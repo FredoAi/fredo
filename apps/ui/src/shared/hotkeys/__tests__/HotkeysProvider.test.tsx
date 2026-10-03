@@ -31,6 +31,9 @@ import {
   HOTKEY_CONTEXT_INDICATOR_TESTID,
 } from '@/shared/hotkeys/ContextIndicator';
 import { HotkeysProvider } from '@/shared/hotkeys/HotkeysProvider';
+import { HOTKEYS_CLUSTER_TESTID } from '@/shared/hotkeys/HotkeysCluster';
+import { KEYS_DISCOVERY_TESTID } from '@/shared/hotkeys/KeysDiscovery';
+import { INPUT_REGIME_TESTID } from '@/shared/hotkeys/InputRegimeIndicator';
 import { KEYBOARD_BAR_TESTID } from '@/shared/hotkeys/KeyboardBar';
 import {
   enterKeyboardMode,
@@ -73,6 +76,24 @@ describe('HotkeysProvider', () => {
 
     unmount();
     expect(document.documentElement.hasAttribute('data-fredo-hotkeys-engine')).toBe(false);
+  });
+
+  it('mounts the ONE S3 cluster exactly once, with the three surfaces and ONE live region', () => {
+    const { container, getByTestId } = renderWithChakra(
+      <HotkeysProvider>
+        <span data-testid="child" />
+      </HotkeysProvider>,
+    );
+
+    // Exactly ONE cluster container (the three S3 surfaces are mounted there).
+    expect(
+      container.querySelectorAll(`[data-testid="${HOTKEYS_CLUSTER_TESTID}"]`),
+    ).toHaveLength(1);
+    // The chip (default navigating) and the always-present discovery control.
+    expect(getByTestId(INPUT_REGIME_TESTID)).toBeInTheDocument();
+    expect(getByTestId(KEYS_DISCOVERY_TESTID)).toBeInTheDocument();
+    // The S3 surfaces introduce NO second live region — still exactly ONE.
+    expect(document.querySelectorAll('[aria-live]')).toHaveLength(1);
   });
 
   it('dispatches a registered action through the engine', () => {

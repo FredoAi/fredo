@@ -138,11 +138,12 @@ describe('InputRegimeIndicator — typing regime', () => {
     expect(label(container)).toHaveTextContent('Typing');
     // Icon SHAPE channel: a rendered <svg>.
     expect(root!.querySelector('svg')).not.toBeNull();
-    // The typing shape uses the rectangular outline (radius sm is asserted in
-    // the source-hygiene block; here we pin the fixed top-left placement).
-    expect(root!.style.position).toBe('fixed');
-    expect(root!.style.left).toBe('12px');
-    expect(root!.style.zIndex).toBe('1310');
+    // ST-5: the chip is IN-FLOW — the shared HotkeysCluster owns placement, so
+    // the chip declares NO independent fixed positioning / anchor / stacking.
+    expect(root!.style.position).not.toBe('fixed');
+    expect(root!.style.left).toBe('');
+    expect(root!.style.top).toBe('');
+    expect(root!.style.zIndex).toBe('');
     expect(root!.style.pointerEvents).toBe('none');
   });
 

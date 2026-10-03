@@ -29,15 +29,18 @@
  * (`flexShrink: 0`, `whiteSpace: nowrap`). The key list scrolls; the mode-chord
  * row is pinned outside the scroll region.
  *
- * Placement (G-253): fixed top-left, `left: 12px`, `top: measureTopOffsetPx()`
- * (the derived top-cluster inset), `z-index: KEYS_DISCOVERY_Z_INDEX` (1310) —
- * the same cluster layer as the regime chip (ST-2) and the first-run card (ST-4).
+ * Placement (ST-5): the control is IN-FLOW — it no longer self-positions. The ONE
+ * shared `HotkeysCluster` owns `position: fixed; left; top; z-index` and stacks
+ * the chip, this control, and the first-run card (G-253/G-267). The panel expands
+ * in-flow beneath the control so it pushes the card down instead of overlapping.
+ * The control re-enables pointer events on its own subtree (the cluster is
+ * click-through).
  *
  * Colour is theme-token / CSS-var / the shared `tint()` helper only — zero
  * hex/rgba/hsl, zero `var(--x)NN` alpha-append.
  */
 
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Button, chakra, HStack, Icon, Text, VStack } from '@chakra-ui/react';
 import { LuKeyboard, LuX } from 'react-icons/lu';
 
@@ -47,7 +50,6 @@ import { useActiveHotkeyContext } from './contextStack';
 import { resolveActiveBindings } from './engine';
 import { KEYBOARD_MODE_CHORD, toggleKeyboardMode } from './keyboardMode';
 import { useHotkeyRevision } from './store';
-import { measureTopOffsetPx, TOP_STACK_ANCHOR_X_PX } from './topStack';
 import { ROOT_CONTEXT_ID, type HotkeyTier, type Platform, type ResolvedBinding } from './types';
 
 // ── Binding names (plan BINDING NAMES BLOCK, verbatim) ───────────────────────
@@ -126,17 +128,6 @@ export function KeysDiscovery({ platform }: KeysDiscoveryProps) {
   const revision = useHotkeyRevision();
   const contextSnapshot = useActiveHotkeyContext();
 
-  // Derived top inset (G-253): re-measure the rendered header on mount + resize,
-  // matching the regime chip's top-left cluster anchor.
-  const [topPx, setTopPx] = useState<number>(() => measureTopOffsetPx());
-  useLayoutEffect(() => {
-    if (typeof window === 'undefined') return;
-    const update = (): void => setTopPx(measureTopOffsetPx());
-    update();
-    window.addEventListener('resize', update);
-    return () => window.removeEventListener('resize', update);
-  }, []);
-
   // Rebuild on a keymap mutation OR a context change; `open` refreshes the
   // listing on each activation (the engine registers shipped defaults without a
   // store revision bump, exactly like the cheat sheet).
@@ -181,15 +172,11 @@ export function KeysDiscovery({ platform }: KeysDiscoveryProps) {
 
   return (
     <Box
-      style={{
-        position: 'fixed',
-        left: `${TOP_STACK_ANCHOR_X_PX}px`,
-        top: `${topPx}px`,
-        zIndex: KEYS_DISCOVERY_Z_INDEX,
-      }}
+      style={{ pointerEvents: 'auto' }}
       display="flex"
       flexDirection="column"
       alignItems="flex-start"
+      gap="1"
     >
       <Button
         ref={controlRef}
@@ -215,10 +202,7 @@ export function KeysDiscovery({ platform }: KeysDiscoveryProps) {
           ref={panelRef}
           tabIndex={-1}
           onKeyDown={handleKeyDown}
-          position="absolute"
-          top="calc(100% + 4px)"
-          left="0"
-          zIndex={1310}
+          flexShrink={0}
           style={{ width: KEYS_DISCOVERY_PANEL_WIDTH, outline: 'none' }}
           bg="bg.surface"
           borderWidth="1px"

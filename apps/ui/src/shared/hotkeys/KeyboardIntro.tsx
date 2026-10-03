@@ -14,9 +14,11 @@
  * `aria-hidden`; the focusable `Got it` button is a SIBLING OUTSIDE that wrapper
  * so it stays in the accessibility tree and is keyboard-operable (R-5.3).
  *
- * Placement is the top-left cluster anchor, inset DERIVED from the rendered
- * window header (`measureTopOffsetPx()`, ST-1) — never a nominal sum (G-253) —
- * so the card never overlays the focused field's resting position.
+ * Placement (ST-5): the card is IN-FLOW — it no longer self-positions. The ONE
+ * shared `HotkeysCluster` owns `position: fixed; left; top; z-index` and stacks
+ * the chip, the discovery control, and this card; the card's top inset is
+ * therefore DERIVED by the cluster (G-253/G-267), never a nominal sum. The card
+ * re-enables pointer events on its own subtree (the cluster is click-through).
  *
  * Render behaviour (G-273/G-274): the body is the ONE shrink target and WRAPS
  * within the card's bounded width (no horizontal clip); the `Got it` control is
@@ -28,7 +30,7 @@
  * opacity/transform only and is disabled under `prefers-reduced-motion`.
  */
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Box, Button, Text } from '@chakra-ui/react';
 
 import { Keycap } from '../components/hotkeys/Keycap';
@@ -36,7 +38,6 @@ import { tint } from '../utils/colorTint';
 import { announce } from './announcer';
 import { persistIntroSeen, readIntroSeen } from './introDismissal';
 import { KEYBOARD_MODE_CHORD } from './keyboardMode';
-import { measureTopOffsetPx } from './topStack';
 
 // ── Contract testids (plan BINDING block — adopt verbatim) ───────────────────
 
@@ -110,9 +111,6 @@ export function KeyboardIntro({
   const [status, setStatus] = useState<IntroStatus>('pending');
   const [dismissed, setDismissed] = useState(false);
 
-  // Derive the top inset from the ACTUAL rendered header (G-253), once on mount.
-  const topOffsetPx = useMemo(() => measureTopOffsetPx(), []);
-
   useEffect(() => {
     let cancelled = false;
     void readIntroSeen()
@@ -146,12 +144,9 @@ export function KeyboardIntro({
   return (
     <Box
       data-testid={KEYBOARD_INTRO_TESTID}
-      zIndex={KEYBOARD_INTRO_Z_INDEX}
       css={INTRO_KEYFRAMES}
       style={{
-        position: 'fixed',
-        left: `${KEYBOARD_INTRO_LEFT_PX}px`,
-        top: `${topOffsetPx}px`,
+        pointerEvents: 'auto',
         ...(reduceMotion ? NO_MOTION_STYLE : MOTION_STYLE),
       }}
       display="flex"

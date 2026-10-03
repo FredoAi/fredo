@@ -130,13 +130,17 @@ describe('KeysDiscovery — always-present control', () => {
     expect(screen.queryByTestId(KEYS_DISCOVERY_PANEL_TESTID)).toBeNull();
   });
 
-  it('rests in the fixed top-left cluster layer (never reflowed by app content)', () => {
+  it('is IN-FLOW inside the shared cluster and stays interactive (ST-5)', () => {
     renderDiscovery();
     const root = screen.getByTestId(KEYS_DISCOVERY_TESTID).parentElement as HTMLElement;
-    expect(root.style.position).toBe('fixed');
-    expect(root.style.left).toBe(`${TOP_STACK_ANCHOR_X_PX}px`);
-    expect(root.style.top).toBe(`${measureTopOffsetPx()}px`);
-    expect(root.style.zIndex).toBe(String(KEYS_DISCOVERY_Z_INDEX));
+    // The shared HotkeysCluster owns position/left/top/z-index — the surface no
+    // longer self-positions.
+    expect(root.style.position).not.toBe('fixed');
+    expect(root.style.left).toBe('');
+    expect(root.style.top).toBe('');
+    expect(root.style.zIndex).toBe('');
+    // The cluster is click-through, so the control re-enables pointer events.
+    expect(root.style.pointerEvents).toBe('auto');
   });
 
   it('opens the panel on activation and tracks aria-expanded', () => {
@@ -359,8 +363,12 @@ describe('KeysDiscovery — resting box clear of the focused field', () => {
     document.body.appendChild(field);
 
     const root = control.parentElement as HTMLElement;
-    const restingLeft = parseFloat(root.style.left);
-    const restingTop = parseFloat(root.style.top);
+    // The shared cluster anchors the control at the top-left cluster corner; the
+    // surface no longer declares its own anchor (ST-5), so the pin derives the
+    // resting corner from the cluster's OWN constants.
+    expect(root.style.position).not.toBe('fixed');
+    const restingLeft = TOP_STACK_ANCHOR_X_PX;
+    const restingTop = measureTopOffsetPx();
 
     let fieldRect = rect(0, FIELD_TOP_PX, 0, FIELD_HEIGHT_PX);
     // jsdom has no layout engine: the pin stubs the measured rects, deriving the

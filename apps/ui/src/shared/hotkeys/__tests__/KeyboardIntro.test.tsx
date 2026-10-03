@@ -57,24 +57,6 @@ async function settle(): Promise<void> {
   });
 }
 
-function mountHeader(bottom: number): void {
-  const header = document.createElement('header');
-  header.className = 'fredo-window__header';
-  header.getBoundingClientRect = () =>
-    ({
-      top: 0,
-      bottom,
-      left: 0,
-      right: 1280,
-      width: 1280,
-      height: bottom,
-      x: 0,
-      y: 0,
-      toJSON: () => ({}),
-    }) as DOMRect;
-  document.body.appendChild(header);
-}
-
 beforeEach(() => {
   resetHotkeyAnnouncer();
   readMock.mockReset();
@@ -237,25 +219,21 @@ describe('KeyboardIntro — prefers-reduced-motion', () => {
   });
 });
 
-// ── Derived top inset (G-253) ────────────────────────────────────────────────
+// ── In-flow inside the shared cluster (ST-5) ─────────────────────────────────
 
-describe('KeyboardIntro — derived top inset', () => {
-  it('uses the base inset when no window header covers the anchor', async () => {
+describe('KeyboardIntro — in-flow inside the shared cluster (ST-5)', () => {
+  it('no longer self-positions — the shared HotkeysCluster owns placement', async () => {
     const { container } = renderWithChakra(<KeyboardIntro reducedMotion />);
     await settle();
 
     const root = card(container)!;
-    expect(root.style.position).toBe('fixed');
-    expect(root.style.left).toBe('12px');
-    expect(root.style.top).toBe('12px');
-  });
-
-  it('derives its top from the ACTUAL rendered header bottom (never a nominal sum)', async () => {
-    mountHeader(48);
-    const { container } = renderWithChakra(<KeyboardIntro reducedMotion />);
-    await settle();
-
-    expect(card(container)!.style.top).toBe('48px');
+    // The shared cluster owns position/left/top/z-index.
+    expect(root.style.position).not.toBe('fixed');
+    expect(root.style.left).toBe('');
+    expect(root.style.top).toBe('');
+    expect(root.style.zIndex).toBe('');
+    // The cluster is click-through, so the card re-enables pointer events.
+    expect(root.style.pointerEvents).toBe('auto');
   });
 });
 

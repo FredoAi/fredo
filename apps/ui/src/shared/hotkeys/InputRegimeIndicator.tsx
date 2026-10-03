@@ -20,9 +20,10 @@
  * `announce()` channel (`announcer.tsx`), and ONLY on a regime transition (boot
  * does not announce).
  *
- * Placement (G-253): fixed top-left, `left: 12px`, `top: measureTopOffsetPx()`
- * (the derived top-cluster inset), `z-index: REGIME_SIGNAL_Z_INDEX` (1310) —
- * above the launcher (1300), below which-key (1400) / cheat sheet (1500).
+ * Placement (ST-5): the chip is IN-FLOW — it no longer self-positions. The ONE
+ * shared `HotkeysCluster` owns `position: fixed; left; top; z-index` and stacks
+ * the chip above the discovery control and the first-run card (G-253/G-267). The
+ * chip only declares `pointerEvents: 'none'` (click-through) and `flexShrink: 0`.
  *
  * Render behaviour (G-273): the label is `flexShrink={0}` + `whiteSpace="nowrap"`
  * so it renders in full, never ellipsized or clipped.
@@ -32,7 +33,7 @@
  * `prefers-reduced-motion`.
  */
 
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Box, Icon, Text } from '@chakra-ui/react';
 import { LuKeyboard, LuNavigation, LuTextCursorInput } from 'react-icons/lu';
 
@@ -41,7 +42,6 @@ import { announce } from './announcer';
 import { useFocusSnapshot } from './engine';
 import { inputRegimeAnnouncement, regimeForFocusSnapshot, type InputRegime } from './inputRegime';
 import { useKeyboardMode } from './keyboardMode';
-import { measureTopOffsetPx, TOP_STACK_ANCHOR_X_PX } from './topStack';
 
 // ── Contract testids / attributes / stacking (plan BINDING block) ────────────
 
@@ -110,16 +110,6 @@ export function InputRegimeIndicator({
 
   const regime = regimeForFocusSnapshot(snapshot);
 
-  // Derived top inset (G-253): re-measure the rendered header on mount + resize.
-  const [topPx, setTopPx] = useState<number>(() => measureTopOffsetPx());
-  useLayoutEffect(() => {
-    if (typeof window === 'undefined') return;
-    const update = (): void => setTopPx(measureTopOffsetPx());
-    update();
-    window.addEventListener('resize', update);
-    return () => window.removeEventListener('resize', update);
-  }, []);
-
   // Announce ONLY on a real regime transition. The mount-time regime is the
   // baseline, so boot never announces (R-1.2/R-2.2); `terminal` (null) is silent.
   const lastRegimeRef = useRef<InputRegime | null>(regime);
@@ -142,10 +132,6 @@ export function InputRegimeIndicator({
       aria-hidden="true"
       css={FADE_KEYFRAMES}
       style={{
-        position: 'fixed',
-        left: `${TOP_STACK_ANCHOR_X_PX}px`,
-        top: `${topPx}px`,
-        zIndex: REGIME_SIGNAL_Z_INDEX,
         pointerEvents: 'none',
         flexShrink: 0,
         ...(reduceMotion ? NO_MOTION_STYLE : MOTION_STYLE),
