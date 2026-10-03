@@ -1,4 +1,5 @@
 pub mod db_client;
+pub mod doom;
 pub mod llm_server;
 pub mod pg_supervisor;
 pub mod screenshot;

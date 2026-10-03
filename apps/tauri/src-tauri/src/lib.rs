@@ -37,6 +37,15 @@ pub use features::db_client;
 #[doc(hidden)]
 pub use features::pg_supervisor::descriptor;
 
+// Spec #2968 CU-2 — the Doom runtime lifecycle contract (`doom::{state, process,
+// commands}`): the shared types + bounded process supervision. The CU-3 HTTP
+// client / acquisition and the CU-4 window consume this surface, so it is
+// re-exported to keep it reachable (and avoid dead-code on the not-yet-wired
+// window-close entry points) while those consumers are pending. `#[doc(hidden)]`:
+// not part of the app surface.
+#[doc(hidden)]
+pub use features::doom;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use features::terminal::state::TerminalState;
@@ -293,6 +302,18 @@ pub fn run() {
             // is PID-reuse guarded (image name) and can never kill an unrelated
             // process (R-3.3).
             features::llm_server::process::sweep_orphan(app.handle());
+
+            // -- Doom runtime state (Spec #2968 CU-2) --------------------------
+            // The single managed Doom engine child lives in this state and is
+            // spawned/killed via the `features::doom` commands registered below.
+            app.manage(features::doom::state::DoomRuntimeState::default());
+
+            // -- Doom startup orphan sweep (Spec #2968 ST-3c) ------------------
+            // A hard-kill (Task Manager) never runs the `RunEvent::Exit` hook, so
+            // reclaim a persisted Doom engine PID on the next launch. The sweep is
+            // PID-reuse guarded (engine image name) and can never kill an
+            // unrelated process (R-3.3).
+            features::doom::process::sweep_orphan(app.handle());
 
             // -- Terminal state ------------------------------------------------
             app.manage(Mutex::new(TerminalState::new()));
@@ -914,6 +935,13 @@ pub fn run() {
             // spawn/bound/parse seam.
             infrastructure::app_open::confirm_app_open_request,
             infrastructure::app_open::run_open_app_cli,
+            // Doom runtime lifecycle (Spec #2968 CU-2/ST-3): the bounded,
+            // idempotent engine spawn + stop and the status snapshot. The HTTP
+            // control surface (`doom_read_state`/`doom_step`/`doom_frame`) and
+            // `open_doom_window` land in CU-3/CU-4.
+            features::doom::commands::launch_doom_runtime,
+            features::doom::commands::stop_doom_runtime,
+            features::doom::commands::get_doom_status,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Fredo application")
@@ -928,6 +956,11 @@ pub fn run() {
                 // with a `taskkill /T /F` hard-kill fallback, then a marker sweep
                 // backstop — quit never blocks on a hung server (R-2.1/G-263).
                 features::pg_supervisor::stop_on_exit(app);
+                // Spec #2968 CU-2/ST-3: bounded Doom engine teardown. The graceful
+                // stop is wall-clock capped by DOOM_EXIT_HOOK_BOUND (5 s) with a
+                // `taskkill /T /F` hard-kill fallback, then a marker sweep
+                // backstop — quit never blocks on a hung engine (G-263).
+                features::doom::commands::stop_doom_on_exit(app);
             }
         });
 }
