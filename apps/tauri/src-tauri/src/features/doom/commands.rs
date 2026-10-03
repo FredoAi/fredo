@@ -14,7 +14,7 @@ use std::path::Path;
 use std::sync::{Arc, MutexGuard};
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::infrastructure::storage::AppStore;
 
@@ -486,6 +486,45 @@ pub fn doom_close_handler(app: AppHandle) -> impl Fn(&tauri::WindowEvent) + Send
             stop_doom_on_window_close(&app);
         }
     }
+}
+
+// ── Dedicated window (ST-6) ──────────────────────────────────────────────────
+
+/// Create or focus the ONE `doom` window (singleton keyed by the binding label
+/// [`DOOM_WINDOW_LABEL`] = `"doom"`).
+///
+/// Mirrors `terminal::commands::open_terminal_window_with_intent`: an existing
+/// window is focused and NEVER rebuilt (R-1.2 exactly-one), while a fresh window
+/// is built against the `index.html?view=doom` route with the CU-2
+/// [`doom_close_handler`] wired to `CloseRequested`, so closing the window for
+/// ANY reason tears the engine down (G-263). The window title matches the
+/// in-webview `doom-window-title` heading ("Doom").
+#[tauri::command]
+pub async fn open_doom_window(app: AppHandle) -> Result<(), String> {
+    match app.get_webview_window(DOOM_WINDOW_LABEL) {
+        Some(window) => {
+            tracing::debug!(target: "fredo::doom", "reusing existing doom window");
+            window.set_focus().ok();
+        }
+        None => {
+            tracing::debug!(target: "fredo::doom", "building the doom WebviewWindow");
+            let builder = WebviewWindowBuilder::new(
+                &app,
+                DOOM_WINDOW_LABEL,
+                WebviewUrl::App("index.html?view=doom".into()),
+            )
+            .title("Doom")
+            .inner_size(900.0, 600.0)
+            .min_inner_size(560.0, 360.0)
+            .resizable(true);
+            let window = builder
+                .build()
+                .map_err(|e| format!("Failed to open Doom window: {e}"))?;
+            // Wire CloseRequested → bounded engine teardown (no orphan, G-263).
+            window.on_window_event(doom_close_handler(app.clone()));
+        }
+    }
+    Ok(())
 }
 
 /// `RunEvent::Exit` hook (SYNCHRONOUS entry): bounded teardown under

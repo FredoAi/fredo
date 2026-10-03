@@ -939,7 +939,9 @@ pub fn run() {
             // idempotent engine spawn + stop and the status snapshot. The HTTP
             // control surface (CU-3/ST-5: `doom_read_state`/`doom_step`/
             // `doom_frame`, all Rust-side because the webview CSP forbids the
-            // engine) is registered here too. `open_doom_window` lands in CU-4.
+            // engine) is registered here too. `open_doom_window` (CU-4/ST-6) is
+            // the singleton window opener the main-window entry host invokes.
+            features::doom::commands::open_doom_window,
             features::doom::commands::launch_doom_runtime,
             features::doom::commands::stop_doom_runtime,
             features::doom::commands::get_doom_status,
