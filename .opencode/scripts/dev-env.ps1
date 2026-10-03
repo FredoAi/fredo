@@ -757,14 +757,14 @@ function Invoke-EnvUp {
     Write-Log "WARNING: $ServingDir has no node_modules -- run 'pnpm install --frozen-lockfile' there or tauri dev will fail." -Level WARN
   }
 
-  $launchCmd = "/c cd /d `"$ServingDir`" && pnpm dev:tauri -- --config `"$confPath`" > `"$stdout`" 2> `"$stderr`""
+  $launchCmd = "/c cd /d `"$ServingDir`" && pnpm --filter @fredo/tauri exec tauri dev --config `"$confPath`" > `"$stdout`" 2> `"$stderr`""
   $proc = Start-Process -FilePath "cmd" -ArgumentList $launchCmd -WindowStyle Hidden -PassThru
   Write-Log "Launched launcher PID $($proc.Id). Waiting for env ports + app..."
 
   # Record the same-issue lease immediately (launcher PID) so a concurrent Up for
   # this issue fails closed even during the startup window; the app PID replaces
   # it once ready (R-3.4).
-  Write-EnvLease -Path $leasePath -SpecIssue $Spec -LeaseEnvId $EnvId -ServingCheckout (Get-RepoRelativePath $ServingDir) -Pid $proc.Id
+  Write-EnvLease -Path $leasePath -SpecIssue $Spec -LeaseEnvId $EnvId -ServingCheckout (Get-RepoRelativePath $ServingDir) -LeasePid $proc.Id
 
   $startedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
   Write-EnvManifest -ManifestPath $ManifestPath -EnvId $EnvId -Spec $Spec -ServingCheckout $ServingDir `
@@ -810,7 +810,7 @@ function Invoke-EnvUp {
       # The app process is the live lease holder (a crash frees the lease for a
       # bounded stale reclaim, R-3.4).
       if ($appPid) {
-        Write-EnvLease -Path $leasePath -SpecIssue $Spec -LeaseEnvId $EnvId -ServingCheckout (Get-RepoRelativePath $ServingDir) -Pid ([int]$appPid)
+        Write-EnvLease -Path $leasePath -SpecIssue $Spec -LeaseEnvId $EnvId -ServingCheckout (Get-RepoRelativePath $ServingDir) -LeasePid ([int]$appPid)
       }
       # Environment-tagged evidence (R-5.1). Best-effort: never fails Up.
       Write-EnvEvidence -EvidenceFile $EvidencePath -EnvId $EnvId -ServingCheckout $ServingDir `
@@ -1064,7 +1064,7 @@ function Test-EnvLeaseLive {
 }
 
 function Write-EnvLease {
-  param([string]$Path, [uint64]$SpecIssue, [string]$LeaseEnvId, [string]$ServingCheckout, [int]$Pid)
+  param([string]$Path, [uint64]$SpecIssue, [string]$LeaseEnvId, [string]$ServingCheckout, [int]$LeasePid)
   $dir = Split-Path -Parent $Path
   if ($dir -and -not (Test-Path -LiteralPath $dir)) {
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
@@ -1073,7 +1073,7 @@ function Write-EnvLease {
     issue           = $SpecIssue
     envId           = $LeaseEnvId
     servingCheckout = $ServingCheckout
-    pid             = $Pid
+    pid             = $LeasePid
     startedAt       = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
   }
   $json = $obj | ConvertTo-Json -Depth 4
