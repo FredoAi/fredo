@@ -37,6 +37,11 @@
 //! up long enough for an external `psql` attach; the default run tears down
 //! immediately.
 //!
+//! The cluster password is `FREDO_SPIKE_2989_PASSWORD` when set (non-default),
+//! else the fixed `spike2989-password`; the `PG_DSN=` line carries the resolved
+//! value. The REQ2b recipe seeds the SAME value into the app's throwaway
+//! control plane so the app can authenticate to the PoC-seeded cluster.
+//!
 //! # Isolation (R-4.5) + safety
 //!
 //! Throwaway data dir `.opencode/tmp/2989/pgdata` via `FREDO_PG_DATA_DIR` and a
@@ -81,10 +86,29 @@ const PG_DATA_DIR_ENV: &str = "FREDO_PG_DATA_DIR";
 const PG_INSTALL_DIR_ENV: &str = "FREDO_PG_INSTALL_DIR";
 /// Optional, FINITE post-evidence hold so an external `psql` can attach.
 const HOLD_ENV: &str = "FREDO_SPIKE_2989_HOLD_MS";
+/// PoC-local cluster-password override (ST-2-R2). Non-default: when unset the
+/// PoC keeps the fixed [`DEFAULT_PASSWORD`], so the REQ2 transcript is unchanged.
+/// The REQ2b recipe sets this SAME value into the app's throwaway control-plane
+/// `postgres.password`, so one credential covers both the PoC cluster and the
+/// app that attaches to it.
+const PASSWORD_ENV: &str = "FREDO_SPIKE_2989_PASSWORD";
+/// Default cluster password (round-1 value; preserves the REQ2 transcript).
+const DEFAULT_PASSWORD: &str = "spike2989-password";
 /// Finite teardown bound (G-263).
 const STOP_BOUND: Duration = Duration::from_secs(30);
 /// Hard cap on the optional hold (never unbounded).
 const HOLD_CAP: u64 = 120_000;
+
+/// Resolve the cluster password for the PoC's `initdb`: the named override
+/// `FREDO_SPIKE_2989_PASSWORD` when set and non-empty, else the fixed default.
+/// The printed `PG_DSN=` line carries the resolved value so the tester and the
+/// control-plane seed share ONE password.
+fn resolved_password() -> String {
+    match std::env::var(PASSWORD_ENV) {
+        Ok(v) if !v.is_empty() => v,
+        _ => DEFAULT_PASSWORD.to_string(),
+    }
+}
 
 fn spike_enabled() -> bool {
     matches!(std::env::var(GATE_ENV).as_deref(), Ok("1"))
@@ -141,7 +165,22 @@ async fn spike_2989_headless_ingest() {
     };
 
     // ── ONE embedded server (bounded; Drop is the panic/error hard-kill) ─────
-    let mut runtime = PgRuntime::new(&app_scratch.path().join("pg-app"), "spike2989-password".to_string());
+    // ST-2-R2: the cluster password comes from a named, non-default env var
+    // (default preserves the round-1 value). One credential for PoC + app.
+    let cluster_password = resolved_password();
+    let password_source = if std::env::var(PASSWORD_ENV)
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+    {
+        PASSWORD_ENV
+    } else {
+        "default"
+    };
+    record(format!(
+        "SPIKE_2989_PASSWORD source={password_source} length={}",
+        cluster_password.len()
+    ));
+    let mut runtime = PgRuntime::new(&app_scratch.path().join("pg-app"), cluster_password);
     runtime.setup().await.expect("embedded PostgreSQL setup (bounded)");
     runtime
         .apply_server_knobs()
