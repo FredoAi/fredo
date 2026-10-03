@@ -573,6 +573,47 @@ function Write-EnvManifest {
   [System.IO.File]::WriteAllText($ManifestPath, $json, (New-Object System.Text.UTF8Encoding($false)))
 }
 
+# Write the environment's evidence record (Spec #2944 ST-12 / CU-G, R-5.1) at
+# <env-root>/evidence.json (overridable via FREDO_EVIDENCE_FILE). It records the
+# env id, serving checkout, served commit, DB path, endpoints/MCP port, manifest
+# path, and app identity so the state machine's audit can attribute evidence to
+# THIS environment and reject cross-environment evidence (R-5.2). BEST-EFFORT:
+# any failure is a warning and must never fail Up (the env is already serving).
+function Write-EnvEvidence {
+  param(
+    [string]$EvidenceFile, [string]$EnvId, [string]$ServingCheckout, [string]$ServedCommit,
+    [string]$DbPath, [int]$VitePort, [int]$McpPort, [int]$OtlpGrpcPort, [int]$OtlpHttpPort, [int]$LlamaPort,
+    [string]$CliPipe, [string]$ManifestPath, [string]$AppIdentity
+  )
+  try {
+    $dir = Split-Path -Parent $EvidenceFile
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) {
+      New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    $obj = [ordered]@{
+      envId           = $EnvId
+      servingCheckout = $ServingCheckout
+      servedCommit    = $ServedCommit
+      dbPath          = $DbPath
+      endpoints       = [ordered]@{
+        vite     = $VitePort
+        mcp      = $McpPort
+        otlpGrpc = $OtlpGrpcPort
+        otlpHttp = $OtlpHttpPort
+        llama    = $LlamaPort
+        pipe     = $CliPipe
+      }
+      manifestPath    = $ManifestPath
+      appIdentity     = $AppIdentity
+    }
+    $json = $obj | ConvertTo-Json -Depth 6
+    [System.IO.File]::WriteAllText($EvidenceFile, $json, (New-Object System.Text.UTF8Encoding($false)))
+    Write-Log "Wrote env evidence: $EvidenceFile"
+  } catch {
+    Write-Log "WARNING: could not write env evidence to ${EvidenceFile}: $($_.Exception.Message)" -Level WARN
+  }
+}
+
 # Env-aware cold start (Spec #2944 ST-4). Fail-closed on port collisions
 # (R-4.3); manifest-scoped (NO global image-name kill); per-env paths/logs; the
 # Tauri devUrl override via `--config <env-root>/tauri.env.conf.json`. Reads the
@@ -771,6 +812,11 @@ function Invoke-EnvUp {
       if ($appPid) {
         Write-EnvLease -Path $leasePath -SpecIssue $Spec -LeaseEnvId $EnvId -ServingCheckout (Get-RepoRelativePath $ServingDir) -Pid ([int]$appPid)
       }
+      # Environment-tagged evidence (R-5.1). Best-effort: never fails Up.
+      Write-EnvEvidence -EvidenceFile $EvidencePath -EnvId $EnvId -ServingCheckout $ServingDir `
+        -ServedCommit $servedCommit -DbPath $DbPath -VitePort $VitePort -McpPort $McpPort `
+        -OtlpGrpcPort $OtlpGrpcPort -OtlpHttpPort $OtlpHttpPort -LlamaPort $LlamaPort `
+        -CliPipe $CliPipe -ManifestPath $ManifestPath -AppIdentity $AppIdentity
       Write-Log "env '$EnvId' ready (manifest: $ManifestPath)"
       exit 0
     }
