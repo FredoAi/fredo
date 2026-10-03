@@ -34,6 +34,14 @@
                 {
                   "key": "gen_ai.usage.output_tokens",
                   "value": { "intValue": "7" }
+                },
+                {
+                  "key": "gen_ai.input.messages",
+                  "value": { "stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Say hello from the headless ingest E2E fixture.\"}]}]" }
+                },
+                {
+                  "key": "gen_ai.output.messages",
+                  "value": { "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Hello from the headless ingest E2E fixture.\"}]}]" }
                 }
               ]
             }

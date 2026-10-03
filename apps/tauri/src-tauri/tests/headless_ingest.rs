@@ -315,8 +315,14 @@ async fn post_fixture(port: u16, body: &str) -> Result<u16, String> {
     Ok(response.status().as_u16())
 }
 
-/// Poll the daemon-owned cluster until BOTH a raw span and a canonical chat row
-/// for the fixture session are visible, bounded.
+/// Poll the daemon-owned cluster until a raw span, a canonical chat row, AND a
+/// rollup-qualifying turn for the fixture session are visible, bounded.
+///
+/// The third clause mirrors the Mission Monitor rollup predicate
+/// (`session_rollup.rs::compute_facts`): a turn is visible unless it is a
+/// terminal (`Response`/`Timeout`) turn with a blank `agent_reply`. Requiring
+/// `visible_turn >= 1` proves the fixture session is renderable by the declared
+/// `sessions` rollup (ST-8R-2), not merely persisted.
 async fn wait_for_rows(pool: &sqlx::PgPool, session: &str, bound: Duration) -> Result<(), String> {
     let deadline = Instant::now() + bound;
     loop {
@@ -332,13 +338,24 @@ async fn wait_for_rows(pool: &sqlx::PgPool, session: &str, bound: Duration) -> R
                 .fetch_one(pool)
                 .await
                 .map_err(|error| format!("query chat_rows: {error}"))?;
-        if spans >= 1 && chats >= 1 {
+        // The `visibleTurnCount > 0` clause (mirrors session_rollup.rs:251-255):
+        // a non-subagent turn counts as visible unless it is terminal AND blank.
+        let visible_turns: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM chat_rows WHERE session_id = $1 \
+             AND (lower(state) NOT IN ('response','timeout') \
+             OR (agent_reply IS NOT NULL AND btrim(agent_reply) <> ''))",
+        )
+        .bind(session)
+        .fetch_one(pool)
+        .await
+        .map_err(|error| format!("query chat_rows visible turns: {error}"))?;
+        if spans >= 1 && chats >= 1 && visible_turns >= 1 {
             return Ok(());
         }
         if Instant::now() >= deadline {
             return Err(format!(
-                "the fixture session did not persist both rows within {bound:?} \
-                 (telemetry_spans={spans}, chat_rows={chats})"
+                "the fixture session did not persist a rollup-qualifying row within {bound:?} \
+                 (telemetry_spans={spans}, chat_rows={chats}, visible_turns={visible_turns})"
             ));
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -450,6 +467,7 @@ async fn scenario(
     println!(
         "HEADLESS_INGEST_ROWS telemetry_spans>=1 chat_rows>=1 session={FIXTURE_SESSION_ID}"
     );
+    println!("HEADLESS_INGEST_ROLLUP visible_turn>=1 session={FIXTURE_SESSION_ID}");
 
     // ── (c) second daemon fails fast on the held lock ────────────────────────
     let (mut daemon2, stderr2) = spawn_daemon(bin, ctx, "daemon2");
