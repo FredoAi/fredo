@@ -59,7 +59,7 @@ Slices 1-6 of the SQLite → embedded-PostgreSQL migration ship the **lifecycle 
 
 **Protections:**
 - The managed postmaster is started on every boot (PostgreSQL is the default engine); it binds an **ephemeral loopback port on `127.0.0.1`** (never OTLP 4317/4318 or the MCP bridge 9223)
-- Spawned/stopped only through `features/pg_supervisor`; nothing else starts it ad-hoc
+- Spawned/stopped only through `features/pg_supervisor` — by the GUI or by the non-GUI `fredo ingest` daemon (Spec #2992); nothing else starts it ad-hoc. The daemon holds the same exclusive data-dir lock, so a second owner cannot start a cluster; a GUI launched while a headless daemon owns the cluster **attaches** to it (published pid/port descriptor) instead of starting its own
 - Every start/readiness/stop wait carries a **finite wall-clock cap** with a hard-kill (`taskkill /T /F`) fallback and guaranteed teardown on normal, error, and panic paths — the observed ~11 h unbounded `pg.stop()` hang (#2948) is closed
 - A PID-reuse-guarded startup sweep reclaims a previous run's orphan (killed only when its image is `postgres.exe`); an exclusive data-dir lock prevents two launches from touching one cluster
 - The cluster password is local-only (control-plane KV key `postgres.password` on `control.db`); OS-keyring hardening is deferred to a later slice

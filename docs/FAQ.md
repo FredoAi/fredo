@@ -134,6 +134,10 @@ Fredo also collects its own internal metrics and structured logs from the Rust b
 
 `chat` child spans are cached and their content is attached to the parent `invoke_agent` row. This prevents the graph from being flooded with individual chat events. The full chat content is visible in the Mission Monitor's chat node / detail panel for the parent.
 
+### Can I capture telemetry while the desktop app is closed?
+
+Yes — run `fredo ingest`. It is a headless daemon that owns the embedded PostgreSQL cluster and the OTLP receivers on the same loopback ports (`127.0.0.1:4317`/`:4318`), using the same data dir and credential as the GUI. It holds the exclusive data-dir lock (a second daemon or the GUI's own cluster start fails fast), and when you later open the GUI it **attaches** to the headless-owned cluster so Mission Monitor shows the captured sessions. Settings → **Ingest** can install a per-user login entry so it starts automatically. See [CLI_GUIDE.md](CLI_GUIDE.md#fredo-ingest).
+
 ---
 
 ## LLM

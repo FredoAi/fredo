@@ -1,11 +1,12 @@
 # Fredo CLI Guide
 
-The `fredo` binary is installed alongside the desktop app and added to your system PATH. It has two modes:
+The `fredo` binary is installed alongside the desktop app and added to your system PATH. It has three modes:
 
 1. **GUI mode** (no arguments) — launches the Fredo desktop window
 2. **CLI mode** (with arguments) — forwards commands to the running app via the local IPC socket
+3. **Headless ingest mode** (`fredo ingest`) — a long-lived daemon that captures agent telemetry while the GUI is closed
 
-> **Prerequisite**: The Fredo desktop app must be running for CLI commands to work. If the app is not open, an error is printed to stderr and the process exits with code `2`.
+> **Prerequisite**: The Fredo desktop app must be running for CLI commands to work — except `fredo ingest`, which is self-contained. If the app is not open, a CLI command prints an error to stderr and exits with code `2`.
 
 ## Commands
 
@@ -129,6 +130,44 @@ fredo open-terminal --cli copilot
 ```
 
 > A malformed invocation exits `1` (invalid argument), distinct from the `2` used for app-not-running. Re-invoking focuses the same single `terminal` window.
+
+### `fredo ingest`
+
+Runs Fredo's **headless ingest daemon**: a long-lived, non-GUI process that owns the embedded PostgreSQL cluster and the OTLP receivers so agent telemetry keeps being captured while the desktop app is closed. It uses the **same data dir and the same control-plane credential** as the desktop app and holds the **exclusive data-dir lock**, so exactly one owner starts the cluster. Events flow through the existing paths — the `IngestClassifier` (canonical rows) and `SpanStore` (raw `telemetry_spans`) — with no alternate row-emission route and no subscription gating.
+
+```bash
+fredo ingest [--data-dir <PATH>] [--pg-data-dir <PATH>] [--lock-dir <PATH>] [--grpc-port <PORT>] [--http-port <PORT>] [--run-ms <MS>] [--shutdown-file <PATH>]
+```
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--data-dir` | OS app-data dir | Override the resolved app-data dir (`FREDO_DATA_DIR`) |
+| `--pg-data-dir` | `<data-dir>/postgres` | Override the PostgreSQL data dir (`FREDO_PG_DATA_DIR`) |
+| `--lock-dir` | `<data-dir>` | Directory holding the exclusive `postgres.lock` + the headless descriptor (`FREDO_PG_LOCK_DIR`) |
+| `--grpc-port` | `4317` | OTLP gRPC receiver port (`FREDO_INGEST_GRPC_PORT`) |
+| `--http-port` | `4318` | OTLP HTTP receiver port (`FREDO_INGEST_HTTP_PORT`) |
+| `--run-ms` | unset (run until signal) | Bounded self-terminate after N ms (`FREDO_INGEST_RUN_MS`) |
+| `--shutdown-file` | unset | When this file appears the daemon shuts down gracefully (`FREDO_INGEST_SHUTDOWN_FILE`) |
+
+Precedence is **CLI flag > environment variable > default**. The daemon never overrides a caller-supplied value.
+
+**Exit codes**
+
+| Exit | Meaning |
+|------|---------|
+| `0` | Graceful shutdown (SIGINT, the shutdown file, or `--run-ms` elapsed) |
+| `1` | Fail-fast — the data-dir lock is already held by another `fredo ingest`, the cluster failed to start, or an un-migrated `fredo.db` is present without the `migration.postgres.completed` marker (defer to a GUI boot) |
+| `2` | Reserved |
+
+**Behaviour**
+
+- **Owns the cluster.** Starts the embedded PostgreSQL cluster via the existing supervisor and holds the exclusive data-dir lock; a second `fredo ingest` (or the GUI's own cluster start) fails fast with a clear message instead of starting a second postmaster.
+- **GUI attach.** When a headless daemon owns the cluster, launching the GUI **attaches** to that same cluster/data dir/credential (status `attached`) rather than starting its own; it never starts or later stops a postmaster.
+- **Bounded shutdown (G-263).** On SIGINT, the shutdown file, or `--run-ms`, the daemon drains and flushes the write-behind queue, closes the pool, stops the cluster within a finite bound (hard-kill fallback on expiry), releases the lock, and clears its descriptor — no orphan postmaster.
+- **Loopback only.** PostgreSQL binds an ephemeral `127.0.0.1` port; the OTLP receivers bind `127.0.0.1:4317`/`:4318`, exactly like the GUI.
+- **Markers untouched.** The daemon never reads or writes the one-shot `rtdb.backfill.*` markers and never writes `telemetry_spans` from the backfill path.
+
+> **Login auto-start.** Settings → **Ingest** installs a per-user login entry that runs `fredo ingest` at sign-in; disabling it removes the entry. OS-level service installation (Windows Service / systemd / launchd daemon) and elevation are out of scope.
 
 ---
 

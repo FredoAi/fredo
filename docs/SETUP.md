@@ -188,6 +188,22 @@ The installer adds the `fredo` binary to your system PATH. Verify:
 fredo --help
 ```
 
+## Headless Ingest (capturing telemetry with the GUI closed)
+
+By default, agent telemetry is only captured while the Fredo desktop app is running. To keep capturing it from a terminal-only workflow (or a CI/E2E run) with the GUI closed, run the headless ingest daemon:
+
+```bash
+fredo ingest
+```
+
+The daemon owns the embedded PostgreSQL cluster and the OTLP receivers on the same loopback ports as the GUI (`127.0.0.1:4317` gRPC, `127.0.0.1:4318` HTTP), using the **same data dir and credential** as the desktop app. It holds the exclusive data-dir lock, so a second `fredo ingest` — or the GUI starting its own cluster — fails fast instead of starting a second postmaster. When you later launch the GUI while the daemon is running, the GUI **attaches** to the headless-owned cluster and Mission Monitor renders the sessions the daemon ingested.
+
+Stop it with Ctrl+C (SIGINT) or `--shutdown-file`; shutdown is bounded and leaves no orphan postmaster. See [CLI_GUIDE.md](CLI_GUIDE.md#fredo-ingest) for all flags and exit codes.
+
+**Auto-start at login.** Settings → **Ingest** installs a per-user login entry that runs `fredo ingest` at sign-in, so capture is continuous without keeping the GUI open. Disabling the toggle removes the entry. No administrator rights are required (an OS-level service is out of scope).
+
+> **Upgraded installs:** if you still have an un-migrated `fredo.db`, the daemon refuses to start (exit `1`) and defers to a GUI boot to run the one-shot PostgreSQL migration — so it never ingests rows ahead of the migration.
+
 ## PostgreSQL Persistence, Cutover, and Rollback
 
 Fredo's migrated stores are backed by an **embedded PostgreSQL** engine, which is the shipped default (Spec #2979). The legacy `fredo.db` file is retained read-only as the backout artifact.
