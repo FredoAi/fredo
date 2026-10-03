@@ -10,19 +10,27 @@
  * one).
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, screen } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { resetHotkeyAnnouncer } from '@/shared/hotkeys/announcer';
 import { resetContextRegistryForTests } from '@/shared/hotkeys/contexts';
 import { resetHotkeyContextForTests } from '@/shared/hotkeys/contextStack';
-import { registerDefaultFredoActions, resetHotkeyEngineForTests } from '@/shared/hotkeys/engine';
+import {
+  installHotkeyEngine,
+  registerDefaultFredoActions,
+  resetHotkeyEngineForTests,
+} from '@/shared/hotkeys/engine';
 import { resetKeyboardModeForTests } from '@/shared/hotkeys/keyboardMode';
 import { resetRegistryForTests } from '@/shared/hotkeys/registry';
 import { resetKeymapStoreForTests } from '@/shared/hotkeys/store';
 import { resetWindowStoreForTests } from '@/shared/window-system/windowStore';
-import { TOP_STACK_ANCHOR_X_PX, TOP_STACK_MIN_PX } from '@/shared/hotkeys/topStack';
+import {
+  TOP_STACK_ANCHOR_X_PX,
+  TOP_STACK_CLEARANCE_GAP_PX,
+  TOP_STACK_MIN_PX,
+} from '@/shared/hotkeys/topStack';
 import { REGIME_SIGNAL_Z_INDEX } from '@/shared/hotkeys/InputRegimeIndicator';
 import { INPUT_REGIME_TESTID } from '@/shared/hotkeys/InputRegimeIndicator';
 import { KEYS_DISCOVERY_TESTID } from '@/shared/hotkeys/KeysDiscovery';
@@ -83,6 +91,7 @@ afterEach(() => {
   resetContextRegistryForTests();
   resetHotkeyContextForTests();
   resetKeyboardModeForTests();
+  vi.restoreAllMocks();
   document.body.innerHTML = '';
 });
 
@@ -122,6 +131,108 @@ describe('HotkeysCluster — ONE fixed top-left container', () => {
     await settle();
 
     expect(cluster().style.top).toBe('48px');
+  });
+});
+
+// ── Collision-aware displacement (Spec #2960 round 2, F-65) ──────────────────
+
+describe('HotkeysCluster — collision-aware displacement (F-65)', () => {
+  const CLUSTER_WIDTH_PX = 83;
+  const CLUSTER_HEIGHT_PX = 75;
+
+  function rect(left: number, top: number, right: number, bottom: number): DOMRect {
+    return {
+      x: left,
+      y: top,
+      top,
+      left,
+      right,
+      bottom,
+      width: right - left,
+      height: bottom - top,
+      toJSON: () => ({}),
+    } as DOMRect;
+  }
+
+  /** Stub the cluster's measured box + the focused field's resting rect. */
+  function stubRects(fieldRect: DOMRect): void {
+    const clusterRect = rect(
+      TOP_STACK_ANCHOR_X_PX,
+      TOP_STACK_MIN_PX,
+      TOP_STACK_ANCHOR_X_PX + CLUSTER_WIDTH_PX,
+      TOP_STACK_MIN_PX + CLUSTER_HEIGHT_PX,
+    );
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: Element,
+    ) {
+      if (this instanceof HTMLElement && this.dataset.testid === HOTKEYS_CLUSTER_TESTID) {
+        return clusterRect;
+      }
+      if (this instanceof HTMLElement && this.dataset.testid === 'focused-field') {
+        return fieldRect;
+      }
+      return rect(0, 0, 0, 0);
+    });
+  }
+
+  async function focusField(): Promise<HTMLElement> {
+    const field = document.createElement('input');
+    field.setAttribute('data-testid', 'focused-field');
+    document.body.appendChild(field);
+    await act(async () => {
+      field.focus();
+    });
+    await settle();
+    return field;
+  }
+
+  it('displaces BELOW the focused Mission Monitor field, keeping left/z/gap', async () => {
+    const uninstall = installHotkeyEngine();
+    try {
+      // The real live F-65 rect: input[placeholder="Filter sessions..."].
+      stubRects(rect(24, 79, 202, 102));
+      renderWithChakra(<HotkeysCluster reducedMotion />);
+      await settle();
+
+      await focusField();
+
+      const root = cluster();
+      // 102 (field.bottom) + 8 (clearance gap) = 110 — clear of the field.
+      expect(root.style.top).toBe(`${102 + TOP_STACK_CLEARANCE_GAP_PX}px`);
+      expect(root.style.top).toBe('110px');
+      // Unchanged invariants.
+      expect(root.style.left).toBe(`${TOP_STACK_ANCHOR_X_PX}px`);
+      expect(root.style.zIndex).toBe(String(REGIME_SIGNAL_Z_INDEX));
+      expect(root.style.gap).toBe(`${HOTKEYS_CLUSTER_GAP_PX}px`);
+      expect(root.style.pointerEvents).toBe('none');
+
+      // The three surfaces stay in-flow inside the ONE cluster.
+      for (const el of [
+        screen.getByTestId(INPUT_REGIME_TESTID),
+        screen.getByTestId(KEYS_DISCOVERY_TESTID),
+        screen.getByTestId(KEYBOARD_INTRO_TESTID),
+      ]) {
+        expect(root.contains(el)).toBe(true);
+      }
+    } finally {
+      uninstall();
+    }
+  });
+
+  it('stays at the derived rest for a launcher-shaped field at the viewport bottom', async () => {
+    const uninstall = installHotkeyEngine();
+    try {
+      // The launcher field sits at the viewport bottom, outside the top-left lane.
+      stubRects(rect(360, 412, 920, 460));
+      renderWithChakra(<HotkeysCluster reducedMotion />);
+      await settle();
+
+      await focusField();
+
+      expect(cluster().style.top).toBe(`${TOP_STACK_MIN_PX}px`);
+    } finally {
+      uninstall();
+    }
   });
 });
 

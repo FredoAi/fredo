@@ -11,8 +11,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   measureTopOffsetPx,
+  resolveClusterTopPx,
   TOP_STACK_ANCHOR_X_PX,
   TOP_STACK_ANCHOR_Y_PX,
+  TOP_STACK_CLEARANCE_GAP_PX,
   TOP_STACK_HEADER_SELECTOR,
   TOP_STACK_MIN_PX,
 } from '../topStack';
@@ -105,5 +107,73 @@ describe('measureTopOffsetPx — header-derived inset (G-253)', () => {
   it('is deterministic for identical DOM', () => {
     mountHeader({ left: 0, top: 0, right: 1280, bottom: 44 });
     expect(measureTopOffsetPx()).toBe(measureTopOffsetPx());
+  });
+});
+
+// ── Collision-aware cluster placement (Spec #2960 round 2, F-65) ─────────────
+
+describe('resolveClusterTopPx — collision-aware cluster placement (F-65)', () => {
+  const RESTING_TOP_PX = TOP_STACK_MIN_PX; // 12
+  const CLUSTER_LEFT_PX = TOP_STACK_ANCHOR_X_PX; // 12
+  const CLUSTER_WIDTH_PX = 83;
+  const CLUSTER_HEIGHT_PX = 75;
+  const VIEWPORT_HEIGHT_PX = 800;
+
+  /** The real Mission Monitor session-filter input resting rect (live F-65). */
+  const MM_FIELD = { left: 24, top: 79, right: 202, bottom: 102 };
+
+  function resolve(field: Rect | null, viewportHeightPx = VIEWPORT_HEIGHT_PX): number {
+    return resolveClusterTopPx({
+      restingTopPx: RESTING_TOP_PX,
+      clusterLeftPx: CLUSTER_LEFT_PX,
+      clusterWidthPx: CLUSTER_WIDTH_PX,
+      clusterHeightPx: CLUSTER_HEIGHT_PX,
+      field,
+      viewportHeightPx,
+    });
+  }
+
+  it('declares the documented clearance gap', () => {
+    expect(TOP_STACK_CLEARANCE_GAP_PX).toBe(8);
+  });
+
+  it('returns the resting top when no field is focused', () => {
+    expect(resolve(null)).toBe(RESTING_TOP_PX);
+  });
+
+  it('returns the resting top when the field is to the right of the cluster', () => {
+    expect(resolve({ left: 300, top: 79, right: 478, bottom: 102 })).toBe(RESTING_TOP_PX);
+  });
+
+  it('returns the resting top when the field is above the cluster', () => {
+    expect(resolve({ left: 24, top: -100, right: 202, bottom: -77 })).toBe(RESTING_TOP_PX);
+  });
+
+  it('returns the resting top when the field is below the cluster', () => {
+    expect(resolve({ left: 24, top: 200, right: 202, bottom: 223 })).toBe(RESTING_TOP_PX);
+  });
+
+  it('treats edge-touching rects as non-overlapping (zero shared area)', () => {
+    // Field starts exactly at the cluster's resting bottom (12 + 75 = 87).
+    expect(resolve({ left: 24, top: 87, right: 202, bottom: 110 })).toBe(RESTING_TOP_PX);
+  });
+
+  it('displaces BELOW the Mission Monitor field when it fits', () => {
+    // 102 (field.bottom) + 8 (gap) = 110; 110 + 75 = 185 <= 800.
+    expect(resolve(MM_FIELD)).toBe(MM_FIELD.bottom + TOP_STACK_CLEARANCE_GAP_PX);
+    expect(resolve(MM_FIELD)).toBe(110);
+  });
+
+  it('displaces ABOVE the field when there is no room below', () => {
+    const field = { left: 24, top: 85, right: 202, bottom: 108 };
+    // Below would need 116 + 75 = 191; viewport 130 has no room.
+    // Above: 85 - 8 - 75 = 2 >= 0.
+    expect(resolve(field, 130)).toBe(2);
+  });
+
+  it('leaves the cluster at rest when neither side fits (documented degradation)', () => {
+    const field = { left: 24, top: 50, right: 202, bottom: 73 };
+    // Below: 81 + 75 = 156 > 100. Above: 50 - 8 - 75 = -33 < 0.
+    expect(resolve(field, 100)).toBe(RESTING_TOP_PX);
   });
 });

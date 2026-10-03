@@ -9,9 +9,15 @@
  * `resolveActiveBindings()` with context-scoped rows first; the pinned
  * `KEYBOARD_MODE_CHORD` row (outside the scroll region) invoking the shipped
  * `toggleKeyboardMode()`; the defined empty state; the three close paths; the
- * G-273/G-274 clamp + single ellipsis target + exempt children; the resting-box
- * ZERO-overlap with the focused field at every supported width; and token
+ * G-273/G-274 clamp + single ellipsis target + exempt children; and token
  * hygiene.
+ *
+ * Placement / F-65 note: the control no longer owns its placement (the shared
+ * `HotkeysCluster` does), so the collision-avoidance pin lives in
+ * `HotkeysCluster.test.tsx` — where a real focused-field rect can be stubbed
+ * against the cluster's own box. A stubbed field below the control here could
+ * never exercise the real top-left collision, so it was a false-negative blind
+ * spot and was removed (Spec #2960 round 2, FIX-5).
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -31,7 +37,6 @@ import {
   isKeyboardModeOn,
   resetKeyboardModeForTests,
 } from '@/shared/hotkeys/keyboardMode';
-import { measureTopOffsetPx, TOP_STACK_ANCHOR_X_PX } from '@/shared/hotkeys/topStack';
 import {
   KEYS_DISCOVERY_CHORD_COPY,
   KEYS_DISCOVERY_CHORD_TESTID,
@@ -324,78 +329,6 @@ describe('KeysDiscovery — clamp + single ellipsis target + exempt children', (
       expect(el!.style.flexShrink, `${name} flexShrink`).toBe('0');
       expect(el!.style.whiteSpace, `${name} whiteSpace`).toBe('nowrap');
     }
-  });
-});
-
-// ── Resting box never overlaps the focused field (F-65, G-273) ───────────────
-
-describe('KeysDiscovery — resting box clear of the focused field', () => {
-  const SUPPORTED_WIDTHS = [320, 768, 1280, 1920];
-  const CONTROL_WIDTH_PX = 96;
-  const CONTROL_HEIGHT_PX = 32;
-  const FIELD_TOP_PX = 120;
-  const FIELD_HEIGHT_PX = 40;
-
-  function rect(left: number, top: number, width: number, height: number): DOMRect {
-    return {
-      x: left,
-      y: top,
-      top,
-      left,
-      right: left + width,
-      bottom: top + height,
-      width,
-      height,
-      toJSON: () => ({}),
-    } as DOMRect;
-  }
-
-  function intersects(a: DOMRect, b: DOMRect): boolean {
-    return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
-  }
-
-  it('has ZERO overlap with a focused field at every supported width', () => {
-    renderDiscovery();
-    const control = screen.getByTestId(KEYS_DISCOVERY_TESTID);
-
-    const field = document.createElement('input');
-    field.setAttribute('data-testid', 'focused-field');
-    document.body.appendChild(field);
-
-    const root = control.parentElement as HTMLElement;
-    // The shared cluster anchors the control at the top-left cluster corner; the
-    // surface no longer declares its own anchor (ST-5), so the pin derives the
-    // resting corner from the cluster's OWN constants.
-    expect(root.style.position).not.toBe('fixed');
-    const restingLeft = TOP_STACK_ANCHOR_X_PX;
-    const restingTop = measureTopOffsetPx();
-
-    let fieldRect = rect(0, FIELD_TOP_PX, 0, FIELD_HEIGHT_PX);
-    // jsdom has no layout engine: the pin stubs the measured rects, deriving the
-    // control's resting corner from the component's OWN declared anchor. The live
-    // F-65 row performs the real measurement.
-    const rectSpy = vi
-      .spyOn(Element.prototype, 'getBoundingClientRect')
-      .mockImplementation(function (this: Element) {
-        if (this instanceof HTMLElement && this.dataset.testid === KEYS_DISCOVERY_TESTID) {
-          return rect(restingLeft, restingTop, CONTROL_WIDTH_PX, CONTROL_HEIGHT_PX);
-        }
-        if (this instanceof HTMLElement && this.dataset.testid === 'focused-field') {
-          return fieldRect;
-        }
-        return rect(0, 0, 0, 0);
-      });
-
-    for (const width of SUPPORTED_WIDTHS) {
-      const fieldWidth = Math.min(480, width - 32);
-      fieldRect = rect((width - fieldWidth) / 2, FIELD_TOP_PX, fieldWidth, FIELD_HEIGHT_PX);
-      expect(
-        intersects(control.getBoundingClientRect(), field.getBoundingClientRect()),
-        `width ${width}`,
-      ).toBe(false);
-    }
-
-    rectSpy.mockRestore();
   });
 });
 
