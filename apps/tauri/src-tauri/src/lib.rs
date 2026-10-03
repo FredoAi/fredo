@@ -794,6 +794,11 @@ pub fn run() {
             // Features
             features::settings::commands::save_setting,
             features::settings::commands::get_setting,
+            // Per-user login auto-start backend (Spec #2992 ST-6): installs /
+            // removes the `HKCU\...\Run\FredoIngest` entry that launches
+            // `fredo ingest` at login. Registry-backed, bounded `reg.exe`.
+            features::settings::autostart::ingest_autostart_get,
+            features::settings::autostart::ingest_autostart_set,
             features::terminal::commands::open_terminal_window,
             features::terminal::commands::spawn_terminal_session,
             features::terminal::commands::list_terminal_sessions,

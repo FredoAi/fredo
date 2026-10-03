@@ -1,3 +1,4 @@
+pub mod autostart;
 pub mod commands;
 
 use crate::runtime::capability::DesktopCapable;
