@@ -9,6 +9,12 @@ const __dirname = dirname(__filename);
 // https://v2.tauri.app/start/frontend/vite/
 const host = process.env.TAURI_DEV_HOST;
 
+// Per-environment Vite port (#2944). Unset/invalid falls back to the legacy
+// 5174 default so single-env behaviour is byte-identical. `strictPort` below
+// keeps a collision fail-closed — the port is never silently reallocated.
+const parsedEnvPort = Number.parseInt(process.env.FREDO_VITE_PORT ?? '', 10);
+const port = Number.isInteger(parsedEnvPort) && parsedEnvPort > 0 ? parsedEnvPort : 5174;
+
 export default defineConfig({
   plugins: [react()],
   resolve: {
@@ -19,7 +25,7 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5174,
+    port,
     host: host ?? 'localhost',
     strictPort: true,
     proxy: {
