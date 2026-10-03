@@ -2264,12 +2264,133 @@ fn line_has_verdict(l: &str) -> bool {
     t.starts_with("verdict:")
 }
 
+/// Run `git` against a specific checkout root. After #2944 the served root may be
+/// the per-issue `.serve/<issue>` checkout rather than the process CWD, so the
+/// serving guards must resolve branch/HEAD from that checkout. In mock mode the
+/// `-C <dir>` prefix is dropped (the mock store has no checkout dirs) and the
+/// emulation runs as usual.
+fn run_git_in(dir: &Path, args: &[&str]) -> anyhow::Result<String> {
+    if mock_mode() {
+        return run_cmd("git", args);
+    }
+    let mut owned: Vec<String> = vec!["-C".to_string(), dir.to_string_lossy().to_string()];
+    owned.extend(args.iter().map(|a| (*a).to_string()));
+    let refs: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    run_cmd("git", &refs)
+}
+
+/// Per-issue env lease (Spec #2944 Names Block) at
+/// `.opencode/state/env-leases/<issue>.json` — the machine's serving record.
+/// Written by `dev-env.ps1 -Action Up` when an environment is started; the state
+/// machine reads it to learn the per-issue serving checkout, surface the lease in
+/// the context block, and (CU-G) validate env-tagged evidence. The `pid` field
+/// lets a caller reclaim a lease whose process is dead (R-3.4). Mock mode never
+/// reads the real state dir, so the offline harness stays deterministic.
+#[derive(Debug, Clone, Deserialize)]
+struct EnvLease {
+    #[serde(default)]
+    issue: u32,
+    #[serde(rename = "envId", default)]
+    env_id: String,
+    #[serde(rename = "servingCheckout", default)]
+    serving_checkout: String,
+    #[serde(default)]
+    pid: u32,
+    #[serde(rename = "startedAt", default)]
+    started_at: String,
+}
+
+/// Absolute path of the per-issue env-lease record.
+fn env_lease_path(issue: u32) -> anyhow::Result<PathBuf> {
+    Ok(project_root()?
+        .join(".opencode")
+        .join("state")
+        .join("env-leases")
+        .join(format!("{}.json", issue)))
+}
+
+/// Human-facing (repo-relative) label of the per-issue env-lease record.
+fn env_lease_display(issue: u32) -> String {
+    format!(".opencode/state/env-leases/{}.json", issue)
+}
+
+/// Read the per-issue env lease (`None` when absent, unparseable, or carrying a
+/// mismatched `issue` — a foreign/forged record is never trusted).
+fn read_env_lease(issue: u32) -> Option<EnvLease> {
+    if mock_mode() {
+        return None;
+    }
+    let raw = std::fs::read_to_string(env_lease_path(issue).ok()?).ok()?;
+    let lease: EnvLease = serde_json::from_str(&raw).ok()?;
+    if lease.issue != 0 && lease.issue != issue {
+        return None;
+    }
+    Some(lease)
+}
+
+/// The serving checkout for an issue: the per-issue `.serve/<issue>` checkout
+/// recorded in the env lease when it exists on disk, else the repo root. The
+/// repo-root fallback keeps the legacy single-env behavior byte-identical when
+/// no lease is present (Names Block: `dev-env.ps1 -ServingCheckout` default repo
+/// root).
+fn serving_checkout_root(issue: u32) -> anyhow::Result<PathBuf> {
+    let root = project_root()?;
+    if mock_mode() {
+        return Ok(root);
+    }
+    if let Some(lease) = read_env_lease(issue) {
+        let sc = lease.serving_checkout.trim();
+        if !sc.is_empty() {
+            let p = PathBuf::from(sc);
+            let abs = if p.is_absolute() { p } else { root.join(p) };
+            if abs.exists() {
+                return Ok(abs);
+            }
+        }
+    }
+    Ok(root)
+}
+
+/// Human-facing label for the serving checkout: the lease's recorded
+/// `servingCheckout` (e.g. `.serve/2944`) when present, else `repo root`. The
+/// repo root — recorded absolutely, or as `.` — normalizes to `repo root` so the
+/// legacy default is reported identically to the no-lease case.
+fn serving_checkout_label(issue: u32) -> String {
+    if mock_mode() {
+        return "repo root".to_string();
+    }
+    match read_env_lease(issue) {
+        Some(l) => {
+            let sc = l.serving_checkout.trim();
+            if sc.is_empty() {
+                return "repo root".to_string();
+            }
+            if let Ok(root) = project_root() {
+                let p = PathBuf::from(sc);
+                let abs = if p.is_absolute() { p } else { root.join(p) };
+                let abs = abs.canonicalize().unwrap_or(abs);
+                let rootc = root.canonicalize().unwrap_or(root);
+                if abs == rootc {
+                    return "repo root".to_string();
+                }
+                if let Ok(rel) = abs.strip_prefix(&rootc) {
+                    return rel.to_string_lossy().replace('\\', "/");
+                }
+            }
+            sc.to_string()
+        }
+        None => "repo root".to_string(),
+    }
+}
+
 /// Serving-currency guard (testing entry; harness fix for the G-052 drift class).
-/// The repo root IS the serving checkout: `dev-env.ps1 -Action Up -Spec <N>`
-/// serves the app from the root, so the root must sit on `spec/<N>` at the
-/// origin tip. The transition into testing is BLOCKED unless the root's branch
-/// is `spec/<N>` AND its HEAD equals `origin/spec/<N>` — a stale or
-/// wrong-branch checkout can never reach the tester.
+/// The app is served from the issue's serving checkout: the per-issue
+/// `.serve/<issue>` worktree recorded in the env lease when one is leased, else
+/// the repo root (legacy). The transition into testing is BLOCKED unless that
+/// checkout's HEAD equals `origin/spec/<N>` — a stale or wrong-branch checkout
+/// can never reach the tester. A per-issue serving worktree may be checked out
+/// on `spec/<N>` or detached at its tip, so the branch-name check applies to the
+/// repo-root (legacy) path only; the HEAD==tip check always applies.
 fn serving_currency_ok(issue: u32) -> anyhow::Result<()> {
     if mock_mode() {
         // Mock harness: the "root" state is simulated by the mock refs — once
@@ -2282,45 +2403,65 @@ fn serving_currency_ok(issue: u32) -> anyhow::Result<()> {
         }
         anyhow::bail!("repo root is not on spec/{} — checkout the spec branch and start the dev instance: dev-env.ps1 -Action Up -Spec {}", issue, issue);
     }
-    let branch = run_cmd("git", &["rev-parse", "--abbrev-ref", "HEAD"])
+    let repo_root = project_root()?;
+    let checkout = serving_checkout_root(issue)?;
+    let per_issue = checkout != repo_root;
+    let branch = run_git_in(&checkout, &["rev-parse", "--abbrev-ref", "HEAD"])
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
-    if branch != format!("spec/{}", issue) {
+    if !per_issue && branch != format!("spec/{}", issue) {
         anyhow::bail!("repo root is on '{}' — checkout spec/{} before testing (G-052): the tester drives the app served from the repo root", branch, issue);
     }
-    let head = run_cmd("git", &["rev-parse", "HEAD"])
+    let head = run_git_in(&checkout, &["rev-parse", "HEAD"])
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
     // Spec tip: the remote ref is authoritative; fall back to the local branch
     // for offline runs.
-    let tip = run_cmd("git", &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/spec/{}", issue)])
-        .or_else(|_| run_cmd("git", &["rev-parse", "--verify", "--quiet", &format!("refs/heads/spec/{}", issue)]))
+    let tip = run_git_in(&checkout, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/spec/{}", issue)])
+        .or_else(|_| run_git_in(&checkout, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/spec/{}", issue)]))
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
     if head.is_empty() || tip.is_empty() {
-        anyhow::bail!("cannot resolve the repo-root HEAD or the spec/{} tip — serving currency unverifiable; git fetch and retry", issue);
+        anyhow::bail!("cannot resolve the serving checkout HEAD or the spec/{} tip — serving currency unverifiable; git fetch and retry", issue);
     }
     if head != tip {
         anyhow::bail!(
-            "repo root is STALE: HEAD {} but spec/{} tip is {} — sync (G-032) then restart: dev-env.ps1 -Action Up -Spec {}",
+            "serving checkout is STALE: HEAD {} but spec/{} tip is {} — sync (G-032) then restart: dev-env.ps1 -Action Up -Spec {}",
             &head[..head.len().min(8)], issue, &tip[..tip.len().min(8)], issue
         );
     }
     Ok(())
 }
 
-/// Root serving state for the tester's context block (best-effort): returns
-/// `(branch, head)` when the root sits on `spec/<issue>`, else `None`.
-fn serving_record(issue: u32) -> Option<(String, String)> {
+/// Serving state for the tester's context block (best-effort): returns
+/// `(checkout_label, branch, head)` for the issue's serving checkout — the
+/// per-issue `.serve/<issue>` checkout recorded in the env lease when present,
+/// else the repo root (legacy). `None` when the repo-root path does not sit on
+/// `spec/<issue>` or no HEAD resolves.
+fn serving_record(issue: u32) -> Option<(String, String, String)> {
     if mock_mode() {
-        return Some((format!("spec/{}", issue), "mock-sha".to_string()));
+        return Some(("repo root".to_string(), format!("spec/{}", issue), "mock-sha".to_string()));
     }
-    let branch = run_cmd("git", &["rev-parse", "--abbrev-ref", "HEAD"]).ok()?.trim().to_string();
-    if branch != format!("spec/{}", issue) {
+    let repo_root = project_root().ok()?;
+    let checkout = serving_checkout_root(issue).ok()?;
+    let per_issue = checkout != repo_root;
+    let branch = run_git_in(&checkout, &["rev-parse", "--abbrev-ref", "HEAD"]).ok()?.trim().to_string();
+    if !per_issue && branch != format!("spec/{}", issue) {
         return None;
     }
-    let head = run_cmd("git", &["rev-parse", "HEAD"]).ok()?.trim().to_string();
-    if head.is_empty() { None } else { Some((branch, head)) }
+    let head = run_git_in(&checkout, &["rev-parse", "HEAD"]).ok()?.trim().to_string();
+    if head.is_empty() {
+        return None;
+    }
+    let label = if per_issue {
+        checkout
+            .strip_prefix(&repo_root)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|_| checkout.to_string_lossy().to_string())
+    } else {
+        "repo root".to_string()
+    };
+    Some((label, branch, head))
 }
 
 /// Count `## Tests Runs` comments already posted on the issue in
@@ -4691,6 +4832,21 @@ fn print_context(issue: u32, actor: &str, raw: bool) -> anyhow::Result<()> {
     let next_phase = Phase::ORDER[next_idx];
 
     if raw {
+        // Per-issue serving checkout + env lease (Spec #2944, CU-D): surfaced so
+        // the tester/audit can read the served root and the same-issue lease
+        // without a separate lookup. The lease is the machine's serving record
+        // (Names Block); it is written by dev-env `-Action Up`.
+        let lease_json = match read_env_lease(issue) {
+            Some(l) => serde_json::json!({
+                "path": env_lease_display(issue),
+                "present": true,
+                "envId": l.env_id,
+                "pid": l.pid,
+                "servingCheckout": l.serving_checkout,
+                "startedAt": l.started_at,
+            }),
+            None => serde_json::json!({ "path": env_lease_display(issue), "present": false }),
+        };
         let mut block = serde_json::json!({
             "phase": phase.as_str(),
             "feature": format!("#{}", issue),
@@ -4707,6 +4863,8 @@ fn print_context(issue: u32, actor: &str, raw: bool) -> anyhow::Result<()> {
             "handoff": format!("Next phase: {} — what must exist: {}", next_phase.as_str(), goals),
             "validation": validation,
             "doc_references": "common-rules.md, pipeline.md, github.md, staffing.md, state-machine.md",
+            "serving_checkout": serving_checkout_label(issue),
+            "env_lease": lease_json,
         });
         if let Some(o) = &orch {
             block["orchestration"] = o.clone();
@@ -4732,9 +4890,17 @@ fn print_context(issue: u32, actor: &str, raw: bool) -> anyhow::Result<()> {
         println!("{:<16} {}", "Handoff:", format!("Next: {} — requires: {}", next_phase.as_str(), goals));
         println!("{:<16} {}", "Validation:", validation);
         println!("{:<16} {}", "Doc references:", "common-rules.md, pipeline.md, github.md, staffing.md, state-machine.md");
+        // Per-issue serving checkout + same-issue env lease (Spec #2944, CU-D,
+        // R-3.4/R-5.1): surfaced for every phase so the served root and the
+        // lease are visible without a separate lookup.
+        println!("{:<16} {}", "Serving checkout:", serving_checkout_label(issue));
+        match read_env_lease(issue) {
+            Some(l) => println!("{:<16} {}", "Env lease:", format!("{} (envId {}, pid {})", env_lease_display(issue), l.env_id, l.pid)),
+            None => println!("{:<16} {}", "Env lease:", format!("none ({})", env_lease_display(issue))),
+        }
         if phase == Phase::Testing {
             match serving_record(issue) {
-                Some((b, c)) => println!("{:<16} {}", "Served commit:", format!("{} @ {} (dev-env -Spec {})", b, &c[..c.len().min(8)], issue)),
+                Some((b, c, _checkout)) => println!("{:<16} {}", "Served commit:", format!("{} @ {} (dev-env -Spec {})", b, &c[..c.len().min(8)], issue)),
                 None => println!("{:<16} {}", "Served commit:", "NONE — checkout spec/<N> at the origin tip, then: dev-env.ps1 -Action Up -Spec <N>"),
             }
         }
