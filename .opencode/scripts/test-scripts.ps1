@@ -3291,6 +3291,53 @@ Test-Script "close-dependabot-prs closes Dependabot PRs and leaves human PRs ope
   }
 }
 
+# --- Spec #2944 env-isolation contract pins (CU-H, ST-13) ---
+# Static pins over the dev-env lifecycle + pipeline-state lease contracts — the
+# anti-regression harness for R-3.3/R-3.4/R-5.3. Fully offline (plain file reads;
+# no GitHub/branch writes). They pin STABLE contracts (action names, param names,
+# path shapes, kill posture) — never line numbers — so concurrent CU-C/CU-D edits
+# stay green as long as the contract holds.
+Write-Host "Env-isolation contract pins (Spec #2944):" -ForegroundColor Cyan
+
+$devEnvSrc = Get-Content ".opencode/scripts/dev-env.ps1" -Raw
+$psSrc = Get-Content ".opencode/scripts/pipeline-state.rs" -Raw
+
+# R-3.3: no global image-name kill anywhere in the lifecycle. Every kill is
+# PID-scoped to the target environment's manifest (image-guarded).
+Test-Script "dev-env.ps1: no global image-name kill (/IM), manifest-scoped teardown" {
+  if ($devEnvSrc -match '(?i)/IM\b') { throw "dev-env.ps1 contains a global image-name kill (/IM): $($Matches[0])" }
+  if ($devEnvSrc -notmatch 'function Stop-EnvManifest\b') { throw "manifest-scoped teardown function Stop-EnvManifest missing" }
+  if ($devEnvSrc -notmatch 'taskkill /PID \$t\.pid /T') { throw "manifest-scoped PID kill (taskkill /PID <manifest pid> /T) missing" }
+  if ($devEnvSrc -notmatch 'Test-RoleImageMatch') { throw "manifest kill is not image-guarded (stale-PID protection)" }
+  return "no /IM image kill; manifest-scoped, image-guarded PID teardown present"
+}
+
+# R-3.2: the Clean action is a first-class lifecycle action (declared + dispatched).
+Test-Script "dev-env.ps1: Clean action declared in ValidateSet + dispatched" {
+  if ($devEnvSrc -notmatch '\[ValidateSet\([^)]*"Up"[^)]*"Clean"') { throw "Clean missing from the -Action ValidateSet" }
+  if ($devEnvSrc -notmatch '(?m)^\s*"Clean"\s*\{') { throw "Clean dispatch arm missing from the Action switch" }
+  return "Clean in ValidateSet + dispatch"
+}
+
+# R-1.1/R-2.2: the env selectors are part of the shipped param surface.
+Test-Script "dev-env.ps1: accepts -EnvId / -EnvSlot / -ServingCheckout" {
+  foreach ($p in @('\[string\]\$EnvId\b', '\[int\]\$EnvSlot\b', '\[string\]\$ServingCheckout\b')) {
+    if ($devEnvSrc -notmatch $p) { throw "dev-env.ps1 param missing: $p" }
+  }
+  return "-EnvId / -EnvSlot / -ServingCheckout params present"
+}
+
+# R-3.4: the same-issue lease path + schema exist in BOTH the lifecycle script
+# (write/refuse/reclaim) and the state machine (serving record + context).
+Test-Script "same-issue env lease path + schema present (dev-env.ps1 + pipeline-state.rs)" {
+  if ($devEnvSrc -notmatch 'env-leases') { throw "dev-env.ps1 has no env-leases path" }
+  if ($devEnvSrc -notmatch '\$SpecIssue\.json') { throw "dev-env.ps1 lease path is not issue-keyed (<issue>.json)" }
+  if ($devEnvSrc -notmatch 'function Test-EnvLeaseLive\b') { throw "dev-env.ps1 has no live-lease check (refuse-second-Up)" }
+  if ($psSrc -notmatch 'env-leases') { throw "pipeline-state.rs has no env-leases path" }
+  if ($psSrc -notmatch 'struct EnvLease\b') { throw "pipeline-state.rs has no EnvLease schema" }
+  return "env lease (.opencode/state/env-leases/<issue>.json) path + schema pinned"
+}
+
 # --- Remaining PowerShell scripts (syntax check) ---
 Write-Host "Other scripts:" -ForegroundColor Cyan
 $scripts = @(
@@ -3299,6 +3346,11 @@ $scripts = @(
   "wait-telemetry.ps1",
   "process-hygiene.ps1"
 )
+# ST-7 (R-1.3/R-2.3): include the continuous isolation checker only when it
+# landed — the pin stays green whether or not CU-C has shipped it yet.
+if (Test-Path ".opencode/scripts/verify-env-isolation.ps1") {
+  $scripts += "verify-env-isolation.ps1"
+}
 
 foreach ($script in $scripts) {
   $path = ".opencode/scripts/$script"
