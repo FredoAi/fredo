@@ -619,3 +619,197 @@ Round-3 focus (F-5) is PASS — the REQ-5 regression is closed.
 - **NFR-4 / F-52 PASS.** Bar context/depth == engine context/depth at every step; 3 rapid
   descend/unwind cycles deterministic.
 
+---
+
+## Spec #2960 — typing-vs-navigating signal + zero-knowledge discovery on-ramp
+
+> Live-plan extension for issue #2960 (S3 of the keyboard-first cluster; builds on the merged
+> #2946 suppression, #2958 context model, #2959 keyboard mode + bar). Rows F-55..F-71 map 1:1 to
+> the QA Plan in `.opencode/tmp/2960/triage.md` `## QA Expert` (`R-1..R-5` (AC1..AC5) +
+> `NFR-1..NFR-5` + the E2E row). **REQ IDs and selectors are REALIGNED at convergence to the
+> Architect's EARS IDs and the FINAL BINDING names block (panel form, G-255/G-187):** body hook
+> `data-fredo-input-regime="typing"|"navigating"` (absent for `terminal`); signal testids
+> `hotkeys-input-regime` / `-label` / `-mode` (no separate icon testid — the icon shape is asserted
+> via the root); discovery `hotkeys-keys-discovery` (button) / `-panel` / `-list` / `-row` /
+> `-mode-chord` / `-empty` / `-close` (non-modal panel listing `resolveActiveBindings()` + the
+> pinned `KEYBOARD_MODE_CHORD` row); first-run `hotkeys-intro` / `-body` / `-dismiss` (AppStore key
+> `fredo.hotkeys.introSeen`); the ONE shipped announcer `[data-testid="hotkeys-announcer"]` carries
+> every announcement.
+> **Out of scope (must not be re-specced):** S1 context model, S2 entry chord/bar, S4 per-app
+> action sets, S5 deep nesting; #2946 text-entry suppression (only its signalling is new).
+>
+> **Verification policy: live.** Every row carries the DOM/a11y/measured-rect/screenshot assertion
+> PLUS a `telemetry_spans` live receipt from a sanctioned span-producing lever in the drive window
+> (an active companion generation — the CLI `fredo emit` path writes no spans, G-256). **Live read
+> lever (G-284 disclosure):** the app boots on the PostgreSQL-default path, so read `telemetry_spans`
+> via the managed `psql` (db `postgres`, URI from `pg_supervisor_status`, password from the
+> `postgres.password` AppStore key) through the allowlisted `run-exitcode.ps1 -Command` wrapper —
+> NOT the SQLite `telemetry-query` skill. A static-only PASS fails closed. G-263: every live leg is
+> bounded; a reproducer that wrote its artifact but does not exit is killed, never waited on.
+
+## F-55 (R-1 / AC1) — Typing is stated
+
+- [ ] F-55: Focus a text field (`TEXTAREA[data-testid="launcher-command-input"]`, a Settings input,
+      a Mission Monitor filter input, a `contenteditable`); read the regime signal. **Expected:** the
+      signal reads "typing" and states that letters are text / navigation keys inactive; the state is
+      NOT colour-only (a text label and an icon shape carry it); the change is announced through the
+      ONE `hotkeys-announcer`. **Data:** `data-fredo-input-regime`, `hotkeys-input-regime-label` text,
+      the `hotkeys-input-regime` root's icon-shape channel, announcer textContent. *(live receipt)*
+  - **Edge:** input / textarea / contenteditable / SELECT / `role=textbox`; password field; first
+    focus vs a move into the field.
+
+## F-56 (R-1 / AC1, G-123 continuous) — Typing holds WHILE the field owns focus
+
+- [ ] F-56: With the field still focused, wait past the sequence timeout, type several chars, move
+      the caret/selection within the field, switch theme; re-sample the signal after EACH
+      perturbation. **Expected:** the signal reads "typing" at every sample — it never flips to
+      "navigating" while the field holds focus; `data-fredo-focus-context` stays `text-entry`; no
+      re-announcement storm. **Data:** sampled regime + focus context + announcer after each step.
+      *(live receipt)*
+  - **Edge:** dwell > sequence timeout; caret move inside the field; theme switch; heavy streaming.
+
+## F-57 (R-2 / AC2) — Navigating is stated
+
+- [ ] F-57: From the resting desktop / a non-text focus (button, list) read the signal; then enter
+      S2 keyboard mode (`ctrl+shift+f8`) and re-read. **Expected:** the signal reads "navigating" in
+      both; it is visibly distinct from typing; with keyboard mode ON the signal still reads
+      "navigating" and mode stays ON. **Data:** `data-fredo-input-regime`, `data-fredo-keyboard-mode`,
+      signal label/icon. *(live receipt)*
+  - **Edge:** default vs interactive focus; keyboard mode ON/OFF; terminal focused; modal open.
+
+## F-58 (R-2 / AC2) — The two regimes are never ambiguous
+
+- [ ] F-58: Render both states (typing + navigating) in one drive; compare label text, icon shape,
+      and the body hook. **Expected:** the two states differ in non-colour channels (text label +
+      icon shape) and are mutually exclusive — never both / never neither; `data-fredo-input-regime`
+      is exactly one of `typing` / `navigating`. **Data:** label text + icon + hook for each state.
+      *(live receipt)*
+  - **Edge:** rapid alternation; the transition frame carries no blank/indeterminate state; light +
+    dark.
+
+## F-59 (R-3 / AC3) — Honest field→non-field move
+
+- [ ] F-59: Focus a field (typing), then move focus to a non-field (button / body) by keyboard.
+      **Expected:** the signal updates to "navigating" immediately (≤1 frame) and deterministically;
+      the signal and `data-fredo-focus-context` agree. **Data:** `document.activeElement` + regime +
+      focus context before/after; repeat N× identical cycles. *(live receipt)*
+  - **Edge:** Tab out; focus a button; focus body; window switch; repeated identical cycles.
+
+## F-60 (R-3 / AC3) — Honest field→field move
+
+- [ ] F-60: Focus field A, then move directly to field B (Tab / click). **Expected:** the signal
+      stays "typing" throughout and reports the current owner honestly; it never flickers to
+      "navigating" between the two fields. **Data:** regime sampled at each step; `activeElement`.
+      *(live receipt)*
+  - **Edge:** two adjacent fields; Tab forward/back; click between fields; field A unmounts as focus
+    leaves it.
+
+## F-61 (R-1/R-2/R-3 / complex scenario) — The AC's complex scenario
+
+- [ ] F-61: Given focus inside a text field and signal "typing"; type a character bound to a
+      navigation action (e.g. `g`, `s`, `?`); then move focus to a non-field and press the same
+      character. **Expected:** while typing the char is entered as text, no navigation action runs,
+      and the signal continues to read "typing"; after the move the signal reads "navigating" and
+      the same char runs its action exactly once. **Data:** field value + action-effect counter +
+      regime after each step. *(live receipt)*
+  - **Edge:** char = `g` (`g g`), `s` (feature), `?`; move by Tab vs click; repeat with a second
+    field.
+
+## F-62 (R-4 / AC4) — Zero-knowledge discovery affordance is always present
+
+- [ ] F-62: On first paint, with NO chord pressed and no prior knowledge, locate the discovery
+      affordance. **Expected:** a persistent affordance is rendered on the resting desktop AND in
+      every focus state; it is visible without hover/focus; it never blocks the app (no modal trap,
+      no keystroke interception). **Data:** `hotkeys-keys-discovery` presence + rendered rect;
+      pointer/keydown interception counter. *(live receipt)*
+  - **Edge:** cold boot; after dismissing the first-run hint; typing vs navigating; modal/terminal
+    focus.
+
+## F-63 (R-4 / AC4) — Discovery reveals the current context's keys
+
+- [ ] F-63: Activate the affordance by keyboard alone (no mouse) and by click. **Expected:** the
+      current context's keys (or the documented route to them / to keyboard-mode entry) are revealed;
+      the affordance needs no prior chord knowledge; keyboard activation works; closing it returns
+      focus to the invoker. **Data:** `hotkeys-keys-discovery-panel` content; `activeElement` before/after;
+      focus context. *(live receipt)*
+  - **Edge:** keyboard-only activation; mouse activation; a context with few/no keys; keyboard mode
+    already ON.
+
+## F-64 (R-5 / AC5) — First-run intro: non-modal, once, dismissible, never blocks
+
+- [ ] F-64: On a fresh profile (flag cleared) boot the app; dismiss the hint; fully restart. 
+      **Expected:** the hint is non-modal (no focus trap; the app is usable with it present);
+      dismissible without a mouse; announced accessibly; shown at most once; after dismissal it never
+      reappears across a full restart. **Data:** `hotkeys-intro` presence,
+      `hotkeys-intro-dismiss`, `fredo.hotkeys.introSeen`, announcer text. *(live
+      receipt)*
+  - **Edge:** dismiss by keyboard; dismiss by click; full restart; cleared-storage fresh state;
+    reduced motion.
+
+## F-65 (R-5 / AC5, G-170) — The typing affordance does not compete with the field
+
+- [ ] F-65: Focus a field with the discovery affordance present; measure the field's resting rect vs
+      the affordance's resting rect. **Expected:** the affordance is present but does NOT overlay or
+      cover the field or its caret area: the field element is rendered and its rect has ZERO overlap
+      with the affordance's RESTING box; the field stays the focused editable surface. **Data:**
+      `getBoundingClientRect()` of the field and the affordance; `activeElement`. *(live receipt)*
+  - **Edge:** long/multiline textarea; narrow viewport; zoom; affordance in typing vs navigating;
+    field first-open vs persisted-content state (G-253).
+
+## F-66 (NFR-1 / a11y) — Announced + non-colour-only + mouse-free dismiss + reduced motion
+
+- [ ] F-66: Read the accessibility tree + announcer across regime changes and first-run dismissal;
+      set reduced motion. **Expected:** every regime change is announced via the ONE polite region
+      (`role=status aria-live=polite`); the signal is non-colour-only; the hint and affordance are
+      keyboard-dismissible/activatable; with reduced motion transitions are instant but functional.
+      **Data:** announcer text; a11y snapshot; computed transition props. *(live receipt)*
+  - **Edge:** both themes; screen-reader names; reduced motion on/off; same-state re-fire does not
+    re-announce stale text.
+
+## F-67 (NFR-2 / typing safety) — No new capture of typed text
+
+- [ ] F-67: Type into each text-entry kind with the affordance present; inject a capture-phase
+      keydown counter. **Expected:** every typed char reaches the field verbatim; the
+      affordance/interception layer performs no `preventDefault`/capture; the #2946 suppression is
+      preserved; no new handler captures typed text. **Data:** field value; capture-phase counter.
+      *(live receipt)*
+  - **Edge:** input / textarea / contenteditable / password; IME composition; affordance focused vs
+    field focused.
+
+## F-68 (NFR-3 / latency) — No perceptible latency / no re-render storm
+
+- [ ] F-68: Instrument keydown→signal-update and keydown→field-echo timestamps; count renders.
+      **Expected:** the signal update lands ≤1 frame after the focus change; a bare keystroke in a
+      field is never delayed; no `Maximum update depth exceeded`; no per-keystroke re-render storm.
+      **Data:** timestamp deltas; render counts; console. *(live receipt)*
+  - **Edge:** heavy streaming; rapid focus churn; rapid regime alternation.
+
+## F-69 (NFR-4 / theme) — Token/CSS-var hygiene + legibility
+
+- [ ] F-69: Static grep of the new files + a live light/dark/accent pass. **Expected:** zero
+      hardcoded hex/rgba/hsla and zero `var(--x)NN` alpha-append; colours from theme tokens / CSS
+      vars / `tint()`; signal + affordance + hint legible in light AND dark. **Data:** grep output;
+      light/dark/accent screenshots; computed colours. *(live receipt)*
+  - **Edge:** both shipped themes; accent change; narrow/zoomed viewport; contrast floor per G-235
+    (two-tier gate — see the plan's non-functional checks).
+
+## F-70 (NFR-5 / reliability) — The signal never disagrees with the engine
+
+- [ ] F-70: Drive typing↔navigating transitions incl. mode toggle, context descent, and focus
+      churn; after EACH step compare the signal/body hook against the engine
+      (`data-fredo-focus-context`, `getHotkeyContextSnapshot()`). **Expected:** the signal ALWAYS
+      equals the engine's current context-derived regime — no stale/duplicate state, deterministic
+      across identical cycles. **Data:** per-step regime + engine context/depth. *(live receipt)*
+  - **Edge:** mode ON + field; modal; terminal; rapid alternation; owning window closes.
+
+## F-71 (E2E, human directive — REQUIRED) — Mission-Monitor E2E on the PostgreSQL-default boot path
+
+- [ ] F-71: Boot the app on the default path; open Mission Monitor; drive a live session. **Expected:**
+      the app boots and Mission Monitor renders the live session(s) sourced from the RTDB row
+      pipeline; the drive window carries a `telemetry_spans` receipt read via the managed `psql`
+      lever. **Data:** `telemetry_spans` rows (db `postgres`, via `run-exitcode.ps1 -Command`); the
+      Mission Monitor live-session DOM. *(live receipt)*
+  - **Edge:** cold boot; G-280 orphan `postgres.exe`/stale socket (clear via a full dev-env
+    Down → Up and report — environment artifact, NOT a spec FAIL); zero-live-session initial state
+    (G-265: start from the pre-feature state and assert the trigger is reachable there).
+
