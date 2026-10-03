@@ -378,4 +378,44 @@ providers `fredo-opencode-plugin` / `opencode-go`). Console clean.
 Teardown: keyboard mode toggled OFF; appearance preset restored to `light-default`; the persisted
 keymap was left unchanged (test residue).
 
+## Spec #2960 — typing-vs-navigating signal + discovery probes
+
+> Live-plan probes for issue #2960 (S3). Selectors REALIGNED at convergence to the Architect's
+> FINAL BINDING names block (panel form: `hotkeys-input-regime*`, `hotkeys-keys-discovery*`,
+> `hotkeys-intro*`, `fredo.hotkeys.introSeen`; REQ ids R-1..R-5 / NFR-1..NFR-5).
+> A confirmed finding PROMOTES to `functional.md` as a new `F-` row. Receipts via the managed
+> `psql` lever reading `telemetry_spans` (G-284).
+
+- [ ] E-34: **Rapid focus churn.** Tab/click rapidly across fields and non-fields. Does the signal
+      land on the correct regime every time, or does it flicker/lag/strand a stale value? Promotes
+      to F-56/F-59/F-70.
+- [ ] E-35: **Focused field unmounts.** Close the window holding the focused text field while it has
+      focus. Does the signal fall honestly to "navigating" (or the new focus's regime), or stay stuck
+      on "typing"? Promotes to F-59/F-70.
+- [ ] E-36: **Regime vs keyboard mode precedence.** Focus a text field with S2 keyboard mode ON.
+      Which signal wins, and is the result declared/unambiguous (AC2)? Promotes to F-57/F-58.
+- [ ] E-37: **Affordance under modal / terminal.** With a modal open or a terminal focused, is the
+      discovery affordance still present and non-blocking, and does activating it behave per the
+      precedence rules (terminal > modal > text-entry)? Promotes to F-62/F-63.
+- [ ] E-38: **First-run hint across restart / cleared storage.** Dismiss the hint, restart (no
+      reappear); separately clear the flag and restart (hint returns once). Does dismissal persist
+      per-user without clobbering other keys? Promotes to F-64/R-27.
+- [ ] E-39: **Reduced-motion live toggle.** Toggle `prefers-reduced-motion` across a regime change
+      and across the hint's appear/dismiss. Does the CURRENT setting govern (no half-animated
+      surface)? Promotes to F-66.
+- [ ] E-40: **Narrow / zoomed viewport.** At a narrow viewport and >100% zoom, do the signal and the
+      discovery affordance clip, overlap the field, or push the layout? Promotes to F-65/F-69.
+- [ ] E-41: **Signal vs engine under streaming.** Drive regime changes under heavy agent streaming;
+      does the signal ever disagree with `data-fredo-focus-context`? Promotes to F-70/F-68.
+- [ ] E-42: **Screen-reader reach of the signal/affordance.** Inspect the signal, the discovery
+      affordance, and the first-run hint in the accessibility tree. A colour-only or un-announced
+      state promotes to F-66.
+
+## Teardown (run after this suite)
+
+- [ ] Restore the pre-run state: dismiss/clear the first-run hint flag to its pre-run value, toggle
+      keyboard mode OFF, restore the appearance preset, and reset any test binding created by the
+      probes. Snapshot the relevant AppStore keys before the run and compare after; a probe that
+      leaves a persisted test flag/binding behind is a finding.
+
 
