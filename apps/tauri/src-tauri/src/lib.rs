@@ -159,6 +159,15 @@ async fn prune_feature_data(app: &tauri::AppHandle, gate: Option<&Arc<MigrationG
 pub fn run() {
     let _runtime = AppRuntime::new();
 
+    // Spec #2944 ST-2 (R-1.2/R-4.1): resolve this process's local
+    // test-environment configuration ONCE from the `FREDO_*` variables. With no
+    // `FREDO_*` set every value is the legacy literal (MCP 9223, OTLP
+    // 4317/4318, pipe `\\.\pipe\fredo-ipc`, title `Fredo`), so the single-env
+    // path is byte-identical.
+    let env_config = infrastructure::env::EnvConfig::from_env();
+    // The per-env title for the `RunEvent::Ready` re-assert below.
+    let window_title = env_config.window_title();
+
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init());
 
@@ -166,11 +175,27 @@ pub fn run() {
     let builder = builder.plugin(
         tauri_plugin_mcp_bridge::Builder::new()
             .bind_address("127.0.0.1")
-            .base_port(9223)
+            // Spec #2944 ST-2 (R-4.1/R-4.2): each environment's MCP bridge binds
+            // its OWN loopback base port. The driver targets an environment by
+            // this port as its explicit `appIdentifier`; there is no shared
+            // default-app port. `bind_address` stays loopback-only.
+            .base_port(env_config.mcp_base_port)
             .build()
     );
 
     builder.setup(|app| {
+            // The setup closure is `'static`, so it re-reads the same `FREDO_*`
+            // variables through the ONE resolver (`EnvConfig`) — resolution logic
+            // is never duplicated, and the read is idempotent.
+            let env_config = infrastructure::env::EnvConfig::from_env();
+
+            // Spec #2944 ST-2 (R-2.2): per-environment window identity. The
+            // legacy path (no `FREDO_ENV_ID`) keeps the title `Fredo`; an
+            // isolated env titles the window `Fredo [<envId>]`.
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_title(&env_config.window_title());
+            }
+
             // Spec #2977 ST-6 (G-275): the ONE app-data-dir resolver. A non-blank
             // `FREDO_DATA_DIR` redirects the source `fredo.db` (and the AC3 backout
             // target) to an in-repo fixture; the managed-PG install dir + lock stay
@@ -288,6 +313,30 @@ pub fn run() {
                     .with(LogBridgeLayer::new())
                     .init();
             }
+
+            // -- Local test-environment wiring (Spec #2944 ST-2) ---------------
+            // Log the resolved environment so the endpoints/identity a live run
+            // actually bound are observable (R-2.2/R-4.1 evidence). Isolated
+            // runs only — the legacy path logs nothing new.
+            if env_config.is_isolated() {
+                tracing::info!(
+                    target: "fredo::env",
+                    env_id = env_config.env_id.as_deref().unwrap_or(""),
+                    app_identity = %env_config.app_identity(),
+                    mcp_port = env_config.mcp_base_port,
+                    otlp_grpc = env_config.ingest_grpc_port,
+                    otlp_http = env_config.ingest_http_port,
+                    llama_port = env_config.llama_server_port,
+                    pipe = %env_config.cli_pipe,
+                    "isolated test environment resolved"
+                );
+            }
+
+            // The companion `llama-server` port + artifact dir are persisted
+            // settings; an isolated env injects its own values so each
+            // environment's server is reachable independently (R-1.2). Inert on
+            // the legacy path (see `companion_env_overrides`).
+            features::llm_server::apply_companion_env_overrides(app.handle(), &env_config);
 
             // -- Companion llama-server state (Spec #2857 ST-4) ----------------
             // Out-of-process inference: the managed child process lives in this
@@ -786,8 +835,29 @@ pub fn run() {
             )));
 
 
-            // -- OTLP receiver (gRPC :4317 + HTTP :4318) -----------------------
-            infrastructure::otlp::start(app.handle().clone());
+            // -- OTLP receiver (Spec #2944 ST-2: env-resolved loopback ports) --
+            // Each environment's receivers bind its OWN loopback ports (R-1.2);
+            // unset env keeps the legacy 4317/4318. `start_with_ports` is the
+            // existing AppHandle-free seam (`otlp/mod.rs`), so the receivers
+            // stay loopback-only. The context is built here from the same
+            // managed state `otlp::start` uses.
+            let otlp_ctx = Arc::new(infrastructure::otlp::ReceiverContext {
+                classifier: app.state::<IngestClassifierState>().inner().clone(),
+                span_store: app.state::<Arc<SpanStore>>().inner().clone(),
+            });
+            let otlp_grpc_port = env_config.ingest_grpc_port;
+            let otlp_http_port = env_config.ingest_http_port;
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = infrastructure::otlp::start_with_ports(
+                    otlp_ctx,
+                    otlp_grpc_port,
+                    otlp_http_port,
+                )
+                .await
+                {
+                    tracing::error!(target: "fredo::otlp", error = %e, "OTLP receiver error");
+                }
+            });
 
             Ok(())
         })
@@ -951,7 +1021,15 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building Fredo application")
-        .run(|app, event| {
+        .run(move |app, event| {
+            // Spec #2944 ST-2 (R-2.2): re-assert the per-env window title once
+            // the app is ready, so the title lands even if the config window was
+            // not yet materialized during `setup`.
+            if let tauri::RunEvent::Ready = event {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.set_title(&window_title);
+                }
+            }
             // Spec #2857 ST-4: the app-exit hook. Terminate the managed
             // `llama-server` tree so no orphan survives Fredo (R-3.3). The
             // startup PID sweep + the kill-on-exit test are ST-7's.
