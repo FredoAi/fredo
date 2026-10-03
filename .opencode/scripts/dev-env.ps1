@@ -70,7 +70,11 @@
   per-env port block, data root, process manifest, log dir, CLI pipe, WebView2
   profile and OTLP endpoint. When omitted in env mode it derives from -Spec as
   "spec<N>". Must match ^[a-z0-9][a-z0-9_-]{0,31}$. Unset with no -EnvSlot and
-  no -ServingCheckout keeps the legacy single-env path byte-identical.
+  no -ServingCheckout keeps the legacy single-env path byte-identical. Up holds
+  a same-issue lease at .opencode/state/env-leases/<Spec>.json while the
+  environment is live: a second Up for the SAME issue fails closed, a dead-PID
+  lease is reclaimed (bounded), and different issues never block each other
+  (R-3.4). Down/Clean release the lease.
 
 .PARAMETER EnvSlot
   Port-block slot (Spec #2944). 0 = legacy defaults (Vite 5174 / MCP 9223 /
@@ -588,6 +592,21 @@ function Invoke-EnvUp {
     }
   }
 
+  # Same-issue serialization (R-3.4): one environment per issue/spec. A LIVE
+  # lease for THIS issue fails closed; a lease whose recorded PID is dead is
+  # stale and reclaimed (bounded -- a single process-existence probe). Different
+  # issues use different lease files and are never blocked.
+  $leasePath = Get-EnvLeasePath $Spec
+  $existingLease = Read-EnvLease $leasePath
+  if ($existingLease) {
+    if (Test-EnvLeaseLive $existingLease) {
+      Write-Log "ERROR: issue $Spec already holds a LIVE env lease (env '$($existingLease.envId)', PID $($existingLease.pid); $leasePath) -- refusing a second environment for the same issue (R-3.4). Down it first: dev-env.ps1 -Action Down -EnvId $($existingLease.envId)." -Level ERROR
+      exit 1
+    }
+    Write-Log "Reclaiming stale env lease for issue $Spec (recorded PID $($existingLease.pid) is dead)."
+    Remove-EnvLease $leasePath
+  }
+
   # Fail-closed collision gate (R-4.3): any bound recorded port means a foreign
   # owner. Never scan to / bind a different port; never kill a sibling env.
   $conflicts = @()
@@ -697,6 +716,11 @@ function Invoke-EnvUp {
   $proc = Start-Process -FilePath "cmd" -ArgumentList $launchCmd -WindowStyle Hidden -PassThru
   Write-Log "Launched launcher PID $($proc.Id). Waiting for env ports + app..."
 
+  # Record the same-issue lease immediately (launcher PID) so a concurrent Up for
+  # this issue fails closed even during the startup window; the app PID replaces
+  # it once ready (R-3.4).
+  Write-EnvLease -Path $leasePath -SpecIssue $Spec -LeaseEnvId $EnvId -ServingCheckout (Get-RepoRelativePath $ServingDir) -Pid $proc.Id
+
   $startedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
   Write-EnvManifest -ManifestPath $ManifestPath -EnvId $EnvId -Spec $Spec -ServingCheckout $ServingDir `
     -ServedCommit $servedCommit -VitePort $VitePort -McpPort $McpPort -OtlpGrpcPort $OtlpGrpcPort `
@@ -738,6 +762,11 @@ function Invoke-EnvUp {
         -ServedCommit $servedCommit -VitePort $VitePort -McpPort $McpPort -OtlpGrpcPort $OtlpGrpcPort `
         -OtlpHttpPort $OtlpHttpPort -LlamaPort $LlamaPort -DataDir $DataDir -DbPath $DbPath `
         -CliPipe $CliPipe -WebviewDir $WebviewDir -AppIdentity $AppIdentity -Processes $procs
+      # The app process is the live lease holder (a crash frees the lease for a
+      # bounded stale reclaim, R-3.4).
+      if ($appPid) {
+        Write-EnvLease -Path $leasePath -SpecIssue $Spec -LeaseEnvId $EnvId -ServingCheckout (Get-RepoRelativePath $ServingDir) -Pid ([int]$appPid)
+      }
       Write-Log "env '$EnvId' ready (manifest: $ManifestPath)"
       exit 0
     }
@@ -754,6 +783,8 @@ function Invoke-EnvUp {
   # Bounded hard-kill fallback (G-263): the readiness wait is wall-clock bounded;
   # reap the failed launch's own manifest PIDs (image-guarded, PID-scoped).
   Stop-EnvManifest -Path $ManifestPath | Out-Null
+  # Release the lease: the failed launch no longer holds this issue (R-3.4).
+  Remove-EnvLease $leasePath $EnvId
   Write-Log "Manifest left at $ManifestPath for teardown: dev-env.ps1 -Action Down -EnvId $EnvId" -Level WARN
   Write-Log "Check logs: powershell -File .opencode/scripts/dev-env.ps1 -Action Logs -EnvId $EnvId" -Level WARN
   exit 1
@@ -883,20 +914,30 @@ function Stop-EnvManifest {
 # Env-scoped Down: ONLY the manifest's own PIDs (R-3.1). Refuses when the
 # manifest belongs to a different env (fail-closed, R-3.2 edge (c)).
 function Invoke-EnvDown {
+  $leaseIssue = 0
+  if ($Spec -gt 0) { $leaseIssue = [uint64]$Spec }
+
   if (-not (Test-Path -LiteralPath $ManifestPath)) {
     Write-Log "env '$EnvId' has no manifest at $ManifestPath -- nothing to stop (safe no-op)."
+    if ($leaseIssue -gt 0) { Remove-EnvLease (Get-EnvLeasePath $leaseIssue) $EnvId }
     return $true
   }
   $manifest = Read-EnvManifest $ManifestPath
   if (-not $manifest) {
     Write-Log "env '$EnvId' manifest at $ManifestPath is unreadable -- nothing to stop (safe no-op)." -Level WARN
+    if ($leaseIssue -gt 0) { Remove-EnvLease (Get-EnvLeasePath $leaseIssue) $EnvId }
     return $true
   }
+  if ($leaseIssue -eq 0 -and $manifest.spec) { $leaseIssue = [uint64]$manifest.spec }
   if ($manifest.envId -and ([string]$manifest.envId -ne $EnvId)) {
     Write-Log "ERROR: manifest $ManifestPath belongs to env '$($manifest.envId)', not '$EnvId' -- refusing to stop another env's processes (R-3.1)." -Level ERROR
     return $false
   }
-  return (Stop-EnvManifest -Path $ManifestPath)
+  $stopped = Stop-EnvManifest -Path $ManifestPath
+  # Release the same-issue lease (R-3.4) once the env's own processes are stopped.
+  # The envId guard never clobbers a sibling env's record.
+  if ($leaseIssue -gt 0) { Remove-EnvLease (Get-EnvLeasePath $leaseIssue) $EnvId }
+  return $stopped
 }
 
 # Remove one env artifact, refusing the repo root and any filesystem root.
@@ -943,6 +984,214 @@ function Invoke-EnvClean {
   }
   Write-Log "env '$EnvId' cleaned (manifest, DB, cache removed)."
   return $true
+}
+
+# -- Same-issue env lease + env-aware Status/Logs (Spec #2944 ST-6 / CU-C) -----
+
+# Per-issue env-lease path (Names Block): .opencode/state/env-leases/<issue>.json.
+# The file is keyed by issue, so different issues never share a lease and may run
+# concurrently (R-3.4).
+function Get-EnvLeasePath {
+  param([uint64]$SpecIssue)
+  return (Join-Path $script:RepoRoot ".opencode\state\env-leases\$SpecIssue.json")
+}
+
+function Read-EnvLease {
+  param([string]$Path)
+  if (-not (Test-Path -LiteralPath $Path)) { return $null }
+  try { return (Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json) } catch { return $null }
+}
+
+# A lease is LIVE when its recorded PID is a running process; a missing/dead PID
+# is STALE. The probe is a single process-existence check -- bounded, never a
+# wait loop (G-263). R-3.4: one environment per issue/spec.
+function Test-EnvLeaseLive {
+  param([object]$Lease)
+  if (-not $Lease) { return $false }
+  $leasePid = 0
+  if (-not [int]::TryParse([string]$Lease.pid, [ref]$leasePid) -or $leasePid -le 0) { return $false }
+  return ($null -ne (Get-Process -Id $leasePid -ErrorAction SilentlyContinue))
+}
+
+function Write-EnvLease {
+  param([string]$Path, [uint64]$SpecIssue, [string]$LeaseEnvId, [string]$ServingCheckout, [int]$Pid)
+  $dir = Split-Path -Parent $Path
+  if ($dir -and -not (Test-Path -LiteralPath $dir)) {
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+  }
+  $obj = [ordered]@{
+    issue           = $SpecIssue
+    envId           = $LeaseEnvId
+    servingCheckout = $ServingCheckout
+    pid             = $Pid
+    startedAt       = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+  }
+  $json = $obj | ConvertTo-Json -Depth 4
+  [System.IO.File]::WriteAllText($Path, $json, (New-Object System.Text.UTF8Encoding($false)))
+}
+
+# Remove the lease for an issue. When -LeaseEnvId is given, the lease is removed
+# ONLY when it belongs to that env -- a teardown never clobbers a sibling env's
+# record (R-3.1).
+function Remove-EnvLease {
+  param([string]$Path, [string]$LeaseEnvId = "")
+  if (-not (Test-Path -LiteralPath $Path)) { return }
+  if ($LeaseEnvId) {
+    $l = Read-EnvLease $Path
+    if ($l -and $l.envId -and ([string]$l.envId -ne $LeaseEnvId)) { return }
+  }
+  Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+}
+
+# Repo-relative path for the lease's servingCheckout (Names Block: .serve/<issue>);
+# falls back to the absolute path when the checkout is outside the repo.
+function Get-RepoRelativePath {
+  param([string]$Path)
+  if (-not $Path) { return "" }
+  try {
+    $full = [System.IO.Path]::GetFullPath($Path)
+    $root = [System.IO.Path]::GetFullPath($script:RepoRoot)
+    if ($full -ieq $root) { return "." }
+    $prefix = $root.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+    if ($full.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+      return ($full.Substring($prefix.Length)).Replace('\', '/')
+    }
+  } catch {}
+  return $Path
+}
+
+# HEAD of a checkout, or $null when it cannot be resolved (native stderr must
+# not throw under $ErrorActionPreference = "Stop").
+function Get-GitHead {
+  param([string]$Dir)
+  if (-not $Dir) { return $null }
+  if (-not [System.IO.Path]::IsPathRooted($Dir)) { $Dir = Join-Path $script:RepoRoot $Dir }
+  if (-not (Test-Path -LiteralPath $Dir)) { return $null }
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $out = (& git -C $Dir rev-parse HEAD 2>$null | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $out) { return $null }
+    return $out
+  } catch {
+    return $null
+  } finally {
+    $ErrorActionPreference = $prev
+  }
+}
+
+function Format-ShortSha {
+  param([string]$Sha)
+  if (-not $Sha) { return "" }
+  return $Sha.Substring(0, [Math]::Min(8, $Sha.Length))
+}
+
+# Env-aware Status (Spec #2944 ST-6): env id + ports + manifest currency. The
+# switch branches on $IsEnvMode first, so the legacy (unset -EnvId) Status
+# strings stay byte-identical.
+function Invoke-EnvStatus {
+  $manifest = Read-EnvManifest $ManifestPath
+
+  # The manifest is the recorded source of truth for an env's ports/paths; fall
+  # back to the resolved script-scope values when it is absent.
+  $vVite = $VitePort; $vMcp = $McpPort; $vGrpc = $OtlpGrpcPort; $vHttp = $OtlpHttpPort; $vLlama = $LlamaPort
+  $vPipe = $CliPipe; $vServing = $ServingDir; $vDb = $DbPath
+  $displayIssue = $Spec
+  if ($manifest) {
+    if ($manifest.ports) {
+      if ($manifest.ports.vite)     { $vVite = [int]$manifest.ports.vite }
+      if ($manifest.ports.mcp)      { $vMcp = [int]$manifest.ports.mcp }
+      if ($manifest.ports.otlpGrpc) { $vGrpc = [int]$manifest.ports.otlpGrpc }
+      if ($manifest.ports.otlpHttp) { $vHttp = [int]$manifest.ports.otlpHttp }
+      if ($manifest.ports.llama)    { $vLlama = [int]$manifest.ports.llama }
+    }
+    if ($manifest.pipe) { $vPipe = [string]$manifest.pipe }
+    if ($manifest.servingCheckout) { $vServing = [string]$manifest.servingCheckout }
+    if ($manifest.dbPath) { $vDb = [string]$manifest.dbPath }
+    if ($displayIssue -eq 0 -and $manifest.spec) { $displayIssue = [uint64]$manifest.spec }
+  }
+
+  $ports = Test-BothPorts $vVite $vMcp
+  $state = "stopped"
+  if ($ports.Vite -and $ports.Mcp) { $state = "running" }
+  elseif ($ports.Vite -or $ports.Mcp) { $state = "starting" }
+
+  Write-Host "env $EnvId (issue $displayIssue) -- $state"
+  Write-Host "  ports            : Vite $vVite  MCP $vMcp  OTLP/gRPC $vGrpc  OTLP/HTTP $vHttp  llama $vLlama"
+  Write-Host "  pipe             : $vPipe"
+  Write-Host "  serving checkout : $vServing"
+  Write-Host "  db               : $vDb"
+  Write-Host "  manifest         : $ManifestPath"
+
+  if (-not $manifest) {
+    Write-Host "  manifest currency: unknown (no manifest -- env not started)"
+    return
+  }
+
+  $served = [string]$manifest.servedCommit
+  $head = Get-GitHead $vServing
+  if (-not $head) {
+    Write-Host "  manifest currency: unknown (cannot resolve serving HEAD at $vServing)"
+  } elseif ($served -and ($head -ieq $served)) {
+    Write-Host "  manifest currency: current (servedCommit $(Format-ShortSha $served) == serving HEAD $(Format-ShortSha $head))"
+  } else {
+    Write-Host "  manifest currency: STALE (manifest $(Format-ShortSha $served) != serving HEAD $(Format-ShortSha $head)) -- re-run: dev-env.ps1 -Action Up -Spec $displayIssue -EnvId $EnvId"
+  }
+  if ($manifest.appIdentity) { Write-Host "  app identity     : $($manifest.appIdentity)" }
+
+  $live = @()
+  foreach ($p in @($manifest.processes)) {
+    if (-not $p) { continue }
+    $procId = 0
+    if (-not [int]::TryParse([string]$p.pid, [ref]$procId)) { continue }
+    $alive = $null -ne (Get-Process -Id $procId -ErrorAction SilentlyContinue)
+    $live += "$($p.role) $procId ($(if ($alive) { 'alive' } else { 'dead' }))"
+  }
+  if ($live.Count -gt 0) { Write-Host "  processes        : $($live -join ', ')" }
+}
+
+# Env-aware Logs (Spec #2944 ST-6): tail the env's OWN log dir, refusing to show
+# another env's logs when the manifest disagrees, and discover the timestamped
+# fallback logs Up uses when the primary handle is locked.
+function Invoke-EnvLogs {
+  $manifest = Read-EnvManifest $ManifestPath
+  if ($manifest -and $manifest.envId -and ([string]$manifest.envId -ne $EnvId)) {
+    Write-Host "env '$EnvId' manifest $ManifestPath belongs to env '$($manifest.envId)' -- refusing to show another env's logs."
+    return
+  }
+  $displayIssue = $Spec
+  if ($displayIssue -eq 0 -and $manifest -and $manifest.spec) { $displayIssue = [uint64]$manifest.spec }
+  Write-Host "=== env '$EnvId' logs ($LogDir) ===" -ForegroundColor Cyan
+
+  $stdout = $Stdout
+  $stderr = $Stderr
+  if (-not (Test-Path -LiteralPath $stdout) -and (Test-Path -LiteralPath $LogDir)) {
+    $latest = Get-ChildItem -LiteralPath $LogDir -Filter "dev-env-stdout*.log" -ErrorAction SilentlyContinue |
+      Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($latest) { $stdout = $latest.FullName }
+  }
+  if (-not (Test-Path -LiteralPath $stderr) -and (Test-Path -LiteralPath $LogDir)) {
+    $latest = Get-ChildItem -LiteralPath $LogDir -Filter "dev-env-stderr*.log" -ErrorAction SilentlyContinue |
+      Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($latest) { $stderr = $latest.FullName }
+  }
+
+  $hasOutput = $false
+  if (Test-Path -LiteralPath $stdout) {
+    Write-Host "=== stdout (last $Lines lines): $stdout ===" -ForegroundColor Cyan
+    Get-Content -LiteralPath $stdout -Tail $Lines
+    $hasOutput = $true
+  }
+  if (Test-Path -LiteralPath $stderr) {
+    Write-Host ""
+    Write-Host "=== stderr (last $Lines lines): $stderr ===" -ForegroundColor Cyan
+    Get-Content -LiteralPath $stderr -Tail $Lines
+    $hasOutput = $true
+  }
+  if (-not $hasOutput) {
+    Write-Host "No log files found at $LogDir"
+    Write-Host "Run 'dev-env.ps1 -Action Up -Spec $displayIssue -EnvId $EnvId' first to start this environment."
+  }
 }
 
 # -- Environment resolution (continues) ---------------------------------------
@@ -1277,6 +1526,13 @@ switch ($Action) {
 
   # -- Status ------------------------------------------------------------------
   "Status" {
+    if ($IsEnvMode) {
+      # Spec #2944 ST-6: env-aware status (env id + ports + manifest currency).
+      # The legacy single-env strings below are untouched (R-3.4/R-5.1).
+      Invoke-EnvStatus
+      exit 0
+    }
+
     $ports = Test-BothPorts $VitePort $McpPort
 
     if ($ports.Vite -and $ports.Mcp) {
@@ -1312,6 +1568,20 @@ switch ($Action) {
 
     Write-Log "Restarting dev:tauri..."
 
+    if ($IsEnvMode) {
+      # Spec #2944 ST-6: env-aware Restart -- stop ONLY via this env's manifest
+      # (image-guarded, no port-owner enumeration; R-3.3), then re-start the SAME
+      # env. -Spec was resolved ABOVE, before anything was stopped (invariant).
+      if (-not (Invoke-EnvDown)) {
+        Write-Log "ERROR: env '$EnvId' could not be fully stopped -- refusing to restart (R-3.1)." -Level ERROR
+        exit 1
+      }
+      & $PSCommandPath -Action Up -Spec $Spec -At $At -EnvId $EnvId -EnvSlot $EnvSlot `
+        -ServingCheckout $ServingCheckout -Manifest $Manifest -VitePort $VitePort -McpPort $McpPort `
+        -TimeoutSecs $TimeoutSecs -EnvVar $EnvVar -EnvVars $EnvVars
+      exit $LASTEXITCODE
+    }
+
     foreach ($port in @($McpPort, $VitePort)) {
       $targetPid = Get-PidByPort $port
       if ($targetPid) {
@@ -1329,6 +1599,12 @@ switch ($Action) {
 
   # -- Logs --------------------------------------------------------------------
   "Logs" {
+    if ($IsEnvMode) {
+      # Spec #2944 ST-6: env-aware Logs -- this env's own log dir/manifest.
+      Invoke-EnvLogs
+      exit 0
+    }
+
     $hasOutput = $false
 
     if (Test-Path $Stdout) {
