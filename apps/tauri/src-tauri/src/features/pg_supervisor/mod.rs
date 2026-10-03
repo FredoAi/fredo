@@ -54,8 +54,24 @@ pub const POSTGRES_IMAGE: &str = "postgres.exe";
 pub const PG_DATA_SUBDIR: &str = "postgres";
 /// Distribution-directory subdirectory under the app data dir.
 pub const PG_INSTALL_SUBDIR: &str = "postgres-install";
-/// Exclusive data-dir lock filename under the app data dir.
+/// Exclusive data-dir lock filename under the lock dir.
 pub const PG_LOCK_FILENAME: &str = "postgres.lock";
+/// **G-275/G-296** lock-directory override (Spec #2992 CU-1): when set
+/// (non-blank) the exclusive data-dir lock lives under this directory instead of
+/// `<app_data_dir>`. A caller-supplied value always WINS; the default applies
+/// only when the env is unset/blank, so the default lock path is byte-identical.
+pub const PG_LOCK_DIR_ENV: &str = "FREDO_PG_LOCK_DIR";
+/// Headless-ingest descriptor filename under the lock dir (Spec #2992 CU-1).
+pub const HEADLESS_DESCRIPTOR_FILENAME: &str = "headless-ingest.json";
+/// **G-296** descriptor-path override (Spec #2992 CU-1): when set (non-blank) the
+/// `fredo ingest` descriptor lives at this exact path instead of
+/// `<lock_dir>/<HEADLESS_DESCRIPTOR_FILENAME>`. Caller value wins; the default
+/// applies only when the env is unset/blank.
+pub const FREDO_INGEST_DESCRIPTOR_ENV: &str = "FREDO_INGEST_DESCRIPTOR";
+/// Image name a live headless `fredo ingest` daemon must report for the
+/// descriptor PID-reuse guard ([`descriptor::is_live`]) to treat the published
+/// PID as OUR daemon (mirrors [`POSTGRES_IMAGE`]).
+pub const FREDO_IMAGE: &str = "fredo.exe";
 /// Log subdirectory under the PostgreSQL data dir (`<data_dir>/log`). The
 /// postmaster's logging collector is pointed here through the crate's
 /// `Settings::configuration` hook (Spec #2978 S4 / Q-17), so this is the ONE
@@ -72,9 +88,10 @@ pub const DEFAULT_PG_HOST: &str = "127.0.0.1";
 
 /// **FS-1** test hook: when set (non-blank) the managed PostgreSQL data dir is
 /// this path instead of `<app_data_dir>/<PG_DATA_SUBDIR>`. The distribution
-/// (install) dir has its own override ([`PG_INSTALL_DIR_ENV`]); the
-/// `<app_data_dir>/postgres.lock` file stays deliberately NOT overridable, so the
-/// exclusive lock keeps its stable location. Inert when unset.
+/// (install) dir has its own override ([`PG_INSTALL_DIR_ENV`]); the lock
+/// directory has its own override ([`PG_LOCK_DIR_ENV`], default
+/// `<app_data_dir>`), so the exclusive lock keeps a stable location. Inert when
+/// unset.
 pub const PG_DATA_DIR_ENV: &str = "FREDO_PG_DATA_DIR";
 /// **G-275** induction seam (Spec #2978 S2): when set (non-blank) the managed
 /// PostgreSQL distribution/installation dir is this path instead of
@@ -144,6 +161,25 @@ pub fn resolve_install_dir(app_data_dir: &Path) -> PathBuf {
     }
 }
 
+/// Resolve the exclusive-lock directory (Spec #2992 CU-1, G-275/G-296): the
+/// non-blank [`PG_LOCK_DIR_ENV`] override when set, else `app_data_dir` itself.
+/// The lock file is always `<lock_dir>/<PG_LOCK_FILENAME>`. A caller-supplied
+/// value always WINS; the default applies only when the env is unset/blank, so
+/// the default lock path is byte-identical to the pre-CU-1 path.
+pub fn resolve_lock_dir(app_data_dir: &Path) -> PathBuf {
+    resolve_lock_dir_with(std::env::var(PG_LOCK_DIR_ENV).ok().as_deref(), app_data_dir)
+}
+
+/// The pure lock-dir rule, split out so the caller-wins / default-only-when-blank
+/// contract is unit-testable without mutating process-global environment state
+/// (G-222).
+fn resolve_lock_dir_with(override_value: Option<&str>, app_data_dir: &Path) -> PathBuf {
+    match override_value {
+        Some(value) if !value.trim().is_empty() => PathBuf::from(value.trim()),
+        _ => app_data_dir.to_path_buf(),
+    }
+}
+
 /// `<data_dir>/log/postgres.log` — the ONE path rule for the postmaster log,
 /// shared by the crate settings that create it ([`runtime::PgRuntime`]) and the
 /// read-only tail ([`state::pg_server_log_tail`]), so the writer and the reader
@@ -196,6 +232,8 @@ pub const PG_EXIT_HOOK_BOUND: Duration = Duration::from_secs(5);
 pub const PG_DEATH_WAIT_BOUND: Duration = Duration::from_secs(20);
 
 pub mod acquisition; // S1/S2/S3 (#2978): acquisition mode + pinned archive
+pub mod descriptor; // CU-1/ST-1 (#2992): headless daemon descriptor
+pub mod headless; // ST-5 (#2992): the `fredo ingest` daemon
 pub mod release_gate; // S6 (#2978): cutover release gate
 pub mod runtime; // ST-1
 pub mod sweep; // ST-2
@@ -208,3 +246,41 @@ pub mod state; // ST-3
 // public contract (`PgState`, `PgStatusView`, `PgSupervisorState`, `await_ready`,
 // `pg_supervisor_status`) is reached through `state::`.
 pub use state::{start_supervisor, stop_on_exit};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// CU-1/ST-1 (G-296): the lock-dir rule honours a caller value and defaults
+    /// to `<app_data_dir>` only when the override is unset/blank. The pure helper
+    /// is tested so the contract is pinned without mutating process-global env.
+    #[test]
+    fn resolve_lock_dir_defaults_to_the_app_data_dir_and_honours_the_override() {
+        let app_data_dir = Path::new("C:/app-data");
+        assert_eq!(
+            resolve_lock_dir_with(None, app_data_dir),
+            app_data_dir.to_path_buf(),
+            "unset => the app data dir (byte-identical default)"
+        );
+        assert_eq!(
+            resolve_lock_dir_with(Some(""), app_data_dir),
+            app_data_dir.to_path_buf(),
+            "empty is inert"
+        );
+        assert_eq!(
+            resolve_lock_dir_with(Some("   "), app_data_dir),
+            app_data_dir.to_path_buf(),
+            "blank is inert"
+        );
+        assert_eq!(
+            resolve_lock_dir_with(Some("C:/custom/lock"), app_data_dir),
+            PathBuf::from("C:/custom/lock"),
+            "a caller-supplied value WINS"
+        );
+        assert_eq!(
+            resolve_lock_dir_with(Some("  C:/custom/lock  "), app_data_dir),
+            PathBuf::from("C:/custom/lock"),
+            "the caller value is trimmed"
+        );
+    }
+}

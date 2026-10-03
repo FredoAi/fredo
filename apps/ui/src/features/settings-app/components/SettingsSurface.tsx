@@ -1,11 +1,12 @@
 import React, { useMemo, useState } from 'react';
 import { Box, Button, HStack, Icon, Text, VStack } from '@chakra-ui/react';
-import { LuPalette, LuBot, LuSave, LuSettings2, LuActivity, LuKeyboard } from 'react-icons/lu';
+import { LuPalette, LuBot, LuSave, LuSettings2, LuActivity, LuKeyboard, LuDatabase } from 'react-icons/lu';
 import { CompanionSettingsPanel } from '../../../shared/components/companion/CompanionSettingsPanel';
 import { SettingsSaveProvider, useSettingsSaveContext } from '../../settings/SettingsSaveContext';
 import { ThemingSettings } from '../../theming';
 import { SetupWizard } from '../../setup';
 import { TelemetrySettings, DockPositionSettings, BackgroundSettings } from '../../home';
+import { IngestAutostartSettings } from '../../ingest/IngestAutostartSettings';
 import { getFeatures, dedupeByFeatureId } from '../../featureRegistry';
 import { tint } from '../../../shared/utils/colorTint';
 import { HotkeysSettings, HOTKEYS_NAV_ID } from './HotkeysSettings';
@@ -39,13 +40,15 @@ interface NavItemProps {
   icon: React.ElementType;
   activeSection: string;
   onClick: (id: string) => void;
+  testId?: string;
 }
 
-const NavItem: React.FC<NavItemProps> = ({ id, label, icon, activeSection, onClick }) => {
+const NavItem: React.FC<NavItemProps> = ({ id, label, icon, activeSection, onClick, testId }) => {
   const isActive = activeSection === id;
   return (
     <HStack
       as="button"
+      data-testid={testId}
       gap={2}
       px={5}
       py={2}
@@ -120,7 +123,7 @@ export const SettingsSurface: React.FC = () => {
     [],
   );
 
-  type StaticSection = 'appearance' | 'companion' | 'telemetry';
+  type StaticSection = 'appearance' | 'companion' | 'telemetry' | 'ingest';
   type SectionId = StaticSection | string;
   const [activeSection, setActiveSection] = useState<SectionId>('companion');
 
@@ -167,6 +170,9 @@ export const SettingsSurface: React.FC = () => {
 
         {/* Static: Telemetry */}
         <NavItem id="telemetry" label="Telemetry" icon={LuActivity} activeSection={activeSection} onClick={setActiveSection} />
+
+        {/* Static: Ingest (Spec #2992 ST-7 — login auto-start for the headless daemon) */}
+        <NavItem id="ingest" label="Ingest" icon={LuDatabase} activeSection={activeSection} onClick={setActiveSection} testId="settings-nav-ingest" />
 
         {/* Static: Hotkeys (Spec #2946 ST-6 — platform-level, immediate write-through) */}
         <NavItem id={HOTKEYS_NAV_ID} label="Hotkeys" icon={LuKeyboard} activeSection={activeSection} onClick={setActiveSection} />
@@ -220,6 +226,9 @@ export const SettingsSurface: React.FC = () => {
             )}
             {activeSection === 'telemetry' && (
               <Box p={5} minH="100%"><TelemetrySettings /></Box>
+            )}
+            {activeSection === 'ingest' && (
+              <Box p={5} minH="100%"><IngestAutostartSettings /></Box>
             )}
             {activeSection === HOTKEYS_NAV_ID && (
               <Box p={0} minH="100%"><HotkeysSettings /></Box>
