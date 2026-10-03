@@ -40,7 +40,8 @@ import {
   resolveBaseContextId,
   resolveContextBindings,
 } from './contexts';
-import { isInteractiveElement, classifyFocusContext } from './focusContext';
+import { isInteractiveElement, isTextControl, classifyFocusContext } from './focusContext';
+import { regimeForFocusSnapshot } from './inputRegime';
 import {
   displayStroke,
   keyStrokeEquals,
@@ -103,6 +104,13 @@ const FIRST_WINDOW_ACTION_ID = 'fredo.window.first';
 const ENGINE_ATTR = 'data-fredo-hotkeys-engine';
 /** `document.body` — live focus classification. */
 export const BODY_FOCUS_CONTEXT_ATTR = 'data-fredo-focus-context';
+/**
+ * `document.body` — the derived input regime (Spec #2960 ST-1): `'typing'` |
+ * `'navigating'`, absent for the `terminal` context (the shipped terminal pill
+ * owns that signal). Published from the SAME `updateHooks()` call as
+ * `BODY_FOCUS_CONTEXT_ATTR` so QA can cross-check without a React render.
+ */
+export const BODY_INPUT_REGIME_ATTR = 'data-fredo-input-regime';
 /** `document.body` — the serialized pending prefix (absent when idle). */
 export const BODY_PENDING_SEQUENCE_ATTR = 'data-fredo-pending-sequence';
 /** `document.body` — terminal passthrough is active. */
@@ -470,11 +478,14 @@ export function computeFocusContext(): FocusContext {
 export interface FocusSnapshot {
   readonly context: FocusContext;
   readonly nativeConsumes: boolean;
+  /** Spec #2960 ST-1 — `isTextControl(readActiveElement())` (the ONE predicate). */
+  readonly textEntry: boolean;
 }
 
 const FOCUS_SNAPSHOT_DEFAULT: FocusSnapshot = Object.freeze({
   context: 'default',
   nativeConsumes: false,
+  textEntry: false,
 });
 
 let focusSnapshot: FocusSnapshot = FOCUS_SNAPSHOT_DEFAULT;
@@ -499,9 +510,19 @@ export function useFocusSnapshot(): FocusSnapshot {
 }
 
 /** Commit a new snapshot only when the classification actually changed. */
-function publishFocusSnapshot(context: FocusContext, nativeConsumes: boolean): void {
-  if (focusSnapshot.context === context && focusSnapshot.nativeConsumes === nativeConsumes) return;
-  focusSnapshot = Object.freeze({ context, nativeConsumes });
+function publishFocusSnapshot(
+  context: FocusContext,
+  nativeConsumes: boolean,
+  textEntry: boolean,
+): void {
+  if (
+    focusSnapshot.context === context &&
+    focusSnapshot.nativeConsumes === nativeConsumes &&
+    focusSnapshot.textEntry === textEntry
+  ) {
+    return;
+  }
+  focusSnapshot = Object.freeze({ context, nativeConsumes, textEntry });
   for (const listener of [...focusSnapshotListeners]) listener();
 }
 
@@ -514,7 +535,13 @@ function updateHooks(context: FocusContext): void {
   setBodyAttr(BODY_FOCUS_CONTEXT_ATTR, context);
   setBodyAttr(BODY_PASSTHROUGH_ATTR, context === 'terminal' ? 'true' : null);
   setBodyAttr(BODY_MACRO_RECORDING_ATTR, isMacroRecording() ? 'true' : null);
-  publishFocusSnapshot(context, isInteractiveElement(readActiveElement()));
+  const active = readActiveElement();
+  const nativeConsumes = isInteractiveElement(active);
+  const textEntry = isTextControl(active);
+  // Spec #2960 ST-1: the ONE regime derivation, published from the SAME call as
+  // the focus-context hook. `terminal` yields `null` → the attribute is absent.
+  setBodyAttr(BODY_INPUT_REGIME_ATTR, regimeForFocusSnapshot({ context, textEntry }));
+  publishFocusSnapshot(context, nativeConsumes, textEntry);
 }
 
 function clearBodyHooks(): void {
@@ -522,6 +549,7 @@ function clearBodyHooks(): void {
   setBodyAttr(BODY_PENDING_SEQUENCE_ATTR, null);
   setBodyAttr(BODY_PASSTHROUGH_ATTR, null);
   setBodyAttr(BODY_MACRO_RECORDING_ATTR, null);
+  setBodyAttr(BODY_INPUT_REGIME_ATTR, null);
 }
 
 function onFocusChange(): void {
@@ -637,7 +665,7 @@ export function handleHotkeyKeydown(event: KeyboardEvent): DispatchDecision {
 
 let installed = false;
 let keydownListener: ((event: KeyboardEvent) => void) | null = null;
-let focusListener: (() => void) | null = null;
+let focusListener: ((event: FocusEvent) => void) | null = null;
 let eventUnsubscribe: (() => void) | null = null;
 /** Spec #2958 — the interaction-context focus-tracking handle (no keydown listener). */
 let contextTrackingUninstall: (() => void) | null = null;
@@ -660,7 +688,14 @@ export function installHotkeyEngine(): () => void {
   keydownListener = (event: KeyboardEvent) => {
     handleHotkeyKeydown(event);
   };
-  focusListener = () => {
+  focusListener = (event: FocusEvent) => {
+    // A `focusout` immediately followed by a `focusin` on another element leaves
+    // `document.activeElement` as `<body>` during the gap, so classifying the
+    // gap would transiently publish `default` (a wrong regime between two text
+    // fields — R-3.2, and a flicker on any field↔non-field move — R-3.1). Skip
+    // the paired move; the following `focusin` publishes the real new focus. A
+    // `focusout` with no related target (focus left to nothing) still publishes.
+    if (event.type === 'focusout' && event.relatedTarget !== null) return;
     onFocusChange();
   };
   document.addEventListener('keydown', keydownListener, true);

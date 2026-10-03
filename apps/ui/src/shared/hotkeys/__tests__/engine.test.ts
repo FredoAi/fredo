@@ -54,6 +54,7 @@ import {
 } from '../store';
 import {
   BODY_FOCUS_CONTEXT_ATTR,
+  BODY_INPUT_REGIME_ATTR,
   BODY_MACRO_RECORDING_ATTR,
   BODY_PASSTHROUGH_ATTR,
   BODY_PENDING_SEQUENCE_ATTR,
@@ -66,6 +67,7 @@ import {
   isHotkeyEngineInstalled,
   subscribeFocusSnapshot,
 } from '../engine';
+import { regimeForFocusSnapshot } from '../inputRegime';
 import { ROOT_CONTEXT_ID, type DispatchDecision, type FeatureHotkeyAction } from '../types';
 
 // ── Harness helpers ──────────────────────────────────────────────────────────
@@ -177,6 +179,7 @@ beforeEach(() => {
   resetKeyboardModeForTests();
   document.body.innerHTML = '';
   document.body.removeAttribute(BODY_FOCUS_CONTEXT_ATTR);
+  document.body.removeAttribute(BODY_INPUT_REGIME_ATTR);
   document.body.removeAttribute(BODY_PENDING_SEQUENCE_ATTR);
   document.body.removeAttribute(BODY_PASSTHROUGH_ATTR);
   document.body.removeAttribute(BODY_MACRO_RECORDING_ATTR);
@@ -871,17 +874,20 @@ describe('engine — live focus snapshot (Spec #2959 ST-1)', () => {
     const initial = getFocusSnapshot();
     expect(initial.context).toBe('default');
     expect(initial.nativeConsumes).toBe(false);
+    expect(initial.textEntry).toBe(false);
 
     mountInput();
     const textEntry = getFocusSnapshot();
     expect(textEntry.context).toBe('text-entry');
     expect(textEntry.nativeConsumes).toBe(false);
+    expect(textEntry.textEntry).toBe(true);
     expect(textEntry).not.toBe(initial);
 
     const button = mountButton();
     const interactive = getFocusSnapshot();
     expect(interactive.context).toBe('interactive');
     expect(interactive.nativeConsumes).toBe(true);
+    expect(interactive.textEntry).toBe(false);
 
     // A keystroke that leaves focus unchanged keeps the SAME frozen identity.
     keydown(button, { key: 'g' });
@@ -910,5 +916,104 @@ describe('engine — live focus snapshot (Spec #2959 ST-1)', () => {
     const callsBeforeUnsubscribe = listener.mock.calls.length;
     mountNeutral();
     expect(listener.mock.calls.length).toBe(callsBeforeUnsubscribe);
+  });
+});
+
+// ── 15. Input-regime body hook + honest textEntry (Spec #2960 ST-1) ──────────
+
+describe('engine — input-regime body hook (Spec #2960 ST-1)', () => {
+  it('mirrors the regime on document.body from the SAME updateHooks() call', () => {
+    installHotkeyEngine();
+    // No text focus → navigating.
+    expect(document.body.getAttribute(BODY_INPUT_REGIME_ATTR)).toBe('navigating');
+
+    mountInput();
+    expect(document.body.getAttribute(BODY_FOCUS_CONTEXT_ATTR)).toBe('text-entry');
+    expect(document.body.getAttribute(BODY_INPUT_REGIME_ATTR)).toBe('typing');
+
+    mountButton();
+    expect(document.body.getAttribute(BODY_FOCUS_CONTEXT_ATTR)).toBe('interactive');
+    expect(document.body.getAttribute(BODY_INPUT_REGIME_ATTR)).toBe('navigating');
+
+    mountNeutral();
+    expect(document.body.getAttribute(BODY_INPUT_REGIME_ATTR)).toBe('navigating');
+  });
+
+  it('omits the hook ONLY for the terminal context (the shipped pill owns it)', () => {
+    installHotkeyEngine();
+    mountTerminal();
+    expect(document.body.getAttribute(BODY_FOCUS_CONTEXT_ATTR)).toBe('terminal');
+    expect(document.body.hasAttribute(BODY_INPUT_REGIME_ATTR)).toBe(false);
+
+    // Leaving the terminal restores the hook.
+    mountNeutral();
+    expect(document.body.getAttribute(BODY_INPUT_REGIME_ATTR)).toBe('navigating');
+  });
+
+  it("reads a modal's TEXT field as 'typing' and its non-text focus as 'navigating'", () => {
+    installHotkeyEngine();
+
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    const input = document.createElement('input');
+    dialog.appendChild(input);
+    document.body.appendChild(dialog);
+    input.focus();
+
+    // Additive: `context` still reports `modal`; the new `textEntry` makes the
+    // regime honest.
+    expect(document.body.getAttribute(BODY_FOCUS_CONTEXT_ATTR)).toBe('modal');
+    expect(getFocusSnapshot().textEntry).toBe(true);
+    expect(document.body.getAttribute(BODY_INPUT_REGIME_ATTR)).toBe('typing');
+
+    // Focus a non-text control inside the same modal → navigating.
+    const button = document.createElement('button');
+    dialog.appendChild(button);
+    button.focus();
+    expect(document.body.getAttribute(BODY_FOCUS_CONTEXT_ATTR)).toBe('modal');
+    expect(getFocusSnapshot().textEntry).toBe(false);
+    expect(document.body.getAttribute(BODY_INPUT_REGIME_ATTR)).toBe('navigating');
+  });
+
+  it('always equals regimeForFocusSnapshot(snapshot) after focus AND keydown changes', () => {
+    installHotkeyEngine();
+    const assertConsistent = (): void => {
+      expect(document.body.getAttribute(BODY_INPUT_REGIME_ATTR)).toBe(
+        regimeForFocusSnapshot(getFocusSnapshot()),
+      );
+    };
+
+    assertConsistent();
+    const input = mountInput();
+    assertConsistent();
+    keydown(input, { key: 'g' });
+    assertConsistent();
+
+    const button = mountButton();
+    assertConsistent();
+    keydown(button, { key: 'g' });
+    assertConsistent();
+
+    mountTerminal();
+    assertConsistent();
+    mountNeutral();
+    assertConsistent();
+  });
+
+  it('R-3.2: a field→field move keeps the snapshot identity and the hook (no DOM change)', () => {
+    installHotkeyEngine();
+    mountInput();
+    const before = getFocusSnapshot();
+    expect(document.body.getAttribute(BODY_INPUT_REGIME_ATTR)).toBe('typing');
+
+    // A second text field: context/nativeConsumes/textEntry are unchanged, so the
+    // snapshot identity is preserved and the body hook does not change.
+    const second = document.createElement('input');
+    document.body.appendChild(second);
+    second.focus();
+
+    expect(getFocusSnapshot()).toBe(before);
+    expect(document.body.getAttribute(BODY_INPUT_REGIME_ATTR)).toBe('typing');
   });
 });
