@@ -22,7 +22,11 @@
               own manifest PIDs, image-guarded (R-3.1/R-3.3): no port-owner
               enumeration, no global image-name kill. Legacy mode stops the
               single instance by port owner.
-  Status   -- Read-only check: running / starting / stopped.
+  Status   -- Read-only check: running / starting / stopped. Env mode also
+              prints an `isolation` line: the result of the read-only
+              verify-env-isolation.ps1 continuous invariant check (distinct
+              data roots, disjoint ports, each recorded endpoint owned by its
+              own manifest PID). Status semantics are unchanged.
   Restart  -- Down then Up.
   Logs     -- Tail process stdout/stderr.
   Clean    -- Env mode only: stop the environment, then remove ONLY its
@@ -1086,6 +1090,42 @@ function Format-ShortSha {
   return $Sha.Substring(0, [Math]::Min(8, $Sha.Length))
 }
 
+# Read-only isolation assertion for env-aware Status (Spec #2944 ST-7): invoke
+# the sibling verify-env-isolation.ps1 checker in `-Scan -Summary` mode and
+# return its single result line. This NEVER kills, binds, or mutates -- it is a
+# pure read (manifests + process table + listening sockets, each bounded). The
+# checker owns the CONTINUOUS invariant; Status merely surfaces it. Any failure
+# to run the checker degrades to an "unknown" line and never fails Status.
+function Get-EnvIsolationLine {
+  $checker = Join-Path $PSScriptRoot "verify-env-isolation.ps1"
+  if (-not (Test-Path -LiteralPath $checker)) {
+    return "unknown (verify-env-isolation.ps1 not found)"
+  }
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    # Always include THIS env's manifest explicitly (covers a custom env root)
+    # and -Scan for any siblings under the default envs root.
+    $psArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $checker, "-Scan", "-Summary")
+    if ($ManifestPath) { $psArgs += @("-ManifestPath", $ManifestPath) }
+    $out = & powershell @psArgs 2>&1
+    $exit = $LASTEXITCODE
+    $line = ""
+    foreach ($l in @($out)) {
+      $s = ([string]$l).Trim()
+      if ($s) { $line = $s }
+    }
+    if (-not $line) {
+      if ($exit -eq 0) { $line = "OK" } else { $line = "FAILED (exit $exit)" }
+    }
+    return $line
+  } catch {
+    return "unknown ($($_.Exception.Message))"
+  } finally {
+    $ErrorActionPreference = $prev
+  }
+}
+
 # Env-aware Status (Spec #2944 ST-6): env id + ports + manifest currency. The
 # switch branches on $IsEnvMode first, so the legacy (unset -EnvId) Status
 # strings stay byte-identical.
@@ -1122,6 +1162,10 @@ function Invoke-EnvStatus {
   Write-Host "  serving checkout : $vServing"
   Write-Host "  db               : $vDb"
   Write-Host "  manifest         : $ManifestPath"
+  # Spec #2944 ST-7: continuous isolation invariant, read-only. Surface it on
+  # its own Status line; Status semantics (running/starting/stopped + exit 0)
+  # are unchanged.
+  Write-Host "  isolation        : $(Get-EnvIsolationLine)"
 
   if (-not $manifest) {
     Write-Host "  manifest currency: unknown (no manifest -- env not started)"
