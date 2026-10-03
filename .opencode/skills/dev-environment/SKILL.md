@@ -23,6 +23,18 @@ Optional parameters: `-VitePort 5174`, `-McpPort 9223`, `-TimeoutSecs 120`, `-Li
 
 > **`-EnvVar` (Up only) — the sanctioned way to drive an ENV-GATED app seam.** Repeatable `NAME=value` pairs inject extra environment variables into the launched dev instance (and every opencode session it spawns). Agents cannot set a process env var for the app any other way: every script invocation is a fresh shell and shell chaining/metacharacters are sandbox-denied, so an env-gated seam is otherwise undrivable and the row becomes a permanent named blocker. Example (the STT deterministic capture feed): `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec <N> -EnvVar "FREDO_STT_FEED_WAV=C:\Code\fredo\.opencode\tests\voice-dictation\fixtures\dictation-phrase-16k-mono.wav"`. **Do NOT use the `-EnvVars @{ NAME = "value" }` hashtable form from a `powershell -File` invocation** — the outer shell passes the literal to the script as a STRING and it fails with `Cannot convert the ... Hashtable value`; `-EnvVars` remains available only to dot-sourced callers. Inject a var ONLY from an in-repo value (never a path outside the repo — G-172), and always pair an env-gated leg with an unset-env control run so the observation is non-vacuous.
 
+## Isolated Environments (Spec #2944)
+
+One machine can run several fully isolated Fredo environments concurrently, one per issue/spec.
+
+- **Instance selector:** `dev-env.ps1 -EnvId <id>` (default derived from `-Spec <N>` → `spec<N>`).
+- **Port block:** `-EnvSlot <n>` (slot 0 = legacy 5174/9223/4317/4318/8080; slot n≥1 = base `16000 + 10*(n-1)`, then Vite=P+0, MCP=P+1, OTLP/gRPC=P+2, OTLP/HTTP=P+3, llama=P+4). Explicit `-VitePort`/`-McpPort` overrides are recorded in the manifest; a collision fails closed (never scans to another port).
+- **Serving checkout:** `-ServingCheckout <path>` launches a per-issue checkout (`.serve/<issue>`); default = repo root (byte-identical legacy behavior).
+- **State root:** `FREDO_ENV_ROOT` (default `<repo>/.opencode/tmp/envs/<envId>`); the SQLite store is `FREDO_DATA_DIR/fredo.db` (default `<env-root>/data/fredo.db`).
+- **Manifest:** `<env-root>/manifest.json` (`FREDO_ENV_MANIFEST` overrides) records `ports` (vite/mcp/otlpGrpc/otlpHttp/llama/pg), `dbPath`, `pipe`, `appIdentity`, and the launched `processes[].pid`. `Down`/`Clean` kill ONLY those PIDs.
+- **Identity / routing:** `FREDO_ENV_ID` is injected into the app and every OpenCode session it spawns; the CLI pipe is `FREDO_CLI_PIPE` (`\\.\pipe\fredo-ipc-<envId>`); the MCP `appIdentifier` for an environment is its MCP port as a decimal string (e.g. `"16001"`). Read an environment's rows from ITS OWN store, never the legacy `%APPDATA%\com.fredo.app` path.
+- **Read lever is engine-dependent (G-284).** When an environment's data plane is SQLite, use the `telemetry-query` skill with `-DbPath <env-root>/data/fredo.db` (or `-Manifest <env-root>/manifest.json`). When the #2979 PostgreSQL store is live (the env may have no `fredo.db`), use the managed `psql` at the manifest's ephemeral `ports.pg` (database `postgres`) through the allowlisted `run-exitcode.ps1 -Command` wrapper; the same engine selection is built into `telemetry-query.ps1` (`-PgPort`/`-Manifest`). State which engine produced the evidence.
+
 ## Cleaning the Fredo DB (fresh-slate reset for live e2e)
 
 Single script: `.opencode/scripts/clean-fredo-db.ps1` (allowed for the tester + self-improver).
@@ -35,6 +47,8 @@ The tester **cannot** `Remove-Item` the live DB directly — the sandbox allowli
 | `powershell -File .opencode/scripts/clean-fredo-db.ps1 -Restart` | Clean, then restart the dev instance (`dev-env.ps1 -Action Up`). |
 | `powershell -File .opencode/scripts/clean-fredo-db.ps1 -Backup [-Name <n>]` | Stop the app and copy the live DB (+ `-wal`/`-shm`) into `.opencode/tmp/db-snapshots/<name>/` (default name = timestamp). Does NOT delete the live DB. Add `-Restart` to bring the app back up. |
 | `powershell -File .opencode/scripts/clean-fredo-db.ps1 -Restore -Name <n> [-Restart]` | Stop the app, replace the live DB with the named snapshot, verify. Errors with the available snapshot names when `<n>` is missing. |
+| `powershell -File .opencode/scripts/clean-fredo-db.ps1 -EnvId spec2944` | Env-scoped clean: stop that env (`-Action Down -EnvId`), delete ITS `FREDO_DATA_DIR/fredo.db` (+ `-wal`/`-shm`), verify. Never touches a sibling env. |
+| `powershell -File .opencode/scripts/clean-fredo-db.ps1 -DbPath <env-root>\data\fredo.db` | Clean an explicit SQLite path; when the path matches `<repo>/.opencode/tmp/envs/<id>/` the env id is derived so the app is stopped env-scoped (never a global kill). |
 
 Notes:
 - **Corpus-size comparison levers (`-Backup` / `-Restore`).** A check that compares behavior across corpus sizes (e.g. "open time does not grow with total stored history") needs BOTH a small corpus and the real corpus back. Sequence: measure on the real DB → `-Backup -Name big` → `-Restart` (fresh small DB; drive a few fixtures) → measure → `-Restore -Name big -Restart`. Snapshots are gitignored in-repo state under `.opencode/tmp/db-snapshots/`, so the real corpus is never lost. Never use `Remove-Item` on the live DB directly (G-009).
@@ -66,6 +80,7 @@ Runs a readonly sqlite3 query against the live `fredo.db` in a bounded polling l
 | Command | Description |
 |---------|-------------|
 | `powershell -File .opencode/scripts/wait-telemetry.ps1 -Query "SELECT ... " -Attempts 20 -IntervalSec 15` | Poll every 15 s, up to 20 attempts. Exit 0 as soon as ≥1 row (a bare `0` aggregate result counts as zero rows), 1 on timeout, 2 on query/DB-not-found errors, 3 on sqlite failure. |
+| `powershell -File .opencode/scripts/wait-telemetry.ps1 -Query "SELECT ... " -DbPath "<env-root>/data/fredo.db" -Attempts 10 -IntervalSec 5` | Poll an isolated env's own SQLite store (`-DbPath`; empty ⇒ legacy fixed search order). SQLite-only — a post-#2979 PostgreSQL env has no `fredo.db`; read it via the telemetry-query skill's PG lever / `run-exitcode.ps1 -Command` instead. |
 
 Notes:
 - Readonly guardrail: only SELECT / PRAGMA / WITH accepted (same DDL/DML rejection as `telemetry-query.ps1`); the `-readonly` connection never blocks the running app.
@@ -198,7 +213,7 @@ For runtime errors, traces, and performance data from the Rust tracing subsystem
 powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 -Query "SELECT ... FROM telemetry_logs WHERE level = 'ERROR'" -Format md
 ```
 
-The telemetry-query skill has recipes for recent errors, latency percentiles, session traces, and more. Use it when process logs don't show enough detail.
+The telemetry-query skill has recipes for recent errors, latency percentiles, session traces, and more. Use it when process logs don't show enough detail. For an isolated env, pass `-DbPath <env-root>/data/fredo.db` (or `-Manifest <env-root>/manifest.json`); its PostgreSQL lever (`-PgPort`, G-284) is documented in that skill.
 
 ## E2E Testing
 

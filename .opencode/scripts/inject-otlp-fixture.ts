@@ -68,6 +68,18 @@
  * Usage (tester allowlist runs this via `bun`):
  *   bun .opencode/scripts/inject-otlp-fixture.ts --count 2 --prefix ses_orphan2762
  *
+ * Per-env usage (Spec #2944, R-1.2/R-2.1): the receiver host/port are the
+ * TARGET env's own endpoint. Read them from that env's process manifest
+ * (`<env-root>/manifest.json`, `ports.otlpGrpc` / `ports.otlpHttp`; slot 0
+ * default is `127.0.0.1:4317` / `:4318`) and pass `--port` (and `--host` when
+ * the receiver is not on loopback):
+ *   bun .opencode/scripts/inject-otlp-fixture.ts --port 16002 --host 127.0.0.1 --count 1
+ * The injected rows land in that env's own store (`FREDO_DATA_DIR/fredo.db`,
+ * i.e. the manifest `dbPath`) — read them back with the telemetry-query skill's
+ * `-DbPath` (or its PostgreSQL lever when the #2979 store is live), never the
+ * legacy `%APPDATA%\com.fredo.app` path. The CONFIRM receipts below print the
+ * legacy path; substitute the target env's manifest `dbPath` for an isolated env.
+ *
  * Delegation-tree mode (--parent, #2768 round 2): spans shaped EXACTLY like the
  * real F5/F4B rows (attribute keys copied verbatim from telemetry_spans). For
  * each child i it exports, in order:
@@ -95,7 +107,8 @@
  * Copilot mode (--copilot, Spec #2933 ST-5): a self-contained producer for the
  * GitHub Copilot CLI capture contract. Instead of the hand-encoded gRPC
  * protobuf, it POSTs a Copilot-shaped OTLP/JSON envelope to the REAL OTLP/HTTP
- * receiver on `127.0.0.1:4318/v1/traces` — the exact transport the Copilot CLI
+ * receiver on the `/v1/traces` endpoint (default host `127.0.0.1`, port `4318`;
+ * override with `--host`/`--port`) — the exact transport the Copilot CLI
  * ships — so a tester can drive receiver → classifier → canonical rows without
  * the `copilot` binary, auth, or a paid subscription. The Rust fixture (ST-4)
  * remains the no-network deterministic baseline; this is the optional live leg.
@@ -122,13 +135,15 @@
  * content keys from the loaded envelope if requested.
  *
  * Transport: `--copilot` POSTs OTLP/JSON to the receiver's `/v1/traces` —
- * the transport the Copilot CLI actually ships — on `--port` (default 4318).
+ * the transport the Copilot CLI actually ships — on `--host`/`--port`
+ * (default `127.0.0.1:4318`).
  *
  * Params:
  *   --count N        number of fake child sessions to inject (default 2)
  *   --prefix ID      base id; session ids are `<prefix>-1 .. <prefix>-N`
  *                    (default ses_orphan2762; `--copilot` default e2e-copilot2933)
  *   --port N         receiver port (gRPC default 4317; `--copilot` HTTP default 4318)
+ *   --host ADDR      receiver host (default 127.0.0.1, loopback)
  *   --parent ID      delegation-tree mode: parent session id (enables the
  *                    task-span + session.parent_id shape above)
  *   --start-index N  first child index in tree mode (default 1)
@@ -153,6 +168,7 @@ import { randomBytes } from 'node:crypto'
 let count = 2
 let prefixArg: string | null = null
 let portArg: number | null = null
+let hostArg: string | null = null
 let parent: string | null = null
 let startIndex = 1
 let copilot = false
@@ -164,6 +180,7 @@ for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--count') count = Number(argv[++i])
   else if (argv[i] === '--prefix') prefixArg = argv[++i]
   else if (argv[i] === '--port') portArg = Number(argv[++i])
+  else if (argv[i] === '--host') hostArg = argv[++i]
   else if (argv[i] === '--parent') parent = argv[++i]
   else if (argv[i] === '--start-index') startIndex = Number(argv[++i])
   else if (argv[i] === '--copilot') copilot = true
@@ -176,6 +193,7 @@ for (let i = 0; i < argv.length; i++) {
 }
 const prefix = prefixArg ?? (copilot ? 'e2e-copilot2933' : 'ses_orphan2762')
 const port = portArg ?? (copilot ? 4318 : 4317)
+const host = hostArg ?? '127.0.0.1'
 if (!Number.isInteger(count) || count < 1) {
   console.error('--count must be a positive integer')
   process.exit(1)
@@ -186,6 +204,10 @@ if (!prefix) {
 }
 if (!Number.isInteger(port) || port < 1 || port > 65535) {
   console.error('--port must be a valid port number')
+  process.exit(1)
+}
+if (!host) {
+  console.error('--host must be a non-empty string')
   process.exit(1)
 }
 if (parent !== null && !parent) {
@@ -537,9 +559,9 @@ interface ExportResult {
   error?: string
 }
 
-function exportViaGrpc(portNum: number, message: number[]): Promise<ExportResult> {
+function exportViaGrpc(hostName: string, portNum: number, message: number[]): Promise<ExportResult> {
   return new Promise((resolve) => {
-    const client = http2.connect(`http://127.0.0.1:${portNum}`)
+    const client = http2.connect(`http://${hostName}:${portNum}`)
     let settled = false
     let timer: ReturnType<typeof setTimeout> | null = null
 
@@ -582,7 +604,7 @@ function exportViaGrpc(portNum: number, message: number[]): Promise<ExportResult
       } catch {
         // already closed
       }
-      fail(new Error(`timeout exporting to 127.0.0.1:${portNum} — is the OTLP gRPC receiver up?`))
+      fail(new Error(`timeout exporting to ${hostName}:${portNum} — is the OTLP gRPC receiver up?`))
     }, 5000)
 
     let observedStatus: string | undefined
@@ -757,11 +779,11 @@ async function runCopilotMode() {
   }
 
   const sessionId = envelopeSessionId(envelopeBody)
-  const url = `http://127.0.0.1:${port}/v1/traces`
+  const url = `http://${host}:${port}/v1/traces`
   console.log(`Copilot mode: POST ${receiptSpans.length} span(s) to ${url} (${sourceLabel}, service.name=copilot-cli, session=${sessionId}, content=${contentOff ? 'OFF' : 'ON'})`)
   const result = await exportViaHttp(url, JSON.stringify(envelopeBody))
   if (!result.ok) {
-    console.error(`FAILED: OTLP/HTTP export to ${url} did not complete: ${result.error ?? 'unknown error'} — the telemetry rows CANNOT exist. Verify the OTLP/HTTP receiver is up (GET http://127.0.0.1:${port}/health should return status ok) and re-run once.`)
+    console.error(`FAILED: OTLP/HTTP export to ${url} did not complete: ${result.error ?? 'unknown error'} — the telemetry rows CANNOT exist. Verify the OTLP/HTTP receiver is up (GET http://${host}:${port}/health should return status ok) and re-run once.`)
     process.exit(1)
   }
   console.log(`EXPORT 1/1 -> OK (http ${result.status ?? 'unknown'})`)
@@ -837,7 +859,7 @@ async function main() {
     const s = spans[i]
     const traceHex = Buffer.from(s.traceId).toString('hex')
     const spanHex = Buffer.from(s.spanId).toString('hex')
-    const result = await exportViaGrpc(port, buildExportRequest(s))
+    const result = await exportViaGrpc(host, port, buildExportRequest(s))
     if (result.ok) {
       // FIX round 7 (FIX-C): print the OBSERVED wire status — never a
       // hardcoded grpc-status 0. An 'unknown' status means neither the
@@ -855,7 +877,7 @@ async function main() {
     const spanHex = Buffer.from(s.spanId).toString('hex')
     console.log(`Injected span: session=${s.sessionId} name=${s.spanName} trace_id ${traceHex} span_id ${spanHex}`)
   }
-  console.log(`Done — ${spans.length} span(s) exported to 127.0.0.1:${port} (one gRPC Export per span${parent !== null ? `, delegation tree under parent ${parent}` : ''})`)
+  console.log(`Done — ${spans.length} span(s) exported to ${host}:${port} (one gRPC Export per span${parent !== null ? `, delegation tree under parent ${parent}` : ''})`)
   console.log(`Gate note: status_code 'UNSET' in telemetry_spans is EXPECTED (no Status set; raw.rs maps absent status → UNSET) — gate on end_time_ns IS NOT NULL, not on status.`)
 
   // Receipt self-containment (fix round 4): print the exact CONFIRM SQL per
@@ -883,7 +905,7 @@ async function main() {
   // Final verdict (fix round 5): a failed export is a hard, loud exit — the
   // telemetry rows CANNOT exist, so the CONFIRM gates must not be run.
   if (exportFailures > 0) {
-    console.error(`FAILED: ${exportFailures} of ${spans.length} gRPC export(s) did not complete (see EXPORT lines above) — the telemetry rows CANNOT exist. Do NOT run the CONFIRM gates; verify the OTLP gRPC receiver on 127.0.0.1:${port} is up and re-run once.`)
+    console.error(`FAILED: ${exportFailures} of ${spans.length} gRPC export(s) did not complete (see EXPORT lines above) — the telemetry rows CANNOT exist. Do NOT run the CONFIRM gates; verify the OTLP gRPC receiver on ${host}:${port} is up and re-run once.`)
     process.exit(1)
   }
   console.log(`All ${spans.length} export(s) completed with grpc-status 0.`)
