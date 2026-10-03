@@ -83,12 +83,13 @@ pub const DOOM_STATUS_EVENT: &str = "doom-status-changed";
 /// configured (the upstream RESTful-DOOM Windows binary).
 pub const DOOM_IMAGE_DEFAULT: &str = "restful-doom.exe";
 
-/// The engine launch argv prefix (binding contract): deterministic lockstep API
-/// mode, no blit, no audio. Followed by `-iwad <path>`, [`DOOM_LAUNCH_SUFFIX`],
-/// then `-port <port>`.
+/// The engine launch argv prefix: deterministic lockstep API mode, no blit, no
+/// audio. Followed by `-iwad <path>`, [`DOOM_LAUNCH_SUFFIX`], then
+/// `-apiport <port>`.
 pub const DOOM_LAUNCH_PREFIX: &[&str] = &["-apilockstep", "-noblit", "-nosound", "-nomusic"];
-/// The engine launch argv suffix after the IWAD: a fixed warp and skill.
-pub const DOOM_LAUNCH_SUFFIX: &[&str] = &["-warp", "1", "-skill", "3"];
+/// The engine launch argv suffix after the IWAD: a fixed Doom-1 warp
+/// (`<episode> <map>`) and skill (ST-1 spike: `freedoom1.wad` is Phase 1).
+pub const DOOM_LAUNCH_SUFFIX: &[&str] = &["-warp", "1", "1", "-skill", "3"];
 
 // ── Lifecycle phase vocabulary ────────────────────────────────────────────────
 

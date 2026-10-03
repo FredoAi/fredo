@@ -79,14 +79,19 @@ pub fn resolve_doom_path(env_override: Option<&str>, configured: Option<&str>) -
     None
 }
 
-/// The binding launch argv: `-apilockstep -noblit -nosound -nomusic -iwad <path>
-/// -warp 1 -skill 3 -port <port>`.
+/// The launch argv: `-apilockstep -noblit -nosound -nomusic -iwad <path>
+/// -warp 1 1 -skill 3 -apiport <port>`.
+///
+/// The port flag is **`-apiport`**, not the Triage Plan's guessed `-port` — the
+/// ST-1 spike (CU-1, on which this unit depends) captured the upstream contract
+/// and corrected it; `-port` would make the engine bind the wrong port (or
+/// error). Doom-1 style takes `-warp <episode> <map>` (Freedoom Phase 1).
 pub fn build_launch_args(iwad: &str, port: u16) -> Vec<String> {
     let mut args: Vec<String> = DOOM_LAUNCH_PREFIX.iter().map(|s| (*s).to_string()).collect();
     args.push("-iwad".to_string());
     args.push(iwad.to_string());
     args.extend(DOOM_LAUNCH_SUFFIX.iter().map(|s| (*s).to_string()));
-    args.push("-port".to_string());
+    args.push("-apiport".to_string());
     args.push(port.to_string());
     args
 }
@@ -416,7 +421,10 @@ mod tests {
     }
 
     #[test]
-    fn launch_args_are_pinned_to_the_binding_argv() {
+    fn launch_args_are_pinned_to_the_corrected_engine_argv() {
+        // CU-1 (ST-1) captured the real engine contract: the port flag is
+        // `-apiport` (not the plan's guessed `-port`) and Doom-1 warp takes
+        // `<episode> <map>`.
         let args = build_launch_args(r"C:\data\doom\freedoom1.wad", 6666);
         assert_eq!(
             args,
@@ -429,9 +437,10 @@ mod tests {
                 r"C:\data\doom\freedoom1.wad",
                 "-warp",
                 "1",
+                "1",
                 "-skill",
                 "3",
-                "-port",
+                "-apiport",
                 "6666",
             ]
         );
