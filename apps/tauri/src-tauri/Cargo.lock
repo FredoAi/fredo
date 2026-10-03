@@ -1868,6 +1868,7 @@ dependencies = [
  "clap",
  "cpal",
  "encoding_rs",
+ "flate2",
  "futures-util",
  "image",
  "interprocess",

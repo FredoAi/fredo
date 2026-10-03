@@ -15,6 +15,7 @@ explicitly rather than leaving a dead link.
 | [#2964 — the migration approach](2964-postgres-migration-approach.md) | The migration is **mandated** — so how? | The full written approach (store, data, lifecycle, packaging), absorbing #2948's measurements as inputs |
 | [#2897 — model-audio feasibility](2897-model-audio-feasibility.md) | Local transcription vs. model audio for speech input? | The ST-0 gating record. **Shipped** — model audio on the managed `llama-server` is the only speech path |
 | [#2876 — local-first streaming STT engine](2876-stt-engine-selection.md) | Which local-first streaming STT engine? | **SUPERSEDED** by #2914, which removed the on-device engine. Kept verbatim as history |
+| [#2968 — RESTful-DOOM acquisition + contract](2968-doom-runtime/README.md) | Is there a trustworthy prebuilt RESTful-DOOM engine, and what is the exact engine contract? | **NO prebuilt asset** (source-only) → user-supplied engine + build recipe; Freedoom IWAD pinned; contract captured (a **directory** of raw captures, per the plan) |
 
 ## Not spikes
 

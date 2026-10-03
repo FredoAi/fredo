@@ -2,6 +2,12 @@
 name = "fredo"
 version = "0.1.0"
 edition = "2021"
+# Selects the app binary for bare `cargo run` invocations. The second `[[bin]]`
+# (`doom_stub`, `required-features`-gated) still participates in `cargo run`'s
+# binary disambiguation even when its feature is off, so without this key
+# `tauri dev` -> `cargo run --no-default-features` errors with "could not
+# determine which binary to run". Never point this at `doom_stub`.
+default-run = "fredo"
 
 [lib]
 name = "fredo_lib"
@@ -10,6 +16,14 @@ crate-type = ["lib", "cdylib", "staticlib"]
 [[bin]]
 name = "fredo"
 path = "src/main.rs"
+
+# In-repo Doom stub engine (Spec #2968 ST-8). `required-features` keeps it OUT of
+# every default build and out of the Tauri bundle: it is compiled ONLY with
+# `cargo build --features doom-stub`, so no stub/engine binary is ever shipped.
+[[bin]]
+name = "doom_stub"
+path = "src/bin/doom_stub.rs"
+required-features = ["doom-stub"]
 
 # Acquisition-mode build-time switch (Spec #2978 S1). The shipped default is the
 # crate `runtime-download` mode (`default = []`, no `bundled`), so the installer
@@ -24,6 +38,10 @@ path = "src/main.rs"
 [features]
 default = []
 bundled = ["postgresql_embedded/bundled"]
+# Enables the in-repo Doom stub engine binary (ST-8). NEVER enabled in a shipped
+# build; used only for deterministic offline QA of the runtime lifecycle + HTTP
+# round trip + error paths.
+doom-stub = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -60,6 +78,12 @@ prost = "0.13"
 bytes = "1"
 # Streaming SHA-256 verification for model-file acquisition (Spec #2856)
 sha2 = "0.10"
+# Raw-deflate decompression for the Doom acquisition's minimal ZIP reader
+# (Spec #2968 ST-4): the pinned Freedoom IWAD is distributed inside a `.zip`
+# and the shared download engine is a file downloader, not an archive
+# extractor. `flate2` is already in the resolved dependency graph (via
+# `postgresql_embedded`/`tar`), so this adds no new supply-chain surface.
+flate2 = "1"
 schemars = "1"
 # PostgreSQL (for observability tools)
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "json", "chrono"] }
