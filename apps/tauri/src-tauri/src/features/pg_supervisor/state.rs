@@ -48,6 +48,7 @@ use crate::infrastructure::storage::migration::{
 };
 use crate::infrastructure::storage::AppStore;
 
+use super::descriptor::{self, HeadlessDescriptor};
 use super::lock::PgDataDirLock;
 use super::runtime::{wait_until, PgRuntime, StopOutcome};
 use super::sweep::{persist_pid, sweep_orphan, sweep_postmaster_pid_file};
@@ -66,6 +67,11 @@ pub enum PgState {
     Starting,
     /// The real-client readiness probe succeeded; `port`/`pid` are populated.
     Ready,
+    /// The data dir is locked by a LIVE headless `fredo ingest` daemon and this
+    /// GUI attached to its cluster (Spec #2992 CU-1). `port` is the published
+    /// ephemeral port; the GUI owns no runtime and holds no lock, so it never
+    /// starts, stops, or sweeps that postmaster.
+    Attached,
     /// The boot failed closed (structured `error`) and was torn down.
     Failed,
 }
@@ -76,9 +82,10 @@ pub enum PgState {
 pub struct PgStatusView {
     /// Current lifecycle state.
     pub state: PgState,
-    /// The bound ephemeral loopback port, once `Ready`.
+    /// The bound ephemeral loopback port, once `Ready`/`Attached`.
     pub port: Option<u16>,
-    /// The managed postmaster PID, once `Ready`.
+    /// The managed postmaster PID once `Ready`; the owning headless daemon PID
+    /// once `Attached` (the postmaster belongs to that daemon).
     pub pid: Option<u32>,
     /// Structured failure detail, once `Failed`.
     pub error: Option<String>,
@@ -89,6 +96,10 @@ pub struct PgStatusView {
     /// (`<data_dir>/log/postgres.log`) the read-only `pg_server_log_tail` reads;
     /// `None` only when no data dir is resolvable.
     pub log_path: Option<String>,
+    /// Additive (Spec #2992 CU-1): `true` only while the GUI serves a
+    /// headless-owned cluster ([`PgState::Attached`]); `false` for every other
+    /// state. Existing consumers ignore the extra field.
+    pub attached: bool,
 }
 
 /// `<data_dir>/log/postgres.log` as a serializable string; `None` when the data
@@ -116,6 +127,7 @@ impl PgStatusView {
             error: Some(error),
             log_path: log_path_for(&data_dir),
             data_dir,
+            attached: false,
         }
     }
 }
@@ -150,6 +162,7 @@ impl PgSupervisorState {
             error: None,
             data_dir,
             log_path,
+            attached: false,
         });
         Self {
             runtime: Mutex::new(runtime),
@@ -180,6 +193,25 @@ impl PgSupervisorState {
             error: None,
             data_dir,
             log_path,
+            attached: false,
+        });
+    }
+
+    /// Publish `Attached` (Spec #2992 CU-1): the GUI serves a headless-owned
+    /// cluster on `port`; `pid` is the owning headless daemon. The GUI holds no
+    /// runtime and no lock, so [`stop_on_exit`] no-ops (it never stops the
+    /// headless postmaster).
+    pub fn set_attached(&self, port: u16, pid: u32) {
+        let data_dir = self.status.borrow().data_dir.clone();
+        let log_path = log_path_for(&data_dir);
+        self.status.send_replace(PgStatusView {
+            state: PgState::Attached,
+            port: Some(port),
+            pid: Some(pid),
+            error: None,
+            data_dir,
+            log_path,
+            attached: true,
         });
     }
 
@@ -233,9 +265,11 @@ pub fn pool_force_fail_stage() -> Option<PgPoolStage> {
 /// Synchronous, bounded bootstrap: decide → lock → sweep. NEVER starts the server.
 ///
 /// `enabled` is the already-resolved boot decision (the shared engine choice, or
-/// the slice-1 KV rule when no state is managed). The lock stays at
-/// `<app_data_dir>/<PG_LOCK_FILENAME>`; only the **data dir** honours the FS-1
-/// [`super::PG_DATA_DIR_ENV`] override (`super::resolve_data_dir`).
+/// the slice-1 KV rule when no state is managed). The lock lives at
+/// `<lock_dir>/<PG_LOCK_FILENAME>`, where `lock_dir` honours the **G-275**
+/// [`super::PG_LOCK_DIR_ENV`] override ([`super::resolve_lock_dir`]); the
+/// **data dir** honours the FS-1 [`super::PG_DATA_DIR_ENV`] override
+/// (`super::resolve_data_dir`).
 fn bootstrap(app_data_dir: &Path, store: &AppStore, enabled: bool) -> Bootstrap {
     if !enabled {
         return Bootstrap::Disabled;
@@ -256,8 +290,10 @@ fn bootstrap(app_data_dir: &Path, store: &AppStore, enabled: bool) -> Bootstrap 
     }
 }
 
-/// The password for the loopback-only cluster, generated once and reused.
-fn ensure_password(store: &AppStore) -> String {
+/// The password for the loopback-only cluster, generated once and reused. Shared
+/// with the headless daemon (Spec #2992 CU-2), which must use the SAME
+/// control-plane credential.
+pub(crate) fn ensure_password(store: &AppStore) -> String {
     if let Ok(Some(password)) = store.control_get(PG_PASSWORD_KEY) {
         if !password.is_empty() {
             return password;
@@ -291,8 +327,9 @@ pub fn start_supervisor(app: &AppHandle) {
     };
     // Spec #2977 ST-6 (G-275): the SAME app-data-dir resolver `lib.rs` injects, so
     // the migration source `<dir>/fredo.db` and `restore_snapshot`'s target can
-    // never diverge. The managed-PG data dir, install dir, and lock deliberately
-    // stay on the OS dir (see `bootstrap` below).
+    // never diverge. The managed-PG data/install dirs and the lock dir resolve
+    // through their own shared rules (FS-1 `FREDO_PG_DATA_DIR`,
+    // `FREDO_PG_INSTALL_DIR`, and CU-1 `FREDO_PG_LOCK_DIR`) — see `bootstrap`.
     let data_dir = resolve_app_data_dir(&os_app_data_dir);
 
     // Spec #2975 ST-2 / Spec #2979 CU-1-R2: the resolved engine choice drives the
@@ -315,24 +352,49 @@ pub fn start_supervisor(app: &AppHandle) {
             );
         }
         Bootstrap::Failed(error) => {
-            // The data dir is owned elsewhere: record the fail-closed reason,
-            // report Failed, and start nothing.
-            if let Some(state) = app.try_state::<Arc<StorageEngineState>>() {
-                if state.choice() == EngineChoice::Postgres {
-                    state.set_fallback_reason(error.clone());
+            let lock_dir = super::resolve_lock_dir(&os_app_data_dir);
+            let pg_data_dir = super::resolve_data_dir(&os_app_data_dir)
+                .display()
+                .to_string();
+            // R-3 attach leg (Spec #2992 CU-1): the data dir is locked. If a LIVE
+            // headless descriptor is published, ATTACH to the headless-owned
+            // cluster instead of failing closed. `is_live` is bounded (PID image
+            // guard + a <=500 ms TCP connect), so the synchronous setup path
+            // never blocks unbounded (G-263).
+            match descriptor::read(&lock_dir).filter(descriptor::is_live) {
+                Some(headless) => {
+                    tracing::info!(
+                        target: "fredo::pg_supervisor",
+                        pid = headless.pid,
+                        port = headless.port,
+                        data_dir = %pg_data_dir,
+                        "data dir locked by a live headless daemon; attaching to its cluster"
+                    );
+                    // No runtime, no lock: this GUI never starts/stops/sweeps the
+                    // headless postmaster, and `stop_on_exit` no-ops.
+                    app.manage(Arc::new(PgSupervisorState::new(None, None, pg_data_dir)));
+                    let handle = app.clone();
+                    // G-273: the attach leg is spawned, never awaited in setup.
+                    tauri::async_runtime::spawn(async move {
+                        run_attach(handle, headless, data_dir).await;
+                    });
+                }
+                None => {
+                    // Missing/stale descriptor: keep today's fail-closed `Failed`
+                    // path — record the reason, report Failed, and start nothing.
+                    if let Some(state) = app.try_state::<Arc<StorageEngineState>>() {
+                        if state.choice() == EngineChoice::Postgres {
+                            state.set_fallback_reason(error.clone());
+                        }
+                    }
+                    tracing::error!(
+                        target: "fredo::pg_supervisor",
+                        error = %error,
+                        "embedded PostgreSQL data dir is not available; supervisor reports Failed"
+                    );
+                    app.manage(Arc::new(PgSupervisorState::failed_only(error, pg_data_dir)));
                 }
             }
-            tracing::error!(
-                target: "fredo::pg_supervisor",
-                error = %error,
-                "embedded PostgreSQL data dir is not available; supervisor reports Failed"
-            );
-            app.manage(Arc::new(PgSupervisorState::failed_only(
-                error,
-                super::resolve_data_dir(&os_app_data_dir)
-                    .display()
-                    .to_string(),
-            )));
         }
         Bootstrap::Locked(lock, pg_data_dir) => {
             tracing::info!(
@@ -436,132 +498,11 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf, data_dir: PathBuf) 
             let port = runtime.port();
 
             // Spec #2975 ST-2 pool-ready callback (REQ-1/EARS-1.2): after the
-            // readiness probe resolves, build ONE bounded pool and install it
-            // into the shared handle EXACTLY once. ANY failure/timeout installs
-            // NOTHING and records the reason — the handle stays Pending, so the
-            // data plane is unavailable until a later startup re-runs the leg
-            // (fail-closed, R-1.4; NO SQLite data-plane fallback). The FS-4 seam
-            // forces this deterministically for QA (REQ-3/EARS-3.3).
-            //
-            // ST-2 rework: AFTER the pool builds and BEFORE the install, run the
-            // registered startup schema initializers against the candidate pool,
-            // so the full startup schema set (feature-data metadata tables + the
-            // terminal record table, beyond `settings` created by
-            // `build_pg_pool`) exists on PostgreSQL BEFORE any feature op. A
-            // schema-init failure installs NOTHING (fail-closed).
-            if let Some(engine) = engine.as_ref() {
-                if engine.choice() == EngineChoice::Postgres {
-                    let url = runtime.connection_url();
-                    match build_pg_pool(&url, pool_force_fail_stage()).await {
-                        Ok(pg) => match engine.run_pg_schema_inits(&pg.pool) {
-                            Ok(()) => {
-                                // Spec #2977 ST-5 / #2979 CU-3: the one-shot
-                                // `fredo.db` → PostgreSQL data migration is the
-                                // LAST pre-install step, BETWEEN the schema inits
-                                // and the install. A source-absent data dir returns
-                                // `Fresh` (no leg; PostgreSQL installs normally,
-                                // R-1.1/R-4.1). Fail-closed (R-1.4): a failed leg
-                                // records the reason and installs NOTHING — the
-                                // handle stays Pending (no SQLite data-plane
-                                // fallback) and the next boot re-runs the
-                                // idempotent read-only export. The marker is
-                                // written inside `run_pre_install` ONLY on a fully
-                                // parity-clean run.
-                                //
-                                // R-3.5 (G-123): the EXCLUSIVE migration barrier is
-                                // acquired HERE and held across `install_postgres`, so
-                                // the quiesced window spans copy + parity + the engine
-                                // flip — no writer can slip a SQLite write between the
-                                // copy and the install (which would be lost on the
-                                // flip). `run_pre_install` never re-acquires it.
-                                let source_db = data_dir.join("fredo.db");
-                                let migration_dir = resolve_migration_dir(&data_dir);
-                                let gate = engine.migration_gate();
-                                let migration_started = std::time::Instant::now();
-                                match gate.migration_enter().await {
-                                    Err(error) => {
-                                        let reason = format!("[migration] {error:#}");
-                                        tracing::error!(
-                                            target: "fredo::pg_supervisor",
-                                            reason = %reason,
-                                            "could not acquire the migration barrier; storage engine stays Pending (fail-closed, no SQLite data-plane fallback)"
-                                        );
-                                        engine.record_migration_outcome(MigrationOutcome {
-                                            status: MigrationStatus::Failed,
-                                            tables: Vec::new(),
-                                            snapshot: None,
-                                            elapsed_ms: migration_started.elapsed().as_millis(),
-                                        });
-                                        engine.set_fallback_reason(reason);
-                                    }
-                                    Ok(guard) => {
-                                        match run_pre_install(
-                                            &source_db,
-                                            &migration_dir,
-                                            &pg.pool,
-                                            &guard,
-                                        )
-                                        .await
-                                        {
-                                            Ok(outcome) => {
-                                                let migration_status = outcome.status;
-                                                engine.record_migration_outcome(outcome);
-                                                // Still under the barrier: the install
-                                                // is the final step of the window.
-                                                // `Fresh`/`Skipped`/`Completed` all
-                                                // install PostgreSQL (R-1.1/R-1.3).
-                                                engine.install_postgres(pg);
-                                                tracing::info!(
-                                                    target: "fredo::pg_supervisor",
-                                                    ?migration_status,
-                                                    "storage engine installed: postgres"
-                                                );
-                                            }
-                                            Err(error) => {
-                                                let reason = format!("[migration] {error:#}");
-                                                tracing::error!(
-                                                    target: "fredo::pg_supervisor",
-                                                    reason = %reason,
-                                                    "data migration failed; storage engine stays Pending (fail-closed, no SQLite data-plane fallback)"
-                                                );
-                                                engine.record_migration_outcome(MigrationOutcome {
-                                                    status: MigrationStatus::Failed,
-                                                    tables: Vec::new(),
-                                                    snapshot: None,
-                                                    elapsed_ms: migration_started
-                                                        .elapsed()
-                                                        .as_millis(),
-                                                });
-                                                engine.set_fallback_reason(reason);
-                                            }
-                                        }
-                                        // Release the barrier only AFTER the install.
-                                        drop(guard);
-                                    }
-                                };
-                            }
-                            Err(error) => {
-                                let reason = format!("[pool:schemaInit] {error:#}");
-                                tracing::error!(
-                                    target: "fredo::pg_supervisor",
-                                    reason = %reason,
-                                    "schema init failed; storage engine stays Pending (fail-closed, no SQLite data-plane fallback)"
-                                );
-                                engine.set_fallback_reason(reason);
-                            }
-                        },
-                        Err(error) => {
-                            let reason = format!("{error:#}");
-                            tracing::error!(
-                                target: "fredo::pg_supervisor",
-                                reason = %reason,
-                                "pool build failed; storage engine stays Pending (fail-closed, no SQLite data-plane fallback)"
-                            );
-                            engine.set_fallback_reason(reason);
-                        }
-                    }
-                }
-            }
+            // readiness probe resolves, build ONE bounded pool, run the shared
+            // pre-install leg (schema inits + the one-shot migration), and install
+            // the engine. The SAME helper backs the CU-1 headless attach path, so
+            // the two legs can never diverge.
+            install_engine_on_pool(&engine, &runtime.connection_url(), &data_dir).await;
 
             if let Ok(mut guard) = state.runtime.lock() {
                 *guard = Some(runtime);
@@ -623,10 +564,200 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf, data_dir: PathBuf) 
     }
 }
 
+/// The pre-install engine leg shared by the GUI's OWN cluster start and the CU-1
+/// headless attach path: build ONE bounded pool, run the registered schema
+/// initializers, run the one-shot `fredo.db` → PostgreSQL migration, and install
+/// the engine.
+///
+/// Fail-closed contract (REQ-3/EARS-3.2, R-1.4): ANY failure records the
+/// structured reason on the engine state and installs NOTHING — the handle stays
+/// Pending, so there is no SQLite data-plane fallback. The FS-4 seam forces the
+/// pool stage deterministically for QA (G-275). A `None`/non-Postgres engine
+/// state is a no-op (the slice-1 path). The function is bounded end-to-end by
+/// `build_pg_pool`'s [`crate::infrastructure::storage::engine::PG_POOL_BUILD_BOUND`]
+/// and the runtime's bounded readiness (G-263).
+async fn install_engine_on_pool(
+    engine: &Option<Arc<StorageEngineState>>,
+    url: &str,
+    data_dir: &Path,
+) {
+    let Some(engine) = engine.as_ref() else {
+        return;
+    };
+    if engine.choice() != EngineChoice::Postgres {
+        return;
+    }
+    match build_pg_pool(url, pool_force_fail_stage()).await {
+        Ok(pg) => match engine.run_pg_schema_inits(&pg.pool) {
+            Ok(()) => {
+                // Spec #2977 ST-5 / #2979 CU-3: the one-shot `fredo.db` →
+                // PostgreSQL data migration is the LAST pre-install step, BETWEEN
+                // the schema inits and the install. A source-absent data dir
+                // returns `Fresh` (no leg; PostgreSQL installs normally,
+                // R-1.1/R-4.1). Fail-closed (R-1.4): a failed leg records the
+                // reason and installs NOTHING — the handle stays Pending (no
+                // SQLite data-plane fallback) and the next boot re-runs the
+                // idempotent read-only export. The marker is written inside
+                // `run_pre_install` ONLY on a fully parity-clean run.
+                //
+                // R-3.5 (G-123): the EXCLUSIVE migration barrier is acquired HERE
+                // and held across `install_postgres`, so the quiesced window spans
+                // copy + parity + the engine flip — no writer can slip a SQLite
+                // write between the copy and the install (which would be lost on
+                // the flip). `run_pre_install` never re-acquires it.
+                let source_db = data_dir.join("fredo.db");
+                let migration_dir = resolve_migration_dir(data_dir);
+                let gate = engine.migration_gate();
+                let migration_started = std::time::Instant::now();
+                match gate.migration_enter().await {
+                    Err(error) => {
+                        let reason = format!("[migration] {error:#}");
+                        tracing::error!(
+                            target: "fredo::pg_supervisor",
+                            reason = %reason,
+                            "could not acquire the migration barrier; storage engine stays Pending (fail-closed, no SQLite data-plane fallback)"
+                        );
+                        engine.record_migration_outcome(MigrationOutcome {
+                            status: MigrationStatus::Failed,
+                            tables: Vec::new(),
+                            snapshot: None,
+                            elapsed_ms: migration_started.elapsed().as_millis(),
+                        });
+                        engine.set_fallback_reason(reason);
+                    }
+                    Ok(guard) => {
+                        match run_pre_install(&source_db, &migration_dir, &pg.pool, &guard).await {
+                            Ok(outcome) => {
+                                let migration_status = outcome.status;
+                                engine.record_migration_outcome(outcome);
+                                // Still under the barrier: the install is the
+                                // final step of the window. `Fresh`/`Skipped`/
+                                // `Completed` all install PostgreSQL (R-1.1/R-1.3).
+                                engine.install_postgres(pg);
+                                tracing::info!(
+                                    target: "fredo::pg_supervisor",
+                                    ?migration_status,
+                                    "storage engine installed: postgres"
+                                );
+                            }
+                            Err(error) => {
+                                let reason = format!("[migration] {error:#}");
+                                tracing::error!(
+                                    target: "fredo::pg_supervisor",
+                                    reason = %reason,
+                                    "data migration failed; storage engine stays Pending (fail-closed, no SQLite data-plane fallback)"
+                                );
+                                engine.record_migration_outcome(MigrationOutcome {
+                                    status: MigrationStatus::Failed,
+                                    tables: Vec::new(),
+                                    snapshot: None,
+                                    elapsed_ms: migration_started.elapsed().as_millis(),
+                                });
+                                engine.set_fallback_reason(reason);
+                            }
+                        }
+                        // Release the barrier only AFTER the install.
+                        drop(guard);
+                    }
+                };
+            }
+            Err(error) => {
+                let reason = format!("[pool:schemaInit] {error:#}");
+                tracing::error!(
+                    target: "fredo::pg_supervisor",
+                    reason = %reason,
+                    "schema init failed; storage engine stays Pending (fail-closed, no SQLite data-plane fallback)"
+                );
+                engine.set_fallback_reason(reason);
+            }
+        },
+        Err(error) => {
+            let reason = format!("{error:#}");
+            tracing::error!(
+                target: "fredo::pg_supervisor",
+                reason = %reason,
+                "pool build failed; storage engine stays Pending (fail-closed, no SQLite data-plane fallback)"
+            );
+            engine.set_fallback_reason(reason);
+        }
+    }
+}
+
+/// The attach connection URL: the headless cluster's published loopback port +
+/// the SHARED control-plane credential
+/// (`postgresql://postgres:<pw>@<host>:<port>/postgres`). The password is a
+/// generated hex token, so no percent-encoding is required.
+fn attach_connection_url(host: &str, port: u16, password: &str) -> String {
+    format!("postgresql://postgres:{password}@{host}:{port}/postgres")
+}
+
+/// The background attach leg (Spec #2992 CU-1, R-3): with the data dir locked by
+/// a LIVE headless daemon, build the pool against the published port + the shared
+/// credential, run the SAME pre-install schema/migration leg the GUI runs, and
+/// publish [`PgState::Attached`].
+///
+/// Non-goals (enforced structurally): this never acquires the lock, never starts/
+/// stops/sweeps the headless postmaster, and holds no runtime — `stop_on_exit`
+/// no-ops. A failed pool/schema/migration leg records the fallback reason and
+/// leaves the engine Pending (fail-closed), mirroring the GUI's own start path;
+/// the supervisor still reports `Attached` because the headless cluster IS
+/// serving. Spawned, never awaited in setup (G-273); the pool build is bounded by
+/// `PG_POOL_BUILD_BOUND` (G-263).
+async fn run_attach(app: AppHandle, headless: HeadlessDescriptor, data_dir: PathBuf) {
+    let state = match app.try_state::<Arc<PgSupervisorState>>() {
+        Some(state) => state,
+        None => return,
+    };
+    let store = match app.try_state::<Arc<AppStore>>() {
+        Some(store) => store.inner().clone(),
+        None => return,
+    };
+    let engine = app
+        .try_state::<Arc<StorageEngineState>>()
+        .map(|state| state.inner().clone());
+
+    let password = ensure_password(&store);
+    let url = attach_connection_url(DEFAULT_PG_HOST, headless.port, &password);
+    install_engine_on_pool(&engine, &url, &data_dir).await;
+
+    state.set_attached(headless.port, headless.pid);
+    tracing::info!(
+        target: "fredo::pg_supervisor",
+        pid = headless.pid,
+        port = headless.port,
+        "attached to the headless-owned embedded PostgreSQL cluster"
+    );
+}
+
+/// Resolve a status snapshot to the readiness gate's outcome: `Some(port)` once a
+/// cluster is serving (`Ready` or `Attached`), `None` while `Starting` (keep
+/// waiting), and `Err` on `Failed`/`Disabled`. Pure so every state — including
+/// the CU-1 `Attached` — is unit-testable without a live app handle.
+fn readiness_outcome(view: &PgStatusView) -> Result<Option<u16>> {
+    match view.state {
+        PgState::Ready => Ok(Some(
+            view.port
+                .context("embedded PostgreSQL reported Ready without a bound port")?,
+        )),
+        PgState::Attached => Ok(Some(
+            view.port
+                .context("embedded PostgreSQL reported Attached without a bound port")?,
+        )),
+        PgState::Failed => Err(anyhow::anyhow!(
+            "{}",
+            view.error
+                .clone()
+                .unwrap_or_else(|| "embedded PostgreSQL failed".to_string())
+        )),
+        PgState::Disabled => Err(anyhow::anyhow!("embedded PostgreSQL is disabled")),
+        PgState::Starting => Ok(None),
+    }
+}
+
 /// The readiness gate later slices' stores block on (bounded).
 ///
-/// Returns the bound port on `Ready`; `Err` on `Disabled`, `Failed`, no managed
-/// supervisor, or after `bound` elapses.
+/// Returns the bound port on `Ready`/`Attached`; `Err` on `Disabled`, `Failed`,
+/// no managed supervisor, or after `bound` elapses.
 pub async fn await_ready(app: &AppHandle, bound: Duration) -> Result<u16> {
     let state = app
         .try_state::<Arc<PgSupervisorState>>()
@@ -635,23 +766,8 @@ pub async fn await_ready(app: &AppHandle, bound: Duration) -> Result<u16> {
     let deadline = Instant::now() + bound;
     loop {
         let view = rx.borrow_and_update().clone();
-        match view.state {
-            PgState::Ready => {
-                return view
-                    .port
-                    .context("embedded PostgreSQL reported Ready without a bound port");
-            }
-            PgState::Failed => {
-                return Err(anyhow::anyhow!(
-                    "{}",
-                    view.error
-                        .unwrap_or_else(|| "embedded PostgreSQL failed".to_string())
-                ));
-            }
-            PgState::Disabled => {
-                return Err(anyhow::anyhow!("embedded PostgreSQL is disabled"));
-            }
-            PgState::Starting => {}
+        if let Some(port) = readiness_outcome(&view)? {
+            return Ok(port);
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -731,6 +847,7 @@ pub async fn pg_supervisor_status(app: AppHandle) -> PgStatusView {
         error: None,
         log_path: log_path_for(&data_dir),
         data_dir,
+        attached: false,
     }
 }
 
@@ -967,6 +1084,7 @@ mod tests {
             error: None,
             data_dir: "C:/data/postgres".to_string(),
             log_path: log_path_for("C:/data/postgres"),
+            attached: false,
         };
         let json = serde_json::to_value(&ready).expect("serialize");
         assert_eq!(json["state"], "ready");
@@ -980,6 +1098,8 @@ mod tests {
                 .to_string()
         );
         assert!(json["error"].is_null());
+        // CU-1: the additive `attached` flag is present and false on Ready.
+        assert_eq!(json["attached"], false);
 
         assert_eq!(
             serde_json::to_value(PgState::Disabled).expect("serialize"),
@@ -990,8 +1110,120 @@ mod tests {
             "starting"
         );
         assert_eq!(
+            serde_json::to_value(PgState::Attached).expect("serialize"),
+            "attached",
+            "CU-1: the new variant serializes as \"attached\""
+        );
+        assert_eq!(
             serde_json::to_value(PgState::Failed).expect("serialize"),
             "failed"
+        );
+    }
+
+    // -- CU-1/ST-2: GUI attach ------------------------------------------------
+
+    /// CU-1/ST-2: `set_attached` publishes the headless cluster's port, marks
+    /// `attached: true`, and holds NO runtime/lock (the GUI never owns the
+    /// headless postmaster).
+    #[test]
+    fn set_attached_publishes_the_headless_cluster_without_owning_it() {
+        let state = PgSupervisorState::new(None, None, "C:/data/postgres".to_string());
+        assert_eq!(state.status.borrow().state, PgState::Starting);
+
+        state.set_attached(54321, 4242);
+
+        let view = state.status.borrow().clone();
+        assert_eq!(view.state, PgState::Attached);
+        assert!(view.attached, "attached is true while serving a headless cluster");
+        assert_eq!(view.port, Some(54321));
+        assert_eq!(view.pid, Some(4242), "the owning headless daemon pid");
+        assert_eq!(view.error, None);
+        assert_eq!(view.data_dir, "C:/data/postgres");
+        assert!(
+            state.runtime.lock().expect("runtime mutex").is_none(),
+            "an attach owns no runtime"
+        );
+        assert!(
+            state.lock.lock().expect("lock mutex").is_none(),
+            "an attach holds no lock"
+        );
+
+        let json = serde_json::to_value(&view).expect("serialize");
+        assert_eq!(json["state"], "attached");
+        assert_eq!(json["attached"], true);
+        assert_eq!(json["port"], 54321);
+    }
+
+    /// CU-1/ST-2: the readiness gate resolves EVERY state, including the new
+    /// `Attached` (returns the published port so gated store reads proceed).
+    #[test]
+    fn readiness_outcome_resolves_every_state_including_attached() {
+        let state = PgSupervisorState::new(None, None, "C:/data/postgres".to_string());
+        // Starting => keep waiting.
+        assert_eq!(
+            readiness_outcome(&state.status.borrow().clone()).expect("starting"),
+            None
+        );
+
+        // Attached => the headless cluster's port.
+        state.set_attached(54321, 4242);
+        assert_eq!(
+            readiness_outcome(&state.status.borrow().clone()).expect("attached"),
+            Some(54321)
+        );
+
+        // Ready => the owned cluster's port.
+        state.set_ready(1111, 2222);
+        assert_eq!(
+            readiness_outcome(&state.status.borrow().clone()).expect("ready"),
+            Some(1111)
+        );
+
+        // Failed => the structured error.
+        state.fail("readiness", &anyhow::anyhow!("connect refused after 62s"));
+        let error = readiness_outcome(&state.status.borrow().clone()).expect_err("failed");
+        assert!(error.to_string().contains("connect refused after 62s"), "{error}");
+
+        // Disabled => an error (no serving cluster).
+        let disabled = PgStatusView {
+            state: PgState::Disabled,
+            port: None,
+            pid: None,
+            error: None,
+            data_dir: String::new(),
+            log_path: None,
+            attached: false,
+        };
+        assert!(readiness_outcome(&disabled).is_err());
+    }
+
+    /// CU-1/ST-2: the shared pre-install leg is fail-closed — a forced pool
+    /// failure records the fallback reason and installs NOTHING.
+    #[tokio::test]
+    async fn install_engine_on_pool_fails_closed_on_a_forced_pool_failure() {
+        use crate::infrastructure::storage::engine::EngineHandle;
+        let _lock = SEAM_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        std::env::set_var(PG_POOL_FORCE_FAIL_ENV, "1");
+        let _guard = SeamEnvGuard;
+
+        let handle = EngineHandle::new_pending();
+        let state = StorageEngineState::new(handle, EngineChoice::Postgres);
+        let engine = Some(state.clone());
+
+        install_engine_on_pool(
+            &engine,
+            "postgresql://postgres:pw@127.0.0.1:1/postgres",
+            Path::new("C:/data"),
+        )
+        .await;
+
+        assert!(
+            state.fallback_reason().is_some(),
+            "a failed leg records the fail-closed reason"
+        );
+        assert!(
+            state.handle().engine().is_none(),
+            "a failed leg installs NOTHING (handle stays Pending)"
         );
     }
 
