@@ -33,8 +33,15 @@
 .PARAMETER IntervalSec
   Seconds to sleep between attempts. Default: 15.
 
+.PARAMETER DbPath
+  SQLite database path override (Spec #2944). Empty => the legacy fixed search
+  order (%APPDATA%\com.fredo.app, then %LOCALAPPDATA%\com.fredo.app). Pass an
+  isolated env's own DB (e.g. <env-root>/data/fredo.db) to poll that env.
+
 .EXAMPLE
   powershell -File .opencode/scripts/wait-telemetry.ps1 -Query "SELECT session_id, span_name FROM telemetry_spans WHERE span_name='fredo.session'" -Attempts 20 -IntervalSec 15
+.EXAMPLE
+  powershell -File .opencode/scripts/wait-telemetry.ps1 -Query "SELECT 1" -DbPath ".opencode/tmp/envs/spec2944/data/fredo.db" -Attempts 10 -IntervalSec 5
 #>
 
 param(
@@ -45,7 +52,10 @@ param(
   [int]$Attempts = 20,
 
   [ValidateRange(1, 3600)]
-  [int]$IntervalSec = 15
+  [int]$IntervalSec = 15,
+
+  # SQLite path override (Spec #2944). Empty => legacy fixed search order.
+  [string]$DbPath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -116,14 +126,23 @@ if (-not $sqlite3Bin) {
   exit 2
 }
 
-# -- Locate fredo.db (primary AppData path, then LOCALAPPDATA fallback) -------
-$dbPath = "$env:APPDATA\com.fredo.app\fredo.db"
-if (-not (Test-Path -LiteralPath $dbPath)) {
-  $dbPath = "$env:LOCALAPPDATA\com.fredo.app\fredo.db"
-}
-if (-not (Test-Path -LiteralPath $dbPath)) {
-  Write-Fail "fredo.db not found (searched %APPDATA%\com.fredo.app and %LOCALAPPDATA%\com.fredo.app). Run the Fredo app at least once to create it."
-  exit 2
+# -- Locate fredo.db (explicit -DbPath wins, then legacy AppData fallbacks) ---
+$dbPath = $null
+if ($DbPath) {
+  if (-not (Test-Path -LiteralPath $DbPath)) {
+    Write-Fail "fredo.db not found at the supplied -DbPath: $DbPath"
+    exit 2
+  }
+  $dbPath = $DbPath
+} else {
+  $dbPath = "$env:APPDATA\com.fredo.app\fredo.db"
+  if (-not (Test-Path -LiteralPath $dbPath)) {
+    $dbPath = "$env:LOCALAPPDATA\com.fredo.app\fredo.db"
+  }
+  if (-not (Test-Path -LiteralPath $dbPath)) {
+    Write-Fail "fredo.db not found (searched %APPDATA%\com.fredo.app and %LOCALAPPDATA%\com.fredo.app). Run the Fredo app at least once to create it."
+    exit 2
+  }
 }
 
 Write-Info "wait-telemetry: polling fredo.db ($dbPath) every ${IntervalSec}s, up to $Attempts attempt(s)" "Cyan"
