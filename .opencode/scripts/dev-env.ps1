@@ -18,10 +18,16 @@
               a corrupt cached localhost:<VitePort> response otherwise paints raw
               HTTP headers as the document (white screen) and survives restarts
               (observed #2770 rounds 2-5 on 4+ consecutive cold boots).
-  Down     -- Stop dev instance by killing the process tree.
+  Down     -- Stop dev instance. Env mode (-EnvId) stops ONLY that environment's
+              own manifest PIDs, image-guarded (R-3.1/R-3.3): no port-owner
+              enumeration, no global image-name kill. Legacy mode stops the
+              single instance by port owner.
   Status   -- Read-only check: running / starting / stopped.
   Restart  -- Down then Up.
   Logs     -- Tail process stdout/stderr.
+  Clean    -- Env mode only: stop the environment, then remove ONLY its
+              manifest, DB, and cache (R-3.2). Sibling environments are never
+              touched.
   Hygiene  -- Passthrough to process-hygiene.ps1 (see -Kill). Resolves the
              sibling copy next to this script first, then the served worktree
              copy .serve/<Spec>/.opencode/scripts/process-hygiene.ps1 when
@@ -103,13 +109,15 @@
   powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec 2835 -At 296f881
   powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec 2944 -EnvId spec2944 -EnvSlot 1
   powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec 2944 -EnvId spec2944 -ServingCheckout .serve/2944
+  powershell -File .opencode/scripts/dev-env.ps1 -Action Down -EnvId spec2944
+  powershell -File .opencode/scripts/dev-env.ps1 -Action Clean -EnvId spec2944
   powershell -File .opencode/scripts/dev-env.ps1 -Action Hygiene -Spec 2762
   powershell -File .opencode/scripts/dev-env.ps1 -Action Hygiene -Kill -Spec 2762
 #>
 
 param(
   [Parameter(Mandatory = $true)]
-  [ValidateSet("Up", "Down", "Status", "Restart", "Logs", "Hygiene")]
+  [ValidateSet("Up", "Down", "Status", "Restart", "Logs", "Clean", "Hygiene")]
   [string]$Action,
 
   [ValidateRange(1, [uint64]::MaxValue)]
@@ -326,9 +334,9 @@ function Get-PidByPort {
 }
 
 # Kill the process listening on $Port (and its tree), retrying because a
-# native-abort instance can survive a first /PID kill and keep the socket, and
-# re-running the targeted /IM fredo.exe pass covers an owner already absent from
-# Win32_Process enumeration. Returns $true when the port is free afterwards.
+# native-abort instance can survive a first /PID kill and keep the socket.
+# LEGACY single-env only -- the env-aware teardown never enumerates ports
+# (Spec #2944 R-3.3). Returns $true when the port is free afterwards.
 function Clear-Port {
   param([int]$Port)
 
@@ -340,7 +348,6 @@ function Clear-Port {
       Write-Log "Reclaiming port ${Port}: owner PID $owner (alive: $alive), attempt $attempt"
       Invoke-NativeQuiet taskkill /PID $owner /T /F | Out-Null
     }
-    Invoke-NativeQuiet taskkill /F /T /IM fredo.exe | Out-Null
     Start-Sleep -Milliseconds 800
   }
   return (-not (Test-Port $Port))
@@ -744,9 +751,198 @@ function Invoke-EnvUp {
   if (-not $httpReady) { $missing += "OTLP/HTTP :$OtlpHttpPort" }
   if (-not $appReady)  { $missing += "app process 'fredo' owning MCP :$McpPort" }
   Write-Log "ERROR: env '$EnvId' timed out after ${TimeoutSecs}s waiting for: $($missing -join ', ')" -Level ERROR
+  # Bounded hard-kill fallback (G-263): the readiness wait is wall-clock bounded;
+  # reap the failed launch's own manifest PIDs (image-guarded, PID-scoped).
+  Stop-EnvManifest -Path $ManifestPath | Out-Null
   Write-Log "Manifest left at $ManifestPath for teardown: dev-env.ps1 -Action Down -EnvId $EnvId" -Level WARN
   Write-Log "Check logs: powershell -File .opencode/scripts/dev-env.ps1 -Action Logs -EnvId $EnvId" -Level WARN
   exit 1
+}
+
+# -- Env-scoped teardown (Spec #2944 ST-5 / CU-C) ------------------------------
+
+# Role -> accepted live image name(s). A recorded manifest PID is killed ONLY
+# when its live image matches the role (the stale-PID guard, mirroring
+# features/llm_server/process.rs). An unknown role, a gone process, or a
+# mismatched image is NEVER killed -- so a stale/wrong manifest can never take
+# out an unrelated process (R-3.1/R-3.3). The three named roles (app/postgres/
+# llama) are exact; the dev-helper roles accept their launcher images.
+$script:RoleImage = @{
+  app      = @("fredo.exe")
+  postgres = @("postgres.exe")
+  llama    = @("llama-server.exe")
+  vite     = @("node.exe", "bun.exe")
+  launcher = @("cmd.exe", "powershell.exe", "pwsh.exe")
+}
+
+# Live image name (with .exe) for a PID, or $null when the process is gone /
+# unreadable. Uses Win32_Process so the name matches the role map exactly.
+function Get-ProcessImageName {
+  param([int]$ProcessId)
+  try {
+    $p = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction SilentlyContinue
+    if ($p -and $p.Name) { return [string]$p.Name }
+  } catch {}
+  return $null
+}
+
+function Test-RoleImageMatch {
+  param([string]$Role, [string]$Image)
+  if (-not $Role -or -not $Image) { return $false }
+  $expected = $script:RoleImage[$Role]
+  if (-not $expected) { return $false }
+  foreach ($e in @($expected)) {
+    if ($Image.Trim() -ieq $e) { return $true }
+  }
+  return $false
+}
+
+# Stop every process recorded in an env manifest: PID-scoped and image-guarded,
+# with a bounded wait (G-263) and a hard-kill fallback. NO port-owner
+# enumeration and NO global image-name kill (R-3.1/R-3.3). Returns $true when
+# every recorded process is gone.
+function Stop-EnvManifest {
+  param([string]$Path)
+
+  $manifest = Read-EnvManifest $Path
+  if (-not $manifest) {
+    Write-Log "No readable env manifest at $Path -- nothing to stop (safe no-op)."
+    return $true
+  }
+  $procs = @($manifest.processes)
+  if ($procs.Count -eq 0) {
+    Write-Log "env manifest $Path records no processes -- nothing to stop."
+    return $true
+  }
+
+  $targets = @()
+  foreach ($p in $procs) {
+    $procId = 0
+    if (-not [int]::TryParse([string]$p.pid, [ref]$procId) -or $procId -le 0) { continue }
+    $role = [string]$p.role
+    $image = Get-ProcessImageName $procId
+    if (-not $image) {
+      Write-Log "manifest $role PID $procId is gone -- skip"
+      continue
+    }
+    if (-not (Test-RoleImageMatch -Role $role -Image $image)) {
+      $expectedList = $script:RoleImage[$role]
+      if (-not $expectedList) {
+        Write-Log "REFUSING to kill PID $procId: manifest role '$role' is not a known role (R-3.3)." -Level WARN
+      } else {
+        Write-Log "REFUSING to kill PID $procId: role '$role' expects image '$($expectedList -join '/')' but live image is '$image' (stale/reused PID, R-3.3)." -Level WARN
+      }
+      continue
+    }
+    $targets += @{ pid = $procId; role = $role; image = $image }
+  }
+
+  if ($targets.Count -eq 0) {
+    Write-Log "No manifest process matched its role image -- nothing killed (safe no-op)."
+    return $true
+  }
+
+  # Bounded stop (G-263): a short graceful window (capped so a wedged console
+  # cannot stretch Down), then a /F hard-kill fallback with its own bound.
+  $boundSecs = [Math]::Min([Math]::Max($TimeoutSecs, 1), 5)
+  foreach ($t in $targets) {
+    Write-Log "Stopping env '$EnvId' $($t.role) PID $($t.pid) ($($t.image))..."
+    Invoke-NativeQuiet taskkill /PID $t.pid /T | Out-Null
+  }
+  $deadline = (Get-Date).AddSeconds($boundSecs)
+  while ((Get-Date) -lt $deadline) {
+    if (@($targets | Where-Object { Get-ProcessImageName $_.pid }).Count -eq 0) { break }
+    Start-Sleep -Milliseconds 500
+  }
+
+  # Hard-kill fallback for survivors, with its own bounded wait (G-263).
+  $survivors = @($targets | Where-Object { Get-ProcessImageName $_.pid })
+  if ($survivors.Count -gt 0) {
+    Write-Log "Graceful stop left $($survivors.Count) process(es) after ${boundSecs}s -- hard-kill fallback (taskkill /PID <pid> /T /F)." -Level WARN
+    foreach ($t in $survivors) {
+      Invoke-NativeQuiet taskkill /PID $t.pid /T /F | Out-Null
+    }
+    $deadline2 = (Get-Date).AddSeconds($boundSecs)
+    while ((Get-Date) -lt $deadline2) {
+      if (@($survivors | Where-Object { Get-ProcessImageName $_.pid }).Count -eq 0) { break }
+      Start-Sleep -Milliseconds 500
+    }
+  }
+
+  $left = @($targets | Where-Object { Get-ProcessImageName $_.pid })
+  if ($left.Count -gt 0) {
+    foreach ($t in $left) {
+      Write-Log "WARNING: env '$EnvId' $($t.role) PID $($t.pid) still alive after the hard-kill fallback." -Level WARN
+    }
+    return $false
+  }
+  Write-Log "env '$EnvId' processes stopped (manifest-scoped, image-guarded)."
+  return $true
+}
+
+# Env-scoped Down: ONLY the manifest's own PIDs (R-3.1). Refuses when the
+# manifest belongs to a different env (fail-closed, R-3.2 edge (c)).
+function Invoke-EnvDown {
+  if (-not (Test-Path -LiteralPath $ManifestPath)) {
+    Write-Log "env '$EnvId' has no manifest at $ManifestPath -- nothing to stop (safe no-op)."
+    return $true
+  }
+  $manifest = Read-EnvManifest $ManifestPath
+  if (-not $manifest) {
+    Write-Log "env '$EnvId' manifest at $ManifestPath is unreadable -- nothing to stop (safe no-op)." -Level WARN
+    return $true
+  }
+  if ($manifest.envId -and ([string]$manifest.envId -ne $EnvId)) {
+    Write-Log "ERROR: manifest $ManifestPath belongs to env '$($manifest.envId)', not '$EnvId' -- refusing to stop another env's processes (R-3.1)." -Level ERROR
+    return $false
+  }
+  return (Stop-EnvManifest -Path $ManifestPath)
+}
+
+# Remove one env artifact, refusing the repo root and any filesystem root.
+function Remove-EnvPath {
+  param([string]$Path)
+  if ([string]::IsNullOrWhiteSpace($Path)) { return }
+  try { $full = [System.IO.Path]::GetFullPath($Path) } catch { return }
+  if ($full -eq $script:RepoRoot) {
+    Write-Log "REFUSING to remove the repo root ($full)." -Level WARN
+    return
+  }
+  if ($full -eq [System.IO.Path]::GetPathRoot($full)) {
+    Write-Log "REFUSING to remove a filesystem root ($full)." -Level WARN
+    return
+  }
+  if (-not (Test-Path -LiteralPath $full)) { return }
+  try { Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+  if (Test-Path -LiteralPath $full) {
+    Write-Log "WARNING: could not fully remove $full (locked/in use)." -Level WARN
+  } else {
+    Write-Log "Removed $full"
+  }
+}
+
+# Env-scoped Clean: stop the env, then remove ONLY its manifest, DB, and cache
+# (R-3.2). Sibling environments' paths are distinct and never touched.
+function Invoke-EnvClean {
+  $stopped = Invoke-EnvDown
+  $artifacts = @(
+    $ManifestPath, $EvidencePath,
+    (Join-Path $EnvRoot "tauri.env.conf.json"),
+    $DataDir, $PgDataDir, $PgLockDir, $DbClientDir,
+    $WebviewDir, $CompanionDir, $LogDir
+  )
+  foreach ($a in $artifacts) { Remove-EnvPath $a }
+  # Drop the env root itself only when it is now empty (never a shared dir).
+  if ((Test-Path -LiteralPath $EnvRoot) -and
+      (@(Get-ChildItem -LiteralPath $EnvRoot -Force -ErrorAction SilentlyContinue).Count -eq 0)) {
+    Remove-EnvPath $EnvRoot
+  }
+  if (-not $stopped) {
+    Write-Log "WARNING: env '$EnvId' clean removed its artifacts but some recorded processes were still alive." -Level WARN
+    return $false
+  }
+  Write-Log "env '$EnvId' cleaned (manifest, DB, cache removed)."
+  return $true
 }
 
 # -- Environment resolution (continues) ---------------------------------------
@@ -901,6 +1097,10 @@ switch ($Action) {
     }
 
     # Kill any stale instance from a previous (possibly mismatched) run.
+    # LEGACY single-env only: PID-scoped port-owner kills. NO global
+    # image-name kill (Spec #2944 R-3.3 / AC3) -- an image-name sweep would
+    # terminate sibling environments. A native-abort survivor is left to
+    # process-hygiene.ps1 -KillOrphans (repo-scoped, G-280/G-297).
     foreach ($port in @($McpPort, $VitePort, 4317, 4318)) {
       $stalePid = Get-PidByPort $port
       if ($stalePid) {
@@ -909,11 +1109,6 @@ switch ($Action) {
         Start-Sleep -Seconds 1
       }
     }
-    # A terminating fredo.exe can hold its ports and its log handles while
-    # being absent from Win32_Process enumeration (observed #2876: a
-    # native-abort instance survived /PID kills and kept :9223/:4318 plus
-    # dev-env-stdout.log). /IM reaches it by image name regardless.
-    Invoke-NativeQuiet taskkill /F /T /IM fredo.exe | Out-Null
 
     Write-Log "Starting pnpm dev:tauri (repo root on spec/$Spec @ $($tip.Substring(0, [Math]::Min(8, $tip.Length))))..."
 
@@ -999,12 +1194,22 @@ switch ($Action) {
     if (-not $mcpReady)  { $missing += "MCP Bridge :$McpPort" }
     if ($viteReady -and $mcpReady -and -not $appReady) { $missing += "app process 'fredo' (ports bound but the app is not running -- a failed/absent launch is NOT ready)" }
     Write-Log "Timed out after ${TimeoutSecs}s waiting for: $($missing -join ', ')" -Level ERROR
+    # Hard-kill fallback (G-263): the readiness wait is wall-clock bounded; reap
+    # the failed launch's own tree by PID (never a global image-name kill).
+    if ($proc -and $proc.Id) { Invoke-NativeQuiet taskkill /PID $proc.Id /T /F | Out-Null }
     Write-Log "Check logs: powershell -File .opencode/scripts/dev-env.ps1 -Action Logs" -Level WARN
     exit 1
   }
 
   # -- Down --------------------------------------------------------------------
   "Down" {
+    if ($IsEnvMode) {
+      # Spec #2944 ST-5: env-scoped teardown -- ONLY this environment's own
+      # manifest PIDs, image-guarded. No port-owner enumeration, no global
+      # image-name kill (R-3.1/R-3.3). Invoke-EnvDown returns $true when done.
+      if (Invoke-EnvDown) { exit 0 } else { exit 1 }
+    }
+
     $killed = $false
 
     foreach ($port in @($McpPort, $VitePort, 4317, 4318)) {
@@ -1016,10 +1221,9 @@ switch ($Action) {
       }
     }
 
-    # Terminating fredo.exe instances can hold ports/log handles while being
-    # absent from Win32_Process enumeration; /IM reaches them by image name
-    # (observed #2876: a native-abort instance survived port-owner /PID kills).
-    Invoke-NativeQuiet taskkill /F /T /IM fredo.exe | Out-Null
+    # LEGACY single-env only. NO global image-name kill (Spec #2944 R-3.3 /
+    # AC3): an image-name sweep would terminate sibling environments. A
+    # native-abort survivor is left to process-hygiene.ps1 -KillOrphans.
 
     if (-not $killed) {
       Write-Log "No dev:tauri instance found on ports $VitePort / $McpPort"
@@ -1057,6 +1261,18 @@ switch ($Action) {
         }
       }
     }
+  }
+
+  # -- Clean -------------------------------------------------------------------
+  "Clean" {
+    # Spec #2944 ST-5: env mode only. Stop the environment (manifest-scoped),
+    # then remove ONLY its manifest/DB/cache (R-3.2). Legacy mode has no
+    # per-env artifacts -- use -Action Down there.
+    if (-not $IsEnvMode) {
+      Write-Log "ERROR: -Action Clean requires env mode (-EnvId <id> / -EnvSlot <n> / -ServingCheckout). Use -Action Down for the legacy single-env instance." -Level ERROR
+      exit 1
+    }
+    if (Invoke-EnvClean) { exit 0 } else { exit 1 }
   }
 
   # -- Status ------------------------------------------------------------------
