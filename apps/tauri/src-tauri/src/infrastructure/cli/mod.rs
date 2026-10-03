@@ -8,6 +8,7 @@ use std::io::IsTerminal;
 
 use crate::infrastructure::ipc::{send_cli_command, CliCommand, CliResponse};
 use commands::emit::EmitArgs;
+use commands::ingest::IngestArgs;
 use commands::open_app::OpenAppArgs;
 use commands::open_terminal::OpenTerminalArgs;
 use commands::setup::SetupArgs;
@@ -33,6 +34,19 @@ pub enum Commands {
     OpenApp(OpenAppArgs),
     /// Open the Terminal window, optionally starting a CLI in a folder
     OpenTerminal(OpenTerminalArgs),
+    /// Run the headless ingest daemon (embedded PostgreSQL + OTLP receivers)
+    ///
+    /// Owns the embedded PostgreSQL cluster (shared data dir + shared
+    /// control-plane credential) and serves OTLP/gRPC 127.0.0.1:4317 and
+    /// OTLP/HTTP 127.0.0.1:4318, feeding every received span through the existing
+    /// row pipeline. Runs until SIGINT, the --shutdown-file appears, or --run-ms
+    /// elapses; every teardown is bounded.
+    ///
+    /// Exit codes:
+    ///   0  graceful shutdown
+    ///   1  fail-fast (the data-dir lock is held, or startup failed)
+    ///   2  reserved (app-not-running)
+    Ingest(IngestArgs),
 }
 
 /// Run the CLI. Connects to the running Fredo app over the local socket,
@@ -44,42 +58,48 @@ pub fn run(cli: Cli) -> Result<()> {
 }
 
 async fn run_async(cli: Cli) -> Result<()> {
-    // Setup commands run locally without requiring the app to be running
-    if let Commands::Setup(ref args) = cli.command {
-        return commands::setup::run_setup(args).await;
-    }
+    // Setup and Ingest run locally without requiring the app to be running. Both
+    // are handled BEFORE the IPC dispatch: Setup is a bounded one-shot; Ingest is
+    // a long-lived daemon that owns its own embedded cluster and receivers.
+    match cli.command {
+        Commands::Setup(ref args) => return commands::setup::run_setup(args).await,
+        Commands::Ingest(args) => {
+            return crate::features::pg_supervisor::headless::run_ingest_daemon(args).await;
+        }
+        other => {
+            let ipc_cmd = build_ipc_command(other);
+            let response = send_cli_command(&ipc_cmd).await?;
 
-    let ipc_cmd = build_ipc_command(cli.command);
-    let response = send_cli_command(&ipc_cmd).await?;
-
-    match exit_code_for_response(response.as_ref()) {
-        0 => {
-            if let Some(resp) = response {
-                match resp.data {
-                    Some(data) => println!("{}", serde_json::to_string_pretty(&data)?),
-                    None => println!("ok"),
+            match exit_code_for_response(response.as_ref()) {
+                0 => {
+                    if let Some(resp) = response {
+                        match resp.data {
+                            Some(data) => println!("{}", serde_json::to_string_pretty(&data)?),
+                            None => println!("ok"),
+                        }
+                    }
+                }
+                1 => {
+                    // Machine-readable failure data (e.g. the app-open outcome) goes to
+                    // stdout; the human-readable message stays on the log line.
+                    if let Some(data) = response.as_ref().and_then(|resp| resp.data.clone()) {
+                        println!("{}", serde_json::to_string_pretty(&data)?);
+                    }
+                    let message = response
+                        .as_ref()
+                        .and_then(|resp| resp.message.clone())
+                        .unwrap_or_else(|| "unknown error".to_string());
+                    tracing::error!(target: "fredo::cli", message = %message, "CLI error response");
+                    std::process::exit(1);
+                }
+                _ => {
+                    if std::io::stderr().is_terminal() {
+                        tracing::error!(target: "fredo::cli", "IPC socket not found");
+                        tracing::info!(target: "fredo::cli", "Tip: run `fredo` to launch the desktop app.");
+                    }
+                    std::process::exit(2);
                 }
             }
-        }
-        1 => {
-            // Machine-readable failure data (e.g. the app-open outcome) goes to
-            // stdout; the human-readable message stays on the log line.
-            if let Some(data) = response.as_ref().and_then(|resp| resp.data.clone()) {
-                println!("{}", serde_json::to_string_pretty(&data)?);
-            }
-            let message = response
-                .as_ref()
-                .and_then(|resp| resp.message.clone())
-                .unwrap_or_else(|| "unknown error".to_string());
-            tracing::error!(target: "fredo::cli", message = %message, "CLI error response");
-            std::process::exit(1);
-        }
-        _ => {
-            if std::io::stderr().is_terminal() {
-                tracing::error!(target: "fredo::cli", "IPC socket not found");
-                tracing::info!(target: "fredo::cli", "Tip: run `fredo` to launch the desktop app.");
-            }
-            std::process::exit(2);
         }
     }
 
@@ -131,6 +151,10 @@ fn build_ipc_command(cmd: Commands) -> CliCommand {
         Commands::Setup(_) => {
             // Setup commands are handled locally in run_async, not via IPC.
             unreachable!("Setup command should be handled before IPC dispatch")
+        }
+        Commands::Ingest(_) => {
+            // The headless daemon is handled locally in run_async, not via IPC.
+            unreachable!("Ingest command should be handled before IPC dispatch")
         }
     }
 }
@@ -296,6 +320,56 @@ mod tests {
         assert_eq!(exit_code_for_parse_error(ErrorKind::InvalidValue), 1);
         assert_eq!(exit_code_for_parse_error(ErrorKind::MissingSubcommand), 1);
         assert_eq!(exit_code_for_parse_error(ErrorKind::ArgumentConflict), 1);
+    }
+
+    /// ST-5 / F-14 (G-254): `fredo ingest --help` names EVERY flag, its default,
+    /// and documents exit codes 0/1/2 — the declared help is the shipped surface.
+    #[test]
+    fn cli_help_lists_ingest_and_names_every_flag_default_and_exit_code() {
+        use clap::CommandFactory;
+
+        let mut root = Cli::command();
+        let help = root.render_long_help().to_string();
+        assert!(help.contains("ingest"), "`fredo --help` must list ingest:\n{help}");
+
+        let sub = root
+            .find_subcommand_mut("ingest")
+            .expect("ingest is a registered subcommand");
+        let sub_help = sub.render_long_help().to_string();
+        for flag in [
+            "--data-dir",
+            "--pg-data-dir",
+            "--lock-dir",
+            "--grpc-port",
+            "--http-port",
+            "--run-ms",
+            "--shutdown-file",
+        ] {
+            assert!(
+                sub_help.contains(flag),
+                "`fredo ingest --help` must name {flag}:\n{sub_help}"
+            );
+        }
+        for env_name in [
+            "FREDO_DATA_DIR",
+            "FREDO_PG_DATA_DIR",
+            "FREDO_PG_LOCK_DIR",
+            "FREDO_INGEST_GRPC_PORT",
+            "FREDO_INGEST_HTTP_PORT",
+            "FREDO_INGEST_RUN_MS",
+            "FREDO_INGEST_SHUTDOWN_FILE",
+        ] {
+            assert!(
+                sub_help.contains(env_name),
+                "`fredo ingest --help` must name {env_name}:\n{sub_help}"
+            );
+        }
+        assert!(sub_help.contains("4317"), "must name the gRPC default:\n{sub_help}");
+        assert!(sub_help.contains("4318"), "must name the HTTP default:\n{sub_help}");
+        assert!(sub_help.contains("Exit codes"), "must document exit codes:\n{sub_help}");
+        assert!(sub_help.contains("0  graceful shutdown"), "{sub_help}");
+        assert!(sub_help.contains("1  fail-fast"), "{sub_help}");
+        assert!(sub_help.contains("2  reserved"), "{sub_help}");
     }
 
     #[test]

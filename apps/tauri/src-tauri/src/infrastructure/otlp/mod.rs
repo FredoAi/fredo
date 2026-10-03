@@ -44,9 +44,26 @@ pub struct ReceiverContext {
 /// and cancels the sibling, so a start failure is surfaced clearly rather than
 /// leaving a half-started receiver.
 pub async fn start_with(ctx: Arc<ReceiverContext>) -> anyhow::Result<()> {
+    start_with_ports(ctx, grpc::DEFAULT_GRPC_PORT, http::DEFAULT_HTTP_PORT).await
+}
+
+/// Serve both OTLP receivers on EXPLICIT loopback ports (Spec #2992 ST-5).
+///
+/// The headless `fredo ingest` daemon resolves the `--grpc-port`/`--http-port`
+/// (or `FREDO_INGEST_GRPC_PORT`/`FREDO_INGEST_HTTP_PORT`) precedence itself and
+/// passes the effective ports here, so the daemon never mutates the process
+/// environment (G-296). [`start_with`] keeps the GUI's default ports.
+pub async fn start_with_ports(
+    ctx: Arc<ReceiverContext>,
+    grpc_port: u16,
+    http_port: u16,
+) -> anyhow::Result<()> {
     let grpc_ctx = Arc::clone(&ctx);
     let http_ctx = Arc::clone(&ctx);
-    tokio::try_join!(grpc::start_with(grpc_ctx), http::start_with(http_ctx))?;
+    tokio::try_join!(
+        grpc::start_with_on_port(grpc_ctx, grpc_port),
+        http::start_with_on_port(http_ctx, http_port)
+    )?;
     Ok(())
 }
 

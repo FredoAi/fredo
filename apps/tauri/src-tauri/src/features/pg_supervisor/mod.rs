@@ -233,6 +233,7 @@ pub const PG_DEATH_WAIT_BOUND: Duration = Duration::from_secs(20);
 
 pub mod acquisition; // S1/S2/S3 (#2978): acquisition mode + pinned archive
 pub mod descriptor; // CU-1/ST-1 (#2992): headless daemon descriptor
+pub mod headless; // ST-5 (#2992): the `fredo ingest` daemon
 pub mod release_gate; // S6 (#2978): cutover release gate
 pub mod runtime; // ST-1
 pub mod sweep; // ST-2

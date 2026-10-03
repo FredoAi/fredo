@@ -348,8 +348,16 @@ pub(crate) fn otlp_logs_to_records(request: &ExportLogsServiceRequest) -> Vec<Lo
 
 // ── Server startup ────────────────────────────────────────────────────────────
 
+/// The default loopback gRPC OTLP port (unchanged from the pre-#2992 receiver).
+pub const DEFAULT_GRPC_PORT: u16 = 4317;
+
 pub async fn start_with(ctx: Arc<ReceiverContext>) -> anyhow::Result<()> {
-    let addr = "127.0.0.1:4317".parse()?;
+    start_with_on_port(ctx, DEFAULT_GRPC_PORT).await
+}
+
+/// Serve the gRPC receiver on an explicit loopback `port` (Spec #2992 ST-5).
+pub async fn start_with_on_port(ctx: Arc<ReceiverContext>, port: u16) -> anyhow::Result<()> {
+    let addr = format!("127.0.0.1:{port}").parse()?;
 
     tracing::info!(target: "fredo::otlp", addr = %addr, "gRPC receiver listening");
 

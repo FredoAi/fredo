@@ -198,6 +198,24 @@ impl PgRuntime {
         )
     }
 
+    /// Build a runtime rooted at EXPLICIT data/install dirs (Spec #2992 ST-5).
+    ///
+    /// The headless `fredo ingest` daemon resolves the CLI-flag > env > default
+    /// precedence itself (G-296) and therefore passes the resolved PostgreSQL data
+    /// and distribution dirs explicitly instead of mutating the process
+    /// environment (the #2989 `set_var` failure). Every other setting — the
+    /// ephemeral loopback port, the finite control timeout, the Q-17 log config,
+    /// and the FS-3 stop-hang seam — is identical to [`Self::with_kill`].
+    pub fn with_paths(data_dir: &Path, install_dir: &Path, password: String) -> Self {
+        Self::with_dirs(
+            data_dir,
+            install_dir,
+            password,
+            kill_pid_tree,
+            pg_stop_with_env_hook,
+        )
+    }
+
     /// Full constructor with explicit data/install dirs and BOTH injectable seams
     /// (**FS-1**/**FS-2**). Private: [`Self::new`]/[`Self::with_kill`] are the
     /// production and retained seams; the unit tests reach it as a child module.

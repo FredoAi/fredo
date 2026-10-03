@@ -36,6 +36,8 @@ use crate::infrastructure::otlp::ReceiverContext;
 #[derive(Clone)]
 struct OtlpState {
     ctx: std::sync::Arc<ReceiverContext>,
+    /// The loopback port this server is bound to (echoed by `/health`).
+    http_port: u16,
 }
 
 // ── Handler helpers ───────────────────────────────────────────────────────────
@@ -220,16 +222,27 @@ async fn handle_logs(
 // ── Health + test endpoints ───────────────────────────────────────────────────
 
 /// GET /health — confirms the HTTP receiver is up.
-async fn handle_health() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "status": "ok", "receiver": "fredo-otlp-http", "port": 4318 }))
+async fn handle_health(State(state): State<OtlpState>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "status": "ok", "receiver": "fredo-otlp-http", "port": state.http_port }))
 }
 
 // ── Server startup ────────────────────────────────────────────────────────────
 
-pub async fn start_with(ctx: std::sync::Arc<ReceiverContext>) -> anyhow::Result<()> {
-    let addr: std::net::SocketAddr = "127.0.0.1:4318".parse()?;
+/// The default loopback HTTP OTLP port (unchanged from the pre-#2992 receiver).
+pub const DEFAULT_HTTP_PORT: u16 = 4318;
 
-    let state = OtlpState { ctx };
+pub async fn start_with(ctx: std::sync::Arc<ReceiverContext>) -> anyhow::Result<()> {
+    start_with_on_port(ctx, DEFAULT_HTTP_PORT).await
+}
+
+/// Serve the HTTP receiver on an explicit loopback `port` (Spec #2992 ST-5).
+pub async fn start_with_on_port(
+    ctx: std::sync::Arc<ReceiverContext>,
+    port: u16,
+) -> anyhow::Result<()> {
+    let addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse()?;
+
+    let state = OtlpState { ctx, http_port: port };
 
     let router = Router::new()
         .route("/health",     get(handle_health))
