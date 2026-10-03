@@ -11,7 +11,6 @@
 /// `telemetry_logs` (Spec #1499, GA-5/6/7).
 use std::sync::Arc;
 
-use tauri::{AppHandle, Manager};
 use tonic::{Request, Response, Status};
 
 use opentelemetry_proto::tonic::collector::{
@@ -32,15 +31,14 @@ use opentelemetry_proto::tonic::common::v1::{any_value, AnyValue, KeyValue};
 use opentelemetry_proto::tonic::metrics::v1 as otlp_metrics;
 
 use crate::infrastructure::comm::event::Transport;
-use crate::infrastructure::rtdb::ingest::IngestClassifierState;
 use crate::infrastructure::telemetry::metrics_collector::{MetricPoint, MetricType, SpanStoreMetricsExt};
 use crate::infrastructure::otlp::raw::raw_spans_from_export;
-use crate::infrastructure::storage::span_store::SpanStore;
+use crate::infrastructure::otlp::ReceiverContext;
 use crate::infrastructure::telemetry::log::LogRecord;
 
 // ── TraceService ──────────────────────────────────────────────────────────────
 
-pub struct OtlpTraceService(pub AppHandle);
+pub struct OtlpTraceService(pub Arc<ReceiverContext>);
 
 #[tonic::async_trait]
 impl TraceService for OtlpTraceService {
@@ -60,7 +58,7 @@ impl TraceService for OtlpTraceService {
         // R1/R5: Raw span ingestion on receipt — persist every span BEFORE and
         // independent of delivery processing. Insert failure logs-and-continues
         // and never fails the export response or blocks delivery (R11).
-        let store = self.0.state::<Arc<SpanStore>>();
+        let store = &self.0.span_store;
         let raw_spans = raw_spans_from_export(&req, "otlp_grpc");
         match store.insert_raw_spans(&raw_spans).await {
             Ok(n) => tracing::info!(target: "fredo::otlp", inserted = n, "raw OTLP spans persisted"),
@@ -76,7 +74,7 @@ impl TraceService for OtlpTraceService {
         // from the export — unconditionally, never gated by subscriptions
         // (R-4a). Log-and-continue: a classifier failure never affects the
         // export response.
-        let classifier = self.0.state::<IngestClassifierState>();
+        let classifier = &self.0.classifier;
         let rows = classifier.ingest_otlp(Transport::OtlpGrpc, &json_value).await;
         tracing::debug!(target: "fredo::rtdb::ingest", rows = rows, "gRPC export classified into RTDB rows");
 
@@ -88,7 +86,7 @@ impl TraceService for OtlpTraceService {
 
 // ── MetricsService ────────────────────────────────────────────────────────────
 
-pub struct OtlpMetricsService(pub AppHandle);
+pub struct OtlpMetricsService(pub Arc<ReceiverContext>);
 
 #[tonic::async_trait]
 impl MetricsService for OtlpMetricsService {
@@ -100,7 +98,7 @@ impl MetricsService for OtlpMetricsService {
         let points = otlp_metrics_to_points(&request);
         if !points.is_empty() {
             // Spec #1499 (GA-7): persist OTLP metrics to telemetry_metrics.
-            let store = self.0.state::<Arc<SpanStore>>();
+            let store = &self.0.span_store;
             match store.insert_metrics(&points).await {
                 Ok(n) => tracing::info!(target: "fredo::otlp", inserted = n, "OTLP metrics persisted"),
                 Err(e) => tracing::error!(target: "fredo::otlp", error = %e, "OTLP metrics insert failed"),
@@ -114,7 +112,7 @@ impl MetricsService for OtlpMetricsService {
 
 // ── LogsService ───────────────────────────────────────────────────────────────
 
-pub struct OtlpLogsService(pub AppHandle);
+pub struct OtlpLogsService(pub Arc<ReceiverContext>);
 
 #[tonic::async_trait]
 impl LogsService for OtlpLogsService {
@@ -126,7 +124,7 @@ impl LogsService for OtlpLogsService {
         let records = otlp_logs_to_records(&request);
         if !records.is_empty() {
             // Spec #1499 (GA-5/GA-6): persist OTLP log records / events to telemetry_logs.
-            let store = self.0.state::<Arc<SpanStore>>();
+            let store = &self.0.span_store;
             match store.insert_logs(&records).await {
                 Ok(n) => tracing::info!(target: "fredo::otlp", inserted = n, "OTLP log records persisted"),
                 Err(e) => tracing::error!(target: "fredo::otlp", error = %e, "OTLP log insert failed"),
@@ -350,15 +348,15 @@ pub(crate) fn otlp_logs_to_records(request: &ExportLogsServiceRequest) -> Vec<Lo
 
 // ── Server startup ────────────────────────────────────────────────────────────
 
-pub async fn start(app: AppHandle) -> anyhow::Result<()> {
+pub async fn start_with(ctx: Arc<ReceiverContext>) -> anyhow::Result<()> {
     let addr = "127.0.0.1:4317".parse()?;
 
     tracing::info!(target: "fredo::otlp", addr = %addr, "gRPC receiver listening");
 
     tonic::transport::Server::builder()
-        .add_service(TraceServiceServer::new(OtlpTraceService(app.clone())))
-        .add_service(MetricsServiceServer::new(OtlpMetricsService(app.clone())))
-        .add_service(LogsServiceServer::new(OtlpLogsService(app)))
+        .add_service(TraceServiceServer::new(OtlpTraceService(Arc::clone(&ctx))))
+        .add_service(MetricsServiceServer::new(OtlpMetricsService(Arc::clone(&ctx))))
+        .add_service(LogsServiceServer::new(OtlpLogsService(ctx)))
         .serve(addr)
         .await?;
 
@@ -587,5 +585,43 @@ mod tests {
         };
         let records = otlp_logs_to_records(&request);
         assert!(records.is_empty());
+    }
+
+    // ── ST-3 (R-1): the trace service consumes ReceiverContext, no AppHandle ──
+
+    #[tokio::test]
+    async fn trace_service_consumes_receiver_context_without_apphandle() {
+        use crate::infrastructure::otlp::test_support::receiver_context;
+        use opentelemetry_proto::tonic::trace::v1::{
+            ResourceSpans, ScopeSpans, Span as OtlpSpan,
+        };
+
+        let service = OtlpTraceService(receiver_context());
+        let request = ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                resource: None,
+                scope_spans: vec![ScopeSpans {
+                    scope: None,
+                    spans: vec![OtlpSpan {
+                        name: "my.llm".to_string(),
+                        trace_id: vec![0x22; 16],
+                        span_id: vec![0x11; 8],
+                        attributes: vec![kv(
+                            "session.id",
+                            any_value::Value::StringValue("sess-ctx".to_string()),
+                        )],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let response = service.export(Request::new(request)).await;
+        assert!(
+            response.is_ok(),
+            "the export must succeed AppHandle-free (raw insert + classification log-and-continue)"
+        );
     }
 }
