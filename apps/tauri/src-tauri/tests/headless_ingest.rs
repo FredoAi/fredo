@@ -80,19 +80,17 @@ const SHUTDOWN_BOUND: Duration = Duration::from_secs(90);
 const PROBE_BOUND: Duration = Duration::from_millis(500);
 
 /// Repo root (`<repo>/apps/tauri/src-tauri` → up three levels).
+///
+/// Deliberately NOT canonicalized: on Windows `canonicalize()` returns a
+/// `\\?\C:\…` verbatim path, and `initdb` rejects the `\\?\` prefix (it tries to
+/// create `//?/C:`). The spike's scratch-dir rule keeps the `..` segments for the
+/// same reason.
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
         .join("..")
-        .canonicalize()
-        .unwrap_or_else(|_| {
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("..")
-                .join("..")
-                .join("..")
-                .to_path_buf()
-        })
+        .to_path_buf()
 }
 
 /// `.opencode/tmp/2992/st8-e2e` — this test's isolated scratch root.
@@ -132,43 +130,47 @@ impl DaemonGuard {
         Self { child: Some(child) }
     }
 
-    fn child_mut(&mut self) -> &mut Child {
-        self.child.as_mut().expect("daemon child is present")
-    }
-
     fn is_running(&mut self) -> bool {
-        matches!(self.child_mut().try_wait(), Ok(None))
+        self.child
+            .as_mut()
+            .map(|child| matches!(child.try_wait(), Ok(None)))
+            .unwrap_or(false)
     }
 
     fn pid(&self) -> Option<u32> {
         self.child.as_ref().and_then(Child::id)
     }
 
+    /// Reap the child if it has already exited; `None` while it still runs.
+    fn try_exit(&mut self) -> Option<ExitStatus> {
+        let status = self
+            .child
+            .as_mut()
+            .and_then(|child| child.try_wait().ok().flatten());
+        if status.is_some() {
+            self.child = None;
+        }
+        status
+    }
+
     /// Wait up to `bound` for exit; on expiry hard-kill and reap (bounded).
     async fn wait_bounded(&mut self, bound: Duration) -> Result<ExitStatus, String> {
-        match tokio::time::timeout(bound, self.child_mut().wait()).await {
-            Ok(Ok(status)) => {
-                self.child = None;
-                Ok(status)
-            }
+        let Some(mut child) = self.child.take() else {
+            return Err("the daemon has already exited".to_string());
+        };
+        match tokio::time::timeout(bound, child.wait()).await {
+            Ok(Ok(status)) => Ok(status),
             Ok(Err(error)) => {
-                self.hard_kill().await;
+                let _ = child.start_kill();
+                let _ = tokio::time::timeout(Duration::from_secs(10), child.wait()).await;
                 Err(format!("waiting for the daemon failed: {error}"))
             }
             Err(_) => {
-                self.hard_kill().await;
+                let _ = child.start_kill();
+                let _ = tokio::time::timeout(Duration::from_secs(10), child.wait()).await;
                 Err(format!("the daemon did not exit within {bound:?}"))
             }
         }
-    }
-
-    /// Hard-kill the direct child and reap it under a small finite bound.
-    async fn hard_kill(&mut self) {
-        if let Some(child) = self.child.as_mut() {
-            let _ = child.start_kill();
-            let _ = tokio::time::timeout(Duration::from_secs(10), child.wait()).await;
-        }
-        self.child = None;
     }
 }
 
@@ -245,12 +247,24 @@ fn spawn_daemon(bin: &str, ctx: &Ctx, label: &str) -> (DaemonGuard, PathBuf) {
     (DaemonGuard::new(child), stderr_path)
 }
 
-/// Poll for the descriptor up to `bound`.
-async fn wait_for_descriptor(path: &Path, bound: Duration) -> Result<HeadlessDescriptor, String> {
+/// Poll for the descriptor up to `bound`, failing fast if the daemon exits first
+/// (so a dead child is never waited on for the full readiness bound, G-263).
+async fn wait_for_descriptor_or_exit(
+    path: &Path,
+    bound: Duration,
+    daemon: &mut DaemonGuard,
+    stderr_path: &Path,
+) -> Result<HeadlessDescriptor, String> {
     let deadline = Instant::now() + bound;
     loop {
         if let Some(descriptor) = read_descriptor(path) {
             return Ok(descriptor);
+        }
+        if let Some(status) = daemon.try_exit() {
+            let stderr = std::fs::read_to_string(stderr_path).unwrap_or_default();
+            return Err(format!(
+                "the daemon exited early with {status:?} before publishing the descriptor; stderr: {stderr}"
+            ));
         }
         if Instant::now() >= deadline {
             return Err(format!(
@@ -391,9 +405,15 @@ fn assert_lock_released(lock_dir: &Path) {
 
 /// Legs (a) and (c): boot, OTLP delivery + row persistence, lock-conflict
 /// fail-fast. Returns the daemon's PG port for leg (b).
-async fn scenario(bin: &str, ctx: &Ctx, daemon1: &mut DaemonGuard) -> Result<u16, String> {
+async fn scenario(
+    bin: &str,
+    ctx: &Ctx,
+    daemon1: &mut DaemonGuard,
+    stderr1: &Path,
+) -> Result<u16, String> {
     // ── (a) readiness ────────────────────────────────────────────────────────
-    let descriptor = wait_for_descriptor(&ctx.desc_path, READINESS_BOUND).await?;
+    let descriptor =
+        wait_for_descriptor_or_exit(&ctx.desc_path, READINESS_BOUND, daemon1, stderr1).await?;
     if descriptor.port == 0 {
         return Err("the descriptor published a zero port".to_string());
     }
@@ -544,11 +564,11 @@ async fn headless_ingest_end_to_end() {
     let bin = env!("CARGO_BIN_EXE_fredo");
     let pg_before = postgres_pids().await;
 
-    let (mut daemon1, _stderr1) = spawn_daemon(bin, &ctx, "daemon1");
+    let (mut daemon1, stderr1) = spawn_daemon(bin, &ctx, "daemon1");
 
     // Run the scenario; teardown is guaranteed on EVERY path (leg (b) when the
     // scenario succeeded, the kill-on-drop guard otherwise).
-    let result = scenario(bin, &ctx, &mut daemon1).await;
+    let result = scenario(bin, &ctx, &mut daemon1, &stderr1).await;
 
     match result {
         Ok(port) => {
