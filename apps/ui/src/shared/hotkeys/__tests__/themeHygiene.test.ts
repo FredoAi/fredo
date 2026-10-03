@@ -30,6 +30,12 @@ const ANNOUNCER = 'src/shared/hotkeys/announcer.tsx';
 const KEYBOARD_BAR = 'src/shared/hotkeys/KeyboardBar.tsx';
 const KEYBOARD_BAR_GEOMETRY = 'src/shared/hotkeys/keyboardBarGeometry.ts';
 const BOTTOM_STACK = 'src/shared/hotkeys/bottomStack.ts';
+// Spec #2960 ST-5 — the S3 cluster + its three integrated surfaces obey the SAME
+// token/var hygiene and single-live-region discipline as the shipped surfaces.
+const HOTKEYS_CLUSTER = 'src/shared/hotkeys/HotkeysCluster.tsx';
+const INPUT_REGIME_INDICATOR = 'src/shared/hotkeys/InputRegimeIndicator.tsx';
+const KEYS_DISCOVERY = 'src/shared/hotkeys/KeysDiscovery.tsx';
+const KEYBOARD_INTRO = 'src/shared/hotkeys/KeyboardIntro.tsx';
 const FILES = [
   KEYCAP,
   DESCRIBE,
@@ -37,6 +43,10 @@ const FILES = [
   KEYBOARD_BAR,
   KEYBOARD_BAR_GEOMETRY,
   BOTTOM_STACK,
+  HOTKEYS_CLUSTER,
+  INPUT_REGIME_INDICATOR,
+  KEYS_DISCOVERY,
+  KEYBOARD_INTRO,
 ];
 
 describe('ST-3 source audit — token hygiene', () => {

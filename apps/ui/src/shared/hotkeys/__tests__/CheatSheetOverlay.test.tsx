@@ -15,7 +15,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
-import { getAnnouncement, resetHotkeyAnnouncer } from '@/shared/hotkeys/announcer';
+import { getAnnouncement, resetHotkeyAnnouncer, subscribeAnnouncer } from '@/shared/hotkeys/announcer';
 import { listHotkeyActions, resetRegistryForTests } from '@/shared/hotkeys/registry';
 import { resetKeymapStoreForTests, setBinding, setLeader } from '@/shared/hotkeys/store';
 import { resetWindowStoreForTests } from '@/shared/window-system/windowStore';
@@ -206,10 +206,18 @@ describe('CheatSheetOverlay — close + focus return', () => {
 describe('CheatSheetOverlay — shared announcer', () => {
   it('announces "Hotkey cheat sheet. N bindings." through the ONE channel', () => {
     renderProvider();
+
+    // ST-5: the regime chip now shares the ONE polite channel. Opening the sheet
+    // focuses its search input, so the engine publishes `typing` and the chip
+    // announces after the sheet digest. Record the emitted sequence so this pin
+    // proves the digest was spoken through the channel independent of order.
+    const seen: string[] = [];
+    const unsubscribe = subscribeAnnouncer(() => seen.push(getAnnouncement()));
     act(() => openCheatSheet());
+    unsubscribe();
 
     const expected = listHotkeyActions().filter((action) => !action.invalid).length;
-    expect(getAnnouncement()).toBe(`Hotkey cheat sheet. ${expected} bindings.`);
+    expect(seen).toContain(`Hotkey cheat sheet. ${expected} bindings.`);
   });
 });
 
