@@ -144,7 +144,23 @@ function Test-Script-Syntax {
     return
   }
   try {
-    $null = Get-Command $FilePath -ErrorAction Stop
+    # A `.ps1` is a script and MUST be parsed: `Get-Command` only resolves the
+    # file as a command and never parses its body, so it stayed green on a
+    # dev-env.ps1 carrying `$procId:` (an invalid scope/drive-qualified variable
+    # reference in a double-quoted string). Parse every script with the PowerShell
+    # AST parser and fail on any error. Non-script callers (e.g. the SKILL.md
+    # presence check) keep the command-resolution check — markdown is not
+    # PowerShell and must not be AST-parsed.
+    if ([System.IO.Path]::GetExtension($FilePath) -eq ".ps1") {
+      $tokens = $null
+      $parseErrors = $null
+      [System.Management.Automation.Language.Parser]::ParseFile($FilePath, [ref]$tokens, [ref]$parseErrors) | Out-Null
+      if ($parseErrors -and $parseErrors.Count -gt 0) {
+        throw "parse errors in ${FilePath}: $($parseErrors[0].Message)"
+      }
+    } else {
+      $null = Get-Command $FilePath -ErrorAction Stop
+    }
     Write-Host "PASS" -ForegroundColor Green
     $global:passed++
     $global:results += @{ Name = $Name; Status = "PASS"; Detail = "Valid PowerShell script" }

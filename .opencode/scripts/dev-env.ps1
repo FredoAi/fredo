@@ -909,9 +909,9 @@ function Stop-EnvManifest {
     if (-not (Test-RoleImageMatch -Role $role -Image $image)) {
       $expectedList = $script:RoleImage[$role]
       if (-not $expectedList) {
-        Write-Log "REFUSING to kill PID $procId: manifest role '$role' is not a known role (R-3.3)." -Level WARN
+        Write-Log "REFUSING to kill PID ${procId}: manifest role '$role' is not a known role (R-3.3)." -Level WARN
       } else {
-        Write-Log "REFUSING to kill PID $procId: role '$role' expects image '$($expectedList -join '/')' but live image is '$image' (stale/reused PID, R-3.3)." -Level WARN
+        Write-Log "REFUSING to kill PID ${procId}: role '$role' expects image '$($expectedList -join '/')' but live image is '$image' (stale/reused PID, R-3.3)." -Level WARN
       }
       continue
     }
