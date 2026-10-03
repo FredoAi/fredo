@@ -185,6 +185,33 @@ postmaster under R-3, a registry entry that survives disable, a backfill-path `t
 write, or a static-only receipt for a live-policy row. Every UNVERIFIED row carries a named,
 actionable blocker (G-053).
 
+## Round 1 results (2026-10-03, spec/2992 @ d6829508)
+
+- [x] **F-1 PASS** — descriptor pid/port live, lock held, both OTLP listeners, managed-`psql` `SELECT 1`.
+- [x] **F-2 PASS (HTTP canonical; gRPC raw)** — HTTP fixture → live `telemetry_spans` (`chat`, `otlp_http`)
+  **and** `chat_rows` (42/7); gRPC injector → `telemetry_spans` (`fredo.tool.read`, `otlp_grpc`).
+- [x] **F-3 PASS** — shutdown exit 0, lock released, post-stop TCP false, no orphan.
+- [x] **F-4 PASS** — stop-hang hard-kill fired at the 2 s bound; teardown complete.
+- [x] **F-5 PASS** — second daemon exit 1 with a lock message; no second postmaster.
+- [x] **F-6 PASS** — GUI attaches (`attached`; DOM `Attached to a headless daemon`).
+- [ ] **F-7 UNVERIFIED** — named blocker: `dev-env Up` kills the `fredo.exe` daemon, so the stale/missing
+  descriptor GUI boot was not separately driven (unit pins cover `is_live`).
+- [x] **F-8 PASS (core)** — registry + KV + DOM testids; enable/disable round-trip. Forced-`reg.exe`-failure
+  edge UNVERIFIED (no injection seam).
+- [x] **F-9 PASS** — no backfill markers / no data-plane SQLite; R-5b refusal exit 1 with a clear message.
+- [ ] **F-10 FAIL/UNVERIFIED (human directive)** — attach + persistence PASS; **Mission Monitor did not render
+  the session**. Named blockers: the list reads the ST-6 declared `sessions` rollup (not `useEventRows(replay)`);
+  the committed fixture cannot satisfy the rollup predicate; fresh-cluster declared-table `latestat` error;
+  wedged real app-data cluster; MCP-bridge 0.12/0.13.
+- [x] **F-11 PASS** — caller `FREDO_DATA_DIR` honored; default == `%APPDATA%\com.fredo.app`.
+- [x] **F-12 PASS** — daemon+GUI share `control.db` with no `SQLITE_BUSY`.
+- [x] **F-13 PASS (local)** — spike test present; local UI build + 2865 tests green; CI `ui-validate` red on an
+  unrelated Terminal-settings flake (flagged).
+- [x] **F-14 PASS** — help names every flag + defaults + exit codes 0/1/2; usage errors non-zero.
+
+**Round verdict: FAIL** (F-10 red; F-7 + F-8 forced-reg edge UNVERIFIED). Full evidence in the issue's
+`## Tests Runs (round 1)` comment.
+
 ## Required test data
 
 - Scratch state under `.opencode/tmp/2992/` only (`app/`, `pgdata/`, `lock/`, `stop.flag`,
