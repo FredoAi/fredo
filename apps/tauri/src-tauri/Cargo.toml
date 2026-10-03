@@ -2,6 +2,12 @@
 name = "fredo"
 version = "0.1.0"
 edition = "2021"
+# Selects the app binary for bare `cargo run` invocations. The second `[[bin]]`
+# (`doom_stub`, `required-features`-gated) still participates in `cargo run`'s
+# binary disambiguation even when its feature is off, so without this key
+# `tauri dev` -> `cargo run --no-default-features` errors with "could not
+# determine which binary to run". Never point this at `doom_stub`.
+default-run = "fredo"
 
 [lib]
 name = "fredo_lib"
