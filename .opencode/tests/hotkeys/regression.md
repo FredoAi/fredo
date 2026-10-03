@@ -188,3 +188,39 @@ Run on the served app (dev-env UP `-Spec 2959`, driver `com.fredo.app`, main win
   CI `ui-validate` check for PR #2973 reports FAILURE (unresolved; job log not retrievable in the
   tester sandbox — see the `## Tests Runs` caveats), which does not reproduce locally.
 
+## Spec #2960 additions (typing-vs-navigating signal + zero-knowledge discovery)
+
+> The S3 slice is ADDITIVE signalling + a discovery on-ramp. It must not re-spec or change the
+> shipped suppression (#2946), the context model (#2958), or the keyboard mode + bar (#2959).
+> **Verification policy: live** — receipts via the managed `psql` lever reading `telemetry_spans`
+> (G-284).
+
+- [ ] **R-21 (text-entry suppression unchanged):** the #2946 contract still holds — while a text
+      field is focused bare keys/sequences do NOT fire and the typed character reaches the field
+      verbatim; the S3 signal only STATES the regime. A captured/swallowed keystroke is a FAIL.
+      Cross-ref F-17/F-42/F-67.
+- [ ] **R-22 (S1 context model unchanged):** the merged #2958 behaviour is unchanged — the
+      focus-derived base, `primary+K` descent, one-Escape-per-level unwind, the
+      `hotkeys-context-indicator` (label/pips/icon), `data-fredo-hotkey-context`/`-depth`, and the
+      single `hotkeys-announcer` announcements. The regime signal must not replace or double-announce
+      them. Cross-ref R-16, F-33..F-43.
+- [ ] **R-23 (S2 keyboard mode + bar unchanged):** `ctrl+shift+f8`, `data-fredo-keyboard-mode`, the
+      persistent bar, and `data-fredo-pending-sequence` behave as before; the S3 signal/affordance is
+      additive and does not suppress the bar or the which-key hint. Cross-ref R-17/R-18, F-44..F-54.
+- [ ] **R-24 (existing bindings not stolen):** Ctrl+Space (launcher), `g g`, `?`, the feature
+      `s`/`n`/`p`/`f` sets, `primary+K`, and `y` resolve exactly as before; the discovery affordance
+      must not swallow or rebind a keystroke. Cross-ref R-1/R-14/R-17, F-25/F-33.
+- [ ] **R-25 (no OS-wide hotkeys, no shortcut-usage telemetry):** the S3 signal/affordance registers
+      no Tauri global-shortcut / OS-level hotkey and emits NO span/event/metric carrying shortcut
+      usage, binding identity, or regime state (PO Q13). Diff `telemetry_spans`/`telemetry_metrics`
+      names before vs after a regime drive. Carry-forward of R-9/R-10/R-19.
+- [ ] **R-26 (token contract + no re-render loop / console clean + build gates):** the new
+      signal/affordance/hint files introduce no hardcoded hex/rgba/hsla and no `var(--x)NN`
+      alpha-append; no `Maximum update depth exceeded`/`Uncaught`/`Error:` across regime changes,
+      focus churn, discovery, and first-run dismissal; `pnpm --filter @fredo/ui build` exit 0 and the
+      served `build:webview` leg passes (H-11/G-251 class). Cross-ref R-6/R-7/R-8/R-11/R-20.
+- [ ] **R-27 (first-run flag is per-user and does not clobber settings):** dismissing the intro
+      writes only `fredo.hotkeys.introSeen`; it survives a restart and does not alter the
+      keymap, the Vim preset, macros, the context stack, or unrelated AppStore keys. Cross-ref R-5
+      and the settings/token suites.
+
