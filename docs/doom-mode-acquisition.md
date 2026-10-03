@@ -69,6 +69,26 @@ versioned release/tag with a maintainer-published **SHA-256** (or a signed check
 provides); (3) an x86_64 Windows target; (4) a clear license/source-offer. Until then the pinned
 URL/SHA-256 stay unset.
 
+### 2.5 Shipped acquisition surface (CU-3 / ST-4)
+
+`apps/tauri/src-tauri/src/features/doom/acquisition.rs` implements the decision above:
+
+- **No default engine archive URL is compiled in** (`DOOM_ENGINE_ARCHIVE_URL_DEFAULT` is the empty
+  string). `acquire_engine` therefore returns `Ok(None)` on the shipped default, and
+  `launch_doom_runtime` falls back to the user-supplied `doom_engine_path` — never a bogus download,
+  never a build failure.
+- The env-override mechanism is declared so a future pinned asset can be enabled:
+  `FREDO_DOOM_ARCHIVE_URL`, `FREDO_DOOM_ARCHIVE_SHA256`, and `FREDO_DOOM_ARCHIVE_BYTES`. The URL and
+  digest are inert when unset. **A configured URL additionally requires the exact byte size**,
+  because the shared streaming engine gates on the exact on-disk length (a real pinned archive must
+  publish its size alongside the digest); an unsized/unverified archive is refused with
+  `acquireFailed`.
+- The **Freedoom** archive is pinned (`FREEDOOM_ARCHIVE_URL` + `FREEDOOM_ARCHIVE_SHA256` +
+  `FREEDOOM_ARCHIVE_BYTES`, matching §3.1) and acquired through the shared engine; `freedoom1.wad`
+  is extracted from the `.zip` by a minimal in-module ZIP reader (stored + raw-deflate), since the
+  shared engine is a file downloader, not an archive extractor. Any failure maps to
+  `DoomErrorCode::AcquireFailed`.
+
 ---
 
 ## 3. Game data (WAD) decision
@@ -241,11 +261,10 @@ No drift: every number/flag above is copied from the ST-1 captures, which cite t
 
 1. **Runtime-download deferred (engine).** Re-enabling requires a canonical, reproducible,
    SHA-256-pinned prebuilt (§2.4). Until then, engine acquisition is user-supplied.
-2. **Contract divergences to carry into CU-3/CU-4** (from ST-1): `-apiport` (not `-port`);
-   `/api/frame` is **indexed8 + palette JSON**, not PNG (CU-4's canvas must decode indexed8, or CU-3
-   expands it); `POST /api/step` body is `{tics, actions}`, not `{action, tic}`. The Rust client is a
-   shape-agnostic JSON passthrough, so these are implementable — but the plan's `DoomFrame` /
-   `doom_step` shapes should be reconciled when CU-3/CU-4 land.
+2. **Contract divergences reconciled in CU-3** (from ST-1): `-apiport` (not `-port`); the
+   `/api/frame` indexed8 + palette JSON is expanded by the Rust client (`client.rs`) to a base64 PNG
+   so CU-4's canvas keeps the binding `DoomFrame { png_base64 }` shape; `POST /api/step` sends
+   `{tics, actions}`. `/api/state` stays a shape-agnostic `serde_json::Value` passthrough.
 3. **Headless/SDL video.** `-noblit` skips present, but the fork still initialises SDL video; a
    truly headless run may need `SDL_VIDEODRIVER=dummy` or a hidden window. Unverified in this spike
    (no binary could be built in-sandbox) — flagged for ST-3 to confirm at launch.

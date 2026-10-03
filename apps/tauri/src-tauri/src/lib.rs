@@ -937,11 +937,15 @@ pub fn run() {
             infrastructure::app_open::run_open_app_cli,
             // Doom runtime lifecycle (Spec #2968 CU-2/ST-3): the bounded,
             // idempotent engine spawn + stop and the status snapshot. The HTTP
-            // control surface (`doom_read_state`/`doom_step`/`doom_frame`) and
-            // `open_doom_window` land in CU-3/CU-4.
+            // control surface (CU-3/ST-5: `doom_read_state`/`doom_step`/
+            // `doom_frame`, all Rust-side because the webview CSP forbids the
+            // engine) is registered here too. `open_doom_window` lands in CU-4.
             features::doom::commands::launch_doom_runtime,
             features::doom::commands::stop_doom_runtime,
             features::doom::commands::get_doom_status,
+            features::doom::commands::doom_read_state,
+            features::doom::commands::doom_step,
+            features::doom::commands::doom_frame,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Fredo application")

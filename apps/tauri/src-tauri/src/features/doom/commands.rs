@@ -18,14 +18,13 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::infrastructure::storage::AppStore;
 
-use super::process;
 use super::state::{
     derive_phase, DoomErrorCode, DoomLaunchResult, DoomRuntimePhase, DoomRuntimeState, DoomStatus,
-    DEFAULT_DOOM_PORT, DOOM_ENGINE_PATH_ENV, DOOM_ENGINE_PATH_KEY, DOOM_EXIT_HOOK_BOUND,
-    DOOM_IWAD_PATH_ENV, DOOM_IWAD_PATH_KEY, DOOM_LAST_ERROR_CODE_KEY, DOOM_LAST_ERROR_KEY,
+    DEFAULT_DOOM_PORT, DOOM_EXIT_HOOK_BOUND, DOOM_LAST_ERROR_CODE_KEY, DOOM_LAST_ERROR_KEY,
     DOOM_PORT_KEY, DOOM_READY_TIMEOUT_ENV, DOOM_READY_TIMEOUT_S, DOOM_STATUS_EVENT,
     DOOM_STOP_TIMEOUT_ENV, DOOM_STOP_TIMEOUT_S, DOOM_WINDOW_LABEL,
 };
+use super::{acquisition, client, process, resolver};
 
 /// Readiness poll cadence.
 const READY_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -98,10 +97,6 @@ fn read_last_error(app: &AppHandle) -> (Option<String>, Option<DoomErrorCode>) {
 
 // ── Settings / env resolution (ST-4 extends acquisition) ─────────────────────
 
-fn env_string(key: &str) -> Option<String> {
-    std::env::var(key).ok()
-}
-
 fn env_u64(key: &str) -> Option<u64> {
     std::env::var(key)
         .ok()
@@ -113,20 +108,6 @@ fn setting(app: &AppHandle, key: &str) -> Option<String> {
         .control_get(key)
         .ok()
         .flatten()
-}
-
-fn resolve_engine(app: &AppHandle) -> Option<String> {
-    process::resolve_doom_path(
-        env_string(DOOM_ENGINE_PATH_ENV).as_deref(),
-        setting(app, DOOM_ENGINE_PATH_KEY).as_deref(),
-    )
-}
-
-fn resolve_iwad(app: &AppHandle) -> Option<String> {
-    process::resolve_doom_path(
-        env_string(DOOM_IWAD_PATH_ENV).as_deref(),
-        setting(app, DOOM_IWAD_PATH_KEY).as_deref(),
-    )
 }
 
 fn configured_port(app: &AppHandle) -> u16 {
@@ -254,17 +235,28 @@ pub async fn launch_doom_runtime(app: AppHandle) -> DoomLaunchResult {
         return success_result(port, pid);
     }
 
-    let engine = match resolve_engine(&app) {
+    // Engine: configured (verbatim → `spawnFailed` when bad) → PATH → staged →
+    // acquisition. Acquisition runs ONLY when nothing resolved: with no pinned
+    // engine archive configured it returns `Ok(None)` → `notConfigured`, so the
+    // shipped default (user-supplied engine) never attempts a network fetch.
+    let engine = match resolver::resolve_engine(&app) {
         Some(path) => path,
-        None => {
-            return fail(
-                &app,
-                DoomErrorCode::NotConfigured,
-                "no Doom engine is configured — set the engine path in Settings.".to_string(),
-            )
-        }
+        None => match acquisition::acquire_engine(&app).await {
+            Ok(Some(path)) => path,
+            Ok(None) => {
+                return fail(
+                    &app,
+                    DoomErrorCode::NotConfigured,
+                    "no Doom engine is configured — set the engine path in Settings.".to_string(),
+                )
+            }
+            Err(detail) => return fail(&app, DoomErrorCode::AcquireFailed, detail),
+        },
     };
-    let iwad = match resolve_iwad(&app) {
+    // IWAD: a configured-but-missing path is `notConfigured` (F-11) and never
+    // triggers a download; only an entirely unconfigured IWAD falls through to
+    // the pinned Freedoom acquisition.
+    let iwad = match resolver::resolve_iwad(&app) {
         Some(path) if Path::new(&path).is_file() => path,
         Some(path) => {
             return fail(
@@ -273,13 +265,18 @@ pub async fn launch_doom_runtime(app: AppHandle) -> DoomLaunchResult {
                 format!("the configured Doom game data (IWAD) is missing: {path}"),
             )
         }
-        None => {
-            return fail(
-                &app,
-                DoomErrorCode::NotConfigured,
-                "no Doom game data (IWAD) is configured — set the WAD path in Settings.".to_string(),
-            )
-        }
+        None => match acquisition::acquire_iwad(&app).await {
+            Ok(Some(path)) => path,
+            Ok(None) => {
+                return fail(
+                    &app,
+                    DoomErrorCode::NotConfigured,
+                    "no Doom game data (IWAD) is configured — set the WAD path in Settings."
+                        .to_string(),
+                )
+            }
+            Err(detail) => return fail(&app, DoomErrorCode::AcquireFailed, detail),
+        },
     };
     let install_dir = match process::resolve_install_dir(&app) {
         Ok(dir) => dir,
@@ -423,6 +420,53 @@ pub fn get_doom_status(app: AppHandle) -> DoomStatus {
     }
 }
 
+// ── HTTP control surface (ST-5) ──────────────────────────────────────────────
+
+/// One `GET /api/state` against the live engine. Never polls — the caller drives
+/// the cadence. A not-running engine is a typed `requestFailed` with no request.
+#[tauri::command]
+pub async fn doom_read_state(
+    app: AppHandle,
+) -> Result<client::DoomStateView, client::DoomRequestError> {
+    let port = client::active_port(&app).ok_or_else(|| {
+        client::DoomRequestError::request_failed("the Doom engine is not running")
+    })?;
+    let transport =
+        client::ReqwestDoomTransport::new().map_err(client::DoomRequestError::request_failed)?;
+    client::read_state_with(&transport, port).await
+}
+
+/// One `POST /api/step` with the corrected `{tics, actions}` body. `tics`
+/// defaults to 1 and `actions` to an empty list; `actions` is passed through
+/// verbatim (the engine takes action objects).
+#[tauri::command]
+pub async fn doom_step(
+    app: AppHandle,
+    tics: Option<i64>,
+    actions: Option<serde_json::Value>,
+) -> Result<client::DoomStepResult, client::DoomRequestError> {
+    let port = client::active_port(&app).ok_or_else(|| {
+        client::DoomRequestError::request_failed("the Doom engine is not running")
+    })?;
+    let transport =
+        client::ReqwestDoomTransport::new().map_err(client::DoomRequestError::request_failed)?;
+    let tics = tics.unwrap_or(1);
+    let actions = actions.unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
+    client::step_with(&transport, port, tics, &actions).await
+}
+
+/// One `GET /api/frame`, converted from the engine's indexed8+palette JSON to a
+/// base64 PNG for the CU-4 canvas.
+#[tauri::command]
+pub async fn doom_frame(app: AppHandle) -> Result<client::DoomFrame, client::DoomRequestError> {
+    let port = client::active_port(&app).ok_or_else(|| {
+        client::DoomRequestError::request_failed("the Doom engine is not running")
+    })?;
+    let transport =
+        client::ReqwestDoomTransport::new().map_err(client::DoomRequestError::request_failed)?;
+    client::frame_with(&transport, port).await
+}
+
 // ── Teardown entry points (window close + app exit) ──────────────────────────
 
 /// Synchronous teardown for the `doom` window's `CloseRequested` handler: bounded
@@ -456,7 +500,9 @@ pub fn stop_doom_on_exit(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::features::doom::state::DOOM_INSTALL_DIR_KEY;
+    use crate::features::doom::state::{
+        DOOM_ENGINE_PATH_KEY, DOOM_INSTALL_DIR_KEY, DOOM_IWAD_PATH_KEY,
+    };
     use crate::infrastructure::storage::engine::EngineHandle;
 
     fn open_store(dir: &Path) -> AppStore {

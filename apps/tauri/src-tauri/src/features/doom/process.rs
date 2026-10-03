@@ -595,6 +595,29 @@ mod tests {
     }
 
     #[test]
+    fn sweep_reclaims_the_qa_stub_engine_by_its_own_basename() {
+        // ST-8: the feature-gated `doom-stub` binary is the offline test engine,
+        // so the startup sweep must recognise its basename (the QA harness points
+        // FREDO_DOOM_ENGINE_PATH at it) and reclaim a hard-killed stub orphan.
+        let _guard = KILL_LOCK.lock().expect("serialize recorder tests");
+        clear_kills();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = open_store(dir.path());
+        persist_pid(&store, Some(5150));
+
+        let reclaimed = sweep_orphan_with(
+            &store,
+            "doom-stub.exe",
+            |_| Some("doom-stub.exe".to_string()),
+            record_kill,
+        );
+
+        assert_eq!(reclaimed, Some(5150));
+        assert_eq!(recorded_kills(), vec![5150]);
+        assert_eq!(persisted_pid(&store), None, "the marker is always cleared");
+    }
+
+    #[test]
     fn select_active_port_returns_the_configured_port_when_free() {
         for _ in 0..5 {
             let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral");

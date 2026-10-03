@@ -15,10 +15,18 @@
 //!   `stop_doom_runtime`, `get_doom_status`) plus the window-close / app-exit
 //!   teardown entry points. ST-3/ST-3b.
 //!
-//! NOT here (later compilable units): acquisition + engine/IWAD resolution
-//! (CU-3, ST-4), the HTTP control client `doom_read_state`/`doom_step`/
-//! `doom_frame` (CU-3, ST-5), the stub engine (CU-3, ST-8), and the `doom`
-//! window + webview + main-window entry (CU-4, ST-6/ST-7).
+//! CU-3 adds:
+//!
+//! * [`resolver`] — engine/IWAD resolution (configured → PATH → staged). ST-4.
+//! * [`acquisition`] — the pinned Freedoom IWAD + deferred engine archive through
+//!   the shared download engine, with the minimal ZIP extractor. ST-4.
+//! * [`client`] — the Rust-side HTTP control surface (`doom_read_state`/
+//!   `doom_step`/`doom_frame`), including indexed8→base64-PNG frame conversion.
+//!   ST-5.
+//! * `src/bin/doom_stub.rs` — the feature-gated stub engine. ST-8.
+//!
+//! NOT here (later compilable units): the `doom` window + webview + main-window
+//! entry (CU-4, ST-6/ST-7).
 //!
 //! # G-263
 //!
@@ -27,6 +35,9 @@
 //! the exit hook is wall-clock capped, and the startup sweep reclaims a
 //! hard-killed orphan under an image guard.
 
+pub mod acquisition;
+pub mod client;
 pub mod commands;
 pub mod process;
+pub mod resolver;
 pub mod state;
