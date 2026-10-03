@@ -35,7 +35,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tauri::Manager;
 
-use crate::infrastructure::rtdb::commands::RtdbState;
+use crate::infrastructure::rtdb::commands::{Rtdb, RtdbState};
 use crate::infrastructure::rtdb::rows::{AgentSessionRow, ChatRow, ToolUseRow};
 use crate::infrastructure::rtdb::store::{RowKind, RtdbStore};
 use crate::infrastructure::storage::migration::MigrationGate;
@@ -460,15 +460,20 @@ impl RtdbCache {
 
 // ── Writer task + retention knobs ────────────────────────────────────────────
 
-/// Dedicated write-behind task: drains the bounded queue in ~30 ms batches and
-/// runs retention pruning on a 60-minute interval (knobs re-read each cycle).
-/// Spawned by lib.rs via `tauri::async_runtime::spawn`.
+/// AppHandle-free core of the write-behind task: drains the bounded queue in
+/// ~30 ms batches and runs retention pruning on a 60-minute interval (knobs
+/// re-read each cycle). The GUI wrapper [`run_writer_task`] resolves the
+/// dependencies from Tauri state and delegates here; the headless ingest daemon
+/// (Spec #2992) calls this directly because it has no `AppHandle`.
 ///
 /// Spec #2977 ST-4: every batch flush quiesces against the exclusive migration
 /// barrier when one is installed, so no RTDB storage write can land while the
-/// migration window is open. `None` (unit tests) leaves the task ungated.
-pub async fn run_writer_task(
-    app: tauri::AppHandle,
+/// migration window is open. `None` (unit tests / headless) leaves the task
+/// ungated.
+pub async fn run_writer_task_core(
+    cache: Arc<RtdbCache>,
+    app_store: Arc<AppStore>,
+    rtdb: Option<Arc<Rtdb>>,
     mut rx: tokio::sync::mpsc::Receiver<PendingWrite>,
     gate: Option<Arc<MigrationGate>>,
 ) {
@@ -485,7 +490,7 @@ pub async fn run_writer_task(
                 }
                 match gate.as_ref() {
                     Some(gate) => match gate.writer_enter().await {
-                        Ok(_guard) => flush_rtdb_batch(&app, batch).await,
+                        Ok(_guard) => flush_rtdb_batch_core(&cache, batch).await,
                         Err(error) => {
                             tracing::warn!(
                                 target: "fredo::rtdb",
@@ -495,7 +500,7 @@ pub async fn run_writer_task(
                             );
                         }
                     },
-                    None => flush_rtdb_batch(&app, batch).await,
+                    None => flush_rtdb_batch_core(&cache, batch).await,
                 }
             }
             Ok(None) => break,  // channel closed — all senders dropped
@@ -503,34 +508,62 @@ pub async fn run_writer_task(
         }
 
         if last_prune.elapsed() >= WRITER_PRUNE_INTERVAL {
-            prune_with_knobs(&app, gate.as_ref()).await;
+            prune_with_knobs_core(&cache, &app_store, rtdb.as_ref(), gate.as_ref()).await;
             last_prune = tokio::time::Instant::now();
         }
     }
 }
 
-/// Flush one drained batch through the RTDB cache (storage write).
-async fn flush_rtdb_batch(app: &tauri::AppHandle, batch: Vec<PendingWrite>) {
-    if let Some(cache) = app.try_state::<Arc<RtdbCache>>() {
-        let count = batch.len();
-        if let Err(e) = cache.flush_pending(batch).await {
-            tracing::error!(
-                target: "fredo::rtdb",
-                error = %e,
-                count,
-                "rtdb write-behind batch flush failed — in-memory rows unaffected"
-            );
-        }
+/// Dedicated write-behind task (GUI wrapper): resolves the AppHandle-free
+/// dependencies from Tauri state and delegates to [`run_writer_task_core`].
+/// Spawned by lib.rs via `tauri::async_runtime::spawn`.
+pub async fn run_writer_task(
+    app: tauri::AppHandle,
+    rx: tokio::sync::mpsc::Receiver<PendingWrite>,
+    gate: Option<Arc<MigrationGate>>,
+) {
+    let Some(cache) = app.try_state::<Arc<RtdbCache>>() else {
+        return;
+    };
+    let app_store = app.state::<Arc<AppStore>>();
+    let rtdb = app.try_state::<RtdbState>();
+    run_writer_task_core(
+        cache.inner().clone(),
+        app_store.inner().clone(),
+        rtdb.map(|state| state.inner().clone()),
+        rx,
+        gate,
+    )
+    .await;
+}
+
+/// Flush one drained batch through the RTDB cache (storage write). AppHandle-
+/// free — used by [`run_writer_task_core`].
+async fn flush_rtdb_batch_core(cache: &RtdbCache, batch: Vec<PendingWrite>) {
+    let count = batch.len();
+    if let Err(e) = cache.flush_pending(batch).await {
+        tracing::error!(
+            target: "fredo::rtdb",
+            error = %e,
+            count,
+            "rtdb write-behind batch flush failed — in-memory rows unaffected"
+        );
     }
 }
 
-/// Run one prune cycle using the current AppStore knob values. Since P2.3,
-/// every eviction is routed through the RTDB orchestrator (`Rtdb`, when
-/// running) as a `kind: remove` delivery to matching subscribers — R-2d.
+/// AppHandle-free core of one prune cycle: quiesces against the exclusive
+/// migration barrier when one is installed, reads the AppStore knobs, prunes
+/// the store, and routes every eviction through the RTDB orchestrator (`Rtdb`,
+/// when running) as a `kind: remove` delivery — R-2d. Since P2.3, retention
+/// eviction is the ONLY remove producer.
 ///
-/// Spec #2977 ST-4: quiesces against the exclusive migration barrier when one is
-/// installed; on timeout the prune is shed.
-pub async fn prune_with_knobs(app: &tauri::AppHandle, gate: Option<&Arc<MigrationGate>>) {
+/// Spec #2977 ST-4: on barrier timeout the prune is shed.
+pub async fn prune_with_knobs_core(
+    cache: &RtdbCache,
+    app_store: &AppStore,
+    rtdb: Option<&Arc<Rtdb>>,
+    gate: Option<&Arc<MigrationGate>>,
+) {
     let _guard = match gate {
         Some(gate) => match gate.writer_enter().await {
             Ok(guard) => Some(guard),
@@ -545,15 +578,11 @@ pub async fn prune_with_knobs(app: &tauri::AppHandle, gate: Option<&Arc<Migratio
         },
         None => None,
     };
-    let Some(cache) = app.try_state::<Arc<RtdbCache>>() else {
-        return;
-    };
-    let app_store = app.state::<Arc<AppStore>>();
-    let (retention_days, max_rows) = read_knobs(&app_store);
+    let (retention_days, max_rows) = read_knobs(app_store);
     match cache.store().prune(retention_days, max_rows).await {
         Ok(outcome) => {
             if !outcome.evicted.is_empty() {
-                if let Some(rtdb) = app.try_state::<RtdbState>() {
+                if let Some(rtdb) = rtdb {
                     rtdb.route_evictions(outcome.evicted);
                 }
             }
@@ -571,6 +600,24 @@ pub async fn prune_with_knobs(app: &tauri::AppHandle, gate: Option<&Arc<Migratio
             tracing::error!(target: "fredo::rtdb", error = %e, "rtdb prune failed");
         }
     }
+}
+
+/// Run one prune cycle using the current AppStore knob values (GUI wrapper):
+/// resolves the AppHandle-free dependencies from Tauri state and delegates to
+/// [`prune_with_knobs_core`].
+pub async fn prune_with_knobs(app: &tauri::AppHandle, gate: Option<&Arc<MigrationGate>>) {
+    let Some(cache) = app.try_state::<Arc<RtdbCache>>() else {
+        return;
+    };
+    let app_store = app.state::<Arc<AppStore>>();
+    let rtdb = app.try_state::<RtdbState>();
+    prune_with_knobs_core(
+        cache.inner(),
+        app_store.inner(),
+        rtdb.as_ref().map(|state| state.inner()),
+        gate,
+    )
+    .await;
 }
 
 /// Read the retention knobs fresh from the AppStore (defaults when unset or
@@ -596,3 +643,85 @@ pub fn read_knobs(app_store: &AppStore) -> (i64, i64) {
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infrastructure::rtdb::rows::RowState;
+    use crate::infrastructure::rtdb::store::{
+        RTDB_DEFAULT_MAX_ROWS, RTDB_DEFAULT_RETENTION_DAYS, RTDB_MAX_ROWS_KEY,
+        RTDB_RETENTION_DAYS_KEY,
+    };
+    use crate::infrastructure::storage::EngineHandle;
+
+    fn chat_row(session: &str, corr: &str) -> ChatRow {
+        ChatRow {
+            session_id: session.to_string(),
+            correlation_id: corr.to_string(),
+            seq: 1,
+            started_at_ns: Some(1_000),
+            ended_at_ns: None,
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+            state: RowState::Init,
+            provider: Some("open_code".to_string()),
+            user_message: Some("hello".to_string()),
+            agent_reply: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            cache_read_tokens: None,
+            cost_usd: None,
+            model: None,
+            parent_session_id: None,
+            composited_child_session_id: None,
+            raw_json: "{}".to_string(),
+        }
+    }
+
+    /// A cache + control-plane AppStore over a PENDING data-plane handle (no
+    /// PostgreSQL pool is installed in unit tests). The TempDir is returned so
+    /// the control-plane `control.db` outlives the store.
+    fn make_cache() -> (Arc<RtdbCache>, Arc<AppStore>, tempfile::TempDir) {
+        let engine = EngineHandle::new_pending();
+        let store = Arc::new(RtdbStore::open(engine.clone()).expect("RtdbStore::open"));
+        let (cache, _rx) = RtdbCache::with_capacity(store, 8, 8);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_store = Arc::new(AppStore::open(engine, dir.path()).expect("AppStore::open"));
+        (cache, app_store, dir)
+    }
+
+    #[test]
+    fn read_knobs_defaults_then_reads_app_store_overrides() {
+        let engine = EngineHandle::new_pending();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_store = AppStore::open(engine, dir.path()).expect("AppStore::open");
+        assert_eq!(
+            read_knobs(&app_store),
+            (RTDB_DEFAULT_RETENTION_DAYS, RTDB_DEFAULT_MAX_ROWS)
+        );
+        app_store.control_set(RTDB_RETENTION_DAYS_KEY, "3").unwrap();
+        app_store.control_set(RTDB_MAX_ROWS_KEY, "42").unwrap();
+        assert_eq!(read_knobs(&app_store), (3, 42));
+    }
+
+    /// ST-4: the write-behind core runs with NO `AppHandle`; a buffered row is
+    /// drained and the loop terminates once every sender is dropped (the
+    /// pending engine fails the flush closed — logged, never a panic).
+    #[tokio::test]
+    async fn writer_task_core_is_apphandle_free_and_terminates_on_channel_close() {
+        let (cache, app_store, _dir) = make_cache();
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        tx.send(PendingWrite::Chat(chat_row("s", "c")))
+            .await
+            .expect("queue one pending write");
+        drop(tx);
+        run_writer_task_core(cache, app_store, None, rx, None).await;
+    }
+
+    /// ST-4: the prune core runs with NO `AppHandle` and fails closed on a
+    /// pending engine (logged), returning without a panic.
+    #[tokio::test]
+    async fn prune_with_knobs_core_is_apphandle_free() {
+        let (cache, app_store, _dir) = make_cache();
+        prune_with_knobs_core(&cache, &app_store, None, None).await;
+    }
+}
