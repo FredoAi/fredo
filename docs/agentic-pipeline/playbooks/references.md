@@ -52,6 +52,16 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **Windows built-in recognizer (`Windows.Media.SpeechRecognition`, WinRT)** - works offline with an installed speech language pack, decent accuracy; session/grammar-based with `HypothesisGenerated` (not true streaming partials) and heavy WinRT/WinSDK interop; viable fallback only. (https://learn.microsoft.com/uwp/api/windows.media.speechrecognition.speechrecognizer)
 
 ---
+
+## Doom Mode — Acquisition Research
+
+- **RESTful-DOOM (mkschreder fork)** - HTTP+JSON API hosted inside Chocolate Doom (fork of `jeff-1amstudios/restful-doom`); **source-only — no Releases/Packages** (no prebuilt to pin); launch flag is **`-apiport <port>`** (not `-port`); agent surface `GET /api/state`, `POST /api/step` (body `{tics, actions}`), `POST /api/episode`, `GET /api/frame` (**indexed8 JSON + palette, NOT PNG**), `GET /api/map|route`, `GET /api/world/movetest`; GPL-2.0. (https://github.com/mkschreder/restful-doom ; https://raw.githubusercontent.com/mkschreder/restful-doom/master/RAML/doom.raml)
+- **Chocolate Doom** - the GPL-2.0 accurate Doom source port the fork builds on; ships Windows binaries but has no HTTP API (not a substitute for the fork). (https://github.com/chocolate-doom/chocolate-doom)
+- **Freedoom** - libre (BSD-style) IWAD substitute; latest **0.13.0** (`freedoom-0.13.0.zip`, SHA-256 `3f9b264f3e3ce503b4fb7f6bdcb1f419d93c7b546f4df3e874dd878db9688f59`, from its PGP-signed CHECKSUM asset); contains `freedoom1.wad` (Phase 1, Ultimate-Doom-compatible) and `freedoom2.wad` (Phase 2, Doom-II-compatible). (https://freedoom.github.io/download.html ; https://github.com/freedoom/freedoom/releases)
+- **chocpkg** - Chocolate Doom's shell-script dependency builder (Linux/macOS-oriented) used by the fork's `configure-and-build.sh`; on Windows the practical path is MSYS2 MinGW-w64 + autotools. (https://github.com/chocolate-doom/chocpkg)
+- **#2968 spike** - the full acquisition finding, exact engine contract, pins, and Windows build recipe live at `spikes/2968-doom-runtime/` + `docs/doom-mode-acquisition.md`.
+
+---
 ## Known Failure Modes
 ### G-299: plan_cites_a_superseded_demonstrating_mechanism
 - **activation_date:** 2026-10-03
