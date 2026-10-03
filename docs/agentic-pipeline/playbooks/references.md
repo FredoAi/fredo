@@ -53,6 +53,22 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 ---
 ## Known Failure Modes
+### G-299: plan_cites_a_superseded_demonstrating_mechanism
+- **activation_date:** 2026-10-03
+- **observed:** #2992 round 1 (live FAIL, F-10, human-mandated) — the plan's Mission-Monitor E2E cited `useEventRows('Chat'|'ToolUse', {replay:true})` (a stale comment left after Spec #2896 ST-6), while the session LIST actually renders from the backend declared `sessions` rollup (`useSessionHistory.ts`) whose predicate requires a rollup-qualifying turn. The fixture was built against the stale model (a single terminal-`response` chat span with a blank agent reply), so no declared row was created and Mission Monitor rendered `No sessions yet`; one rework round was burned. Root-cause class: `defect`.
+- **target_failure:** a plan cites a superseded rendering/derivation mechanism for an AC's demonstrating surface (a leftover comment or an older hook), so the fixture/implementation is built against a mechanism that no longer governs and the AC fails only live.
+- **guardrail:** At convergence, for every AC whose demonstrating surface names a rendering/derivation mechanism, verify the plan cites the CURRENT governing mechanism by tracing the consuming component/hook (file:line) — never a stale comment or an older hook; when a mechanism has been superseded, the plan must cite the replacement and the QA row must bind to it.
+- **home:** playbooks/self-improver.md (convergence) + playbooks/software-architect.md + playbooks/qa-expert.md + references.md (this record)
+- **effectiveness:** Pending — created 2026-10-03 from the #2992 round-1 F-10 failure; the round-2 fix (a rollup-qualifying fixture + an E2E rollup assertion) passed live.
+
+### G-300: qa_error_path_edge_without_an_induction_lever
+- **activation_date:** 2026-10-03
+- **observed:** #2992 — the QA plan added F-7 (stale/missing-descriptor GUI fallback) and an F-8 forced-`reg.exe` failure edge; neither is a backlog AC and neither named an induction lever, so both shipped UNVERIFIED-with-blocker in the verdict (the core ACs passed). Root-cause class: `scope`.
+- **target_failure:** a QA plan adds an error/failure-path edge (not a backlog AC) without a named in-repo induction lever, so the edge ships UNVERIFIED and dilutes the verdict's coverage.
+- **guardrail:** At convergence, every QA edge asserting an error/failure path — even when it is not a backlog AC — must name an in-repo induction lever, or be scoped as a static/unit pin and marked non-AC; an error-path edge with no lever is a plan defect returned in the same convergence pass. Extends G-275 from error-path ACs to QA-authored edges.
+- **home:** playbooks/qa-expert.md + playbooks/self-improver.md (convergence) + references.md (this record)
+- **effectiveness:** Pending — created 2026-10-03 from the #2992 F-7/F-8 UNVERIFIED edges.
+
 ### G-298: viewport_fixed_overlay_ships_without_a_collision_contract
 - **activation_date:** 2026-10-02
 - **observed:** #2960 round 1 (live FAIL, F-65) — the plan placed the S3 typing/navigating signal and discovery affordance in a viewport-fixed top-left cluster, and its AC (R-5/AC5) required the affordance's resting box to have ZERO overlap with the focused field, but the plan declared no collision contract and pre-validated no per-surface collision. The Keys control covered Mission Monitor's session-filter input by 639 px² (`elementFromPoint` hit the button, not the field); the launcher lever passed, so the plan's implicit "top-left is safe" assumption held only on the surface it was reasoned about. One rework round was burned; the architect's fix made the cluster collision-aware (displace below, else above, the intersecting field). Root-cause class: `defect`.
@@ -76,6 +92,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **guardrail:** A PoC that reads an env-var seam MUST honor a caller-supplied value and default only when it is unset; the plan/ST line must state whether the PoC honors an external override. A PoC that unconditionally sets the seam is a plan/implementation defect (isolation is not caller-controllable).
 - **home:** playbooks/software-architect.md (ST decomposition) + playbooks/developer.md + references.md (this record)
 - **effectiveness:** Pending — created 2026-10-03 from the #2989 round-2 tester finding; the round passed by isolating the app onto a separate dir.
+- **re-validated:** 2026-10-03, #2992 — the daemon honoured caller-supplied `FREDO_DATA_DIR`/`FREDO_PG_*` values (CLI flag > env > default) and added named-port seams (`start_with_ports`) instead of `std::env::set_var`-ing an internal override; F-11 pinned caller-vs-default resolution live. Confirmed.
 
 ### G-297: process_hygiene_does_not_inventory_postgres_and_orphans_survive_the_kill
 - **activation_date:** 2026-10-03
@@ -84,6 +101,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **guardrail:** Process hygiene (and the dev-env Down/Restart path) must inventory and reap postmaster trees rooted under the app data dir; until then, a "directory exists but is not empty" cluster-start failure is checked for an orphan postmaster BEFORE it is treated as a product defect.
 - **home:** .opencode/skills/dev-environment/SKILL.md + .opencode/scripts/process-hygiene.ps1 + references.md (this record)
 - **effectiveness:** Pending — created 2026-10-03 from the #2989 round-2 environment finding.
+- **re-validated:** 2026-10-03, #2992 — RECURRED: process hygiene again did not inventory the embedded postmaster; an orphan `postgres.exe` + stale `postmaster.pid` survived under the scratch dir (reported per G-280). The inventory/reap fix remains the open follow-up.
 
 ### G-281: compiler_coupled_migration_waves_leave_the_branch_unbuildable
 - **activation_date:** 2026-10-01
@@ -95,6 +113,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **re-validated:** 2026-10-02, #2977 — the plan declared 4 compilable units (CU-A..CU-D) and the SI dispatched by unit with dependency waves; each unit produced a green `cargo check`/`clippy`/`test` receipt (CU-A `8596e37`, CU-B `ee128e3`, CU-C `6e627cb`, CU-D `e7e020d`) and no intermediate branch state was left non-building. Confirmed.
 - **re-validated:** 2026-10-02, #2978 — the plan declared 3 compilable units (CU-1 S1+S2+S3; CU-2 S4+S6, bundling the shared `lib.rs`/`mod.rs` registrations into one push; CU-3 measurement), dispatched in dependency order; CU-1 `8fea1f0` and CU-2 `9e129f3` each produced a green `cargo check`/`clippy`/`test` receipt on BOTH feature branches, so no intermediate branch state was non-building. Confirmed.
 - **re-validated:** 2026-10-02, #2979 — the plan declared 5 compilable units (CU-1 control-plane split; CU-2 the compiler-coupled SQLite-branch removal; CU-3 cutover semantics; CU-4 rollback verification; CU-5 seams/suites) with a strict `requires:` chain; each of CU-1..CU-4 produced a green CI-parity receipt and CU-5 was a verified no-op, so no intermediate branch state was non-building. The SI rejected CU-2's first push for deleting coverage (recorded as G-290), not for build breakage. Confirmed.
+- **re-validated:** 2026-10-03, #2992 — the plan declared 4 compilable units (CU-1 supervisor attach seams; CU-2 daemon + AppHandle-free receivers/writer + autostart backend; CU-3 settings toggle UI; CU-4 E2E) with a strict `requires:` chain; CU-1, CU-2 (three concurrent pushes rebased cleanly), CU-3 and CU-4 each produced a green CI-parity receipt, so no intermediate branch state was non-building. Confirmed.
 
 ### G-282: local_toolchain_lags_ci_so_a_lint_gate_fails_only_in_ci
 - **activation_date:** 2026-10-01
@@ -125,6 +144,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **re-validated:** 2026-10-02, #2979 — the cutover flipped the engine and removed the SQLite data plane; the plan named the managed-`psql` lever as the ONLY live read path (the `telemetry-query` skill now reads only the retained backout artifact) and the tester used it for every PG read across both rounds, with the substitution disclosed. Confirmed; the `telemetry-query` PG-mode read path remains the open follow-up.
 - **re-validated:** 2026-10-02, #2950 — the live-policy plan named the managed-`psql` lever (database `postgres`, URI from `pg_supervisor_status`, password from the `postgres.password` AppStore key, invoked via the allowlisted `run-exitcode.ps1 -Command` wrapper) and `telemetry_spans` only for the row-pipeline/Mission-Monitor receipt; both tester rounds used exactly those and disclosed the split. Confirmed; the `telemetry-query` PG-mode read path remains the open follow-up.
 - **re-validated:** 2026-10-03, #2989 — the spike plan named the managed-`psql` lever (database `postgres`, allowlisted `run-exitcode.ps1 -Command` wrapper) and the tester used it for every PG read. Refinement: the app's shared pool (`max_connections = 8`) can hold ALL of the server's `max_connections = 8`, so an external `psql` gets a clean `too many clients` refusal while the app runs — a same-instant psql-vs-DOM cross-check is then structurally impossible; the plan must either name this coupling or provide an app-pool-backed read command for the same-instant leg. Confirmed.
+- **re-validated:** 2026-10-03, #2992 — the plan named the managed-`psql` lever (database `postgres`, descriptor port, control-plane `postgres.password`, allowlisted `run-exitcode.ps1 -Command`) plus the app-pool-backed `telemetry_get_stats`/`feature_data_read` fallback; the tester used the pre-attach psql read for the `telemetry_spans` receipt and the app-pool levers after attach when the pool saturated (`too many clients`). Confirmed.
 - **re-validated:** 2026-10-02, #2960 — RECURRED (the pool-saturation coupling): the live-policy plan named the managed-`psql` lever, but on the round-2 tester drive the app's pool held every server connection and psql was refused with `too many clients` on all three attempts; the tester substituted the app's own pool-backed `telemetry_get_stats` for the same-instant `telemetry_spans` read and disclosed it. The app-pool-backed read command remains the open follow-up. Also observed: `get_setting` reads only the data plane, so the plan's "password from the `postgres.password` AppStore key" is reachable only via the control-plane `control.db` (`sqlite3 -readonly`) — the recipe should name the control-plane accessor.
 
 ### G-285: fixture_generator_omits_the_consuming_contracts_invariants
@@ -134,6 +154,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **guardrail:** A fixture generator whose data feeds a consumer's derivation must pin the CONSUMER'S invariants in its own ungated guard test from the start — every required declaration field present, every enum value in the canonical (persisted) vocabulary, and every relational ordering the consumer's rule needs (e.g. a child row starting strictly after its parent). Assert the invariant the consumer applies, not merely that the fixture is self-consistent.
 - **home:** playbooks/software-architect.md (decomposition of fixture capsules) + playbooks/qa-expert.md (required test data) + references.md (this record)
 - **effectiveness:** Pending — created 2026-10-02 from the #2977 rounds 1-2 fixture defects; the fix (production-shaped declarations + canonical lowercase states + strict tool-after-chat timing, pinned by an ungated guard) landed in rounds 2-3.
+- **re-validated:** 2026-10-03, #2992 round 1 — RECURRED: the ST-8 OTLP fixture emitted a terminal-`response` chat span with a blank agent reply, so the consuming `sessions` rollup predicate was not satisfied and Mission Monitor rendered `No sessions yet` (F-10). The round-2 fix added the consumer-invariant pin (a rollup-qualifying fixture + an E2E assertion). The rule was not applied at planning; downgraded Pending → Partial.
 
 ### G-286: full_size_copy_ac_planned_without_a_measured_corpus
 - **activation_date:** 2026-10-02
@@ -153,6 +174,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **effectiveness:** Pending — created 2026-10-02 from the #2977 recurrence; the script fix is the open follow-up.
 - **re-validated:** 2026-10-02, #2979 — RECURRED: the round-2 `tests-commit` again left the reconciled suite paths staged/dirty on `spec/2979`, and the SI had to reset the branch and merge `origin/main` by SHA to complete the G-032 sync before the tester. The script fix remains the open follow-up.
 - **re-validated:** 2026-10-02, #2960 — RECURRED: after the `planning → implementation` `tests-commit`, the serving checkout carried a line-ending-only dirty `apps/tauri/src-tauri/Cargo.toml`; the SI restored it from the committed tree-ish (`git checkout -- <path>`) before resetting the spec ref for the tester. The script fix remains the open follow-up.
+- **re-validated:** 2026-10-03, #2992 — RECURRED: the tester's `tests-commit` left the serving tree dirty (staged `.opencode/tests/headless-ingest/functional.md` + a line-ending-only `Cargo.toml`); cleared with `git checkout -f -B spec/2992 origin/spec/2992` before the G-032 main-tip merge. The script fix remains the open follow-up.
 
 ### G-288: plan_conflates_the_download_transfer_with_the_extracted_payload
 - **activation_date:** 2026-10-02
@@ -179,6 +201,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **guardrail:** When decomposing/reviewing a removal sweep, require the plan and the push to PRESERVE the surviving engine's regression suite and to CLASSIFY every removed test: ported to the surviving engine's gated suite / pure-logic restored unchanged / genuinely engine-only-removed with a written justification. Deleting an assertion is not passing it; a green receipt obtained by deleting the target engine's coverage is a false green and must be rejected at developer-push review.
 - **home:** playbooks/software-architect.md (decomposition) + playbooks/developer.md (verification) + playbooks/self-improver.md (developer-push review) + references.md
 - **effectiveness:** Confirmed (2026-10-02, #2979 round 1) — caught at push review before the testing round; the focused change restored the gated PG suite + ported the Mission-Monitor classification tests + restored the pure-logic tests, and the round-2 live round passed.
+- **re-validated:** 2026-10-03, #2992 — the CU-1/CU-2 refactors (no engine removal) kept every existing supervisor/store test and the #2989 spike test (lib 926→951 tests, all green); no assertion was deleted or weakened at developer-push review. Confirmed.
 
 ### G-291: byte_identity_backout_artifact_written_by_its_own_snapshot_step
 - **activation_date:** 2026-10-02
@@ -237,6 +260,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** .opencode/skills/dev-environment/SKILL.md + playbooks/tester.md + .opencode/scripts/run-exitcode.ps1 (document the outer-expansion pitfall) + references.md (this record)
 - **effectiveness:** Pending — created 2026-09-27 from the #2975 rounds; the workaround (set `$env:` inside a helper script) unblocked the gated leg.
 - **re-validated:** 2026-10-03, #2989 — the plan's REQ2b recipe specified two repeatable `-EnvVar` pairs, which the tester could not bind under `powershell -File` ("parameter 'EnvVar' is specified more than once"); it fell back to the G-279 helper-script form that sets the variables in-process, and the leg passed. Confirmed; the recipe text should use the single delimited / helper-script form.
+- **re-validated:** 2026-10-03, #2992 — both the developer and the tester drove the gated E2E via a helper script that set `FREDO_INGEST_E2E=1` (and `FREDO_PG_INSTALL_DIR`) INSIDE the script; the gate was shown ACTIVE (real test body, not the skip notice) in both rounds. Confirmed; the multi-variable `-EnvVar` collapse persists.
 - **re-validated:** 2026-10-02, #2979 — both tester rounds drove the gated PG suites via a helper script that set the gate inside the script; the gate was confirmed ACTIVE (the suites executed, not skipped). Confirmed. The launcher's multi-variable `-EnvVar` form still silently collapses to one variable — the documented pitfall persists.
 
 ### G-280: dev_env_down_hard_kill_orphans_the_managed_sidecar
@@ -248,6 +272,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **effectiveness:** Pending — routed to the Self-Improver 2026-09-27; the bounded post-kill reclaim is the open follow-up.
 - **re-validated:** 2026-10-02, #2979 — RECURRED: every `dev-env.ps1 -Action Down` left 10–21 orphan `postgres.exe` processes, and the bridge/OTLP ports stayed LISTENING on a dead PID (the tester cleared them manually). Reported per G-280, not attributed to the spec. The bounded post-kill reclaim remains the open follow-up.
 - **re-validated:** 2026-10-02, #2960 — RECURRED: after `dev-env Down` an orphan `fredo.exe` socket held :4318 and an orphan `postgres.exe` blocked the next embedded-PG start (`stage="start" … hardKilled`); the tester recovered with a kill + full Down → Up and reported it as an environment artifact, never a spec FAIL. The bounded post-kill reclaim remains the open follow-up.
+- **re-validated:** 2026-10-03, #2992 — RECURRED: a dead-owner orphan on port 9223 forced the MCP bridge to 9224, and an orphan `postgres.exe` + stale `postmaster.pid` survived under `.opencode/tmp/2992/`; both reported as G-280 environment artifacts, never spec FAILs. The bounded post-kill reclaim remains the open follow-up.
 
 ### G-276: audit_restart_flushes_drafts_after_the_destination_phase_entry
 - **activation_date:** 2026-09-27
@@ -269,6 +294,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **re-validated:** 2026-10-02, #2978 — the packaging plan shipped the three error-path induction seams `FREDO_PG_INSTALL_DIR` / `FREDO_PG_ARCHIVE_URL` / `FREDO_PG_ARCHIVE_SHA256`, and the tester induced BOTH AC2/AC4 failure paths LIVE (wrong digest → `[pg:archive] SHA-256 mismatch`, artifact deleted, no extract; unreachable URL → retryable `[pg:archive]` error, no half-extract, bounded). Confirmed.
 - **re-validated:** 2026-10-02, #2979 — the cutover plan named the retained induction seams (`FREDO_DATA_DIR`, `FREDO_MIGRATION_DIR`, `FREDO_MIGRATION_FORCE_MISMATCH` with all four sub-cases, `FREDO_PG_DATA_DIR`, `FREDO_PG_POOL_FORCE_FAIL`), CU-5 verified them present/reachable, and the tester induced the forced-mismatch fail-closed path LIVE (no marker, no install, `ready:false`, structured reason) plus the fresh-install path. The round-1 FAIL was a byte-identity product defect (G-291), not a missing induction lever. Confirmed.
 - **re-validated:** 2026-10-03, #2989 — the spike plan shipped the human-required Mission-Monitor E2E row (REQ2b) with NO credential/data-dir-sharing lever, so the app could not serve the PoC-seeded store and the row was unsatisfiable in-box; the SI rejected the tester's PASS as a false PASS (G-033) and the round-2 rework added the lever (a throwaway `FREDO_DATA_DIR` control plane seeded to match the PoC's cluster password), after which REQ2b went green (`failed`→`ready`, Mission Monitor rendered the seeded session). Refinement: the rule covers ANY external-runtime E2E leg where the runtime and the harness must agree on shared state (credentials, data dir, port) — not only error/FAILURE paths.
+- **re-validated:** 2026-10-03, #2992 — the plan shipped the lock-dir override, shutdown-file, run-ms, stop-bound and stop-hang levers, and the tester induced the lock-conflict fail-fast, bounded shutdown, and hard-kill legs LIVE. The two QA-added error-path EDGES (stale-descriptor fallback, forced-`reg.exe` failure) named no lever and shipped UNVERIFIED — see G-300, which extends this rule to QA-authored edges. Confirmed for ACs; the QA-edge gap is recorded separately.
 
 ### G-273: render_behaviour_declared_without_an_owning_acceptance_clause
 - **activation_date:** 2026-09-27
@@ -363,6 +389,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **re-validated:** 2026-10-02, #2979 — the real-corpus cutover leg was bounded per table and completed in ~12 min under the hard ceiling; the tester ran no unbounded binary across two rounds. Confirmed. (The known G-280 teardown orphans are a separate dev-env artifact, not a bound failure.)
 - **re-validated:** 2026-10-03, #2989 — the spike's gated embedded-PostgreSQL PoC set finite start/stop waits and guaranteed teardown on every run; the developer's and tester's runs all exited bounded (teardown Graceful 142–269 ms; post-stop TCP probe unreachable) and no unbounded binary ran. Confirmed.
 - **re-validated:** 2026-10-02, #2960 — both tester rounds ran only bounded legs (dev-env Up/Down, DOM/rect reads, one bounded psql attempt) with no unbounded binary; the round-1 F-65 FAIL was a real placement defect, not a bound failure. Confirmed.
+- **re-validated:** 2026-10-03, #2992 — the headless daemon and its E2E drove every start/stop/readiness/teardown wait under an explicit wall-clock bound with a hard-kill fallback; the gated E2E exited bounded (shutdown ~350–464 ms), the stop-hang seam hard-killed at its 2 s bound, and no unbounded binary ran. Confirmed.
 
 ### G-264: out_of_repo_glob_grep_hunt_stalls_the_harness
 - **activation_date:** 2026-09-26
