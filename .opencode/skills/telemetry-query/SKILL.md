@@ -11,7 +11,7 @@ description: Query Fredo's telemetry database (fredo.db) via sqlite3 CLI to insp
 
 ## How It Works
 
-`telemetry-query.ps1` → `sqlite3 --readonly fredo.db` → formatted output (JSON / markdown / table)
+`telemetry-query.ps1` → `sqlite3 --readonly fredo.db` (default) **or** the managed `psql` against an isolated env's embedded PostgreSQL store (G-284) → formatted output (JSON / markdown / table)
 
 The telemetry subsystem stores OpenTelemetry-compatible spans in a `telemetry_spans` table inside `fredo.db`. The same database used by `AppStore` (settings KV) and `FeatureStore` (feature-level data). This skill provides a read-only query interface — no mutations, no DDL, no DML.
 
@@ -37,13 +37,45 @@ $env:LOCALAPPDATA\com.fredo.app\fredo.db      # Windows local (non-roaming)
 
 The wrapper script searches these paths automatically. If the database is not found, it reports an error with the paths it attempted. For a live Mission Monitor / telemetry e2e, the DB is always `$env:APPDATA\com.fredo.app\fredo.db` (clean it with `powershell -File .opencode/scripts/clean-fredo-db.ps1`).
 
+## Isolated Environments (Spec #2944)
+
+An isolated dev environment keeps its own store at `FREDO_DATA_DIR/fredo.db` (default
+`<repo>/.opencode/tmp/envs/<envId>/data/fredo.db`), recorded as `dbPath` in that environment's
+process manifest `<env-root>/manifest.json`. Pass `-DbPath` for the SQLite engine, or `-Manifest`
+to resolve both `dbPath` and `ports.pg` — never read the sibling/legacy `%APPDATA%\com.fredo.app`
+path for an isolated env.
+
+```powershell
+# SQLite: an isolated env's own store
+powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
+  -Query "SELECT session_id, span_name FROM telemetry_spans" `
+  -DbPath ".opencode/tmp/envs/spec2944/data/fredo.db"
+
+# Manifest form: resolves the env's dbPath (SQLite), or ports.pg when no SQLite store exists
+powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
+  -Query "SELECT count(*) FROM telemetry_spans" `
+  -Manifest ".opencode/tmp/envs/spec2944/manifest.json"
+```
+
+**Engine substitution (G-284).** After the #2979 PostgreSQL cutover an environment's data plane is
+PostgreSQL and `fredo.db` may be absent — the engine-appropriate read lever is then the managed
+`psql` (database `postgres`, ephemeral port from the manifest `ports.pg`). Select it with
+`-PgPort <ports.pg>` (or `-Manifest`, when the manifest records `ports.pg` and the SQLite `dbPath`
+is absent); the wrapper locates the managed `psql` binary and bounds the connect
+(`PGCONNECT_TIMEOUT`). `wait-telemetry.ps1` is SQLite-only — for a PostgreSQL env poll via the
+allowlisted `run-exitcode.ps1 -Command` wrapper instead. Always state which engine produced the
+evidence.
+
 ## CLI Reference
 
 ```
 powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
   -Query "<SQL SELECT statement>" `
   [-Format json|md|table] `
-  [-Limit 1000]
+  [-Limit 1000] `
+  [-DbPath <env db path>] `
+  [-Manifest <env-root>/manifest.json] `
+  [-PgPort <env pg port>] [-PgHost 127.0.0.1] [-PgUser postgres] [-PgDatabase postgres] [-PgPassword <pw>]
 ```
 
 ### Parameters
@@ -53,6 +85,10 @@ powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
 | `-Query`  | Yes      | —       | SQL SELECT query (without trailing LIMIT — appended automatically). Must be read-only. |
 | `-Format` | No       | `table` | Output format: `json` (raw JSON array), `md` (markdown table), `table` (plain sqlite3 table) |
 | `-Limit`  | No       | `1000`  | Maximum rows returned. Appended as `LIMIT N` unless query already contains `LIMIT`. |
+| `-DbPath` | No       | (empty) | SQLite path override (Spec #2944). Empty ⇒ the fixed search order above. Pass an isolated env's `<env-root>/data/fredo.db`. |
+| `-Manifest` | No     | (empty) | Env process-manifest path (`<env-root>/manifest.json`). Resolves `dbPath` (SQLite) and `ports.pg` (PostgreSQL). Explicit `-DbPath`/`-PgPort` win. |
+| `-PgPort` | No       | `0`     | PostgreSQL loopback port (G-284). `>0` selects the managed-`psql` engine (database `postgres`). `0` ⇒ SQLite, or the `-Manifest` `ports.pg` when selected. |
+| `-PgHost` / `-PgUser` / `-PgDatabase` / `-PgPassword` | No | `127.0.0.1` / `postgres` / `postgres` / `$env:PGPASSWORD` | PostgreSQL connection fields — used only by the PG engine. |
 
 ### Guardrails (enforced by the wrapper)
 
@@ -60,6 +96,7 @@ powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
 - ✅ **Allowed**: queries must start with `SELECT`, `WITH` (CTE), or a permitted `PRAGMA`. `PRAGMA` is allowed only for `table_info`, `page_count`, `page_size`, `index_list`, and `index_info`.
 - ✅ **Default LIMIT**: If the query has no `LIMIT` clause, `LIMIT 1000` is appended automatically. Override with `-Limit N`.
 - ✅ **Read-only mode**: `sqlite3` is invoked with `-readonly` flag, preventing accidental writes even if DML somehow passes the keyword check.
+- ✅ **PostgreSQL engine**: the same statement-shape + forbidden-keyword scan applies; `psql` runs `-w` (never prompts for a password), `PGCONNECT_TIMEOUT=10`, and `ON_ERROR_STOP=1`.
 
 ---
 
@@ -361,7 +398,9 @@ The wrapper script provides clear error messages for common failure modes:
 | Condition | Error Message |
 |-----------|---------------|
 | `sqlite3` not found | `ERROR: sqlite3 CLI not found. Install sqlite3 (choco install sqlite / scoop install sqlite / apt install sqlite3)` |
+| `psql` not found (PG engine) | `ERROR: psql CLI not found (managed embedded PostgreSQL or PATH).` |
 | `fredo.db` not found | `ERROR: fredo.db not found. Searched: <comma-separated list of paths>`. Run Fredo at least once to create the database. |
+| Env manifest missing/invalid | `ERROR: env manifest not found: <path>` / `ERROR: env manifest is not valid JSON: <path>` (`-Manifest` only) |
 | DDL/DML in query | `ERROR: Query rejected — contains forbidden keyword: <keyword>. Only SELECT and permitted PRAGMA allowed.` |
 | Query execution failure | `ERROR: SQLite query failed: <sqlite3 stderr>` |
 | `telemetry_logs` table missing | `ERROR: no such table: telemetry_logs`. Ensure the Fredo application has been run at least once with logging enabled. |
