@@ -218,6 +218,14 @@ src-tauri/src/
 |       +-- classify.rs         — quote/comment-aware statement splitter + `sqlparser` classification
 |       +-- query.rs            — read-only/destructive/`unknown` safety gates, execution, bounded result cache + pagination
 |       +-- commands.rs         — the nine `db_*` Tauri commands
+|   +-- doom/                   — Doom Mode runtime + dedicated game window (Spec #2968): RESTful-DOOM engine supervised as a bounded child process, loopback HTTP control, live frame canvas
+|       +-- mod.rs              — feature module wiring + module tree
+|       +-- state.rs            — `ManagedDoom`/`DoomRuntimeState` + `DoomRuntimePhase`/`DoomErrorCode`/`DoomLaunchResult`/`DoomStatus`, timeout constants, AppStore keys, env seams
+|       +-- process.rs          — bounded spawn/stop (`taskkill /T /F` fallback), PID marker + image-guarded startup orphan sweep + `sweep_orphan_with` test seam
+|       +-- acquisition.rs      — SHA-256-pinned Freedoom IWAD + optional engine-archive acquisition (fail-closed; no default engine URL), bounded
+|       +-- resolver.rs         — engine/IWAD resolution (configured path → PATH → staged)
+|       +-- client.rs           — Rust-side engine HTTP (`/api/state`, `/api/step`, `/api/frame` indexed8→PNG), bounded
+|       +-- commands.rs         — open_doom_window, launch_doom_runtime, stop_doom_runtime, get_doom_status, doom_read_state, doom_step, doom_frame + exit/close hooks
 +-- infrastructure/
     +-- comm/                   — Canonical wire types + the single IPC emitter
     |   +-- mod.rs              — re-exports: FredoEvent, EventBus, CommAdapter, InternalAdapter
@@ -576,6 +584,13 @@ Shipped defaults: `Ctrl+Space` (launcher), `Ctrl+Shift+P` (action palette in the
 | theming | ✗ | — | Theme customization (hidden from grid) |
 | model-storage | ✓ | — | Model file management |
 | database-client | ✓ | `db_*` commands + `settingsService` | Built-in PostgreSQL client — saved connections (OS-keychain credentials), lazy schema browser, multi-tab SQL editor + bounded results grid, history/saved queries, CSV/JSON export; read-only by default |
+| doom | ✓ | Engine HTTP via Rust commands | Dedicated Doom game window — a RESTful-DOOM runtime supervised as a bounded child process, live frames rendered to a canvas, manual whole-state read + deterministic step (Spec #2968) |
+
+### Doom Runtime (`features/doom/`, Spec #2968)
+
+The first Doom Mode slice ships a **dedicated native window** (label `doom`, `index.html?view=doom`) that hosts a RESTful-DOOM engine running as a **supervised out-of-process child**. `open_doom_window` is singleton-per-label + focus-if-exists (mirroring the `terminal` window); the window mount calls the idempotent `launch_doom_runtime`, which spawns the engine on loopback and polls readiness under a finite bound, killing the child on timeout. All engine HTTP is **Rust-side** (the webview CSP `connect-src` forbids direct fetch): `doom_read_state` (`GET /api/state`), `doom_step` (`POST /api/step`, `{tics,actions}`), and `doom_frame` (`GET /api/frame` — indexed8+palette JSON decoded to a base64 PNG drawn to a canvas at `DOOM_FRAME_POLL_MS` ≈ 15 fps). Teardown is **bounded and guaranteed on every exit path** (window `CloseRequested`, `RunEvent::Exit`, start failure, startup sweep) with a hard-kill fallback and a PID-reuse image guard — no engine process outlives its window. Failure paths surface typed `DoomErrorCode` states in-window without crashing the app.
+
+**Acquisition / licensing decision (Spec #2968, AC5):** no trustworthy prebuilt RESTful-DOOM Windows binary exists upstream, so the engine is **user-supplied** (`doom-engine-path` / `FREDO_DOOM_ENGINE_PATH`) with a documented Windows build recipe; the libre **Freedoom** IWAD is the default game data (SHA-256-pinned, on-demand). The engine is GPL-2.0 and runs as an **arm's-length separate process** over loopback HTTP — the installer ships no GPL binary and no WAD. Full decision: [`docs/doom-mode-acquisition.md`](doom-mode-acquisition.md).
 
 ### Workspace Layout (`shared/window-system/`, Spec #2949)
 
@@ -919,6 +934,13 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 | `run_open_app_cli` | app_open | Spawn `fredo open-app <identity>` and return its bounded outcome (the companion's execution path reuses the CLI) |
 | `confirm_app_open_request` | app_open | Complete a pending `fredo open-app` request from the webview with the structured outcome |
 | `capture_screen_region` | screenshot | Capture screen region as base64 PNG |
+| `open_doom_window` | doom | Open (or focus) the singleton native `doom` window (`index.html?view=doom`) |
+| `launch_doom_runtime` | doom | Idempotent bounded launch of the Doom engine child process (spawn → readiness poll → kill-on-timeout) |
+| `stop_doom_runtime` | doom | Bounded stop of the Doom engine (graceful → hard-kill fallback) |
+| `get_doom_status` | doom | Report `DoomStatus` (`running`/`ready`/`phase`/`port`/`pid`/`lastError`/`code`) |
+| `doom_read_state` | doom | One `GET /api/state` — the whole game observation (verbatim JSON) |
+| `doom_step` | doom | One `POST /api/step` (`{tics,actions}`) — deterministic advance, returns the post-step state |
+| `doom_frame` | doom | One `GET /api/frame` — indexed8+palette decoded to a base64 PNG for the canvas |
 | `feature_store_ensure_table` | storage | Create a typed-column feature namespaced table |
 | `feature_store_insert` | storage | Insert rows into a feature namespaced table |
 | `feature_store_query` | storage | Query rows with optional WHERE/ORDER BY/LIMIT |
@@ -937,6 +959,7 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 
 1. Initialize `AppStore` (synchronous control-plane KV on `control.db`; the data plane runs on the shared embedded-PostgreSQL engine) — managed via `app.manage()`
 2. Manage `LlamaServerState` (the managed out-of-process `llama-server` lifecycle) and run the PID-reuse-guarded startup orphan sweep — no in-process engine load
+2b. Manage `DoomRuntimeState` (the supervised Doom engine) and run its PID/image-guarded startup orphan sweep
 3. Initialize `TerminalState` (PTY terminal) — managed via `app.manage()`
 4. Manage `EventBus` (the single `"fredo-stream-event"` emitter)
 5. Open `RtdbStore`, build the LRU cache + registry + FlushLoop, manage `Rtdb` + the ingest classifier, spawn the flush task (~5 ms) and the write-behind task (~30 ms), set retention defaults + startup prune, spawn the canonical backfill (read-only over `telemetry_spans`; one-shot completion marker)

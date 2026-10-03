@@ -130,9 +130,21 @@ function Write-Log {
 # Merge the repeatable `-EnvVar NAME=value` form into the hashtable so all
 # callers share one injection path. Fails closed on a malformed pair rather
 # than silently launching without the requested seam.
+# Accepts BOTH the repeatable flag form (`-EnvVar "A=1" -EnvVar "B=2"`) and a
+# single comma-delimited token (`-EnvVar "A=1,B=2,C=3"`) — some shells deliver
+# the comma form as ONE argument under `powershell -File`, which previously
+# bound only the first pair (observed #2968 round 1). Values must not contain a
+# comma; pipeline seams are paths/ints/enums, so this is safe.
 if ($EnvVar -and $EnvVar.Count -gt 0) {
-  foreach ($pair in $EnvVar) {
-    $eq = if ($null -ne $pair) { $pair.IndexOf("=") } else { -1 }
+  $pairs = @()
+  foreach ($raw in $EnvVar) {
+    if ($null -eq $raw) { continue }
+    if (([string]$raw) -match ',') { $pairs += (([string]$raw) -split ',') } else { $pairs += [string]$raw }
+  }
+  foreach ($pair in $pairs) {
+    $pair = ([string]$pair).Trim()
+    if ([string]::IsNullOrWhiteSpace($pair)) { continue }
+    $eq = $pair.IndexOf("=")
     if ($eq -lt 1) {
       Write-Log "ERROR: -EnvVar must be NAME=value (got '$pair')" "ERROR"
       exit 2
@@ -528,6 +540,7 @@ switch ($Action) {
     $deadline = (Get-Date).AddSeconds($TimeoutSecs)
     $viteReady = $ports.Vite
     $mcpReady  = $ports.Mcp
+    $appReady  = $false
 
     while ((Get-Date) -lt $deadline) {
       if (-not $viteReady) {
@@ -538,7 +551,14 @@ switch ($Action) {
         $mcpReady = Test-Port $McpPort
         if ($mcpReady) { Write-Log "MCP Bridge :$McpPort ready" }
       }
-      if ($viteReady -and $mcpReady) {
+      # G-304: ports alone are a FALSE-READY -- Vite/MCP helpers can outlive a
+      # dead app (or the app binary can fail to launch). Require the app
+      # process to actually be alive before declaring ready.
+      if (-not $appReady) {
+        $appReady = [bool](Get-Process -Name "fredo" -ErrorAction SilentlyContinue)
+        if ($appReady) { Write-Log "app process 'fredo' alive" }
+      }
+      if ($viteReady -and $mcpReady -and $appReady) {
         Write-Log "dev:tauri ready"
         exit 0
       }
@@ -548,6 +568,7 @@ switch ($Action) {
     $missing = @()
     if (-not $viteReady) { $missing += "Vite :$VitePort" }
     if (-not $mcpReady)  { $missing += "MCP Bridge :$McpPort" }
+    if ($viteReady -and $mcpReady -and -not $appReady) { $missing += "app process 'fredo' (ports bound but the app is not running -- a failed/absent launch is NOT ready)" }
     Write-Log "Timed out after ${TimeoutSecs}s waiting for: $($missing -join ', ')" -Level ERROR
     Write-Log "Check logs: powershell -File .opencode/scripts/dev-env.ps1 -Action Logs" -Level WARN
     exit 1

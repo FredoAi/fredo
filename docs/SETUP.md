@@ -231,6 +231,10 @@ A parity-clean cutover records the pre-cutover per-table row counts and SHA-256 
 
 The retained `fredo.db` is **byte-identical to the pre-cutover state**. Rows written **after** the cutover live only in PostgreSQL and are **not reverse-exported** (a PostgreSQL → SQLite incremental export is explicitly out of scope). A downgrade to a pre-cutover build therefore reads the pre-cutover state and **does not** see post-cutover rows — this data loss is **accepted** and is the documented trade-off of the PostgreSQL cutover. To back out: stop the app, restore `fredo.pre-cutover.db` over `fredo.db` (or use the retained `fredo.db`), then start the pre-cutover build.
 
+## Doom Mode (optional)
+
+The Doom game window (Spec #2968) runs a **user-supplied** RESTful-DOOM engine as a supervised child process; Fredo ships no engine binary and no WAD. To use it you provide a Windows engine binary (there is no trustworthy prebuilt upstream — build it from the RESTful-DOOM source) and, optionally, a WAD. The default game data is the libre **Freedoom** IWAD, acquired on demand and SHA-256-pinned; the retail `DOOM.WAD` is only ever used via a user-supplied path. Configure the engine/IWAD in Settings (keys `doom_engine_path` / `doom_iwad_path`) or via the env overrides `FREDO_DOOM_ENGINE_PATH` / `FREDO_DOOM_IWAD_PATH` / `FREDO_DOOM_INSTALL_DIR`. The full acquisition, licensing (GPL-2.0), and packaging decision, plus the reproducible Windows build recipe, is in [`docs/doom-mode-acquisition.md`](doom-mode-acquisition.md).
+
 ## Environment Variables
 
 The Tauri app does not require environment variables for basic operation. For connecting to external services (Azure DevOps, Kubernetes, Jira), configure credentials via the Settings panel in the app UI.

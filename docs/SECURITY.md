@@ -75,6 +75,24 @@ Slices 1-6 of the SQLite → embedded-PostgreSQL migration ship the **lifecycle 
 
 ---
 
+## Doom Runtime (`features/doom`, Spec #2968)
+
+The Doom Mode foundation runs a RESTful-DOOM engine as a **supervised out-of-process child**, launched on demand by the `doom` window and controlled over loopback HTTP. The engine binary is **user-supplied** (no prebuilt exists upstream) and the default game data is the libre **Freedoom** IWAD; the installer ships **no GPL engine binary and no WAD**.
+
+**Protections:**
+- Loopback-only: the engine binds `127.0.0.1:{port}` only — never a public interface
+- All engine HTTP is **Rust-side**; the webview CSP `connect-src 'self' ipc: http://ipc.localhost` is unchanged, so the webview cannot fetch the engine directly (it only receives base64 PNG frames)
+- Spawned/stopped only through `features/doom`; terminated on window close **and** app exit (`RunEvent::Exit`), both **bounded** with a `taskkill /T /F` hard-kill fallback and guaranteed teardown on every exit path — no engine process outlives its window
+- A PID-reuse-guarded startup sweep (image name + PID marker) reclaims an orphan after a hard-kill
+- Acquisition is SHA-256-pinned and fail-closed; the shipped default has **no** engine archive URL (no unverified download), and a configured archive without a pinned SHA-256 is refused
+- GPL-2.0 posture: the engine runs as an **arm's-length separate process** over loopback HTTP (not linked); the acquisition UI surfaces the license/source offer
+
+**Limitations:**
+- Any process on the same machine can reach the loopback engine port; the engine has no authentication — the same local-user threat model as the IPC socket and OTLP receivers
+- The engine is user-supplied, so its provenance is outside Fredo's integrity surface (documented in `docs/doom-mode-acquisition.md`)
+
+---
+
 ## Database Client (`features/db_client`, Spec #2950)
 
 The built-in PostgreSQL client connects to **external** PostgreSQL databases (separate per-connection pools; the embedded-PostgreSQL persistence plane is never touched).
