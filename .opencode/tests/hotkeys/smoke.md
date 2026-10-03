@@ -197,3 +197,31 @@ Run on the served app (dev-env UP `-Spec 2959`, driver `com.fredo.app`, main win
 **Smoke verdict for #2959 round 3: PASS (all live quick paths); the feature verdict is PASS on
 REQ-1..5 + NFR-1/3/4 (REQ-5 fixed), with NFR-2 carried as a named pin-only blocker.**
 
+## Spec #2960 quick paths (typing-vs-navigating signal + zero-knowledge discovery)
+
+> Live-plan quick paths for issue #2960 (S3). **Verification policy: live** — each carries the
+> DOM/a11y assertion plus a `telemetry_spans` receipt read via the managed `psql` lever (G-284; the
+> SQLite `telemetry-query` skill reads an empty/stale store on the PostgreSQL-default path).
+> Selectors are REALIGNED at convergence to the Architect's FINAL BINDING names block (panel form;
+> see functional.md #2960 header) — `hotkeys-keys-discovery`, `hotkeys-input-regime`,
+> `hotkeys-intro`, `fredo.hotkeys.introSeen`.
+
+- [ ] S-17: **App boots + the regime signal is present.** Load the app on the PostgreSQL-default
+      path and read `data-fredo-input-regime` and the signal testid. **Expected:** `#root` mounts,
+      `data-fredo-hotkeys-engine="1"`, the signal is rendered (non-colour-only) with a declared
+      regime value; no `vite-error-overlay`; console clean. *(live receipt)*
+- [ ] S-18: **The discovery affordance is present without any chord.** On first paint, locate
+      `hotkeys-keys-discovery` with no chord pressed and no prior knowledge. **Expected:** the
+      affordance is rendered and visible on the resting desktop; activating it by keyboard alone
+      reveals the current context's keys; console clean. *(live receipt)*
+- [ ] S-19: **Typing is stated, navigating is stated.** Focus `TEXTAREA[data-testid=
+      "launcher-command-input"]` and read the signal; then blur to a non-field and re-read.
+      **Expected:** the signal reads "typing" in the field and "navigating" outside it, via
+      non-colour channels, with the change announced through `hotkeys-announcer`. *(live receipt)*
+- [ ] S-20: **Mission Monitor still renders live sessions on the default boot path (E2E).** Boot the
+      app, open Mission Monitor, drive a live session. **Expected:** the live session(s) render from
+      the RTDB row pipeline and the drive window carries a `telemetry_spans` receipt via the managed
+      `psql`; console clean. *(live receipt)*
+  - **Edge:** G-280 orphan `postgres.exe`/stale sockets block boot → full dev-env Down → Up, then
+    report (environment artifact, not a spec FAIL).
+
