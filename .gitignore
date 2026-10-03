@@ -180,6 +180,10 @@ package-lock.json
 apps/browser-extension-svelte
 .worktrees/
 
+# Per-issue serving checkouts (Spec #2944): a worktree on spec/<issue> that the
+# dev-env tool serves from, e.g. .serve/2944. Never committed.
+.serve/
+
 # OpenCode agent runtime state
 .opencode/state/
 
