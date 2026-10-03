@@ -193,19 +193,12 @@ export const DoomWindow: React.FC = () => {
         applyStatus(event);
       }),
     );
-    // 1b. Native-window close registration: releases UI resources only. The
-    // engine teardown is Rust-owned (`CloseRequested` in `open_doom_window`);
-    // the React layer MUST NOT call `stop_doom_runtime`.
-    const closeRegistration = registerNativeWindowClose(() => {
-      if (frameTimerRef.current !== null) {
-        window.clearInterval(frameTimerRef.current);
-        frameTimerRef.current = null;
-      }
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
-    });
+    // 1b. Native close is intentionally NOT intercepted here. The `terminal`
+    // window registers no JS close listener and closes through Tauri's default
+    // native path; the `doom` window mirrors that so the OS / `close()` request
+    // actually closes it. The engine teardown is Rust-owned (`CloseRequested`
+    // in `open_doom_window`); the React layer MUST NOT call
+    // `stop_doom_runtime`. UI resources are released by this effect's cleanup.
 
     // 2. Idempotent launch — only after the listener is registered.
     void Promise.all(unlisteners).then(() => {
@@ -217,7 +210,6 @@ export const DoomWindow: React.FC = () => {
       cancelled = true;
       mountedRef.current = false;
       unlisteners.forEach((pending) => pending.then((fn) => fn()).catch(() => {}));
-      closeRegistration.then((fn) => fn()).catch(() => {});
       if (frameTimerRef.current !== null) {
         window.clearInterval(frameTimerRef.current);
         frameTimerRef.current = null;
@@ -546,23 +538,17 @@ const Center: React.FC<{ children: React.ReactNode }> = ({ children }) => (
 );
 
 /**
- * Register a handler for the native Tauri window's close request.
+ * The `doom` window deliberately registers NO JS `onCloseRequested` handler.
  *
- * Guarded + dynamic (the repo convention — never a static `@tauri-apps/api`
- * import) and a no-op outside Tauri. It only releases UI resources; the engine
- * teardown is Rust-owned, so it never calls `stop_doom_runtime`.
+ * `@tauri-apps/api`'s `onCloseRequested` wrapper auto-invokes
+ * `getCurrentWindow().destroy()` when the handler does not `preventDefault()`;
+ * `destroy` requires `core:window:allow-destroy`, which the `doom` window's
+ * capability does not grant, so the invoke is ACL-denied and the window never
+ * closes. The working `terminal` window registers no JS close listener and
+ * closes through Tauri's default native path — `doom` mirrors that. Engine
+ * teardown stays Rust-owned via the `CloseRequested` handler wired in
+ * `open_doom_window` (`features/doom/commands.rs`), so the React layer MUST NOT
+ * intercept the close or call `stop_doom_runtime`.
  */
-async function registerNativeWindowClose(onClose: () => void): Promise<() => void> {
-  if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return () => {};
-  try {
-    const { getCurrentWindow } = await import('@tauri-apps/api/window');
-    const unlisten = await getCurrentWindow().onCloseRequested(() => {
-      onClose();
-    });
-    return unlisten;
-  } catch {
-    return () => {};
-  }
-}
 
 export default DoomWindow;
