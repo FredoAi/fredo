@@ -58,6 +58,31 @@
   wait; every start/stop/teardown has a finite bound + hard-kill fallback. **Edge / FAIL:** any
   await without a finite bound.
 
+## Lever / baseline regression rows (G-275)
+
+- [ ] **R-13 (single-env happy path preserved — no `-EnvId`):** `dev-env.ps1 -Action Up -Spec <N>`
+  (legacy — no `-EnvId`/`-EnvSlot`/`-ServingCheckout`) still starts the single instance on the
+  default ports (Vite 5174 / MCP 9223 / OTLP 4317+4318 / llama 8080), and `-Action Status` /
+  `-Action Down` behave as before. **FAIL:** the default path now requires an env id, or its
+  ports/strings change.
+
+- [ ] **R-14 (`-Spec` root currency + `-At` baseline leg still work):** `dev-env.ps1 -Action Up -Spec
+  <N>` enforces the G-052 root-on-`spec/<N>`-at-origin-tip guard; `-Action Up -Spec <N> -At <pre-fix
+  sha>` still materializes the pre-fix `apps/` product code and cold-starts it; the next `Up` (no
+  `-At`) restores the tip. **FAIL:** the currency guard is skipped/loosened, or the baseline leg no
+  longer serves the ancestor.
+
+- [ ] **R-15 (G-304 app-alive readiness gate intact):** `Up` never reports ready on bound ports
+  alone — env mode requires the `fredo` process alive AND owning the recorded MCP port; legacy mode
+  requires the `fredo` process alive. A ports-only readiness is a FALSE-READY. **FAIL:** `Up` exits
+  0 with ports bound but no live app process.
+
+- [ ] **R-16 (G-280/G-297 orphan reaping preserved, repo-scoped):** `dev-env.ps1 -Action Hygiene`
+  (passthrough to `process-hygiene.ps1`) still lists/cleans orphaned opencode/node processes scoped
+  to this repo; it never kills the current run's live `fredo.exe` children or anything outside the
+  repo. **FAIL:** a global/out-of-repo kill, or the Hygiene passthrough no longer resolves the
+  sibling copy.
+
 ## Linked suites (overlapping surface — run alongside)
 
 - [ ] **R-10:** inherit and run `.opencode/tests/mission-monitor/regression.md` — the row-pipeline /

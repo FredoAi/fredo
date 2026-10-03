@@ -35,6 +35,34 @@ One machine can run several fully isolated Fredo environments concurrently, one 
 - **Identity / routing:** `FREDO_ENV_ID` is injected into the app and every OpenCode session it spawns; the CLI pipe is `FREDO_CLI_PIPE` (`\\.\pipe\fredo-ipc-<envId>`); the MCP `appIdentifier` for an environment is its MCP port as a decimal string (e.g. `"16001"`). Read an environment's rows from ITS OWN store, never the legacy `%APPDATA%\com.fredo.app` path.
 - **Read lever is engine-dependent (G-284).** When an environment's data plane is SQLite, use the `telemetry-query` skill with `-DbPath <env-root>/data/fredo.db` (or `-Manifest <env-root>/manifest.json`). When the #2979 PostgreSQL store is live (the env may have no `fredo.db`), use the managed `psql` at the manifest's ephemeral `ports.pg` (database `postgres`) through the allowlisted `run-exitcode.ps1 -Command` wrapper; the same engine selection is built into `telemetry-query.ps1` (`-PgPort`/`-Manifest`). State which engine produced the evidence.
 
+### Continuous isolation invariant checker (Spec #2944 ST-7)
+
+Single read-only script: `.opencode/scripts/verify-env-isolation.ps1`. While two or more environments are live it proves — **read-only** (never kills, never binds, never starts/stops) — that each env's data root is distinct, no port is recorded by two envs, and each live env's recorded endpoint is bound only by a PID recorded in that env's own manifest (never a sibling's, never a foreign owner). It owns the *continuous* invariant (R-1.3/R-2.3) as its own line; `dev-env.ps1 -Action Status` also invokes it read-only (`-Summary`) and prints an `isolation` assertion line.
+
+| Command | Description |
+|---------|-------------|
+| `powershell -File .opencode/scripts/verify-env-isolation.ps1 -Spec 2944,2945` | Check the named issues' default manifests (`<repo>/.opencode/tmp/envs/spec<N>/manifest.json`). |
+| `powershell -File .opencode/scripts/verify-env-isolation.ps1 -EnvRoot .opencode/tmp/envs/spec2944 -EnvRoot .opencode/tmp/envs/spec2945` | Check explicit env roots (each resolves to `<root>/manifest.json`). |
+| `powershell -File .opencode/scripts/verify-env-isolation.ps1 -ManifestPath <manifest.json> [...]` | Check explicit manifest paths. |
+| `powershell -File .opencode/scripts/verify-env-isolation.ps1 -Scan` | Discover every `<repo>/.opencode/tmp/envs/*/manifest.json`; inactive (not-live) envs are reported and excluded from the cross-env pair checks. `-Scan` is also the default when no manifest/root/spec is given. |
+| `powershell -File .opencode/scripts/verify-env-isolation.ps1 -Summary` | Print a single result line (used by `dev-env.ps1 -Action Status`). |
+
+Notes:
+- **Exit code:** `0` = OK (or trivially OK for a single/zero env); `1` = at least one isolation violation (shared data root, duplicate port, duplicate env id, cross-env PID, or a live env's non-optional endpoint bound by an unrecorded/foreign owner). Optional endpoints (the companion `llama` port) not bound are a warning, not a violation.
+- `-TimeoutSecs <n>` bounds each native query (default 5 s, G-263) — no unbounded wait.
+- Read-only: safe to run repeatedly while envs are live; it never alters `Status` semantics.
+
+### Error-path induction levers (Spec #2944 ST-14, G-275)
+
+Test-only levers for the error-path ACs live in `.opencode/tests/multi-env-isolation/error-path-levers.ps1` (inert by default; writes only under `.opencode/tmp/2944/`). Run them through the allowlisted `run-exitcode.ps1 -Command` wrapper:
+
+| Command | Induces |
+|---------|---------|
+| `... -Lever NoImageKill` | Static pin: `dev-env.ps1` contains no global image-name kill (`/IM`) and its teardown is image-guarded (AC3). |
+| `... -Lever DecoyManifest -Stage Run` | A decoy manifest recording a long-running `Start-Sleep` PID under role `app`; Down must refuse the foreign-image PID and leave it alive (AC3). |
+| `... -Lever PortCollision` | A bound recorded port + an `Up` to that port; `Up` must exit non-zero with the fail-closed collision message and must not scan (AC4). |
+| `... -Lever ForgedEvidence -RunAudit` | A tampered `evidence.json` via `FREDO_EVIDENCE_FILE`; the audit must reject it (AC5). |
+
 ## Cleaning the Fredo DB (fresh-slate reset for live e2e)
 
 Single script: `.opencode/scripts/clean-fredo-db.ps1` (allowed for the tester + self-improver).
