@@ -101,12 +101,20 @@ const FredoPlugin: Plugin = async (
   const otlpEndpointEnv = process.env["OPENCODE_OTLP_ENDPOINT"] ?? "(not set)";
   const hasOptionsEnabled = typeof (options as any)?.enabled === "boolean";
   const optionsEnabledVal = hasOptionsEnabled ? String((options as any).enabled) : "(not provided)";
+  // Spec #2944 ST-11: the plugin file is shared/global, but the effective endpoint
+  // is resolved from the per-process env, so a session spawned by env A streams to
+  // A's receiver. Emitted only when FREDO_ENV_ID is set — inert on the legacy
+  // single-env path (no extra output, no routing/behavior change).
+  const fredoEnvId = process.env["FREDO_ENV_ID"];
 
   console.error(`\n[fredo-opencode-plugin] v${PLUGIN_VERSION} starting`);
   console.error(`[fredo-opencode-plugin]   enabled (resolved): ${config.enabled}`);
   console.error(`[fredo-opencode-plugin]   enabled (options):  ${optionsEnabledVal}${hasOptionsEnabled ? "" : " — options tuple not provided (auto-discovered plugin)"}`);
   console.error(`[fredo-opencode-plugin]   OPENCODE_ENABLE_TELEMETRY: ${enableTelemetryEnv}`);
   console.error(`[fredo-opencode-plugin]   OPENCODE_OTLP_ENDPOINT:    ${otlpEndpointEnv}`);
+  if (fredoEnvId) {
+    console.error(`[fredo-opencode-plugin]   effective endpoint: ${config.endpoint} (FREDO_ENV_ID=${fredoEnvId})`);
+  }
   console.error(`[fredo-opencode-plugin]   FREDO_SUPPRESS_PARENT_ROUTING: ${SUPPRESS_PARENT_ROUTING} (test seam — legacy-shaped spans when true)`);
   console.error(`[fredo-opencode-plugin]   directory: ${directory}\n`);
 
