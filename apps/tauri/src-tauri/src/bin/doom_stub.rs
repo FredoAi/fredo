@@ -22,10 +22,12 @@
 //! | `FREDO_DOOM_STUB_EXIT=1` | Exit immediately before binding (drives `readyTimeout`). |
 //! | `FREDO_DOOM_STUB_HANG=1` | Ignore termination requests (drives the hard-kill fallback). |
 //! | `FREDO_DOOM_STUB_FAIL=state\|step\|frame` | That endpoint returns HTTP 500 (drives `requestFailed`, QA F-14). |
+//! | `FREDO_DOOM_STUB_FRAME_503=<count\|duration>` | `GET /api/frame` returns HTTP **503** (transient) for the first `<count>` requests, or for a `<duration>` (`250ms` / `2s` / `1m`, anchored at the first frame request), then 200 resumes — the deterministic `frameNotReady` / R-1.4 / QA F-4 lever. |
 //!
 //! Run it with a finite bound only — it is a long-running server.
 
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::{
     body::Bytes,
@@ -48,6 +50,7 @@ struct StubState {
     fail_state: bool,
     fail_step: bool,
     fail_frame: bool,
+    frame_503: Arc<Mutex<Frame503Runtime>>,
 }
 
 #[tokio::main]
@@ -68,7 +71,19 @@ async fn main() {
         fail_state: fail_flag("state"),
         fail_step: fail_flag("step"),
         fail_frame: fail_flag("frame"),
+        frame_503: Arc::new(Mutex::new(Frame503Runtime {
+            spec: std::env::var("FREDO_DOOM_STUB_FRAME_503")
+                .ok()
+                .and_then(|value| parse_frame_503(&value)),
+            consumed: 0,
+            deadline: None,
+        })),
     };
+    if state.frame_503.lock().expect("stub frame503 lock").spec.is_some() {
+        eprintln!(
+            "doom-stub: FREDO_DOOM_STUB_FRAME_503 set — GET /api/frame returns 503 while active"
+        );
+    }
 
     let router = Router::new()
         .route("/api/state", get(get_state))
@@ -125,6 +140,80 @@ fn fail_flag(which: &str) -> bool {
     std::env::var("FREDO_DOOM_STUB_FAIL")
         .map(|value| value.trim().eq_ignore_ascii_case(which))
         .unwrap_or(false)
+}
+
+// ── FREDO_DOOM_STUB_FRAME_503 seam (R-1.4 / F-4) ─────────────────────────────
+
+/// The parsed `FREDO_DOOM_STUB_FRAME_503` value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Frame503Spec {
+    /// Return 503 for the first `n` frame requests, then 200.
+    Count(u64),
+    /// Return 503 until `duration` after the FIRST frame request, then 200.
+    Duration(Duration),
+}
+
+/// Mutable state for the frame-503 seam (countdown / lazily-anchored deadline).
+struct Frame503Runtime {
+    spec: Option<Frame503Spec>,
+    consumed: u64,
+    deadline: Option<Instant>,
+}
+
+/// Parse `FREDO_DOOM_STUB_FRAME_503` = `<count>|<duration>`:
+///
+/// * a bare integer is a request **count** (`5` => the next 5 `/api/frame` calls 503);
+/// * a `ms`/`s`/`m` suffix is a **duration** (`250ms`, `2s`, `1m`) anchored at the
+///   first frame request.
+///
+/// Blank / unset / `0` / unparseable => `None` (the seam is inert).
+fn parse_frame_503(value: &str) -> Option<Frame503Spec> {
+    let value = value.trim().to_ascii_lowercase();
+    if value.is_empty() {
+        return None;
+    }
+    let positive = |text: &str| text.trim().parse::<u64>().ok().filter(|n| *n > 0);
+    if let Some(rest) = value.strip_suffix("ms") {
+        return positive(rest).map(|n| Frame503Spec::Duration(Duration::from_millis(n)));
+    }
+    if let Some(rest) = value.strip_suffix('s') {
+        return positive(rest).map(|n| Frame503Spec::Duration(Duration::from_secs(n)));
+    }
+    if let Some(rest) = value.strip_suffix('m') {
+        return positive(rest)
+            .map(|n| Frame503Spec::Duration(Duration::from_secs(n.saturating_mul(60))));
+    }
+    positive(&value).map(Frame503Spec::Count)
+}
+
+/// Whether the next `/api/frame` request should be answered with HTTP 503. Counts
+/// down by request; a duration anchors at the first call. Once exhausted/elapsed
+/// the seam clears itself so 200 frames resume.
+fn frame_503_active(gate: &Arc<Mutex<Frame503Runtime>>) -> bool {
+    let mut runtime = gate.lock().expect("stub frame503 lock");
+    match runtime.spec {
+        None => false,
+        Some(Frame503Spec::Count(limit)) => {
+            if runtime.consumed < limit {
+                runtime.consumed += 1;
+                true
+            } else {
+                runtime.spec = None;
+                false
+            }
+        }
+        Some(Frame503Spec::Duration(duration)) => {
+            let deadline = *runtime
+                .deadline
+                .get_or_insert_with(|| Instant::now() + duration);
+            if Instant::now() < deadline {
+                true
+            } else {
+                runtime.spec = None;
+                false
+            }
+        }
+    }
 }
 
 // ── Contract shapes ───────────────────────────────────────────────────────────
@@ -202,6 +291,16 @@ fn failure(what: &str) -> Response {
         .into_response()
 }
 
+/// The engine's transient not-ready response (ST-1 contract: HTTP 503 while the
+/// graphics subsystem is not up yet). The runtime maps this to `frameNotReady`.
+fn frame_not_ready() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(serde_json::json!({ "error": "Graphics are not up yet" })),
+    )
+        .into_response()
+}
+
 async fn get_state(State(state): State<StubState>) -> Response {
     if state.fail_state {
         return failure("state");
@@ -225,6 +324,9 @@ async fn post_step(State(state): State<StubState>, body: Bytes) -> Response {
 async fn get_frame(State(state): State<StubState>) -> Response {
     if state.fail_frame {
         return failure("frame");
+    }
+    if frame_503_active(&state.frame_503) {
+        return frame_not_ready();
     }
     let tick = *state.tick.lock().expect("stub tick lock");
     Json(frame_json(tick)).into_response()
@@ -320,5 +422,56 @@ mod tests {
         let a = frame_json(0);
         let b = frame_json(1);
         assert_ne!(a["pixels"], b["pixels"], "frames must differ across ticks");
+    }
+
+    #[test]
+    fn parse_frame_503_reads_counts_and_durations() {
+        // Inert forms.
+        assert_eq!(parse_frame_503(""), None);
+        assert_eq!(parse_frame_503("   "), None);
+        assert_eq!(parse_frame_503("0"), None);
+        assert_eq!(parse_frame_503("nope"), None);
+        assert_eq!(parse_frame_503("0s"), None);
+
+        // Counts.
+        assert_eq!(parse_frame_503("5"), Some(Frame503Spec::Count(5)));
+        assert_eq!(parse_frame_503("  12 "), Some(Frame503Spec::Count(12)));
+
+        // Durations (case-insensitive suffix; `ms` must win over `s`).
+        assert_eq!(
+            parse_frame_503("250ms"),
+            Some(Frame503Spec::Duration(Duration::from_millis(250)))
+        );
+        assert_eq!(
+            parse_frame_503("2S"),
+            Some(Frame503Spec::Duration(Duration::from_secs(2)))
+        );
+        assert_eq!(
+            parse_frame_503("1m"),
+            Some(Frame503Spec::Duration(Duration::from_secs(60)))
+        );
+    }
+
+    #[test]
+    fn frame_503_count_exhausts_then_clears() {
+        let gate = Arc::new(Mutex::new(Frame503Runtime {
+            spec: Some(Frame503Spec::Count(2)),
+            consumed: 0,
+            deadline: None,
+        }));
+        assert!(frame_503_active(&gate), "first request 503s");
+        assert!(frame_503_active(&gate), "second request 503s");
+        assert!(!frame_503_active(&gate), "count exhausted => 200 resumes");
+        assert!(!frame_503_active(&gate), "the seam stays clear");
+    }
+
+    #[test]
+    fn frame_503_is_inert_when_unset() {
+        let gate = Arc::new(Mutex::new(Frame503Runtime {
+            spec: None,
+            consumed: 0,
+            deadline: None,
+        }));
+        assert!(!frame_503_active(&gate));
     }
 }

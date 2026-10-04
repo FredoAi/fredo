@@ -86,6 +86,77 @@ powershell -File scripts/doom/build-restful-doom.ps1   # exit 3, typed "offline"
 Remove-Item Env:\FREDO_DOOM_BUILD_OFFLINE
 ```
 
+## `stage-doom-fixture.ps1`
+
+Stages the **real engine + the Freedoom IWAD** into an in-repo fixture directory
+(`.opencode/tmp/2968/fixtures/` by default) and prints the exact environment
+exports QA needs — both the happy path and one line per AC4 / R-1.4 induction
+lever. Idempotent: a re-run copies nothing it already has.
+
+Layout produced under `-FixtureDir`:
+
+| Path | Contents |
+|------|----------|
+| `engine/restful-doom.exe` | The real built engine (from `build-restful-doom.ps1`). |
+| `engine/*.dll` | The engine's MSYS2 runtime DLLs, copied beside it so the fixture is self-contained (ST-1 §6: without them the child exits immediately, indistinguishable from a failed launch). |
+| `engine/doom-engine.invalid.exe` | A deliberately non-PE file → `FREDO_DOOM_ENGINE_PATH` `spawnFailed` lever. |
+| `freedoom/freedoom1.wad` | The pinned Freedoom 0.13.0 IWAD (verified by SHA-256). |
+| `freedoom/freedoom-0.13.0.zip` | The verified archive (only when downloaded by this script). |
+
+**Nothing is committed.** The built binary and the WAD never enter the repo
+(G-172); `.opencode/tmp/` is gitignored.
+
+### Usage
+
+```powershell
+# Stage into the default in-repo fixture dir (builds/copies the engine + IWAD).
+powershell -File scripts/doom/stage-doom-fixture.ps1
+
+# Show the resolved paths + exports without touching the network or filesystem.
+powershell -File scripts/doom/stage-doom-fixture.ps1 -PlanOnly
+```
+
+### Parameters
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `-FixtureDir` | `<repo>\.opencode\tmp\2968\fixtures` | Destination. |
+| `-EngineCommit` | `eded41b5597b7738ec1fa06d24f62b53db982c2c` | Pinned commit forwarded to the build script. |
+| `-SourceInstallDir` | `%APPDATA%\com.fredo.app\doom` | Reuse an already-staged engine/WAD from here before building/downloading. |
+| `-Msys2Root` | auto-probe | Forwarded to the build script. |
+| `-SkipEngine` / `-SkipIwad` | off | Require the artifact to already be staged. |
+| `-PlanOnly` | off | Print the plan + exports only (no network/filesystem writes). |
+
+### Environment
+
+| Variable | Effect |
+|----------|--------|
+| `FREDO_DOOM_BUILD_OFFLINE=1` | Refuse the network: no IWAD download; exit **3** when none is staged. |
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Staged OK — stdout carries the `NAME=value` env exports. |
+| `2` | **TOOLING GAP** — the engine toolchain is absent / the engine could not be produced. |
+| `3` | Offline requested, or a download failed / failed its pin. |
+| `4` | IWAD extraction or SHA-256 verification failed. |
+
+### AC4 / R-1.4 induction levers
+
+The script prints these; inject one at a time via the dev-environment skill
+(`dev-env.ps1 -Action Up -Spec 2968 -EnvVar "NAME=value"`). Every seam is inert
+when unset.
+
+| Env | Induces |
+|-----|---------|
+| `FREDO_DOOM_ENGINE_PATH=<engine/doom-engine.invalid.exe>` | `spawnFailed` |
+| `FREDO_DOOM_IWAD_PATH=<freedoom/missing.wad>` | `notConfigured` |
+| `FREDO_DOOM_ARCHIVE_URL` + `_SHA256` + `_BYTES` | `acquireFailed` |
+| `FREDO_DOOM_REQUIRE_REAL_ENGINE=1` + the built stub path | anti-stub refusal |
+| `FREDO_DOOM_BUILD_OFFLINE=1` | build-script failure (`build-restful-doom.ps1` exit 3) |
+| `FREDO_DOOM_STUB_FRAME_503=<count\|duration>` | `frameNotReady` (stub only; e.g. `10`, `250ms`, `2s`, `1m`) |
+
 ## Relationship to the runtime
 
 The runtime resolves the engine (`apps/tauri/src-tauri/src/features/doom/resolver.rs`)
