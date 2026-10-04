@@ -37,15 +37,15 @@
 > `{"malformed":true}`/`{"error":...}`, `FREDO_DOOM_STUB_EPISODE_FAIL=1`, stub death/exit
 > levers) or is marked a static/unit pin, non-AC.
 
-- [ ] E-15: `stop_doom_autoplay` mid-decision — does the loop stop cooperatively within its
+- [x] E-15 (PASS 2026-10-04 #2969 r1 — stop mid-run → phase idle, steps 531→534, no in-flight request, no orphan): `stop_doom_autoplay` mid-decision — does the loop stop cooperatively within its
   bound (`Stopping`→`Idle`), leaving no in-flight engine request and no orphan? (Lever: scripted loop + stop.)
-- [ ] E-16: A death observation arrives exactly while a `POST /api/step` is in flight — is the
+- [x] E-16 (PASS 2026-10-04 #2969 r1 — the loop is strictly sequential read→decide→step, so a terminal observation is only seen on the post-step read; the DIE_AFTER leg showed each death → exactly one clean restart with no lost/duplicated episode call and no panic; unit pin `a_dead_observation_restarts_once_then_resumes`): A death observation arrives exactly while a `POST /api/step` is in flight — is the
   restart deferred to the next iteration cleanly (no lost/duplicated episode call, no panic)?
-- [ ] E-17: A malformed decision repeatedly with a good decision interleaved — does
+- [x] E-17 (PASS 2026-10-04 #2969 r1 — script `[malformed,error,good,out-of-range,malformed,error]`: failures=5 but final consecutiveFailures=3, proving the good decision reset the counter; loop resumed then failed at the 3rd consecutive): A malformed decision repeatedly with a good decision interleaved — does
   `consecutiveFailures` reset on the good decision and the loop resume, rather than latching Failed?
-- [ ] E-18: Death while `FREDO_DOOM_STUB_EPISODE_FAIL=1` — does the loop surface
+- [x] E-18 (PASS 2026-10-04 #2969 r1 — DIE_AFTER=2 + EPISODE_FAIL=1: step2 dead → episode 500 → phase=failed code=engineRequestFailed within bound, no spin): Death while `FREDO_DOOM_STUB_EPISODE_FAIL=1` — does the loop surface
   `EngineRequestFailed` within the bound without hanging or spinning? (Lever: stub episode-500.)
-- [ ] E-19: `FREDO_DOOM_AGENT_MAX_STEPS` set very low (e.g. 2) — does the loop stop cleanly at the
+- [x] E-19 (PASS 2026-10-04 #2969 r1 — `start_doom_autoplay{maxSteps:2}` → completed, steps=2, code budgetExhausted, no partial step): `FREDO_DOOM_AGENT_MAX_STEPS` set very low (e.g. 2) — does the loop stop cleanly at the
   cap with `BudgetExhausted` and no partial step? (Lever: env override.)
-- [ ] E-20: Two `start_doom_autoplay` invocations in quick succession — is exactly one loop
+- [x] E-20 (PASS 2026-10-04 #2969 r1 — 2nd start while running returned the live run (steps=239, not a reset) → single loop, no doubled rate, no second engine): Two `start_doom_autoplay` invocations in quick succession — is exactly one loop
   running (idempotent start), with no doubled `steps` rate and no second engine?
