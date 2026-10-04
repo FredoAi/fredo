@@ -1063,3 +1063,167 @@ artifact, `reactflow.js:3524`).
   (provider `open_code`, non-blank replies); MM bar shows `mission-monitor` + `S Focus
   session search`; live `telemetry_spans` receipt via the managed `psql` lever.
 
+---
+
+## Spec #2962 — deep nested contexts + intentional key reuse (S5 of the keyboard-first cluster)
+
+> Live-plan extension for issue #2962 (S5 of 5; builds on the merged #2958 contexts, #2959
+> keyboard mode + bar, #2960 typing-vs-navigating, #2961 per-app actions). Rows F-88..F-94 map
+> 1:1 to the QA Plan in `.opencode/tmp/2962/triage.md` `## QA Expert` (`R-1..R-5` = AC1..AC5 +
+> the NFR row + the human-directive E2E row). **Names bind to the Architect's BINDING block
+> (G-255).** Demonstration flow (decided): Mission Monitor, 3 levels —
+> `mission-monitor` (base title renders as the raw id; "Sessions" is a human label only) → `mission-monitor.graph` (Graph) → `mission-monitor.detail`
+> (Node detail); keys `n`/`p`/`o` intentionally reused at every level. Max supported depth = 4
+> levels (base + 3 descents); the runtime cap `MAX_CONTEXT_STACK_FRAMES = 8` is unchanged
+> (`contextStack.ts:50`). Action ids: `mission-monitor.openGraph` (L1 `o`, opens GRAPH),
+> `mission-monitor.nextNode`/`previousNode` (L2 `n`/`p`), `mission-monitor.openDetail` (L2 `o`,
+> opens DETAIL), `mission-monitor.nextSection`/`previousSection`/`toggleSection` (L3 `n`/`p`/`o`).
+> Reused DOM hooks: body `data-fredo-hotkey-context` / `-depth`,
+> `hotkeys-keyboard-bar-context` (`data-depth`), `hotkeys-keyboard-bar-row`
+> (`data-hotkey-action` / `data-availability`), `hotkeys-keyboard-bar-row-unavailable`,
+> `hotkeys-context-indicator-label` / `-depth`, `[data-testid="hotkeys-announcer"]`,
+> `[data-testid="detail-panel"]`. NEW (ST-3): `data-mm-graph-cursor` (L2 keyboard cursor),
+> `data-mm-detail-section` / `data-mm-active-section` (L3). NEW (ST-1): the `Shadowed by`
+> reason prefix (`SHADOWED_UNAVAILABLE_PREFIX`) on the losing parent binding.
+>
+> **Verification policy: live.** Every row carries the DOM/a11y/measured assertion PLUS a
+> `telemetry_spans` live receipt from a sanctioned span-producing lever in the drive window.
+> **Live read lever (G-284):** the app boots on the PostgreSQL-default path, so read
+> `telemetry_spans` via the managed `psql` (db `postgres`, URI from `pg_supervisor_status`,
+> password from the `postgres.password` AppStore key) through the allowlisted
+> `run-exitcode.ps1 -Command` wrapper — NOT the SQLite `telemetry-query` skill. A static-only
+> PASS fails closed (G-033). G-263: every live leg is bounded. The hotkeys layer emits no
+> telemetry (PO Q13 / R-9), so the receipt proves the app was LIVE; the assertion is DOM-measured.
+> **G-223:** the `## Tests Runs` draft carries the literal footer `*Authored by Tester*`; frames
+> are named in prose without image extensions and `.png`/`.jpeg` tokens appear only on lines
+> carrying an `https://` URL. Baseline lever (if a row needs before→after):
+> `dev-env.ps1 -Action Up -Spec 2962 -At <pre-change-tip>`, restored to the tested tip afterwards.
+
+## F-88 (R-1 / AC1) — Multi-level nesting: two descents, each changing the action set
+
+- [ ] F-88: Focus Mission Monitor + mode ON (`ctrl+shift+f8`). Descend the declared chain: press
+      `o` at L1 → read; press `o` again at L2 → read. At each level read
+      `data-fredo-hotkey-context` / `-depth`, `hotkeys-keyboard-bar-context` (`data-depth`), and
+      the `data-hotkey-action` row histogram. **Expected:** L1 `mission-monitor` (base title
+      renders as the raw id; "Sessions" is a human label only) →
+      L2 `mission-monitor.graph` (Graph, depth 2) → L3 `mission-monitor.detail` (Node detail,
+      depth 3); each descent enters the DECLARED direct child (`contextStack.ts:161-173`) and the
+      resolved action set CHANGES — L1-only `openGraph`, L2-only `nextNode`/`previousNode` +
+      `openDetail`, L3-only `nextSection`/`previousSection`/`toggleSection`; ≥1 action available
+      at a deeper level is absent at its parent and vice versa (resolver orders feature bindings
+      by context depth DESC, `contexts.ts:353`). Depth ≤ 4. **Data:** body hook + bar context +
+      row histogram per level; `hotkeysContexts` declaration. *(live receipt)*
+  - **Edge:** a third descent beyond the declared chain is refused (depth unchanged,
+    `contextStack.ts:162-168`); descend while a text field is focused → suppressed
+    (`sequence.ts:195-201`); mode OFF → context still enters (assert via body hook + indicator,
+    bar absent); re-entering the same context id is a no-op (`contextStack.ts:166`).
+
+## F-89 (R-2 / AC2) — Intentional key reuse + the current meaning is named
+
+- [ ] F-89: At each level press the reused keys `n`/`p`/`o`. At L2 assert `n` runs
+      `mission-monitor.nextNode` (`data-mm-graph-cursor` changes) and NOT L1's `nextSession`; at
+      L3 assert `n` runs `mission-monitor.nextSection` (`data-mm-active-section` changes). Read
+      `hotkeys-keyboard-bar-context` text + `data-depth`, each row's keycap + action title, and
+      the ONE `hotkeys-announcer`. **Expected:** the active (deepest) context's action runs and
+      the parent's does NOT (`contexts.ts:353`; first-exact match `sequence.ts:65-88`); the
+      current level is named where visible (bar context title + depth; each row names its key's
+      current meaning) and the level is spoken through the shared polite region — with mode OFF
+      `contextAnnouncement` (`contextStack.ts:257-265`), with mode ON the bar's mode-aware digest
+      (`keyboardBarAnnouncement`, `keyboardBarModel.ts:309-315`); never colour-only. **Data:**
+      per-level row set + titles; bar context text/`data-depth`; announcer textContent;
+      `data-mm-graph-cursor` / `data-mm-active-section`. *(live receipt)*
+  - **Edge:** reused key at all 3 levels (deepest wins); a key the child does NOT bind → parent
+    stays in force (cumulative S1 contract, `contexts.test.ts:247-251`); key bound at current +
+    parent; mode OFF naming via indicator + announcer; same-level re-fire does not re-announce
+    stale text.
+
+## F-90 (R-3 / AC3) — Full unwind: Escape pops exactly one level, no trap at any depth
+
+- [ ] F-90: Descend L1→L2→L3 (depth 3). Press Escape once and re-read the body hook/indicator;
+      press again; press again at L1. After each pop re-fire the restored level's action (`n`).
+      **Expected:** each Escape pops EXACTLY one level (`engine.ts:592-596` → `exitHotkeyContext`,
+      `contextStack.ts:180-185`) — 3→2 restores `mission-monitor.graph` L2 actions; 2→1 restores
+      `mission-monitor` L1 actions; at L1 Escape is NOT consumed by the context model
+      (`canUnwindContext` armed only while depth > 1, `engine.ts:652`; branch `sequence.ts:212-219`);
+      no depth traps Escape and no non-current level's action runs. **Data:** body hook/indicator
+      depth after each press; re-fired action effect per level. *(live receipt)*
+  - **Edge:** 2- and 3-level unwind; Escape with a pending sequence armed → pending-cancel wins
+    with NO pop (`sequence.ts:228-238`, F-43/R-12); Escape in text-entry/modal/terminal → no
+    unwind (`sequence.ts:176-201`); rapid repeated Escape (N=5) at L1 all left native.
+
+## F-91 (R-4 / AC4) — Defined, observable precedence + the complex scenario
+
+- [ ] F-91: The AC's complex scenario — stand at L3 and press a key bound at the current level
+      AND its parent (`n` at L3 = `nextSection`; `n` at L2 = `nextNode`). Read
+      `data-hotkey-action` + `data-availability` and the `hotkeys-keyboard-bar-row-unavailable`
+      reason for the losing level. Then Escape once and re-fire `n` (L2 binding now in force).
+      **Expected:** the DEEPEST level wins (feature-tier depth DESC, `contexts.ts:353`) and is
+      observable — the losing parent binding renders `data-availability="unavailable"` with
+      reason `Shadowed by <winner title>` (`SHADOWED_UNAVAILABLE_PREFIX`, ST-1 `shadowingBinding`);
+      no action from a non-current level runs for a key the active level binds (R-4.2); the
+      action that ran is announced/named for ITS level; a parent-only key (e.g. `s` at L1, or
+      `primary+K`) still resolves while descended (cumulative S1 contract,
+      `contexts.test.ts:247-251`). **Data:** `data-hotkey-action`/`data-availability`; the
+      unavailable-reason text; action-effect counter; announcer. *(live receipt)*
+  - **Edge:** key bound at all 3 levels → L3 wins; parent-only key while descended still works
+    (cumulative); current binding unavailable (typing) → precedence still deepest with the
+    declared reason; `shadowingBinding` returns null when no earlier deeper binding shares the
+    `serialized` → no false `Shadowed by`; two keys with the same sequence but different ids.
+
+## F-92 (R-5 / AC5) — Stale-state discard on focus change / window close; same-focus preserves
+
+- [ ] F-92: Descend to L3. (a) **Focus-change lever:** focus a second feature window by keyboard
+      (Ctrl+Space → launcher tile → Enter, or `g g`), then re-focus Mission Monitor. (b)
+      **Window-close lever:** activate the Mission Monitor close control
+      `aria-label="Close Mission Monitor"` (`WindowChrome.tsx:228`;
+      `workspace-pane-close-<id>` `WorkspacePane.tsx:594-595` → `closeWindow` `WindowFrame.tsx:229-230`),
+      then re-open Mission Monitor. (c) Re-run a no-op same-focus sync. **Expected:** (a)/(b)
+      while nested, a focused-feature change or the window close DISCARDS every explicit descent
+      and re-derives the base (`applyFocus`, `contextStack.ts:189-197`; window-store subscription
+      `:225-227`); re-entering starts at L1 `mission-monitor`, depth 1 — never a stale deeper
+      level. (c) a same-focus sync PRESERVES the active descent (`contextStack.ts:191`). **Data:**
+      body hook/depth before/after; the close control + `closeWindow`; `data-fredo-hotkey-context`. *(live receipt)*
+  - **Edge:** focus A→B→A; close then reopen; close a DIFFERENT window while nested in MM;
+    dev-env restart mid-descent (stack is transient module state → boots at base); no dangling
+    context after close; rapid focus churn. **Lever (G-275/G-300):** the two levers named above
+    are the in-repo induction levers; the 8-frame cap + direct-child refusal are unit-pinned
+    (`contextStack.test.ts`) and marked **non-AC**.
+
+## F-93 (NFR) — A11y + typing safety + latency + theme + determinism at every level
+
+- [ ] F-93: At EACH level: read the accessibility tree + announcer; focus a text field and press
+      `n`/`p`/`o`; instrument keydown→effect; run N identical descend/unwind cycles; static-grep
+      the changed files; render light + dark. **Expected:** the level is announced at every depth
+      through the ONE polite region (`role=status`, `aria-live=polite`, `announcer.tsx:62-73`);
+      no keyboard trap at any depth; the whole flow is mouse-free (zero
+      `mousedown`/`click`/`pointerdown`); typing safety holds at each level (bare keys land
+      VERBATIM, no action, no unwind, `data-fredo-focus-context="text-entry"`); keydown→effect
+      ≤100 ms at every level (no growth vs the `primary+K` baseline); zero hardcoded hex/rgba/hsla
+      and zero `var(--x)NN` alpha-append in the changed files (tokens/`tint()` only); N identical
+      cycles → identical context id/depth + action (no drift); `MAX_CONTEXT_STACK_FRAMES=8`
+      unchanged. **Data:** announcer text; a11y snapshot; pointer-event counter; field value;
+      timestamp deltas; grep output; light/dark screenshots; console. *(live receipt)*
+  - **Edge:** both shipped themes; accent change; narrow/zoomed viewport; heavy agent streaming;
+    rapid cycles; pending sequence at depth; reduced motion; no `Maximum update depth
+    exceeded`/`Uncaught`/`Error:` (AGENTS.md #523).
+
+## F-94 (E2E, human directive — REQUIRED) — Running-app end-to-end on the PostgreSQL-default boot path
+
+- [ ] F-94: Boot the app on the PG-default path (`dev-env Up`); open Mission Monitor; drive a
+      live session; descend twice (L1→L2→L3) keyboard-only; press a reused key (`n`/`p`/`o`) at
+      each level; Escape unwind level-by-level back to L1. **Expected:** (a) the app boots on the
+      PostgreSQL-default path; (b) Mission Monitor still renders live sessions — the session list
+      derives from the CURRENT backend-declared `sessions` rollup (`useSessionHistory.ts` →
+      `useDeliverySessions`, backend `session_rollup.rs`; consumed by `MissionMonitorPanel.tsx`),
+      NOT the retired `useEventRows('Chat'|'ToolUse')` path (G-299); (c) the nested keyboard
+      navigation works end-to-end (descend twice, reused key runs the current level's action,
+      Escape unwinds exactly one level per press to L1); the drive window carries a
+      `telemetry_spans` receipt via the managed `psql` lever; console clean. **Data:**
+      `telemetry_spans` rows (db `postgres`, via `run-exitcode.ps1 -Command`); the MM live-session
+      DOM; body context/depth at each step; bar rows. *(live receipt)*
+  - **Edge:** cold boot; G-280 orphan `postgres.exe`/stale socket → full dev-env Down→Up then
+    report (environment artifact, NOT a spec FAIL); zero-live-session initial state (G-265).
+    **Seed lever (G-285):** the OTLP fixture MUST emit a rollup-QUALIFYING turn (a terminal chat
+    span with a non-blank agent reply) so a declared `sessions` row is created; the fixture's
+    ungated guard asserts the CONSUMER invariant (a `sessions` row renders).
+
