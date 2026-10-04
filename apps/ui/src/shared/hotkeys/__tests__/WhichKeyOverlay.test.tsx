@@ -4,8 +4,8 @@
  * Covers: hidden-when-idle, the empty-prefix / empty-candidates HIDDEN
  * adjudication (completion must show nothing), pending prefix + valid-next rows,
  * invalid + timeout reset testids, `pointerEvents:'none'`, `aria-hidden` visual
- * root with NO live region, the ST-3 announcer digest, the G-253 dock-derived
- * bottom offset, and the reduced-motion nudge gate.
+ * root with NO live region, the ST-3 announcer digest, the Spec #2954 base
+ * bottom inset (the retired dock selector), and the reduced-motion nudge gate.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -28,7 +28,6 @@ import {
 } from '@/shared/hotkeys/store';
 import { HotkeysProvider } from '@/shared/hotkeys/HotkeysProvider';
 import {
-  WHICHKEY_DOCK_SELECTOR,
   WHICHKEY_INVALID_TESTID,
   WHICHKEY_MAX_ANNOUNCED_CANDIDATES,
   WHICHKEY_MIN_BOTTOM_PX,
@@ -43,6 +42,8 @@ import {
   pendingAnnouncement,
   resetAnnouncement,
 } from '../WhichKeyOverlay';
+import * as whichKeyOverlayModule from '../WhichKeyOverlay';
+import * as bottomStackModule from '../bottomStack';
 import type { HotkeyCandidate } from '../types';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -64,10 +65,9 @@ function candidate(
 const G = candidate('g', 'Go to top');
 const H = candidate('h', 'Focus left');
 
-function mountDock(rect: { top: number; bottom: number }, visibility?: string): HTMLElement {
+function mountDock(rect: { top: number; bottom: number }): HTMLElement {
   const dock = document.createElement('div');
   dock.setAttribute('data-testid', 'app-dock');
-  if (visibility) dock.style.visibility = visibility;
   dock.getBoundingClientRect = () =>
     ({
       top: rect.top,
@@ -317,41 +317,31 @@ describe('WhichKeyOverlay — announcer digest', () => {
   });
 });
 
-// ── G-253: offset derived from the ACTUAL rendered dock stack ────────────────
+// ── Spec #2954 ST-4: the retired dock selector — base inset unconditionally ───
 
-describe('WhichKeyOverlay — bottom offset derives from the rendered dock (G-253)', () => {
+describe('WhichKeyOverlay — bottom offset is the base inset (Spec #2954 ST-4)', () => {
   it('uses the base inset when no dock is rendered', () => {
+    const { container } = renderWithChakra(<WhichKeyOverlay platform="win32" />);
+    act(() => setPendingSequence('g', [G]));
+    expect(overlay(container)?.style.bottom).toBe(`${WHICHKEY_MIN_BOTTOM_PX}px`);
+    expect(measureBottomOffsetPx()).toBe(WHICHKEY_MIN_BOTTOM_PX);
+    // The documented base inset is 24 px (R-73).
+    expect(WHICHKEY_MIN_BOTTOM_PX).toBe(24);
+  });
+
+  it('returns the base inset UNCONDITIONALLY, ignoring any app-dock element', () => {
+    // The selector is retired: even a rendered `[data-testid="app-dock"]` (the
+    // pre-#2954 dock root) must not drive the offset any more.
+    mountDock({ top: 730, bottom: 788 });
     const { container } = renderWithChakra(<WhichKeyOverlay platform="win32" />);
     act(() => setPendingSequence('g', [G]));
     expect(overlay(container)?.style.bottom).toBe(`${WHICHKEY_MIN_BOTTOM_PX}px`);
     expect(measureBottomOffsetPx()).toBe(WHICHKEY_MIN_BOTTOM_PX);
   });
 
-  it('clears the ACTUAL rendered bottom dock via its live rect (never a nominal sum)', () => {
-    mountDock({ top: 730, bottom: 788 });
-    const { container } = renderWithChakra(<WhichKeyOverlay platform="win32" />);
-    act(() => setPendingSequence('g', [G]));
-
-    // 800 (viewport) − 730 (real dock top, including border/padding) + 16 (gap).
-    expect(overlay(container)?.style.bottom).toBe('86px');
-  });
-
-  it('uses the base inset for a hidden (edge-peek) dock', () => {
-    mountDock({ top: 730, bottom: 788 }, 'hidden');
-    const { container } = renderWithChakra(<WhichKeyOverlay platform="win32" />);
-    act(() => setPendingSequence('g', [G]));
-    expect(overlay(container)?.style.bottom).toBe(`${WHICHKEY_MIN_BOTTOM_PX}px`);
-  });
-
-  it('uses the base inset for a side-rail dock (not anchored to the bottom)', () => {
-    mountDock({ top: 300, bottom: 400 });
-    const { container } = renderWithChakra(<WhichKeyOverlay platform="win32" />);
-    act(() => setPendingSequence('g', [G]));
-    expect(overlay(container)?.style.bottom).toBe(`${WHICHKEY_MIN_BOTTOM_PX}px`);
-  });
-
-  it('scans the documented dock selector', () => {
-    expect(WHICHKEY_DOCK_SELECTOR).toBe('[data-testid="app-dock"]');
+  it('retires the dock selector exports (no BOTTOM_STACK_DOCK_SELECTOR / WHICHKEY_DOCK_SELECTOR)', () => {
+    expect('BOTTOM_STACK_DOCK_SELECTOR' in bottomStackModule).toBe(false);
+    expect('WHICHKEY_DOCK_SELECTOR' in whichKeyOverlayModule).toBe(false);
   });
 });
 

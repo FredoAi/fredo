@@ -34,7 +34,6 @@ vi.mock('@/features/theming', () => ({ ThemingSettings: () => null }));
 vi.mock('@/features/setup', () => ({ SetupWizard: () => null }));
 vi.mock('@/features/home', () => ({
   TelemetrySettings: () => null,
-  DockPositionSettings: () => null,
 }));
 vi.mock('@/shared/components/companion/CompanionSettingsPanel', () => ({
   CompanionSettingsPanel: () => null,
