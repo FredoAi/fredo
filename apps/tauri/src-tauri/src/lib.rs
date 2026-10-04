@@ -46,6 +46,15 @@ pub use features::pg_supervisor::descriptor;
 #[doc(hidden)]
 pub use features::doom;
 
+// Spec #2969 ST-4 — the Doom-agent producer surface
+// (`llm_server::doom_agent`: the persona, the pure schema-constrained request
+// builder, the model-backed `DoomDecisionSource`, and the bounded request audit).
+// ST-5 consumes it from this crate root (`ModelDoomDecisionSource`); the module is
+// re-exported so the frozen producer stays reachable (and dead-code-free) while
+// that wiring is still pending. `#[doc(hidden)]`: not part of the app surface.
+#[doc(hidden)]
+pub use features::llm_server::doom_agent;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use features::terminal::state::TerminalState;
