@@ -225,3 +225,21 @@ REQ-1..5 + NFR-1/3/4 (REQ-5 fixed), with NFR-2 carried as a named pin-only block
   - **Edge:** G-280 orphan `postgres.exe`/stale sockets block boot → full dev-env Down → Up, then
     report (environment artifact, not a spec FAIL).
 
+## Spec #2961 quick paths (per-app contextual actions)
+
+> Live-plan quick paths for issue #2961 (S4). **Verification policy: live** — each carries the
+> DOM/a11y assertion plus a `telemetry_spans` receipt read via the managed `psql` lever (G-284).
+> Names bind to the Architect's FINAL BINDING names block (see `functional.md` #2961 header).
+
+- [ ] S-21: **Enter keyboard mode in a named app and read its rows.** Focus a named app
+      (e.g. `my-workitems`), fire the mode entry chord (`ctrl+shift+f8`), and read
+      `[data-testid="hotkeys-keyboard-bar-row"]` + `data-hotkey-action` + `data-availability`.
+      **Expected:** the app's declared rows appear alongside the global rows (e.g.
+      `my-workitems.refresh` / `-showAllSources` / `-showAzdo` / `-showJira`), each naming its key
+      and title, with the app context title visible; no other app's feature-tier rows; console
+      clean. *(live receipt)*
+- [ ] S-22: **Perform one app action keyboard-only.** With a named app focused + mode ON, press one
+      of its declared bare keys (e.g. Feature Flags `r` refresh) and assert the app's existing
+      operation runs with zero pointer events. **Expected:** the action effect is observable, no
+      `mousedown`/`click`/`pointerdown` fired, console clean. *(live receipt)*
+
