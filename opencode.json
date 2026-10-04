@@ -326,7 +326,10 @@
                     "copilot*": "allow",
                     "gh run view*": "allow",
                     "git worktree list*": "allow",
-                    "git rev-parse*": "allow"
+                    "git rev-parse*": "allow",
+                    "powershell -File scripts/doom/*": "allow",
+                    "git clone*": "allow",
+                    "*restful-doom*": "allow"
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny"
@@ -428,7 +431,10 @@
                     "* ; *": "deny",
                     "* | *": "deny",
                     "cargo run*": "allow",
-                    "gh run view*": "allow"
+                    "gh run view*": "allow",
+                    "powershell -File scripts/doom/*": "allow",
+                    "*restful-doom*": "allow",
+                    "tasklist*": "allow"
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny",
