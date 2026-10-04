@@ -28,9 +28,9 @@
  * effect/memo dependency (#523 loop rule); the store's frozen-singleton idle
  * candidates make the subscription stable.
  *
- * Position: anchored bottom-center, with the bottom inset DERIVED from the ACTUAL
- * rendered dock stack via `getBoundingClientRect()` (G-253 — never a nominal sum).
- * A non-rendered, hidden, or side-rail dock yields the documented base inset.
+ * Position: anchored bottom-center, with the bottom inset the documented base
+ * inset (`WHICHKEY_MIN_BOTTOM_PX`). The persistent dock was removed (Spec #2954
+ * ST-4), so there is no dock measurement left to perform.
  *
  * Colour is theme-token / CSS-var / `tint()` only — zero hex/rgba, zero
  * `var(--x)NN` alpha-append.
@@ -43,12 +43,7 @@ import { LuCircleX, LuTriangleAlert } from 'react-icons/lu';
 import { Keycap } from '../components/hotkeys/Keycap';
 import { tint } from '../utils/colorTint';
 import { announce } from './announcer';
-import {
-  BOTTOM_STACK_DOCK_SELECTOR,
-  BOTTOM_STACK_GAP_PX,
-  BOTTOM_STACK_MIN_PX,
-  measureBottomOffsetPx,
-} from './bottomStack';
+import { BOTTOM_STACK_MIN_PX, measureBottomOffsetPx } from './bottomStack';
 import { displaySequence, parseSequence } from './keys';
 import {
   getPendingSequence,
@@ -75,14 +70,10 @@ export const WHICHKEY_RESET_FLASH_MS = 600;
 export const WHICHKEY_NUDGE_MS = 150;
 /** The announcer digest is bounded to this many candidates (first N + "and M more"). */
 export const WHICHKEY_MAX_ANNOUNCED_CANDIDATES = 8;
-/** Above the dock (z=1200) and the launcher overlay (z=1300). */
+/** Above the launcher-rest layer (z=1200) and the launcher overlay (z=1300). */
 export const WHICHKEY_Z_INDEX = 1400;
-/** Gap between the measured dock top and the overlay's bottom edge (px). */
-export const WHICHKEY_BOTTOM_GAP_PX = BOTTOM_STACK_GAP_PX;
-/** Base bottom inset when no bottom-anchored dock is rendered (px). */
+/** Base bottom inset for the overlay (px). */
 export const WHICHKEY_MIN_BOTTOM_PX = BOTTOM_STACK_MIN_PX;
-/** The dock root the offset is measured from; absent when zero windows. */
-export const WHICHKEY_DOCK_SELECTOR = BOTTOM_STACK_DOCK_SELECTOR;
 
 const NUDGE_KEYFRAMES = {
   '@keyframes hotkeys-whichkey-nudge': {
@@ -101,10 +92,10 @@ const NO_NUDGE: React.CSSProperties = { animation: 'none' };
 type ResetReason = Extract<HotkeyResetReason, 'invalid' | 'timeout'>;
 
 /**
- * The bottom inset for the overlay, DERIVED from the ACTUAL rendered dock stack
- * (G-253). The ONE shared derivation now lives in `bottomStack.ts` (Spec #2959
- * ST-3) so the which-key overlay and the persistent keyboard bar cannot drift;
- * this re-export preserves the shipped overlay API and behaviour byte-for-byte.
+ * The bottom inset for the overlay. The ONE shared derivation lives in
+ * `bottomStack.ts` (Spec #2959 ST-3) so the which-key overlay and the persistent
+ * keyboard bar cannot drift; with the dock retired (Spec #2954 ST-4) it is the
+ * base inset unconditionally. This re-export preserves the overlay's public API.
  */
 export { measureBottomOffsetPx };
 
@@ -209,8 +200,8 @@ export function WhichKeyOverlay({ platform, reducedMotion }: WhichKeyOverlayProp
     };
   }, [platform]);
 
-  // Measure the ACTUAL rendered dock stack on every show (and keep it fresh while
-  // the overlay is visible). No lazy/async gate — the visual commits immediately.
+  // Resolve the bottom inset on every show (and keep it fresh while the overlay
+  // is visible). No lazy/async gate — the visual commits immediately.
   useLayoutEffect(() => {
     if (!visible) return;
     const next = measureBottomOffsetPx();
