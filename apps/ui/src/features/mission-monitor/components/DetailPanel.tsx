@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { LuX, LuBot, LuWrench, LuBrain } from 'react-icons/lu';
+import { LuX, LuBot, LuWrench, LuBrain, LuChevronDown, LuChevronRight } from 'react-icons/lu';
 import type { MonitorNodeData } from '../types';
 import { STATUS_COLORS } from '../types';
 import { formatTokenCount, normalizeCost, normalizeTokenCount } from '../lib/graph';
@@ -66,12 +66,126 @@ function toolCallStatus(call: ToolCallSummary): { label: string; color: string }
   }
 }
 
+// ── Spec #2962 ST-3: keyboard-navigable detail sections (L3) ─────────────────
+//
+// The node-detail level (L3) navigates a LIST of sections with the reused
+// `n`/`p` keys and toggles the active section with `o` (progressive disclosure).
+// The section list is derived from the SAME target the panel renders, and the
+// SAME pure helper feeds the panel (which owns the keyboard cursor) and this
+// component (which renders the sections) so the two can never disagree.
+
+/** One navigable detail section (id + human label). */
+export interface DetailSectionMeta {
+  readonly id: string;
+  readonly label: string;
+}
+
+/**
+ * The navigable section list for a detail target. Mirrors EXACTLY which blocks
+ * the panel renders, so a section is never declared empty and a rendered block
+ * is never un-navigable:
+ *  - tool-call  → Details
+ *  - node       → Overview, [Content], [Token Usage | Child Usage], [Timing]
+ */
+export function detailSectionsForTarget(target: DetailOpenTarget): DetailSectionMeta[] {
+  if (target.kind === 'tool-call') {
+    return [{ id: 'details', label: 'Details' }];
+  }
+  const nodeType = extractNodeTypeFromEventType(target.data.eventType);
+  const payload = (target.data.payload ?? {}) as AgentNodePayload;
+  const sections: DetailSectionMeta[] = [{ id: 'overview', label: 'Overview' }];
+
+  if (nodeType === 'agent') {
+    if (payload.userMessage || payload.agentReply || payload.agentThinking || payload.model) {
+      sections.push({ id: 'content', label: 'Content' });
+    }
+    sections.push({ id: 'tokens', label: 'Token Usage' });
+  } else if (nodeType === 'subagent') {
+    const sub = payload as unknown as SubagentNodePayload;
+    if (sub.instruction || sub.output || sub.childSessionId) {
+      sections.push({ id: 'content', label: 'Content' });
+    }
+    sections.push({ id: 'usage', label: 'Child Usage' });
+  }
+
+  const startTime = payload.startTime ?? target.data.timestamp;
+  const endTime = payload.endTime;
+  if (startTime || endTime) {
+    sections.push({ id: 'timing', label: 'Timing' });
+  }
+  return sections;
+}
+
+/**
+ * One L3 section: `data-mm-detail-section` names it; the active one carries
+ * `data-mm-active-section` and is marked with a `var(--accent-primary)` left
+ * border PLUS a non-colour cue (weight + chevron shape) — never border-colour
+ * only. The header is a plain (non-focusable) div: the L3 cursor is driven by
+ * the reused hotkeys, never by DOM focus, so no element here may become a
+ * native consumer that withholds bare keys.
+ */
+const DetailSection: React.FC<{
+  id: string;
+  label: string;
+  active: boolean;
+  collapsed: boolean;
+  onToggle?: (id: string) => void;
+  children: React.ReactNode;
+}> = ({ id, label, active, collapsed, onToggle, children }) => (
+  <div
+    data-mm-detail-section={id}
+    {...(active ? { 'data-mm-active-section': 'true' } : {})}
+    style={{
+      // The active left border is applied by the `[data-mm-active-section]`
+      // rule below (a token-derived `var(--accent-primary)` border); the
+      // transparent inline border on the inactive state prevents layout shift.
+      borderLeft: active ? undefined : '2px solid transparent',
+      paddingLeft: 8,
+      marginBottom: 10,
+    }}
+  >
+    <div
+      onClick={onToggle ? () => onToggle(id) : undefined}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        cursor: onToggle ? 'pointer' : 'default',
+        fontSize: 9,
+        letterSpacing: '0.06em',
+        textTransform: 'uppercase',
+        // Non-colour cue: the active section's label is BOLDER and accent-tinted
+        // — the marker is never border-colour only.
+        fontWeight: active ? 700 : 600,
+        color: active ? 'var(--accent-primary)' : 'var(--text-secondary)',
+        marginBottom: collapsed ? 0 : 6,
+      }}
+    >
+      {collapsed ? <LuChevronRight size={11} /> : <LuChevronDown size={11} />}
+      <span>{label}</span>
+    </div>
+    {!collapsed && <div>{children}</div>}
+  </div>
+);
+
 interface DetailPanelProps {
   target: DetailOpenTarget;
   onClose: () => void;
+  /** Spec #2962 ST-3 (L3): the active section id (panel-owned keyboard cursor). */
+  activeSectionId?: string | null;
+  /** Spec #2962 ST-3 (L3): section ids collapsed by `o` (progressive disclosure). */
+  collapsedSectionIds?: ReadonlySet<string>;
+  /** Spec #2962 ST-3 (L3): toggle one section (mouse affordance; keys drive it too). */
+  onToggleSection?: (id: string) => void;
 }
 
-export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => {
+export const DetailPanel: React.FC<DetailPanelProps> = ({
+  target,
+  onClose,
+  activeSectionId = null,
+  collapsedSectionIds,
+  onToggleSection,
+}) => {
   // #2743 ST-6 (AC-7/AC-8): the open target is a union — a graph node
   // (`{ kind: 'node' }`, opened by ReactFlow onNodeDoubleClick) or a scoped
   // tool call (`{ kind: 'tool-call' }`, opened by an embedded tool accordion
@@ -115,6 +229,16 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => 
   // toLocaleTimeString() (Architect #13 — format unchanged).
   const startTime = isToolCall ? undefined : (agentPayload.startTime ?? target.data.timestamp);
   const endTime = isToolCall ? undefined : agentPayload.endTime;
+
+  // ── Spec #2962 ST-3 (L3): the navigable section list ──────────────────────
+  // Derived from the SAME target the content renders; the panel owns the
+  // keyboard cursor and passes the active/collapsed state down.
+  const sections = detailSectionsForTarget(target);
+  const activeId =
+    activeSectionId && sections.some((section) => section.id === activeSectionId)
+      ? activeSectionId
+      : sections[0]?.id ?? null;
+  const collapsed = collapsedSectionIds;
 
   // ── Panel width (R-2): persisted + drag-resizable ─────────────────────────
   // `persistedWidth` is loaded from settingsService on mount and written ONLY
@@ -224,6 +348,95 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => 
     return () => window.removeEventListener('keydown', handleKey);
   }, [onClose]);
 
+  // ── Section content (Spec #2962 ST-3) ─────────────────────────────────────
+  // Every block the original flat panel rendered is preserved verbatim inside
+  // its section; only the grouping chrome (the old dividers/labels) is now the
+  // section header.
+  const renderSectionContent = (sectionId: string): React.ReactNode => {
+    if (isToolCall) {
+      return <ToolCallDetailView call={target.call} />;
+    }
+    switch (sectionId) {
+      case 'overview':
+        return (
+          <>
+            <DetailRow label="ID" value={id} mono />
+            <DetailRow label="Type" value={nodeType} />
+          </>
+        );
+      case 'content':
+        if (nodeType === 'agent') {
+          return (
+            <>
+              {agentPayload.userMessage ? (
+                <DetailRow label="Input" value={agentPayload.userMessage} mono />
+              ) : null}
+              {agentPayload.agentReply ? (
+                <DetailRow label="Output" value={agentPayload.agentReply} mono />
+              ) : null}
+              {agentPayload.agentThinking ? (
+                <DetailRow label="Thoughts" value={agentPayload.agentThinking} mono />
+              ) : null}
+              {agentPayload.model ? (
+                <DetailRow label="Model" value={agentPayload.model} mono />
+              ) : null}
+            </>
+          );
+        }
+        if (nodeType === 'subagent') {
+          const sub = payload as SubagentNodePayload;
+          return (
+            <>
+              {sub.instruction ? <DetailRow label="Instruction" value={sub.instruction} mono /> : null}
+              {sub.output ? <DetailRow label="Output" value={sub.output} mono /> : null}
+              {sub.childSessionId ? <DetailRow label="Child Session" value={sub.childSessionId} mono /> : null}
+            </>
+          );
+        }
+        return null;
+      case 'tokens':
+        return (
+          <>
+            <DetailRow label="Input" value={formatTokenCount(inputTokens)} mono />
+            <DetailRow label="Cache" value={formatTokenCount(cacheReadTokens)} mono />
+            <DetailRow label="Reasoning" value={formatTokenCount(reasoningTokens)} mono />
+            <DetailRow label="Output" value={formatTokenCount(outputTokens)} mono />
+            <DetailRow label="Total" value={formatTokenCount(totalTokens)} mono />
+            {/* #2750 ST-4 (AC5): the node's Estimated Cost — byte-identical to
+                the ChatNode cost row (ChatNode.tsx:239-251): en-US comma-
+                grouped, 4-decimal `$X.XXXX`. Read from the RAW payload field
+                (agentPayload.costUsd — never through normalizeCost); absent →
+                the design's '—' (the per-node figure matches the graph). */}
+            <DetailRow
+              label="Estimated Cost"
+              value={
+                agentPayload.costUsd === undefined
+                  ? '—'
+                  : `$${agentPayload.costUsd.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`
+              }
+              mono
+            />
+          </>
+        );
+      case 'usage':
+        return <SubagentUsageRows payload={payload as SubagentNodePayload} />;
+      case 'timing':
+        return (
+          <>
+            {startTime && (
+              <DetailRow label="Start" value={new Date(startTime).toLocaleTimeString()} />
+            )}
+            {endTime && (
+              <DetailRow label="End" value={new Date(endTime).toLocaleTimeString()} />
+            )}
+            <DetailRow label="Duration" value={formatDuration(startTime, endTime)} mono />
+          </>
+        );
+      default:
+        return null;
+    }
+  };
+
   return (
     <div
       ref={panelRef}
@@ -247,6 +460,13 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => 
         @keyframes detail-slide-in {
           from { transform: translateX(100%); opacity: 0; }
           to   { transform: translateX(0); opacity: 1; }
+        }
+        /* Spec #2962 ST-3 (L3): the active-section marker — a token-derived
+           accent left border keyed on the published data-mm-active-section
+           attribute (never border-colour only; the label's weight/accent colour
+           above is the non-colour cue). */
+        [data-mm-active-section] {
+          border-left: 2px solid var(--accent-primary);
         }
       `}</style>
 
@@ -340,137 +560,38 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => 
         </button>
       </div>
 
-      {/* Content */}
+      {/* Content — the navigable section list (Spec #2962 ST-3, L3) */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '10px 12px' }}>
-        {isToolCall ? (
-          /* #2743 ST-6 (AC-8): the scoped per-tool detail — THAT call's own
-             Status / Duration / Input / Output, never a generic all-tools view. */
-          <ToolCallDetailView call={target.call} />
-        ) : (
-          <>
-        {/* Node ID */}
-        <DetailRow label="ID" value={id} mono />
-
-        {/* Type */}
-        <DetailRow label="Type" value={nodeType} />
-
-        {/* #2750 ST-2 (AC2): the Status row is REMOVED for node targets — the
-            graph nodes carry no status (#2748), so the detail panel must not
-            re-add the status chrome the graph dropped. Per-tool outcome
-            indicators inside a tool call remain (ToolCallDetailView). */}
-
-        {/* #2688 AC4: input / output / thoughts / model rows for chat nodes.
-            Absent sections are hidden, not rendered empty. */}
-        {nodeType === 'agent' && (
-          <>
-            {agentPayload.userMessage ? (
-              <DetailRow label="Input" value={agentPayload.userMessage} mono />
-            ) : null}
-            {agentPayload.agentReply ? (
-              <DetailRow label="Output" value={agentPayload.agentReply} mono />
-            ) : null}
-            {agentPayload.agentThinking ? (
-              <DetailRow label="Thoughts" value={agentPayload.agentThinking} mono />
-            ) : null}
-            {agentPayload.model ? (
-              <DetailRow label="Model" value={agentPayload.model} mono />
-            ) : null}
-          </>
-        )}
-
-        {/* #2745 ST-5 (AC-1): the rich SubagentNode disclosure — instruction /
-            output / childSessionId content rows + a Child Usage block (child
-            tokens / cost / messages). Mirrors the AgentNodePayload pattern:
-            absent sections are hidden, not rendered empty. */}
-        {nodeType === 'subagent' && (
-          <SubagentDetailView payload={payload as SubagentNodePayload} />
-        )}
-
-        {/* Divider when there are token fields */}
-        {nodeType === 'agent' && (
-          <>
-            <div style={{ height: 1, background: 'var(--border-color)', margin: '8px 0' }} />
-            <div style={{ fontSize: 9, color: 'var(--accent-primary)', fontWeight: 700, marginBottom: 6, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
-              Token Usage
-            </div>
-            <DetailRow label="Input" value={formatTokenCount(inputTokens)} mono />
-            <DetailRow label="Cache" value={formatTokenCount(cacheReadTokens)} mono />
-            <DetailRow label="Reasoning" value={formatTokenCount(reasoningTokens)} mono />
-            <DetailRow label="Output" value={formatTokenCount(outputTokens)} mono />
-            <DetailRow label="Total" value={formatTokenCount(totalTokens)} mono />
-            {/* #2750 ST-4 (AC5): the node's Estimated Cost — byte-identical to
-                the ChatNode cost row (ChatNode.tsx:239-251): en-US comma-
-                grouped, 4-decimal `$X.XXXX`. Read from the RAW payload field
-                (agentPayload.costUsd — never through normalizeCost); absent →
-                the design's '—' (the per-node figure matches the graph). */}
-            <DetailRow
-              label="Estimated Cost"
-              value={
-                agentPayload.costUsd === undefined
-                  ? '—'
-                  : `$${agentPayload.costUsd.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`
-              }
-              mono
-            />
-          </>
-        )}
-
-        {/* Divider for timestamps — the delivery-timestamp fallback renders a
-            Start/Duration pair only when the payload carries real times. */}
-        {(startTime || endTime) && (
-          <>
-            <div style={{ height: 1, background: 'var(--border-color)', margin: '8px 0' }} />
-            <div style={{ fontSize: 9, color: 'var(--accent-primary)', fontWeight: 700, marginBottom: 6, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
-              Timing
-            </div>
-            {startTime && (
-              <DetailRow label="Start" value={new Date(startTime).toLocaleTimeString()} />
-            )}
-            {endTime && (
-              <DetailRow label="End" value={new Date(endTime).toLocaleTimeString()} />
-            )}
-            <DetailRow label="Duration" value={formatDuration(startTime, endTime)} mono />
-          </>
-        )}
-          </>
-        )}
+        {sections.map((section) => (
+          <DetailSection
+            key={section.id}
+            id={section.id}
+            label={section.label}
+            active={section.id === activeId}
+            collapsed={collapsed?.has(section.id) ?? false}
+            onToggle={onToggleSection}
+          >
+            {renderSectionContent(section.id)}
+          </DetailSection>
+        ))}
       </div>
     </div>
   );
 };
 
-// ── #2745 ST-5 (AC-1): rich SubagentNode detail view ─────────────────────────
+// ── #2745 ST-5 (AC-1): rich SubagentNode detail rows ─────────────────────────
 //
-// The panel opened by selecting a SubagentNode. Mirrors the AgentNodePayload
-// disclosure (absent sections hidden, not rendered empty): the dispatch
-// instruction, the child's final output, the child session id chip, and a
-// "Child Usage" block with the child's token total / cost / message count —
+// The panel opened by selecting a SubagentNode. The child-usage block keeps
 // the same zero-guarded figures the node renders (normalizeTokenCount /
 // normalizeCost; absent child cost renders the absent-state '—').
 
-const SubagentDetailView: React.FC<{ payload: SubagentNodePayload }> = ({ payload }) => {
+const SubagentUsageRows: React.FC<{ payload: SubagentNodePayload }> = ({ payload }) => {
   const childTokens = normalizeTokenCount(payload.childTokens);
   const childCost = payload.childCost === undefined
     ? undefined
     : normalizeCost(payload.childCost);
   return (
     <>
-      {payload.instruction ? (
-        <DetailRow label="Instruction" value={payload.instruction} mono />
-      ) : null}
-      {payload.output ? (
-        <DetailRow label="Output" value={payload.output} mono />
-      ) : null}
-      {payload.childSessionId ? (
-        <DetailRow label="Child Session" value={payload.childSessionId} mono />
-      ) : null}
-
-      {/* Divider + Child Usage block — present whenever any child figure is
-          deliverable; the figures themselves zero-guard (never NaN). */}
-      <div style={{ height: 1, background: 'var(--border-color)', margin: '8px 0' }} />
-      <div style={{ fontSize: 9, color: 'var(--accent-primary)', fontWeight: 700, marginBottom: 6, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
-        Child Usage
-      </div>
       <DetailRow label="Tokens" value={formatTokenCount(childTokens)} mono />
       <DetailRow
         label="Cost"

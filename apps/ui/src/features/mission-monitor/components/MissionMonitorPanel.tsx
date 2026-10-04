@@ -8,6 +8,7 @@ import ReactFlow, {
   useReactFlow,
   type NodeTypes,
   type Node,
+  type NodeChange,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { useWindowActions } from '../../../shared/window-system/useWindowActions';
@@ -25,14 +26,29 @@ import { SessionHistoryDrawer } from './SessionHistoryDrawer';
 // Spec #2946 ST-15: the declared feature hotkeys dispatch a namespaced window
 // event; this panel's ONE listener maps it onto the existing session ops.
 import {
+  MISSION_MONITOR_DETAIL_CONTEXT_ID,
   MISSION_MONITOR_FOCUS_SESSION_SEARCH,
+  MISSION_MONITOR_GRAPH_CONTEXT_ID,
+  MISSION_MONITOR_NEXT_NODE,
+  MISSION_MONITOR_NEXT_SECTION,
   MISSION_MONITOR_NEXT_SESSION,
+  MISSION_MONITOR_OPEN_DETAIL,
+  MISSION_MONITOR_PREVIOUS_NODE,
+  MISSION_MONITOR_PREVIOUS_SECTION,
   MISSION_MONITOR_PREVIOUS_SESSION,
+  MISSION_MONITOR_TOGGLE_SECTION,
   subscribeMissionMonitorActions,
 } from '../lib/hotkeyBridge';
+// Spec #2962 ST-3 — nested-flow wiring: the active interaction context drives
+// which surface is live; the ONE announcer names the action that ran; the
+// registry/context lookups resolve that action's level title.
+import { announce } from '../../../shared/hotkeys/announcer';
+import { getHotkeyContext } from '../../../shared/hotkeys/contexts';
+import { useActiveHotkeyContext } from '../../../shared/hotkeys/contextStack';
+import { getHotkeyAction } from '../../../shared/hotkeys/registry';
 import { SessionTokenBar } from './SessionTokenBar';
 import { NodeFocusProvider } from './NodeFocusContext';
-import { DetailPanel } from './DetailPanel';
+import { DetailPanel, detailSectionsForTarget, type DetailSectionMeta } from './DetailPanel';
 import { ChatNode }          from './nodes/ChatNode';
 import { SubagentNode }      from './nodes/SubagentNode';
 import type { MonitorNodeData } from '../types';
@@ -231,6 +247,19 @@ const WatchStatusBanner: React.FC<{ error: string | null; disconnected: boolean 
 
 // ── Inner canvas ──────────────────────────────────────────────────────────────
 
+/**
+ * Spec #2962 ST-3 (L2): the imperative graph-cursor API the panel's ONE window
+ * listener drives. The cursor is PROGRAMMATIC ReactFlow selection — it never
+ * moves DOM focus (a `[tabindex]>=0` node would be a native consumer and would
+ * withhold bare keys), so the panel never touches a node element.
+ */
+export interface MissionMonitorCanvasHandle {
+  /** Move the L2 keyboard cursor by `delta` (wrap-around) and mark it selected. */
+  moveCursor: (delta: number) => void;
+  /** Open the cursor node's detail (the L2→L3 descent). Falls back to the first node. */
+  openCursorDetail: () => void;
+}
+
 interface CanvasProps {
   sessionId: string;
   /** Spec #2896 ST-6: the SELECTED SESSION's canonical activity rows (the
@@ -242,10 +271,19 @@ interface CanvasProps {
    *  which child-session calls never resolved a parent SubagentNode; the panel
    *  renders the figure on the SessionTokenBar. */
   onUnattributedCount?: (count: number) => void;
+  /** Spec #2962 ST-3: the graph interaction level is active (L2 or L3) — the
+   *  keyboard cursor lives here and is cleared when the level unwinds to L1. */
+  graphActive: boolean;
+  /** Spec #2962 ST-3 (L2→L3): open the cursor node's detail — a context descent
+   *  (distinct from a user double-click) so the panel can close it on unwind. */
+  onOpenDetailFromContext: (target: DetailOpenTarget) => void;
+  /** Spec #2962 ST-3: the imperative cursor API for the panel's ONE listener. */
+  apiRef?: { current: MissionMonitorCanvasHandle | null };
 }
 
 const MissionMonitorCanvas: React.FC<CanvasProps> = ({
   sessionId, rows, onFocusTarget, onUnattributedCount,
+  graphActive, onOpenDetailFromContext, apiRef,
 }) => {
   // Spec #2896 ST-6: the graph's data source — the selected session's
   // session-scoped canonical chat/toolUse rows (ST-9's watch). The hook derives
@@ -256,6 +294,72 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
     sessionId,
     rows,
   });
+
+  // ── Spec #2962 ST-3 (L2): the programmatic keyboard cursor ────────────────
+  // The cursor is a node id held in React state; the node is marked selected
+  // through ReactFlow's own `select` change (never DOM focus), and the id is
+  // published on the canvas wrapper (`data-mm-graph-cursor` + `data-node-id`)
+  // so QA reads the cursor without touching a node element. Refs keep the
+  // imperative API stable for the panel's ONE listener.
+  const [cursorNodeId, setCursorNodeId] = useState<string | null>(null);
+  const cursorNodesRef = useRef<Node[]>([]);
+  cursorNodesRef.current = nodes;
+  const cursorIdRef = useRef<string | null>(null);
+  cursorIdRef.current = cursorNodeId;
+  const onOpenDetailRef = useRef(onOpenDetailFromContext);
+  onOpenDetailRef.current = onOpenDetailFromContext;
+
+  const moveCursor = useCallback((delta: number) => {
+    const ids = cursorNodesRef.current.map((n) => n.id);
+    if (ids.length === 0) return;
+    setCursorNodeId((prev) => {
+      const currentIndex = prev ? ids.indexOf(prev) : -1;
+      const base = currentIndex === -1 ? (delta > 0 ? -1 : 0) : currentIndex;
+      const nextIndex = (base + delta + ids.length) % ids.length;
+      return ids[nextIndex] ?? null;
+    });
+  }, []);
+
+  const openCursorDetail = useCallback(() => {
+    const currentNodes = cursorNodesRef.current;
+    const cursorId = cursorIdRef.current ?? currentNodes[0]?.id ?? null;
+    const node = currentNodes.find((n) => n.id === cursorId);
+    if (node) onOpenDetailRef.current({ kind: 'node', data: node.data as MonitorNodeData });
+  }, []);
+
+  useEffect(() => {
+    if (!apiRef) return;
+    apiRef.current = { moveCursor, openCursorDetail };
+    return () => { apiRef.current = null; };
+  }, [apiRef, moveCursor, openCursorDetail]);
+
+  // A session switch discards the cursor (stale state never survives).
+  useEffect(() => { setCursorNodeId(null); }, [sessionId]);
+
+  // Entering the graph level seeds the cursor on the first node (L2 is always
+  // navigable); unwinding to L1 clears it.
+  useEffect(() => {
+    if (!graphActive) {
+      setCursorNodeId(null);
+      return;
+    }
+    setCursorNodeId((prev) => prev ?? (cursorNodesRef.current[0]?.id ?? null));
+  }, [graphActive, nodes]);
+
+  // Mark the cursor node selected THROUGH ReactFlow state (a `select` change),
+  // never DOM focus. Dispatched only on a real cursor change.
+  const prevCursorRef = useRef<string | null>(null);
+  const onNodesChangeRef = useRef(onNodesChange);
+  onNodesChangeRef.current = onNodesChange;
+  useEffect(() => {
+    const prev = prevCursorRef.current;
+    if (prev === cursorNodeId) return;
+    const changes: NodeChange[] = [];
+    if (prev) changes.push({ id: prev, type: 'select', selected: false });
+    if (cursorNodeId) changes.push({ id: cursorNodeId, type: 'select', selected: true });
+    prevCursorRef.current = cursorNodeId;
+    if (changes.length > 0) onNodesChangeRef.current(changes);
+  }, [cursorNodeId]);
 
   // #2762 ST-3 (D-6): push the builder's orphan count up when it CHANGES
   // (ref-guarded — same-value pushes are skipped, so no render loop).
@@ -645,8 +749,30 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
     <NodeFocusProvider value={onFocusTarget}>
       <div
         ref={canvasContainerRef}
+        data-testid="mm-canvas"
+        // Spec #2962 ST-3 (L2): the published keyboard cursor — the node id the
+        // L2 `n`/`p` keys move. Both hooks carry the same id; absent at L1.
+        data-mm-graph-cursor={cursorNodeId ?? undefined}
+        data-node-id={cursorNodeId ?? undefined}
         style={{ width: '100%', height: '100%', position: 'relative' }}
       >
+        {/* Spec #2962 ST-3 (G-273): the L2 cursor ring is TOKEN-DERIVED and
+            keyed on `[data-mm-graph-cursor]` — an accent outline + tint() glow,
+            never ReactFlow's default `.selected` border (which ignores the
+            user's accent). The `.selected` default is neutralized so the
+            token ring is the ONLY cursor signal. */}
+        {cursorNodeId && (
+          <style>{`
+            [data-mm-graph-cursor] .react-flow__node[data-id="${cursorNodeId}"] {
+              outline: 2px solid var(--accent-primary);
+              box-shadow: 0 0 0 4px ${tint('var(--accent-primary)', 60)};
+              border-radius: 6px;
+            }
+            [data-mm-graph-cursor] .react-flow__node.selected {
+              box-shadow: none;
+            }
+          `}</style>
+        )}
         {/* The canvas ALWAYS renders <ReactFlow>. Spec #2795 (AC1) removed the
             #2791 explanatory ghost state: a session that renders zero nodes is
             simply not listed (the shared renderability rule in the sidebar), so
@@ -876,6 +1002,79 @@ export const MissionMonitorPanel: React.FC = () => {
     [filteredSessions, selectedSessionId, selectSession],
   );
 
+  // ── Detail Panel state (#2743 ST-6 / AC-7, AC-8) ─────────────────────────
+  // The open target is a `DetailOpenTarget` union: a node (opened by ReactFlow
+  // onNodeDoubleClick — single-click never opens) or a scoped tool call (opened
+  // by double-clicking a ToolsNode accordion item). `null` = panel closed.
+  const [focusTarget, setFocusTarget] = useState<DetailOpenTarget | null>(null);
+
+  // ── Spec #2962 ST-3: nested-flow wiring (descend / unwind) ────────────────
+  // The active interaction context is the single source of truth for which
+  // surface is live. Deriving `graphActive`/`detailActive` from it (rather than
+  // tracking a second flag) means the engine's capture-phase unwind restores
+  // the parent surface with no extra dispatch.
+  const { contextId: activeContextId } = useActiveHotkeyContext();
+  const graphActive =
+    activeContextId === MISSION_MONITOR_GRAPH_CONTEXT_ID ||
+    activeContextId === MISSION_MONITOR_DETAIL_CONTEXT_ID;
+  const detailActive = activeContextId === MISSION_MONITOR_DETAIL_CONTEXT_ID;
+
+  // The imperative graph-cursor API (the cursor itself lives in the canvas).
+  const canvasApiRef = useRef<MissionMonitorCanvasHandle | null>(null);
+
+  // L3 section navigation state — the panel owns the keyboard cursor and feeds
+  // it to the DetailPanel. Reset whenever the detail target changes.
+  const [activeSectionIndex, setActiveSectionIndex] = useState(0);
+  const [collapsedSectionIds, setCollapsedSectionIds] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
+  const detailSections = useMemo<readonly DetailSectionMeta[]>(
+    () => (focusTarget ? detailSectionsForTarget(focusTarget) : []),
+    [focusTarget],
+  );
+  // Refs so the ONE memoized listener always sees the current section list.
+  const detailSectionsRef = useRef(detailSections);
+  detailSectionsRef.current = detailSections;
+  const activeSectionIndexRef = useRef(activeSectionIndex);
+  activeSectionIndexRef.current = activeSectionIndex;
+
+  // A new detail target starts at its first section, fully expanded.
+  useEffect(() => {
+    setActiveSectionIndex(0);
+    setCollapsedSectionIds(new Set<string>());
+  }, [focusTarget]);
+
+  // Unwind L3→L2: a context-opened detail closes with the level (a detail the
+  // user opened by double-click is untouched — existing behavior preserved).
+  // After the unwind the panel is absent, so its Escape listeners unregister.
+  const [detailFromContext, setDetailFromContext] = useState(false);
+  useEffect(() => {
+    if (!detailActive && detailFromContext) {
+      setFocusTarget(null);
+      setDetailFromContext(false);
+    }
+  }, [detailActive, detailFromContext]);
+
+  const handleFocusTarget = useCallback((target: DetailOpenTarget | null) => {
+    setFocusTarget(target);
+    setDetailFromContext(false);
+  }, []);
+
+  /** L2→L3 descent: open the cursor node's detail as a context-owned surface. */
+  const handleOpenDetailFromContext = useCallback((target: DetailOpenTarget) => {
+    setFocusTarget(target);
+    setDetailFromContext(true);
+  }, []);
+
+  const handleToggleSection = useCallback((id: string) => {
+    setCollapsedSectionIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
   // ONE window listener for the whole panel; removed on unmount. `run` is a
   // no-op while the feature is unmounted (no subscriber), and the engine never
   // dispatches these feature-tier actions unless Mission Monitor is focused.
@@ -893,20 +1092,46 @@ export const MissionMonitorPanel: React.FC = () => {
           case MISSION_MONITOR_PREVIOUS_SESSION:
             selectRelativeSession(-1);
             break;
+          // ── Spec #2962 ST-3 (L2): graph cursor (programmatic selection) ────
+          case MISSION_MONITOR_NEXT_NODE:
+            canvasApiRef.current?.moveCursor(1);
+            break;
+          case MISSION_MONITOR_PREVIOUS_NODE:
+            canvasApiRef.current?.moveCursor(-1);
+            break;
+          case MISSION_MONITOR_OPEN_DETAIL:
+            canvasApiRef.current?.openCursorDetail();
+            break;
+          // ── Spec #2962 ST-3 (L3): section navigation + progressive disclosure ─
+          case MISSION_MONITOR_NEXT_SECTION: {
+            const count = detailSectionsRef.current.length;
+            if (count > 0) setActiveSectionIndex((index) => (index + 1) % count);
+            break;
+          }
+          case MISSION_MONITOR_PREVIOUS_SECTION: {
+            const count = detailSectionsRef.current.length;
+            if (count > 0) setActiveSectionIndex((index) => (index - 1 + count) % count);
+            break;
+          }
+          case MISSION_MONITOR_TOGGLE_SECTION: {
+            const section = detailSectionsRef.current[activeSectionIndexRef.current];
+            if (section) handleToggleSection(section.id);
+            break;
+          }
+        }
+        // ── Spec #2962 ST-3 (R-2.2 / AC2): "the action that ran" ─────────────
+        // A nested-level action names itself and the level it belonged to
+        // through the ONE shared `announce()` channel (e.g. `Next section.
+        // Node detail.`). No new live region, no per-row live region. L1
+        // actions declare no context and therefore never announce here.
+        const action = getHotkeyAction(actionId);
+        if (action && action.contextId) {
+          const context = getHotkeyContext(action.contextId);
+          if (context) announce(`${action.title}. ${context.title}.`);
         }
       }),
-    [selectRelativeSession],
+    [selectRelativeSession, handleToggleSection],
   );
-
-  // ── Detail Panel state (#2743 ST-6 / AC-7, AC-8) ─────────────────────────
-  // The open target is a `DetailOpenTarget` union: a node (opened by ReactFlow
-  // onNodeDoubleClick — single-click never opens) or a scoped tool call (opened
-  // by double-clicking a ToolsNode accordion item). `null` = panel closed.
-  const [focusTarget, setFocusTarget] = useState<DetailOpenTarget | null>(null);
-
-  const handleFocusTarget = useCallback((target: DetailOpenTarget | null) => {
-    setFocusTarget(target);
-  }, []);
 
   // S6: a failed read/watch surfacing the verbatim backend error wins over the
   // plain disconnect hint; both are non-blocking (fail-open).
@@ -1011,12 +1236,24 @@ export const MissionMonitorPanel: React.FC = () => {
                 rows={rowSources}
                 onFocusTarget={handleFocusTarget}
                 onUnattributedCount={handleUnattributedCount}
+                graphActive={graphActive}
+                onOpenDetailFromContext={handleOpenDetailFromContext}
+                apiRef={canvasApiRef}
               />
             </ReactFlowProvider>
 
             {/* Detail Panel */}
             {focusTarget && (
-              <DetailPanel target={focusTarget} onClose={() => setFocusTarget(null)} />
+              <DetailPanel
+                target={focusTarget}
+                onClose={() => {
+                  setFocusTarget(null);
+                  setDetailFromContext(false);
+                }}
+                activeSectionId={detailSections[activeSectionIndex]?.id ?? null}
+                collapsedSectionIds={collapsedSectionIds}
+                onToggleSection={handleToggleSection}
+              />
             )}
             </div>
           </div>

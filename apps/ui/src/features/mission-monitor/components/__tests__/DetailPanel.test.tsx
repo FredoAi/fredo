@@ -646,3 +646,108 @@ describe('DetailPanel width persistence & resize (R-2)', () => {
     expect(localStorage.getItem(PANEL_WIDTH_KEY)).toBe('520');
   });
 });
+
+// ── Spec #2962 ST-3 (L3): the keyboard-navigable detail section list ──────────
+//
+// The panel owns the L3 keyboard cursor (active section id + collapsed set) and
+// passes it down; the DetailPanel publishes `data-mm-detail-section` on every
+// section and `data-mm-active-section` on the active one. The active marker is
+// a token-derived accent left border PLUS a non-colour cue (weight + accent
+// label), never border-colour only.
+
+describe('Spec #2962 ST-3 (L3): navigable detail sections', () => {
+  it('publishes data-mm-detail-section for each section and data-mm-active-section on the active one', () => {
+    renderWithChakra(
+      <DetailPanel
+        target={{ kind: 'node', data: makeAgentData() }}
+        onClose={() => {}}
+        activeSectionId="tokens"
+        collapsedSectionIds={new Set()}
+        onToggleSection={() => {}}
+      />,
+    );
+
+    const panel = screen.getByTestId('detail-panel');
+    const sectionIds = Array.from(panel.querySelectorAll('[data-mm-detail-section]')).map(
+      (el) => el.getAttribute('data-mm-detail-section'),
+    );
+    // Agent node: overview + content + tokens + timing.
+    expect(sectionIds).toEqual(['overview', 'content', 'tokens', 'timing']);
+
+    const active = panel.querySelectorAll('[data-mm-active-section]');
+    expect(active.length).toBe(1);
+    expect(active[0].getAttribute('data-mm-detail-section')).toBe('tokens');
+  });
+
+  it('collapsing a section hides its rows but keeps its marker (progressive disclosure)', () => {
+    renderWithChakra(
+      <DetailPanel
+        target={{ kind: 'node', data: makeAgentData() }}
+        onClose={() => {}}
+        activeSectionId="content"
+        collapsedSectionIds={new Set(['content'])}
+        onToggleSection={() => {}}
+      />,
+    );
+
+    const panel = screen.getByTestId('detail-panel');
+    const content = panel.querySelector('[data-mm-detail-section="content"]') as HTMLElement;
+    // The section (and its active marker) is still present…
+    expect(content).not.toBeNull();
+    expect(content.getAttribute('data-mm-active-section')).toBe('true');
+    // …but its rows are hidden.
+    expect(content.textContent).not.toContain('Hello, can you help me?');
+    // Sibling sections are unaffected.
+    expect(screen.getByText('Estimated Cost')).toBeDefined();
+  });
+
+  it('marks the active section with the token accent border AND a weight/text cue (never colour-only)', () => {
+    renderWithChakra(
+      <DetailPanel
+        target={{ kind: 'node', data: makeAgentData() }}
+        onClose={() => {}}
+        activeSectionId="overview"
+        onToggleSection={() => {}}
+      />,
+    );
+
+    const panel = screen.getByTestId('detail-panel');
+    // The token-derived accent border is keyed on [data-mm-active-section].
+    const styleText = panel.querySelector('style')?.textContent ?? '';
+    expect(styleText).toContain('[data-mm-active-section]');
+    expect(styleText).toContain('border-left: 2px solid var(--accent-primary)');
+
+    const active = panel.querySelector('[data-mm-active-section]') as HTMLElement;
+    // Non-colour cue: the active header label is bolder (and accent-tinted).
+    const header = active.firstElementChild as HTMLElement;
+    expect(header.style.fontWeight).toBe('700');
+    expect(header.style.color).toBe('var(--accent-primary)');
+
+    // Inactive sections carry a transparent (not accent) left border.
+    const overviewSibling = panel.querySelector('[data-mm-detail-section="tokens"]') as HTMLElement;
+    expect(overviewSibling.style.borderLeft).toBe('2px solid transparent');
+  });
+
+  it('defaults the active section to the first when none is supplied (backward compatible)', () => {
+    renderWithChakra(<DetailPanel target={{ kind: 'node', data: makeAgentData() }} onClose={() => {}} />);
+
+    const active = screen.getByTestId('detail-panel').querySelector('[data-mm-active-section]');
+    expect(active?.getAttribute('data-mm-detail-section')).toBe('overview');
+  });
+
+  it('exposes a single Details section for a tool-call target', () => {
+    renderWithChakra(
+      <DetailPanel
+        target={{ kind: 'tool-call', call: makeToolCallData(), sessionId: 's1' }}
+        onClose={() => {}}
+      />,
+    );
+
+    const panel = screen.getByTestId('detail-panel');
+    const sectionIds = Array.from(panel.querySelectorAll('[data-mm-detail-section]')).map(
+      (el) => el.getAttribute('data-mm-detail-section'),
+    );
+    expect(sectionIds).toEqual(['details']);
+    expect(panel.querySelector('[data-mm-active-section]')?.getAttribute('data-mm-detail-section')).toBe('details');
+  });
+});
