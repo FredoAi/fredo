@@ -329,7 +329,8 @@
                     "git rev-parse*": "allow",
                     "powershell -File scripts/doom/*": "allow",
                     "git clone*": "allow",
-                    "*restful-doom*": "allow"
+                    "*restful-doom*": "allow",
+                    "Remove-Item scripts/doom/*": "allow"
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny"
