@@ -191,3 +191,104 @@
   - Edge: PG leg needs the managed `psql` lever (G-284) — if unavailable, record a NAMED TOOLING GAP for the PG leg (never silently drop it, G-307); the seeded session is idempotent; the rest of the app is unaffected after autoplay stops.
 
 **`DoomAutoplayErrorCode` coverage:** `NotReady`→F-32(b) · `DecisionFailed`→F-27 · `EngineRequestFailed`→F-32(a) · `BudgetExhausted`→F-28.
+
+---
+
+# doom-mode — Secret activation + performance mode (Spec #2970)
+
+> **Verification policy: live** — the mode is entered by a real document-level keydown
+> sequence or a live model-audio turn, launches a real OS child, opens a real webview,
+> and suppresses a real Rust pipeline. Evidence MUST carry the `telemetry_spans`
+> live-pipeline reference (non-zero count + recent `max(ingested_at)`; managed `psql`
+> at the manifest `ports.pg`, database `postgres`, G-284, or `telemetry-query.ps1
+> -PgPort`/`-Manifest`; a disclosed app-pool `feature_data_read` fallback allowed).
+> Doom Mode emits NO OTLP span — the query proves the pipeline, not the feature. A
+> static-only PASS is a FALSE PASS (G-033). Every "advances" assertion is STEP-DRIVEN
+> (G-316: `-apilockstep` freezes the world between `POST /api/step`).
+>
+> **Real-engine scope (BINDING):** the typed/voice activation legs run against the real
+> `restful-doom.exe` staged by `scripts/doom/stage-doom-fixture.ps1` (F-49); a stub-only
+> PASS is a FALSE PASS (G-033/G-319). Never assume prior staging survives.
+>
+> Binding names: `enter_doom_mode`/`exit_doom_mode`/`get_doom_mode_status`; event
+> `doom-mode-changed`; `DoomModePhase = inactive|entering|active|exiting`;
+> `DoomModeOrigin = code|voice|window`; `DoomModeStatus`/`DoomModeResult` fields
+> `{phase,active,voiceSuppressed,origin,enteredAt,lastError,code}`; skill `doom_mode`
+> arg `action` = `enter|exit`; `SkillRegistry::with_app_control_and_doom()`; frontend
+> `DOOM_MODE_EVENT`, `DOOM_MODE_SKILL`, `DOOM_SECRET_CODE='iddqd'`, `useDoomMode()`,
+> `useSecretCode()`, `useDoomModeSkill()`, store `performanceGate`; DOM hook
+> `doom-exit-button` (label "Exit Doom Mode"); removed `doom-entry-button`.
+
+## Typed trigger + lifecycle (R-1 / R-1.a / R-1.b)
+
+- [ ] F-33 (R-1, AC1) **REAL-ENGINE typed `iddqd` enters — REQUIRED.** Start from the fresh pre-feature state (G-265): no `doom` window, no Doom tile in the launcher, `get_doom_mode_status = {phase:"inactive",active:false,voiceSuppressed:false,origin:null}`. Stage the real engine (F-49); dispatch the five document keydowns `i`,`d`,`d`,`q`,`d` in the main window (no modifier, any focus).
+  - EXPECTED: `doom-mode-changed` fires `{phase:"active",active:true,origin:"code"}`; `get_doom_mode_status.active===true`, `origin==="code"`, `enteredAt` RFC3339 non-null; runtime ready — `DoomStatus.enginePath` basename `restful-doom.exe` + live PID; the playing agent started (scripted lever: `get_doom_autoplay_status.phase` running/completed); exactly ONE window labeled `doom` (`doom-root` + `doom-window-title`="Doom" present); `doom-frame-canvas` paints real pixels.
+  - Edge: focus inside an input field still triggers (document-level host, `useKonamiCode.ts:55-60`); a wrong key mid-sequence resets (near-miss F-46).
+- [ ] F-34 (R-1.a) **Idempotent re-trigger.** While active, type `iddqd` again and separately invoke `enter_doom_mode`.
+  - EXPECTED: `DoomModeResult` no-op success; phase stays `active`; exactly ONE `doom` window; exactly ONE engine PID; `enteredAt` unchanged; no second runtime.
+  - Edge: rapid double-trigger; re-trigger while `entering`.
+- [ ] F-35 (R-1.b, R-5) **Enter failure → no half-entered.** Inject `FREDO_DOOM_MODE_FAIL_ENTER=1` via `dev-env.ps1 -EnvVar`; type `iddqd`.
+  - EXPECTED: `DoomModeResult.success===false` with a typed `error`+`code`; `phase==="inactive"`, `active===false`, `voiceSuppressed===false`; NO `doom` window; NO engine PID; no suppression. Unset the lever + retry → enters.
+  - Edge: retry with the lever still set stays `inactive`; no orphan.
+
+## Voice trigger (R-2 / R-2.a)
+
+- [ ] F-36 (R-2, AC2) **Voice "fredo, go Doom Mode" enters — REQUIRED.** Live model-audio path: capture the phrase through the companion model-audio turn so the model selects `doom_mode {action:"enter"}` (`commands.rs:814-821` → `status.rs` audio leg; registry `with_app_control_and_doom()`).
+  - EXPECTED: `llm-skill-call {skill:"doom_mode",arguments:{action:"enter"}}` observed on the IPC monitor; then the SAME lifecycle as F-33 with `origin==="voice"`; the companion bubble settles with the deterministic enter reply (through `skillBridge.pushAppOpenReply`, `skillBridge.ts:51`); no 15 s watchdog stall.
+  - Edge: repeat the utterance — success metric 2 of 2 first-try; if the model does not select, record a technique finding UNLESS `doom_mode` is absent from the offered registry (then FAIL, G-316).
+- [ ] F-37 (R-2.a) **Unrelated spoken phrase → no enter.** Speak an unrelated phrase (e.g. "fredo, what's the weather?") through the model-audio path.
+  - EXPECTED: no `llm-skill-call {skill:"doom_mode"}`; `get_doom_mode_status.phase==="inactive"`; no window; no suppression; the companion replies normally.
+  - Edge: the model selects another skill; no skill selected.
+
+## Secrecy + exit lifecycle (R-3.a / R-3.b / R-3.c)
+
+- [ ] F-38 (R-3.a, AC3) **Secrecy pre-activation over USER-VISIBLE surfaces.** Fresh boot, mode inactive. Enumerate the RENDERED user-visible surfaces: launcher/app grid (`Home.tsx:32` `SHOWABLE_FEATURES`), Settings→Apps presentation list (`AppPresentationSettings.tsx:223`), Settings sidebar (`SettingsSurface.tsx:120-125`), help/reference text, hotkey listing.
+  - EXPECTED: NONE references "Doom"/"iddqd"/Doom Mode; `doom-entry-button` absent (deleted with `DoomEntry.tsx`); no Doom tile/settings row/nav item. Grep scope = RENDERED surfaces only — NOT source/test files (which legitimately contain "Doom").
+  - Edge: the `?view=doom` route still exists (`Router.tsx:16-18`) — a route, not a discoverable control (regression invariant).
+- [ ] F-39 (R-3.b) **Exit via `doom-exit-button`.** While active, click `doom-exit-button` (label "Exit Doom Mode") in the `doom` window header.
+  - EXPECTED: `doom-mode-changed {active:false,phase:"inactive"}`; the agent is stopped; the runtime stops bounded (PID gone within `DOOM_STOP_TIMEOUT_S`); the `doom` window closes; `get_doom_mode_status.voiceSuppressed===false`; origin cleared.
+  - Edge: exit while `entering`.
+- [ ] F-40 (R-3.b) **Exit via `doom` window close.** While active, close the `doom` window natively (routes through `doom_close_handler`).
+  - EXPECTED: same clean exit as F-39; zero `restful-doom.exe` after.
+  - Edge: close while the agent is running.
+- [ ] F-41 (R-3.b) **Spoken exit.** Say "fredo, stop Doom Mode" so the model selects `doom_mode {action:"exit"}`.
+  - EXPECTED: `llm-skill-call {skill:"doom_mode",arguments:{action:"exit"}}`; then a clean exit as F-39; deterministic reply.
+  - Edge: exit while already exiting.
+- [ ] F-42 (R-3.b) **Exit via app exit.** While active, exit Fredo (`RunEvent::Exit`; `stop_doom_on_exit`).
+  - EXPECTED: mode cleared + runtime stopped within bound; zero engine PID after app exit; the llama-server and PG exit hooks still run.
+  - Edge: exit while `entering`/hung (hard-kill; `FREDO_DOOM_STOP_TIMEOUT_S=1` + `FREDO_DOOM_STUB_HANG=1`).
+- [ ] F-43 (R-3.c) **Exit while inactive → no-op.** Fresh boot (inactive); invoke `exit_doom_mode` and separately speak the stop phrase.
+  - EXPECTED: no-op result (`phase:"inactive"`); no window; no engine; no error surface.
+  - Edge: repeated no-op exits.
+
+## Continuous suppression (R-4.a / R-4.b)
+
+- [ ] F-44 (R-4.a, AC4) **CONTINUOUS suppression invariant — its own row (G-123).** While the mode is `active`, sample `stt_start` and the model-audio turn (`llm_chat_with_audio` / the audio leg of `llm_chat_with_status`) at least 3 times across the active window.
+  - EXPECTED: EVERY `stt_start` returns `{started:false, code:"disabled"}` (typed); the model-audio turn is refused with a typed code and NO `input_audio` request is issued to the model; `get_doom_mode_status.voiceSuppressed===true` throughout; the launcher voice affordance is gated (`performanceGate`); the mode stays `active` until an R-3.b exit.
+  - Edge: **G-050** — the companion has NO audio/TTS output (`CompanionContext.tsx:94-99`); AC4's "voice/audio" is the INPUT pipeline (capture `session.rs:312-321` + model-audio turn `commands.rs:814-821`). A literal TTS-mute surface does not exist; do NOT assert one.
+- [ ] F-45 (R-4.b) **Restore after exit.** After an R-3.b exit (voice otherwise enabled), call `stt_start`, then drive the model-audio turn.
+  - EXPECTED: `stt_start` proceeds (`started:true`); `get_doom_mode_status.voiceSuppressed===false`; the model-audio turn proceeds; no residual suppression.
+  - Edge: compare against a mode-off baseline; restore after each exit path (button/close/spoken).
+
+## Negatives + no half-entered state (R-5)
+
+- [ ] F-46 (R-5, AC5) **Near-miss typed `iddqdq`.** Fresh inactive state; type `i`,`d`,`d`,`q`,`d`,`q`.
+  - EXPECTED: NO activation; `phase` stays `inactive`; no window; no engine; no suppression; Fredo unchanged.
+  - Edge: `iddqd` + extra key; prefix `iddq`; interleaved wrong keys.
+- [ ] F-47 (R-5, AC5) **Near-miss unrelated spoken phrase.** Speak a phrase the model does not map to `doom_mode` (e.g. "fredo, play some music").
+  - EXPECTED: no `doom_mode` skill call; mode stays `inactive`; no half-entered state.
+  - Edge: a phrase containing "doom" unrelated to the command.
+- [ ] F-48 (R-5, AC5) **No half-entered on runtime failure.** Leg (a): `FREDO_DOOM_ENGINE_PATH=<fixture>/engine/doom-engine.invalid.exe` (spawnFailed). Leg (b): `FREDO_DOOM_IWAD_PATH=<fixture>/freedoom/missing.wad` (notConfigured). In each, type `iddqd`.
+  - EXPECTED: each attempt → typed failure (`lastError`/`code`), `phase==="inactive"`, `active===false`, `voiceSuppressed===false`, NO `doom` window, NO orphan engine, no suppression.
+  - Edge: retry after supplying a valid path recovers; no partial window.
+
+## Real-engine re-stage + E2E (REQUIRED)
+
+- [ ] F-49 (ST-1, G-314) **REAL-ENGINE build+stage — REQUIRED.** Run `powershell -File scripts/doom/stage-doom-fixture.ps1 -FixtureDir .opencode/tmp/2970/fixtures -Msys2Root C:\msys64` (invokes `scripts/doom/build-restful-doom.ps1` when needed).
+  - EXPECTED: exit 0; stdout carries `FREDO_DOOM_INSTALL_DIR` / `FREDO_DOOM_ENGINE_PATH` / `FREDO_DOOM_IWAD_PATH`; `<fixture>/engine/restful-doom.exe` is a PE image; `<fixture>/freedoom/freedoom1.wad` SHA-256 `3f9b264f3e3ce503b4fb7f6bdcb1f419d93c7b546f4df3e874dd878db9688f59`; `<fixture>/engine/doom-engine.invalid.exe` present; the staged engine launches and renders. NOTE: the script's default FixtureDir is `.opencode/tmp/2968/fixtures` (`stage-doom-fixture.ps1:130`) → the explicit `-FixtureDir` is REQUIRED.
+  - Edge: toolchain absent → exit 2 (named TOOLING GAP → `block`, G-172); prior staging is NOT assumed (gitignored scratch is not durable); never commit the engine/WAD (G-172); a stub-only receipt is a FALSE PASS (G-033/G-319). If the leg genuinely cannot run, `block` with exact specifics — never present as full live verification.
+- [ ] F-50 (E2E, human directive) **RUNNING app: PG-default boot + Mission Monitor + secret activation, no discoverable trace.** Boot the app end-to-end; seed one qualifying session; then activate Doom Mode.
+  - EXPECTED: (a) `storage_engine_status` = PostgreSQL / PG supervisor ready (PG-default boot path); (b) seed `bun .opencode/scripts/inject-otlp-fixture.ts --copilot --fixture .opencode/scripts/copilot-exchange.fixture.json` → assert the DECLARED `sessions` row for `e2e-copilot2933` has `visibleTurnCount ≥ 1` BEFORE asserting the list; Mission Monitor renders ≥1 live session; (c) typed `iddqd` raises Doom Mode (`doom` window + `doom-mode-changed active`) while no Doom surface is discoverable pre-activation (F-38); (d) live-pipeline receipt `telemetry_spans` non-zero + recent `max(ingested_at)`.
+  - Edge: the PG leg needs the managed `psql` (G-284); if the ephemeral `ports.pg` is 0/unavailable, name the sanctioned app-pool `feature_data_read` fallback and DISCLOSE it — never silently drop the leg (G-307); the seeded session is idempotent; the rest of the app is unaffected after the mode exits.
+
+**`DoomModePhase` coverage:** `inactive`→F-33 pre / F-35/F-46/F-48 / F-39-42 post · `entering`→F-39 edge · `active`→F-33/F-36/F-44 · `exiting`→F-41 edge. **`DoomModeOrigin` coverage:** `code`→F-33 · `voice`→F-36/F-41 · `window`→F-39 (the `doom` window's exit control).
