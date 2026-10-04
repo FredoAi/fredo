@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { Box, Button, HStack, Icon, Text, VStack } from '@chakra-ui/react';
-import { LuPalette, LuBot, LuSave, LuSettings2, LuActivity, LuKeyboard, LuDatabase } from 'react-icons/lu';
+import { LuPalette, LuBot, LuSave, LuSettings2, LuActivity, LuKeyboard, LuDatabase, LuAppWindow } from 'react-icons/lu';
 import { CompanionSettingsPanel } from '../../../shared/components/companion/CompanionSettingsPanel';
 import { SettingsSaveProvider, useSettingsSaveContext } from '../../settings/SettingsSaveContext';
 import { ThemingSettings } from '../../theming';
@@ -10,6 +10,7 @@ import { IngestAutostartSettings } from '../../ingest/IngestAutostartSettings';
 import { getFeatures, dedupeByFeatureId } from '../../featureRegistry';
 import { tint } from '../../../shared/utils/colorTint';
 import { HotkeysSettings, HOTKEYS_NAV_ID } from './HotkeysSettings';
+import { AppPresentationSettings } from './AppPresentationSettings';
 
 /**
  * SettingsSurface — the inner Settings shell (Spec #2868 ST-1).
@@ -171,6 +172,9 @@ export const SettingsSurface: React.FC = () => {
         {/* Static: Telemetry */}
         <NavItem id="telemetry" label="Telemetry" icon={LuActivity} activeSection={activeSection} onClick={setActiveSection} />
 
+        {/* Static: Apps (Spec #2955 ST-3 — per-app main/own window choice) */}
+        <NavItem id="apps" label="Apps" icon={LuAppWindow} activeSection={activeSection} onClick={setActiveSection} testId="settings-nav-apps" />
+
         {/* Static: Ingest (Spec #2992 ST-7 — login auto-start for the headless daemon) */}
         <NavItem id="ingest" label="Ingest" icon={LuDatabase} activeSection={activeSection} onClick={setActiveSection} testId="settings-nav-ingest" />
 
@@ -222,6 +226,9 @@ export const SettingsSurface: React.FC = () => {
             )}
             {activeSection === 'telemetry' && (
               <Box p={5} minH="100%"><TelemetrySettings /></Box>
+            )}
+            {activeSection === 'apps' && (
+              <Box p={5} minH="100%"><AppPresentationSettings /></Box>
             )}
             {activeSection === 'ingest' && (
               <Box p={5} minH="100%"><IngestAutostartSettings /></Box>

@@ -14,13 +14,14 @@ export class TerminalFeature extends FredoFeatureClass {
   readonly hasSettings = true;
 
   /**
-   * Mode-aware entry (Spec #2947 ST-3): `TerminalEntry` resolves the persisted
-   * presentation mode and renders the in-window workspace (`TerminalWindow`) for
-   * `same-window`, or the shipped `TerminalLauncher` (which fires
-   * `open_terminal_window` and closes this in-window entry) for `new-window`.
-   * Every in-window entry point — the launcher tile, the dock/toolbar desktop
-   * item, `open-app`/`openSelf` — flows through the ONE shipped
-   * `openFeatureWindow`, so the mode is honoured everywhere with no second
+   * In-window Terminal host (Spec #2947 ST-3, reworked by #2955 ST-4): the
+   * render-time trampoline (`new-window` → `TerminalLauncher`) is RETIRED.
+   * `TerminalEntry` always renders the real workspace (`TerminalWindow`); the
+   * per-app presentation choice is owned by the ONE presentation-aware opener
+   * (`Home.openApp`), which routes a `new-window` app to its native host before
+   * this in-window entry is ever created. Every in-window entry point — the
+   * launcher tile, the dock/toolbar desktop item, `open-app`/`openSelf` — flows
+   * through that ONE opener, so the mode is honoured everywhere with no second
    * spawner and no event-target change.
    */
   render() {
