@@ -56,47 +56,10 @@ impl SessionKind {
     }
 }
 
-/// The Terminal presentation mode (Spec #2947): whether Terminal opens inside
-/// the main Fredo window or in its own native window. Wire form is kebab-case
-/// (`"same-window"` / `"new-window"`), persisted under
-/// [`TERMINAL_PRESENTATION_KEY`] (AppStore KV, via the frontend
-/// `settingsService`). This is the ONE naming authority for the feature (ST-1).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum TerminalPresentation {
-    /// Terminal renders inside the main Fredo window's in-window kernel.
-    SameWindow,
-    /// Terminal opens in the single native `terminal` window (shipped behaviour).
-    NewWindow,
-}
-
-impl TerminalPresentation {
-    /// The kebab-case wire value — the inverse of [`Self::parse`].
-    pub fn wire(self) -> &'static str {
-        match self {
-            Self::SameWindow => "same-window",
-            Self::NewWindow => "new-window",
-        }
-    }
-
-    /// Parse a persisted wire value. `None` for an absent / blank / unrecognized
-    /// value — the caller falls back to [`DEFAULT_PRESENTATION`] (R-4.1).
-    pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim() {
-            "same-window" => Some(Self::SameWindow),
-            "new-window" => Some(Self::NewWindow),
-            _ => None,
-        }
-    }
-}
-
-/// The presentation mode used for an absent/unrecognized stored value (R-4.1):
-/// `new-window` preserves the shipped behaviour on upgrade (adjudication 2).
-pub const DEFAULT_PRESENTATION: TerminalPresentation = TerminalPresentation::NewWindow;
-
-/// AppStore KV key holding the persisted presentation wire value (the
-/// Settings → Terminal "Presentation" control).
-pub const TERMINAL_PRESENTATION_KEY: &str = "terminal_presentation_mode";
+// The presentation contract is now platform-wide (Spec #2955 ST-1): the
+// Terminal-only enum moved to `infrastructure::app_window::AppPresentation`.
+// There is exactly ONE enum, one wire vocabulary, one naming authority — every
+// consumer imports the shared type directly (no Terminal-local alias survives).
 
 /// Event emitted to the active Terminal host when a same-window CLI launch has
 /// armed an intent and an already-mounted workspace should drain it.
@@ -612,86 +575,96 @@ mod tests {
         assert!(!finalize_resume_failed(&state, "missing"));
     }
 
-    // ── ST-1 (#2947): the TerminalPresentation shared contract ──────────────
+    // ── #2947/#2955: the shared AppPresentation contract ────────────────────
+    //
+    // The Terminal-only enum was replaced by the platform-wide
+    // `infrastructure::app_window::AppPresentation` (Spec #2955 ST-1); these
+    // pins confirm the re-exported type the Terminal code path consumes keeps
+    // #2947's wire contract intact.
+
+    use crate::infrastructure::app_window::{
+        AppPresentation, DEFAULT_APP_PRESENTATION, LEGACY_TERMINAL_PRESENTATION_KEY,
+    };
 
     #[test]
     fn presentation_parse_accepts_the_wire_values() {
         assert_eq!(
-            TerminalPresentation::parse("same-window"),
-            Some(TerminalPresentation::SameWindow)
+            AppPresentation::parse("same-window"),
+            Some(AppPresentation::SameWindow)
         );
         assert_eq!(
-            TerminalPresentation::parse("new-window"),
-            Some(TerminalPresentation::NewWindow)
+            AppPresentation::parse("new-window"),
+            Some(AppPresentation::NewWindow)
         );
     }
 
     #[test]
     fn presentation_parse_trims_surrounding_whitespace() {
         assert_eq!(
-            TerminalPresentation::parse("  same-window\n"),
-            Some(TerminalPresentation::SameWindow)
+            AppPresentation::parse("  same-window\n"),
+            Some(AppPresentation::SameWindow)
         );
         assert_eq!(
-            TerminalPresentation::parse("\tnew-window "),
-            Some(TerminalPresentation::NewWindow)
+            AppPresentation::parse("\tnew-window "),
+            Some(AppPresentation::NewWindow)
         );
     }
 
     #[test]
     fn presentation_parse_rejects_absent_or_unrecognized_values() {
-        // R-4.1 — the caller falls back to DEFAULT_PRESENTATION for every one.
-        assert_eq!(TerminalPresentation::parse(""), None);
-        assert_eq!(TerminalPresentation::parse("   "), None);
-        assert_eq!(TerminalPresentation::parse("SameWindow"), None);
-        assert_eq!(TerminalPresentation::parse("same_window"), None);
-        assert_eq!(TerminalPresentation::parse("not-a-mode"), None);
+        // R-4.1 — the caller falls back to the default for every one.
+        assert_eq!(AppPresentation::parse(""), None);
+        assert_eq!(AppPresentation::parse("   "), None);
+        assert_eq!(AppPresentation::parse("SameWindow"), None);
+        assert_eq!(AppPresentation::parse("same_window"), None);
+        assert_eq!(AppPresentation::parse("not-a-mode"), None);
     }
 
     #[test]
     fn presentation_wire_is_the_inverse_of_parse() {
-        assert_eq!(TerminalPresentation::SameWindow.wire(), "same-window");
-        assert_eq!(TerminalPresentation::NewWindow.wire(), "new-window");
-        for mode in [
-            TerminalPresentation::SameWindow,
-            TerminalPresentation::NewWindow,
-        ] {
-            assert_eq!(TerminalPresentation::parse(mode.wire()), Some(mode));
+        assert_eq!(AppPresentation::SameWindow.wire(), "same-window");
+        assert_eq!(AppPresentation::NewWindow.wire(), "new-window");
+        for mode in [AppPresentation::SameWindow, AppPresentation::NewWindow] {
+            assert_eq!(AppPresentation::parse(mode.wire()), Some(mode));
         }
     }
 
     #[test]
     fn presentation_serializes_kebab_case() {
         assert_eq!(
-            serde_json::to_value(TerminalPresentation::SameWindow).unwrap(),
+            serde_json::to_value(AppPresentation::SameWindow).unwrap(),
             serde_json::json!("same-window")
         );
         assert_eq!(
-            serde_json::to_value(TerminalPresentation::NewWindow).unwrap(),
+            serde_json::to_value(AppPresentation::NewWindow).unwrap(),
             serde_json::json!("new-window")
         );
     }
 
     #[test]
     fn presentation_deserializes_from_its_wire_value() {
-        let same: TerminalPresentation =
+        let same: AppPresentation =
             serde_json::from_value(serde_json::json!("same-window")).unwrap();
-        let new: TerminalPresentation =
+        let new: AppPresentation =
             serde_json::from_value(serde_json::json!("new-window")).unwrap();
-        assert_eq!(same, TerminalPresentation::SameWindow);
-        assert_eq!(new, TerminalPresentation::NewWindow);
+        assert_eq!(same, AppPresentation::SameWindow);
+        assert_eq!(new, AppPresentation::NewWindow);
     }
 
     #[test]
-    fn default_presentation_is_new_window() {
-        // R-4.1/AC5 — an absent/unrecognized value preserves today's
-        // separate-window behaviour on upgrade.
-        assert_eq!(DEFAULT_PRESENTATION, TerminalPresentation::NewWindow);
+    fn default_presentation_is_same_window() {
+        // Spec #2955 decision 1 — the platform default is the main window for
+        // every app, Terminal included; an explicit legacy value is preserved
+        // via the backend's legacy fallback, not by this default.
+        assert_eq!(DEFAULT_APP_PRESENTATION, AppPresentation::SameWindow);
     }
 
     #[test]
     fn presentation_key_and_event_constants_are_pinned() {
-        assert_eq!(TERMINAL_PRESENTATION_KEY, "terminal_presentation_mode");
+        assert_eq!(
+            LEGACY_TERMINAL_PRESENTATION_KEY,
+            "terminal_presentation_mode"
+        );
         assert_eq!(TERMINAL_INTENT_AVAILABLE_EVENT, "terminal-intent-available");
     }
 }

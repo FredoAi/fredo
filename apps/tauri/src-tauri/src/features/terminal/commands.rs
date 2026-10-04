@@ -14,9 +14,9 @@ use crate::features::terminal::resume::{
 };
 use crate::features::terminal::state::{
     append_capped, finalize_exited, finalize_resume_failed, mark_resumed, now_ms, SessionKind,
-    TerminalErrorKind, TerminalPresentation, TerminalSession, TerminalSessionStatus, TerminalState,
-    DEFAULT_PRESENTATION, OUTPUT_BUFFER_CAP, TERMINAL_PRESENTATION_KEY,
+    TerminalErrorKind, TerminalSession, TerminalSessionStatus, TerminalState, OUTPUT_BUFFER_CAP,
 };
+use crate::infrastructure::app_window::{app_presentation, AppPresentation};
 use crate::infrastructure::storage::feature_store::FeatureStore;
 use crate::infrastructure::storage::AppStore;
 
@@ -27,36 +27,26 @@ pub const WINDOW_LABEL: &str = "terminal";
 /// presentation mode is `same-window` (Spec #2947 ST-2).
 pub const MAIN_WINDOW_LABEL: &str = "main";
 
-// ── Terminal host resolution (Spec #2947 ST-2) ────────────────────────────────
+// ── Terminal host resolution (Spec #2947 ST-2; generalized #2955 ST-1) ────────
 
 /// Map a resolved presentation mode onto the label every terminal event is
 /// emitted to. Pure — the unit-tested half of [`terminal_host_label`].
-fn host_label_for(presentation: TerminalPresentation) -> &'static str {
+fn host_label_for(presentation: AppPresentation) -> &'static str {
     match presentation {
-        TerminalPresentation::SameWindow => MAIN_WINDOW_LABEL,
-        TerminalPresentation::NewWindow => WINDOW_LABEL,
+        AppPresentation::SameWindow => MAIN_WINDOW_LABEL,
+        AppPresentation::NewWindow => WINDOW_LABEL,
     }
 }
 
-/// Map a persisted raw value onto the host label, applying the
-/// absent/unrecognized → [`DEFAULT_PRESENTATION`] fallback (R-4.1). Pure — the
-/// exact parse+fallback chain [`terminal_host_label`] delegates to.
-fn host_label_for_stored(raw: Option<&str>) -> &'static str {
-    host_label_for(
-        raw.and_then(TerminalPresentation::parse).unwrap_or(DEFAULT_PRESENTATION),
-    )
-}
-
-/// The ONE label every terminal event is emitted to. Resolved from AppStore PER
-/// EMIT (never cached at spawn), so a mode change reroutes live output on the
-/// next chunk: `same-window` → [`MAIN_WINDOW_LABEL`], otherwise the native
-/// [`WINDOW_LABEL`]. An absent/unrecognized stored value falls back to
-/// [`DEFAULT_PRESENTATION`] (`new-window`).
+/// The ONE label every terminal event is emitted to. Resolved from the shared
+/// per-app presentation contract PER EMIT (never cached at spawn), so a mode
+/// change reroutes live output on the next chunk: `same-window` →
+/// [`MAIN_WINDOW_LABEL`], otherwise the native [`WINDOW_LABEL`]. An
+/// absent/unrecognized stored value falls back to the legacy Terminal key, then
+/// to the platform default (`same-window`) — see
+/// [`crate::infrastructure::app_window::app_presentation`].
 pub fn terminal_host_label(app: &AppHandle) -> &'static str {
-    let stored = app
-        .try_state::<Arc<AppStore>>()
-        .and_then(|store| store.control_get(TERMINAL_PRESENTATION_KEY).ok().flatten());
-    host_label_for_stored(stored.as_deref())
+    host_label_for(app_presentation(app, "terminal"))
 }
 
 /// Unrendered diagnostic override: a Copilot binary used BEFORE the PATH search.
@@ -2194,39 +2184,30 @@ mod tests {
         assert!(pending.take().is_none(), "clear must drop the intent");
     }
 
-    // ── Terminal host resolution (Spec #2947 ST-2) ─────────────────────────
+    // ── Terminal host resolution (Spec #2947 ST-2; generalized #2955 ST-1) ──
 
     // `AppHandle` is not constructible under `cfg(test)` (the `tauri` `test`
     // feature is off, and enabling it would edit Cargo.toml outside this
-    // sub-task's scope), so the store-read wrapper `terminal_host_label` is
-    // pinned through its pure core `host_label_for_stored` — the exact
-    // parse+fallback chain it delegates to. R-2.2 / R-3.2.
+    // sub-task's scope), so `terminal_host_label` is pinned through its pure
+    // core `host_label_for`. The parse + legacy + default chain lives in
+    // `infrastructure::app_window::resolve_presentation` and is unit-tested
+    // there. R-2.2 / R-3.2.
 
     #[test]
-    fn stored_same_window_routes_to_main() {
-        assert_eq!(host_label_for_stored(Some("same-window")), MAIN_WINDOW_LABEL);
-        assert_eq!(host_label_for_stored(Some("same-window")), "main");
+    fn same_window_routes_to_main() {
+        assert_eq!(host_label_for(AppPresentation::SameWindow), MAIN_WINDOW_LABEL);
+        assert_eq!(host_label_for(AppPresentation::SameWindow), "main");
     }
 
     #[test]
-    fn stored_new_window_routes_to_terminal() {
-        assert_eq!(host_label_for_stored(Some("new-window")), WINDOW_LABEL);
-        assert_eq!(host_label_for_stored(Some("new-window")), "terminal");
+    fn new_window_routes_to_terminal() {
+        assert_eq!(host_label_for(AppPresentation::NewWindow), WINDOW_LABEL);
+        assert_eq!(host_label_for(AppPresentation::NewWindow), "terminal");
     }
 
     #[test]
-    fn absent_or_unrecognized_value_defaults_to_the_native_host() {
-        for raw in [None, Some(""), Some("  "), Some("garbage"), Some("Same-Window")] {
-            assert_eq!(
-                host_label_for_stored(raw),
-                WINDOW_LABEL,
-                "raw {raw:?} must fall back to DEFAULT_PRESENTATION's native host"
-            );
-        }
-    }
-
-    #[test]
-    fn default_presentation_targets_the_native_host() {
-        assert_eq!(host_label_for(DEFAULT_PRESENTATION), WINDOW_LABEL);
+    fn default_presentation_targets_the_main_host() {
+        // Spec #2955 decision 1 — the platform default is the main window.
+        assert_eq!(host_label_for(AppPresentation::SameWindow), MAIN_WINDOW_LABEL);
     }
 }

@@ -902,6 +902,10 @@ pub fn run() {
             features::terminal::commands::resume_terminal_session,
             features::terminal::commands::delete_terminal_session_record,
             features::terminal::commands::rename_terminal_session_record,
+            // Platform-wide per-app window presentation (Spec #2955 ST-1): the
+            // singleton/focus authority every app's open/close routes through.
+            infrastructure::app_window::open_app_window,
+            infrastructure::app_window::close_app_window,
             features::setup::commands::check_cli_installations,
             features::setup::commands::install_plugin,
             features::setup::commands::get_plugin_source_path,
