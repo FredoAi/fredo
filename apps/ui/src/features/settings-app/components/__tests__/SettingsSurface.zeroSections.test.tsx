@@ -46,7 +46,6 @@ vi.mock('@/features/setup', () => ({
 }));
 vi.mock('@/features/home', () => ({
   TelemetrySettings: () => <div data-testid="telemetry-settings" />,
-  DockPositionSettings: () => <div data-testid="dock-position-settings" />,
 }));
 vi.mock('@/shared/components/companion/CompanionSettingsPanel', () => ({
   CompanionSettingsPanel: () => <div data-testid="companion-settings" />,

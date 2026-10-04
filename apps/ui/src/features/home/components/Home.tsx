@@ -6,7 +6,6 @@ import { hydrateWorkspaceLayout, reopenHydratedSlots } from '../../../shared/win
 import { updateWindow } from '../../../shared/window-system/windowStore';
 import { useWindowActions } from '../../../shared/window-system/useWindowActions';
 import { LauncherShell } from './launcher/LauncherShell';
-import { AppDock } from './dock/AppDock';
 import { DesktopBackdrop } from './background/DesktopBackdrop';
 import { myWorkItemsFeature } from '../../my-workitems';
 import { createWorkItemFeature } from '../../my-workitems';
@@ -94,7 +93,7 @@ const HomeDesktop: React.FC<HomeDesktopProps> = ({ registerOpenFeature }) => {
   // some other consumer happens to mount, so a saved last-active layout would
   // not re-tile on a restart. The store is `hydrationStarted`-once +
   // dirty-guarded, so a later consumer's call is a harmless no-op and a late
-  // read never clobbers an in-flight user write (mirrors `AppDock.tsx:283-285`).
+  // read never clobbers an in-flight user write.
   //
   // Round-2 (AC3/AC5): after hydration resolves, REOPEN the arrangement's
   // windows through the full-lifecycle `openFeatureWindow` and immediately
@@ -238,7 +237,6 @@ export const Home: React.FC = () => {
                 <DesktopBackdrop />
                 <WindowManager />
                 <HomeDesktop registerOpenFeature={registerOpenFeature} />
-                <AppDock />
               </Box>
               <LauncherShell
                 showableFeatures={SHOWABLE_FEATURES}

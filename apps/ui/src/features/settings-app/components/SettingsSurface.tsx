@@ -5,7 +5,7 @@ import { CompanionSettingsPanel } from '../../../shared/components/companion/Com
 import { SettingsSaveProvider, useSettingsSaveContext } from '../../settings/SettingsSaveContext';
 import { ThemingSettings } from '../../theming';
 import { SetupWizard } from '../../setup';
-import { TelemetrySettings, DockPositionSettings, BackgroundSettings } from '../../home';
+import { TelemetrySettings, BackgroundSettings } from '../../home';
 import { IngestAutostartSettings } from '../../ingest/IngestAutostartSettings';
 import { getFeatures, dedupeByFeatureId } from '../../featureRegistry';
 import { tint } from '../../../shared/utils/colorTint';
@@ -215,10 +215,6 @@ export const SettingsSurface: React.FC = () => {
                     (no Save-footer gating). */}
                 <BackgroundSettings />
                 <ThemingSettings />
-                {/* Dock position (Spec #2848 ST-4) — home-owned, rendered
-                    BENEATH ThemingSettings; immediate write-through via the
-                    dock-position store (no Save-footer gating). */}
-                <DockPositionSettings />
               </Box>
             )}
             {activeSection === 'plugin-setup' && (
