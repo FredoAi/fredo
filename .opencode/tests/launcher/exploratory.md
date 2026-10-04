@@ -562,3 +562,25 @@
       and check band joins at the larger scale (the per-box rim tuck is scale-independent in viewBox
       units but the antialias width is not). Absent an md surface, record the shared-component RTL pin
       as the residual and do NOT claim a rendered md PASS (promotes to launcher F-113).
+
+---
+
+## #2954 extension — open-apps row edge probes
+
+> Unscripted probes for issue #2954. A confirmed finding PROMOTES to `functional.md` as a new `F-`
+> row (keep the origin note). Live policy; an undrivable lever is a named blocker (G-053) with a
+> static/unit pin — never fabricated.
+
+- [ ] E-78: **Rapid window open/close churn while engaged.** Open and close windows rapidly with the
+      launcher engaged — does the row track the store exactly (one entry per window, no ghost entry,
+      no stale count), with no flicker / re-render loop / console error?
+- [ ] E-79: **Query churn against the row.** Type/clear queries rapidly while windows open/close — does
+      the row + grid always filter from the SAME query with no stale entry, and does an open app whose
+      title matches reappear when the query clears?
+- [ ] E-80: **Palette ↔ query toggle.** Type `>` then delete it repeatedly with windows open — does the
+      row cleanly disappear in palette mode and reappear in normal mode, with no orphan container?
+- [ ] E-81: **Close the last window from the row.** With exactly one window open and the launcher
+      engaged, click its close control — does the row vanish entirely (not an empty box) and the grid
+      remain intact?
+- [ ] E-82: **Minimize/restore from the row.** Minimize a window, engage, activate its entry — does the
+      window restore and raise (topmost) with the entry label updating to/from `(minimized)`?
