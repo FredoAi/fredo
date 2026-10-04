@@ -267,3 +267,27 @@ Run on the served app (dev-env UP `-Spec 2959`, driver `com.fredo.app`, main win
       switch / availability flips / text-entry; `pnpm --filter @fredo/ui build` exit 0 and the served
       `build:webview` leg passes (H-11/G-251 class). Cross-ref R-6/R-7/R-8/R-9/R-20/R-26.
 
+## #2961 testing round 1 — regression result (spec/2961 @ b1234f44)
+
+Run on the served app (dev-env UP `-Spec 2961`, driver `com.fredo.app`, main window). Live
+`telemetry_spans` receipt via the managed `psql` lever (db `postgres`, port 64217) in the
+drive window 2026-10-04T02:00–02:35Z (`otlp_grpc`; 138 `fredo.llm` + tool spans; store
+total 3951). Console clean of product errors (ReactFlow synthetic-keydown harness artifact
+disclosed).
+
+- **R-28 PASS** — `mission-monitor` s/n/p and `diagram` s/f resolve unchanged (model).
+- **R-29 PASS** — Ctrl+Space / `?` / `g g` / `primary+K` / Ctrl+Shift+F8 still resolve with
+  mode ON and OFF; the new app keys (`r/a/z/j/s/n/p/f/e/c/v`) are disjoint from every
+  global (G-220).
+- **R-30 PASS** — text-entry suppression holds for the new app actions (F-81).
+- **R-31 PASS** — `data-fredo-hotkey-context`/`-depth` + the ONE `hotkeys-announcer`
+  behave as before; no double-announce from the new rows.
+- **R-32 PASS** — `ctrl+shift+f8` toggles; the bar persists with `data-fredo-pending-sequence`
+  null; `+N more` bounds the render; app rows are additive/context-scoped-first.
+- **R-33 PASS** — `git diff main HEAD` = 14 files; the bridge uses namespaced
+  `CustomEvent` on `window` + one `useEffect`; no new Tauri command / persisted key /
+  OS-wide hotkey.
+- **R-34 PASS** — span receipt carries no shortcut/keymap/binding/availability spans (PO
+  Q13); #2961-added lines introduce zero colour literals; `pnpm --filter @fredo/ui build`
+  exit 0; `test:run` 212 files / 2906 tests green.
+
