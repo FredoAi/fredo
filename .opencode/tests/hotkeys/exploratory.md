@@ -447,4 +447,29 @@ keymap was left unchanged (test residue).
       probes. Snapshot the relevant AppStore keys before the run and compare after; a probe that
       leaves a persisted test flag/binding behind is a finding.
 
+## #2961 testing round 1 — probe results (spec/2961 @ b1234f44)
+
+Run on the served app (dev-env UP `-Spec 2961`, driver `com.fredo.app`). Live
+`telemetry_spans` receipt via the managed `psql` lever (drive window 2026-10-04T02:00–02:35Z).
+No confirmed defect → no new F- row promoted.
+
+- [ ] E-43 — **PASS (partial).** `optimizely.collapseAll`, `dev-mode.clearEvents`,
+      `dev-mode.showAllStates` render `unavailable` with their declared reasons live; the
+      flip to available is blocked only by absent azdo/jira data (named lever limit).
+- [ ] E-44 — **PASS.** 3 A↔B focus cycles: no stale row, no previous-app action fires.
+- [ ] E-45 — **PASS.** Closed `dev-mode` + dispatch → no throw, no side effect.
+- [ ] E-46 — **PASS.** No app key collides with a shipped global; the resolver is Fredo-first
+      and no global trigger is masked.
+- [ ] E-47 — **PASS (observation).** The bounded `+N more` reconciles with the total
+      (e.g. `my-workitems` 2+21=23); context-scoped rows sort first.
+- [ ] E-48 — **PASS.** `docs-viewer`/`github-viewer` contribute 0 app rows; registry
+      cross-check confirms all absence exemplars declare `hotkeys:[]`.
+- [ ] **New observation (not promoted):** the shipped `fredo.context.descendReference` is
+      itself context-scoped, so it occupies the first context-scoped bar slot ahead of the
+      focused app's rows — at `capacity`=2 only the app's FIRST row is DOM-visible. The full
+      declared set remains in the model. Origin: F-72 round 1.
+
+Teardown: keyboard mode toggled OFF; appearance preset left at the served default; no test
+binding was created (probes used the shipped keymap only).
+
 
