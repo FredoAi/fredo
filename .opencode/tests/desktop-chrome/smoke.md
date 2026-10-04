@@ -1,5 +1,9 @@
 # desktop-chrome — Smoke
 
+> **#2954 note:** S-8's "app-dock rail resting-visible at the left edge" leg is RETIRED — the dock is
+> removed. On a clean desktop the clock/LED cluster + settings button still render; the open-apps
+> surface now lives in the engaged launcher (`launcher-open-apps`). Do NOT assert an `app-dock` rail.
+
 - [x] S-1: App window renders — `tauri_webview_dom_snapshot(type="structure")` returns a non-empty `<body>`
 - [x] S-2: No console errors — `tauri_read_logs(source="console", lines=50)` shows no `Error:`/`Uncaught`/`Maximum update depth exceeded`
   - Note (spec/2825 run): the only console `Error:` lines were `Uncaught TypeError: target.hasAttribute is not a function at reactflow.js:3525` — AUTOMATION ARTIFACT, not a product defect. Both bursts (06:00:50, 06:01:33) occurred exactly when the tester dispatched a synthetic `document.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape'}))`; ReactFlow's keydown handler assumes `event.target.hasAttribute`, which `document` lacks. A real `webview_keyboard` Escape produced no new error. No `Maximum update depth exceeded`, no re-render loop. Benign WARNs: `motion() is deprecated`, `React Flow parent container needs width/height` (transient mount warning).
