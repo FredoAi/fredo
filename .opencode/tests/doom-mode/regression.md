@@ -24,3 +24,28 @@
 - `.opencode/tests/llama-setup/` — out-of-process child supervision + PID/image guard.
 - `.opencode/tests/postgres-lifecycle/`, `.opencode/tests/postgres-cutover/` — PG-default boot + exit-hook co-existence.
 - `.opencode/tests/mission-monitor/` — the live-session render smoke (F-MM).
+
+---
+
+## Autonomous-play slice (Spec #2969) — must-not-change baseline
+
+> **Verification policy: live** — the live-pipeline `telemetry_spans` reference plus
+> DOM/screenshot/process receipts per leg (managed `psql` on the PG default, G-284; a
+> disclosed `telemetry_get_stats` substitution allowed). A static-only PASS is a FALSE PASS.
+
+- [ ] R-10: **Mission Monitor unaffected by autoplay** — with the Doom autoplay surface
+  present (and after a run), Mission Monitor still renders live sessions; the F-31 E2E row
+  is the gate. (Links: `mission-monitor/functional.md`.)
+- [ ] R-11: **Frame-poll path unchanged** — `DoomWindow.tsx:228-239` still polls
+  `doom_frame` at `DOOM_FRAME_POLL_MS=66`; autoplay DRIVES steps and the display loop is
+  not modified or blocked (no idle-frame motion introduced — G-316).
+- [ ] R-12: **Existing Doom surface unchanged** — `doom_read_state`/`doom_step`/`doom_frame`,
+  `doom-status-changed`, launch/teardown, and the window singleton behave identically; the
+  loop reuses the slice-1 supervised child and spawns NO new engine process; existing testids
+  (`doom-root`, `doom-frame-canvas`, `doom-state-readout`, `doom-step-button`, …) still render.
+
+### Links added by this slice
+
+- `.opencode/tests/mission-monitor/` — F-31 E2E regression gate (unchanged surface).
+- `.opencode/tests/llama-setup/` — the managed `llama-server` + Gemma model files the model
+  decision leg depends on (named TOOLING GAP if absent).
