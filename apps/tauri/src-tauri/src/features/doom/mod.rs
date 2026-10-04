@@ -25,6 +25,12 @@
 //!   ST-5.
 //! * `src/bin/doom_stub.rs` — the feature-gated stub engine. ST-8.
 //!
+//! Slice 2 (#2969) adds:
+//!
+//! * [`actions`] — the live-confirmed engine action vocabulary (`DOOM_ACTION_*`
+//!   consts plus the structured list the persona and scripted lever consume).
+//!   ST-1.
+//!
 //! NOT here (later compilable units): the `doom` window + webview + main-window
 //! entry (CU-4, ST-6/ST-7).
 //!
@@ -36,6 +42,7 @@
 //! hard-killed orphan under an image guard.
 
 pub mod acquisition;
+pub mod actions;
 pub mod client;
 pub mod commands;
 pub mod process;
