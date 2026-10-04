@@ -21,10 +21,13 @@ import {
 } from '../defaults';
 import {
   KEYBOARD_BAR_MAX_ANNOUNCED,
+  SHADOWED_UNAVAILABLE_PREFIX,
   buildKeyboardBarModel,
   keyboardBarAnnouncement,
+  shadowingBinding,
   unavailableReasonFor,
   type KeyboardBarModelInput,
+  type KeyboardBarRow,
 } from '../keyboardBarModel';
 import {
   TERMINAL_EXIT_ACTION_ID,
@@ -347,6 +350,73 @@ describe('buildKeyboardBarModel — context-first ordering (F-1)', () => {
       'fredo.keyboardMode.toggle',
       'fredo.launcher.toggle',
     ]);
+  });
+});
+
+// ── Platform precedence / observable shadowing (Spec #2962, R-2.1/R-4.1/R-4.2) ─
+
+describe('shadowingBinding + shadowed unavailable reason (R-2.1/R-4.1/R-4.2)', () => {
+  // The resolver orders feature-tier bindings by context depth DESC, so when a
+  // caller passes [deepest, …, parent] the DEEPEST same-sequence binding leads
+  // and the engine's first-exact match runs it. `makeBinding` preserves order.
+  const deep = makeBinding('demo.canvasNode.action', 'g', { contextId: 'demo.canvas.node' });
+  const parent = makeBinding('demo.base.action', 'g', { contextId: 'demo' });
+  const isShadowed = (row: KeyboardBarRow): boolean =>
+    row.availability === 'unavailable' &&
+    (row.unavailableReason ?? '').startsWith(SHADOWED_UNAVAILABLE_PREFIX);
+
+  it('returns the earlier same-sequence (winning) binding for a shadowed one', () => {
+    expect(shadowingBinding(parent, [deep, parent])).toBe(deep);
+  });
+
+  it('returns null for the winner and when no earlier entry shares the sequence', () => {
+    expect(shadowingBinding(deep, [deep, parent])).toBeNull();
+    expect(shadowingBinding(deep, [deep])).toBeNull();
+    const unique = makeBinding('demo.base.other', 'h', { contextId: 'demo' });
+    expect(shadowingBinding(unique, [deep, parent, unique])).toBeNull();
+  });
+
+  it('marks the parent binding unavailable, naming the winning action (deepest wins)', () => {
+    const model = buildKeyboardBarModel(modelInput({ bindings: [deep, parent] }));
+    expect(model.rows.map((row) => row.actionId)).toEqual([
+      'demo.canvasNode.action',
+      'demo.base.action',
+    ]);
+    const winnerRow = model.rows[0];
+    const shadowedRow = model.rows[1];
+    expect(winnerRow.availability).toBe('available');
+    expect('unavailableReason' in winnerRow).toBe(false);
+    expect(shadowedRow.availability).toBe('unavailable');
+    expect(shadowedRow.unavailableReason).toBe(
+      `${SHADOWED_UNAVAILABLE_PREFIX} Title demo.canvasNode.action`,
+    );
+  });
+
+  it('does not shadow a binding whose sequence is unique among the resolved bindings', () => {
+    const model = buildKeyboardBarModel(modelInput({ bindings: [deep, parent] }));
+    expect(model.rows.some(isShadowed)).toBe(true);
+    const soloModel = buildKeyboardBarModel(
+      modelInput({ bindings: [makeBinding('demo.base.only', 'j', { contextId: 'demo' })] }),
+    );
+    expect(soloModel.rows.some(isShadowed)).toBe(false);
+    expect(soloModel.rows[0].availability).toBe('available');
+  });
+
+  it('leads with every available (winning) row so a capacity cut can only hide shadowed rows (G-273)', () => {
+    const model = buildKeyboardBarModel(modelInput({ bindings: [deep, parent] }));
+    const lastAvailable = model.rows.reduce(
+      (last, row, index) => (row.availability === 'available' ? index : last),
+      -1,
+    );
+    const firstShadowed = model.rows.findIndex(isShadowed);
+    expect(lastAvailable).toBeGreaterThanOrEqual(0);
+    expect(firstShadowed).toBeGreaterThan(-1);
+    // Every winning row precedes every shadowed row in the FULL list…
+    expect(lastAvailable).toBeLessThan(firstShadowed);
+    // …so the tightest capacity cut (1) still shows the winning row, never the shadowed one.
+    const visiblePrefix = model.rows.slice(0, 1);
+    expect(visiblePrefix.map((row) => row.actionId)).toEqual(['demo.canvasNode.action']);
+    expect(visiblePrefix.some(isShadowed)).toBe(false);
   });
 });
 
