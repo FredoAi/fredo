@@ -266,16 +266,26 @@ errors.
 > DOM/a11y assertion plus a `telemetry_spans` receipt read via the managed `psql` lever (G-284).
 > Names bind to the Architect's FINAL BINDING names block (see `functional.md` #2962 header).
 
-- [ ] S-23: **Mission Monitor declares the nested chain.** Focus Mission Monitor and read the
+- [x] S-23: **PASS (2026-10-04, spec/2962 @ e39dc7e).** **Mission Monitor declares the nested chain.** Focus Mission Monitor and read the
       declared contexts. **Expected:** `mission-monitor.graph` (parent `mission-monitor`) and
       `mission-monitor.detail` (parent `mission-monitor.graph`) resolve; the bar at L1 shows
       `Sessions`; no `vite-error-overlay`; console clean. *(live receipt)*
-- [ ] S-24: **Descend twice + Escape unwind quick path.** With mode ON press `o` (→ Graph, depth 2),
+- [x] S-24: **PASS (2026-10-04, spec/2962 @ e39dc7e).** **Descend twice + Escape unwind quick path.** With mode ON press `o` (→ Graph, depth 2),
       `o` (→ Node detail, depth 3), then Escape, Escape, Escape. **Expected:**
       `data-fredo-hotkey-context-depth` goes 1→2→3 then 3→2→1, one level per Escape; the bar rows
       follow each level; console clean. *(live receipt)*
-- [ ] S-25: **Reused key runs the current level's action.** At L2 press `n`; at L3 press `n`.
+- [x] S-25: **PASS (2026-10-04, spec/2962 @ e39dc7e).** **Reused key runs the current level's action.** At L2 press `n`; at L3 press `n`.
       **Expected:** L2 runs `mission-monitor.nextNode` (graph cursor moves), L3 runs
       `mission-monitor.nextSection` (active section moves) — the deepest level wins, no L1
       `nextSession`; the action is named for its level. *(live receipt)*
+
+## #2962 testing round 1 — smoke results (spec/2962 @ e39dc7e)
+
+- [x] **S-23 PASS** — bar context text `mission-monitor` (`data-depth="1"`, raw base id);
+      `mission-monitor.graph` (parent `mission-monitor`) and `mission-monitor.detail`
+      (parent `mission-monitor.graph`) resolve; no `vite-error-overlay`.
+- [x] **S-24 PASS** — depth `1→2→3→2→1→1`, one level per Escape; bar rows follow each level.
+- [x] **S-25 PASS** — L2 `n`=nextNode (cursor moves), L3 `n`=nextSection (active section
+      moves); no L1 `nextSession`; action named for its level.
+
 
