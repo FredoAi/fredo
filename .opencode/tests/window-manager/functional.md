@@ -1,5 +1,13 @@
 # Window Manager — Functional Test Cases (Spec #2807 — Own OS-style window-system kernel)
 
+> **#2954 note:** the persistent dock (`app-dock` / `data-dock-entry` / `data-dock-item` /
+> `.dock-close`) is REMOVED and the open-apps surface moved into the engaged launcher. Dock-bound
+> references in the F-20..F-28 lifecycle rows (e.g. the `app-dock` restore entry at F-38) are
+> RE-BOUND: the window store/kernel behavior is unchanged, but the observable open-apps surface is
+> now `[data-testid="launcher-open-apps"]` / `launcher-open-app-entry-<windowId>` (see
+> `.opencode/tests/launcher/functional.md` `#2954 extension`). The dock-hosted assertions are
+> retired; the window-store/kernel rows stay in force.
+
 > Durable functional suite (feature domain `window-manager`). One `- [ ]` case per requirement; observable expected outcome per case. Each case carries the QA-Plan row number (T-R1..T-R4) and its Acceptance Criterion (AC1..AC4) so the tester's `## Tests Runs` verdict maps a row to an AC — a FAIL on any row fails that AC.
 >
 > **Evidence policy: LIVE** — the exit gate / audit fail-closed unless the tester's Evidence references `telemetry_spans` (a live-query result via `.opencode/skills/telemetry-query/telemetry-query.ps1`) for this frontend rendering/UX feature. A static-only PASS is a FALSE PASS.
