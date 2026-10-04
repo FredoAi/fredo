@@ -11,17 +11,15 @@
  *     the in-window opener (the native host is NOT touched);
  *   - a hydration read failure falls back to `same-window` (R-4).
  *
- * `settingsService` + `featureRegistry` are mocked at the same seams as the
- * sibling appPresentationStore test, so the suite stays host-agnostic.
+ * `controlSettingAccessor` + `featureRegistry` are mocked at the same seams as
+ * the sibling appPresentationStore test, so the suite stays host-agnostic.
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../../features/settings', () => ({
-  settingsService: {
-    get: vi.fn(),
-    set: vi.fn().mockResolvedValue(undefined),
-  },
+vi.mock('../controlSettingAccessor', () => ({
+  getControlSetting: vi.fn(),
+  saveControlSetting: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../../../features/featureRegistry', () => ({
@@ -29,7 +27,7 @@ vi.mock('../../../features/featureRegistry', () => ({
 }));
 
 import { adapterBridge } from '../../utils/adapterBridge';
-import { settingsService } from '../../../features/settings';
+import { getControlSetting } from '../controlSettingAccessor';
 import { getFeatures } from '../../../features/featureRegistry';
 import {
   APP_PRESENTATION_KEY,
@@ -38,7 +36,7 @@ import {
 import { closeAppOwnWindow, createAppOpener, openAppInOwnWindow } from '../appWindows';
 import type { FredoFeatureClass } from '../../classes/FredoFeatureClass';
 
-const getMock = settingsService.get as unknown as ReturnType<typeof vi.fn>;
+const getMock = getControlSetting as unknown as ReturnType<typeof vi.fn>;
 const getFeaturesMock = getFeatures as unknown as ReturnType<typeof vi.fn>;
 
 const feature = (id: string, name: string): FredoFeatureClass =>
@@ -49,10 +47,16 @@ const QUERY_VIEWER = feature('query-viewer', 'Query Viewer');
 
 let invokeMock: ReturnType<typeof vi.fn>;
 
-/** Route `settingsService.get` by key: the map key returns a parsed map, else legacy. */
-function stored(map: unknown, legacy: unknown = undefined): void {
+/**
+ * Route the control-plane accessor by key: the canonical key returns the RAW map
+ * JSON, the legacy key returns the RAW mode. `null`/`undefined` = absent.
+ */
+function stored(map: unknown, legacy: unknown = null): void {
+  const rawMap = map == null ? null : typeof map === 'string' ? map : JSON.stringify(map);
+  const rawLegacy =
+    legacy == null ? null : typeof legacy === 'string' ? legacy : JSON.stringify(legacy);
   getMock.mockImplementation(async (key: string) =>
-    key === APP_PRESENTATION_KEY ? map : legacy,
+    key === APP_PRESENTATION_KEY ? rawMap : rawLegacy,
   );
 }
 

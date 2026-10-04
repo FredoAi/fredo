@@ -13,11 +13,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
 
-vi.mock('../../settings', () => ({
-  settingsService: {
-    get: vi.fn(),
-    set: vi.fn().mockResolvedValue(undefined),
-  },
+vi.mock('../../../shared/window-system/controlSettingAccessor', () => ({
+  getControlSetting: vi.fn(),
+  saveControlSetting: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../../../features/featureRegistry', () => ({
@@ -25,7 +23,10 @@ vi.mock('../../../features/featureRegistry', () => ({
 }));
 
 import { APP_PRESENTATION_KEY } from '../../../shared/window-system/appPresentationStore';
-import { settingsService } from '../../settings';
+import {
+  getControlSetting,
+  saveControlSetting,
+} from '../../../shared/window-system/controlSettingAccessor';
 import {
   DEFAULT_PRESENTATION,
   PRESENTATION_MODE_KEY,
@@ -40,12 +41,19 @@ import {
   useTerminalPresentation,
 } from '../presentation';
 
-const getMock = settingsService.get as unknown as ReturnType<typeof vi.fn>;
-const setMock = settingsService.set as unknown as ReturnType<typeof vi.fn>;
+const getMock = getControlSetting as unknown as ReturnType<typeof vi.fn>;
+const setMock = saveControlSetting as unknown as ReturnType<typeof vi.fn>;
 
-function stored(map: unknown, legacy: unknown = undefined): void {
+/**
+ * Route the control-plane accessor by key: the canonical key returns the RAW map
+ * JSON, the legacy key returns the RAW mode. `null`/`undefined` = absent.
+ */
+function stored(map: unknown, legacy: unknown = null): void {
+  const rawMap = map == null ? null : typeof map === 'string' ? map : JSON.stringify(map);
+  const rawLegacy =
+    legacy == null ? null : typeof legacy === 'string' ? legacy : JSON.stringify(legacy);
   getMock.mockImplementation(async (key: string) =>
-    key === APP_PRESENTATION_KEY ? map : legacy,
+    key === APP_PRESENTATION_KEY ? rawMap : rawLegacy,
   );
 }
 

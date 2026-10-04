@@ -14,19 +14,16 @@
  *   - the factory (`isMultiWindow`) defensive read;
  *   - the `useSyncExternalStore` bindings.
  *
- * `settingsService` and `featureRegistry` are mocked at the same seams as the
- * sibling window-system store tests, so the suite stays host-agnostic and
- * deterministic.
+ * `controlSettingAccessor` (the control-plane KV seam) and `featureRegistry`
+ * are mocked, so the suite stays host-agnostic and deterministic.
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
 
-vi.mock('../../../features/settings', () => ({
-  settingsService: {
-    get: vi.fn(),
-    set: vi.fn().mockResolvedValue(undefined),
-  },
+vi.mock('../controlSettingAccessor', () => ({
+  getControlSetting: vi.fn(),
+  saveControlSetting: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../../../features/featureRegistry', () => ({
@@ -48,17 +45,23 @@ import {
   useAppPresentation,
   useAppPresentationMap,
 } from '../appPresentationStore';
-import { settingsService } from '../../../features/settings';
+import { getControlSetting, saveControlSetting } from '../controlSettingAccessor';
 import { getFeatures } from '../../../features/featureRegistry';
 
-const getMock = settingsService.get as unknown as ReturnType<typeof vi.fn>;
-const setMock = settingsService.set as unknown as ReturnType<typeof vi.fn>;
+const getMock = getControlSetting as unknown as ReturnType<typeof vi.fn>;
+const setMock = saveControlSetting as unknown as ReturnType<typeof vi.fn>;
 const getFeaturesMock = getFeatures as unknown as ReturnType<typeof vi.fn>;
 
-/** Route `settingsService.get` by key: the map key returns a parsed map, else legacy. */
-function stored(map: unknown, legacy: unknown = undefined): void {
+/**
+ * Route the control-plane accessor by key: the canonical key returns the RAW
+ * map JSON, the legacy key returns the RAW mode. `null`/`undefined` = absent.
+ */
+function stored(map: unknown, legacy: unknown = null): void {
+  const rawMap = map == null ? null : typeof map === 'string' ? map : JSON.stringify(map);
+  const rawLegacy =
+    legacy == null ? null : typeof legacy === 'string' ? legacy : JSON.stringify(legacy);
   getMock.mockImplementation(async (key: string) =>
-    key === APP_PRESENTATION_KEY ? map : legacy,
+    key === APP_PRESENTATION_KEY ? rawMap : rawLegacy,
   );
 }
 
@@ -152,6 +155,29 @@ describe('appPresentationStore (Spec #2955 ST-2 — generalized per-app presenta
     await hydrateAppPresentation();
     expect(getAppPresentation('terminal')).toBe('same-window');
     expect(getAppPresentationSnapshot()).toEqual({});
+  });
+
+  it('resolves an authoritative absent read to the default and never consults localStorage (B-2)', async () => {
+    const getItem = vi.spyOn(Storage.prototype, 'getItem');
+    stored(null, null);
+    await hydrateAppPresentation();
+
+    expect(getAppPresentationSnapshot()).toEqual({});
+    expect(getAppPresentation('terminal')).toBe('same-window');
+    expect(getAppPresentation('doom')).toBe('same-window');
+    expect(getItem).not.toHaveBeenCalled();
+    getItem.mockRestore();
+  });
+
+  it('routes the canonical and legacy reads through the control-plane accessor (B-2/B-3)', async () => {
+    stored(null, 'new-window');
+    await hydrateAppPresentation();
+
+    expect(getAppPresentation('terminal')).toBe('new-window');
+    expect(getMock).toHaveBeenNthCalledWith(1, APP_PRESENTATION_KEY);
+    expect(getMock).toHaveBeenNthCalledWith(2, LEGACY_TERMINAL_PRESENTATION_KEY);
+    // One-way migration never writes the legacy key back.
+    expect(setMock).not.toHaveBeenCalled();
   });
 
   it('is idempotent — a second hydrate reuses the settled read', async () => {
@@ -269,7 +295,7 @@ describe('appPresentationStore (Spec #2955 ST-2 — generalized per-app presenta
 
     expect(getAppPresentation('terminal')).toBe('new-window');
 
-    resolveRead({ terminal: 'same-window', doom: 'new-window' });
+    resolveRead(JSON.stringify({ terminal: 'same-window', doom: 'new-window' }));
     await hydration;
     await write;
 

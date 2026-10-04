@@ -62,6 +62,12 @@ let liveSessions: Array<{ status: string }> = [];
 
 const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
   commands.push(command);
+  // The presentation store now persists/reads the CONTROL plane (B-2/B-3).
+  if (command === 'get_control_setting') return settings[String(args?.key)] ?? null;
+  if (command === 'save_control_setting') {
+    saved.push({ key: String(args?.key), value: String(args?.value) });
+    return undefined;
+  }
   if (command === 'get_setting') return settings[String(args?.key)] ?? null;
   if (command === 'save_setting') {
     saved.push({ key: String(args?.key), value: String(args?.value) });

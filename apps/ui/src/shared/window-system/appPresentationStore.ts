@@ -12,14 +12,19 @@
  * `terminal/presentation.ts` is a thin delegating shim over this store.
  *
  * Persistence: a JSON object map `{ "<appId>": "same-window" | "new-window" }`
- * stored as a RAW string under the `app_window_presentation` AppStore
- * control-plane KV key via `settingsService` (`features/settings/index.tsx` —
- * `get`'s default deserializer JSON-parses; `set` takes a raw string). The wire
+ * stored as a RAW string under the `app_window_presentation` CONTROL-plane
+ * (`control.db`) KV key through `controlSettingAccessor`
+ * (`get_control_setting` / `save_control_setting`) — the SAME plane the Rust
+ * `app_window.rs::app_presentation` reads synchronously. It is deliberately NOT
+ * the async, PostgreSQL-only data plane (`save_setting`), and it NEVER consults
+ * `localStorage`: an authoritative absent read resolves to the default. The wire
  * vocabulary is REUSED unchanged from #2947 (`same-window` / `new-window`).
  *
  * Legacy migration: on the first hydrate, if the map lacks `terminal` and the
  * legacy `terminal_presentation_mode` key holds a RECOGNIZED value, it is copied
- * into `map.terminal` (one-way, idempotent). The legacy key is never rewritten.
+ * into `map.terminal` (one-way, idempotent). The legacy read also goes through
+ * the control-plane accessor (the backend's own fallback reads it there), and the
+ * legacy key is never rewritten.
  *
  * Optimistic write (binding adjudication): `setAppPresentation` moves the module
  * store synchronously and notifies subscribers BEFORE awaiting the KV write, and
@@ -28,7 +33,7 @@
  */
 
 import { useSyncExternalStore } from 'react';
-import { settingsService } from '../../features/settings';
+import { getControlSetting, saveControlSetting } from './controlSettingAccessor';
 import { getFeatures } from '../../features/featureRegistry';
 
 /** Where an app opens: inside the main Fredo window or in its own native window. */
@@ -87,6 +92,20 @@ function toPresentationMap(raw: unknown): Record<string, AppPresentation> {
 }
 
 /**
+ * Parse the RAW canonical map value read from the control plane. An
+ * authoritative ABSENT (`null`) / empty / malformed value resolves to an empty
+ * map, so every app falls back to `DEFAULT_APP_PRESENTATION` (`same-window`).
+ */
+function parseCanonicalMap(raw: string | null): unknown {
+  if (raw == null || raw === '') return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+/**
  * True when the registered feature for `appId` intentionally supports multiple
  * simultaneous instances. A factory app can never own a single separate window,
  * so its effective mode is forced to the default (Architect decision 6).
@@ -140,14 +159,11 @@ export function hydrateAppPresentation(): Promise<void> {
   hydrationStarted = true;
   hydrationPromise = (async () => {
     try {
-      const rawMap = await settingsService.get<unknown>(APP_PRESENTATION_KEY, {});
-      const stored = toPresentationMap(rawMap);
+      const rawMap = await getControlSetting(APP_PRESENTATION_KEY);
+      const stored = toPresentationMap(parseCanonicalMap(rawMap));
       // One-way legacy migration: only when the map has no `terminal` entry.
       if (!Object.prototype.hasOwnProperty.call(stored, 'terminal')) {
-        const rawLegacy = await settingsService.get<unknown>(
-          LEGACY_TERMINAL_PRESENTATION_KEY,
-          undefined,
-        );
+        const rawLegacy = await getControlSetting(LEGACY_TERMINAL_PRESENTATION_KEY);
         const legacyMode = recognizePresentation(rawLegacy);
         if (legacyMode) stored.terminal = legacyMode;
       }
@@ -189,7 +205,7 @@ export async function setAppPresentation(appId: string, mode: AppPresentation): 
   try {
     // Never persist a partial map before hydration has merged the stored entries.
     await hydrateAppPresentation();
-    await settingsService.set(APP_PRESENTATION_KEY, JSON.stringify(map));
+    await saveControlSetting(APP_PRESENTATION_KEY, JSON.stringify(map));
   } catch (err) {
     // Restore the prior value only if this write still owns the current value
     // (a newer write supersedes a slow rejected one — do not clobber it).
