@@ -1,8 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Box, useBreakpointValue } from '@chakra-ui/react';
+import { Box, chakra, useBreakpointValue } from '@chakra-ui/react';
 
 // Own-kernel window list (Spec #2807 ST-1) — AC1: never the third-party toolbar.
 import { useWindows } from '../../../../shared/window-system/useWindows';
+// Spec #2954 ST-2 — the in-launcher Open-apps row dispatches the SAME window
+// actions the retired dock used (focus/close only; the kernel stays read-only).
+import { useWindowActions } from '../../../../shared/window-system/useWindowActions';
+// Spec #2954 ST-2 — the relocated always-discoverable arrange entry dispatches
+// the ONE shared store action, imported from its ORIGINAL source module (the
+// retired `AppDock.tsx:48` imported it from here too — never recreate the dock).
+import { arrangeOpenWindows } from '../../../../shared/window-system/workspaceLayoutStore';
+import type { WindowEntry } from '../../../../shared/window-system/windowTypes';
+import { tint } from '../../../../shared/utils/colorTint';
 // Live stream/connection flag — mirrors StreamStatus.tsx (ONLINE dot).
 import { useConnectionStatus } from '../../../../shared/contexts/StreamContext';
 // Companion designated presence — gates the launcher mascot (#2853 ST-4).
@@ -33,6 +42,9 @@ import { useBackgroundId } from '../background/backgroundStore';
 
 import { LauncherChrome } from './LauncherChrome';
 import { LauncherAppGrid } from './LauncherAppGrid';
+// Spec #2954 ST-2 — the in-launcher "Open apps" row + its pure query filter.
+import { LauncherOpenAppsRow } from './LauncherOpenAppsRow';
+import { filterOpenWindows } from './launcherOpenApps';
 // Spec #2946 ST-9 — the `>` action palette (existing command bar; no second
 // palette component ships). Pure projection/switch + the presentational list.
 import { LauncherActionList } from './LauncherActionList';
@@ -359,6 +371,106 @@ export function voiceStartErrorCopy(code: string | null): string | null {
  *  look has ONE definition. The overlay is z-gated below the window stack when
  *  covered. */
 
+/** Spec #2954 ST-2 — the relocated arrange glyph. A minimal 2×2 grid drawn in
+ *  `currentColor` only (no hardcoded colour), matching the retired dock well. */
+function ArrangeWindowsIcon(): React.ReactElement {
+  return (
+    <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+      <rect x="2" y="2" width="4" height="4" rx="0.8" fill="currentColor" />
+      <rect x="8" y="2" width="4" height="4" rx="0.8" fill="currentColor" />
+      <rect x="2" y="8" width="4" height="4" rx="0.8" fill="currentColor" />
+      <rect x="8" y="8" width="4" height="4" rx="0.8" fill="currentColor" />
+    </svg>
+  );
+}
+
+/**
+ * Spec #2954 ST-2 — the RELOCATED always-discoverable arrange entry (#2949 AC1).
+ *
+ * The retired dock's `[data-testid="dock-arrange"]` well was the ONLY arrange
+ * control reachable at 0 tiled panes (the workspace toolbar is gated on an
+ * existing pane). The testid is DELIBERATELY preserved so
+ * `.opencode/tests/workspace-layout` stays bound; the control is no longer a
+ * "dock" — it is the launcher Open-apps heading's trailing action, reachable
+ * whenever the launcher is engaged with ≥1 open window (the only state in which
+ * arranging is meaningful). It dispatches the ONE shared `arrangeOpenWindows()`
+ * store action; token-native (theme vars + `tint()` only).
+ */
+const LauncherArrangeControl: React.FC = () => (
+  <chakra.button
+    type="button"
+    data-testid="dock-arrange"
+    aria-label="Arrange windows"
+    title="Arrange windows"
+    onClick={() => arrangeOpenWindows()}
+    display="flex"
+    alignItems="center"
+    justifyContent="center"
+    width="24px"
+    height="24px"
+    flexShrink={0}
+    padding={0}
+    borderRadius="6px"
+    border="1px dashed"
+    borderColor="var(--border-color)"
+    bg="transparent"
+    color="var(--text-secondary)"
+    cursor="pointer"
+    transition="background-color 0.15s ease, color 0.15s ease"
+    _hover={{ bg: 'var(--card-hover-bg)', color: 'var(--text-primary)' }}
+    _focusVisible={{ outline: 'none', boxShadow: `0 0 0 2px ${tint('var(--accent-primary)', 40)}` }}
+  >
+    <ArrangeWindowsIcon />
+  </chakra.button>
+);
+
+/**
+ * Spec #2954 ST-2 — the in-launcher Open-apps row HOST.
+ *
+ * Isolated from `LauncherShell` so the window-system ACTIONS context
+ * (`useWindowActions`, which throws outside a `WindowSystemProvider`) is read
+ * only when the row actually renders. The shell is mounted by many
+ * provider-less unit harnesses (and by the `featureRegistry` dedupe suite); a
+ * 0-window desktop must never require the provider. The host owns the
+ * focus/close dispatches (the row stays presentational) and receives the
+ * ALREADY query-filtered window list — the shell derives it from the SAME
+ * `query` the grid uses, so the row and the grid can never filter differently.
+ */
+interface LauncherOpenAppsHostProps {
+  /** ALREADY query-filtered (see `filterOpenWindows`) — non-empty when mounted. */
+  windows: WindowEntry[];
+}
+
+const LauncherOpenAppsHost: React.FC<LauncherOpenAppsHostProps> = ({ windows }) => {
+  const actions = useWindowActions();
+
+  const handleActivate = useCallback(
+    (win: WindowEntry) => {
+      // Top-window no-op guard (mirrors the retired dock, D-4): a focused,
+      // non-minimized window is already frontmost — nothing to restore.
+      if (win.focused && !win.isMinimized) return;
+      actions.focusWindow(win.id); // kernel clears minimize → restore + raise
+    },
+    [actions],
+  );
+
+  const handleClose = useCallback(
+    (win: WindowEntry) => {
+      actions.closeWindow(win.id); // idempotent, re-entrancy-guarded
+    },
+    [actions],
+  );
+
+  return (
+    <LauncherOpenAppsRow
+      windows={windows}
+      onActivate={handleActivate}
+      onClose={handleClose}
+      headingAccessory={<LauncherArrangeControl />}
+    />
+  );
+};
+
 export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, onOpenFeature }) => {
   const currentWindows = useWindows();
   // #2899 ST-3 — the desktop surface's fill is conditional on the selection
@@ -626,6 +738,13 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // reply that respects the barrier is already above every tile row. Measured in
   // the SAME rAF pass as the band (never a second effect/polling chain).
   const gridRef = useRef<HTMLDivElement | null>(null);
+  // Spec #2954 ST-2 — the Open-apps row's wrapper box. Folded into the reply
+  // band's `barrierTop` in the SAME rAF pass as the bar/grid (G-253): the row is
+  // a new surface between the bar and the grid, so the companion reply must
+  // never grow over it. `null` when the row is absent (0 windows / filtered out)
+  // — the barrier then folds only the bar + grid, so the keep-out is correct in
+  // BOTH row-present and row-absent states.
+  const openAppsRowRef = useRef<HTMLDivElement | null>(null);
   // #2886 round 2 (F3) — the seat entity reports whether a message surface is on
   // screen. The tiles must stay MOUNTED (and therefore measurable) for the whole
   // reply display: the send path collapses `engaged`, and a hide/collapse cannot
@@ -763,6 +882,15 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     if (!q) return showableFeatures;
     return showableFeatures.filter((feature) => feature.name.toLowerCase().includes(q));
   }, [showableFeatures, query]);
+
+  // Spec #2954 ST-2 (R-4) — the Open-apps row filters from the SAME `query` as
+  // the grid (ONE query source; no second writer). `currentWindows` is the
+  // stable `useWindows()` snapshot, so the memo only recomputes on a real
+  // window-list or query change (AGENTS.md #523 — no array `.length` deps).
+  const filteredOpenWindows = useMemo(
+    () => filterOpenWindows(currentWindows, query),
+    [currentWindows, query],
+  );
 
   // ── Spec #2946 ST-9 — the `>` command-palette switch ──────────────────────
   // A query whose first non-whitespace character is `>` (`ACTION_PALETTE_PREFIX`)
@@ -1655,12 +1783,27 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       const columnRect = column.getBoundingClientRect();
       const barRect = bar.getBoundingClientRect();
       const gridRect = gridRef.current ? gridRef.current.getBoundingClientRect() : null;
+      // Spec #2954 ST-2 (G-253) — the Open-apps row is a NEW surface between the
+      // bar and the grid, so its rendered height must be folded into the barrier
+      // too: the reply's bottom edge stays `<= barrierTop - REPLY_MARGIN`, above
+      // EVERY obstacle below the seat (bar, row, tiles). The row's top is below
+      // the bar's top in normal flow, so this is the bar top in practice — but
+      // folding it keeps the keep-out correct if the stack ever changes, and in
+      // BOTH row-present and row-absent states (`openAppsRowRef` is null when the
+      // row is absent, so only the bar + grid fold then).
+      const rowRect = openAppsRowRef.current
+        ? openAppsRowRef.current.getBoundingClientRect()
+        : null;
+      const barrierTops = [barRect.top];
+      if (rowRect) barrierTops.push(rowRect.top);
+      if (gridRect) barrierTops.push(gridRect.top);
       const next: ReplySurfaceBounds = {
         safeTop: NOTCH_HEIGHT_PX + REPLY_MARGIN,
         // #2886 — the bar's box top AND the app-tiles grid's resting top. The
         // grid sits below the bar, so this is also the tiles' keep-out (E4/E5):
-        // the reply's bottom edge can never reach the first tile row.
-        barrierTop: gridRect ? Math.min(barRect.top, gridRect.top) : barRect.top,
+        // the reply's bottom edge can never reach the first tile row. #2954 ST-2
+        // folds the Open-apps row's top into the same min.
+        barrierTop: Math.min(...barrierTops),
         boundsLeft: columnRect.left + REPLY_MARGIN,
         boundsRight: columnRect.right - REPLY_MARGIN,
       };
@@ -1870,6 +2013,19 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             // passed down; ST-1 renders the caption only on 2+ visual lines.
             newlineHint={companionActive}
           />
+          {/* Spec #2954 ST-2 — the in-launcher Open-apps row. Rendered
+              IMMEDIATELY above the grid, inside the launcher column, gated
+              `engaged && !paletteActive && windows>0`. The gate is expressed on
+              the FILTERED list (`filteredOpenWindows.length > 0`) so the wrapper
+              only mounts with content — an all-filtered-out query is an ABSENCE
+              (the row component itself also returns `null` on an empty prop),
+              never an empty `| OPEN APPS` box, and the reply band's `barrierTop`
+              stays correct in both row-present and row-absent states (G-253). */}
+          {engaged && !paletteActive && filteredOpenWindows.length > 0 && (
+            <Box ref={openAppsRowRef} width="100%">
+              <LauncherOpenAppsHost windows={filteredOpenWindows} />
+            </Box>
+          )}
           {(engaged || companionMessageVisible) &&
             (paletteActive ? (
               <LauncherActionList
