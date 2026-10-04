@@ -1017,3 +1017,49 @@ Round-3 focus (F-5) is PASS — the REQ-5 regression is closed.
     ungated guard asserts the CONSUMER invariant (a `sessions` row renders), not merely fixture
     self-shape.
 
+---
+
+## #2961 testing round 1 — result (served spec/2961 @ b1234f44)
+
+**Verdict: PASS (F-72..F-87 all PASS).** Driven live on the served app (dev-env UP
+`-Spec 2961`, driver `com.fredo.app`, main window). Live `telemetry_spans` receipt via the
+managed `psql` lever (db `postgres`, port 64217): 138 `fredo.llm` + 65
+`fredo.tool.tauri_webview_execute_js` + 24 `fredo.tool.tauri_webview_keyboard` in the drive
+window 2026-10-04T02:00–02:35Z (`otlp_grpc`); store total 3951. Console clean of product
+errors (a ReactFlow `target.hasAttribute` error is a synthetic-document-keydown harness
+artifact, `reactflow.js:3524`).
+
+- **F-72/F-73 PASS.** Per-app bar **model** (`buildKeyboardBarModel` over
+  `resolveActiveBindings`) carries the exact Names-Block ids per focused app, no cross-app
+  rows; focus A↔B replaces rows deterministically over 3 cycles (0 stale rows). The shipped
+  #2959 bar DOM renders `capacity`=2 rows at 1920 px + the accepted `+N more` chip, so the
+  visible DOM shows `fredo.context.descendReference` + the first app row; the full declared
+  set is in the model (context-scoped first). Observation, not a declaration defect.
+- **F-74/F-75/F-76 PASS.** Zero pointer events on every key; `my-workitems` `z`/`j`/`a`
+  change the source tab, `r` dispatches `my-workitems-hotkey-action` once; `optimizely` `s`
+  → `optimizely-search-input`; `dev-mode` `s`→filter, `v`→view toggle; `mission-monitor`
+  `s`→session filter, `n`→session selection; `diagram` `s`→`diagram-search-input`.
+- **F-77/F-78 PASS.** Rows render keycap + title; `data-fredo-hotkey-context` names the app;
+  the ONE `hotkeys-announcer` (`role=status`, `aria-live=polite`) announces the context +
+  digest on every focus change.
+- **F-79 PASS.** `docs-viewer`/`github-viewer` contribute 0 app rows; no empty/placeholder
+  artifact (the `|` separator renders because the shipped `descendReference` is itself
+  context-scoped).
+- **F-80 PASS.** `optimizely.collapseAll`=`Nothing is expanded`, `dev-mode.clearEvents`=
+  `No events to clear`, `dev-mode.showAllStates`=`All states are already shown` (live
+  unavailable-with-reason); pressing an unavailable key dispatches nothing. `my-workitems`
+  `refresh` loading gate is declared + unit-pinned but not live-observable without
+  azdo/jira credentials (named lever limit).
+- **F-81 PASS.** Typing in `dev-mode-filter-input` lands verbatim, action suppressed, row
+  `unavailable`/`Unavailable while typing`, `data-fredo-focus-context="text-entry"`.
+- **F-82/F-83/F-84 PASS.** Keyboard focus switch deterministic; closed `dev-mode` dispatch
+  is a safe no-op; 3 s dwell + within-app focus move keep the app's action set in force;
+  `appContextReuse.test.ts` (6) + `appActionSafety.test.ts` (5) green.
+- **F-85/F-86 PASS.** #2961-added lines introduce zero hex/rgba/`var(--x)NN`; app actions
+  announced + non-colour-only; keydown→effect **13.7 ms** (≤100 ms).
+- **F-87 PASS.** App boots on the PG-default path; MM SESSIONS list matches the 7
+  `feature_mission_monitor_sessions` rollup rows (current declared `sessions` rollup, not
+  the retired `useEventRows` path); the drive window produced qualifying `chat_rows`
+  (provider `open_code`, non-blank replies); MM bar shows `mission-monitor` + `S Focus
+  session search`; live `telemetry_spans` receipt via the managed `psql` lever.
+
