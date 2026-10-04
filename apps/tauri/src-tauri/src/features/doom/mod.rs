@@ -30,6 +30,10 @@
 //! * [`actions`] — the live-confirmed engine action vocabulary (`DOOM_ACTION_*`
 //!   consts plus the structured list the persona and scripted lever consume).
 //!   ST-1.
+//! * [`autoplay`] — the autoplay contract (phase/error vocabularies, status /
+//!   result wire models, bounded budget constants). ST-2.
+//! * [`decision`] — the deterministic scripted decision lever plus the
+//!   `FREDO_DOOM_AGENT_*` env seam. ST-2.
 //!
 //! NOT here (later compilable units): the `doom` window + webview + main-window
 //! entry (CU-4, ST-6/ST-7).
@@ -43,8 +47,10 @@
 
 pub mod acquisition;
 pub mod actions;
+pub mod autoplay;
 pub mod client;
 pub mod commands;
+pub mod decision;
 pub mod process;
 pub mod resolver;
 pub mod state;
