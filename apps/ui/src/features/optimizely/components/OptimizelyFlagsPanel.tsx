@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Box,
   Badge,
@@ -21,6 +21,16 @@ import {
 } from 'react-icons/lu';
 import { useOptimizelyFlags } from '../hooks/useOptimizelyFlags';
 import type { OptimizelyFlag, FlagEnvironment } from '../types';
+// Spec #2961 ST-2: the declared feature hotkeys dispatch a namespaced window
+// event; this panel's ONE listener maps it onto the existing flag operations.
+import {
+  OPTIMIZELY_COLLAPSE_ALL_ACTION_ID,
+  OPTIMIZELY_EXPAND_ALL_ACTION_ID,
+  OPTIMIZELY_FOCUS_SEARCH_ACTION_ID,
+  OPTIMIZELY_REFRESH_ACTION_ID,
+  setOptimizelyActionAvailable,
+  subscribeOptimizelyActions,
+} from '../lib/hotkeyBridge';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -401,6 +411,10 @@ export const OptimizelyFlagsPanel: React.FC = () => {
 
   const { flags, isLoading, error, isMockData, refetch } = useOptimizelyFlags();
 
+  // Spec #2961 ST-2: the search input, focused by the declared
+  // `optimizely.focusSearch` local hotkey.
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+
   const groups = useMemo(() => {
     const all = groupFlags(flags);
     if (!search.trim()) return all;
@@ -421,8 +435,40 @@ export const OptimizelyFlagsPanel: React.FC = () => {
     });
   };
 
-  const expandAll = () => setExpandedKeys(new Set(allKeys));
-  const collapseAll = () => setExpandedKeys(new Set());
+  const expandAll = useCallback(() => setExpandedKeys(new Set(allKeys)), [allKeys]);
+  const collapseAll = useCallback(() => setExpandedKeys(new Set()), []);
+
+  // AC5: publish the `collapseAll` gate (module-scoped in the bridge so it
+  // survives panel mount/unmount). Nothing expanded ⇒ unavailable with the
+  // declared reason. `expandedKeys` is a `useState` Set (identity-stable until a
+  // mutation), so this effect does not loop.
+  useEffect(() => {
+    setOptimizelyActionAvailable(OPTIMIZELY_COLLAPSE_ALL_ACTION_ID, expandedKeys.size > 0);
+  }, [expandedKeys]);
+
+  // ONE window listener for the whole panel; removed on unmount. `run` is a
+  // no-op while the feature is unmounted (no subscriber), and the engine never
+  // dispatches these feature-tier actions unless Feature Flags is focused.
+  useEffect(
+    () =>
+      subscribeOptimizelyActions((actionId) => {
+        switch (actionId) {
+          case OPTIMIZELY_REFRESH_ACTION_ID:
+            void refetch();
+            break;
+          case OPTIMIZELY_FOCUS_SEARCH_ACTION_ID:
+            searchInputRef.current?.focus();
+            break;
+          case OPTIMIZELY_EXPAND_ALL_ACTION_ID:
+            expandAll();
+            break;
+          case OPTIMIZELY_COLLAPSE_ALL_ACTION_ID:
+            collapseAll();
+            break;
+        }
+      }),
+    [refetch, expandAll, collapseAll],
+  );
 
   return (
     <Box height="100%" display="flex" flexDirection="column" overflow="hidden">
@@ -452,6 +498,7 @@ export const OptimizelyFlagsPanel: React.FC = () => {
           color="var(--text-secondary)"
           onClick={refetch}
           disabled={isLoading}
+          data-testid="optimizely-refresh"
           _hover={{ color: 'var(--text-primary)', background: 'var(--card-hover-bg)' }}
         >
           <LuRefreshCw size={13} />
@@ -480,6 +527,7 @@ export const OptimizelyFlagsPanel: React.FC = () => {
             px={2}
             height="22px"
             fontSize="xs"
+            data-testid="optimizely-expand-all"
             _hover={{ background: 'rgba(147, 51, 234, 0.08)' }}
           >
             Expand All
@@ -493,6 +541,7 @@ export const OptimizelyFlagsPanel: React.FC = () => {
             px={2}
             height="22px"
             fontSize="xs"
+            data-testid="optimizely-collapse-all"
             _hover={{ background: 'rgba(147, 51, 234, 0.08)' }}
           >
             Collapse All
@@ -517,6 +566,8 @@ export const OptimizelyFlagsPanel: React.FC = () => {
             <LuSearch />
           </Box>
           <Input
+            ref={searchInputRef}
+            data-testid="optimizely-search-input"
             placeholder="Search by name or key"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
