@@ -7,6 +7,9 @@
 //!   (`serde_json::Value`), so an upstream field addition never breaks the client.
 //! * `POST /api/step`  → body `{ "tics": <int>, "actions": <json> }` (ST-1
 //!   corrected the plan's guessed `{action, tic}`), answering the post-step state.
+//! * `POST /api/episode` → body `{ "episode": <int>, "map": <int>, "skill": <int>,
+//!   "seed": <int> }` (ST-3 R-3 restart/advance), answering the new-level
+//!   observation.
 //! * `GET  /api/frame` → the **indexed8 + palette JSON** frame (ST-1 corrected the
 //!   plan's guessed `image/png`), decoded to RGBA and re-encoded as a base64 PNG
 //!   so the CU-4 canvas keeps the binding `DoomFrame { png_base64 }` shape.
@@ -212,6 +215,11 @@ pub fn step_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/api/step")
 }
 
+/// `http://127.0.0.1:<port>/api/episode`.
+pub fn episode_url(port: u16) -> String {
+    format!("http://127.0.0.1:{port}/api/episode")
+}
+
 /// `http://127.0.0.1:<port>/api/frame`.
 pub fn frame_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/api/frame")
@@ -221,6 +229,12 @@ pub fn frame_url(port: u16) -> String {
 /// `actions` is passed through verbatim (the engine takes action objects).
 pub fn build_step_body(tics: i64, actions: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({ "tics": tics, "actions": actions })
+}
+
+/// The `POST /api/episode` body (ST-3 R-3 restart/advance):
+/// `{ "episode": <int>, "map": <int>, "skill": <int>, "seed": <int> }`.
+pub fn build_episode_body(episode: i64, map: i64, skill: i64, seed: i64) -> serde_json::Value {
+    serde_json::json!({ "episode": episode, "map": map, "skill": skill, "seed": seed })
 }
 
 // ── Frame decoding (indexed8 + palette → RGBA → base64 PNG) ──────────────────
@@ -340,6 +354,24 @@ pub async fn step_with(
     let body = build_step_body(tics, actions);
     let state = transport
         .post_json(&step_url(port), &body)
+        .await
+        .map_err(|e| DoomRequestError::request_failed(e.message))?;
+    Ok(DoomStepResult { state })
+}
+
+/// One `POST /api/episode` with `{episode, map, skill, seed}` (ST-3 R-3): restart
+/// the level / advance the map, answering the new-level observation.
+pub async fn restart_with(
+    transport: &dyn DoomHttpTransport,
+    port: u16,
+    episode: i64,
+    map: i64,
+    skill: i64,
+    seed: i64,
+) -> Result<DoomStepResult, DoomRequestError> {
+    let body = build_episode_body(episode, map, skill, seed);
+    let state = transport
+        .post_json(&episode_url(port), &body)
         .await
         .map_err(|e| DoomRequestError::request_failed(e.message))?;
     Ok(DoomStepResult { state })
@@ -476,6 +508,7 @@ mod tests {
     fn urls_and_step_body_are_pinned_to_the_corrected_contract() {
         assert_eq!(state_url(6666), "http://127.0.0.1:6666/api/state");
         assert_eq!(step_url(6666), "http://127.0.0.1:6666/api/step");
+        assert_eq!(episode_url(6666), "http://127.0.0.1:6666/api/episode");
         assert_eq!(frame_url(6666), "http://127.0.0.1:6666/api/frame");
 
         // ST-1 correction: the body is {tics, actions}, NOT {action, tic}.
@@ -484,6 +517,30 @@ mod tests {
         assert_eq!(body["actions"][0]["type"], "shoot");
         assert!(body.get("action").is_none());
         assert!(body.get("tic").is_none());
+
+        // R-3: the restart body is the four level coordinates.
+        let episode = build_episode_body(1, 2, 3, 7);
+        assert_eq!(episode["episode"], 1);
+        assert_eq!(episode["map"], 2);
+        assert_eq!(episode["skill"], 3);
+        assert_eq!(episode["seed"], 7);
+    }
+
+    #[tokio::test]
+    async fn restart_is_one_post_with_the_level_body() {
+        let state = serde_json::json!({ "tic": 0, "outcome": "alive" });
+        let transport = ScriptedTransport::default().with_post(state.clone());
+        let result = restart_with(&transport, 6666, 1, 2, 3, 7)
+            .await
+            .expect("restart");
+        assert_eq!(result.state, state);
+        let calls = transport.calls();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].starts_with("POST http://127.0.0.1:6666/api/episode"));
+        assert!(calls[0].contains("\"episode\":1"));
+        assert!(calls[0].contains("\"map\":2"));
+        assert!(calls[0].contains("\"skill\":3"));
+        assert!(calls[0].contains("\"seed\":7"));
     }
 
     #[test]
