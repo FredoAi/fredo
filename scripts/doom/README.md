@@ -23,6 +23,20 @@ source and stages it at the resolver's candidate path
 - Staged output: `<InstallDir>/engine/restful-doom.exe` (default `InstallDir` is
   `{app_data_dir}/doom` = `%APPDATA%\com.fredo.app\doom`), plus a
   `.restful-doom-commit` marker used for idempotency
+- **Self-contained runtime:** the script also stages the engine's MSYS2 runtime
+  DLL closure beside `restful-doom.exe`, plus a `.restful-doom-runtime-dlls`
+  manifest. Windows searches the executable's own directory first, so the staged
+  engine launches with **no `C:\msys64\mingw64\bin` on the child PATH** (without
+  its DLLs the engine exits silently — ST-1 §6). The closure is computed from the
+  built binary's PE import tables via the toolchain `objdump`, so it cannot drift.
+  For the ST-1 pinned commit the closure is the 16 DLLs:
+
+  ```text
+  libFLAC.dll            libmpg123-0.dll   libogg-0.dll        libopus-0.dll
+  libopusfile-0.dll      libpng16-16.dll   libsamplerate-0.dll libvorbis-0.dll
+  libvorbisfile-3.dll    libwavpack-1.dll  libwinpthread-1.dll libxmp.dll
+  SDL2.dll               SDL2_mixer.dll    SDL2_net.dll        zlib1.dll
+  ```
 
 The script does **not** commit the built binary or the WAD and does **not**
 change the resolver order (`resolver.rs`: configured → PATH → staged candidate).

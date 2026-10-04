@@ -17,7 +17,13 @@
       5. applies the portability patches in `scripts/doom/patches` (the fork is
          POSIX-only and does not compile as-is against MinGW-w64 + gcc 16),
       6. runs `./autogen.sh && ./configure --prefix=/mingw64 CFLAGS=-std=gnu11 && make`,
-      7. stages `src/restful-doom.exe` at `<InstallDir>/engine/restful-doom.exe`.
+      7. stages `src/restful-doom.exe` at `<InstallDir>/engine/restful-doom.exe`,
+      8. stages the MSYS2 runtime DLL closure (SDL2, SDL2_mixer, SDL2_net, libpng,
+         libsamplerate + their transitive MinGW deps) beside the engine so the
+         staged engine is SELF-CONTAINED. Windows searches the executable's own
+         directory first, so the engine launches with NO `C:\msys64\mingw64\bin`
+         on the child PATH (ST-1 finding: the engine exits silently without its
+         MinGW DLLs).
 
     The built binary and the WAD are NEVER committed and NEVER bundled. This is a
     development / QA-time producer for the resolver's staged engine candidate
@@ -148,6 +154,79 @@ function Invoke-Msys2Bash([string]$Root, [string]$Command) {
     return $code
 }
 
+# Parse the direct PE import table of `Path` via the MSYS2 `objdump -p`.
+function Get-PeImports([string]$Objdump, [string]$Path) {
+    $previousEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $dump = & $Objdump -p $Path 2>&1
+    } finally {
+        $ErrorActionPreference = $previousEap
+    }
+    $names = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($line in $dump) {
+        $text = $line.ToString().Trim()
+        if ($text.StartsWith('DLL Name:')) {
+            $names.Add($text.Substring('DLL Name:'.Length).Trim())
+        }
+    }
+    return $names
+}
+
+# The transitive closure of MinGW runtime DLLs the engine imports: BFS over the
+# PE import tables, keeping only DLLs that live in `<root>\mingw64\bin`. System
+# DLLs (KERNEL32, USER32, ...) resolve from Windows and are never staged.
+#
+# This is derived from the actual built binary rather than a hardcoded list, so
+# a toolchain package change cannot silently drop a needed DLL.
+function Get-RuntimeDllClosure([string]$Root, [string]$EngineExe) {
+    $bin = Join-Path $Root 'mingw64\bin'
+    $objdump = Join-Path $bin 'objdump.exe'
+    if (-not (Test-Path -LiteralPath $objdump)) {
+        Stop-With $ExitBuild "objdump not found at $objdump -- cannot compute the runtime DLL closure."
+    }
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $queue = New-Object 'System.Collections.Generic.Queue[string]'
+    foreach ($name in (Get-PeImports $objdump $EngineExe)) { $queue.Enqueue($name) }
+    $resolved = New-Object 'System.Collections.Generic.List[string]'
+    while ($queue.Count -gt 0) {
+        $name = $queue.Dequeue()
+        if ($seen.Contains($name)) { continue }
+        [void]$seen.Add($name)
+        $candidate = Join-Path $bin $name
+        if (Test-Path -LiteralPath $candidate) {
+            $resolved.Add($name)
+            foreach ($dep in (Get-PeImports $objdump $candidate)) { $queue.Enqueue($dep) }
+        }
+    }
+    return @($resolved | Sort-Object)
+}
+
+# True when every DLL named in the manifest exists beside the engine.
+function Test-RuntimeDllsStaged([string]$EngineDir, [string]$Manifest) {
+    if (-not (Test-Path -LiteralPath $Manifest)) { return $false }
+    $names = @(Get-Content -LiteralPath $Manifest | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($names.Count -eq 0) { return $false }
+    foreach ($name in $names) {
+        if (-not (Test-Path -LiteralPath (Join-Path $EngineDir $name.Trim()))) { return $false }
+    }
+    return $true
+}
+
+# Copy the runtime DLL closure beside the engine and record it in the manifest.
+function Stage-RuntimeDlls([string]$Root, [string]$EngineExe, [string]$EngineDir, [string]$Manifest) {
+    $bin = Join-Path $Root 'mingw64\bin'
+    $dlls = @(Get-RuntimeDllClosure $Root $EngineExe)
+    if ($dlls.Count -eq 0) {
+        Stop-With $ExitBuild "the engine's runtime DLL closure is empty -- refusing to stage an engine that cannot load."
+    }
+    foreach ($dll in $dlls) {
+        Copy-Item -LiteralPath (Join-Path $bin $dll) -Destination (Join-Path $EngineDir $dll) -Force
+    }
+    Set-Content -LiteralPath $Manifest -Value ($dlls -join "`n") -NoNewline
+    Write-Log ("Staged {0} runtime DLLs beside the engine: {1}" -f $dlls.Count, ($dlls -join ', '))
+}
+
 # -- 1. Offline gate (before ANY network or filesystem mutation) --------------
 if ($env:FREDO_DOOM_BUILD_OFFLINE -eq '1') {
     Stop-With $ExitClone 'FREDO_DOOM_BUILD_OFFLINE=1 is set: refusing network access. Unset it to clone and build the engine.'
@@ -164,10 +243,20 @@ Write-Log "MSYS2 root: $root"
 $engineDir = Join-Path $InstallDir 'engine'
 $stagedExe = Join-Path $engineDir 'restful-doom.exe'
 $markerFile = Join-Path $engineDir '.restful-doom-commit'
+$dllManifest = Join-Path $engineDir '.restful-doom-runtime-dlls'
 if ((Test-Path -LiteralPath $stagedExe) -and (Test-Path -LiteralPath $markerFile)) {
     $stagedCommit = (Get-Content -LiteralPath $markerFile -Raw).Trim()
     if ($stagedCommit -eq $EngineCommit) {
-        Write-Log "Already staged from $EngineCommit; nothing to do."
+        if (Test-RuntimeDllsStaged $engineDir $dllManifest) {
+            Write-Log "Already staged from $EngineCommit; nothing to do."
+            Write-Output $stagedExe
+            exit $ExitOk
+        }
+        # The exe is current but its runtime DLL closure is incomplete (e.g. a
+        # stage produced before DLL staging existed). Re-stage the DLLs from the
+        # existing binary without paying for a rebuild.
+        Write-Log "Engine staged but its runtime DLLs are incomplete -- re-staging the DLL closure."
+        Stage-RuntimeDlls $root $stagedExe $engineDir $dllManifest
         Write-Output $stagedExe
         exit $ExitOk
     }
@@ -256,6 +345,8 @@ if (-not (Test-Path -LiteralPath $builtExe)) {
 New-Item -ItemType Directory -Force -Path $engineDir | Out-Null
 Copy-Item -LiteralPath $builtExe -Destination $stagedExe -Force
 Set-Content -LiteralPath $markerFile -Value $EngineCommit -NoNewline
+# -- 8. Stage the runtime DLL closure so the engine is self-contained ---------
+Stage-RuntimeDlls $root $stagedExe $engineDir $dllManifest
 Write-Log "Staged $builtExe -> $stagedExe (commit $EngineCommit)"
 Write-Output $stagedExe
 exit $ExitOk

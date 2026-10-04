@@ -66,6 +66,10 @@ pub const DOOM_INSTALL_DIR_ENV: &str = "FREDO_DOOM_INSTALL_DIR";
 pub const DOOM_READY_TIMEOUT_ENV: &str = "FREDO_DOOM_READY_TIMEOUT_S";
 /// Override the bounded graceful-stop timeout, in seconds.
 pub const DOOM_STOP_TIMEOUT_ENV: &str = "FREDO_DOOM_STOP_TIMEOUT_S";
+/// **G-275** anti-stub guard: when set to `1`, the launch path refuses an engine
+/// whose basename is not [`DOOM_IMAGE_DEFAULT`] (`restful-doom.exe`). Inert when
+/// unset, so the production path is unchanged.
+pub const DOOM_REQUIRE_REAL_ENGINE_ENV: &str = "FREDO_DOOM_REQUIRE_REAL_ENGINE";
 
 // ── Product defaults / identity ───────────────────────────────────────────────
 
@@ -125,6 +129,10 @@ pub enum DoomErrorCode {
     StopTimeout,
     /// An engine HTTP request failed (ST-5 client).
     RequestFailed,
+    /// The engine is serving but its graphics are not up yet (`GET /api/frame`
+    /// returned HTTP 503). **Transient** — the frame loop keeps polling and the
+    /// window never enters the `error` phase.
+    FrameNotReady,
 }
 
 impl DoomErrorCode {
@@ -137,6 +145,7 @@ impl DoomErrorCode {
             DoomErrorCode::ReadyTimeout => "readyTimeout",
             DoomErrorCode::StopTimeout => "stopTimeout",
             DoomErrorCode::RequestFailed => "requestFailed",
+            DoomErrorCode::FrameNotReady => "frameNotReady",
         }
     }
 
@@ -150,6 +159,7 @@ impl DoomErrorCode {
             "readyTimeout" => Some(DoomErrorCode::ReadyTimeout),
             "stopTimeout" => Some(DoomErrorCode::StopTimeout),
             "requestFailed" => Some(DoomErrorCode::RequestFailed),
+            "frameNotReady" => Some(DoomErrorCode::FrameNotReady),
             _ => None,
         }
     }
@@ -178,6 +188,8 @@ pub struct ManagedDoom {
     pub pid: u32,
     /// The loopback port the engine was launched to bind.
     pub port: u16,
+    /// Absolute path to the engine executable that was spawned (identity, G-033).
+    pub engine_path: String,
     /// Absolute path to the engine's stdout/stderr log.
     pub log_path: PathBuf,
 }
@@ -204,6 +216,8 @@ pub struct DoomLaunchResult {
     pub port: Option<u16>,
     /// The managed engine PID, once ready.
     pub pid: Option<u32>,
+    /// The resolved **absolute** engine executable path, once resolved.
+    pub engine_path: Option<String>,
     /// Human-readable failure detail, when `success` is false.
     pub error: Option<String>,
     /// The typed failure code, when `success` is false.
@@ -222,6 +236,8 @@ pub struct DoomStatus {
     pub port: Option<u16>,
     /// The managed engine PID, when running.
     pub pid: Option<u32>,
+    /// The resolved **absolute** engine executable path, when running.
+    pub engine_path: Option<String>,
     /// The last recorded error message, if any.
     pub last_error: Option<String>,
     /// The typed code paired with `last_error`, if any.
@@ -262,6 +278,7 @@ mod tests {
             DoomErrorCode::ReadyTimeout,
             DoomErrorCode::StopTimeout,
             DoomErrorCode::RequestFailed,
+            DoomErrorCode::FrameNotReady,
         ];
         for code in all {
             let wire = serde_json::to_string(&code).expect("serialize");
@@ -288,6 +305,7 @@ mod tests {
             phase: DoomRuntimePhase::Error,
             port: None,
             pid: None,
+            engine_path: None,
             error: Some("boom".to_string()),
             code: Some(DoomErrorCode::ReadyTimeout),
         };
@@ -296,12 +314,14 @@ mod tests {
         assert_eq!(value["phase"], "error");
         assert_eq!(value["code"], "readyTimeout");
         assert!(value["port"].is_null());
+        assert!(value["enginePath"].is_null());
 
         let status = DoomStatus {
             phase: DoomRuntimePhase::Ready,
             running: true,
             port: Some(6666),
             pid: Some(4242),
+            engine_path: Some(r"C:\app\doom\engine\restful-doom.exe".to_string()),
             last_error: None,
             code: None,
         };
@@ -310,6 +330,10 @@ mod tests {
         assert_eq!(value["running"], true);
         assert_eq!(value["port"], 6666);
         assert_eq!(value["pid"], 4242);
+        assert_eq!(
+            value["enginePath"],
+            r"C:\app\doom\engine\restful-doom.exe"
+        );
         assert!(value["lastError"].is_null());
         assert!(value["code"].is_null());
     }
@@ -335,6 +359,10 @@ mod tests {
         assert_eq!(DOOM_INSTALL_DIR_ENV, "FREDO_DOOM_INSTALL_DIR");
         assert_eq!(DOOM_READY_TIMEOUT_ENV, "FREDO_DOOM_READY_TIMEOUT_S");
         assert_eq!(DOOM_STOP_TIMEOUT_ENV, "FREDO_DOOM_STOP_TIMEOUT_S");
+        assert_eq!(
+            DOOM_REQUIRE_REAL_ENGINE_ENV,
+            "FREDO_DOOM_REQUIRE_REAL_ENGINE"
+        );
         assert_eq!(DOOM_WINDOW_LABEL, "doom");
         assert_eq!(DOOM_STATUS_EVENT, "doom-status-changed");
     }
