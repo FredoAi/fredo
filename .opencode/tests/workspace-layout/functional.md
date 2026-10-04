@@ -139,3 +139,15 @@ Round-2 fixes verified (round-1 FAIL → PASS):
 - **F-13/F-16/F-17/F-18/F-19/F-20 — PASS.** Maximize/float/restore exact-slot return; console clean; module-scoped store survives restart; divider keyboard resize + pane arrow focus + focus ring; kernel regression holds (`windowStore`/`windowTypes`/`WindowFrame` unchanged); CI-parity green (`typecheck`/`build`/`test:run` 172 files / 2444 tests / `cargo check` / `cargo clippy -D warnings`).
 
 **Promoted F-21/F-22/F-23 now PASS** on the served tip. Round-2 observation (non-blocking): immediately after `dock-arrange` at 0 panes the panes briefly report `offsetHeight 1017` vs tiles `981`; the next structural change re-homes them to 981 — cosmetic only.
+
+---
+
+## #2954 extension — `dock-arrange` host relocation (binding preserved)
+
+> Issue #2954 removes the persistent dock but keeps the arrange entry (`[data-testid="dock-arrange"]`
+> → `arrangeOpenWindows()`) RELOCATED into the engaged launcher (ST-2) — #2949 AC1 must not regress.
+> F-1/F-22's `dock-arrange` binding therefore stays valid; only the host moved (the control is no
+> longer inside an `app-dock`). The historical F-1/F-22 PASS records above are PRESERVED (they were
+> captured against the dock host and remain the evidence for the capability). Re-run the arrange leg
+> against the new launcher host as `.opencode/tests/launcher/regression.md` R-71; the dock-hosted
+> `app-dock` binding itself is retired.
