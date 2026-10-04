@@ -11,13 +11,21 @@
 //! loopback TCP probe (ST-5 refines it to `/api/state`).
 
 use std::path::Path;
-use std::sync::{Arc, MutexGuard};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
+use crate::infrastructure::comm::bus::EventBus;
+use crate::infrastructure::companion::doom_decision::DoomDecisionSourceState;
 use crate::infrastructure::storage::AppStore;
 
+use super::agent::{run_autoplay_loop, DoomAutoplayConfig};
+use super::autoplay::{
+    DoomAutoplayErrorCode, DoomAutoplayPhase, DoomAutoplayResult, DoomAutoplayStatus,
+};
+use super::decision;
 use super::state::{
     derive_phase, DoomErrorCode, DoomLaunchResult, DoomRuntimePhase, DoomRuntimeState, DoomStatus,
     DEFAULT_DOOM_PORT, DOOM_EXIT_HOOK_BOUND, DOOM_LAST_ERROR_CODE_KEY, DOOM_LAST_ERROR_KEY,
@@ -527,6 +535,322 @@ pub async fn doom_frame(app: AppHandle) -> Result<client::DoomFrame, client::Doo
     client::frame_with(&transport, port).await
 }
 
+// ── Autoplay commands + state (Spec #2969, ST-5) ─────────────────────────────
+//
+// The reachable trigger host (G-265): the Tauri command surface over the ST-3
+// bounded loop. This section owns the ONE autoplay run's stop flag + last
+// status ([`DoomAutoplayState`], feature-module state), selects nothing itself
+// (the composition root installs the decision source), and publishes every
+// status transition to the `doom` window through the EventBus.
+
+/// The autoplay status-transition event the `doom` window subscribes to
+/// (binding name; payload [`DoomAutoplayStatus`]).
+pub const DOOM_AUTOPLAY_EVENT: &str = "doom-autoplay-changed";
+
+/// Tauri-managed autoplay state (Spec #2969 ST-5): the ONE live run's stop flag
+/// plus the last observed status. Feature-module state (binding decision 2) —
+/// no Doom runtime state lives in `infrastructure/`.
+pub struct DoomAutoplayState {
+    inner: Mutex<DoomAutoplayInner>,
+}
+
+struct DoomAutoplayInner {
+    /// The stop flag of the live run, or `None` when no run is active.
+    active: Option<Arc<AtomicBool>>,
+    /// The last observed/known status (the `get_doom_autoplay_status` return).
+    status: DoomAutoplayStatus,
+}
+
+impl Default for DoomAutoplayState {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::new(DoomAutoplayInner {
+                active: None,
+                status: idle_status(),
+            }),
+        }
+    }
+}
+
+impl DoomAutoplayState {
+    fn lock(&self) -> MutexGuard<'_, DoomAutoplayInner> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The last observed status.
+    pub fn status(&self) -> DoomAutoplayStatus {
+        self.lock().status.clone()
+    }
+
+    /// The current status when a run is active; `None` when idle. Lets `start`
+    /// return the live run immediately without touching readiness.
+    pub fn active_status(&self) -> Option<DoomAutoplayStatus> {
+        let inner = self.lock();
+        inner.active.as_ref().map(|_| inner.status.clone())
+    }
+
+    /// Atomically begin a run with `stop`. `Err(current)` when a run is already
+    /// active, so two concurrent starts can never spawn two loops (R-1
+    /// idempotency).
+    pub fn try_begin(
+        &self,
+        stop: Arc<AtomicBool>,
+    ) -> Result<DoomAutoplayStatus, DoomAutoplayStatus> {
+        let mut inner = self.lock();
+        if inner.active.is_some() {
+            return Err(inner.status.clone());
+        }
+        inner.active = Some(stop);
+        inner.status = running_status();
+        Ok(inner.status.clone())
+    }
+
+    /// Fold one loop observation into the state, returning the status to emit.
+    ///
+    /// While a stop is winding down a `Running` observation is reported as
+    /// `Stopping` (so the UI never flickers back to `Running`), and any
+    /// non-`Running`/`Stopping` observation clears the live run.
+    pub fn apply(&self, observed: &DoomAutoplayStatus) -> DoomAutoplayStatus {
+        let mut inner = self.lock();
+        let stop_requested = inner
+            .active
+            .as_ref()
+            .map(|flag| flag.load(Ordering::Relaxed))
+            .unwrap_or(false);
+        let mut status = observed.clone();
+        if status.phase == DoomAutoplayPhase::Running && stop_requested {
+            status.phase = DoomAutoplayPhase::Stopping;
+        }
+        if !matches!(
+            status.phase,
+            DoomAutoplayPhase::Running | DoomAutoplayPhase::Stopping
+        ) {
+            inner.active = None;
+        }
+        inner.status = status.clone();
+        status
+    }
+
+    /// Request a cooperative stop of the live run: sets the flag and returns the
+    /// `Stopping` status to emit. `None` when idle (idempotent).
+    pub fn request_stop(&self) -> Option<DoomAutoplayStatus> {
+        let mut inner = self.lock();
+        let flag = inner.active.clone()?;
+        flag.store(true, Ordering::Relaxed);
+        inner.status.phase = DoomAutoplayPhase::Stopping;
+        inner.status.running = true;
+        Some(inner.status.clone())
+    }
+
+    /// Defensive cleanup once the loop task has returned: clear the live-run
+    /// marker if the terminal observation did not already. Returns the status to
+    /// emit only when the loop exited WITHOUT a terminal observation (every
+    /// normal exit observes one first).
+    pub fn finish(&self) -> Option<DoomAutoplayStatus> {
+        let mut inner = self.lock();
+        inner.active.take()?;
+        if matches!(
+            inner.status.phase,
+            DoomAutoplayPhase::Running | DoomAutoplayPhase::Stopping
+        ) {
+            inner.status.phase = DoomAutoplayPhase::Idle;
+            inner.status.running = false;
+            return Some(inner.status.clone());
+        }
+        None
+    }
+}
+
+/// The initial idle status (no run has ever started).
+fn idle_status() -> DoomAutoplayStatus {
+    DoomAutoplayStatus {
+        phase: DoomAutoplayPhase::Idle,
+        running: false,
+        steps: 0,
+        decisions: 0,
+        failures: 0,
+        consecutive_failures: 0,
+        last_tic: None,
+        outcome: None,
+        started_at: None,
+        last_error: None,
+        code: None,
+    }
+}
+
+/// The seeded status at the moment a run begins (replaced by the loop's first
+/// observation almost immediately).
+fn running_status() -> DoomAutoplayStatus {
+    DoomAutoplayStatus {
+        phase: DoomAutoplayPhase::Running,
+        running: true,
+        steps: 0,
+        decisions: 0,
+        failures: 0,
+        consecutive_failures: 0,
+        last_tic: None,
+        outcome: None,
+        started_at: Some(chrono::Utc::now().to_rfc3339()),
+        last_error: None,
+        code: None,
+    }
+}
+
+/// The bounded autoplay config: the `maxSteps` argument wins, then the
+/// `FREDO_DOOM_AGENT_MAX_STEPS` seam, then the binding default. The remaining
+/// budgets honour their env seams over the defaults.
+fn autoplay_config(max_steps: Option<u32>) -> DoomAutoplayConfig {
+    let base = DoomAutoplayConfig::default();
+    DoomAutoplayConfig {
+        max_steps: max_steps
+            .or_else(decision::max_steps_from_env)
+            .unwrap_or(base.max_steps),
+        max_failures: decision::max_failures_from_env().unwrap_or(base.max_failures),
+        ..base
+    }
+}
+
+/// A typed `NotReady` start result — always `success: false` with
+/// `phase: Failed` and NO engine request.
+fn not_ready(detail: impl Into<String>) -> DoomAutoplayResult {
+    DoomAutoplayResult {
+        success: false,
+        phase: DoomAutoplayPhase::Failed,
+        steps: 0,
+        code: Some(DoomAutoplayErrorCode::NotReady),
+        error: Some(detail.into()),
+    }
+}
+
+/// Publish a `doom-autoplay-changed` transition to the `doom` window through the
+/// EventBus — the sanctioned emission path (feature code never calls
+/// `AppHandle::emit_to` directly). A missing window is not an error.
+fn publish_autoplay(app: &AppHandle, status: &DoomAutoplayStatus) {
+    let bus = app.state::<EventBus>();
+    bus.emit_to_window(DOOM_WINDOW_LABEL, DOOM_AUTOPLAY_EVENT, status);
+}
+
+/// Start the bounded Doom autoplay loop (Spec #2969 ST-5).
+///
+/// Idempotent: a live run wins immediately and a second loop is never spawned.
+/// When the engine is not serving (`client::active_port` is `None`) or the
+/// composition root installed no decision source, returns a typed
+/// `code = NotReady` result with **NO engine request** (F-32). The `doom-
+/// autoplay-changed` event (not this result) is the source of truth for
+/// `running`; the result only reports the start.
+#[tauri::command]
+pub async fn start_doom_autoplay(
+    app: AppHandle,
+    max_steps: Option<u32>,
+) -> DoomAutoplayResult {
+    // Idempotency — a live run wins immediately (no second loop).
+    if let Some(status) = app.state::<DoomAutoplayState>().active_status() {
+        return DoomAutoplayResult {
+            success: true,
+            phase: status.phase,
+            steps: status.steps,
+            code: None,
+            error: None,
+        };
+    }
+
+    // Readiness — the engine must be serving. Not ready ⇒ typed `NotReady` with
+    // NO engine request (F-32).
+    let Some(port) = client::active_port(&app) else {
+        return not_ready("the Doom engine is not ready — start the engine, then try again.");
+    };
+
+    // The composition root installs the decision source; absent ⇒ `NotReady`.
+    let Some(source) = app.state::<DoomDecisionSourceState>().get() else {
+        return not_ready("no Doom decision source is installed.");
+    };
+
+    let transport = match client::ReqwestDoomTransport::new() {
+        Ok(transport) => transport,
+        Err(detail) => {
+            return DoomAutoplayResult {
+                success: false,
+                phase: DoomAutoplayPhase::Failed,
+                steps: 0,
+                code: Some(DoomAutoplayErrorCode::EngineRequestFailed),
+                error: Some(detail),
+            }
+        }
+    };
+
+    let config = autoplay_config(max_steps);
+    let stop = Arc::new(AtomicBool::new(false));
+    if let Err(current) = app.state::<DoomAutoplayState>().try_begin(stop.clone()) {
+        // Lost the race to a concurrent start — report the live run.
+        return DoomAutoplayResult {
+            success: true,
+            phase: current.phase,
+            steps: current.steps,
+            code: None,
+            error: None,
+        };
+    }
+
+    // Spawn the bounded loop. Every status transition is folded into the state
+    // and published; the terminal observation clears the live-run marker.
+    let loop_app = app.clone();
+    let observe_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let transport_ref: &dyn client::DoomHttpTransport = &transport;
+        let source_ref: &dyn crate::infrastructure::companion::doom_decision::DoomDecisionSource =
+            source.as_ref();
+        run_autoplay_loop(
+            transport_ref,
+            port,
+            source_ref,
+            &config,
+            &stop,
+            move |observed| {
+                let state = observe_app.state::<DoomAutoplayState>();
+                let published = state.apply(observed);
+                publish_autoplay(&observe_app, &published);
+            },
+        )
+        .await;
+        // Defensive: clear the run marker if the loop returned without a
+        // terminal observation (every normal exit observes one first).
+        let state = loop_app.state::<DoomAutoplayState>();
+        if let Some(status) = state.finish() {
+            publish_autoplay(&loop_app, &status);
+        }
+    });
+
+    DoomAutoplayResult {
+        success: true,
+        phase: DoomAutoplayPhase::Running,
+        steps: 0,
+        code: None,
+        error: None,
+    }
+}
+
+/// Cooperatively stop the live autoplay run (Spec #2969 ST-5).
+///
+/// Bounded and idempotent: sets the run's stop flag and returns immediately; the
+/// loop observes it at its next bounded check (every engine wait is capped by
+/// `DOOM_REQUEST_TIMEOUT_S` and every decision by the per-decision timeout). A
+/// no-op when idle.
+#[tauri::command]
+pub async fn stop_doom_autoplay(app: AppHandle) -> Result<(), String> {
+    if let Some(status) = app.state::<DoomAutoplayState>().request_stop() {
+        publish_autoplay(&app, &status);
+    }
+    Ok(())
+}
+
+/// Read-only autoplay status snapshot (the ST-7 mount-hydration source).
+#[tauri::command]
+pub fn get_doom_autoplay_status(app: AppHandle) -> DoomAutoplayStatus {
+    app.state::<DoomAutoplayState>().status()
+}
+
 // ── Teardown entry points (window close + app exit) ──────────────────────────
 
 /// Synchronous teardown for the `doom` window's `CloseRequested` handler: bounded
@@ -692,6 +1016,137 @@ mod tests {
         }
         if std::env::var(DOOM_STOP_TIMEOUT_ENV).is_err() {
             assert_eq!(stop_timeout(), Duration::from_secs(DOOM_STOP_TIMEOUT_S));
+        }
+    }
+
+    // ── Autoplay state machine (ST-5) ────────────────────────────────────────
+
+    #[test]
+    fn autoplay_event_and_status_shapes_are_pinned() {
+        assert_eq!(DOOM_AUTOPLAY_EVENT, "doom-autoplay-changed");
+
+        let idle = idle_status();
+        assert_eq!(idle.phase, DoomAutoplayPhase::Idle);
+        assert!(!idle.running);
+        assert!(idle.started_at.is_none());
+
+        let running = running_status();
+        assert_eq!(running.phase, DoomAutoplayPhase::Running);
+        assert!(running.running);
+        assert!(running.started_at.is_some());
+    }
+
+    #[test]
+    fn try_begin_is_idempotent() {
+        let state = DoomAutoplayState::default();
+        let first = state
+            .try_begin(Arc::new(AtomicBool::new(false)))
+            .expect("the first start begins a run");
+        assert_eq!(first.phase, DoomAutoplayPhase::Running);
+
+        let second = state.try_begin(Arc::new(AtomicBool::new(false)));
+        assert!(
+            second.is_err(),
+            "a second concurrent start must not begin a second loop"
+        );
+    }
+
+    #[test]
+    fn request_stop_is_idempotent_and_marks_stopping() {
+        let state = DoomAutoplayState::default();
+        assert!(state.request_stop().is_none(), "idle stop is a no-op");
+
+        let stop = Arc::new(AtomicBool::new(false));
+        state.try_begin(stop.clone()).expect("begin");
+        let stopping = state.request_stop().expect("a live run can be stopped");
+        assert_eq!(stopping.phase, DoomAutoplayPhase::Stopping);
+        assert!(stopping.running);
+        assert!(stop.load(Ordering::Relaxed), "the cooperative flag is set");
+
+        // A second request while winding down still reports Stopping.
+        let again = state.request_stop().expect("still active");
+        assert_eq!(again.phase, DoomAutoplayPhase::Stopping);
+    }
+
+    #[test]
+    fn apply_reports_stopping_while_a_stop_winds_down() {
+        let state = DoomAutoplayState::default();
+        let stop = Arc::new(AtomicBool::new(false));
+        state.try_begin(stop.clone()).expect("begin");
+
+        let mut running = running_status();
+        running.steps = 3;
+        let published = state.apply(&running);
+        assert_eq!(published.phase, DoomAutoplayPhase::Running);
+        assert_eq!(published.steps, 3);
+
+        // Once a stop is requested, a Running observation reports Stopping so
+        // the UI never flickers back to Running while winding down.
+        stop.store(true, Ordering::Relaxed);
+        let published = state.apply(&running);
+        assert_eq!(published.phase, DoomAutoplayPhase::Stopping);
+        assert!(
+            state.active_status().is_some(),
+            "the run is still active until the loop returns"
+        );
+    }
+
+    #[test]
+    fn apply_clears_the_run_on_a_terminal_observation() {
+        let state = DoomAutoplayState::default();
+        state
+            .try_begin(Arc::new(AtomicBool::new(false)))
+            .expect("begin");
+
+        let mut completed = running_status();
+        completed.phase = DoomAutoplayPhase::Completed;
+        completed.running = false;
+        let published = state.apply(&completed);
+        assert_eq!(published.phase, DoomAutoplayPhase::Completed);
+        assert!(
+            state.active_status().is_none(),
+            "a terminal observation ends the run"
+        );
+        assert_eq!(state.status().phase, DoomAutoplayPhase::Completed);
+    }
+
+    #[test]
+    fn finish_clears_a_run_without_a_terminal_observation() {
+        let state = DoomAutoplayState::default();
+        state
+            .try_begin(Arc::new(AtomicBool::new(false)))
+            .expect("begin");
+
+        let status = state.finish().expect("finish publishes idle");
+        assert_eq!(status.phase, DoomAutoplayPhase::Idle);
+        assert!(!status.running);
+        assert!(state.active_status().is_none());
+        // A second finish is a no-op (idempotent).
+        assert!(state.finish().is_none());
+    }
+
+    #[test]
+    fn not_ready_result_is_typed_and_failed() {
+        let result = not_ready("engine not ready");
+        assert!(!result.success);
+        assert_eq!(result.phase, DoomAutoplayPhase::Failed);
+        assert_eq!(result.code, Some(DoomAutoplayErrorCode::NotReady));
+        assert_eq!(result.error.as_deref(), Some("engine not ready"));
+        assert_eq!(result.steps, 0);
+    }
+
+    #[test]
+    fn autoplay_config_prefers_the_argument_then_env_then_default() {
+        let base = DoomAutoplayConfig::default();
+        // The `maxSteps` argument always wins.
+        assert_eq!(autoplay_config(Some(7)).max_steps, 7);
+
+        // With no argument and no env seam, the binding defaults are used.
+        if std::env::var(decision::DOOM_AGENT_MAX_STEPS_ENV).is_err() {
+            assert_eq!(autoplay_config(None).max_steps, base.max_steps);
+        }
+        if std::env::var(decision::DOOM_AGENT_MAX_FAILURES_ENV).is_err() {
+            assert_eq!(autoplay_config(None).max_failures, base.max_failures);
         }
     }
 }

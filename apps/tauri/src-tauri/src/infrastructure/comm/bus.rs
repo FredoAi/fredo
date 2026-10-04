@@ -7,6 +7,7 @@
 //!
 //! Registered as Tauri state in lib.rs and consumed by the RTDB flush loop.
 
+use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use crate::infrastructure::feature_data::envelope::{
     FeatureDeliveryBatch, FeatureRowNotification,
@@ -65,6 +66,25 @@ impl EventBus {
         let envelope = FeatureDeliveryBatch::new(notifications.to_vec());
         if let Err(e) = self.app.emit("fredo-stream-event", &envelope) {
             tracing::error!(target: "fredo::comm", error = %e, "emit featureBatch failed");
+        }
+    }
+
+    /// Emit `event` with `payload` to ONE webview `window` (targeted delivery).
+    ///
+    /// This is the sanctioned path for a feature's window-scoped status event
+    /// (Spec #2969 ST-5: the Doom window's `doom-autoplay-changed`): like
+    /// [`Self::emit_row_delivery_batch`], it keeps the emission behind the
+    /// EventBus so feature code never calls `AppHandle::emit_to` directly. A
+    /// missing window is not an error — it is logged at debug.
+    pub fn emit_to_window<T: Serialize>(&self, window: &str, event: &str, payload: &T) {
+        if let Err(error) = self.app.emit_to(window, event, payload) {
+            tracing::debug!(
+                target: "fredo::comm",
+                error = %error,
+                window,
+                event,
+                "emit_to_window skipped (no such window?)"
+            );
         }
     }
 }

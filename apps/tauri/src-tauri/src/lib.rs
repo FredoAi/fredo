@@ -49,9 +49,10 @@ pub use features::doom;
 // Spec #2969 ST-4 — the Doom-agent producer surface
 // (`llm_server::doom_agent`: the persona, the pure schema-constrained request
 // builder, the model-backed `DoomDecisionSource`, and the bounded request audit).
-// ST-5 consumes it from this crate root (`ModelDoomDecisionSource`); the module is
-// re-exported so the frozen producer stays reachable (and dead-code-free) while
-// that wiring is still pending. `#[doc(hidden)]`: not part of the app surface.
+// ST-5 wires the real consumer in the `setup` closure below (the composition root
+// constructs `ModelDoomDecisionSource` with `features::doom`'s vocabulary); the
+// module stays re-exported so the frozen producer surface remains reachable.
+// `#[doc(hidden)]`: not part of the app surface.
 #[doc(hidden)]
 pub use features::llm_server::doom_agent;
 
@@ -372,6 +373,45 @@ pub fn run() {
             // PID-reuse guarded (engine image name) and can never kill an
             // unrelated process (R-3.3).
             features::doom::process::sweep_orphan(app.handle());
+
+            // -- Doom autoplay state (Spec #2969 ST-5) -------------------------
+            // The ONE autoplay run's stop flag + last status; the
+            // `start_doom_autoplay` / `stop_doom_autoplay` /
+            // `get_doom_autoplay_status` commands below own it.
+            app.manage(features::doom::commands::DoomAutoplayState::default());
+
+            // -- Doom decision source (Spec #2969 ST-5, binding decision 1) ----
+            // The composition root selects the decision source from
+            // `FREDO_DOOM_AGENT_DECISION_SOURCE` (`model` default, `scripted`
+            // lever) and installs it into the shared Tauri-managed holder.
+            // Neither feature imports the other — this is the only place both
+            // `features::doom` and `features::llm_server` are visible. The
+            // scripted lever is inert unless explicitly selected; if its script
+            // cannot be loaded no source is installed, so a start reports a typed
+            // `NotReady` instead of silently falling back to the model.
+            let doom_decision_state =
+                infrastructure::companion::doom_decision::DoomDecisionSourceState::default();
+            if features::doom::decision::decision_source_from_env()
+                == features::doom::decision::DOOM_AGENT_SOURCE_SCRIPTED
+            {
+                match features::doom::decision::ScriptedDecisionSource::from_env() {
+                    Ok(scripted) => doom_decision_state.set(Arc::new(scripted)),
+                    Err(error) => tracing::error!(
+                        target: "fredo::doom",
+                        error = %error,
+                        "the scripted Doom decision source could not be loaded; \
+                         start_doom_autoplay will report NotReady"
+                    ),
+                }
+            } else {
+                doom_decision_state.set(Arc::new(
+                    features::llm_server::doom_agent::ModelDoomDecisionSource::new(
+                        app.handle().clone(),
+                        features::doom::actions::action_vocabulary_json(),
+                    ),
+                ));
+            }
+            app.manage(doom_decision_state);
 
             // -- Terminal state ------------------------------------------------
             app.manage(Mutex::new(TerminalState::new()));
@@ -1036,6 +1076,12 @@ pub fn run() {
             features::doom::commands::doom_read_state,
             features::doom::commands::doom_step,
             features::doom::commands::doom_frame,
+            // Doom autoplay trigger host (Spec #2969 ST-5): the bounded
+            // start/stop/status commands over the ST-3 loop. `start` chooses
+            // nothing — the decision source was installed at startup above.
+            features::doom::commands::start_doom_autoplay,
+            features::doom::commands::stop_doom_autoplay,
+            features::doom::commands::get_doom_autoplay_status,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Fredo application")
