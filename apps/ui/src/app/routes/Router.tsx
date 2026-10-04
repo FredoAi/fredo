@@ -5,6 +5,7 @@ import { ArchitectureDiagram } from '../../features/diagram/components/Architect
 import { DevMode } from '../../features/dev-mode';
 import { TerminalWindow } from '../../features/terminal';
 import { DoomWindow } from '../../features/doom';
+import { StandaloneAppWindow } from '../../features/app-window';
 
 export const Router: React.FC = () => {
   // Terminal window route — opened as a separate Tauri webview
@@ -15,6 +16,12 @@ export const Router: React.FC = () => {
   // Doom window route — the dedicated `doom` webview (Spec #2968 CU-4/ST-6)
   if (new URLSearchParams(window.location.search).get('view') === 'doom') {
     return <DoomWindow />;
+  }
+
+  // Generic standalone app-window route (Spec #2955 ST-5) — the native window
+  // built by `open_app_window` for any non-bespoke app loads this.
+  if (new URLSearchParams(window.location.search).get('view') === 'app') {
+    return <StandaloneAppWindow />;
   }
 
   const { currentPage, showDiagram } = useExtension();
