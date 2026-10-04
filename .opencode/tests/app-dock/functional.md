@@ -1,5 +1,12 @@
 # app-dock — Functional
 
+> **RETIRED by #2954 — DO NOT RUN against the post-#2954 build.** The persistent dock is REMOVED
+> (no `app-dock` / `data-dock-entry` / `data-dock-item` / `.dock-close`); the open-apps surface moved
+> INTO the engaged launcher. Every row below is HISTORICAL (pre-#2954). The live assertions now live
+> in `.opencode/tests/launcher/functional.md` `#2954 extension` (F-118..F-125) with hooks
+> `launcher-open-apps` / `launcher-open-app-entry-<windowId>` / `launcher-open-app-close-<windowId>`.
+> The relocated `dock-arrange` is PRESERVED (see launcher R-71 / workspace-layout).
+
 Scope: the positionable open-apps dock surface — **Sidebar** (left-edge vertical rail) vs **Bottom bar** (bottom-center horizontal pill), selectable under Settings → Appearance — extending the #2838/#2841 left-edge dock (resting-visible on a clean desktop, edge-peek overlay reveal when a window covers the desktop, hover/focus ✕ close). Seeded from issue #2848; map 1:1 to `.opencode/tmp/2848/triage.md` `## QA Expert` (QA Plan F-1..F-12, F-6a/F-6b split).
 
 > **Verification policy: live** — pure-rendering UI spec (position choice, edge-summon reveal/hide, hover ✕, persistence); ACs provable ONLY by observing the running artifact (`pnpm dev:tauri` serving `spec/2848`, MCP driver `com.fredo.app:9223`). DOM snapshots, `getBoundingClientRect`/computed-style probes, real `webview_interact` pointer/keyboard drives, and `tauri_webview_screenshot` receipts per orientation. NO telemetry surface — the live-gate reference is the established desktop-shell F-14 / desktop-chrome F-23 pattern: `SELECT COUNT(*) FROM telemetry_spans` non-zero + recent `max(ingested_at)` at round start (the dock is row-INDEPENDENT — entries come from the `useWindows()` store, opened via the launcher grid). A static-only PASS is a FALSE PASS. A console `Error:`/`Uncaught`/`Maximum update depth exceeded` on any leg invalidates that leg's evidence.
