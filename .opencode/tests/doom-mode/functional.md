@@ -117,3 +117,77 @@
 - [ ] N-7 (live-pipeline receipt): F-21 as above (non-zero count + recent `max(ingested_at)` at round start AND after the drive).
 
 **`DoomErrorCode` coverage:** `notConfigured`→F-11/F-19 · `acquireFailed`→F-18 · `spawnFailed`→F-11 · `readyTimeout`→F-13 · `stopTimeout`→F-8 hang leg · `requestFailed`→F-14 · `frameNotReady`→F-4.
+
+---
+
+# doom-mode — Autonomous Play (Spec #2969)
+
+> **Verification policy: live** — the loop drives the live OS child over loopback HTTP; the
+> model leg emits inference requests. Evidence MUST carry the `telemetry_spans` live-pipeline
+> reference (non-zero count + recent `max(ingested_at)`, managed `psql` on the PG default,
+> G-284; the Doom loop emits NO span — the query proves the pipeline, disclosed substitution
+> allowed). Every "advances" assertion is **STEP-DRIVEN** (G-316: `-apilockstep` freezes the
+> world between `POST /api/step` calls) — never an idle-frame assertion. Every wait bounded.
+>
+> **Test data (G-172):** deterministic decision lever `FREDO_DOOM_AGENT_DECISION_SOURCE=scripted`
+> + `FREDO_DOOM_AGENT_SCRIPT` → tester writes `.opencode/tmp/2969/agent-script.json` (valid /
+> `{"malformed":true}` / `{"error":"..."}` / out-of-range-`tics` entries, `repeat:true`); request
+> audit `FREDO_DOOM_AGENT_LOG_DIR=.opencode/tmp/2969/agent-audit`; stub levers
+> `FREDO_DOOM_STUB_PROGRESS=1` / `FREDO_DOOM_STUB_DIE_AFTER=<n>` / `FREDO_DOOM_STUB_DONE_AFTER=<n>` /
+> `FREDO_DOOM_STUB_EPISODE_FAIL=1` (inert when unset; `doom-stub` feature-gated, never shipped);
+> budget overrides `FREDO_DOOM_AGENT_MAX_STEPS` / `_MAX_FAILURES` / `_STEP_TICS`; DOM hooks
+> `doom-autoplay-toggle`, `doom-autoplay-status`, `doom-autoplay-stop`; app-boot/PG lever = the
+> PG supervisor default path (`storage_engine_status` = PostgreSQL / PG supervisor ready).
+>
+> Binding names adopted VERBATIM: commands `start_doom_autoplay`/`stop_doom_autoplay`/
+> `get_doom_autoplay_status`; event `doom-autoplay-changed`; `DoomAutoplayPhase =
+> Idle|Running|Stopping|Completed|Failed`; `DoomAutoplayErrorCode =
+> NotReady|DecisionFailed|EngineRequestFailed|BudgetExhausted`; constants
+> `DOOM_AUTOPLAY_MAX_STEPS=600`, `DOOM_AUTOPLAY_MAX_FAILURES=3`,
+> `DOOM_AUTOPLAY_DECISION_TIMEOUT_S=30`, `DOOM_AUTOPLAY_STEP_TICS=1`,
+> `DOOM_AUTOPLAY_FAILURE_BACKOFF_MS=250`. Display units: `steps`/`decisions`/`failures` = counts;
+> `lastTic`/`tic` = engine tics; cadence = steps/sec.
+
+## Autonomous loop (R-1 / AC1)
+
+- [ ] F-24 (R-1, AC1) **Autonomous forward progress — no human input — REQUIRED.** Start the stub engine (`FREDO_DOOM_STUB_PROGRESS=1`); set the scripted lever; invoke `start_doom_autoplay`; then make NO further input; poll `get_doom_autoplay_status` (and capture `doom-autoplay-changed`) ≥3 times.
+  - EXPECTED: phase `Running`; `steps`+`decisions` strictly increase; `lastTic` strictly increases across successive reads (STEP-DRIVEN, G-316); ≥1 progress component improves (`level.kills` bumps / `exit.distance` reduces via the stub lever); `doom-frame-canvas` shows the advanced world.
+  - Edge: a single `GET /api/state` read alone does NOT advance; every wait bounded; no human input after start.
+- [ ] F-25 (R-2, AC2) **No image/audio request contract — pure builder unit pin.** Pin `build_doom_agent_request_body`.
+  - EXPECTED: the serialized body's system message content == `DOOM_AGENT_SYSTEM_PROMPT` (the Doom-playing instructions); the user message carries structured observation JSON; NO `image_url` content part, NO `input_audio` content part, no image/audio field anywhere (rendered via `render_messages(..., None, None)`).
+  - Edge: `GET /api/frame` is never included; vocabulary list is structured text only. (This pin is the AC2 fallback when the model leg is a TOOLING GAP.)
+- [ ] F-30 (R-2, AC2) **Request audit JSONL — live AC2 receipt.** `FREDO_DOOM_AGENT_LOG_DIR=.opencode/tmp/2969/agent-audit`; run the model loop; read the JSONL.
+  - EXPECTED: every line `{at,tic,contentParts:["text"],hasImage:false,hasAudio:false,systemPrompt:"<DOOM_AGENT_SYSTEM_PROMPT>"}`; `hasImage==false` AND `hasAudio==false` AND `contentParts==["text"]`; `systemPrompt` non-empty and carries the Doom instructions; file bounded to the last 64 records.
+  - Edge: scripted source issues no model request → this leg needs the model path; model files absent → named TOOLING GAP (F-25 carries AC2).
+
+## Event reaction (R-3 / AC3) + complex scenario
+
+- [ ] F-26 (R-3, AC3) **Death/exit → bounded restart/advance.** `FREDO_DOOM_STUB_DIE_AFTER=<n>` then separately `FREDO_DOOM_STUB_DONE_AFTER=<n>`; scripted decisions; capture the engine request log / IPC.
+  - EXPECTED: on the death observation (`outcome=="dead"`, `player.health=0`) or exit (`done==true`, `outcome=="exited"`), exactly ONE `POST /api/episode {episode,map,skill,seed}` within the next iteration; the stub resets tick and clears dead/done; the loop resumes `Running` and `lastTic` resumes increasing; no re-decide on the terminal state.
+  - Edge: the same terminal step never repeats; restart request failure → F-32.
+- [ ] F-29 (complex) **"A dead player is never a dead loop".** Repeated deaths (`FREDO_DOOM_STUB_DIE_AFTER` with a repeating script).
+  - EXPECTED: every death observation yields a bounded restart/advance and progress resumes; `outcome` returns to `alive`; the run terminates only by the step/failure cap — never an infinite repeat of one terminal step.
+  - Edge: interleaved death/exit; death then a malformed decision; clean stop at budget exhaustion.
+
+## Bounded failure (R-4 / AC4)
+
+- [ ] F-27 (R-4, AC4) **Unusable decision → bounded skip/retry → typed Failed.** Script with `{"malformed":true}`, `{"error":"..."}`, and an out-of-range-`tics` entry.
+  - EXPECTED: each unusable decision issues NO `POST /api/step`; a retry occurs after `DOOM_AUTOPLAY_FAILURE_BACKOFF_MS=250`; `failures`/`consecutiveFailures` increment; on the 3rd consecutive failure (`DOOM_AUTOPLAY_MAX_FAILURES=3`) the loop stops with `phase=Failed`, `code=DecisionFailed`, a typed `lastError`; the engine still answers (frozen, not hung) and the app/pipeline is unaffected.
+  - Edge: a good decision after 1–2 failures resets `consecutiveFailures` to 0 and resumes progress (never stalling); the per-decision timeout (30 s) maps to `TimedOut` on the same bounded path — **unit pin, non-AC** (no in-repo timeout lever, G-300).
+- [ ] F-32 (QA-added, G-300) **QA error edges with in-repo levers.** (a) `FREDO_DOOM_STUB_EPISODE_FAIL=1` while dead; (b) invoke `start_doom_autoplay` with no ready engine (fresh state).
+  - EXPECTED: (a) `POST /api/episode` 500 → `code=EngineRequestFailed`, typed Failed, within bound, no hang; (b) `code=NotReady`, no engine request issued.
+  - Edge: (a) recovers once the lever is unset; (b) starting after a successful launch succeeds.
+
+## Bounded budget + rate target (R-5 / AC5)
+
+- [ ] F-28 (R-5, AC5) **Bounded budget + recorded cadence.** Run the scripted loop to completion; read `get_doom_autoplay_status` + `spikes/2969-doom-agent/action-vocabulary.md` (ST-1 measured per-step RTT).
+  - EXPECTED: `steps` ≤ `DOOM_AUTOPLAY_MAX_STEPS=600`; per-decision time ≤ `DOOM_AUTOPLAY_DECISION_TIMEOUT_S=30` s; the plan records a sustained decision-rate target (steps/sec) DERIVED from the engine's measured per-step RTT (ST-1), and the measured rate ≥ target; the rate is a decision cadence, never idle frame motion (G-316).
+  - Edge: slow engine RTT lowers the achievable rate; timeout/backoff counted in cadence; a `FREDO_DOOM_AGENT_MAX_STEPS` override is honored.
+
+## Mission-Monitor end-to-end (REQUIRED, human directive)
+
+- [ ] F-31 (E2E, human directive) **RUNNING app: PG-default boot + Mission Monitor regression + autonomous play.** Boot the app on the PG-default path; seed one qualifying session; then open the Doom window and start autoplay (scripted lever).
+  - EXPECTED: (a) `storage_engine_status` = PostgreSQL / PG supervisor ready (app-boot/PG lever = the PG supervisor default path); (b) Mission Monitor renders ≥1 live session — SEED LEVER `bun .opencode/scripts/inject-otlp-fixture.ts --copilot --fixture .opencode/scripts/copilot-exchange.fixture.json` (stable `e2e-copilot2933`) through the real OTLP/HTTP receiver; assert the DECLARED `sessions` row qualifies (`visibleTurnCount ≥ 1`) BEFORE asserting the list, then `SessionHistoryDrawer` shows ≥1 row; (c) `doom-autoplay-toggle` starts autoplay → `doom-autoplay-status` shows `Running` and the game advances (`lastTic` increases step-driven); (d) live-pipeline receipt `telemetry_spans` non-zero + recent `max(ingested_at)`.
+  - Edge: PG leg needs the managed `psql` lever (G-284) — if unavailable, record a NAMED TOOLING GAP for the PG leg (never silently drop it, G-307); the seeded session is idempotent; the rest of the app is unaffected after autoplay stops.
+
+**`DoomAutoplayErrorCode` coverage:** `NotReady`→F-32(b) · `DecisionFailed`→F-27 · `EngineRequestFailed`→F-32(a) · `BudgetExhausted`→F-28.
