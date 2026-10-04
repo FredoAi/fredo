@@ -291,3 +291,45 @@ disclosed).
   Q13); #2961-added lines introduce zero colour literals; `pnpm --filter @fredo/ui build`
   exit 0; `test:run` 212 files / 2906 tests green.
 
+## Spec #2962 additions (multi-level nesting + intentional key reuse)
+
+> The S5 slice ADDS the Mission Monitor 3-level context chain and the per-level actions with
+> intentional `n`/`p`/`o` reuse. It must not re-spec or change the shipped suppression (#2946),
+> the context model + cumulative resolution (#2958), the keyboard mode + bar (#2959), the
+> typing-vs-navigating signal (#2960), or the per-app action sets (#2961). **Verification
+> policy: live** — receipts via the managed `psql` lever reading `telemetry_spans` (G-284).
+> **Out of scope (must not be re-specced):** S1–S4 behaviour; no new platform/global binding;
+> no new DOM hook beyond the ST-3 `data-mm-graph-cursor` / `data-mm-detail-section` /
+> `data-mm-active-section`.
+
+- [ ] **R-35 (pending-sequence Escape cancel unchanged):** at ANY depth, with a multi-key
+      sequence armed, Escape still cancels the pending sequence (`data-fredo-pending-sequence`
+      clears) and does NOT pop a context level (`data-fredo-hotkey-context-depth` unchanged) —
+      the two owners are disjoint by the `pending === null` guard (`sequence.ts:212-219`,
+      pending branch `sequence.ts:228-238`). Baseline recipe: dev-env UP on `main`, arm +
+      Escape at the base and record; repeat descended on `spec/2962`. Cross-ref R-12, F-43/F-90.
+- [ ] **R-36 (DetailPanel Escape is not double-fired by the unwind):** `DetailPanel.tsx:190-204`
+      (drag-cancel/close) and `:219-225` (close) are TWO window `keydown` listeners. While
+      descended at L3, the engine's capture-phase unwind (`engine.ts:657-660`) must pre-empt
+      both exactly once (one Escape = one pop, no second `onClose`); after unwinding to L2 the
+      `detail-panel` testid must be absent (both listeners unregistered). A double-fire or a
+      panel that survives the unwind is a FAIL. Baseline recipe: open the node detail on `main`
+      and record the Escape behaviour; repeat descended on `spec/2962`. Cross-ref R-3,
+      `.opencode/tests/mission-monitor/` (detail panel).
+- [ ] **R-37 (S1 context model + cumulative resolution unchanged):** the merged #2958 behaviour
+      is unchanged — focus-derived base, `primary+K` descent to `fredo.root.reference`,
+      one-Escape-per-level unwind, the `hotkeys-context-indicator` (label/pips/icon),
+      `data-fredo-hotkey-context`/`-depth`, and the single `hotkeys-announcer`. A parent-only key
+      still resolves while descended (cumulative contract, `contexts.test.ts:247-251`);
+      `resolveContextBindings` ordering is unchanged (`contexts.ts:353`);
+      `MAX_CONTEXT_STACK_FRAMES = 8` is unchanged (`contextStack.ts:50`); the conflict classifier
+      is untouched (`conflicts.ts:41-81`). Cross-ref R-16/R-22/R-31, F-33..F-43/F-90/F-91.
+- [ ] **R-38 (no focus theft + token contract + no re-render loop / console clean + build
+      gates):** the L2 keyboard cursor is programmatic ReactFlow selection (`data-mm-graph-cursor`),
+      never DOM focus — `focusContext.ts:53-63` classifies any `[tabindex]>=0` as a native
+      consumer, so `document.activeElement` must stay OFF graph nodes; the new/changed files
+      introduce no hardcoded hex/rgba/hsla and no `var(--x)NN` alpha-append; no
+      `Maximum update depth exceeded`/`Uncaught`/`Error:` across descend/unwind/focus-churn;
+      `pnpm --filter @fredo/ui build` exit 0 and the served `build:webview` leg passes
+      (H-11/G-251 class). Cross-ref R-6/R-7/R-8/R-11/R-20/R-26/R-34.
+
