@@ -9,7 +9,7 @@
  *  - Clicking a card opens an inline detail view with "Work with Agent" CTA
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import {
   Box, Text, VStack, SimpleGrid, Spinner, Button, HStack, Badge,
 } from '@chakra-ui/react';
@@ -22,6 +22,14 @@ import { AzdoDetailPanel } from './AzdoDetailPanel';
 import { JiraDetailPanel } from './JiraDetailPanel';
 import type { UnifiedWorkItem, SourceFilter, DetailTarget } from '../types';
 import { toaster } from '../../../shared/components/ui/toaster';
+import {
+  MY_WORKITEMS_REFRESH_ACTION_ID,
+  MY_WORKITEMS_SHOW_ALL_SOURCES_ACTION_ID,
+  MY_WORKITEMS_SHOW_AZDO_ACTION_ID,
+  MY_WORKITEMS_SHOW_JIRA_ACTION_ID,
+  setMyWorkItemsActionAvailable,
+  subscribeMyWorkItemsActions,
+} from '../lib/hotkeyBridge';
 
 interface MyWorkItemsContainerProps {
   /** Set by feature class when Agent navigates directly to a specific item */
@@ -50,10 +58,47 @@ export const MyWorkItemsContainer: React.FC<MyWorkItemsContainerProps> = ({
   const [statusFilter, setStatusFilter] = useState<string>('All');
   const [detail, setDetail] = useState<DetailTarget | null>(initialDetail ?? null);
 
-  const handleRefresh = async () => {
+  const handleRefresh = useCallback(async () => {
     await refetch();
     toaster.create({ title: 'Refreshed', description: 'Work items updated', type: 'success', duration: 2000 });
-  };
+  }, [refetch]);
+
+  // ── Spec #2961 ST-1 (S4): map the declared local hotkeys ───────────────────
+  // Publish `refresh` availability so the declared action reads
+  // unavailable-with-reason while the list is loading. Module-scoped in the
+  // bridge — survives this component's mount/unmount (never a React ref).
+  useEffect(() => {
+    setMyWorkItemsActionAvailable(MY_WORKITEMS_REFRESH_ACTION_ID, !isLoading);
+  }, [isLoading]);
+
+  // ONE window listener for the whole container; removed on unmount. Each action
+  // maps onto an EXISTING operation (the same `handleRefresh` / source-filter
+  // state the buttons use). `run` is a no-op while the feature is unmounted (no
+  // subscriber), and the engine never dispatches these feature-tier actions
+  // unless My Work Items is focused.
+  useEffect(
+    () =>
+      subscribeMyWorkItemsActions((actionId) => {
+        switch (actionId) {
+          case MY_WORKITEMS_REFRESH_ACTION_ID:
+            void handleRefresh();
+            break;
+          case MY_WORKITEMS_SHOW_ALL_SOURCES_ACTION_ID:
+            setSourceFilter('all');
+            setStatusFilter('All');
+            break;
+          case MY_WORKITEMS_SHOW_AZDO_ACTION_ID:
+            setSourceFilter('azdo');
+            setStatusFilter('All');
+            break;
+          case MY_WORKITEMS_SHOW_JIRA_ACTION_ID:
+            setSourceFilter('jira');
+            setStatusFilter('All');
+            break;
+        }
+      }),
+    [handleRefresh],
+  );
 
   // ── Filter items ─────────────────────────────────────────────────────────
   const visibleItems = useMemo(() => {
@@ -128,6 +173,7 @@ export const MyWorkItemsContainer: React.FC<MyWorkItemsContainerProps> = ({
             colorPalette="blue"
             loading={isLoading}
             onClick={handleRefresh}
+            data-testid="my-workitems-refresh"
           >
             <HStack gap={1}><LuRefreshCw size={14} /><span>Refresh</span></HStack>
           </Button>
@@ -148,6 +194,7 @@ export const MyWorkItemsContainer: React.FC<MyWorkItemsContainerProps> = ({
             return (
               <Button
                 key={tab.value}
+                data-testid={`my-workitems-source-${tab.value}`}
                 size="sm"
                 variant={active ? 'solid' : 'outline'}
                 colorPalette={
