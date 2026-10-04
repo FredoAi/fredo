@@ -472,4 +472,40 @@ No confirmed defect → no new F- row promoted.
 Teardown: keyboard mode toggled OFF; appearance preset left at the served default; no test
 binding was created (probes used the shipped keymap only).
 
+## Spec #2962 — deep-nesting probes
+
+> Live-plan probes for issue #2962 (S5). Names bind to the Architect's FINAL BINDING names block
+> (see `functional.md` #2962 header). A confirmed finding PROMOTES to `functional.md` as a new
+> `F-` row (keep the origin note). Receipts via the managed `psql` lever reading
+> `telemetry_spans` (G-284).
+
+- [ ] E-49: **Descend while a native consumer has DOM focus.** With a `<button>` focused (or a
+      ReactFlow node if it ever becomes focusable), attempt the bare-key descent (`o`). Does the
+      descend fire (wrong — bare keys are withheld from a native consumer, `sequence.ts:221-225`),
+      or is it correctly suppressed while a modifier chord still descends? A bare-key descent
+      from a native consumer promotes to F-88/R-38.
+- [ ] E-50: **Third descent beyond the declared chain.** From L3 attempt to descend again (to a
+      hypothetical 4th level). Is the descent refused deterministically (depth unchanged, no
+      stack growth), or does the stack drift / accept an undeclared child? Promotes to F-88/R-37.
+- [ ] E-51: **Pending sequence at the deepest level.** At L3 arm a multi-key sequence (`g`), then
+      press Escape; then a clean Escape. Does pending-cancel win with NO pop and the next clean
+      Escape pop exactly one? An ambiguous/order-dependent result promotes to F-90/R-35.
+- [ ] E-52: **Window close mid-descent (AC5).** At L3 close the Mission Monitor window via its
+      close control; reopen. Is the context discarded and re-entry at L1, or does a stale deeper
+      context survive? A stale context promotes to F-92/R-37.
+- [ ] E-53: **Rapid descend/unwind + focus churn.** Hammer `o`/Escape and switch focus A↔B
+      rapidly while descended. Does the context stack ever drift, double-pop, or leave a stale
+      bar row? Promotes to F-90/F-92/F-93.
+- [ ] E-54: **Reused key with a shadowed-but-unavailable parent.** At a level where the current
+      binding is itself unavailable (e.g. text-entry), does the losing parent binding's reason
+      stay honest (no false `Shadowed by` when the winner cannot run), or does the bar name a
+      winner that is not in force? A misleading reason promotes to F-91.
+- [ ] E-55: **Detail panel survives the unwind.** At L3 with the detail panel open, Escape once.
+      Is the panel gone at L2 (`detail-panel` absent) and the engine unwind fired exactly once,
+      or does the panel's own Escape close double-fire / linger? Promotes to F-90/R-36.
+
+Teardown (run after this suite): unwound to L1 (depth 1); keyboard mode toggled OFF; the
+Mission Monitor window left open on the default layout; no test binding created (the probes use
+the shipped keymap only).
+
 
