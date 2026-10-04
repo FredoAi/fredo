@@ -302,13 +302,13 @@ disclosed).
 > no new DOM hook beyond the ST-3 `data-mm-graph-cursor` / `data-mm-detail-section` /
 > `data-mm-active-section`.
 
-- [ ] **R-35 (pending-sequence Escape cancel unchanged):** at ANY depth, with a multi-key
+- [x] **R-35 (pending-sequence Escape cancel unchanged): PASS (2026-10-04, spec/2962 @ e39dc7e).** at ANY depth, with a multi-key
       sequence armed, Escape still cancels the pending sequence (`data-fredo-pending-sequence`
       clears) and does NOT pop a context level (`data-fredo-hotkey-context-depth` unchanged) —
       the two owners are disjoint by the `pending === null` guard (`sequence.ts:212-219`,
       pending branch `sequence.ts:228-238`). Baseline recipe: dev-env UP on `main`, arm +
       Escape at the base and record; repeat descended on `spec/2962`. Cross-ref R-12, F-43/F-90.
-- [ ] **R-36 (DetailPanel Escape is not double-fired by the unwind):** `DetailPanel.tsx:190-204`
+- [x] **R-36 (DetailPanel Escape is not double-fired by the unwind): PASS (2026-10-04, spec/2962 @ e39dc7e).** `DetailPanel.tsx:190-204`
       (drag-cancel/close) and `:219-225` (close) are TWO window `keydown` listeners. While
       descended at L3, the engine's capture-phase unwind (`engine.ts:657-660`) must pre-empt
       both exactly once (one Escape = one pop, no second `onClose`); after unwinding to L2 the
@@ -316,7 +316,7 @@ disclosed).
       panel that survives the unwind is a FAIL. Baseline recipe: open the node detail on `main`
       and record the Escape behaviour; repeat descended on `spec/2962`. Cross-ref R-3,
       `.opencode/tests/mission-monitor/` (detail panel).
-- [ ] **R-37 (S1 context model + cumulative resolution unchanged):** the merged #2958 behaviour
+- [x] **R-37 (S1 context model + cumulative resolution unchanged): PASS (2026-10-04, spec/2962 @ e39dc7e).** the merged #2958 behaviour
       is unchanged — focus-derived base, `primary+K` descent to `fredo.root.reference`,
       one-Escape-per-level unwind, the `hotkeys-context-indicator` (label/pips/icon),
       `data-fredo-hotkey-context`/`-depth`, and the single `hotkeys-announcer`. A parent-only key
@@ -324,12 +324,25 @@ disclosed).
       `resolveContextBindings` ordering is unchanged (`contexts.ts:353`);
       `MAX_CONTEXT_STACK_FRAMES = 8` is unchanged (`contextStack.ts:50`); the conflict classifier
       is untouched (`conflicts.ts:41-81`). Cross-ref R-16/R-22/R-31, F-33..F-43/F-90/F-91.
-- [ ] **R-38 (no focus theft + token contract + no re-render loop / console clean + build
-      gates):** the L2 keyboard cursor is programmatic ReactFlow selection (`data-mm-graph-cursor`),
+- [x] **R-38 (no focus theft + token contract + no re-render loop / console clean + build
+      gates): PASS (2026-10-04, spec/2962 @ e39dc7e).** the L2 keyboard cursor is programmatic ReactFlow selection (`data-mm-graph-cursor`),
       never DOM focus — `focusContext.ts:53-63` classifies any `[tabindex]>=0` as a native
       consumer, so `document.activeElement` must stay OFF graph nodes; the new/changed files
       introduce no hardcoded hex/rgba/hsla and no `var(--x)NN` alpha-append; no
       `Maximum update depth exceeded`/`Uncaught`/`Error:` across descend/unwind/focus-churn;
       `pnpm --filter @fredo/ui build` exit 0 and the served `build:webview` leg passes
       (H-11/G-251 class). Cross-ref R-6/R-7/R-8/R-11/R-20/R-26/R-34.
+
+## #2962 testing round 1 — regression results (spec/2962 @ e39dc7e)
+
+- **R-35 PASS** — at depth 2 and depth 3, `g` armed `data-fredo-pending-sequence="g"`;
+  Escape cleared it to `null` with depth UNCHANGED; the next clean Escape popped one level.
+- **R-36 PASS** — one Escape L3→L2 unmounted `detail-panel`, depth exactly 2, no double-fire.
+- **R-37 PASS** — parent-only `s` resolves at L2 (cumulative); `primary+K` → `fredo.root.reference`
+  with deeper-only `y` → `Reference action ran.`; ordering/cap/classifier unit-pinned unchanged.
+- **R-38 PASS** — `document.activeElement` = BODY across L2 cursor moves; changed files have zero
+  colour literals / `var(--x)NN`; `pnpm --filter @fredo/ui build` exit 0 (2673 modules, 0 TS errors);
+  no `Maximum update depth exceeded`. One third-party ReactFlow `Uncaught` is a tester synthetic-event
+  artifact (document-dispatched Escape), disclosed — see the round's `## Tests Runs`.
+
 
