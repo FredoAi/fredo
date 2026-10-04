@@ -64,8 +64,8 @@ observable expected outcome per case.
   No global image-name kill.
   **Edge:** stale PID reused by an unrelated live process → never killed; A's manifest
   corrupt/empty → teardown no-ops safely; A and B misconfigured to share a manifest → fail-closed,
-  neither kills the other; teardown while B is mid-boot. **Induction lever:** stale-PID manifest
-  under `FREDO_ENV_MANIFEST` under `.opencode/tmp/2944/`.
+  neither kills the other; teardown while B is mid-boot. **Induction lever:** F-7
+  (`.opencode/tests/multi-env-isolation/error-path-levers.ps1 -Lever DecoyManifest`).
 
 - [ ] **F-4 (AC4, env-aware MCP + fail-closed ports).** Start A and B; `tauri_driver_session start`
   against BOTH with explicit `appIdentifier`. Issue a webview/IPC tool call to each with explicit
@@ -79,7 +79,8 @@ observable expected outcome per case.
   **Edge:** a call with NO `appIdentifier` while two envs are connected → refused/ambiguous, never
   silently defaulted; collision on OTLP gRPC/HTTP and Vite ports → same fail-closed;
   `appIdentifier` given as the env's MCP port resolves to that env only; env torn down mid-call →
-  named error, no cross-env fallback. **Induction lever:** point env B at env A's live port.
+  named error, no cross-env fallback. **Induction lever:** F-8
+  (`.opencode/tests/multi-env-isolation/error-path-levers.ps1 -Lever PortCollision`).
 
 - [ ] **F-5 (AC5, env-tagged evidence + gates).** For each env inspect its evidence record and
   assert it carries each named element: environment ID, serving checkout path, served commit, DB
@@ -90,8 +91,8 @@ observable expected outcome per case.
   literal count, G-271); the audit REJECTS evidence that cannot be attributed to the intended
   environment; `cargo check`, `pnpm --filter @fredo/ui build`, and `test-scripts.ps1` all pass.
   **Edge:** one named field missing → audit rejects; env-ID mismatch; evidence from a torn-down
-  env; served commit ≠ checkout HEAD. **Induction lever:** forged evidence under
-  `.opencode/tmp/2944/`.
+  env; served commit ≠ checkout HEAD. **Induction lever:** F-9
+  (`.opencode/tests/multi-env-isolation/error-path-levers.ps1 -Lever ForgedEvidence -RunAudit`).
 
 - [ ] **F-6 (AC-E2E, MANDATORY human directive — Mission Monitor renders live sessions in the
   isolated env).** In an isolated env (A), boot the app and inject a Mission-Monitor-QUALIFYING
@@ -106,6 +107,40 @@ observable expected outcome per case.
   **Edge:** empty env → existing empty state, no cross-env row; the SAME session id injected in A
   and B → each MM shows only its own; subagent/composited session renders under its parent;
   console clean after injection (no `Maximum update depth exceeded`).
+
+## Error-path induction rows (G-275)
+
+These rows have no natural trigger: each one drives a committed, test-only lever under
+`.opencode/tests/multi-env-isolation/error-path-levers.ps1` (levers are inert by default and write
+only under `.opencode/tmp/2944/`). Run each through the allowlisted wrapper:
+`powershell -File .opencode/scripts/run-exitcode.ps1 -Command "powershell -File .opencode/tests/multi-env-isolation/error-path-levers.ps1 <args>"`.
+
+- [ ] **F-7 (AC3 / R-3.1, R-3.3 — decoy manifest, stale-PID image guard).** Run
+  `error-path-levers.ps1 -Lever DecoyManifest -Stage Run`. It starts a long-running `Start-Sleep`
+  decoy (a stand-in for env B's live PID), writes `.opencode/tmp/2944/decoy-manifest.json` recording
+  that PID under role `app`, and runs the target env's `dev-env.ps1 -Action Down` with
+  `FREDO_ENV_MANIFEST` pointed at the decoy (set INSIDE the helper — G-279).
+  **Expected:** Down exits 0; the teardown log shows `REFUSING to kill PID <n> ... role 'app' expects
+  image 'fredo.exe' but live image is 'powershell.exe'`; the decoy PID is still alive
+  (`DECOY_ALIVE=True`); `RESULT=PASS`. Pair with the static pin `-Lever NoImageKill` (no `/IM`).
+  **FAIL:** the decoy is killed (cross-env kill), Down exits non-zero, or a PowerShell parse error
+  means the teardown never ran (`DOWN_PARSE_ERROR=True`).
+
+- [ ] **F-8 (AC4 / R-4.3 — bound-port collision fails closed, no scan).** Run
+  `error-path-levers.ps1 -Lever PortCollision`. It binds the slot's Vite port with a `TcpListener`
+  and runs `dev-env.ps1 -Action Up -Spec <probe> -EnvSlot 1 -VitePort <bound>` (bounded).
+  **Expected:** `UP_EXITCODE != 0`; output contains `already bound` and `fail-closed (R-4.3)`; output
+  does NOT contain `dev:tauri ready` / `already running` (no scan / no fallback); `RESULT=PASS`.
+  **FAIL:** Up binds a different port, silently attaches, or reports ready.
+
+- [ ] **F-9 (AC5 / R-5.2 — audit rejects forged evidence).** Run
+  `error-path-levers.ps1 -Lever ForgedEvidence -RunAudit`. It writes
+  `.opencode/tmp/2944/evidence-forged.json` (envId `spec2944` but B's checkout/DB path and a bogus
+  `servedCommit`), sets `FREDO_EVIDENCE_FILE` INSIDE the helper (G-279), and runs
+  `pipeline-state.rs --action audit --issue 2944`.
+  **Expected:** audit output contains `ENV EVIDENCE REJECTED: serving checkout mismatch: ...`;
+  `AUDIT_REJECTED=True`; `RESULT=PASS`.
+  **FAIL:** the audit accepts the mismatched record.
 
 ## Non-functional
 
@@ -123,6 +158,6 @@ observable expected outcome per case.
 
 ## Suite-level pass/fail
 
-PASS = F-1..F-6 all green and N-1..N-6 hold. Any cross-env bleed, any cross-env kill, a silent
+PASS = F-1..F-9 all green and N-1..N-6 hold. Any cross-env bleed, any cross-env kill, a silent
 port fallback, an unreachable named element, a missing named evidence field, a red gate, or an
 unbounded wait = **FAIL**.

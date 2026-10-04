@@ -30,3 +30,12 @@ probes below beyond the script.
   whose DB path and checkout path belong to different envs?
 - [ ] **E-10:** Is every env's start/stop bounded when the other env holds a shared resource
   (e.g. a lock), or can one env's boot hang unbounded on the other?
+- [ ] **E-11:** With a corrupt/empty decoy manifest at `FREDO_ENV_MANIFEST`, does the teardown no-op
+  safely (no kill, exit 0) rather than crashing or killing by port? (Lever: `error-path-levers.ps1
+  -Lever DecoyManifest -Stage Prepare`, then hand-edit the manifest.)
+- [ ] **E-12:** Does a collision on the MCP bridge port (or an OTLP port) fail closed the same way a
+  Vite collision does, or can one port class silently scan/fall back? (Lever: `error-path-levers.ps1
+  -Lever PortCollision -VitePort <mcp-port>` / bind the MCP port and re-run.)
+- [ ] **E-13:** Does the audit reject forged evidence whose individual fields are valid but whose
+  `dbPath` belongs to a different env than its `envId`/`servingCheckout`? (Lever: `error-path-levers.ps1
+  -Lever ForgedEvidence -RunAudit -Keep`, then edit the DB path and re-run the audit.)

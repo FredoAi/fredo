@@ -2264,12 +2264,133 @@ fn line_has_verdict(l: &str) -> bool {
     t.starts_with("verdict:")
 }
 
+/// Run `git` against a specific checkout root. After #2944 the served root may be
+/// the per-issue `.serve/<issue>` checkout rather than the process CWD, so the
+/// serving guards must resolve branch/HEAD from that checkout. In mock mode the
+/// `-C <dir>` prefix is dropped (the mock store has no checkout dirs) and the
+/// emulation runs as usual.
+fn run_git_in(dir: &Path, args: &[&str]) -> anyhow::Result<String> {
+    if mock_mode() {
+        return run_cmd("git", args);
+    }
+    let mut owned: Vec<String> = vec!["-C".to_string(), dir.to_string_lossy().to_string()];
+    owned.extend(args.iter().map(|a| (*a).to_string()));
+    let refs: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    run_cmd("git", &refs)
+}
+
+/// Per-issue env lease (Spec #2944 Names Block) at
+/// `.opencode/state/env-leases/<issue>.json` — the machine's serving record.
+/// Written by `dev-env.ps1 -Action Up` when an environment is started; the state
+/// machine reads it to learn the per-issue serving checkout, surface the lease in
+/// the context block, and (CU-G) validate env-tagged evidence. The `pid` field
+/// lets a caller reclaim a lease whose process is dead (R-3.4). Mock mode never
+/// reads the real state dir, so the offline harness stays deterministic.
+#[derive(Debug, Clone, Deserialize)]
+struct EnvLease {
+    #[serde(default)]
+    issue: u32,
+    #[serde(rename = "envId", default)]
+    env_id: String,
+    #[serde(rename = "servingCheckout", default)]
+    serving_checkout: String,
+    #[serde(default)]
+    pid: u32,
+    #[serde(rename = "startedAt", default)]
+    started_at: String,
+}
+
+/// Absolute path of the per-issue env-lease record.
+fn env_lease_path(issue: u32) -> anyhow::Result<PathBuf> {
+    Ok(project_root()?
+        .join(".opencode")
+        .join("state")
+        .join("env-leases")
+        .join(format!("{}.json", issue)))
+}
+
+/// Human-facing (repo-relative) label of the per-issue env-lease record.
+fn env_lease_display(issue: u32) -> String {
+    format!(".opencode/state/env-leases/{}.json", issue)
+}
+
+/// Read the per-issue env lease (`None` when absent, unparseable, or carrying a
+/// mismatched `issue` — a foreign/forged record is never trusted).
+fn read_env_lease(issue: u32) -> Option<EnvLease> {
+    if mock_mode() {
+        return None;
+    }
+    let raw = std::fs::read_to_string(env_lease_path(issue).ok()?).ok()?;
+    let lease: EnvLease = serde_json::from_str(&raw).ok()?;
+    if lease.issue != 0 && lease.issue != issue {
+        return None;
+    }
+    Some(lease)
+}
+
+/// The serving checkout for an issue: the per-issue `.serve/<issue>` checkout
+/// recorded in the env lease when it exists on disk, else the repo root. The
+/// repo-root fallback keeps the legacy single-env behavior byte-identical when
+/// no lease is present (Names Block: `dev-env.ps1 -ServingCheckout` default repo
+/// root).
+fn serving_checkout_root(issue: u32) -> anyhow::Result<PathBuf> {
+    let root = project_root()?;
+    if mock_mode() {
+        return Ok(root);
+    }
+    if let Some(lease) = read_env_lease(issue) {
+        let sc = lease.serving_checkout.trim();
+        if !sc.is_empty() {
+            let p = PathBuf::from(sc);
+            let abs = if p.is_absolute() { p } else { root.join(p) };
+            if abs.exists() {
+                return Ok(abs);
+            }
+        }
+    }
+    Ok(root)
+}
+
+/// Human-facing label for the serving checkout: the lease's recorded
+/// `servingCheckout` (e.g. `.serve/2944`) when present, else `repo root`. The
+/// repo root — recorded absolutely, or as `.` — normalizes to `repo root` so the
+/// legacy default is reported identically to the no-lease case.
+fn serving_checkout_label(issue: u32) -> String {
+    if mock_mode() {
+        return "repo root".to_string();
+    }
+    match read_env_lease(issue) {
+        Some(l) => {
+            let sc = l.serving_checkout.trim();
+            if sc.is_empty() {
+                return "repo root".to_string();
+            }
+            if let Ok(root) = project_root() {
+                let p = PathBuf::from(sc);
+                let abs = if p.is_absolute() { p } else { root.join(p) };
+                let abs = abs.canonicalize().unwrap_or(abs);
+                let rootc = root.canonicalize().unwrap_or(root);
+                if abs == rootc {
+                    return "repo root".to_string();
+                }
+                if let Ok(rel) = abs.strip_prefix(&rootc) {
+                    return rel.to_string_lossy().replace('\\', "/");
+                }
+            }
+            sc.to_string()
+        }
+        None => "repo root".to_string(),
+    }
+}
+
 /// Serving-currency guard (testing entry; harness fix for the G-052 drift class).
-/// The repo root IS the serving checkout: `dev-env.ps1 -Action Up -Spec <N>`
-/// serves the app from the root, so the root must sit on `spec/<N>` at the
-/// origin tip. The transition into testing is BLOCKED unless the root's branch
-/// is `spec/<N>` AND its HEAD equals `origin/spec/<N>` — a stale or
-/// wrong-branch checkout can never reach the tester.
+/// The app is served from the issue's serving checkout: the per-issue
+/// `.serve/<issue>` worktree recorded in the env lease when one is leased, else
+/// the repo root (legacy). The transition into testing is BLOCKED unless that
+/// checkout's HEAD equals `origin/spec/<N>` — a stale or wrong-branch checkout
+/// can never reach the tester. A per-issue serving worktree may be checked out
+/// on `spec/<N>` or detached at its tip, so the branch-name check applies to the
+/// repo-root (legacy) path only; the HEAD==tip check always applies.
 fn serving_currency_ok(issue: u32) -> anyhow::Result<()> {
     if mock_mode() {
         // Mock harness: the "root" state is simulated by the mock refs — once
@@ -2282,45 +2403,253 @@ fn serving_currency_ok(issue: u32) -> anyhow::Result<()> {
         }
         anyhow::bail!("repo root is not on spec/{} — checkout the spec branch and start the dev instance: dev-env.ps1 -Action Up -Spec {}", issue, issue);
     }
-    let branch = run_cmd("git", &["rev-parse", "--abbrev-ref", "HEAD"])
+    let repo_root = project_root()?;
+    let checkout = serving_checkout_root(issue)?;
+    let per_issue = checkout != repo_root;
+    let branch = run_git_in(&checkout, &["rev-parse", "--abbrev-ref", "HEAD"])
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
-    if branch != format!("spec/{}", issue) {
+    if !per_issue && branch != format!("spec/{}", issue) {
         anyhow::bail!("repo root is on '{}' — checkout spec/{} before testing (G-052): the tester drives the app served from the repo root", branch, issue);
     }
-    let head = run_cmd("git", &["rev-parse", "HEAD"])
+    let head = run_git_in(&checkout, &["rev-parse", "HEAD"])
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
     // Spec tip: the remote ref is authoritative; fall back to the local branch
     // for offline runs.
-    let tip = run_cmd("git", &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/spec/{}", issue)])
-        .or_else(|_| run_cmd("git", &["rev-parse", "--verify", "--quiet", &format!("refs/heads/spec/{}", issue)]))
+    let tip = run_git_in(&checkout, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/spec/{}", issue)])
+        .or_else(|_| run_git_in(&checkout, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/spec/{}", issue)]))
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
     if head.is_empty() || tip.is_empty() {
-        anyhow::bail!("cannot resolve the repo-root HEAD or the spec/{} tip — serving currency unverifiable; git fetch and retry", issue);
+        anyhow::bail!("cannot resolve the serving checkout HEAD or the spec/{} tip — serving currency unverifiable; git fetch and retry", issue);
     }
     if head != tip {
         anyhow::bail!(
-            "repo root is STALE: HEAD {} but spec/{} tip is {} — sync (G-032) then restart: dev-env.ps1 -Action Up -Spec {}",
+            "serving checkout is STALE: HEAD {} but spec/{} tip is {} — sync (G-032) then restart: dev-env.ps1 -Action Up -Spec {}",
             &head[..head.len().min(8)], issue, &tip[..tip.len().min(8)], issue
         );
     }
     Ok(())
 }
 
-/// Root serving state for the tester's context block (best-effort): returns
-/// `(branch, head)` when the root sits on `spec/<issue>`, else `None`.
-fn serving_record(issue: u32) -> Option<(String, String)> {
+/// Serving state for the tester's context block (best-effort): returns
+/// `(checkout_label, branch, head)` for the issue's serving checkout — the
+/// per-issue `.serve/<issue>` checkout recorded in the env lease when present,
+/// else the repo root (legacy). `None` when the repo-root path does not sit on
+/// `spec/<issue>` or no HEAD resolves.
+fn serving_record(issue: u32) -> Option<(String, String, String)> {
     if mock_mode() {
-        return Some((format!("spec/{}", issue), "mock-sha".to_string()));
+        return Some(("repo root".to_string(), format!("spec/{}", issue), "mock-sha".to_string()));
     }
-    let branch = run_cmd("git", &["rev-parse", "--abbrev-ref", "HEAD"]).ok()?.trim().to_string();
-    if branch != format!("spec/{}", issue) {
+    let repo_root = project_root().ok()?;
+    let checkout = serving_checkout_root(issue).ok()?;
+    let per_issue = checkout != repo_root;
+    let branch = run_git_in(&checkout, &["rev-parse", "--abbrev-ref", "HEAD"]).ok()?.trim().to_string();
+    if !per_issue && branch != format!("spec/{}", issue) {
         return None;
     }
-    let head = run_cmd("git", &["rev-parse", "HEAD"]).ok()?.trim().to_string();
-    if head.is_empty() { None } else { Some((branch, head)) }
+    let head = run_git_in(&checkout, &["rev-parse", "HEAD"]).ok()?.trim().to_string();
+    if head.is_empty() {
+        return None;
+    }
+    let label = if per_issue {
+        checkout
+            .strip_prefix(&repo_root)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|_| checkout.to_string_lossy().to_string())
+    } else {
+        "repo root".to_string()
+    };
+    Some((label, branch, head))
+}
+
+/// Env-tagged evidence record written by `dev-env.ps1 -Action Up` (Spec #2944
+/// Names Block, R-5.1). Every named field is defaulted so a partial/forged record
+/// still parses and is then rejected by the required-field check rather than
+/// crashing the audit. Unknown fields are ignored.
+#[derive(Debug, Clone, Deserialize, Default)]
+struct EnvEvidence {
+    #[serde(rename = "envId", default)]
+    env_id: String,
+    #[serde(rename = "servingCheckout", default)]
+    serving_checkout: String,
+    #[serde(rename = "servedCommit", default)]
+    served_commit: String,
+    #[serde(rename = "dbPath", default)]
+    db_path: String,
+    #[serde(rename = "manifestPath", default)]
+    manifest_path: String,
+    #[serde(rename = "appIdentity", default)]
+    app_identity: String,
+    #[serde(default)]
+    endpoints: serde_json::Value,
+}
+
+/// Outcome of validating the env evidence record against the intended
+/// environment (R-5.2). `present == false` means no env-tagged evidence was
+/// evaluated (legacy single-env runs write none) — that is NOT a rejection; the
+/// audit only rejects, never deletes.
+struct EnvEvidenceCheck {
+    present: bool,
+    valid: bool,
+    reason: String,
+    path: String,
+}
+
+impl EnvEvidenceCheck {
+    fn absent(reason: &str) -> Self {
+        Self { present: false, valid: true, reason: reason.to_string(), path: String::new() }
+    }
+}
+
+fn short_sha(s: &str) -> String {
+    s.chars().take(8).collect()
+}
+
+/// Absolute path of the env evidence record. Precedence: explicit
+/// `FREDO_EVIDENCE_FILE` (Names Block override), else `<env-root>/evidence.json`
+/// where the env root is `FREDO_ENV_ROOT` (resolved against the repo root) or the
+/// default `<repo>/.opencode/tmp/envs/<envId>`, and `<envId>` is the per-issue
+/// lease's env id (fallback `spec<issue>`). Returns `None` when neither an
+/// explicit evidence file nor an active env indicator (lease / FREDO_ENV_ROOT /
+/// FREDO_ENV_ID) is present, so stale leftover evidence is never mis-validated.
+fn env_evidence_path(issue: u32) -> Option<PathBuf> {
+    let root = project_root().ok()?;
+    let explicit = std::env::var("FREDO_EVIDENCE_FILE")
+        .ok()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty());
+    if let Some(p) = explicit {
+        let pb = PathBuf::from(&p);
+        return Some(if pb.is_absolute() { pb } else { root.join(pb) });
+    }
+    let lease = read_env_lease(issue);
+    let env_root_env = std::env::var("FREDO_ENV_ROOT")
+        .ok()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty());
+    let env_id_env = std::env::var("FREDO_ENV_ID")
+        .ok()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty());
+    if lease.is_none() && env_root_env.is_none() && env_id_env.is_none() {
+        return None;
+    }
+    let env_id = lease
+        .as_ref()
+        .map(|l| l.env_id.clone())
+        .filter(|s| !s.trim().is_empty())
+        .or(env_id_env)
+        .unwrap_or_else(|| format!("spec{}", issue));
+    let env_root = match env_root_env {
+        Some(r) => {
+            let pb = PathBuf::from(&r);
+            if pb.is_absolute() { pb } else { root.join(pb) }
+        }
+        None => root.join(".opencode").join("tmp").join("envs").join(env_id),
+    };
+    Some(env_root.join("evidence.json"))
+}
+
+/// Normalize a path for comparison: resolve against `root` when relative,
+/// canonicalize when possible, forward slashes, trim a trailing separator.
+fn normalize_path_for_compare(p: &str, root: &Path) -> String {
+    let t = p.trim();
+    if t.is_empty() { return String::new(); }
+    let pb = PathBuf::from(t);
+    let abs = if pb.is_absolute() { pb } else { root.join(pb) };
+    let canon = abs.canonicalize().unwrap_or(abs);
+    let mut s = canon.to_string_lossy().replace('\\', "/");
+    while s.len() > 1 && s.ends_with('/') { s.pop(); }
+    s
+}
+
+/// The commit the environment is intended to serve: the serving checkout's HEAD
+/// when it resolves, else the `spec/<issue>` tip (remote first, then local).
+fn intended_served_commit(issue: u32) -> String {
+    if let Some((_, _, head)) = serving_record(issue) {
+        if !head.is_empty() { return head; }
+    }
+    let root = match project_root() { Ok(r) => r, Err(_) => return String::new() };
+    run_git_in(&root, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/spec/{}", issue)])
+        .or_else(|_| run_git_in(&root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/spec/{}", issue)]))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
+/// Validate the env-tagged evidence record against the intended environment
+/// (R-5.2): the per-issue lease's env id + serving checkout, and the serving
+/// checkout's HEAD commit. A present record whose env id / serving checkout /
+/// served commit disagrees (or which is missing a required named field) is
+/// REJECTED with a reason. An absent record is not a rejection.
+fn check_env_evidence(issue: u32) -> EnvEvidenceCheck {
+    if mock_mode() {
+        return EnvEvidenceCheck::absent("mock mode — env evidence not read");
+    }
+    let path = match env_evidence_path(issue) {
+        Some(p) => p,
+        None => return EnvEvidenceCheck::absent("no active environment — env evidence not evaluated"),
+    };
+    let display = path.to_string_lossy().replace('\\', "/");
+    if !path.exists() {
+        return EnvEvidenceCheck::absent(&format!("no env evidence record at {}", display));
+    }
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(r) => r,
+        Err(e) => return EnvEvidenceCheck { present: true, valid: false, reason: format!("env evidence unreadable: {}", e), path: display },
+    };
+    let ev: EnvEvidence = match serde_json::from_str(&raw) {
+        Ok(e) => e,
+        Err(e) => return EnvEvidenceCheck { present: true, valid: false, reason: format!("env evidence unparseable: {}", e), path: display },
+    };
+    let root = match project_root() {
+        Ok(r) => r,
+        Err(e) => return EnvEvidenceCheck { present: true, valid: false, reason: format!("cannot resolve repo root: {}", e), path: display },
+    };
+
+    // Required named fields (R-5.1): a record missing any of these cannot be
+    // attributed to the intended environment (R-5.2).
+    let mut missing: Vec<&str> = Vec::new();
+    if ev.env_id.trim().is_empty() { missing.push("envId"); }
+    if ev.serving_checkout.trim().is_empty() { missing.push("servingCheckout"); }
+    if ev.served_commit.trim().is_empty() { missing.push("servedCommit"); }
+    if ev.db_path.trim().is_empty() { missing.push("dbPath"); }
+    if ev.manifest_path.trim().is_empty() { missing.push("manifestPath"); }
+    if ev.app_identity.trim().is_empty() { missing.push("appIdentity"); }
+    if ev.endpoints.get("mcp").and_then(|v| v.as_i64()).is_none() { missing.push("endpoints.mcp"); }
+    if !missing.is_empty() {
+        return EnvEvidenceCheck { present: true, valid: false, reason: format!("env evidence missing required field(s): {}", missing.join(", ")), path: display };
+    }
+
+    // Intended environment: the per-issue lease, else the derived default.
+    let lease = read_env_lease(issue);
+    let intended_env_id = lease
+        .as_ref()
+        .map(|l| l.env_id.clone())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| format!("spec{}", issue));
+    if !ev.env_id.eq_ignore_ascii_case(&intended_env_id) {
+        return EnvEvidenceCheck { present: true, valid: false, reason: format!("env id mismatch: evidence '{}' != intended '{}'", ev.env_id, intended_env_id), path: display };
+    }
+
+    let intended_checkout_raw = lease
+        .as_ref()
+        .map(|l| l.serving_checkout.clone())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| ".".to_string());
+    let intended_checkout = normalize_path_for_compare(&intended_checkout_raw, &root);
+    let ev_checkout = normalize_path_for_compare(&ev.serving_checkout, &root);
+    if intended_checkout.is_empty() || !ev_checkout.eq_ignore_ascii_case(&intended_checkout) {
+        return EnvEvidenceCheck { present: true, valid: false, reason: format!("serving checkout mismatch: evidence '{}' != intended '{}'", ev.serving_checkout, intended_checkout_raw), path: display };
+    }
+
+    let intended_commit = intended_served_commit(issue);
+    if intended_commit.is_empty() || !ev.served_commit.eq_ignore_ascii_case(&intended_commit) {
+        return EnvEvidenceCheck { present: true, valid: false, reason: format!("served commit mismatch: evidence '{}' != intended '{}'", short_sha(&ev.served_commit), short_sha(&intended_commit)), path: display };
+    }
+
+    EnvEvidenceCheck { present: true, valid: true, reason: "env evidence matches the intended environment".to_string(), path: display }
 }
 
 /// Count `## Tests Runs` comments already posted on the issue in
@@ -3955,6 +4284,17 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // verification policy. A static-only PASS, a FAIL, or no Evidence
             // comment cannot close a feature as done — the SI must restart instead.
             if verdict == "success" {
+                // Spec #2944 CU-G (R-5.2): env-tagged evidence must be attributable
+                // to the intended environment — a forged/mismatched record blocks the
+                // success verdict (reject, never delete). Evaluated first so the
+                // rejection is surfaced independently of the comment verdict.
+                let env_check = check_env_evidence(req_issue(a)?);
+                if env_check.present && !env_check.valid {
+                    let msg = format!("cannot record success: env evidence rejected — {}", env_check.reason);
+                    append_event(req_issue(a)?, "audit-record", &a.actor, "audit", "blocked", &msg)?;
+                    println!("BLOCKED: {}", msg);
+                    return Ok(());
+                }
                 let (_, _, _, _, verification_ok, reason) = verification_status(req_issue(a)?);
                 if !verification_ok {
                     let msg = format!("cannot record success: {}", reason);
@@ -4691,6 +5031,31 @@ fn print_context(issue: u32, actor: &str, raw: bool) -> anyhow::Result<()> {
     let next_phase = Phase::ORDER[next_idx];
 
     if raw {
+        // Per-issue serving checkout + env lease (Spec #2944, CU-D): surfaced so
+        // the tester/audit can read the served root and the same-issue lease
+        // without a separate lookup. The lease is the machine's serving record
+        // (Names Block); it is written by dev-env `-Action Up`.
+        let lease_json = match read_env_lease(issue) {
+            Some(l) => serde_json::json!({
+                "path": env_lease_display(issue),
+                "present": true,
+                "envId": l.env_id,
+                "pid": l.pid,
+                "servingCheckout": l.serving_checkout,
+                "startedAt": l.started_at,
+            }),
+            None => serde_json::json!({ "path": env_lease_display(issue), "present": false }),
+        };
+        // Env-tagged evidence attribution (Spec #2944 CU-G, R-5.2): surfaced so a
+        // caller can see whether the environment's evidence matches the intended
+        // env id / serving checkout / served commit.
+        let env_ev = check_env_evidence(issue);
+        let env_ev_json = serde_json::json!({
+            "present": env_ev.present,
+            "valid": env_ev.valid,
+            "reason": env_ev.reason,
+            "path": env_ev.path,
+        });
         let mut block = serde_json::json!({
             "phase": phase.as_str(),
             "feature": format!("#{}", issue),
@@ -4707,6 +5072,9 @@ fn print_context(issue: u32, actor: &str, raw: bool) -> anyhow::Result<()> {
             "handoff": format!("Next phase: {} — what must exist: {}", next_phase.as_str(), goals),
             "validation": validation,
             "doc_references": "common-rules.md, pipeline.md, github.md, staffing.md, state-machine.md",
+            "serving_checkout": serving_checkout_label(issue),
+            "env_lease": lease_json,
+            "env_evidence": env_ev_json,
         });
         if let Some(o) = &orch {
             block["orchestration"] = o.clone();
@@ -4732,9 +5100,23 @@ fn print_context(issue: u32, actor: &str, raw: bool) -> anyhow::Result<()> {
         println!("{:<16} {}", "Handoff:", format!("Next: {} — requires: {}", next_phase.as_str(), goals));
         println!("{:<16} {}", "Validation:", validation);
         println!("{:<16} {}", "Doc references:", "common-rules.md, pipeline.md, github.md, staffing.md, state-machine.md");
+        // Per-issue serving checkout + same-issue env lease (Spec #2944, CU-D,
+        // R-3.4/R-5.1): surfaced for every phase so the served root and the
+        // lease are visible without a separate lookup.
+        println!("{:<16} {}", "Serving checkout:", serving_checkout_label(issue));
+        match read_env_lease(issue) {
+            Some(l) => println!("{:<16} {}", "Env lease:", format!("{} (envId {}, pid {})", env_lease_display(issue), l.env_id, l.pid)),
+            None => println!("{:<16} {}", "Env lease:", format!("none ({})", env_lease_display(issue))),
+        }
+        // Env-tagged evidence attribution (Spec #2944 CU-G, R-5.2).
+        {
+            let ev = check_env_evidence(issue);
+            let state = if !ev.present { "none" } else if ev.valid { "OK" } else { "REJECTED" };
+            println!("{:<16} {}", "Env evidence:", format!("{} ({})", state, ev.reason));
+        }
         if phase == Phase::Testing {
             match serving_record(issue) {
-                Some((b, c)) => println!("{:<16} {}", "Served commit:", format!("{} @ {} (dev-env -Spec {})", b, &c[..c.len().min(8)], issue)),
+                Some((b, c, _checkout)) => println!("{:<16} {}", "Served commit:", format!("{} @ {} (dev-env -Spec {})", b, &c[..c.len().min(8)], issue)),
                 None => println!("{:<16} {}", "Served commit:", "NONE — checkout spec/<N> at the origin tip, then: dev-env.ps1 -Action Up -Spec <N>"),
             }
         }
@@ -5235,6 +5617,11 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
     // Evidence/Verdict), and the verification signals come from the shared helper.
     let (evidence_on_plan, verdict_pass, plan_policy, live_evidence, verification_ok, _reason) = verification_status(issue);
     let has_record = evidence_on_plan;
+    // Spec #2944 CU-G (R-5.2): validate env-tagged evidence against the intended
+    // environment. A present-but-mismatched record is REJECTED (never deleted).
+    let env_check = check_env_evidence(issue);
+    let env_ok = !env_check.present || env_check.valid;
+    let audit_ok = verification_ok && env_ok;
     // Linked-artifact status: the leader's verdict must see what it actually
     // steered — the merged spec PR. (Sub-issues were removed; the spec branch +
     // the plan's Evidence are the work record.)
@@ -5255,6 +5642,11 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
             "verification_policy": plan_policy,
             "live_telemetry_evidence": live_evidence,
             "verification_ok": verification_ok,
+            "env_evidence_present": env_check.present,
+            "env_evidence_valid": env_check.valid,
+            "env_evidence_reason": env_check.reason,
+            "env_evidence_path": env_check.path,
+            "audit_ok": audit_ok,
             "spec_pr_merged": spec_merged,
         }))?);
         return Ok(());
@@ -5273,6 +5665,17 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
     println!("Verification policy (plan): {}", plan_policy);
     println!("Live telemetry evidence (telemetry_spans refs): {}", live_evidence);
     println!("Verification OK (evidence PASS + policy-live has telemetry): {}", verification_ok);
+    // Spec #2944 CU-G (R-5.2): env-tagged evidence attribution. A present record
+    // that disagrees with the intended environment is REJECTED here (the audit
+    // never deletes it); an absent record is not a rejection.
+    if !env_check.present {
+        println!("Env evidence: none evaluated ({})", env_check.reason);
+    } else if env_check.valid {
+        println!("Env evidence: OK — {} ({})", env_check.reason, env_check.path);
+    } else {
+        println!("ENV EVIDENCE REJECTED: {} ({})", env_check.reason, env_check.path);
+    }
+    println!("Audit OK (verification + env evidence attribution): {}", audit_ok);
     println!("Spec PR merged: {}", spec_merged);
     println!();
     println!("Record verdict: pipeline-state.rs --action audit-record --issue {} --verdict success|restart [--phase <p> --reason <why>]", issue);

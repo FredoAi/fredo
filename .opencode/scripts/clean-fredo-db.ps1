@@ -24,12 +24,20 @@
 #   powershell -File .opencode/scripts/clean-fredo-db.ps1 -Backup               # snapshot live DB
 #   powershell -File .opencode/scripts/clean-fredo-db.ps1 -Backup -Name big     # named snapshot
 #   powershell -File .opencode/scripts/clean-fredo-db.ps1 -Restore -Name big -Restart
+#   powershell -File .opencode/scripts/clean-fredo-db.ps1 -EnvId spec2944       # clean an isolated env's DB
+#   powershell -File .opencode/scripts/clean-fredo-db.ps1 -DbPath <env-root>\data\fredo.db
+#
+# Spec #2944: -EnvId targets <env-root>/data/fredo.db (FREDO_ENV_ROOT /
+# FREDO_DATA_DIR aware); -DbPath targets an explicit SQLite path. Both stop the
+# app before deleting (env-scoped Down when an env id is known).
 
 param(
   [switch]$Restart,
   [switch]$Backup,
   [switch]$Restore,
-  [string]$Name
+  [string]$Name,
+  [string]$EnvId = "",
+  [string]$DbPath = ""
 )
 $ErrorActionPreference = "Stop"
 
@@ -40,8 +48,34 @@ if ($Backup -and $Restore) {
 
 $devEnv = Join-Path $PSScriptRoot "dev-env.ps1"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
-$dbDir = Join-Path $env:APPDATA "com.fredo.app"
-$db = Join-Path $dbDir "fredo.db"
+
+# --- DB target resolution (Spec #2944) ---------------------------------------
+# Explicit -DbPath wins; then -EnvId (FREDO_ENV_ROOT / FREDO_DATA_DIR aware);
+# else the legacy live app path (%APPDATA%\com.fredo.app).
+# When -DbPath alone is given, derive the env id from the path so the app is
+# stopped env-scoped (never a global kill) when the path is an isolated env DB.
+if ($DbPath -and -not $EnvId) {
+  $envMatch = [regex]::Match($DbPath, '[\\/]\.opencode[\\/]tmp[\\/]envs[\\/]([a-z0-9][a-z0-9_-]{0,31})[\\/]')
+  if ($envMatch.Success) { $EnvId = $envMatch.Groups[1].Value }
+}
+
+if ($DbPath) {
+  $db = $DbPath
+  $dbDir = Split-Path -Parent $db
+} elseif ($EnvId) {
+  if ($EnvId -notmatch '^[a-z0-9][a-z0-9_-]{0,31}$') {
+    Write-Error "-EnvId '$EnvId' is invalid (must match ^[a-z0-9][a-z0-9_-]{0,31}$)"
+    exit 1
+  }
+  # Only trust the injected FREDO_* paths when they belong to THIS env.
+  $sameEnv = ($env:FREDO_ENV_ID -eq $EnvId)
+  $envRoot = if ($sameEnv -and $env:FREDO_ENV_ROOT) { $env:FREDO_ENV_ROOT } else { Join-Path $repoRoot ".opencode\tmp\envs\$EnvId" }
+  $dbDir = if ($sameEnv -and $env:FREDO_DATA_DIR) { $env:FREDO_DATA_DIR } else { Join-Path $envRoot "data" }
+  $db = Join-Path $dbDir "fredo.db"
+} else {
+  $dbDir = Join-Path $env:APPDATA "com.fredo.app"
+  $db = Join-Path $dbDir "fredo.db"
+}
 $snapshotRoot = Join-Path $repoRoot ".opencode\tmp\db-snapshots"
 if (-not $Name) { $Name = Get-Date -Format "yyyyMMdd-HHmmss" }
 $snapshotDir = Join-Path $snapshotRoot $Name
@@ -49,7 +83,11 @@ $snapshotDir = Join-Path $snapshotRoot $Name
 $dbFiles = @("fredo.db", "fredo.db-wal", "fredo.db-shm")
 
 function Stop-DevInstance {
-  & powershell -NoProfile -File $devEnv -Action Down
+  if ($EnvId) {
+    & powershell -NoProfile -File $devEnv -Action Down -EnvId $EnvId
+  } else {
+    & powershell -NoProfile -File $devEnv -Action Down
+  }
   if ($LASTEXITCODE -ne 0) {
     Write-Error "dev-env Down failed (exit $LASTEXITCODE)"
     exit 1

@@ -10,13 +10,22 @@ use std::io;
 use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-/// The local socket path / named pipe name used by both the IPC server (app)
-/// and the CLI client.
-#[cfg(windows)]
-pub const SOCKET_NAME: &str = r"\\.\pipe\fredo-ipc";
+/// The local socket path / named pipe name for THIS process's environment.
+///
+/// Resolved at runtime from `FREDO_CLI_PIPE` (Spec #2944 ST-2, R-1.2): the
+/// app's IPC server and the `fredo` CLI client run in separate processes, so
+/// each resolves its OWN environment's pipe. When unset it is the legacy
+/// default (`\\.\pipe\fredo-ipc`), byte-identical to the pre-#2944 constant.
+pub fn socket_name() -> String {
+    resolve_socket_name_with(|key| std::env::var(key).ok())
+}
 
-#[cfg(not(windows))]
-pub const SOCKET_NAME: &str = "/tmp/fredo-ipc.sock";
+/// Pure resolution seam (G-222): the legacy default when `FREDO_CLI_PIPE` is
+/// absent/blank, else the injected value. Delegates to [`EnvConfig`] so the
+/// pipe is never re-derived.
+fn resolve_socket_name_with(get: impl Fn(&str) -> Option<String>) -> String {
+    crate::infrastructure::env::EnvConfig::resolve_with(get).cli_pipe
+}
 
 // ── Command types ─────────────────────────────────────────────────────────────
 
@@ -78,11 +87,13 @@ impl CliResponse {
 /// Accepts newline-delimited JSON `CliCommand` messages from CLI clients,
 /// executes the corresponding handler, and emits a `StreamEvent` to the webview.
 pub async fn start_ipc_server(app: AppHandle) -> Result<()> {
+    let socket = socket_name();
+
     // Clean up stale socket on Unix before binding
     #[cfg(not(windows))]
-    let _ = std::fs::remove_file(SOCKET_NAME);
+    let _ = std::fs::remove_file(&socket);
 
-    let name = SOCKET_NAME.to_fs_name::<GenericFilePath>()?;
+    let name = socket.as_str().to_fs_name::<GenericFilePath>()?;
     let opts = ListenerOptions::new().name(name);
     let listener = opts.create_tokio()?;
 
@@ -91,10 +102,11 @@ pub async fn start_ipc_server(app: AppHandle) -> Result<()> {
     #[cfg(not(windows))]
     {
         use std::os::unix::fs::PermissionsExt;
-        if let Ok(permissions) = std::fs::metadata(SOCKET_NAME.trim_start_matches("unix:")) {
+        let path = socket.trim_start_matches("unix:");
+        if let Ok(permissions) = std::fs::metadata(path) {
             let mut perms = permissions.permissions();
             perms.set_mode(0o600);
-            let _ = std::fs::set_permissions(SOCKET_NAME.trim_start_matches("unix:"), perms);
+            let _ = std::fs::set_permissions(path, perms);
         }
     }
 
@@ -179,7 +191,8 @@ async fn dispatch_emit_event(
 /// Connect to the running Fredo app IPC socket, send a command, and return the response.
 /// Returns `None` if the app is not running.
 pub async fn send_cli_command(cmd: &CliCommand) -> Result<Option<CliResponse>> {
-    let name = match SOCKET_NAME.to_fs_name::<GenericFilePath>() {
+    let socket = socket_name();
+    let name = match socket.as_str().to_fs_name::<GenericFilePath>() {
         Ok(n) => n,
         Err(e) => return Err(anyhow::anyhow!("Invalid socket name: {e}")),
     };
@@ -267,6 +280,27 @@ mod tests {
             }
             other => panic!("expected OpenTerminal, got {other:?}"),
         }
+    }
+
+    /// ST-2 regression invariant (R-1.2): with `FREDO_CLI_PIPE` unset the pipe
+    /// name is the legacy literal, so the single-env IPC path is unchanged.
+    #[test]
+    fn socket_name_defaults_to_the_legacy_pipe_when_unset() {
+        assert_eq!(
+            resolve_socket_name_with(|_| None),
+            crate::infrastructure::env::DEFAULT_CLI_PIPE
+        );
+    }
+
+    /// ST-2 (R-1.2): a non-blank `FREDO_CLI_PIPE` selects the environment's own
+    /// pipe at runtime (deterministic — injected lookup, no process env).
+    #[test]
+    fn socket_name_resolves_the_environment_pipe() {
+        let pipe = r"\\.\pipe\fredo-ipc-spec2944";
+        let resolved = resolve_socket_name_with(|key| {
+            (key == crate::infrastructure::env::CLI_PIPE_ENV).then(|| pipe.to_string())
+        });
+        assert_eq!(resolved, pipe);
     }
 }
 
