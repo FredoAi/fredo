@@ -13,9 +13,28 @@
  * an action id can never drift between the declaration and the handler.
  *
  * Namespaces are per-feature (`lib/`) — no cross-feature imports.
+ *
+ * Spec #2962 ST-2 extends the same bridge with the three-level nested flow:
+ * two declared interaction contexts (graph → node detail) and one action per
+ * level for each reused key, each `run` dispatching its own namespaced event.
  */
 
-import type { HotkeyActionId } from '../../../shared/hotkeys/types';
+import type { HotkeyActionId, HotkeyContextId } from '../../../shared/hotkeys/types';
+
+// ── Interaction contexts (Spec #2962 ST-2) ───────────────────────────────────
+//
+// The nested flow is three levels deep: the synthesized base `mission-monitor`
+// (L1), then two declared descents. Each declared id is `<featureId>.`-prefixed
+// and names a resolvable parent (the base, then the graph), per the #2958
+// context registry contract.
+
+/** L2 — the graph navigation level (parent: the synthesized base `mission-monitor`). */
+export const MISSION_MONITOR_GRAPH_CONTEXT_ID: HotkeyContextId = 'mission-monitor.graph';
+
+/** L3 — the node-detail level (parent: the graph level). */
+export const MISSION_MONITOR_DETAIL_CONTEXT_ID: HotkeyContextId = 'mission-monitor.detail';
+
+// ── L1 actions (base context `mission-monitor`) ──────────────────────────────
 
 /** Open the session drawer and focus the session filter input. */
 export const MISSION_MONITOR_FOCUS_SESSION_SEARCH: HotkeyActionId =
@@ -27,11 +46,43 @@ export const MISSION_MONITOR_NEXT_SESSION: HotkeyActionId = 'mission-monitor.nex
 /** Select the previous session in the filtered list (wrap-around). */
 export const MISSION_MONITOR_PREVIOUS_SESSION: HotkeyActionId = 'mission-monitor.previousSession';
 
-/** The stable set of action ids this feature declares. */
+/** Descend from L1 into the graph context. */
+export const MISSION_MONITOR_OPEN_GRAPH: HotkeyActionId = 'mission-monitor.openGraph';
+
+// ── L2 actions (graph context `mission-monitor.graph`) ───────────────────────
+
+/** Move the graph cursor to the next node. */
+export const MISSION_MONITOR_NEXT_NODE: HotkeyActionId = 'mission-monitor.nextNode';
+
+/** Move the graph cursor to the previous node. */
+export const MISSION_MONITOR_PREVIOUS_NODE: HotkeyActionId = 'mission-monitor.previousNode';
+
+/** Descend from L2 into the node-detail context. */
+export const MISSION_MONITOR_OPEN_DETAIL: HotkeyActionId = 'mission-monitor.openDetail';
+
+// ── L3 actions (node-detail context `mission-monitor.detail`) ────────────────
+
+/** Move the active detail section to the next one. */
+export const MISSION_MONITOR_NEXT_SECTION: HotkeyActionId = 'mission-monitor.nextSection';
+
+/** Move the active detail section to the previous one. */
+export const MISSION_MONITOR_PREVIOUS_SECTION: HotkeyActionId = 'mission-monitor.previousSection';
+
+/** Toggle (expand/collapse) the active detail section. */
+export const MISSION_MONITOR_TOGGLE_SECTION: HotkeyActionId = 'mission-monitor.toggleSection';
+
+/** The stable set of action ids this feature declares (L1 → L2 → L3 order). */
 export const MISSION_MONITOR_HOTKEY_ACTION_IDS = [
   MISSION_MONITOR_FOCUS_SESSION_SEARCH,
   MISSION_MONITOR_NEXT_SESSION,
   MISSION_MONITOR_PREVIOUS_SESSION,
+  MISSION_MONITOR_OPEN_GRAPH,
+  MISSION_MONITOR_NEXT_NODE,
+  MISSION_MONITOR_PREVIOUS_NODE,
+  MISSION_MONITOR_OPEN_DETAIL,
+  MISSION_MONITOR_NEXT_SECTION,
+  MISSION_MONITOR_PREVIOUS_SECTION,
+  MISSION_MONITOR_TOGGLE_SECTION,
 ] as const;
 
 export type MissionMonitorHotkeyAction = (typeof MISSION_MONITOR_HOTKEY_ACTION_IDS)[number];

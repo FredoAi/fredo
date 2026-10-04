@@ -25,12 +25,28 @@ import {
   installHotkeyEngine,
   resetHotkeyEngineForTests,
 } from '../../../../shared/hotkeys/engine';
+import { registerFeature } from '../../../../features/featureRegistry';
+import {
+  getHotkeyContext,
+  resetContextRegistryForTests,
+  resolveContextBindings,
+} from '../../../../shared/hotkeys/contexts';
+import { listHotkeyActions } from '../../../../shared/hotkeys/registry';
 import { missionMonitorFeature } from '../../MissionMonitorFeature';
 import {
+  MISSION_MONITOR_DETAIL_CONTEXT_ID,
   MISSION_MONITOR_FOCUS_SESSION_SEARCH,
+  MISSION_MONITOR_GRAPH_CONTEXT_ID,
   MISSION_MONITOR_HOTKEY_EVENT,
+  MISSION_MONITOR_NEXT_NODE,
+  MISSION_MONITOR_NEXT_SECTION,
   MISSION_MONITOR_NEXT_SESSION,
+  MISSION_MONITOR_OPEN_DETAIL,
+  MISSION_MONITOR_OPEN_GRAPH,
+  MISSION_MONITOR_PREVIOUS_NODE,
+  MISSION_MONITOR_PREVIOUS_SECTION,
   MISSION_MONITOR_PREVIOUS_SESSION,
+  MISSION_MONITOR_TOGGLE_SECTION,
   subscribeMissionMonitorActions,
 } from '../hotkeyBridge';
 
@@ -62,6 +78,7 @@ function openTestWindow(id: string): void {
 beforeEach(() => {
   localStorage.clear();
   resetRegistryForTests();
+  resetContextRegistryForTests();
   resetKeymapStoreForTests();
   resetWindowStoreForTests();
   resetHotkeyEngineForTests();
@@ -75,13 +92,62 @@ afterEach(() => {
 });
 
 describe('Mission Monitor — declarative contribution', () => {
-  it('declares the three local actions with their documented id + default sequence', () => {
+  it('declares the three L1 actions with their documented id + default sequence', () => {
     const byId = new Map(missionMonitorFeature.hotkeys.map((action) => [action.actionId, action]));
 
+    // Existing L1 contract (Spec #2946) — ids, titles and keys unchanged.
     expect(byId.get(MISSION_MONITOR_FOCUS_SESSION_SEARCH)?.defaultSequence).toBe('s');
+    expect(byId.get(MISSION_MONITOR_FOCUS_SESSION_SEARCH)?.title).toBe('Focus session search');
     expect(byId.get(MISSION_MONITOR_NEXT_SESSION)?.defaultSequence).toBe('n');
+    expect(byId.get(MISSION_MONITOR_NEXT_SESSION)?.title).toBe('Next session');
     expect(byId.get(MISSION_MONITOR_PREVIOUS_SESSION)?.defaultSequence).toBe('p');
-    expect(missionMonitorFeature.hotkeys).toHaveLength(3);
+    expect(byId.get(MISSION_MONITOR_PREVIOUS_SESSION)?.title).toBe('Previous session');
+    // L1 actions carry no explicit contextId (base context `mission-monitor`).
+    expect(byId.get(MISSION_MONITOR_FOCUS_SESSION_SEARCH)?.contextId).toBeUndefined();
+    expect(byId.get(MISSION_MONITOR_NEXT_SESSION)?.contextId).toBeUndefined();
+    expect(byId.get(MISSION_MONITOR_PREVIOUS_SESSION)?.contextId).toBeUndefined();
+  });
+
+  it('declares the L1→L2→L3 nested actions with intentional key reuse (Spec #2962)', () => {
+    const byId = new Map(missionMonitorFeature.hotkeys.map((action) => [action.actionId, action]));
+
+    // L1 descent: `o` at the base opens the graph context.
+    expect(byId.get(MISSION_MONITOR_OPEN_GRAPH)?.defaultSequence).toBe('o');
+    expect(byId.get(MISSION_MONITOR_OPEN_GRAPH)?.contextId).toBeUndefined();
+    expect(byId.get(MISSION_MONITOR_OPEN_GRAPH)?.opensContextId).toBe(
+      MISSION_MONITOR_GRAPH_CONTEXT_ID,
+    );
+
+    // L2: n / p / o reused inside the graph context.
+    expect(byId.get(MISSION_MONITOR_NEXT_NODE)?.defaultSequence).toBe('n');
+    expect(byId.get(MISSION_MONITOR_NEXT_NODE)?.contextId).toBe(MISSION_MONITOR_GRAPH_CONTEXT_ID);
+    expect(byId.get(MISSION_MONITOR_PREVIOUS_NODE)?.defaultSequence).toBe('p');
+    expect(byId.get(MISSION_MONITOR_PREVIOUS_NODE)?.contextId).toBe(
+      MISSION_MONITOR_GRAPH_CONTEXT_ID,
+    );
+    expect(byId.get(MISSION_MONITOR_OPEN_DETAIL)?.defaultSequence).toBe('o');
+    expect(byId.get(MISSION_MONITOR_OPEN_DETAIL)?.contextId).toBe(
+      MISSION_MONITOR_GRAPH_CONTEXT_ID,
+    );
+    expect(byId.get(MISSION_MONITOR_OPEN_DETAIL)?.opensContextId).toBe(
+      MISSION_MONITOR_DETAIL_CONTEXT_ID,
+    );
+
+    // L3: n / p / o reused inside the node-detail context.
+    expect(byId.get(MISSION_MONITOR_NEXT_SECTION)?.defaultSequence).toBe('n');
+    expect(byId.get(MISSION_MONITOR_NEXT_SECTION)?.contextId).toBe(
+      MISSION_MONITOR_DETAIL_CONTEXT_ID,
+    );
+    expect(byId.get(MISSION_MONITOR_PREVIOUS_SECTION)?.defaultSequence).toBe('p');
+    expect(byId.get(MISSION_MONITOR_PREVIOUS_SECTION)?.contextId).toBe(
+      MISSION_MONITOR_DETAIL_CONTEXT_ID,
+    );
+    expect(byId.get(MISSION_MONITOR_TOGGLE_SECTION)?.defaultSequence).toBe('o');
+    expect(byId.get(MISSION_MONITOR_TOGGLE_SECTION)?.contextId).toBe(
+      MISSION_MONITOR_DETAIL_CONTEXT_ID,
+    );
+
+    expect(missionMonitorFeature.hotkeys).toHaveLength(10);
   });
 
   it('dispatches the matching bridge event from each declared run', async () => {
@@ -96,6 +162,13 @@ describe('Mission Monitor — declarative contribution', () => {
       MISSION_MONITOR_FOCUS_SESSION_SEARCH,
       MISSION_MONITOR_NEXT_SESSION,
       MISSION_MONITOR_PREVIOUS_SESSION,
+      MISSION_MONITOR_OPEN_GRAPH,
+      MISSION_MONITOR_NEXT_NODE,
+      MISSION_MONITOR_PREVIOUS_NODE,
+      MISSION_MONITOR_OPEN_DETAIL,
+      MISSION_MONITOR_NEXT_SECTION,
+      MISSION_MONITOR_PREVIOUS_SECTION,
+      MISSION_MONITOR_TOGGLE_SECTION,
     ]);
     unsubscribe();
   });
@@ -167,5 +240,81 @@ describe('Mission Monitor — focus-scoped dispatch (R-2.5)', () => {
     expect(seen).toEqual([]);
 
     unsubscribe();
+  });
+});
+
+describe('Mission Monitor — nested contexts + per-level resolution (Spec #2962)', () => {
+  beforeEach(() => {
+    // Register the REAL feature so its synthesized base context (`mission-monitor`)
+    // resolves and the declared descents validate against it.
+    registerFeature(missionMonitorFeature);
+    resetContextRegistryForTests();
+  });
+
+  it('declares exactly the two descents below the top-level base context (R-1.1)', () => {
+    expect(missionMonitorFeature.hotkeysContexts).toEqual([
+      {
+        contextId: MISSION_MONITOR_GRAPH_CONTEXT_ID,
+        parentId: 'mission-monitor',
+        title: 'Graph',
+      },
+      {
+        contextId: MISSION_MONITOR_DETAIL_CONTEXT_ID,
+        parentId: MISSION_MONITOR_GRAPH_CONTEXT_ID,
+        title: 'Node detail',
+      },
+    ]);
+
+    const graph = getHotkeyContext(MISSION_MONITOR_GRAPH_CONTEXT_ID);
+    expect(graph?.invalid).toBeUndefined();
+    expect(graph?.parentId).toBe('mission-monitor');
+    expect(graph?.title).toBe('Graph');
+
+    const detail = getHotkeyContext(MISSION_MONITOR_DETAIL_CONTEXT_ID);
+    expect(detail?.invalid).toBeUndefined();
+    expect(detail?.parentId).toBe(MISSION_MONITOR_GRAPH_CONTEXT_ID);
+    expect(detail?.title).toBe('Node detail');
+  });
+
+  it('changes the resolved action set on each descent (R-1.2/R-1.3)', () => {
+    const actions = listHotkeyActions();
+    const base = resolveContextBindings('mission-monitor', ['mission-monitor'], actions).map(
+      (binding) => binding.actionId,
+    );
+    const graph = resolveContextBindings(
+      'mission-monitor',
+      ['mission-monitor', MISSION_MONITOR_GRAPH_CONTEXT_ID],
+      actions,
+    ).map((binding) => binding.actionId);
+    const detail = resolveContextBindings(
+      'mission-monitor',
+      ['mission-monitor', MISSION_MONITOR_GRAPH_CONTEXT_ID, MISSION_MONITOR_DETAIL_CONTEXT_ID],
+      actions,
+    ).map((binding) => binding.actionId);
+
+    // L1 exposes the base actions + the graph descent, but no deeper action.
+    expect(base).toContain(MISSION_MONITOR_OPEN_GRAPH);
+    expect(base).not.toContain(MISSION_MONITOR_NEXT_NODE);
+    expect(base).not.toContain(MISSION_MONITOR_NEXT_SECTION);
+
+    // L2 adds the graph actions, still no L3 action.
+    expect(graph).toContain(MISSION_MONITOR_NEXT_NODE);
+    expect(graph).toContain(MISSION_MONITOR_OPEN_DETAIL);
+    expect(graph).not.toContain(MISSION_MONITOR_NEXT_SECTION);
+
+    // L3 adds the detail actions.
+    expect(detail).toContain(MISSION_MONITOR_NEXT_SECTION);
+    expect(detail).toContain(MISSION_MONITOR_TOGGLE_SECTION);
+
+    // Each descent changes the resolved set (R-1.3).
+    expect(new Set(graph)).not.toEqual(new Set(base));
+    expect(new Set(detail)).not.toEqual(new Set(graph));
+
+    // The deepest level wins for a reused key: bindings are ordered depth DESC,
+    // so the L3 `n` binding precedes the L2 and L1 `n` bindings.
+    const firstNextSection = detail.indexOf(MISSION_MONITOR_NEXT_SECTION);
+    expect(firstNextSection).toBeGreaterThanOrEqual(0);
+    expect(detail.indexOf(MISSION_MONITOR_NEXT_NODE)).toBeGreaterThan(firstNextSection);
+    expect(detail.indexOf(MISSION_MONITOR_NEXT_SESSION)).toBeGreaterThan(firstNextSection);
   });
 });

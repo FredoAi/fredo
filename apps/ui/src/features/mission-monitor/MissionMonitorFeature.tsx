@@ -7,9 +7,18 @@ import type { FeatureHotkeyAction } from "../../shared/hotkeys/types";
 import { MissionMonitorPanel } from "./components/MissionMonitorPanel";
 import {
   dispatchMissionMonitorAction,
+  MISSION_MONITOR_DETAIL_CONTEXT_ID,
   MISSION_MONITOR_FOCUS_SESSION_SEARCH,
+  MISSION_MONITOR_GRAPH_CONTEXT_ID,
+  MISSION_MONITOR_NEXT_NODE,
+  MISSION_MONITOR_NEXT_SECTION,
   MISSION_MONITOR_NEXT_SESSION,
+  MISSION_MONITOR_OPEN_DETAIL,
+  MISSION_MONITOR_OPEN_GRAPH,
+  MISSION_MONITOR_PREVIOUS_NODE,
+  MISSION_MONITOR_PREVIOUS_SECTION,
   MISSION_MONITOR_PREVIOUS_SESSION,
+  MISSION_MONITOR_TOGGLE_SECTION,
 } from "./lib/hotkeyBridge";
 
 export class MissionMonitorFeature extends FredoFeatureClass {
@@ -29,6 +38,7 @@ export class MissionMonitorFeature extends FredoFeatureClass {
    * focused window anyway — R-2.5).
    */
   readonly hotkeys: readonly FeatureHotkeyAction[] = [
+    // ── L1 — base context `mission-monitor` (contextId omitted) ──────────────
     {
       actionId: MISSION_MONITOR_FOCUS_SESSION_SEARCH,
       title: "Focus session search",
@@ -50,7 +60,86 @@ export class MissionMonitorFeature extends FredoFeatureClass {
       defaultSequence: "p",
       run: () => dispatchMissionMonitorAction(MISSION_MONITOR_PREVIOUS_SESSION),
     },
+    {
+      actionId: MISSION_MONITOR_OPEN_GRAPH,
+      title: "Open graph",
+      description: "Descend into the graph level",
+      defaultSequence: "o",
+      opensContextId: MISSION_MONITOR_GRAPH_CONTEXT_ID,
+      run: () => dispatchMissionMonitorAction(MISSION_MONITOR_OPEN_GRAPH),
+    },
+    // ── L2 — graph context `mission-monitor.graph` ───────────────────────────
+    {
+      actionId: MISSION_MONITOR_NEXT_NODE,
+      title: "Next node",
+      description: "Move the graph cursor to the next node",
+      defaultSequence: "n",
+      contextId: MISSION_MONITOR_GRAPH_CONTEXT_ID,
+      run: () => dispatchMissionMonitorAction(MISSION_MONITOR_NEXT_NODE),
+    },
+    {
+      actionId: MISSION_MONITOR_PREVIOUS_NODE,
+      title: "Previous node",
+      description: "Move the graph cursor to the previous node",
+      defaultSequence: "p",
+      contextId: MISSION_MONITOR_GRAPH_CONTEXT_ID,
+      run: () => dispatchMissionMonitorAction(MISSION_MONITOR_PREVIOUS_NODE),
+    },
+    {
+      actionId: MISSION_MONITOR_OPEN_DETAIL,
+      title: "Open node detail",
+      description: "Descend into the node-detail level",
+      defaultSequence: "o",
+      contextId: MISSION_MONITOR_GRAPH_CONTEXT_ID,
+      opensContextId: MISSION_MONITOR_DETAIL_CONTEXT_ID,
+      run: () => dispatchMissionMonitorAction(MISSION_MONITOR_OPEN_DETAIL),
+    },
+    // ── L3 — node-detail context `mission-monitor.detail` ────────────────────
+    {
+      actionId: MISSION_MONITOR_NEXT_SECTION,
+      title: "Next section",
+      description: "Move the active detail section to the next one",
+      defaultSequence: "n",
+      contextId: MISSION_MONITOR_DETAIL_CONTEXT_ID,
+      run: () => dispatchMissionMonitorAction(MISSION_MONITOR_NEXT_SECTION),
+    },
+    {
+      actionId: MISSION_MONITOR_PREVIOUS_SECTION,
+      title: "Previous section",
+      description: "Move the active detail section to the previous one",
+      defaultSequence: "p",
+      contextId: MISSION_MONITOR_DETAIL_CONTEXT_ID,
+      run: () => dispatchMissionMonitorAction(MISSION_MONITOR_PREVIOUS_SECTION),
+    },
+    {
+      actionId: MISSION_MONITOR_TOGGLE_SECTION,
+      title: "Toggle section",
+      description: "Toggle the active detail section",
+      defaultSequence: "o",
+      contextId: MISSION_MONITOR_DETAIL_CONTEXT_ID,
+      run: () => dispatchMissionMonitorAction(MISSION_MONITOR_TOGGLE_SECTION),
+    },
   ];
+
+  /**
+   * Spec #2962 ST-2: the declared nested interaction contexts for the
+   * Mission Monitor flow. The L1 base context (`mission-monitor`) is
+   * synthesized by the registry; only the two descents are declared here. The
+   * graph level parents the base, and the node-detail level parents the graph,
+   * so each descent is a direct-child push (`contextStack.ts`).
+   */
+  override readonly hotkeysContexts = [
+    {
+      contextId: MISSION_MONITOR_GRAPH_CONTEXT_ID,
+      parentId: "mission-monitor",
+      title: "Graph",
+    },
+    {
+      contextId: MISSION_MONITOR_DETAIL_CONTEXT_ID,
+      parentId: MISSION_MONITOR_GRAPH_CONTEXT_ID,
+      title: "Node detail",
+    },
+  ] as const;
 
   /**
    * Spec #2788 P4.2/P5.1: fully on typed RTDB rows — the feature derives its

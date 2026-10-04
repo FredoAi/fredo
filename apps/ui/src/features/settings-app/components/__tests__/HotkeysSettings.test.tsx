@@ -162,7 +162,10 @@ describe('listing — both tiers + zero-contribution feature (R-2.1/R-2.2)', () 
 
     // H-5: a feature that declares none contributes no section and no rows.
     expect(screen.queryByText('Empty Feature')).toBeNull();
-    expect(screen.getAllByTestId('hotkeys-row')).toHaveLength(6);
+    // Spec #2962 ST-2 adds the 7 nested-flow actions (L1 open-graph, L2 node
+    // nav + detail descent, L3 section nav) to the real Mission Monitor
+    // feature: 10 mission-monitor + 2 diagram + 1 Fredo.
+    expect(screen.getAllByTestId('hotkeys-row')).toHaveLength(13);
   });
 
   it('labels a cross-tier binding with a precedence badge (R-2.4)', async () => {
