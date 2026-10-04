@@ -150,43 +150,43 @@
 
 ## Autonomous loop (R-1 / AC1)
 
-- [ ] F-24 (R-1, AC1) **Autonomous forward progress — no human input — REQUIRED.** Start the stub engine (`FREDO_DOOM_STUB_PROGRESS=1`); set the scripted lever; invoke `start_doom_autoplay`; then make NO further input; poll `get_doom_autoplay_status` (and capture `doom-autoplay-changed`) ≥3 times.
+- [x] F-24 (PASS 2026-10-04 #2969 r1 — scripted lever + `FREDO_DOOM_STUB_PROGRESS=1`; status steps 1→62→…→600, lastTic strictly ↑, kills 0→600, exit.distance 1000→0, no input) (R-1, AC1) **Autonomous forward progress — no human input — REQUIRED.** Start the stub engine (`FREDO_DOOM_STUB_PROGRESS=1`); set the scripted lever; invoke `start_doom_autoplay`; then make NO further input; poll `get_doom_autoplay_status` (and capture `doom-autoplay-changed`) ≥3 times.
   - EXPECTED: phase `Running`; `steps`+`decisions` strictly increase; `lastTic` strictly increases across successive reads (STEP-DRIVEN, G-316); ≥1 progress component improves (`level.kills` bumps / `exit.distance` reduces via the stub lever); `doom-frame-canvas` shows the advanced world.
   - Edge: a single `GET /api/state` read alone does NOT advance; every wait bounded; no human input after start.
-- [ ] F-25 (R-2, AC2) **No image/audio request contract — pure builder unit pin.** Pin `build_doom_agent_request_body`.
+- [x] F-25 (PASS 2026-10-04 #2969 r1 — `cargo test --locked --lib doom_agent` 7/7 incl. `f25_request_body_is_structured_text_only`) (R-2, AC2) **No image/audio request contract — pure builder unit pin.** Pin `build_doom_agent_request_body`.
   - EXPECTED: the serialized body's system message content == `DOOM_AGENT_SYSTEM_PROMPT` (the Doom-playing instructions); the user message carries structured observation JSON; NO `image_url` content part, NO `input_audio` content part, no image/audio field anywhere (rendered via `render_messages(..., None, None)`).
   - Edge: `GET /api/frame` is never included; vocabulary list is structured text only. (This pin is the AC2 fallback when the model leg is a TOOLING GAP.)
-- [ ] F-30 (R-2, AC2) **Request audit JSONL — live AC2 receipt.** `FREDO_DOOM_AGENT_LOG_DIR=.opencode/tmp/2969/agent-audit`; run the model loop; read the JSONL.
+- [x] F-30 (PASS 2026-10-04 #2969 r1 — live model-source run, 3 JSONL lines each `{contentParts:["text"],hasImage:false,hasAudio:false,systemPrompt:<Doom persona>,tic}`; tic 0→10→20; engine was the stub — disclosed) (R-2, AC2) **Request audit JSONL — live AC2 receipt.** `FREDO_DOOM_AGENT_LOG_DIR=.opencode/tmp/2969/agent-audit`; run the model loop; read the JSONL.
   - EXPECTED: every line `{at,tic,contentParts:["text"],hasImage:false,hasAudio:false,systemPrompt:"<DOOM_AGENT_SYSTEM_PROMPT>"}`; `hasImage==false` AND `hasAudio==false` AND `contentParts==["text"]`; `systemPrompt` non-empty and carries the Doom instructions; file bounded to the last 64 records.
   - Edge: scripted source issues no model request → this leg needs the model path; model files absent → named TOOLING GAP (F-25 carries AC2).
 
 ## Event reaction (R-3 / AC3) + complex scenario
 
-- [ ] F-26 (R-3, AC3) **Death/exit → bounded restart/advance.** `FREDO_DOOM_STUB_DIE_AFTER=<n>` then separately `FREDO_DOOM_STUB_DONE_AFTER=<n>`; scripted decisions; capture the engine request log / IPC.
+- [x] F-26 (PASS 2026-10-04 #2969 r1 — DIE_AFTER=2: outcome alive→dead, lastTic reset+resumed; DONE_AFTER=2: outcome alive→exited, lastTic reset+resumed; run ended at the cap) (R-3, AC3) **Death/exit → bounded restart/advance.** `FREDO_DOOM_STUB_DIE_AFTER=<n>` then separately `FREDO_DOOM_STUB_DONE_AFTER=<n>`; scripted decisions; capture the engine request log / IPC.
   - EXPECTED: on the death observation (`outcome=="dead"`, `player.health=0`) or exit (`done==true`, `outcome=="exited"`), exactly ONE `POST /api/episode {episode,map,skill,seed}` within the next iteration; the stub resets tick and clears dead/done; the loop resumes `Running` and `lastTic` resumes increasing; no re-decide on the terminal state.
   - Edge: the same terminal step never repeats; restart request failure → F-32.
-- [ ] F-29 (complex) **"A dead player is never a dead loop".** Repeated deaths (`FREDO_DOOM_STUB_DIE_AFTER` with a repeating script).
+- [x] F-29 (PASS 2026-10-04 #2969 r1 — repeated deaths each produced a bounded restart and resumed; completed 400 steps + 200 restarts = 600 budget, code budgetExhausted, never an infinite terminal repeat) (complex) **"A dead player is never a dead loop".** Repeated deaths (`FREDO_DOOM_STUB_DIE_AFTER` with a repeating script).
   - EXPECTED: every death observation yields a bounded restart/advance and progress resumes; `outcome` returns to `alive`; the run terminates only by the step/failure cap — never an infinite repeat of one terminal step.
   - Edge: interleaved death/exit; death then a malformed decision; clean stop at budget exhaustion.
 
 ## Bounded failure (R-4 / AC4)
 
-- [ ] F-27 (R-4, AC4) **Unusable decision → bounded skip/retry → typed Failed.** Script with `{"malformed":true}`, `{"error":"..."}`, and an out-of-range-`tics` entry.
+- [x] F-27 (PASS 2026-10-04 #2969 r1 — malformed/error/out-of-range issued NO step (steps=1), phase=failed code=decisionFailed, consecutiveFailures=3, lastError="model unavailable: still down", engine still answering tic=1; timeout→TimedOut unit-pinned) (R-4, AC4) **Unusable decision → bounded skip/retry → typed Failed.** Script with `{"malformed":true}`, `{"error":"..."}`, and an out-of-range-`tics` entry.
   - EXPECTED: each unusable decision issues NO `POST /api/step`; a retry occurs after `DOOM_AUTOPLAY_FAILURE_BACKOFF_MS=250`; `failures`/`consecutiveFailures` increment; on the 3rd consecutive failure (`DOOM_AUTOPLAY_MAX_FAILURES=3`) the loop stops with `phase=Failed`, `code=DecisionFailed`, a typed `lastError`; the engine still answers (frozen, not hung) and the app/pipeline is unaffected.
   - Edge: a good decision after 1–2 failures resets `consecutiveFailures` to 0 and resumes progress (never stalling); the per-decision timeout (30 s) maps to `TimedOut` on the same bounded path — **unit pin, non-AC** (no in-repo timeout lever, G-300).
-- [ ] F-32 (QA-added, G-300) **QA error edges with in-repo levers.** (a) `FREDO_DOOM_STUB_EPISODE_FAIL=1` while dead; (b) invoke `start_doom_autoplay` with no ready engine (fresh state).
+- [x] F-32 (PASS 2026-10-04 #2969 r1 — (a) EPISODE_FAIL=1 → episode 500 → phase=failed code=engineRequestFailed within bound, no hang; (b) start with no ready engine → code=notReady, no engine request) (QA-added, G-300) **QA error edges with in-repo levers.** (a) `FREDO_DOOM_STUB_EPISODE_FAIL=1` while dead; (b) invoke `start_doom_autoplay` with no ready engine (fresh state).
   - EXPECTED: (a) `POST /api/episode` 500 → `code=EngineRequestFailed`, typed Failed, within bound, no hang; (b) `code=NotReady`, no engine request issued.
   - Edge: (a) recovers once the lever is unset; (b) starting after a successful launch succeeds.
 
 ## Bounded budget + rate target (R-5 / AC5)
 
-- [ ] F-28 (R-5, AC5) **Bounded budget + recorded cadence.** Run the scripted loop to completion; read `get_doom_autoplay_status` + `spikes/2969-doom-agent/action-vocabulary.md` (ST-1 measured per-step RTT).
+- [x] F-28 (PASS 2026-10-04 #2969 r1 — steps capped at 600 (budgetExhausted); recorded target `DOOM_AUTOPLAY_RATE_TARGET_STEPS_PER_S=40` derived from measured RTT 12.37 ms; measured stub cadence ~600 steps/s ≥ target; maxSteps override honored) (R-5, AC5) **Bounded budget + recorded cadence.** Run the scripted loop to completion; read `get_doom_autoplay_status` + `spikes/2969-doom-agent/action-vocabulary.md` (ST-1 measured per-step RTT).
   - EXPECTED: `steps` ≤ `DOOM_AUTOPLAY_MAX_STEPS=600`; per-decision time ≤ `DOOM_AUTOPLAY_DECISION_TIMEOUT_S=30` s; the plan records a sustained decision-rate target (steps/sec) DERIVED from the engine's measured per-step RTT (ST-1), and the measured rate ≥ target; the rate is a decision cadence, never idle frame motion (G-316).
   - Edge: slow engine RTT lowers the achievable rate; timeout/backoff counted in cadence; a `FREDO_DOOM_AGENT_MAX_STEPS` override is honored.
 
 ## Mission-Monitor end-to-end (REQUIRED, human directive)
 
-- [ ] F-31 (E2E, human directive) **RUNNING app: PG-default boot + Mission Monitor regression + autonomous play.** Boot the app on the PG-default path; seed one qualifying session; then open the Doom window and start autoplay (scripted lever).
+- [x] F-31 (PASS 2026-10-04 #2969 r1 — (a) storage_engine_status={engine:postgres,ready:true}; (b) declared sessions row e2e-copilot2933 visibleTurnCount=1 qualifies; MM lists it with a gpt-4o node; (c) doom-autoplay-toggle → status "Autoplay · step … · tic … · alive" advancing; (d) telemetry_get_stats spanCount 7493→7672; PG psql refused "too many clients" → app-pool fallback disclosed) (E2E, human directive) **RUNNING app: PG-default boot + Mission Monitor regression + autonomous play.** Boot the app on the PG-default path; seed one qualifying session; then open the Doom window and start autoplay (scripted lever).
   - EXPECTED: (a) `storage_engine_status` = PostgreSQL / PG supervisor ready (app-boot/PG lever = the PG supervisor default path); (b) Mission Monitor renders ≥1 live session — SEED LEVER `bun .opencode/scripts/inject-otlp-fixture.ts --copilot --fixture .opencode/scripts/copilot-exchange.fixture.json` (stable `e2e-copilot2933`) through the real OTLP/HTTP receiver; assert the DECLARED `sessions` row qualifies (`visibleTurnCount ≥ 1`) BEFORE asserting the list, then `SessionHistoryDrawer` shows ≥1 row; (c) `doom-autoplay-toggle` starts autoplay → `doom-autoplay-status` shows `Running` and the game advances (`lastTic` increases step-driven); (d) live-pipeline receipt `telemetry_spans` non-zero + recent `max(ingested_at)`.
   - Edge: PG leg needs the managed `psql` lever (G-284) — if unavailable, record a NAMED TOOLING GAP for the PG leg (never silently drop it, G-307); the seeded session is idempotent; the rest of the app is unaffected after autoplay stops.
 
