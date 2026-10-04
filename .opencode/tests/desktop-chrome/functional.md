@@ -1,5 +1,11 @@
 # desktop-chrome — Functional
 
+> **#2954 note:** the app-dock rail (`[data-testid="app-dock"]`, `role="region" aria-label="Open
+> applications"`) is REMOVED. Dock-rail assertions in F-15/F-20/F-28 are RETIRED (historical PASS
+> records preserved); the open-apps surface is now the engaged-launcher row
+> `[data-testid="launcher-open-apps"]` (`.opencode/tests/launcher/` `#2954 extension`). The
+> clock/LED cluster and its z-order/geometry rows remain in force.
+
 Durable per-feature suite for the desktop-chrome / window-chrome z-order surface
 (FREDO logo band, clock + ONLINE readout, bottom LED pair from #2821, and the
 webview window min/max/close controls). Seeded from issue #2825.
