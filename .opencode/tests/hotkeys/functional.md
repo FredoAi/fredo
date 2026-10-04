@@ -1101,7 +1101,7 @@ artifact, `reactflow.js:3524`).
 
 ## F-88 (R-1 / AC1) — Multi-level nesting: two descents, each changing the action set
 
-- [ ] F-88: Focus Mission Monitor + mode ON (`ctrl+shift+f8`). Descend the declared chain: press
+- [x] F-88: **PASS (2026-10-04, spec/2962 @ e39dc7e).** Focus Mission Monitor + mode ON (`ctrl+shift+f8`). Descend the declared chain: press
       `o` at L1 → read; press `o` again at L2 → read. At each level read
       `data-fredo-hotkey-context` / `-depth`, `hotkeys-keyboard-bar-context` (`data-depth`), and
       the `data-hotkey-action` row histogram. **Expected:** L1 `mission-monitor` (base title
@@ -1120,7 +1120,7 @@ artifact, `reactflow.js:3524`).
 
 ## F-89 (R-2 / AC2) — Intentional key reuse + the current meaning is named
 
-- [ ] F-89: At each level press the reused keys `n`/`p`/`o`. At L2 assert `n` runs
+- [x] F-89: **PASS (2026-10-04, spec/2962 @ e39dc7e).** At each level press the reused keys `n`/`p`/`o`. At L2 assert `n` runs
       `mission-monitor.nextNode` (`data-mm-graph-cursor` changes) and NOT L1's `nextSession`; at
       L3 assert `n` runs `mission-monitor.nextSection` (`data-mm-active-section` changes). Read
       `hotkeys-keyboard-bar-context` text + `data-depth`, each row's keycap + action title, and
@@ -1139,7 +1139,7 @@ artifact, `reactflow.js:3524`).
 
 ## F-90 (R-3 / AC3) — Full unwind: Escape pops exactly one level, no trap at any depth
 
-- [ ] F-90: Descend L1→L2→L3 (depth 3). Press Escape once and re-read the body hook/indicator;
+- [x] F-90: **PASS (2026-10-04, spec/2962 @ e39dc7e).** Descend L1→L2→L3 (depth 3). Press Escape once and re-read the body hook/indicator;
       press again; press again at L1. After each pop re-fire the restored level's action (`n`).
       **Expected:** each Escape pops EXACTLY one level (`engine.ts:592-596` → `exitHotkeyContext`,
       `contextStack.ts:180-185`) — 3→2 restores `mission-monitor.graph` L2 actions; 2→1 restores
@@ -1153,7 +1153,7 @@ artifact, `reactflow.js:3524`).
 
 ## F-91 (R-4 / AC4) — Defined, observable precedence + the complex scenario
 
-- [ ] F-91: The AC's complex scenario — stand at L3 and press a key bound at the current level
+- [x] F-91: **PASS (2026-10-04, spec/2962 @ e39dc7e).** The AC's complex scenario — stand at L3 and press a key bound at the current level
       AND its parent (`n` at L3 = `nextSection`; `n` at L2 = `nextNode`). Read
       `data-hotkey-action` + `data-availability` and the `hotkeys-keyboard-bar-row-unavailable`
       reason for the losing level. Then Escape once and re-fire `n` (L2 binding now in force).
@@ -1172,7 +1172,7 @@ artifact, `reactflow.js:3524`).
 
 ## F-92 (R-5 / AC5) — Stale-state discard on focus change / window close; same-focus preserves
 
-- [ ] F-92: Descend to L3. (a) **Focus-change lever:** focus a second feature window by keyboard
+- [x] F-92: **PASS (2026-10-04, spec/2962 @ e39dc7e).** Descend to L3. (a) **Focus-change lever:** focus a second feature window by keyboard
       (Ctrl+Space → launcher tile → Enter, or `g g`), then re-focus Mission Monitor. (b)
       **Window-close lever:** activate the Mission Monitor close control
       `aria-label="Close Mission Monitor"` (`WindowChrome.tsx:228`;
@@ -1191,7 +1191,7 @@ artifact, `reactflow.js:3524`).
 
 ## F-93 (NFR) — A11y + typing safety + latency + theme + determinism at every level
 
-- [ ] F-93: At EACH level: read the accessibility tree + announcer; focus a text field and press
+- [x] F-93: **PASS (2026-10-04, spec/2962 @ e39dc7e).** At EACH level: read the accessibility tree + announcer; focus a text field and press
       `n`/`p`/`o`; instrument keydown→effect; run N identical descend/unwind cycles; static-grep
       the changed files; render light + dark. **Expected:** the level is announced at every depth
       through the ONE polite region (`role=status`, `aria-live=polite`, `announcer.tsx:62-73`);
@@ -1209,7 +1209,7 @@ artifact, `reactflow.js:3524`).
 
 ## F-94 (E2E, human directive — REQUIRED) — Running-app end-to-end on the PostgreSQL-default boot path
 
-- [ ] F-94: Boot the app on the PG-default path (`dev-env Up`); open Mission Monitor; drive a
+- [x] F-94: **PASS (2026-10-04, spec/2962 @ e39dc7e).** Boot the app on the PG-default path (`dev-env Up`); open Mission Monitor; drive a
       live session; descend twice (L1→L2→L3) keyboard-only; press a reused key (`n`/`p`/`o`) at
       each level; Escape unwind level-by-level back to L1. **Expected:** (a) the app boots on the
       PostgreSQL-default path; (b) Mission Monitor still renders live sessions — the session list
@@ -1225,5 +1225,34 @@ artifact, `reactflow.js:3524`).
     report (environment artifact, NOT a spec FAIL); zero-live-session initial state (G-265).
     **Seed lever (G-285):** the OTLP fixture MUST emit a rollup-QUALIFYING turn (a terminal chat
     span with a non-blank agent reply) so a declared `sessions` row is created; the fixture's
-    ungated guard asserts the CONSUMER invariant (a `sessions` row renders).
+      ungated guard asserts the CONSUMER invariant (a `sessions` row renders).
+
+## #2962 testing round 1 — results (spec/2962 @ e39dc7e)
+
+Run on the served app (dev-env UP `-Spec 2962`, PG-default boot, driver `com.fredo.app`
+on the scanned MCP port :9224). Live `telemetry_spans` receipt via the managed `psql`
+lever (db `postgres`, port 52824; drive window 2026-10-04T04:40–05:30Z; 51
+`tauri_webview_keyboard` + 90 `tauri_webview_execute_js` spans; store 4963, max
+`ingested_at` 05:30:00Z). Console: one third-party ReactFlow `Uncaught` reproduced ONLY by
+the tester's synthetic `document`-dispatched Escape events (harness artifact).
+
+- [x] **F-88 PASS** — two descents `mission-monitor` (23 actions) → `mission-monitor.graph`
+      / `Graph` depth 2 (26) → `mission-monitor.detail` / `Node detail` depth 3 (29); action
+      sets change each level.
+- [x] **F-89 PASS** — L2 `n`=nextNode (`data-mm-graph-cursor` `_4`→`_6`→`_8`, no DOM focus);
+      L3 `n`=nextSection (overview→content), `p`=previousSection, `o`=toggleSection; each
+      action announced for its level.
+- [x] **F-90 PASS** — Escape 3→2→1, one level per press; L1 Escape native no-op; 5 identical
+      cycles `1→2→3→2→1` no drift.
+- [x] **F-91 PASS** — L2 `nextNode` renders unavailable `Shadowed by Next section` at L3;
+      after one Escape `nextNode` is available and `n` moves the cursor.
+- [x] **F-92 PASS** — focus change (`open-app settings`) and window close both discard to
+      depth 1; same-focus sync preserves the descent.
+- [x] **F-93 PASS** — ONE polite announcer (`role=status`, `aria-live=polite`); bar
+      `aria-hidden`; typing `npo` verbatim; keydown→effect ~9.8 ms; zero colour literals /
+      `var(--x)NN` in changed files; identical cycles; cap 8 unchanged.
+- [x] **F-94 PASS** — PG-default boot; MM renders the declared `sessions` rollup
+      (`useDeliverySessions`; `feature_mission_monitor_sessions` 7 rows == 7 DOM rows);
+      keyboard-only nested nav end-to-end; live receipt.
+
 
