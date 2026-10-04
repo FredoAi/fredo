@@ -802,3 +802,65 @@
       band-count refresh is the one expected named refresh, G-125). Reference R-31/R-49/R-63/R-66.
   - **Edge:** open/close churn around the animating mascot; the pre-existing `motion() is deprecated`
     WARN is exempt.
+
+---
+
+## #2954 extension — the open-apps row must NOT disturb the launcher (G-136)
+
+> Issue #2954 moves the open-apps surface into the engaged launcher and removes the persistent dock.
+> These invariants MUST hold — any FAIL is a regression. Run alongside R-1..R-69 and launcher
+> F-118..F-125. **Verification policy: live.** G-136 note: the dock rows in `.opencode/tests/app-dock/`
+> are RETIRED (the feature is removed); the `dock-arrange` binding is PRESERVED (relocated to the
+> launcher) for #2949 AC1.
+
+## R-70 — Continuous-state: no persistent open-apps chrome; row absent at rest and with 0 windows (G-123)
+
+- [ ] R-70: On a clean desktop with ≥1 window open, do NOT engage: assert
+      `[data-testid="launcher-open-apps"]`, `[data-testid="app-dock"]`, `[data-dock-entry]`,
+      `[data-dock-item]`, `.dock-close` are all `count 0`; probe the left + bottom edges and re-scan.
+      Then close all windows, engage, and re-assert the row is absent (no empty box).
+  **Expected:** no persistent open-apps chrome in ANY state; the row renders only when engaged with
+      ≥1 window. ST-5 owns this continuous-state pin. Reference F-118/F-119.
+
+## R-71 — `dock-arrange` preserved (relocated into the launcher); #2949 AC1 does not regress
+
+- [ ] R-71: with ≥1 window open and 0 tiled panes, locate `[data-testid="dock-arrange"]`
+      (`aria-label="Arrange windows"`), click it, and verify the open windows tile into
+      `[data-testid="workspace-pane-<windowId>"]` (the #2949 AC1 behavior). Assert
+      `[data-testid="app-dock"]` is `count 0`.
+  **Expected:** the arrange entry is present and dispatches `arrangeOpenWindows()` from its NEW
+      launcher host; the testid is deliberately preserved so `.opencode/tests/workspace-layout`
+      stays bound. Reference `.opencode/tests/workspace-layout/functional.md` F-1/F-22.
+  - **Edge:** the launcher disengages when the panes are created; the control is discoverable at 0
+    panes (the workspace-arrange toolbar is still gated on an existing pane, `WindowManager.tsx:184`).
+
+## R-72 — Removed hooks absent; the launcher keyboard contract is unchanged
+
+- [ ] R-72: assert `app-dock` / `data-dock-entry` / `data-dock-item` / `.dock-close` /
+      `dock-position-settings` are `count 0` in every state; with the engaged grid, drive arrows
+      (↑↓←→), `Home`/`End`, `Enter`/`Space`; confirm the empty-grid no-op and the hint-row hiding; then
+      Tab to the open-apps row.
+  **Expected:** the grid nav/roving/Enter/Space behavior is byte-for-byte the #2808/#2882 contract; the
+      open-apps row carries no `role="gridcell"` and is NOT in the roving order (Tab may reach its
+      buttons). Reference R-7/R-33/R-40.
+  - **Edge:** a query that filters the grid to zero while the row still lists open windows; Enter on
+    the bar (smart-Enter) unchanged.
+
+## R-73 — bottomStack retires the dock selector; base inset preserved
+
+- [ ] R-73: read `measureBottomOffsetPx()` (or its unit pin) and the persistent `KeyboardBar` /
+      which-key overlay bottom inset with the dock absent.
+  **Expected:** `BOTTOM_STACK_DOCK_SELECTOR`/`WHICHKEY_DOCK_SELECTOR` match nothing and
+      `measureBottomOffsetPx()` returns `BOTTOM_STACK_MIN_PX` (24) unconditionally; the keyboard bar
+      and overlay keep their base bottom inset (no layout change beyond the absent dock measurement);
+      `WhichKeyOverlay.test.tsx` re-pinned. Reference F-118/R-5.
+
+## R-74 — Window kernel read-only; token-native; no re-render loop; build gates
+
+- [ ] R-74: git-diff scope `windowStore.ts`/`windowTypes.ts`/`window-system/*` (must be empty);
+      static-grep the new row/helper files for `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` / `var(--x)NN`;
+      read the console after every leg; run `pnpm --filter @fredo/ui build` + `test:run`.
+  **Expected:** the kernel is untouched (the row dispatches only `focusWindow`/`closeWindow`); no
+      cross-feature import; ZERO colour literals / no alpha-append; no `Error:`/`Uncaught`/`Maximum
+      update depth exceeded`; no effect/memo on array `.length`/fresh refs (#523); build exit 0.
+  - **Edge:** open/close churn; the pre-existing `motion() is deprecated` WARN is exempt.
