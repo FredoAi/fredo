@@ -224,3 +224,46 @@ Run on the served app (dev-env UP `-Spec 2959`, driver `com.fredo.app`, main win
       keymap, the Vim preset, macros, the context stack, or unrelated AppStore keys. Cross-ref R-5
       and the settings/token suites.
 
+## Spec #2961 additions (per-app contextual actions)
+
+> The S4 slice ADDS content (new feature declarations + per-feature bridge modules). It must not
+> re-spec or change the shipped suppression (#2946), the context model (#2958), the keyboard mode +
+> bar (#2959), or the typing-vs-navigating signal (#2960). Mission Monitor and Diagram declarations
+> are UNCHANGED. **Verification policy: live** — receipts via the managed `psql` lever reading
+> `telemetry_spans` (G-284).
+
+- [ ] **R-28 (Mission Monitor + Diagram declarations unchanged):** the shipped two declarers still
+      resolve exactly as before — `mission-monitor` `s`/`n`/`p` (focusSessionSearch / nextSession /
+      previousSession) and `diagram` `s`/`f` (search / fitView); no id, key, title, or ordering
+      changes. Baseline recipe: dev-env UP on `main`, record the two feature-tier row sets while each
+      app is focused + mode ON; repeat on `spec/2961`. Cross-ref F-29/F-72.
+- [ ] **R-29 (shipped globals unshadowed):** the new app keys (`r/a/z/j/s/n/p/f/e/c/v`) are disjoint
+      from every shipped global binding — Ctrl+Space (launcher), `g g` (`fredo.window.first`), `?`
+      (cheat sheet), `primary+K` (descent), `y` (reference-only) and all modifier chords still
+      resolve exactly as before, with mode ON and OFF. The resolver is Fredo-first, so a new feature
+      key MUST NOT mask a global. Cross-ref R-1/R-14/R-17/R-24, F-25/F-33.
+- [ ] **R-30 (text-entry / terminal / modal suppression unchanged):** the #2946 contract still holds
+      for the NEW app actions — while a text field is focused a bare app key does NOT fire and the
+      typed character reaches the field verbatim; terminal full passthrough and modal ownership are
+      unchanged. A captured/swallowed keystroke or a fired app action in text-entry is a FAIL.
+      Cross-ref R-21, F-17/F-42/F-81.
+- [ ] **R-31 (S1 context model unchanged):** the merged #2958 behaviour is unchanged — focus-derived
+      base, `primary+K` descent to `fredo.root.reference`, one-Escape-per-level unwind, the
+      `hotkeys-context-indicator` (label/pips/icon), `data-fredo-hotkey-context`/`-depth`, and the
+      single `hotkeys-announcer`. The new app rows must not alter the context stack or double-announce.
+      Cross-ref R-16/R-22, F-33..F-43.
+- [ ] **R-32 (S2 keyboard mode + bar unchanged):** `ctrl+shift+f8`, `data-fredo-keyboard-mode`, the
+      persistent bar, `data-fredo-pending-sequence`, and the `+N more` overflow bounding behave as
+      before; the app rows are ADDITIVE (context-scoped rows still sort first) and do not suppress the
+      bar or the which-key hint. Cross-ref R-17/R-18/R-23, F-44..F-54.
+- [ ] **R-33 (no new IPC / command / persisted key / cross-window channel):** the app actions reuse
+      the shipped bridge precedent (namespaced `CustomEvent` on `window` + one `useEffect`); no new
+      Tauri command, no new IPC, no new persisted key, no new cross-window channel, and no OS-wide
+      hotkey (Tauri global-shortcut) is introduced. Cross-ref R-10/R-19/R-25.
+- [ ] **R-34 (no shortcut-usage telemetry + token contract + no re-render loop / console clean + build
+      gates):** the new files emit NO span/event/metric carrying shortcut usage, binding identity, or
+      availability state (PO Q13); introduce no hardcoded hex/rgba/hsla and no `var(--x)NN`
+      alpha-append; produce no `Maximum update depth exceeded`/`Uncaught`/`Error:` across focus
+      switch / availability flips / text-entry; `pnpm --filter @fredo/ui build` exit 0 and the served
+      `build:webview` leg passes (H-11/G-251 class). Cross-ref R-6/R-7/R-8/R-9/R-20/R-26.
+
