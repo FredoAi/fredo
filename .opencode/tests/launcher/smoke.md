@@ -324,3 +324,18 @@
       wrapper exactly 80×100 + 16 px; the inter-leg gap stays background (no leak); screenshot
       succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
 
+## #2954 extension — open-apps row quick paths (live)
+
+> Issue #2954 moves the open-apps surface into the engaged launcher and removes the dock. Quick paths
+> only — the full matrix lives in `functional.md` F-118..F-125 / `regression.md` R-70..R-74.
+> **Verification policy: live.**
+
+- [ ] S-38: **Engaged launcher shows the Open apps row.** Open ≥1 window (Mission Monitor), engage the
+      launcher (focus `input[role="searchbox"]`). **Expected:** `[data-testid="launcher-open-apps"]`
+      (`role="region" aria-label="Open apps"`) renders ABOVE `#fredo-launcher-grid` with a heading
+      `| OPEN APPS` and one `launcher-open-app-entry-<id>` per open window; `tauri_webview_screenshot`
+      succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-39: **Resting / zero-window absence.** On a clean desktop (resting) and again with 0 windows
+      engaged: `[data-testid="launcher-open-apps"]` and `[data-testid="app-dock"]` are `count 0`;
+      screenshot succeeds; console clean.
+
