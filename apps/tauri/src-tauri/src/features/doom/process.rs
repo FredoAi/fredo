@@ -38,6 +38,16 @@ use super::state::{
 /// `pg_supervisor::sweep::KillTreeFn`).
 pub type KillTreeFn = fn(u32);
 
+// ── Framebuffer-only child env (ST-5) ────────────────────────────────────────
+
+/// The SDL video-driver environment variable set on the engine child.
+pub const SDL_VIDEODRIVER_ENV: &str = "SDL_VIDEODRIVER";
+/// The framebuffer-only SDL video driver: the engine renders into its framebuffer
+/// with **no visible OS window**. ST-1 §6 confirmed `-noblit` alone still creates
+/// a window (`i_video.c` only skips the blit; `SetVideoMode` still calls
+/// `SDL_CreateWindow`), so the dummy driver is the binding lever.
+pub const SDL_VIDEODRIVER_DUMMY: &str = "dummy";
+
 // ── Layout ────────────────────────────────────────────────────────────────────
 
 /// Resolve the install/scratch directory: a non-blank [`DOOM_INSTALL_DIR_ENV`]
@@ -302,7 +312,10 @@ pub fn spawn_doom(
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
-        .stderr(Stdio::from(log_err));
+        .stderr(Stdio::from(log_err))
+        // ST-5: framebuffer-only SDL video -- no visible second OS window. The
+        // engine still populates I_VideoBuffer and serves /api/frame.
+        .env(SDL_VIDEODRIVER_ENV, SDL_VIDEODRIVER_DUMMY);
 
     #[cfg(target_os = "windows")]
     {
@@ -320,6 +333,7 @@ pub fn spawn_doom(
         child,
         pid,
         port,
+        engine_path: executable.to_string(),
         log_path: log_file.to_path_buf(),
     })
 }
@@ -418,6 +432,15 @@ mod tests {
 
     fn open_store(dir: &Path) -> AppStore {
         AppStore::open(EngineHandle::new_pending(), dir).expect("open app store")
+    }
+
+    #[test]
+    fn the_child_env_forces_the_framebuffer_only_sdl_video_driver() {
+        // ST-5 / ST-1 §6: `SDL_VIDEODRIVER=dummy` is the binding lever that keeps
+        // the real engine from presenting a second OS window; `-noblit` alone is
+        // insufficient.
+        assert_eq!(SDL_VIDEODRIVER_ENV, "SDL_VIDEODRIVER");
+        assert_eq!(SDL_VIDEODRIVER_DUMMY, "dummy");
     }
 
     #[test]

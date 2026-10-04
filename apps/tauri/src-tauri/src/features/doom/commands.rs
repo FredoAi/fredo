@@ -39,9 +39,9 @@ fn lock_state(state: &DoomRuntimeState) -> MutexGuard<'_, Option<super::state::M
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// `Some((port, pid))` iff a live managed child exists. A child that has exited
-/// is reaped out of the state and its PID marker cleared.
-fn running_snapshot(app: &AppHandle) -> Option<(u16, u32)> {
+/// `Some((port, pid, engine_path))` iff a live managed child exists. A child that
+/// has exited is reaped out of the state and its PID marker cleared.
+fn running_snapshot(app: &AppHandle) -> Option<(u16, u32, String)> {
     let state = app.state::<DoomRuntimeState>();
     let mut guard = lock_state(&state);
     let had_child = guard.is_some();
@@ -57,7 +57,9 @@ fn running_snapshot(app: &AppHandle) -> Option<(u16, u32)> {
         }
         return None;
     }
-    guard.as_ref().map(|managed| (managed.port, managed.pid))
+    guard
+        .as_ref()
+        .map(|managed| (managed.port, managed.pid, managed.engine_path.clone()))
 }
 
 /// Persist (or clear) the `doom_pid` marker through the SINGLE implementation in
@@ -136,6 +138,7 @@ fn emit_status(
     phase: DoomRuntimePhase,
     port: Option<u16>,
     pid: Option<u32>,
+    engine_path: Option<String>,
     last_error: Option<String>,
     code: Option<DoomErrorCode>,
 ) {
@@ -144,6 +147,7 @@ fn emit_status(
         running: phase == DoomRuntimePhase::Ready,
         port,
         pid,
+        engine_path,
         last_error,
         code,
     };
@@ -157,12 +161,13 @@ fn emit_status(
     }
 }
 
-fn success_result(port: u16, pid: u32) -> DoomLaunchResult {
+fn success_result(port: u16, pid: u32, engine_path: String) -> DoomLaunchResult {
     DoomLaunchResult {
         success: true,
         phase: DoomRuntimePhase::Ready,
         port: Some(port),
         pid: Some(pid),
+        engine_path: Some(engine_path),
         error: None,
         code: None,
     }
@@ -177,6 +182,7 @@ fn fail(app: &AppHandle, code: DoomErrorCode, detail: String) -> DoomLaunchResul
         DoomRuntimePhase::Error,
         None,
         None,
+        None,
         Some(detail.clone()),
         Some(code),
     );
@@ -185,14 +191,24 @@ fn fail(app: &AppHandle, code: DoomErrorCode, detail: String) -> DoomLaunchResul
         phase: DoomRuntimePhase::Error,
         port: None,
         pid: None,
+        engine_path: None,
         error: Some(detail),
         code: Some(code),
     }
 }
 
-/// Bounded readiness wait that ALSO fails fast when the child exits: `true` when
-/// the loopback port opens, `false` when the child is gone or `bound` elapses.
-async fn wait_ready_or_exit(app: &AppHandle, port: u16, bound: Duration) -> bool {
+/// Bounded readiness wait that ALSO fails fast when the child exits.
+///
+/// Readiness means "the engine can SERVE", not "the TCP port is open" (ST-4):
+/// once the loopback port accepts a connection, this polls `GET /api/state` until
+/// it answers **200**. `true` when the engine serves state; `false` when the child
+/// is gone or `bound` elapses (the caller then kills the child — G-263).
+async fn wait_ready_or_exit(
+    app: &AppHandle,
+    port: u16,
+    bound: Duration,
+    transport: &dyn client::DoomHttpTransport,
+) -> bool {
     let deadline = Instant::now() + bound;
     loop {
         // The child may have exited immediately (e.g. a stub `EXIT` lever).
@@ -207,8 +223,18 @@ async fn wait_ready_or_exit(app: &AppHandle, port: u16, bound: Duration) -> bool
         if exited {
             return false;
         }
+        // The port must accept a connection before /api/state can answer; once it
+        // does, a 200 from /api/state is the real readiness signal.
         if process::port_is_open("127.0.0.1", port) {
-            return true;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            if let Ok(Ok(_)) =
+                tokio::time::timeout(remaining, client::read_state_with(transport, port)).await
+            {
+                return true;
+            }
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -230,9 +256,9 @@ async fn wait_ready_or_exit(app: &AppHandle, port: u16, bound: Duration) -> bool
 #[tauri::command]
 pub async fn launch_doom_runtime(app: AppHandle) -> DoomLaunchResult {
     // Idempotency — an already-live engine wins immediately (R-1.3).
-    if let Some((port, pid)) = running_snapshot(&app) {
+    if let Some((port, pid, engine_path)) = running_snapshot(&app) {
         clear_last_error(&app);
-        return success_result(port, pid);
+        return success_result(port, pid, engine_path);
     }
 
     // Engine: configured (verbatim → `spawnFailed` when bad) → PATH → staged →
@@ -253,6 +279,19 @@ pub async fn launch_doom_runtime(app: AppHandle) -> DoomLaunchResult {
             Err(detail) => return fail(&app, DoomErrorCode::AcquireFailed, detail),
         },
     };
+    // Anti-stub guard (G-033, ST-3/ST-4): when `FREDO_DOOM_REQUIRE_REAL_ENGINE=1`
+    // an engine whose basename is not `restful-doom.exe` is refused before spawn,
+    // so a stub can never masquerade as a real-engine PASS. Inert when unset.
+    if resolver::require_real_engine() && !resolver::is_real_engine_path(&engine) {
+        return fail(
+            &app,
+            DoomErrorCode::SpawnFailed,
+            format!(
+                "FREDO_DOOM_REQUIRE_REAL_ENGINE=1 refuses an engine that is not {}: {engine}",
+                acquisition::DOOM_ENGINE_EXE
+            ),
+        );
+    }
     // IWAD: a configured-but-missing path is `notConfigured` (F-11) and never
     // triggers a download; only an entirely unconfigured IWAD falls through to
     // the pinned Freedoom acquisition.
@@ -284,7 +323,7 @@ pub async fn launch_doom_runtime(app: AppHandle) -> DoomLaunchResult {
     };
     let log_file = process::log_path(&install_dir);
 
-    emit_status(&app, DoomRuntimePhase::Starting, None, None, None, None);
+    emit_status(&app, DoomRuntimePhase::Starting, None, None, None, None, None);
 
     let configured = configured_port(&app);
     let port = match process::select_active_port("127.0.0.1", configured) {
@@ -307,10 +346,11 @@ pub async fn launch_doom_runtime(app: AppHandle) -> DoomLaunchResult {
         let mut guard = lock_state(&state);
         if let Some(managed) = guard.as_mut() {
             if matches!(managed.child.try_wait(), Ok(None)) {
-                let (port, pid) = (managed.port, managed.pid);
+                let (port, pid, engine_path) =
+                    (managed.port, managed.pid, managed.engine_path.clone());
                 drop(guard);
                 clear_last_error(&app);
-                return success_result(port, pid);
+                return success_result(port, pid, engine_path);
             }
             if let Some(mut dead) = guard.take() {
                 process::kill_process_tree(&mut dead);
@@ -331,9 +371,26 @@ pub async fn launch_doom_runtime(app: AppHandle) -> DoomLaunchResult {
     };
     persist_managed_pid(&app, Some(pid));
 
-    // Bounded readiness poll — kills the child before returning on timeout.
+    // Bounded readiness poll — readiness now means the engine can SERVE (a
+    // `GET /api/state` 200), not merely that the TCP port opened (ST-4). The
+    // child is killed before returning on timeout (G-263).
     let timeout = ready_timeout();
-    if !wait_ready_or_exit(&app, port, timeout).await {
+    let transport = match client::ReqwestDoomTransport::new() {
+        Ok(transport) => transport,
+        Err(detail) => {
+            let managed = {
+                let state = app.state::<DoomRuntimeState>();
+                let taken = lock_state(&state).take();
+                taken
+            };
+            if let Some(mut managed) = managed {
+                process::kill_process_tree(&mut managed);
+            }
+            persist_managed_pid(&app, None);
+            return fail(&app, DoomErrorCode::SpawnFailed, detail);
+        }
+    };
+    if !wait_ready_or_exit(&app, port, timeout, &transport).await {
         let managed = {
             let state = app.state::<DoomRuntimeState>();
             let taken = lock_state(&state).take();
@@ -356,10 +413,11 @@ pub async fn launch_doom_runtime(app: AppHandle) -> DoomLaunchResult {
         DoomRuntimePhase::Ready,
         Some(port),
         Some(pid),
+        Some(engine.clone()),
         None,
         None,
     );
-    success_result(port, pid)
+    success_result(port, pid, engine)
 }
 
 /// Stop the managed engine within a bounded graceful window, hard-killing the
@@ -386,13 +444,14 @@ async fn stop_runtime(app: &AppHandle, bound: Duration) {
         DoomRuntimePhase::Stopping,
         Some(managed.port),
         Some(managed.pid),
+        Some(managed.engine_path.clone()),
         None,
         None,
     );
     let outcome = process::stop_bounded(&mut managed, bound).await;
     persist_managed_pid(app, None);
     clear_last_error(app);
-    emit_status(app, DoomRuntimePhase::Idle, None, None, None, None);
+    emit_status(app, DoomRuntimePhase::Idle, None, None, None, None, None);
     tracing::info!(
         target: "fredo::doom",
         pid = managed.pid,
@@ -404,9 +463,9 @@ async fn stop_runtime(app: &AppHandle, bound: Duration) {
 /// Read-only status snapshot. Reaps a child that has already exited.
 #[tauri::command]
 pub fn get_doom_status(app: AppHandle) -> DoomStatus {
-    let (running, port, pid) = match running_snapshot(&app) {
-        Some((port, pid)) => (true, Some(port), Some(pid)),
-        None => (false, None, None),
+    let (running, port, pid, engine_path) = match running_snapshot(&app) {
+        Some((port, pid, engine_path)) => (true, Some(port), Some(pid), Some(engine_path)),
+        None => (false, None, None, None),
     };
     let (last_error, code) = read_last_error(&app);
     let phase = derive_phase(running, last_error.is_some());
@@ -415,6 +474,7 @@ pub fn get_doom_status(app: AppHandle) -> DoomStatus {
         running,
         port,
         pid,
+        engine_path,
         last_error,
         code,
     }
@@ -550,11 +610,15 @@ mod tests {
 
     #[test]
     fn success_and_failure_results_carry_the_typed_contract() {
-        let ok = success_result(6666, 4242);
+        let ok = success_result(6666, 4242, r"C:\app\doom\engine\restful-doom.exe".to_string());
         assert!(ok.success);
         assert_eq!(ok.phase, DoomRuntimePhase::Ready);
         assert_eq!(ok.port, Some(6666));
         assert_eq!(ok.pid, Some(4242));
+        assert_eq!(
+            ok.engine_path.as_deref(),
+            Some(r"C:\app\doom\engine\restful-doom.exe")
+        );
         assert!(ok.code.is_none());
 
         let failed = DoomLaunchResult {
@@ -562,10 +626,12 @@ mod tests {
             phase: DoomRuntimePhase::Error,
             port: None,
             pid: None,
+            engine_path: None,
             error: Some("nope".to_string()),
             code: Some(DoomErrorCode::SpawnFailed),
         };
         assert_eq!(failed.code, Some(DoomErrorCode::SpawnFailed));
+        assert!(failed.engine_path.is_none());
     }
 
     #[test]

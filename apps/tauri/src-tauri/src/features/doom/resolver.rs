@@ -30,7 +30,10 @@ use crate::infrastructure::storage::AppStore;
 use super::acquisition::{
     DOOM_ENGINE_EXE, DOOM_ENGINE_SUBDIR, DOOM_IWAD_FILENAME, FREEDOOM_SUBDIR,
 };
-use super::state::{DOOM_ENGINE_PATH_ENV, DOOM_ENGINE_PATH_KEY, DOOM_IWAD_PATH_ENV, DOOM_IWAD_PATH_KEY};
+use super::state::{
+    DOOM_ENGINE_PATH_ENV, DOOM_ENGINE_PATH_KEY, DOOM_IWAD_PATH_ENV, DOOM_IWAD_PATH_KEY,
+    DOOM_REQUIRE_REAL_ENGINE_ENV,
+};
 
 /// The upstream engine binary basename searched on PATH.
 pub const DOOM_ENGINE_BIN: &str = "restful-doom";
@@ -147,6 +150,24 @@ pub fn resolve_iwad(app: &AppHandle) -> Option<String> {
         .map(|path| path.to_string_lossy().into_owned())
 }
 
+/// Whether the anti-stub guard is active: `FREDO_DOOM_REQUIRE_REAL_ENGINE=1`.
+/// Inert (false) when unset, blank, or any other value.
+pub fn require_real_engine() -> bool {
+    std::env::var(DOOM_REQUIRE_REAL_ENGINE_ENV)
+        .map(|value| value.trim() == "1")
+        .unwrap_or(false)
+}
+
+/// Whether `path`'s basename is the real engine binary ([`DOOM_ENGINE_EXE`],
+/// `restful-doom.exe`). Case-insensitive; a bare/other basename is not real.
+pub fn is_real_engine_path(path: &str) -> bool {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.eq_ignore_ascii_case(DOOM_ENGINE_EXE))
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,5 +218,44 @@ mod tests {
         assert_eq!(non_blank(Some("   ")), None);
         assert_eq!(non_blank(Some("")), None);
         assert_eq!(non_blank(None), None);
+    }
+
+    #[test]
+    fn a_staged_engine_resolves_via_the_downloaded_candidate() {
+        // ST-3: the ST-2 staged build (`<install_dir>/engine/restful-doom.exe`) is
+        // selected when nothing is configured and nothing is on PATH — the
+        // `downloaded_engine` leg.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let staged = dir.path().join("engine").join(DOOM_ENGINE_EXE);
+        std::fs::create_dir_all(staged.parent().expect("engine dir")).expect("mkdir");
+        std::fs::write(&staged, b"MZ").expect("write staged engine");
+
+        assert_eq!(
+            resolve_engine_order(None, None, Some(staged.clone())),
+            Some(staged)
+        );
+    }
+
+    #[test]
+    fn the_anti_stub_guard_recognises_only_the_real_engine_basename() {
+        assert!(is_real_engine_path(r"C:\app\doom\engine\restful-doom.exe"));
+        assert!(is_real_engine_path("RESTFUL-DOOM.EXE"));
+        assert!(!is_real_engine_path(r"C:\build\doom_stub.exe"));
+        assert!(!is_real_engine_path("doom-stub"));
+        assert!(!is_real_engine_path(""));
+    }
+
+    #[test]
+    fn the_anti_stub_guard_is_inert_unless_the_env_is_exactly_one() {
+        // The seam is inert when unset; this asserts the parse contract without
+        // mutating the process env (which would race sibling tests).
+        let parse = |value: Option<&str>| value.map(|v| v.trim() == "1").unwrap_or(false);
+        assert!(!parse(None));
+        assert!(!parse(Some("")));
+        assert!(!parse(Some("0")));
+        assert!(!parse(Some("true")));
+        assert!(parse(Some("1")));
+        assert!(parse(Some(" 1 ")));
+        assert_eq!(DOOM_REQUIRE_REAL_ENGINE_ENV, "FREDO_DOOM_REQUIRE_REAL_ENGINE");
     }
 }

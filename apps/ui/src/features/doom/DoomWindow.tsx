@@ -112,6 +112,9 @@ export const DoomWindow: React.FC = () => {
       drawFrame(frame.pngBase64);
     } catch {
       // Never blank the canvas — degrade to the last frame + reconnecting note.
+      // A `frameNotReady` (HTTP 503 "graphics not up yet") is deliberately treated
+      // here as transient: the 66 ms interval keeps polling and the window never
+      // enters the `error` phase (R-1.4).
       setFrameError(true);
     }
   }, [drawFrame]);

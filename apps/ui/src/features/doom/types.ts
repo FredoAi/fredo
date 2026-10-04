@@ -18,7 +18,8 @@ export type DoomErrorCode =
   | 'spawnFailed'
   | 'readyTimeout'
   | 'stopTimeout'
-  | 'requestFailed';
+  | 'requestFailed'
+  | 'frameNotReady';
 
 /** Bounded readiness wait: the `starting` Progress bar is scaled to this. */
 export const DOOM_READY_TIMEOUT_S = 30;
@@ -31,6 +32,7 @@ export interface DoomStatusEvent {
   running?: boolean;
   port?: number | null;
   pid?: number | null;
+  enginePath?: string | null;
   lastError?: string | null;
   code?: DoomErrorCode | null;
 }
@@ -41,6 +43,7 @@ export interface DoomLaunchResult {
   phase: DoomRuntimePhase;
   port?: number | null;
   pid?: number | null;
+  enginePath?: string | null;
   error?: string | null;
   code?: DoomErrorCode | null;
 }
@@ -86,6 +89,12 @@ export const DOOM_ERROR_MESSAGES: Record<DoomErrorCode, { title: string; message
   requestFailed: {
     title: 'Lost connection',
     message: 'Lost contact with the Doom engine — it may have stopped. Retry to restart it.',
+  },
+  // Transient and never rendered in the error phase (the frame loop degrades to
+  // the reconnecting note instead). Present only so the Record stays exhaustive.
+  frameNotReady: {
+    title: 'Graphics warming up',
+    message: 'The Doom engine is still preparing its display. The view resumes automatically.',
   },
 };
 
