@@ -606,7 +606,9 @@ Round-3 focus (F-5) is PASS — the REQ-5 regression is closed.
   S/N/P). Mode stayed ON throughout (no re-entry); announcer updated each change.
 - **REQ-4 / F-47 PASS.** 0 focusables, `Tab` leaves `activeElement` BODY, `elementFromPoint`
   at the bar centre is outside, ONE announcer (`role=status`/`aria-live=polite`), keep-out vs
-  `app-dock` = no intersection at 1920×1080 AND 1280×800; light + dark legible.
+  `app-dock` (**#2954 rebind:** the dock is REMOVED — the keep-out is re-bound to the engaged-launcher
+  open-apps row `launcher-open-apps`; assert no intersection at 1920×1080 AND 1280×800) = no
+  intersection at 1920×1080 AND 1280×800; light + dark legible.
 - **REQ-5 / F-48 / F-54 PASS (the round-2 FAIL is fixed).** On the live text-entry lever the
   reason `Unavailable while typing` renders **24/24** chars (right `818` ≤ clip `824`) and the
   title is **130.5 px** (was 0). Safety half holds (non-focusable `DIV`; bare `y` runs nothing).
