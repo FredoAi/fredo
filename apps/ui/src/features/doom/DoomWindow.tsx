@@ -13,16 +13,31 @@ import {
   Text,
   VisuallyHidden,
 } from '@chakra-ui/react';
-import { LuGamepad2, LuRefreshCw, LuStepForward, LuTriangleAlert } from 'react-icons/lu';
+import {
+  LuGamepad2,
+  LuPlay,
+  LuRefreshCw,
+  LuSquare,
+  LuStepForward,
+  LuTriangleAlert,
+} from 'react-icons/lu';
 import { adapterBridge } from '../../shared/utils/adapterBridge';
 import { tint } from '../../shared/utils/colorTint';
 import {
+  DOOM_AUTOPLAY_EVENT,
+  DOOM_AUTOPLAY_IDLE_STATUS,
   DOOM_FRAME_POLL_MS,
   DOOM_READY_TIMEOUT_S,
   describeDoomFrame,
+  doomAutoplayErrorMessage,
+  doomAutoplayStatusLine,
   doomErrorMessage,
   doomPhaseLabel,
+  formatAutoplayElapsed,
   formatDoomState,
+  truncateAutoplayError,
+  type DoomAutoplayResult,
+  type DoomAutoplayStatus,
   type DoomErrorCode,
   type DoomFrame,
   type DoomLaunchResult,
@@ -57,12 +72,27 @@ export const DoomWindow: React.FC = () => {
   const [stepBusy, setStepBusy] = useState(false);
   const [frameError, setFrameError] = useState(false);
   const [startElapsed, setStartElapsed] = useState(0);
+  // ── Autoplay (Spec #2969, ST-7) ────────────────────────────────────────────
+  // The Rust loop outlives the webview, so this status is seeded on mount from
+  // `get_doom_autoplay_status` and thereafter driven SOLELY by the
+  // `doom-autoplay-changed` event (no polling). Cross-mount state is never held
+  // in a ref — the refs below are within-mount guards only.
+  const [autoplayStatus, setAutoplayStatus] =
+    useState<DoomAutoplayStatus>(DOOM_AUTOPLAY_IDLE_STATUS);
+  const [autoplayBusy, setAutoplayBusy] = useState(false);
+  const [autoplayNow, setAutoplayNow] = useState(() => Date.now());
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const lastFrameImageRef = useRef<HTMLImageElement | null>(null);
   const rafRef = useRef<number | null>(null);
   const frameTimerRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
+  // AC-UI-9/AC-UI-10: within-mount guards. `autoplayEventSeenRef` is the
+  // first-wins hydration guard (an event already seen must not be clobbered by
+  // the mount seed); `autoplayBusyRef` is the synchronous re-entry guard (a
+  // double-click must not fire two invokes before React re-renders).
+  const autoplayEventSeenRef = useRef(false);
+  const autoplayBusyRef = useRef(false);
 
   // ── Frame drawing (canvas, letterboxed, pixelated) ─────────────────────────
   const paint = useCallback(() => {
@@ -183,9 +213,65 @@ export const DoomWindow: React.FC = () => {
     }
   }, [stepBusy]);
 
+  // ── Autoplay controls (Spec #2969, ST-7) ────────────────────────────────────
+  // The event, not the start result, is the source of truth for `running`; the
+  // result only surfaces an immediate typed failure (NotReady / engine error)
+  // that the backend returns WITHOUT emitting an event (F-32).
+  const applyAutoplayFailure = useCallback(
+    (code: DoomAutoplayResult['code'], detail: string | null, steps?: number) => {
+      setAutoplayStatus((prev) => ({
+        ...prev,
+        phase: 'failed',
+        running: false,
+        steps: typeof steps === 'number' ? steps : prev.steps,
+        code: code ?? 'notReady',
+        lastError: detail,
+      }));
+    },
+    [],
+  );
+
+  const handleAutoplayToggle = useCallback(async () => {
+    if (autoplayBusyRef.current) return;
+    autoplayBusyRef.current = true;
+    setAutoplayBusy(true);
+    const active =
+      autoplayStatus.phase === 'running' || autoplayStatus.phase === 'stopping';
+    try {
+      if (active) {
+        await adapterBridge.invoke('stop_doom_autoplay');
+        return;
+      }
+      const result = await adapterBridge.invoke<DoomAutoplayResult>('start_doom_autoplay');
+      if (result && result.success === false) {
+        applyAutoplayFailure(result.code, result.error, result.steps);
+      }
+    } catch (err) {
+      applyAutoplayFailure('engineRequestFailed', String(err));
+    } finally {
+      autoplayBusyRef.current = false;
+      setAutoplayBusy(false);
+    }
+  }, [applyAutoplayFailure, autoplayStatus.phase]);
+
+  const handleAutoplayStop = useCallback(async () => {
+    if (autoplayBusyRef.current) return;
+    autoplayBusyRef.current = true;
+    setAutoplayBusy(true);
+    try {
+      await adapterBridge.invoke('stop_doom_autoplay');
+    } catch {
+      // The event / last status remain authoritative; a stop is idempotent.
+    } finally {
+      autoplayBusyRef.current = false;
+      setAutoplayBusy(false);
+    }
+  }, []);
+
   // ── Mount: register BEFORE the first call, then launch ──────────────────────
   useEffect(() => {
     mountedRef.current = true;
+    autoplayEventSeenRef.current = false;
     let cancelled = false;
     const unlisteners: Array<Promise<() => void>> = [];
 
@@ -194,6 +280,16 @@ export const DoomWindow: React.FC = () => {
       adapterBridge.listen<DoomStatusEvent>('doom-status-changed', (event) => {
         if (cancelled) return;
         applyStatus(event);
+      }),
+    );
+    // 1a. The autoplay listener MUST be live before the hydration seed, so an
+    // event that races the seed wins (first-wins guard, AC-UI-9).
+    unlisteners.push(
+      adapterBridge.listen<DoomAutoplayStatus>(DOOM_AUTOPLAY_EVENT, (event) => {
+        if (cancelled) return;
+        if (!event || !event.phase) return;
+        autoplayEventSeenRef.current = true;
+        setAutoplayStatus(event);
       }),
     );
     // 1b. Native close is intentionally NOT intercepted here. The `terminal`
@@ -207,6 +303,18 @@ export const DoomWindow: React.FC = () => {
     void Promise.all(unlisteners).then(() => {
       if (cancelled) return;
       void launch();
+      // 3. Hydrate the autoplay status: the loop outlives the webview, so a
+      // freshly-opened window reflects a run already in flight. First-wins — a
+      // `doom-autoplay-changed` event that already arrived is never clobbered.
+      void adapterBridge
+        .invoke<DoomAutoplayStatus>('get_doom_autoplay_status')
+        .then((status) => {
+          if (cancelled || autoplayEventSeenRef.current) return;
+          if (status && typeof status === 'object' && 'phase' in status) {
+            setAutoplayStatus(status);
+          }
+        })
+        .catch(() => {});
     });
 
     return () => {
@@ -251,6 +359,14 @@ export const DoomWindow: React.FC = () => {
     return () => window.clearInterval(id);
   }, [phase]);
 
+  // ── Autoplay elapsed ticker (AC-UI-7): 1 s while running, cleared otherwise ─
+  useEffect(() => {
+    if (autoplayStatus.phase !== 'running') return;
+    setAutoplayNow(Date.now());
+    const id = window.setInterval(() => setAutoplayNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [autoplayStatus.phase, autoplayStatus.startedAt]);
+
   const busy = phase === 'starting' || phase === 'stopping';
   const statusLabel = doomPhaseLabel(phase, port);
   const dotColor =
@@ -266,6 +382,24 @@ export const DoomWindow: React.FC = () => {
   const frameDescription = useMemo(() => describeDoomFrame(phase, stateRaw), [phase, stateRaw]);
   const error = useMemo(() => doomErrorMessage(errorCode), [errorCode]);
   const progressValue = Math.min((startElapsed / DOOM_READY_TIMEOUT_S) * 100, 100);
+
+  // ── Autoplay-derived display state (AC-UI-1..11) ────────────────────────────
+  const autoplayActive =
+    autoplayStatus.phase === 'running' || autoplayStatus.phase === 'stopping';
+  const autoplayStopping = autoplayStatus.phase === 'stopping';
+  const autoplayStatusText = doomAutoplayStatusLine(autoplayStatus);
+  const autoplayElapsed =
+    autoplayStatus.phase === 'running'
+      ? formatAutoplayElapsed(autoplayStatus.startedAt, autoplayNow)
+      : null;
+  const autoplayError = useMemo(
+    () => doomAutoplayErrorMessage(autoplayStatus.code),
+    [autoplayStatus.code],
+  );
+  const autoplayErrorDetail = truncateAutoplayError(autoplayStatus.lastError);
+  // Start gated on runtime readiness; `stopping` is a bounded loading state.
+  const autoplayToggleDisabled =
+    autoplayBusy || autoplayStopping || (!autoplayActive && phase !== 'ready');
 
   return (
     <Flex
@@ -511,23 +645,121 @@ export const DoomWindow: React.FC = () => {
             </Collapsible.Root>
           )}
         </Box>
-        <Button
-          data-testid="doom-step-button"
-          variant="solid"
-          colorPalette="accent"
-          size="sm"
-          disabled={phase !== 'ready' || stepBusy}
-          onClick={() => void handleStep()}
-        >
-          {stepBusy ? (
-            <Spinner size="xs" />
-          ) : (
-            <>
-              <Icon as={LuStepForward} boxSize="14px" mr={1} aria-hidden />
-              Step
-            </>
+        <HStack gap={2} align="center" minW={0}>
+          <Text
+            data-testid="doom-autoplay-status"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            fontFamily="mono"
+            fontSize="xs"
+            color="fg.muted"
+            whiteSpace="nowrap"
+            overflow="hidden"
+            textOverflow="ellipsis"
+            minW={0}
+            title={autoplayStatusText}
+          >
+            {autoplayStatusText}
+          </Text>
+          {autoplayElapsed && (
+            <Text
+              data-testid="doom-autoplay-elapsed"
+              fontFamily="mono"
+              fontSize="xs"
+              color="fg.muted"
+              whiteSpace="nowrap"
+              flexShrink={0}
+            >
+              {autoplayElapsed}
+            </Text>
           )}
-        </Button>
+          <Button
+            data-testid="doom-autoplay-toggle"
+            colorPalette="accent"
+            size="sm"
+            aria-pressed={autoplayStatus.running}
+            disabled={autoplayToggleDisabled}
+            loading={autoplayStopping}
+            onClick={() => void handleAutoplayToggle()}
+          >
+            <Icon as={autoplayActive ? LuSquare : LuPlay} boxSize="14px" mr={1} aria-hidden />
+            Autoplay
+          </Button>
+          {autoplayActive && (
+            <Button
+              data-testid="doom-autoplay-stop"
+              variant="outline"
+              size="sm"
+              disabled={autoplayBusy || autoplayStopping}
+              loading={autoplayStopping}
+              onClick={() => void handleAutoplayStop()}
+            >
+              <Icon as={LuSquare} boxSize="14px" mr={1} aria-hidden />
+              Stop
+            </Button>
+          )}
+          <Button
+            data-testid="doom-step-button"
+            variant="solid"
+            colorPalette="accent"
+            size="sm"
+            disabled={phase !== 'ready' || stepBusy || autoplayActive}
+            onClick={() => void handleStep()}
+          >
+            {stepBusy ? (
+              <Spinner size="xs" />
+            ) : (
+              <>
+                <Icon as={LuStepForward} boxSize="14px" mr={1} aria-hidden />
+                Step
+              </>
+            )}
+          </Button>
+        </HStack>
+        {autoplayStatus.phase === 'failed' && (
+          <Box
+            data-testid="doom-autoplay-error"
+            role="alert"
+            flexBasis="100%"
+            p={3}
+            borderRadius="md"
+            borderWidth="1px"
+            borderColor="status.error"
+            bg={tint('var(--status-error)', 8)}
+          >
+            <HStack gap={2} align="flex-start">
+              <Icon
+                as={LuTriangleAlert}
+                boxSize="16px"
+                color="status.error"
+                mt="2px"
+                flexShrink={0}
+                aria-hidden
+              />
+              <Box minW={0}>
+                <Text fontSize="sm" fontWeight="semibold" color="status.error">
+                  {autoplayError.title}
+                </Text>
+                <Text fontSize="xs" color="fg.default" mt={1} lineHeight="1.4">
+                  {autoplayError.message}
+                </Text>
+                {autoplayErrorDetail && (
+                  <Text
+                    fontSize="xs"
+                    color="fg.muted"
+                    fontFamily="mono"
+                    mt={2}
+                    title={autoplayStatus.lastError ?? undefined}
+                    truncate
+                  >
+                    {autoplayErrorDetail}
+                  </Text>
+                )}
+              </Box>
+            </HStack>
+          </Box>
+        )}
       </Flex>
     </Flex>
   );

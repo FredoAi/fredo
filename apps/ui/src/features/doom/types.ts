@@ -200,6 +200,157 @@ export function formatDoomState(raw: unknown): FormattedDoomState {
   return { advancedKey, advancedValue, pairs, rawJson };
 }
 
+// ── Autoplay contract (Spec #2969, ST-7) ─────────────────────────────────────
+//
+// Mirrors the Rust contract in `features/doom/autoplay.rs` (serde camelCase over
+// IPC) verbatim — the binding names adopted by the plan. No I/O happens here:
+// the types describe what the ST-5 commands/event deliver, and the helpers
+// format them for the `DoomAutoplayControls` cluster.
+
+/** The autoplay lifecycle phase (binding enum, camelCase over IPC). */
+export type DoomAutoplayPhase = 'idle' | 'running' | 'stopping' | 'completed' | 'failed';
+
+/** The typed autoplay failure vocabulary (binding enum, camelCase over IPC). */
+export type DoomAutoplayErrorCode =
+  | 'notReady'
+  | 'decisionFailed'
+  | 'engineRequestFailed'
+  | 'budgetExhausted';
+
+/** The `doom-autoplay-changed` event name (ST-5 emits it to the `doom` window). */
+export const DOOM_AUTOPLAY_EVENT = 'doom-autoplay-changed';
+
+/** Maximum advance steps a single autoplay run may issue (backend default). */
+export const DOOM_AUTOPLAY_MAX_STEPS = 600;
+/** Maximum consecutive decision failures before the run stops (backend default). */
+export const DOOM_AUTOPLAY_MAX_FAILURES = 3;
+/** Longest `lastError` detail rendered in the failure box (AC-UI-2). */
+export const DOOM_AUTOPLAY_ERROR_MAX_CHARS = 120;
+
+/** `doom-autoplay-changed` payload + `get_doom_autoplay_status` return. */
+export interface DoomAutoplayStatus {
+  phase: DoomAutoplayPhase;
+  running: boolean;
+  steps: number;
+  decisions: number;
+  failures: number;
+  consecutiveFailures: number;
+  lastTic: number | null;
+  outcome: string | null;
+  startedAt: string | null;
+  lastError: string | null;
+  code: DoomAutoplayErrorCode | null;
+}
+
+/** `start_doom_autoplay` result — always returned, never a hang. */
+export interface DoomAutoplayResult {
+  success: boolean;
+  phase: DoomAutoplayPhase;
+  steps: number;
+  code: DoomAutoplayErrorCode | null;
+  error: string | null;
+}
+
+/** The initial idle status (mirrors the backend's `idle_status()`). */
+export const DOOM_AUTOPLAY_IDLE_STATUS: DoomAutoplayStatus = {
+  phase: 'idle',
+  running: false,
+  steps: 0,
+  decisions: 0,
+  failures: 0,
+  consecutiveFailures: 0,
+  lastTic: null,
+  outcome: null,
+  startedAt: null,
+  lastError: null,
+  code: null,
+};
+
+/** The human-facing failure copy per `DoomAutoplayErrorCode` (UI/UX error table). */
+export const DOOM_AUTOPLAY_ERROR_MESSAGES: Record<
+  DoomAutoplayErrorCode,
+  { title: string; message: string }
+> = {
+  notReady: {
+    title: 'Engine not ready',
+    message:
+      "The Doom engine wasn't ready to accept autoplay. Start the engine, then try again.",
+  },
+  decisionFailed: {
+    title: 'Companion stalled',
+    message: "The companion couldn't produce a usable decision within the failure budget.",
+  },
+  engineRequestFailed: {
+    title: 'Lost contact',
+    message: 'Lost contact with the Doom engine while playing. Restart and try again.',
+  },
+  budgetExhausted: {
+    title: 'Run finished',
+    message: 'Autoplay reached its step budget and stopped cleanly.',
+  },
+};
+
+/** Resolve the human copy for a code, defaulting to a generic typed failure. */
+export function doomAutoplayErrorMessage(code: DoomAutoplayErrorCode | null | undefined): {
+  title: string;
+  message: string;
+} {
+  if (code && code in DOOM_AUTOPLAY_ERROR_MESSAGES) {
+    return DOOM_AUTOPLAY_ERROR_MESSAGES[code];
+  }
+  return {
+    title: 'Autoplay error',
+    message: 'Autoplay hit an unexpected error. Start it again to retry.',
+  };
+}
+
+/** AC-UI-4: base-10 integer via `String(n)`; `lastTic === null` renders an em dash. */
+export function formatAutoplayTic(lastTic: number | null): string {
+  return lastTic === null ? '—' : String(lastTic);
+}
+
+/** The single-line status text per phase (the UI/UX state table). */
+export function doomAutoplayStatusLine(status: DoomAutoplayStatus): string {
+  switch (status.phase) {
+    case 'running':
+      return `Autoplay · step ${String(status.steps)} · tic ${formatAutoplayTic(
+        status.lastTic,
+      )} · ${status.outcome ?? 'alive'}`;
+    case 'stopping':
+      return 'Stopping autoplay…';
+    case 'completed':
+      return `Autoplay complete · ${String(status.steps)} steps${
+        status.outcome ? ` · ${status.outcome}` : ''
+      }`;
+    case 'failed':
+      return `Autoplay failed · ${String(status.steps)} steps`;
+    case 'idle':
+    default:
+      return 'Autoplay off';
+  }
+}
+
+/**
+ * AC-UI-7: the `m:ss` elapsed ticker from an RFC3339 `startedAt`. An unparseable
+ * (or absent) timestamp renders no ticker (`null`) — never throws.
+ */
+export function formatAutoplayElapsed(startedAt: string | null, nowMs: number): string | null {
+  if (!startedAt) return null;
+  const start = Date.parse(startedAt);
+  if (Number.isNaN(start)) return null;
+  const totalSeconds = Math.max(0, Math.floor((nowMs - start) / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+/** AC-UI-2: truncate the failure detail to `<= 120` chars (title carries the full text). */
+export function truncateAutoplayError(value: string | null): string | null {
+  if (!value) return null;
+  if (value.length <= DOOM_AUTOPLAY_ERROR_MAX_CHARS) return value;
+  return `${value.slice(0, DOOM_AUTOPLAY_ERROR_MAX_CHARS - 1)}…`;
+}
+
 /** A one-line, non-visual description of the current frame/state. */
 export function describeDoomFrame(phase: DoomRuntimePhase, raw: unknown): string {
   switch (phase) {

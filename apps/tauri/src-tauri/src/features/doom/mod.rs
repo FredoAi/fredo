@@ -25,6 +25,19 @@
 //!   ST-5.
 //! * `src/bin/doom_stub.rs` — the feature-gated stub engine. ST-8.
 //!
+//! Slice 2 (#2969) adds:
+//!
+//! * [`actions`] — the live-confirmed engine action vocabulary (`DOOM_ACTION_*`
+//!   consts plus the structured list the persona and scripted lever consume).
+//!   ST-1.
+//! * [`autoplay`] — the autoplay contract (phase/error vocabularies, status /
+//!   result wire models, bounded budget constants). ST-2.
+//! * [`decision`] — the deterministic scripted decision lever plus the
+//!   `FREDO_DOOM_AGENT_*` env seam. ST-2.
+//! * [`agent`] — the bounded read → decide → validate → step autoplay loop, the
+//!   terminal-state restart reaction, and the consecutive-failure budget (R-1,
+//!   R-3, R-4, R-5). ST-3.
+//!
 //! NOT here (later compilable units): the `doom` window + webview + main-window
 //! entry (CU-4, ST-6/ST-7).
 //!
@@ -36,8 +49,12 @@
 //! hard-killed orphan under an image guard.
 
 pub mod acquisition;
+pub mod actions;
+pub mod agent;
+pub mod autoplay;
 pub mod client;
 pub mod commands;
+pub mod decision;
 pub mod process;
 pub mod resolver;
 pub mod state;

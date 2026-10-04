@@ -10,6 +10,7 @@
 pub mod chat;
 pub mod commands;
 pub mod config;
+pub mod doom_agent;
 pub mod health;
 pub mod process;
 pub mod probe;
