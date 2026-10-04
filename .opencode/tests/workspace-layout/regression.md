@@ -52,3 +52,24 @@ The "must not change" baseline for the customizable workspace (issue #2949). Run
 ## CI-parity baseline
 
 - [ ] S-CI: the local `validate.yml` command set (`CONTRIBUTING.md:28-35`) is green on the spec tip — `typecheck`, `build`, `test:run`, `cargo check --locked`, `cargo test --locked`, `cargo clippy --locked -- -D warnings`. A workspace-layout change must not break any leg.
+
+---
+
+## #2954 extension — the arrange entry relocated out of the dock (G-136)
+
+> Issue #2954 removes the persistent dock but PRESERVES the always-discoverable arrange entry
+> (`[data-testid="dock-arrange"]` → `arrangeOpenWindows()`), RELOCATED into the engaged launcher
+> (ST-2), so #2949 AC1 does not regress. The `dock-arrange` binding in this suite stays valid; the
+> dock-hosted/positionable-dock expectations in R-4 (the dock listing every window, empty gate,
+> Sidebar↔Bottom relocation) are RETIRED — the dock no longer exists. Run alongside the new
+> launcher R-71 (arrange preserved) + F-118..F-125.
+
+- [ ] R-4' (rebind of R-4's arrange clause): with ≥1 window open and 0 tiled panes, the arrange entry
+      `[data-testid="dock-arrange"]` (`aria-label="Arrange windows"`) is present in its NEW launcher
+      host and dispatches `arrangeOpenWindows()` (tiles the open windows into
+      `[data-testid="workspace-pane-<windowId>"]`). `[data-testid="app-dock"]` is `count 0`.
+  **Expected:** the arrange capability is reachable at 0 panes exactly as in #2949 AC1 — only its host
+      changed. Reference launcher R-71 + `.opencode/tests/workspace-layout/functional.md` F-1/F-22.
+  - **Retired:** R-4's "the dock lists every open window once; empty gate (0 windows → no dock)" and
+    the Sidebar↔Bottom relocation clauses — the dock and its position store are removed by #2954.
+  - **Note:** R-8's `DockPositionSettings` reference is re-bound to the removal (see `settings`).
