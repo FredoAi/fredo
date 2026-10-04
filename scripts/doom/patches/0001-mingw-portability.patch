@@ -1,0 +1,83 @@
+diff --git a/src/doom/api.c b/src/doom/api.c
+index 549469b..fa9b778 100644
+--- a/src/doom/api.c
++++ b/src/doom/api.c
+@@ -19,6 +19,31 @@
+ #include "api_agent.h"
+ #include "api_snapshot.h"
+ 
++// MinGW-w64 does not provide `strcasestr` (a GNU/POSIX extension), so gcc 16
++// rejects the implicit declaration in API_ServeRequest. The only use is a
++// case-insensitive search for "close" in the Connection header; supply it from
++// `strncasecmp`, which `<strings.h>` does provide on Windows.
++#ifdef _WIN32
++static char *api_strcasestr(const char *haystack, const char *needle)
++{
++    size_t nlen = strlen(needle);
++
++    if (nlen == 0)
++    {
++        return (char *) haystack;
++    }
++    for (; *haystack != '\0'; haystack++)
++    {
++        if (strncasecmp(haystack, needle, nlen) == 0)
++        {
++            return (char *) haystack;
++        }
++    }
++    return NULL;
++}
++#define strcasestr api_strcasestr
++#endif
++
+ 
+ extern api_obj_description_t api_descriptors[];
+ char hud_message[512];
+diff --git a/src/doom/api_snapshot.c b/src/doom/api_snapshot.c
+index f414658..f39151a 100644
+--- a/src/doom/api_snapshot.c
++++ b/src/doom/api_snapshot.c
+@@ -20,6 +20,33 @@
+ #include "m_random.h"
+ #include "p_local.h"
+ 
++// MinGW-w64 does not provide `fmemopen` (POSIX), so gcc 16 rejects the implicit
++// declaration in API_PostSnapshotRestore. A snapshot is restored one at a time
++// and closed immediately, so on Windows stage the bytes through a `tmpfile` and
++// read them back - functionally identical to the in-memory stream the POSIX
++// build uses, without the fd exhaustion the fmemopen path was avoiding (only
++// one handle is open per restore).
++static FILE *reopen_snapshot(const char *data, size_t len)
++{
++#ifdef _WIN32
++    FILE *f = tmpfile();
++
++    if (f == NULL)
++    {
++        return NULL;
++    }
++    if (len > 0 && fwrite(data, 1, len, f) != len)
++    {
++        fclose(f);
++        return NULL;
++    }
++    rewind(f);
++    return f;
++#else
++    return fmemopen((void *) data, len, "rb");
++#endif
++}
++
+ // One held state. `stream` is a `tmpfile`, which is the portable way to get a
+ // `FILE *` the savegame writer can use without inventing a second one: the
+ // archive functions in p_saveg.c write through `save_stream` and nothing
+@@ -496,7 +523,7 @@ api_response_t API_PostSnapshotRestore(cJSON *req)
+      * says, and the two together are a full resynchronisation. */
+     API_ReleaseControls();
+ 
+-    replay = fmemopen(slots[slot].data, slots[slot].len, "rb");
++    replay = reopen_snapshot(slots[slot].data, slots[slot].len);
+     if (replay == NULL)
+     {
+         return API_CreateErrorResponse(500, "could not reopen the snapshot");

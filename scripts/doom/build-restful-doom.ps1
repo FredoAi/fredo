@@ -4,18 +4,20 @@
     Build the RESTful-DOOM engine from source and stage it for Fredo (Spec #2968, ST-2).
 
 .DESCRIPTION
-    Reproducible, idempotent Windows build of `mkschreder/restful-doom` — the
+    Reproducible, idempotent Windows build of `mkschreder/restful-doom` -- the
     Chocolate-Doom-derived fork that exposes the HTTP+JSON API Fredo drives
     (`GET /api/state`, `POST /api/step`, `GET /api/frame`).
 
     The build runs inside an MSYS2 "MINGW64" environment. This script:
 
-      1. locates the MSYS2 MINGW64 toolchain (exit 2 when absent — TOOLING GAP),
+      1. locates the MSYS2 MINGW64 toolchain (exit 2 when absent -- TOOLING GAP),
       2. refuses all network access when `FREDO_DOOM_BUILD_OFFLINE=1` (exit 3),
       3. ensures the pinned pacman dependency set (idempotent, `--needed`),
       4. clones / updates the fork and checks out the pinned commit,
-      5. runs `./autogen.sh && ./configure --prefix=/mingw64 && make`,
-      6. stages `src/restful-doom.exe` at `<InstallDir>/engine/restful-doom.exe`.
+      5. applies the portability patches in `scripts/doom/patches` (the fork is
+         POSIX-only and does not compile as-is against MinGW-w64 + gcc 16),
+      6. runs `./autogen.sh && ./configure --prefix=/mingw64 CFLAGS=-std=gnu11 && make`,
+      7. stages `src/restful-doom.exe` at `<InstallDir>/engine/restful-doom.exe`.
 
     The built binary and the WAD are NEVER committed and NEVER bundled. This is a
     development / QA-time producer for the resolver's staged engine candidate
@@ -42,7 +44,7 @@
     `<InstallDir>\build\restful-doom`. Never committed.
 
 .OUTPUTS
-    Exit 0  staged OK — stdout is the staged engine path (one line).
+    Exit 0  staged OK -- stdout is the staged engine path (one line).
     Exit 2  MSYS2 MINGW64 toolchain not found (TOOLING GAP).
     Exit 3  offline requested, or clone/fetch/checkout failed.
     Exit 4  autogen/configure/make failed.
@@ -63,13 +65,13 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# ── Exit codes (typed contract, ST-2) ────────────────────────────────────────
+# -- Exit codes (typed contract, ST-2) ----------------------------------------
 $ExitOk        = 0
 $ExitToolchain = 2
 $ExitClone     = 3
 $ExitBuild     = 4
 
-# The pinned pacman dependency set (docs/doom-mode-acquisition.md §6.1).
+# The pinned pacman dependency set (docs/doom-mode-acquisition.md section 6.1).
 $Dependencies = @(
     'base-devel',
     'git',
@@ -119,28 +121,46 @@ function ConvertTo-MsysPath([string]$WindowsPath) {
 }
 
 # Run one command through the MSYS2 MINGW64 login shell; returns its exit code.
+#
+# The command's stdout/stderr are relayed to the host console rather than left on
+# the success stream: a bare `& $bash ...` would otherwise prepend every output
+# line to the function's return value, so callers comparing the result to 0 would
+# see a non-empty array and misfire. Capture the exit code first, then relay.
 function Invoke-Msys2Bash([string]$Root, [string]$Command) {
     $bash = Join-Path $Root 'usr\bin\bash.exe'
     $env:MSYSTEM = 'MINGW64'
     $env:CHERE_INVOKING = '1'
     Write-Log "msys2> $Command"
-    & $bash -lc $Command
-    return $LASTEXITCODE
+    # Native commands (pacman, configure, make) write progress/warnings to
+    # stderr; under the script-level `ErrorActionPreference = 'Stop'` those would
+    # be treated as terminating errors and abort the build. Relay both streams to
+    # the host console under a locally relaxed preference, and capture the exit
+    # code before any cmdlet can clobber $LASTEXITCODE.
+    $previousEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = & $bash -lc $Command 2>&1
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousEap
+    }
+    if ($output) { $output | ForEach-Object { [Console]::Out.WriteLine($_) } }
+    return $code
 }
 
-# ── 1. Offline gate (before ANY network or filesystem mutation) ──────────────
+# -- 1. Offline gate (before ANY network or filesystem mutation) --------------
 if ($env:FREDO_DOOM_BUILD_OFFLINE -eq '1') {
     Stop-With $ExitClone 'FREDO_DOOM_BUILD_OFFLINE=1 is set: refusing network access. Unset it to clone and build the engine.'
 }
 
-# ── 2. Locate the toolchain (TOOLING GAP when absent) ────────────────────────
+# -- 2. Locate the toolchain (TOOLING GAP when absent) ------------------------
 $root = Find-Msys2Root
 if (-not $root) {
-    Stop-With $ExitToolchain "MSYS2 MINGW64 not found (no <root>\usr\bin\bash.exe under: -Msys2Root, %MSYS2_ROOT%, %MSYS2%, C:\msys64, %ProgramFiles%\msys64). Install MSYS2 from https://www.msys2.org/ — this is a TOOLING GAP, not a script error."
+    Stop-With $ExitToolchain "MSYS2 MINGW64 not found (no <root>\usr\bin\bash.exe under: -Msys2Root, %MSYS2_ROOT%, %MSYS2%, C:\msys64, %ProgramFiles%\msys64). Install MSYS2 from https://www.msys2.org/ -- this is a TOOLING GAP, not a script error."
 }
 Write-Log "MSYS2 root: $root"
 
-# ── 3. Idempotent short-circuit: an already-staged pinned engine wins ─────────
+# -- 3. Idempotent short-circuit: an already-staged pinned engine wins ---------
 $engineDir = Join-Path $InstallDir 'engine'
 $stagedExe = Join-Path $engineDir 'restful-doom.exe'
 $markerFile = Join-Path $engineDir '.restful-doom-commit'
@@ -151,17 +171,17 @@ if ((Test-Path -LiteralPath $stagedExe) -and (Test-Path -LiteralPath $markerFile
         Write-Output $stagedExe
         exit $ExitOk
     }
-    Write-Log "Staged engine is from $stagedCommit, want $EngineCommit — rebuilding."
+    Write-Log "Staged engine is from $stagedCommit, want $EngineCommit -- rebuilding."
 }
 
-# ── 4. Ensure the pinned MSYS2 dependency set (idempotent) ───────────────────
+# -- 4. Ensure the pinned MSYS2 dependency set (idempotent) -------------------
 # `-Sy` refreshes the package DB non-interactively; `--needed` makes a re-run a
 # no-op. The docs' `pacman -Syu` full-system upgrade is intentionally narrowed to
 # a bounded, non-interactive refresh so the script never blocks on a TTY.
 $depList = ($Dependencies -join ' ')
 $refresh = Invoke-Msys2Bash $root 'pacman -Sy --noconfirm'
 if ($refresh -ne 0) {
-    Stop-With $ExitToolchain "pacman database refresh failed (exit $refresh). MSYS2 is present but unusable — this is a TOOLING GAP."
+    Stop-With $ExitToolchain "pacman database refresh failed (exit $refresh). MSYS2 is present but unusable -- this is a TOOLING GAP."
 }
 Write-Log "Ensuring MSYS2 dependencies: $depList"
 $install = Invoke-Msys2Bash $root "pacman -S --needed --noconfirm $depList"
@@ -169,7 +189,7 @@ if ($install -ne 0) {
     Stop-With $ExitToolchain "pacman failed to install the MSYS2 dependency set (exit $install). This is a TOOLING GAP."
 }
 
-# ── 5. Clone / update the fork at the pinned commit ──────────────────────────
+# -- 5. Clone / update the fork at the pinned commit --------------------------
 if (-not $ScratchDir) {
     $ScratchDir = Join-Path $InstallDir 'build\restful-doom'
 }
@@ -196,15 +216,39 @@ if ($checkout -ne 0) {
     Stop-With $ExitClone "git checkout $EngineCommit failed (exit $checkout)."
 }
 
-# ── 6. Build (autogen -> configure -> make) ──────────────────────────────────
+# -- 5b. Apply the in-repo portability patches -------------------------------
+# The fork's HTTP/API layer is POSIX-only: it calls `fmemopen` and `strcasestr`,
+# neither of which MinGW-w64 provides, and gcc 16 rejects the implicit
+# declarations. The patches under scripts/doom/patches are the minimal,
+# documented source fixes; they are re-applied after the forced checkout so a
+# fresh clone always builds (the checkout discards any prior application).
+$patchDir = Join-Path $PSScriptRoot 'patches'
+if (Test-Path -LiteralPath $patchDir) {
+    $patchDirPosix = ConvertTo-MsysPath $patchDir
+    $patchFiles = @(Get-ChildItem -LiteralPath $patchDir -Filter '*.patch' | Sort-Object Name)
+    foreach ($patchFile in $patchFiles) {
+        $patchPosix = "$patchDirPosix/$($patchFile.Name)"
+        Write-Log "Applying patch $($patchFile.Name)"
+        $apply = Invoke-Msys2Bash $root "git -C '$scratchPosix' apply --whitespace=nowarn '$patchPosix'"
+        if ($apply -ne 0) {
+            Stop-With $ExitBuild "failed to apply patch $($patchFile.Name) (exit $apply)."
+        }
+    }
+}
+
+# -- 6. Build (autogen -> configure -> make) ----------------------------------
 # `--prefix=/mingw64` picks up the MSYS2 SDL2/SDL2_mixer/SDL2_net packages.
-$buildCmd = "cd '$scratchPosix' && ./autogen.sh && ./configure --prefix=/mingw64 && make -j`$(nproc)"
+# `CFLAGS=-std=gnu11` is REQUIRED: this 2017-era fork predates C23, and gcc 16
+# defaults to `-std=gnu23` where `false`/`true` are keywords, so its
+# `doomtype.h` boolean enum (`false, true`) fails to compile. Pinning gnu11 is
+# the minimal source-free fix and matches the era the fork targets.
+$buildCmd = "cd '$scratchPosix' && ./autogen.sh && ./configure --prefix=/mingw64 CFLAGS='-std=gnu11' && make -j`$(nproc)"
 $build = Invoke-Msys2Bash $root $buildCmd
 if ($build -ne 0) {
     Stop-With $ExitBuild "autogen/configure/make failed (exit $build). Fix the build output above and re-run."
 }
 
-# ── 7. Stage the built engine at the resolver's candidate path ───────────────
+# -- 7. Stage the built engine at the resolver's candidate path ---------------
 $builtExe = Join-Path $ScratchDir 'src\restful-doom.exe'
 if (-not (Test-Path -LiteralPath $builtExe)) {
     Stop-With $ExitBuild "build reported success but $builtExe does not exist."

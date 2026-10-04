@@ -3,3 +3,6 @@
 docs/agentic-pipeline/playbooks/references.md text eol=lf
 docs/agentic-pipeline/common-rules.md text eol=lf
 AGENTS.md text eol=lf
+# Build patches are applied with `git apply`, whose context lines must be LF;
+# autocrlf would rewrite them to CRLF on checkout and break the engine build.
+scripts/doom/patches/*.patch text eol=lf
