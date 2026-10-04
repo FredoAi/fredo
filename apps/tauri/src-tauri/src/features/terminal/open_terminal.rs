@@ -20,10 +20,10 @@ use crate::features::terminal::commands::{
     TerminalOpenRequestPayload,
 };
 use crate::features::terminal::state::{
-    SessionKind, TerminalPresentation, DEFAULT_KIND, DEFAULT_PRESENTATION,
-    TERMINAL_INTENT_AVAILABLE_EVENT, TERMINAL_PRESENTATION_KEY,
+    SessionKind, DEFAULT_KIND, TERMINAL_INTENT_AVAILABLE_EVENT,
 };
 use crate::infrastructure::app_open::{confirm_feature_open, AppOpenOutcome};
+use crate::infrastructure::app_window::{app_presentation, AppPresentation};
 use crate::infrastructure::ipc::CliResponse;
 use crate::infrastructure::storage::AppStore;
 
@@ -120,13 +120,11 @@ fn failed_response(message: String) -> CliResponse {
     }
 }
 
-/// The persisted presentation mode, applying the absent/unrecognized →
-/// [`DEFAULT_PRESENTATION`] fallback (R-4.1). Read per dispatch.
-fn persisted_presentation(app: &AppHandle) -> TerminalPresentation {
-    app.try_state::<Arc<AppStore>>()
-        .and_then(|state| state.control_get(TERMINAL_PRESENTATION_KEY).ok().flatten())
-        .and_then(|raw| TerminalPresentation::parse(&raw))
-        .unwrap_or(DEFAULT_PRESENTATION)
+/// The persisted presentation mode for Terminal, resolved through the shared
+/// per-app contract (map → legacy Terminal key → platform default, R-4.1). Read
+/// per dispatch.
+fn persisted_presentation(app: &AppHandle) -> AppPresentation {
+    app_presentation(app, "terminal")
 }
 
 /// Tell the active Terminal host an armed launch intent is ready to drain (the
@@ -203,7 +201,7 @@ pub async fn dispatch_open_terminal(
     });
 
     let presentation = persisted_presentation(app);
-    // The resolved mode is the branch discriminator; `TerminalPresentation::wire`
+    // The resolved mode is the branch discriminator; `AppPresentation::wire`
     // reports it in the diagnostic (the same kebab-case value the frontend
     // persists), so the shared contract's inverse-of-parse is exercised in
     // production, not only by tests.
@@ -214,7 +212,7 @@ pub async fn dispatch_open_terminal(
         "fredo open-terminal dispatch"
     );
 
-    if presentation == TerminalPresentation::SameWindow {
+    if presentation == AppPresentation::SameWindow {
         // Arm BEFORE the request: a cold workspace's mount handshake
         // (`list_terminal_sessions`) drains the intent and can run before the
         // confirmation resolves.

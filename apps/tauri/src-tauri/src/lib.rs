@@ -885,6 +885,11 @@ pub fn run() {
             // Features
             features::settings::commands::save_setting,
             features::settings::commands::get_setting,
+            // Control-plane KV access (Spec #2955): the frontend seam for keys
+            // the backend reads synchronously (e.g. the per-app window
+            // presentation map on the terminal per-emit hot path).
+            features::settings::commands::get_control_setting,
+            features::settings::commands::save_control_setting,
             // Per-user login auto-start backend (Spec #2992 ST-6): installs /
             // removes the `HKCU\...\Run\FredoIngest` entry that launches
             // `fredo ingest` at login. Registry-backed, bounded `reg.exe`.
@@ -902,6 +907,10 @@ pub fn run() {
             features::terminal::commands::resume_terminal_session,
             features::terminal::commands::delete_terminal_session_record,
             features::terminal::commands::rename_terminal_session_record,
+            // Platform-wide per-app window presentation (Spec #2955 ST-1): the
+            // singleton/focus authority every app's open/close routes through.
+            infrastructure::app_window::open_app_window,
+            infrastructure::app_window::close_app_window,
             features::setup::commands::check_cli_installations,
             features::setup::commands::install_plugin,
             features::setup::commands::get_plugin_source_path,

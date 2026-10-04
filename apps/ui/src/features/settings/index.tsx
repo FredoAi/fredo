@@ -41,20 +41,30 @@ export const settingsService = {
     const parse = deserialize ?? defaultDeserialize<T>;
 
     // 1. Try SQLite via Tauri
+    let raw: string | null | undefined;
     try {
-      const raw = await adapterBridge.invoke<string | null>('get_setting', { key });
-      if (raw != null && raw !== '') return parse(raw);
+      raw = await adapterBridge.invoke<string | null>('get_setting', { key });
     } catch {
-      // Tauri not available — fall through to localStorage
+      // A thrown transport error means no Tauri host (Vite dev server) — consult
+      // the localStorage shadow store.
+      return readShadow(key, defaultValue, parse);
     }
 
-    // 2. localStorage fallback (Vite dev server)
-    const stored = localStorage.getItem(key);
-    if (stored != null) {
-      try { return parse(stored); } catch { /* corrupted — use default */ }
-    }
+    // No adapter registered (jsdom / plain Vite dev server): the bridge resolves
+    // `undefined` instead of a real DB answer. That is the no-host signal, NOT an
+    // authoritative "absent", so the shadow fallback still applies here.
+    if (raw === undefined) return readShadow(key, defaultValue, parse);
 
-    return defaultValue;
+    // The DB read succeeded, so it is authoritative: an absent value (`null`/`""`)
+    // resolves to `defaultValue` and must NEVER be overridden by a stale
+    // localStorage shadow (AC4: absent → default). A corrupt value is likewise
+    // authoritative-absent — the shadow is not consulted.
+    if (raw === null || raw === '') return defaultValue;
+    try {
+      return parse(raw);
+    } catch {
+      return defaultValue;
+    }
   },
 
   /**
@@ -81,6 +91,20 @@ export const settingsService = {
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/**
+ * Read a value from the localStorage shadow store. Used ONLY when no Tauri host
+ * answered the DB read (a thrown transport error, or an unregistered bridge in
+ * the Vite dev server / jsdom). A successful DB read is authoritative and never
+ * reaches here — see `settingsService.get`.
+ */
+function readShadow<T>(key: string, defaultValue: T, parse: (raw: string) => T): T {
+  const stored = localStorage.getItem(key);
+  if (stored != null) {
+    try { return parse(stored); } catch { /* corrupted — use default */ }
+  }
+  return defaultValue;
+}
 
 function defaultDeserialize<T>(raw: string): T {
   try { return JSON.parse(raw) as T; } catch { return raw as unknown as T; }

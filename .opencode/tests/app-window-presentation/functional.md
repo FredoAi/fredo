@@ -40,13 +40,13 @@
   (Terminal `terminal`, Doom `doom`, Mission Monitor, Settings); confirm the factory app Query Viewer
   renders `app-presentation-multi-window-note-query-viewer` with its `-new-window` radio `disabled`.
   Select `app-presentation-mode-terminal-new-window`; read `app-presentation-status`; read the store
-  via `get_setting{key:"app_window_presentation"}`; perform a FULL app restart; reopen Settings → Apps.
+  via `get_control_setting{key:"app_window_presentation"}`; perform a FULL app restart; reopen Settings → Apps.
   **Expected:** the named rows are covered (assert COVERAGE of named elements, never a literal count —
   G-271); the choice writes immediately (`{"terminal":"new-window"}`, no Save footer) and shows a
   `app-presentation-status` confirmation; after the restart the Terminal `-new-window` radio is
   `aria-checked="true"` and the store still holds the value. A pre-hydration `app-presentation-loading`
   skeleton renders before the stored value resolves (no flash of a wrong pre-selection).
-  **Data:** `clean-fredo-db.ps1` for a fresh profile; `tauri_webview_execute_js` `get_setting` read-back.
+  **Data:** `clean-fredo-db.ps1` for a fresh profile; `tauri_webview_execute_js` `get_control_setting` read-back.
   **Edge:** keyboard-only radio operation; factory `-new-window` disabled; no re-render loop.
 
 - [ ] **F-2 (R-2 / AC2) — default opens in the main window; a stored `new-window` app opens in its own OS window.**
@@ -78,7 +78,8 @@
   `map.terminal` on first hydrate AND the backend falls back to it before the first hydrate, so
   Terminal routes by the legacy value. On mode change the superseded host is closed
   (`closeWindow(id)` and/or `close_app_window(id)`), leaving no orphaned or duplicate window.
-  **Data:** `set_setting`/`save_setting` seeding; `get_setting` read-back; restart.
+  **Data:** `save_control_setting` seeding (canonical map + legacy key, control plane);
+  `get_control_setting` read-back; restart.
   **Edge:** `"not-a-mode"` / JSON array / whitespace-only → default; legacy `"new-window"` wins until
   superseded; a live-session Terminal change shows `app-presentation-change-confirm` (Cancel via
   `app-presentation-change-cancel` leaves the host intact).

@@ -1,10 +1,12 @@
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback, useMemo } from 'react';
 import { Box } from '@chakra-ui/react';
 import { WindowSystemProvider } from '../../../shared/window-system/WindowSystemProvider';
 import { WindowManager } from '../../../shared/window-system/WindowManager';
 import { hydrateWorkspaceLayout, reopenHydratedSlots } from '../../../shared/window-system/workspaceLayoutStore';
 import { updateWindow } from '../../../shared/window-system/windowStore';
 import { useWindowActions } from '../../../shared/window-system/useWindowActions';
+import { createAppOpener } from '../../../shared/window-system/appWindows';
+import { hydrateAppPresentation } from '../../../shared/window-system/appPresentationStore';
 import { LauncherShell } from './launcher/LauncherShell';
 import { DesktopBackdrop } from './background/DesktopBackdrop';
 import { myWorkItemsFeature } from '../../my-workitems';
@@ -44,10 +46,15 @@ const HomeDesktop: React.FC<HomeDesktopProps> = ({ registerOpenFeature }) => {
   // `openSelf()` was null-noop for any feature never manually opened this
   // session. Registering eagerly is idempotent: openFeatureWindow()
   // re-registers on every open, replacing this callback with an equivalent.
+  //
+  // Spec #2955 ST-4: `openSelf()` is a USER-initiated open, so it routes through
+  // the presentation-aware `openApp` (not the raw in-window opener) — the
+  // per-app choice is honored here too. Internal transition callbacks stay on
+  // the raw `openFeatureWindowRef`.
   React.useEffect(() => {
     ALL_FEATURES.forEach((feature) => {
       feature.registerOpenCallback(() => {
-        openFeatureWindowRef.current(feature.id, feature);
+        openAppRef.current(feature.id, feature);
       });
     });
     // Spec #2896 ST-5 — bootstrap: materialize EVERY registered feature-data
@@ -114,11 +121,28 @@ const HomeDesktop: React.FC<HomeDesktopProps> = ({ registerOpenFeature }) => {
     });
   }, []);
 
+  // Spec #2955 ST-4 — boot-time hydration of the per-app presentation map, so
+  // the ONE `openApp` resolves the user's choice on the very first open without
+  // a flash. Idempotent + once-only at module scope; NO state write here (the
+  // store notifies its own subscribers), so this is a mount-only effect with no
+  // re-render loop (#523). `openApp` also awaits hydration, so this is purely
+  // eager readiness.
+  useEffect(() => {
+    void hydrateAppPresentation();
+  }, []);
+
   // Track open features so we can route deliveries and call lifecycle hooks
   const openFeaturesRef = useRef<Map<string, FredoFeatureClass>>(new Map());
 
   // Stable ref to allow recursive calls inside transition callbacks without circular deps
   const openFeatureWindowRef = useRef<(id: string, feature: FredoFeatureClass) => void>(() => {});
+
+  // Spec #2955 ST-4 — the presentation-aware opener ref. USER-initiated entry
+  // points (openSelf registration, launcher grid, Open-apps row, app-open CLI /
+  // companion skill) read THIS; internal transition callbacks keep using the
+  // raw `openFeatureWindowRef` so a workitem transition never re-routes through
+  // the per-app choice.
+  const openAppRef = useRef<(id: string, feature: FredoFeatureClass) => void>(() => {});
 
   const openFeatureWindow = useCallback((id: string, feature: FredoFeatureClass) => {
     openWindow({
@@ -140,8 +164,10 @@ const HomeDesktop: React.FC<HomeDesktopProps> = ({ registerOpenFeature }) => {
       closeWindow(id);
     });
 
+    // openSelf() is user-initiated — route it through the presentation-aware
+    // opener (Spec #2955 ST-4). Internal transition callbacks below stay raw.
     feature.registerOpenCallback(() => {
-      openFeatureWindowRef.current(feature.id, feature);
+      openAppRef.current(feature.id, feature);
     });
 
     feature.registerRerenderCallback(() => {
@@ -174,23 +200,42 @@ const HomeDesktop: React.FC<HomeDesktopProps> = ({ registerOpenFeature }) => {
     }, 0);
   }, [openWindow, closeWindow, updateWindow]);
 
+  // Spec #2955 ST-4 — THE ONE presentation-aware opener. Every USER-initiated
+  // open flows through it: the launcher grid + Open-apps row (via the
+  // registered opener), the `fredo open-app` / companion `open_app` round trip
+  // (`useAppOpenRequests`), and `openSelf`. `createAppOpener` awaits the per-app
+  // presentation hydration, then branches `new-window` → the Rust singleton
+  // native host (AC3) or `same-window` → the raw in-window `openFeatureWindow`.
+  //
+  // Internal transition callbacks and the #2949 `reopenHydratedSlots` restore do
+  // NOT route through here — they call `openFeatureWindowRef.current` directly,
+  // so a workitem transition / tiled-workspace restore always stays in-window.
+  // The bound in-window opener reads the ref at call time, so it always sees the
+  // latest `openFeatureWindow`; the factory itself is created once.
+  const openApp = useMemo(
+    () => createAppOpener((id, feature) => openFeatureWindowRef.current(id, feature)),
+    [],
+  );
+
   // #2893 ST-6 — the ONE app-open request/confirm loop: the CLI `open-app`
   // round trip (`app-open-request`) and the companion skill selection
   // (`llm-skill-call`) both resolve through `resolveAppIdentity` and open
-  // through THIS full-lifecycle `openFeatureWindow` (never a raw `openWindow`).
+  // through the ONE presentation-aware `openApp` (never a raw `openWindow`).
   // The backend addresses the `main` window only, so the terminal route never
   // receives these events.
-  useAppOpenRequests({ openFeatureWindow, features: SHOWABLE_FEATURES });
+  useAppOpenRequests({ openFeatureWindow: openApp, features: SHOWABLE_FEATURES });
 
-  // Keep the ref in sync so transition callbacks always call the latest version, and
-  // register the opener with the Home-level ref so the sibling LauncherShell (which
-  // renders outside HomeDesktop, inside the provider) can route launcher clicks through
-  // the own kernel's full-lifecycle openFeatureWindow. openFeatureWindow is a stable
-  // useCallback and registerOpenFeature is a stable useCallback, so this runs once.
+  // Keep the refs in sync so transition callbacks always call the latest version,
+  // and register the presentation-aware opener with the Home-level ref so the
+  // sibling LauncherShell (which renders outside HomeDesktop, inside the
+  // provider) routes launcher grid + Open-apps clicks through it. `openApp` and
+  // `openFeatureWindow` are stable useCallbacks and `registerOpenFeature` is a
+  // stable useCallback, so this runs once.
   useEffect(() => {
     openFeatureWindowRef.current = openFeatureWindow;
-    registerOpenFeature(openFeatureWindow);
-  }, [openFeatureWindow, registerOpenFeature]);
+    openAppRef.current = openApp;
+    registerOpenFeature(openApp);
+  }, [openFeatureWindow, openApp, registerOpenFeature]);
 
   // The decorative full-screen animated background (#2817) is gone — the clean
   // shell chrome (FREDO notch, avatar, search bar, side ticks, clock) is rendered
