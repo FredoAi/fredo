@@ -77,7 +77,7 @@ Slices 1-6 of the SQLite → embedded-PostgreSQL migration ship the **lifecycle 
 
 ## Doom Runtime (`features/doom`, Spec #2968)
 
-The Doom Mode foundation runs a RESTful-DOOM engine as a **supervised out-of-process child**, launched on demand by the `doom` window and controlled over loopback HTTP. The engine binary is **user-supplied** (no prebuilt exists upstream) and the default game data is the libre **Freedoom** IWAD; the installer ships **no GPL engine binary and no WAD**.
+The Doom Mode foundation runs a RESTful-DOOM engine as a **supervised out-of-process child**, launched on demand by the `doom` window and controlled over loopback HTTP. The engine binary is **built from source at development/QA time** by the committed `scripts/doom/build-restful-doom.ps1` (MSYS2 MINGW64) and staged into the local app-data directory; the runtime never builds it. The default game data is the libre **Freedoom** IWAD; the installer ships **no GPL engine binary and no WAD**.
 
 **Protections:**
 - Loopback-only: the engine binds `127.0.0.1:{port}` only — never a public interface
@@ -89,7 +89,7 @@ The Doom Mode foundation runs a RESTful-DOOM engine as a **supervised out-of-pro
 
 **Limitations:**
 - Any process on the same machine can reach the loopback engine port; the engine has no authentication — the same local-user threat model as the IPC socket and OTLP receivers
-- The engine is user-supplied, so its provenance is outside Fredo's integrity surface (documented in `docs/doom-mode-acquisition.md`)
+- The engine is built from source at dev/QA time (not shipped by the installer); its provenance is the pinned upstream commit plus the in-repo MinGW portability patch, staged outside the installer's integrity surface (documented in `docs/doom-mode-acquisition.md`)
 
 ---
 
