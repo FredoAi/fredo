@@ -1960,3 +1960,119 @@ The FIXED composition suppresses the hint chip in model mode (REQ-3), so the mod
       PASS is a FALSE PASS.** Never fabricate a query.
   - **Edge:** re-run on the tested tip; keep the emit + query output verbatim; the tester's
     `## Tests Runs` draft must end with `*Authored by Tester*`.
+
+---
+
+## #2954 extension — open-apps row inside the engaged launcher (live)
+
+> Issue #2954 moves the open-apps surface INTO the launcher. When engaged (bar focused OR query
+> present) an "Open apps" row renders ABOVE the app grid listing the currently-open windows; hidden
+> at rest; zero-windows → row ABSENT; the persistent dock/rail/edge-peek is removed. Tile click =
+> focus/restore; close control = close (entry leaves); query filters row + grid together. Map 1:1 to
+> `.opencode/tmp/2954/triage.md` `## QA Expert` (F-118..F-125 / R-1..R-5 + the zero-windows edge +
+> the MISSION-MONITOR E2E leg). **Verification policy: live** — `tauri_webview_dom_snapshot` +
+> `tauri_webview_screenshot` + `getBoundingClientRect`/`elementFromPoint` + `tauri_webview_interact` +
+> `tauri_read_logs(source="console")`, plus the mandatory `telemetry_spans` receipt (F-124). A
+> static-only PASS is a FALSE PASS.
+>
+> **Names (binding, Architect):** row root `[data-testid="launcher-open-apps"]`
+> (`role="region" aria-label="Open apps"`), heading `[data-testid="launcher-open-apps-heading"]`
+> (text `| OPEN APPS`), entry `[data-testid="launcher-open-app-entry-<windowId>"]`, close
+> `[data-testid="launcher-open-app-close-<windowId>"]`. Row gating:
+> `engaged && !paletteActive && currentWindows.length > 0`.
+
+## F-118 (R-1/AC1) — resting launcher renders NO open-apps surface; no persistent dock/rail/edge-peek
+
+- [ ] F-118: clean desktop, ≥1 window open (Mission Monitor + Query Viewer); launcher NOT engaged.
+      `dom_snapshot(structure)` + `find_element` scan for `[data-testid="launcher-open-apps"]`,
+      `[data-testid="app-dock"]`, `[data-dock-entry]`, `[data-dock-item]`, `.dock-close`; then
+      `document pointermove` along the left + bottom edges and re-scan.
+  **Expected:** all five selectors `count 0` at rest AND after each edge probe — no dock/rail/row/
+      edge-peek. **FAIL** if any selector matches or an edge reveal produces an open-apps surface.
+  - **Edge:** ≥1 window minimized (the #2848 dock was resting-visible); a maximized window (the
+    #2838 edge-peek state); light + dark.
+
+## F-119 (R-1/AC1 zero-windows edge, G-123/G-265) — engaged + 0 windows → row ABSENT, not an empty box
+
+- [ ] F-119: START from the pre-feature state — close ALL windows (0 open). Engage the launcher
+      (focus `input[role="searchbox"]` / Ctrl+Space). DOM-snapshot. Repeat with a non-empty query and
+      with the `>` action palette.
+  **Expected:** `[data-testid="launcher-open-apps"]` `count 0` — the row is ABSENT, never an empty
+      container/heading; the app grid still renders normally. **FAIL** if an empty box/heading renders.
+  - **Edge:** 0 windows + empty query; 0 windows + non-empty query; 0 windows + palette; 0 windows
+    resting. (G-170: assert the grid's resting rect is present so absence is not vacuous.)
+
+## F-120 (R-2/AC2) — engaged + ≥1 window → row above the grid, exactly the open windows
+
+- [ ] F-120: open 2 windows (Mission Monitor, Query Viewer) with one minimized; engage. Read the row
+      root (`role="region" aria-label="Open apps"`), the heading text, and each
+      `[data-testid="launcher-open-app-entry-<windowId>"]`; compare `getBoundingClientRect()` of the
+      row vs `#fredo-launcher-grid`.
+  **Expected:** entry count == `currentWindows.length`, one per open window, ids match the store,
+      order == store order; heading text `| OPEN APPS`; the row rect is ABOVE the grid rect with zero
+      overlap (G-253); `aria-label=openAppEntryLabel(win)`. **FAIL** on a duplicate/missing entry or
+      row/grid overlap.
+  - **Edge:** 1 window; 3 windows; a minimized window (`<title> (minimized)`); the focused window
+    (`aria-current="step"`); 900×600.
+
+## F-121 (R-3/AC3) — activate = focus/restore; close = close + entry leaves
+
+- [ ] F-121: with 2 windows (one minimized), click an entry → the window restores/raises (not
+      minimized, topmost via `elementFromPoint`). Then click the other entry's
+      `[data-testid="launcher-open-app-close-<id>"]`.
+  **Expected:** activate dispatches `focusWindow(id)` (minimize cleared, z raised); close dispatches
+      `closeWindow(id)` — ONLY that window closes, its entry leaves the row, the other entry remains;
+      the close control renders only when `win.canClose`. **FAIL** if the wrong window closes or the
+      entry persists.
+  - **Edge:** activate an already-focused non-minimized window (no-op); close the LAST window → row
+    disappears entirely; keyboard Enter/Space on the entry/close buttons; `stopPropagation` keeps
+    close from activating.
+
+## F-122 (R-4/AC4) — query filters the row AND the grid from the SAME query
+
+- [ ] F-122: open Mission Monitor + Query Viewer; type `miss`; then `query`; then clear. Snapshot the
+      row entries and the grid tiles each time.
+  **Expected:** with `miss` the row lists ONLY Mission Monitor and the grid shows the Mission Monitor
+      tile; with `query` the row lists ONLY Query Viewer and the grid shows the Query Viewer tile;
+      cleared/whitespace → both full; case-insensitive substring on `win.title`. **FAIL** if the row
+      and grid use different predicates.
+  - **Edge:** a query matching a grid entry with NO open window (grid only, row empty); a query
+    matching an open window title with no grid tile (row only); mixed case; leading/trailing
+    whitespace.
+
+## F-123 (R-4/AC4) — complex multi-condition gating matrix
+
+- [ ] F-123: drive (a) engaged + `>` palette + ≥1 window; (b) engaged + palette + 0 windows; (c)
+      engaged + normal query + windows; (d) resting + windows. Snapshot + measure the row/grid rects
+      in each.
+  **Expected:** the row renders iff `engaged && !paletteActive && currentWindows.length > 0`; (a)/(b)/
+      (d) → row ABSENT; (c) → row renders filtered; switching palette → normal query restores the
+      row. **FAIL** if the row renders in palette mode or at rest.
+  - **Edge:** rapid palette↔query toggling (no flicker, no console error); query present in both
+    states; the row never enters the grid's roving order.
+
+## F-124 (MISSION-MONITOR E2E, live) — boot + Mission Monitor sessions + open-apps row, grounded in telemetry_spans
+
+- [ ] F-124: boot the running app on the PG-default path; open Mission Monitor (its live session rows
+      render); open a second window; engage the launcher; exercise the row (activate + close); query
+      `telemetry_spans` (telemetry-query skill) for a NON-ZERO count + recent `max(ingested_at)`;
+      screenshot.
+  **Expected:** Mission Monitor renders its live session rows (`.mm-session-row`); the launcher
+      open-apps row lists the open windows and activate/close work; `telemetry_spans` NON-ZERO with a
+      recent `max(ingested_at)`. **FAIL** if `telemetry_spans` is empty/stale or Mission Monitor shows
+      no sessions.
+  - **Edge:** telemetry quiet at boot — still require the non-zero + recent-timestamp qualifier; a
+    static-only PASS is a FALSE PASS (G-108/G-102).
+  - **Lever (G-256):** the span-producing lever is the real OTLP ingest (`127.0.0.1:4317/4318`) from an
+    active session — NOT `fredo emit` (writes RTDB rows, not spans).
+
+## F-125 (R-5/AC5) — Settings dock-position control removed; no dock/rail/edge-peek reachable
+
+- [ ] F-125: open Settings → Appearance. Scan for `[data-testid="dock-position-settings"]` and any
+      "Dock position" label/select; scan the whole app for the REMOVED hooks (`app-dock`,
+      `data-dock-entry`, `data-dock-item`, `.dock-close`).
+  **Expected:** the dock-position control is ABSENT; `ThemingSettings` + `BackgroundSettings` still
+      render; no removed hook appears in any state (resting/engaged/maximized). **FAIL** if the
+      control or any removed hook renders.
+  - **Edge:** light + dark; a persisted `Fredo_dock_position` value present (orphaned, must not
+    resurrect the control); narrow viewport.
