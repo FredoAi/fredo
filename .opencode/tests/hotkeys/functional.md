@@ -813,3 +813,207 @@ Round-3 focus (F-5) is PASS — the REQ-5 regression is closed.
     Down → Up and report — environment artifact, NOT a spec FAIL); zero-live-session initial state
     (G-265: start from the pre-feature state and assert the trigger is reachable there).
 
+---
+
+## Spec #2961 — per-app contextual actions (S4 of the keyboard-first cluster)
+
+> Live-plan extension for issue #2961 (S4 of 5; builds on the merged #2958 contexts,
+> #2959 keyboard mode + bar, #2960 typing-vs-navigating). Rows F-72..F-87 map 1:1 to the
+> QA Plan in `.opencode/tmp/2961/triage.md` `## QA Expert` (`R-1..R-5` = AC1..AC5 +
+> `NFR-1..NFR-5` + the ST-4 G-123 continuous pin + the human-directive E2E row).
+> **Names bind to the Architect's BINDING names block (G-187/G-255).** Named target apps
+> (5 apps, 17 actions): `mission-monitor` (`s` focus session search, `n` next session,
+> `p` previous session), `diagram` (`s` search diagram, `f` fit view), `my-workitems`
+> (`r` refresh, `a` all sources, `z` Azure DevOps, `j` Jira), `optimizely` (`r` refresh,
+> `s` focus search, `e` expand all, `c` collapse all), `dev-mode` (`s` focus filter,
+> `c` clear events, `a` show all states, `v` switch rows/feature-data view). Declared-absence
+> exemplars (must contribute 0 app rows): `docs-viewer`, `github-viewer`, `browser-preview`,
+> `model-storage`, `setup`, `theming`, `query-viewer`, `terminal`. Reused DOM hooks:
+> `[data-testid="hotkeys-keyboard-bar-row"]` carrying `data-hotkey-action="<actionId>"` +
+> `data-availability="available|unavailable"`, `[data-testid="hotkeys-keyboard-bar-row-unavailable"]`,
+> `[data-testid="hotkeys-keyboard-bar-empty"]`, body `data-fredo-hotkey-context` / `-depth`,
+> `[data-testid="hotkeys-announcer"]`. NEW hooks: ST-1 `my-workitems-refresh`,
+> `my-workitems-source-all`, `my-workitems-source-azdo`, `my-workitems-source-jira`; ST-2
+> `optimizely-refresh`, `optimizely-search-input`, `optimizely-expand-all`,
+> `optimizely-collapse-all`; ST-3 `dev-mode-filter-input`, `dev-mode-clear-events`,
+> `dev-mode-show-all-states`, `dev-mode-view-toggle`. No new type/enum/command.
+>
+> **Verification policy: live** — every row carries the DOM/a11y/measured-rect/screenshot
+> assertion PLUS a `telemetry_spans` live receipt from a sanctioned span-producing lever in the
+> drive window (an active companion generation). **Live read lever (G-284):** the app boots on
+> the PostgreSQL-default path, so read `telemetry_spans` via the managed `psql` (db `postgres`,
+> URI from `pg_supervisor_status`) through `run-exitcode.ps1 -Command` — NOT the SQLite
+> `telemetry-query` skill. A static-only PASS fails closed (G-033). G-263: every live leg is
+> bounded.
+
+## F-72 (R-1.1 / R-1.2 / AC1) — App-specific actions appear, and only the focused app's
+
+- [ ] F-72: Focus each named app window (`mission-monitor`, `diagram`, `my-workitems`,
+      `optimizely`, `dev-mode`) one at a time; enter keyboard mode (`ctrl+shift+f8`); read
+      `[data-testid="hotkeys-keyboard-bar-row"]` + `data-hotkey-action` + `data-availability`.
+      **Expected:** the bar lists that app's declared actions ALONGSIDE the platform/global rows;
+      the app rows carry the EXACT action ids from the Names Block; NO other app's feature-tier
+      rows are present. **Data:** per-app row histogram keyed by `data-hotkey-action`; mode hook;
+      screenshot. *(live receipt)*
+  - **Edge:** focused app window but mode OFF (no bar); two app windows open → only the focused
+    one contributes; cold boot. **Lever:** launcher tile / window focus + `ctrl+shift+f8`.
+
+## F-73 (R-1.3 / AC1) — Focus A→B replaces app rows deterministically
+
+- [ ] F-73: Focus app A, sample rows; focus app B by keyboard only, re-sample; repeat A→B→A ≥3
+      cycles. **Expected:** A's app-specific rows are REPLACED by B's deterministically;
+      identical focus + keymap ⇒ identical row set each cycle; no stale A rows. **Data:** row sets
+      per cycle. *(live receipt)*
+  - **Edge:** rapid A↔B churn; A (mode ON) → B; window closed mid-switch. **Lever:** keyboard
+    focus switch (Ctrl+Tab / `g g` / launcher).
+
+## F-74 (R-2.1 / AC2) — A declared key runs the action with zero pointer
+
+- [ ] F-74: For each named app, with that app focused + mode ON, press each declared bare key via
+      `tauri_webview_keyboard`; inject a capture-phase pointer counter. **Expected:** the app's
+      action runs; ZERO `mousedown`/`click`/`pointerdown`; console clean. **Data:** action-effect
+      assertion + pointer counter. *(live receipt)*
+  - **Edge:** bare key with `default` vs `interactive` focus; key with mode OFF (inert); repeat
+    each key 2×. **Lever:** `tauri_webview_keyboard` + pointer counter.
+
+## F-75 (R-2.2 / AC2) — Each action performs the app's EXISTING core operation
+
+- [ ] F-75: After each F-74 press assert the app's real operation: MM `s` focus session search /
+      `n`,`p` move selection; Diagram `s` search / `f` fit; My Work Items `r` refresh / `a`,`z`,`j`
+      source filter; Feature Flags `r` refetch / `s` focus search / `e` expand all / `c` collapse
+      all; Dev Mode `s` focus filter / `c` clear events / `a` show all states / `v` view toggle.
+      **Expected:** each key performs the app's REAL existing operation (observable DOM/state
+      change), never a stub, never a new in-app navigation engine. **Data:** the operation's DOM
+      effect. *(live receipt)*
+  - **Edge:** action with no effect in current state (→ F-80); long list; streaming.
+
+## F-76 (R-3.1 / AC3) — Contextual reuse: only the focused app's action runs
+
+- [ ] F-76: Press `s` while `mission-monitor`, then `optimizely`, then `dev-mode` focused; repeat
+      `r` (`my-workitems` vs `optimizely`), `c` (`optimizely` vs `dev-mode`), `a` (`my-workitems`
+      vs `dev-mode`). **Expected:** only the FOCUSED app's action for that key runs; the other
+      app's action never runs. **Data:** action-effect counter per app. *(live receipt)*
+  - **Edge:** same key in two apps; focus switch mid-press; mode OFF. **Lever:** keyboard focus
+    switch + the shared key.
+
+## F-77 (R-3.2 / AC3) — The bar names each key's current meaning + the app context
+
+- [ ] F-77: With a named app focused + mode ON, read each row's title text, its key, and the app
+      context title. **Expected:** each row renders the action TITLE next to its KEY and the app
+      context title is visible, so the same key's current meaning is named where visible — never
+      silent. **Data:** row text + key + `data-fredo-hotkey-context`; screenshot. *(live receipt)*
+  - **Edge:** two apps with the same key; overflow (`+N more`) still names the app context;
+    narrow viewport (no clip; app rows sorted first and never dropped).
+
+## F-78 (R-3.3 / AC3) — Context + action digest announced via the ONE live region
+
+- [ ] F-78: Enter mode and switch the focused app; sample `[data-testid="hotkeys-announcer"]`
+      after each change. **Expected:** the app context + its action digest is announced through the
+      ONE shared polite live region (`role=status`, `aria-live=polite`); no second live region; not
+      colour-only. **Data:** announcer textContent; a11y snapshot. *(live receipt)*
+  - **Edge:** entry announcement; focus change; same-app re-fire (no stale re-announce).
+    **Lever:** mode entry + keyboard focus switch.
+
+## F-79 (R-4.1 / AC4) — Graceful absence: an app declaring nothing contributes none
+
+- [ ] F-79: Focus `docs-viewer` (then `github-viewer`) + mode ON; read the bar. **Expected:** only
+      global/platform rows render; NO app-specific row, NO separator / placeholder / empty-state
+      artifact. **Data:** row histogram (global-only); absence of any feature-tier row. *(live receipt)*
+  - **Edge:** each declared-absence exemplar (`docs-viewer`, `github-viewer`, `browser-preview`,
+    `model-storage`, `setup`, `theming`, `query-viewer`, `terminal`); switch from a named app to an
+    absence app. **Lever:** launcher tile focus to the absence app.
+
+## F-80 (R-5.1 / AC5) — State-gated actions are unavailable-with-reason, never dead
+
+- [ ] F-80: Drive each gated action's `enabled()` FALSE and inspect the row: (a) `my-workitems.refresh`
+      with `loading=true`; (b) `optimizely.collapseAll` with nothing expanded (initial state);
+      (c) `dev-mode.clearEvents` with `eventCount=0`; (d) `dev-mode.showAllStates` with all states
+      active. **Expected:** the row is `data-availability="unavailable"` with the declared reason
+      (`Work items are still loading` / `Nothing is expanded` / `No events to clear` /
+      `All states are already shown`) OR hidden by a DEFINED rule — NEVER actionable; pressing the
+      key performs nothing. **Data:** row availability + reason text (Range-bisection) + activation
+      attempt result. *(live receipt)*
+  - **Edge:** flip available→unavailable→available live; all-unavailable; long reason fully
+    readable; unavailable row non-focusable. **Lever:** drive `loading` / expand state /
+    `eventCount` / `allStatesActive`.
+
+## F-81 (R-5.2 / AC5) — Typing safety: a bare app key does not fire in a text field
+
+- [ ] F-81: Focus a text field inside a named app (`dev-mode-filter-input`,
+      `optimizely-search-input`, my-workitems search) and press that app's bare key (`r`, `s`,
+      `c`); read the row + field value. **Expected:** the bare-key app action does NOT run; the
+      character lands VERBATIM; the row shows `data-availability="unavailable"` with reason
+      `Unavailable while typing`; `data-fredo-focus-context="text-entry"`. **Data:** field value +
+      row state + focus context. *(live receipt)*
+  - **Edge:** input / textarea / contenteditable / password; blur lifts suppression; terminal
+    passthrough unchanged. **Lever:** focus the app's own text field.
+
+## F-82 (R-5.3 / AC5) — Keyboard-only focus switch is deterministic and never runs the previous app's action
+
+- [ ] F-82: Keyboard-only focus switch between two named apps (A→B) with mode ON; press A's key
+      immediately after B gains focus; repeat N≥3 cycles. **Expected:** the bar updates
+      deterministically to B's actions; A's action NEVER runs after the switch; identical cycles ⇒
+      identical rows/selection. **Data:** row set + action-effect counter per cycle. *(live receipt)*
+  - **Edge:** rapid churn; same key in both apps; switch while a sequence is pending; switch during
+    streaming. **Lever:** Ctrl+Tab / `g g` / launcher (no pointer).
+
+## F-83 (R-5.4 / AC5) — Action on a closed/unmounted app is a safe no-op
+
+- [ ] F-83: With a named app's action registered, CLOSE that app's window (unmount), then invoke
+      the action's dispatch path; read the console. **Expected:** safe no-op — no throw, no
+      unhandled rejection, no console `Error:`; nothing else changes. **Data:** console log +
+      absence of side effects. *(live receipt)*
+  - **Edge:** close then dispatch the bridge event; window closed then reopened (action works
+    again); dispatch for a never-mounted app. **Lever:** close the window (launcher/window control)
+    + invoke the shipped `<featureId>-hotkey-action` dispatch from the webview.
+
+## F-84 (G-123 / ST-4 continuous pin) — The app's action set is in force WHILE the app is focused
+
+- [ ] F-84: Dwell in a named app with mode ON across the sequence timeout, a within-app focus move,
+      and a theme switch; re-sample rows. Also confirm the ST-4 platform pins
+      `appContextReuse.test.ts` + `appActionSafety.test.ts` are green. **Expected:** for the WHOLE
+      time the app is focused the in-force action set is that app's (not re-derived only at the
+      transition); the ST-4 pins pass (focus-scoping, availability, typing). **Data:** row set
+      sampled after each perturbation; test-run output. *(live receipt)*
+  - **Edge:** dwell > timeout; focus move; theme switch; two apps live in two windows; heavy
+    streaming.
+
+## F-85 (NFR-3 / NFR-5 / a11y + theme) — Reachable, announced, non-colour-only, token-hygienic
+
+- [ ] F-85: Live focus/theme pass + static grep of the changed files. **Expected:** app actions are
+      reachable + announced (bar text + the ONE announcer), NOT colour-only; ZERO hardcoded
+      hex/rgba/hsla and ZERO `var(--x)NN` alpha-append in the changed files; legible in light AND
+      dark; the bar stays `aria-hidden` / non-focusable. **Data:** grep output; light/dark
+      screenshots; a11y snapshot. *(live receipt)*
+  - **Edge:** both themes; accent change; narrow/zoomed viewport; contrast floor; screen-reader
+    name on rows.
+
+## F-86 (NFR-1 / NFR-2 / NFR-4) — Latency, typing safety, reliability
+
+- [ ] F-86: Instrument keydown→effect timestamps for an app chord; count renders; drive the
+      text-entry + closed-window paths. **Expected:** the app chord effect begins ≤100 ms after
+      keydown; no per-keystroke re-render storm / no `Maximum update depth exceeded`; typing
+      suppression holds; a closed-app action is a no-op; no unhandled rejection. **Data:** timestamp
+      deltas; render counts; console. *(live receipt)*
+  - **Edge:** under streaming; rapid repeats; large action set; text-entry + terminal. **Lever:**
+    timestamp instrumentation + focus text field + close window.
+
+## F-87 (E2E, human directive — REQUIRED) — Running-app end-to-end on the PostgreSQL-default boot path
+
+- [ ] F-87: Boot the app on the PG-default path (dev-env Up); open Mission Monitor; drive a live
+      session; enter keyboard mode in a named app and read its bar rows. **Expected:** (a) the app
+      boots on the default path; (b) Mission Monitor still renders live sessions — the session list
+      derives from the CURRENT backend-declared `sessions` rollup (`useSessionHistory.ts` →
+      `useDeliverySessions`, backend `session_rollup.rs`; consumed by `MissionMonitorPanel.tsx`),
+      NOT the retired `useEventRows('Chat'|'ToolUse', {replay})` path (G-299); (c) the keyboard
+      action surface works (the named app's rows appear); the drive window carries a
+      `telemetry_spans` receipt via the managed `psql` lever; console clean.
+      **Data:** `telemetry_spans` rows (db `postgres`, via `run-exitcode.ps1 -Command`); the MM
+      live-session DOM; the named app's bar rows. *(live receipt)*
+  - **Edge:** cold boot; G-280 orphan `postgres.exe` / stale socket → full dev-env Down→Up then
+    report (environment artifact, NOT a spec FAIL); zero-live-session initial state (G-265).
+    **Seed lever (G-285):** the OTLP fixture MUST emit a rollup-QUALIFYING turn (a terminal chat
+    span with a non-blank agent reply) so a declared `sessions` row is created; the fixture's
+    ungated guard asserts the CONSUMER invariant (a `sessions` row renders), not merely fixture
+    self-shape.
+
