@@ -411,6 +411,35 @@ keymap was left unchanged (test residue).
       affordance, and the first-run hint in the accessibility tree. A colour-only or un-announced
       state promotes to F-66.
 
+## Spec #2961 — per-app contextual-action probes
+
+> Live-plan probes for issue #2961 (S4). Names bind to the Architect's FINAL BINDING names block
+> (see `functional.md` #2961 header). A confirmed finding PROMOTES to `functional.md` as a new
+> `F-` row (keep the origin note). Receipts via the managed `psql` lever reading `telemetry_spans`
+> (G-284).
+
+- [ ] E-43: **State-gated availability flips live.** Enter a named app, drive the gating state
+      (`my-workitems` `loading` on→off; `optimizely` expand-then-collapse so `expandedCount` >0→0;
+      `dev-mode` clear events so `eventCount` >0→0; `dev-mode` toggle all-states). Does the row flip
+      `available ⇄ unavailable-with-reason` in place with no stale dead entry? Promotes to F-80.
+- [ ] E-44: **Focus-switch churn between named apps.** Rapidly switch focus A↔B (keyboard-only) and
+      hammer A's key right after B gains focus. Does a stale row or the previous app's action ever
+      fire? Promotes to F-73/F-82.
+- [ ] E-45: **No-op on a closed/unmounted app.** With the app's action registered, close its window,
+      then invoke the action's dispatch path. Any throw, unhandled rejection, or console error
+      promotes to F-83/R-33.
+- [ ] E-46: **App key vs a global key (precedence).** Register/observe an app action whose key equals
+      a shipped global (hypothetical/if reachable). Which wins? The resolver is Fredo-first, so a
+      global shadowing an app key is the expected (declared) behaviour; an app action masking a
+      global is a finding. Promotes to R-29/G-220.
+- [ ] E-47: **Overflow with many app actions.** Focus an app whose rows (plus globals) exceed the bar
+      width. Are the app-specific rows preserved (context-first ordering) and does `+N more` reconcile
+      with the total, or are app rows silently dropped/clipped? Promotes to F-77/F-85.
+- [ ] E-48: **Declared-absence apps contribute nothing.** Focus each absence exemplar (`docs-viewer`,
+      `github-viewer`, `browser-preview`, `model-storage`, `setup`, `theming`, `query-viewer`,
+      `terminal`) + mode ON. Any app-specific row, separator, placeholder, or empty artifact promotes
+      to F-79/R-4.1.
+
 ## Teardown (run after this suite)
 
 - [ ] Restore the pre-run state: dismiss/clear the first-run hint flag to its pre-run value, toggle
