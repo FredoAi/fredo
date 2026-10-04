@@ -42,6 +42,7 @@ import {
   appOpenUnknownReply,
 } from '../../../shared/components/companion/appOpenReply';
 import { closeWindow, getWindowSnapshot } from '../../../shared/window-system/windowStore';
+import { closeAppOwnWindow } from '../../../shared/window-system/appWindows';
 import { resolveAppIdentity } from '../lib/appIdentity';
 import type { FredoFeatureClass } from '../../../shared/classes/FredoFeatureClass';
 
@@ -198,18 +199,31 @@ export function useAppOpenRequests({
       const { feature, displayName } = resolution;
 
       if (isCloseSkill) {
-        // Guarded close: the open-check comes from the kernel snapshot, so a
-        // not-open target performs ZERO close and is told the truth. The
-        // mechanism is the ONE shipped `windowStore.closeWindow` (idempotent +
-        // re-entrancy-guarded) — never a new window API. Then the reply states
-        // exactly what happened (never a close claim when nothing closed).
-        const targetIsOpen = getWindowSnapshot().some((entry) => entry.id === feature.id);
-        if (!targetIsOpen) {
-          pushAppOpenReply({ kind: 'failed', text: appCloseNotOpenReply(displayName) });
-          return;
+        // Spec #2955 ST-4 — close BOTH possible hosts and report honestly.
+        // The in-window host (when the app is open in the main kernel) closes
+        // through the ONE shipped `windowStore.closeWindow` (idempotent +
+        // re-entrancy-guarded); the app's NATIVE host closes through
+        // `closeAppOwnWindow`, which returns true ONLY when a native window
+        // actually existed. Success is claimed when EITHER host was open; a
+        // not-open target performs ZERO close and is told the truth (never a
+        // close claim when nothing closed). No CLI round trip, no direct opener.
+        const closedInWindow = getWindowSnapshot().some((entry) => entry.id === feature.id);
+        if (closedInWindow) {
+          closeWindow(feature.id);
         }
-        closeWindow(feature.id);
-        pushAppOpenReply({ kind: 'success', text: appCloseSuccessReply(displayName) });
+        void (async () => {
+          let closedNative = false;
+          try {
+            closedNative = await closeAppOwnWindow(feature.id);
+          } catch (err) {
+            console.warn('[useAppOpenRequests] close_app_window failed', err);
+          }
+          if (!closedInWindow && !closedNative) {
+            pushAppOpenReply({ kind: 'failed', text: appCloseNotOpenReply(displayName) });
+            return;
+          }
+          pushAppOpenReply({ kind: 'success', text: appCloseSuccessReply(displayName) });
+        })();
         return;
       }
 

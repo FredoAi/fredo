@@ -53,7 +53,13 @@ beforeEach(() => {
   resetWindowStoreForTests();
   handlers = {};
   unlistenSpy = vi.fn();
-  invokeMock = vi.fn().mockResolvedValue({ exitCode: 0, outcome: 'opened', message: null });
+  // `close_app_window` reports a boolean (false = no native host); every other
+  // command keeps the shipped CLI-result shape.
+  invokeMock = vi.fn(async (command: string) =>
+    command === 'close_app_window'
+      ? false
+      : { exitCode: 0, outcome: 'opened', message: null },
+  );
   const listenMock = vi.fn(async (event: string, handler: Handler) => {
     handlers[event] = handler;
     return unlistenSpy;
@@ -252,14 +258,14 @@ describe('useAppOpenRequests — llm-skill-call (companion path)', () => {
 
 // ── (c) llm-skill-call — the close_app intent (#2903 ST-3) ───────────────────
 
-describe('useAppOpenRequests — llm-skill-call (close_app path, #2903)', () => {
-  it('closes the resolved app window on close_app and pushes the deterministic close reply (#2903)', async () => {
+describe('useAppOpenRequests — llm-skill-call (close_app path, #2903/#2955 ST-4)', () => {
+  it('closes the resolved app in-window host on close_app and pushes the deterministic close reply (#2903)', async () => {
     await renderAppOpenHook();
     openWindow(windowParams('mission-monitor', 'Mission Monitor'));
     const closed = vi.fn();
     registerWindowCloseCallback('mission-monitor', closed);
 
-    act(() => {
+    await act(async () => {
       // `close` is stripped by the SAME normalizeAppQuery verb rule.
       handlers['llm-skill-call']({ skill: 'close_app', arguments: { app: 'close Mission Monitor' } });
     });
@@ -267,25 +273,45 @@ describe('useAppOpenRequests — llm-skill-call (close_app path, #2903)', () => 
     expect(pushed).toEqual([{ kind: 'success', text: 'Closing Mission Monitor' }]);
     expect(closed).toHaveBeenCalledTimes(1);
     expect(getWindowSnapshot().some((w) => w.id === 'mission-monitor')).toBe(false);
-    // Close NEVER round-trips the CLI, and NEVER opens a window.
-    expect(invokeMock).not.toHaveBeenCalled();
+    // ST-4: it ALSO asks the backend to close any native host; it NEVER
+    // round-trips the CLI and NEVER opens a window.
+    expect(invokeMock).toHaveBeenCalledWith('close_app_window', { appId: 'mission-monitor' });
+    expect(invokeMock).not.toHaveBeenCalledWith('run_open_app_cli', expect.anything());
+    expect(invokeMock).not.toHaveBeenCalledWith('open_app_window', expect.anything());
   });
 
-  it('performs zero actions and pushes the truthful not-open reply when close_app names a closed app (#2903)', async () => {
+  it('closes the native host when the app has no in-window entry and reports success honestly (ST-4)', async () => {
+    await renderAppOpenHook();
+    invokeMock.mockImplementation(async (command: string) =>
+      command === 'close_app_window'
+        ? true
+        : { exitCode: 0, outcome: 'opened', message: null },
+    );
+
+    await act(async () => {
+      handlers['llm-skill-call']({ skill: 'close_app', arguments: { app: 'Mission Monitor' } });
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith('close_app_window', { appId: 'mission-monitor' });
+    expect(pushed).toEqual([{ kind: 'success', text: 'Closing Mission Monitor' }]);
+  });
+
+  it('performs zero closes and pushes the truthful not-open reply when close_app names a closed app (#2903)', async () => {
     await renderAppOpenHook();
     // A DIFFERENT app is open and must remain untouched (zero spurious closes).
     openWindow(windowParams('other-app', 'Other App'));
     const otherClosed = vi.fn();
     registerWindowCloseCallback('other-app', otherClosed);
 
-    act(() => {
+    await act(async () => {
       handlers['llm-skill-call']({ skill: 'close_app', arguments: { app: 'Mission Monitor' } });
     });
 
     expect(pushed).toEqual([{ kind: 'failed', text: "Mission Monitor isn't open" }]);
     expect(otherClosed).not.toHaveBeenCalled();
     expect(getWindowSnapshot().map((w) => w.id)).toEqual(['other-app']);
-    expect(invokeMock).not.toHaveBeenCalled();
+    // No native window existed either (mock false) — reported honestly.
+    expect(invokeMock).toHaveBeenCalledWith('close_app_window', { appId: 'mission-monitor' });
   });
 
   it('performs zero actions for an unsupported close_app name (#2903)', async () => {
@@ -324,10 +350,10 @@ describe('useAppOpenRequests — llm-skill-call (close_app path, #2903)', () => 
     const closed = vi.fn();
     registerWindowCloseCallback('mission-monitor', closed);
 
-    act(() => {
+    await act(async () => {
       handlers['llm-skill-call']({ skill: 'close_app', arguments: { app: 'Mission Monitor' } });
     });
-    act(() => {
+    await act(async () => {
       handlers['llm-skill-call']({ skill: 'close_app', arguments: { app: 'Mission Monitor' } });
     });
 
@@ -343,7 +369,7 @@ describe('useAppOpenRequests — llm-skill-call (close_app path, #2903)', () => 
     vi.useFakeTimers();
     openWindow(windowParams('mission-monitor', 'Mission Monitor'));
 
-    act(() => {
+    await act(async () => {
       handlers['llm-skill-call']({ skill: 'close_app', arguments: { app: 'Mission Monitor' } });
     });
     await act(async () => {
@@ -352,7 +378,7 @@ describe('useAppOpenRequests — llm-skill-call (close_app path, #2903)', () => 
 
     // The close branch is terminal — no CLI, no direct opener, one reply.
     expect(openFeatureWindow).not.toHaveBeenCalled();
-    expect(invokeMock).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalledWith('run_open_app_cli', expect.anything());
     expect(pushed).toHaveLength(1);
   });
 });
