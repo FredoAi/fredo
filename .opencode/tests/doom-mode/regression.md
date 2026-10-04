@@ -49,3 +49,25 @@
 - `.opencode/tests/mission-monitor/` — F-31 E2E regression gate (unchanged surface).
 - `.opencode/tests/llama-setup/` — the managed `llama-server` + Gemma model files the model
   decision leg depends on (named TOOLING GAP if absent).
+
+---
+
+## Secret-activation slice (Spec #2970) — must-not-change baseline
+
+> **Verification policy: live** — the live-pipeline `telemetry_spans` reference plus
+> DOM/screenshot/process receipts per leg (managed `psql` at the manifest `ports.pg`,
+> G-284; a disclosed `telemetry-query.ps1 -PgPort`/`-Manifest` or app-pool
+> `feature_data_read` substitution allowed). A static-only PASS is a FALSE PASS.
+
+- [ ] R-13: **`?view=doom` route unchanged** — `Router.tsx:16-18` still renders `DoomWindow` for `?view=doom`; the route is opened by the Rust `open_doom_window` singleton and is independent of the (removed) feature-registry entry. Doom Mode activation must not perturb it. (Links: `doom-mode/functional.md` F-33/F-38.)
+- [ ] R-14: **Mode-off companion behaviour unchanged** — with the mode inactive, `stt_start` and the model-audio turn behave exactly as today; the existing disabled gate (`session.rs:316-321`) and the model-audio path (`commands.rs:814-821`) are unmodified on the mode-off path. `get_doom_mode_status.voiceSuppressed === false`. (Links: `voice-dictation/functional.md`.)
+- [ ] R-15: **Exit hooks co-exist** — `stop_doom_on_exit` clears the mode AND stops the runtime; the llama-server (`stop_llama_server_on_exit`) and PG (`pg_supervisor::stop_on_exit`) exit hooks still run (no early-return starves one). (Links: `llama-setup/functional.md`, `postgres-lifecycle/`.)
+- [ ] R-16: **Existing Doom runtime/autoplay surface unchanged** — `launch_doom_runtime`, `stop_doom_runtime`, `doom_read_state`, `doom_step`, `doom_frame`, `start/stop_doom_autoplay`, `doom-status-changed`, and the window singleton behave identically; the existing testids (`doom-root`, `doom-window-title`, `doom-frame-canvas`, `doom-state-readout`, `doom-step-button`, `doom-autoplay-toggle`, …) still render; the new `doom-exit-button` is additive. (Links: `doom-mode/functional.md` slice 1/2.)
+- [ ] R-17: **Companion skill registry pins unchanged** — `with_app_control()` and its tests are untouched; `with_app_control_and_doom()` is additive with offer order `open_app, close_app, doom_mode`. The `useAppOpenRequests` filter (`useAppOpenRequests.ts:168-174`) still ignores non-open/close skills (zero spurious opens). (Links: `companion/functional.md`.)
+- [ ] R-18: **No process leak / no second OS window** — across every activation/exit leg zero `restful-doom.exe` outlives its window/app (N-8); no SDL second OS window; `-noblit` still serves `/api/frame`. (Links: `doom-mode/functional.md` F-39-42.)
+- [ ] R-19: **Mission Monitor unaffected** — renders live sessions normally with the secret-activation slice present; the F-50 E2E row is the gate. (Links: `mission-monitor/functional.md`.)
+
+### Links added by this slice
+
+- `.opencode/tests/mission-monitor/` — F-50 E2E regression gate (unchanged surface).
+- `.opencode/tests/voice-dictation/` — the capture + model-audio pipeline the suppression gate reads (`session.rs`, `commands.rs`).
