@@ -34,6 +34,8 @@ Fredo accepts events from two sources. Hook/CLI input is unified into the canoni
 | OTLP HTTP | `127.0.0.1:4318` (OpenCode spans) | `OtlpHttp` |
 | `fredo emit` CLI | Named-pipe `CliCommand::EmitEvent` → `InternalAdapter` enrich → row classifier | `Hook` |
 
+> These are the DEFAULT loopback endpoints for the canonical (slot-0) environment. A **local test environment** (`dev-env.ps1 -EnvId <id> -EnvSlot <n>`, Spec #2944) resolves every dimension at runtime from `FREDO_*` env in `infrastructure/env.rs`: the Vite port, the MCP bridge base port, the OTLP gRPC/HTTP ports, the `fredo` CLI pipe (`FREDO_CLI_PIPE`), the data root/DB, and the WebView/app identity. Slot 0 keeps the legacy defaults; slots n≥1 use the contiguous block `16000 + 10*(n-1)`. A port collision fails closed (no scan or fallback).
+
 ---
 
 ## Communication Layer (`infrastructure/comm/`)
@@ -832,6 +834,8 @@ The local socket accepts newline-delimited JSON. Each message is a `CliCommand`.
 |----|------|
 | Windows | `\\.\pipe\fredo-ipc` |
 | macOS / Linux | `/tmp/fredo-ipc.sock` |
+
+> The pipe name is **environment-scoped** (Spec #2944): `FREDO_CLI_PIPE` overrides it, so a selected local test environment's `fredo` CLI targets only that environment's app. Unset, the legacy default above applies.
 
 ### CliCommand Schema
 

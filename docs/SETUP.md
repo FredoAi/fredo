@@ -239,4 +239,4 @@ The Doom game window (Spec #2968) runs a **user-supplied** RESTful-DOOM engine a
 
 The Tauri app does not require environment variables for basic operation. For connecting to external services (Azure DevOps, Kubernetes, Jira), configure credentials via the Settings panel in the app UI.
 
-For OTLP receivers, the endpoints are hardcoded to `127.0.0.1:4317` (gRPC) and `127.0.0.1:4318` (HTTP).
+For OTLP receivers, the endpoints default to `127.0.0.1:4317` (gRPC) and `127.0.0.1:4318` (HTTP) and are resolved at runtime from `FREDO_INGEST_GRPC_PORT` / `FREDO_INGEST_HTTP_PORT` (the headless `fredo ingest` `--grpc-port`/`--http-port` flags share those names). An isolated local test environment (`dev-env.ps1 -EnvId <id> -EnvSlot <n>`, Spec #2944) binds its own ports for the app, MCP bridge, OTLP receivers, and CLI pipe; slot 0 keeps these defaults.
