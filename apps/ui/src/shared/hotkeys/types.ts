@@ -232,6 +232,13 @@ export interface DispatchDecision {
 export type HotkeyContextChangeReason = 'enter' | 'back' | 'focus';
 
 /**
+ * The path length of an interaction context along the active path (Spec #2962):
+ * base only = 1, each explicit descent adds 1 (see DEPTH semantics in
+ * `contexts.ts`). A named alias so precedence/depth call sites read as intent.
+ */
+export type HotkeyContextDepth = number;
+
+/**
  * The stable snapshot of the active interaction context (Spec #2958). Identity
  * stable (a module-cached frozen object) so `useSyncExternalStore` never sees a
  * fresh object; it deliberately does NOT carry the label — resolve the label
@@ -240,7 +247,7 @@ export type HotkeyContextChangeReason = 'enter' | 'back' | 'focus';
 export interface HotkeyContextSnapshot {
   readonly contextId: HotkeyContextId;
   /** Path length; `1` = base only (see DEPTH semantics in `contexts.ts`). */
-  readonly depth: number;
+  readonly depth: HotkeyContextDepth;
   readonly reason: HotkeyContextChangeReason;
 }
 

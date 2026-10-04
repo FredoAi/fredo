@@ -37,6 +37,8 @@ import {
 } from '../registry';
 import { resetKeymapStoreForTests } from '../store';
 import { resolveActiveBindings } from '../engine';
+import { parseSequence } from '../keys';
+import { decideDispatch } from '../sequence';
 
 function featureAction(
   actionId: string,
@@ -223,6 +225,35 @@ describe('cumulative layered resolution', () => {
     ).map((b) => b.actionId);
 
     expect(order).toEqual(['fredo.global', 'demo.deep', 'demo.mid', 'demo.base']);
+  });
+
+  it('resolves a key reused across levels to the deepest binding first (deepest wins, R-2.1)', () => {
+    const actions = [
+      registered('demo.base', { featureId: 'demo', defaultSequence: 'g' }),
+      registered('demo.deep', {
+        featureId: 'demo',
+        contextId: 'demo.canvas',
+        defaultSequence: 'g',
+      }),
+    ];
+    const bindings = resolveContextBindings('demo', ['demo', 'demo.canvas'], actions);
+    // The deepest level leads, so the engine's FIRST exact match is the current
+    // level's action — the parent binding never runs while descended.
+    expect(bindings.map((b) => b.actionId)).toEqual(['demo.deep', 'demo.base']);
+
+    const stroke = parseSequence('g')[0];
+    const decision = decideDispatch({
+      stroke,
+      context: 'default',
+      pending: null,
+      bindings,
+      leader: null,
+      macroRecording: false,
+      nativeConsumes: false,
+      platform: 'win32',
+    });
+    expect(decision.outcome).toBe('match');
+    expect(decision.action?.actionId).toBe('demo.deep');
   });
 
   it('treats an omitted contextId as the feature base context (R-1.2)', () => {

@@ -125,6 +125,37 @@ export function unavailableReasonFor(decisionReason: string): string {
   }
 }
 
+// ── Platform precedence / observable shadowing (Spec #2962, R-2.1/R-4.1/R-4.2) ─
+
+/**
+ * The reason copy prefix for a binding SHADOWED by a deeper level's binding for
+ * the SAME sequence. The full copy is
+ * `` `${SHADOWED_UNAVAILABLE_PREFIX} ${winner.action.title}` `` — naming the
+ * winning action so the losing (parent) binding is observable to the user.
+ */
+export const SHADOWED_UNAVAILABLE_PREFIX = 'Shadowed by';
+
+/**
+ * The earlier (deeper) binding that shares `binding`'s `serialized` sequence, or
+ * `null` when `binding` is the winner (the first same-sequence entry) or no
+ * earlier entry shares the sequence.
+ *
+ * `resolveContextBindings` orders feature-tier bindings by context depth DESC
+ * (deepest first) and `matchSequence` returns the FIRST exact binding — so the
+ * earlier same-sequence entry is the one the engine actually runs when a key is
+ * reused across levels (Spec #2962, R-2.1/R-4.1/R-4.2).
+ */
+export function shadowingBinding(
+  binding: ResolvedBinding,
+  bindings: readonly ResolvedBinding[],
+): ResolvedBinding | null {
+  const winner = bindings.find((candidate) => candidate.serialized === binding.serialized);
+  if (!winner) return null;
+  if (winner === binding) return null;
+  if (winner.actionId === binding.actionId && winner.tier === binding.tier) return null;
+  return winner;
+}
+
 // ── Availability projection (asks the engine's OWN decision) ──────────────────
 
 /**
@@ -206,6 +237,19 @@ function availabilityFor(
   const decision = simulateDecision(binding, focus, macroRecording, bindings, platform);
   if (decision.outcome === 'match' && decision.action?.actionId === binding.actionId) {
     return { availability: 'available' };
+  }
+  // Spec #2962 (R-4.1/R-4.2): the decision matched a DIFFERENT action — the
+  // earlier, deeper binding for the SAME sequence. This row's binding is
+  // shadowed; name the winning action so the losing level is observable. Only
+  // taken when the matched action IS the earlier same-sequence binding.
+  if (decision.outcome === 'match' && decision.action !== undefined) {
+    const shadowing = shadowingBinding(binding, bindings);
+    if (shadowing !== null && shadowing.actionId === decision.action.actionId) {
+      return {
+        availability: 'unavailable',
+        unavailableReason: `${SHADOWED_UNAVAILABLE_PREFIX} ${shadowing.action.title}`,
+      };
+    }
   }
   return { availability: 'unavailable', unavailableReason: unavailableReasonFor(decision.reason) };
 }
