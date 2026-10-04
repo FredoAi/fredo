@@ -49,3 +49,25 @@
   cap with `BudgetExhausted` and no partial step? (Lever: env override.)
 - [x] E-20 (PASS 2026-10-04 #2969 r1 — 2nd start while running returned the live run (steps=239, not a reset) → single loop, no doubled rate, no second engine): Two `start_doom_autoplay` invocations in quick succession — is exactly one loop
   running (idempotent start), with no doubled `steps` rate and no second engine?
+
+---
+
+## Secret-activation slice (Spec #2970) — unscripted probes
+
+> **Verification policy: live** — probes run against the running artifact with the
+> `telemetry_spans` live-pipeline reference (managed `psql` at the manifest `ports.pg`,
+> G-284; a disclosed substitution allowed).
+>
+> **G-300:** every error/failure probe names an in-repo induction lever
+> (`FREDO_DOOM_MODE_FAIL_ENTER=1`, `FREDO_DOOM_ENGINE_PATH=...invalid.exe`,
+> `FREDO_DOOM_IWAD_PATH=...missing.wad`, `FREDO_DOOM_STOP_TIMEOUT_S` +
+> `FREDO_DOOM_STUB_HANG=1`) or is marked a static/unit pin, non-AC.
+
+- [ ] E-21: Type `iddqd` while a text input is focused — does the document-level listener (`useKonamiCode.ts:55-60`) still trigger, or does the field swallow it? (Lever: real engine; observe the mode event.)
+- [ ] E-22: Trigger the typed activation while the mode is already `entering` — is the second attempt a clean no-op (no second runtime, no second window)? (Lever: real engine; poll PIDs + window list.)
+- [ ] E-23: Close the `doom` window at the same instant as a `doom_step` is in flight — does exit complete cleanly with no panic and no orphan? (Lever: real engine + `doom-exit-button`/native close.)
+- [ ] E-24: Speak an ambiguous phrase ("fredo, do the thing") through the model-audio path — does the model avoid `doom_mode`, leaving the mode inactive with no half-entered state? (Lever: live model-audio turn; inspect `llm-skill-call`.)
+- [ ] E-25: Enter the mode, then hard-kill Fredo — on relaunch is the mode `inactive` (no persistence) and is the orphan engine swept? (Lever: hard-kill + relaunch.)
+- [ ] E-26: While active, exercise the launcher voice affordance — is it gated (`performanceGate`) with no voice error surfaced, and does `stt_start` still refuse with `code:"disabled"`? (Lever: real engine + suppression.)
+- [ ] E-27: Exit via the `doom` window close while a spoken "stop" is also being processed — is the double exit idempotent (no error, no residual suppression, no orphan)? (Lever: real engine + `doom_mode {action:"exit"}`.)
+- [ ] E-28: After an R-3.b exit, immediately re-type `iddqd` — does the mode re-enter cleanly with a fresh runtime and `enteredAt`, no stale window? (Lever: real engine; poll PIDs + `doom-mode-changed`.)
