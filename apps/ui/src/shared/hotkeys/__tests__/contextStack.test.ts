@@ -383,3 +383,138 @@ describe('useActiveHotkeyContext', () => {
     expect(result.current.depth).toBe(2);
   });
 });
+
+// ── Continuous nested-state invariant (Spec #2962 ST-4, G-123) ───────────────
+//
+// ST-4 owns the invariant that must hold for the WHOLE descended lifetime — not
+// only at the enter/unwind call-sites. These pins read the module-scoped stack
+// directly (the same path every keydown resolves against) across repeated reads,
+// a mid-lifetime same-focus sync, a base change, a window close and the cap.
+
+describe('continuous nested-state invariant (Spec #2962 ST-4)', () => {
+  /** Focus `demo`, derive the base, then descend the full demo chain (3 levels). */
+  function descendDemoChain(): void {
+    openFeature('demo');
+    syncHotkeyContextFromFocus();
+    expect(enterHotkeyContext('demo.canvas')).toBe(true);
+    expect(enterHotkeyContext('demo.canvas.node')).toBe(true);
+  }
+
+  it('holds the full active path for the whole descended lifetime, not just at enter', () => {
+    descendDemoChain();
+    expect(getHotkeyContextPath()).toEqual(['demo', 'demo.canvas', 'demo.canvas.node']);
+    expect(getActiveHotkeyContext()).toBe('demo.canvas.node');
+    expect(getHotkeyContextDepth()).toBe(3);
+
+    // Repeated reads (what every keydown's resolve performs) never mutate the path.
+    expect(getHotkeyContextPath()).toEqual(['demo', 'demo.canvas', 'demo.canvas.node']);
+    expect(getHotkeyContextDepth()).toBe(3);
+
+    // A same-focus sync mid-lifetime preserves the active descent (R-5.3).
+    syncHotkeyContextFromFocus();
+    expect(getHotkeyContextPath()).toEqual(['demo', 'demo.canvas', 'demo.canvas.node']);
+    expect(getHotkeyContextDepth()).toBe(3);
+    expect(getActiveHotkeyContext()).toBe('demo.canvas.node');
+  });
+
+  it('R-3.1/R-3.2: each Escape pops EXACTLY one level and at the base it is native', () => {
+    descendDemoChain();
+
+    expect(exitHotkeyContext()).toBe(true);
+    expect(getActiveHotkeyContext()).toBe('demo.canvas');
+    expect(getHotkeyContextDepth()).toBe(2);
+
+    expect(exitHotkeyContext()).toBe(true);
+    expect(getActiveHotkeyContext()).toBe('demo');
+    expect(getHotkeyContextDepth()).toBe(1);
+
+    // At the base the model must not consume Escape (R-3.2).
+    expect(exitHotkeyContext()).toBe(false);
+    expect(getActiveHotkeyContext()).toBe('demo');
+    expect(getHotkeyContextDepth()).toBe(1);
+  });
+
+  it('R-5.1/R-5.2: a focused-feature change discards every descent; re-entry starts at the top level', () => {
+    descendDemoChain();
+
+    openFeature('other');
+    syncHotkeyContextFromFocus();
+    expect(getActiveHotkeyContext()).toBe('other');
+    expect(getHotkeyContextDepth()).toBe(1);
+
+    // Re-entering the original feature starts at its TOP level — never stale.
+    openFeature('demo');
+    syncHotkeyContextFromFocus();
+    expect(getActiveHotkeyContext()).toBe('demo');
+    expect(getHotkeyContextPath()).toEqual(['demo']);
+    expect(getHotkeyContextDepth()).toBe(1);
+  });
+
+  it('R-5.1: the window-close subscription (no manual sync) re-derives the base and clears descents', () => {
+    const uninstall = installHotkeyContextTracking();
+    try {
+      openFeature('demo');
+      expect(getActiveHotkeyContext()).toBe('demo');
+      expect(enterHotkeyContext('demo.canvas')).toBe(true);
+      expect(enterHotkeyContext('demo.canvas.node')).toBe(true);
+      expect(getHotkeyContextDepth()).toBe(3);
+
+      // The window-store notification ALONE must discard the descents (R-5.1).
+      closeWindow('demo');
+      expect(getActiveHotkeyContext()).toBe(ROOT_CONTEXT_ID);
+      expect(getHotkeyContextDepth()).toBe(1);
+
+      // Re-opening the feature starts at the top level (R-5.2).
+      openFeature('demo');
+      expect(getActiveHotkeyContext()).toBe('demo');
+      expect(getHotkeyContextDepth()).toBe(1);
+    } finally {
+      uninstall();
+    }
+  });
+
+  it('R-5.3: a same-base sync preserves the descent while a base change clears it', () => {
+    descendDemoChain();
+
+    // Re-focusing the SAME feature keeps the base → the descent is preserved.
+    openFeature('demo');
+    syncHotkeyContextFromFocus();
+    expect(getActiveHotkeyContext()).toBe('demo.canvas.node');
+    expect(getHotkeyContextDepth()).toBe(3);
+
+    // A base change → every descent is discarded.
+    openFeature('other');
+    syncHotkeyContextFromFocus();
+    expect(getActiveHotkeyContext()).toBe('other');
+    expect(getHotkeyContextDepth()).toBe(1);
+  });
+
+  it('bounds the stack at 8 frames and unwinds exactly one level per press from the cap', () => {
+    openFeature('demo');
+    syncHotkeyContextFromFocus();
+    for (let i = 1; i <= 7; i += 1) {
+      registerHotkeyContext({
+        contextId: `fredo.p${i}`,
+        parentId: ROOT_CONTEXT_ID,
+        title: `P${i}`,
+      });
+    }
+    for (let i = 1; i <= 7; i += 1) {
+      expect(enterHotkeyContext(`fredo.p${i}`)).toBe(true);
+    }
+    expect(getHotkeyContextDepth()).toBe(8);
+
+    // One more descent is refused and the active path is unchanged (bounded).
+    registerHotkeyContext({ contextId: 'fredo.p8', parentId: ROOT_CONTEXT_ID, title: 'P8' });
+    expect(enterHotkeyContext('fredo.p8')).toBe(false);
+    expect(getHotkeyContextDepth()).toBe(8);
+
+    // Unwind from the cap: exactly one level per press, no trap.
+    for (let depth = 7; depth >= 1; depth -= 1) {
+      expect(exitHotkeyContext()).toBe(true);
+      expect(getHotkeyContextDepth()).toBe(depth);
+    }
+    expect(exitHotkeyContext()).toBe(false);
+    expect(getHotkeyContextDepth()).toBe(1);
+  });
+});

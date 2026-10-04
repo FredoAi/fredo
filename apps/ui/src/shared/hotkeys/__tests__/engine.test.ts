@@ -12,7 +12,12 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { getWindowSnapshot, openWindow, resetWindowStoreForTests } from '@/shared/window-system/windowStore';
+import {
+  closeWindow,
+  getWindowSnapshot,
+  openWindow,
+  resetWindowStoreForTests,
+} from '@/shared/window-system/windowStore';
 import { getAnnouncement, resetHotkeyAnnouncer } from '../announcer';
 import {
   getHotkeyContext,
@@ -24,6 +29,7 @@ import {
   BODY_HOTKEY_CONTEXT_ATTR,
   enterHotkeyContext,
   getActiveHotkeyContext,
+  getHotkeyContextDepth,
   resetHotkeyContextForTests,
 } from '../contextStack';
 import {
@@ -1015,5 +1021,153 @@ describe('engine — input-regime body hook (Spec #2960 ST-1)', () => {
 
     expect(getFocusSnapshot()).toBe(before);
     expect(document.body.getAttribute(BODY_INPUT_REGIME_ATTR)).toBe('typing');
+  });
+});
+
+// ── 16. Continuous nested-state invariant (Spec #2962 ST-4, G-123) ───────────
+//
+// ST-4 owns the invariant that must hold for the WHOLE descended lifetime: every
+// keydown resolves against the active path with the DEEPEST level's binding in
+// force, each Escape pops exactly one level (and is native at the base), and a
+// focused-feature/window change discards the descents so re-entry starts at the
+// top level. These pins exercise the REAL engine path (sync → resolve → decide →
+// apply), not the stack call-sites in isolation.
+
+describe('engine — continuous nested-state invariant (Spec #2962 ST-4)', () => {
+  /**
+   * Register the demo feature's 3-level chain with the SAME key (`n`) bound at
+   * every level, so deepest-wins is observable at each depth.
+   */
+  function registerNestedDemo(): {
+    baseRun: ReturnType<typeof vi.fn>;
+    canvasRun: ReturnType<typeof vi.fn>;
+    nodeRun: ReturnType<typeof vi.fn>;
+  } {
+    registerFeatureHotkeyContexts('demo', [
+      { contextId: 'demo.canvas', parentId: 'demo', title: 'Canvas' },
+      { contextId: 'demo.canvas.node', parentId: 'demo.canvas', title: 'Node' },
+    ]);
+    const baseRun = vi.fn();
+    const canvasRun = vi.fn();
+    const nodeRun = vi.fn();
+    registerFeatureHotkeys('demo', [
+      { actionId: 'demo.baseNext', title: 'Base next', defaultSequence: 'n', run: baseRun },
+      {
+        actionId: 'demo.canvasNext',
+        title: 'Canvas next',
+        defaultSequence: 'n',
+        contextId: 'demo.canvas',
+        run: canvasRun,
+      },
+      {
+        actionId: 'demo.nodeNext',
+        title: 'Node next',
+        defaultSequence: 'n',
+        contextId: 'demo.canvas.node',
+        run: nodeRun,
+      },
+    ]);
+    return { baseRun, canvasRun, nodeRun };
+  }
+
+  it('R-4.2/R-3.1: a reused key runs the DEEPEST binding all lifetime; Escape restores the parent one level per press', () => {
+    const { baseRun, canvasRun, nodeRun } = registerNestedDemo();
+    installHotkeyEngine();
+    const el = mountNeutral();
+    openTestWindow('demo');
+
+    // L1 — the base binding is in force.
+    keydown(el, { key: 'n' });
+    expect(baseRun).toHaveBeenCalledTimes(1);
+    expect(getActiveHotkeyContext()).toBe('demo');
+
+    // L2 — the active path is [demo, demo.canvas]; the deeper binding wins.
+    expect(enterHotkeyContext('demo.canvas')).toBe(true);
+    keydown(el, { key: 'n' });
+    expect(canvasRun).toHaveBeenCalledTimes(1);
+    expect(baseRun).toHaveBeenCalledTimes(1); // no action from a non-current level
+
+    // L3 — the active path is [demo, demo.canvas, demo.canvas.node].
+    expect(enterHotkeyContext('demo.canvas.node')).toBe(true);
+    keydown(el, { key: 'n' });
+    keydown(el, { key: 'n' }); // repeated resolution stays on the deepest binding
+    expect(nodeRun).toHaveBeenCalledTimes(2);
+    expect(canvasRun).toHaveBeenCalledTimes(1);
+
+    // Escape pops exactly ONE level → the parent binding is now in force.
+    const first = dispatch({ key: 'Escape' });
+    expect(first.decision.outcome).toBe('context-back');
+    expect(first.prevented).toBe(true);
+    expect(getActiveHotkeyContext()).toBe('demo.canvas');
+    keydown(el, { key: 'n' });
+    expect(canvasRun).toHaveBeenCalledTimes(2);
+    expect(nodeRun).toHaveBeenCalledTimes(2);
+
+    // Escape again → the base binding is in force.
+    const second = dispatch({ key: 'Escape' });
+    expect(second.decision.outcome).toBe('context-back');
+    expect(getActiveHotkeyContext()).toBe('demo');
+    keydown(el, { key: 'n' });
+    expect(baseRun).toHaveBeenCalledTimes(2);
+
+    // At the base Escape is native — the context model must not consume it (R-3.2).
+    const third = dispatch({ key: 'Escape' });
+    expect(third.decision.outcome).toBe('passthrough');
+    expect(third.decision.consumed).toBe(false);
+    expect(third.prevented).toBe(false);
+    expect(getActiveHotkeyContext()).toBe('demo');
+  });
+
+  it('R-5.3/R-5.1/R-5.2: a same-focus sync preserves the descent; a focus change discards it and re-entry starts at the top', () => {
+    const { baseRun, canvasRun } = registerNestedDemo();
+    installHotkeyEngine();
+    const el = mountNeutral();
+    openTestWindow('demo');
+
+    expect(enterHotkeyContext('demo.canvas')).toBe(true);
+    expect(getHotkeyContextDepth()).toBe(2);
+
+    // A keydown on the SAME focused feature preserves the active descent (R-5.3).
+    keydown(el, { key: 'n' });
+    expect(canvasRun).toHaveBeenCalledTimes(1);
+    expect(getHotkeyContextDepth()).toBe(2);
+    expect(getActiveHotkeyContext()).toBe('demo.canvas');
+
+    // A focused-feature change discards every descent and re-derives the base.
+    openTestWindow('other');
+    expect(getHotkeyContextDepth()).toBe(1);
+    expect(getActiveHotkeyContext()).toBe('other');
+
+    // Re-entering the feature starts at its TOP level — never the stale deeper level.
+    openTestWindow('demo');
+    expect(getHotkeyContextDepth()).toBe(1);
+    expect(getActiveHotkeyContext()).toBe('demo');
+    keydown(el, { key: 'n' });
+    expect(baseRun).toHaveBeenCalledTimes(1);
+    expect(canvasRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('R-5.1/R-5.2: closing the focused window discards descents; re-entry starts at the top level', () => {
+    const { baseRun } = registerNestedDemo();
+    installHotkeyEngine();
+    const el = mountNeutral();
+    openTestWindow('demo');
+
+    expect(enterHotkeyContext('demo.canvas')).toBe(true);
+    expect(enterHotkeyContext('demo.canvas.node')).toBe(true);
+    expect(getHotkeyContextDepth()).toBe(3);
+
+    // The window-store subscription ALONE re-derives the base + clears descents.
+    closeWindow('demo');
+    expect(getActiveHotkeyContext()).toBe(ROOT_CONTEXT_ID);
+    expect(getHotkeyContextDepth()).toBe(1);
+    expect(document.body.hasAttribute(BODY_HOTKEY_CONTEXT_ATTR)).toBe(false);
+
+    // Re-open → the top level, never the stale deeper level.
+    openTestWindow('demo');
+    expect(getActiveHotkeyContext()).toBe('demo');
+    expect(getHotkeyContextDepth()).toBe(1);
+    keydown(el, { key: 'n' });
+    expect(baseRun).toHaveBeenCalledTimes(1);
   });
 });
