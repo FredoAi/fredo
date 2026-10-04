@@ -243,3 +243,20 @@ REQ-1..5 + NFR-1/3/4 (REQ-5 fixed), with NFR-2 carried as a named pin-only block
       operation runs with zero pointer events. **Expected:** the action effect is observable, no
       `mousedown`/`click`/`pointerdown` fired, console clean. *(live receipt)*
 
+## #2961 testing round 1 — quick-path results (spec/2961 @ b1234f44)
+
+Run on the served app (dev-env UP `-Spec 2961`, driver `com.fredo.app`, main window). Live
+`telemetry_spans` receipt via the managed `psql` lever (db `postgres`, port 64217; drive
+window 2026-10-04T02:00–02:35Z, `otlp_grpc`; store total 3951). Console clean of product
+errors.
+
+- [x] **S-21 PASS** — focusing `my-workitems` + `ctrl+shift+f8` renders the app's rows
+      (`R Refresh work items` visible; `refresh`/`showAllSources`/`showAzdo`/`showJira` in
+      the model) alongside the global rows, with the `my-workitems` context title; no other
+      app's feature rows.
+- [x] **S-22 PASS** — `my-workitems` `z`/`j`/`a` perform the real source-filter operation
+      with `{mousedown:0,click:0,pointerdown:0}`; `r` dispatches the refresh action once.
+- [x] **F-87 E2E PASS** — app boots on the PG-default path; MM renders the 7 declared
+      `feature_mission_monitor_sessions` rollup rows; MM bar shows `S Focus session search`;
+      live `telemetry_spans` receipt via the managed `psql` lever.
+
