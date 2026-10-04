@@ -220,14 +220,18 @@ src-tauri/src/
 |       +-- classify.rs         — quote/comment-aware statement splitter + `sqlparser` classification
 |       +-- query.rs            — read-only/destructive/`unknown` safety gates, execution, bounded result cache + pagination
 |       +-- commands.rs         — the nine `db_*` Tauri commands
-|   +-- doom/                   — Doom Mode runtime + dedicated game window (Spec #2968): RESTful-DOOM engine supervised as a bounded child process, loopback HTTP control, live frame canvas
+|   +-- doom/                   — Doom Mode runtime + dedicated game window (Spec #2968) + companion autonomous play (Spec #2969): RESTful-DOOM engine supervised as a bounded child process, loopback HTTP control, live frame canvas, bounded lockstep autoplay loop
 |       +-- mod.rs              — feature module wiring + module tree
 |       +-- state.rs            — `ManagedDoom`/`DoomRuntimeState` + `DoomRuntimePhase`/`DoomErrorCode`/`DoomLaunchResult`/`DoomStatus`, timeout constants, AppStore keys, env seams
 |       +-- process.rs          — bounded spawn/stop (`taskkill /T /F` fallback), PID marker + image-guarded startup orphan sweep + `sweep_orphan_with` test seam
 |       +-- acquisition.rs      — SHA-256-pinned Freedoom IWAD + optional engine-archive acquisition (fail-closed; no default engine URL), bounded
 |       +-- resolver.rs         — engine/IWAD resolution (configured path → PATH → staged)
-|       +-- client.rs           — Rust-side engine HTTP (`/api/state`, `/api/step`, `/api/frame` indexed8→PNG), bounded
-|       +-- commands.rs         — open_doom_window, launch_doom_runtime, stop_doom_runtime, get_doom_status, doom_read_state, doom_step, doom_frame + exit/close hooks
+|       +-- client.rs           — Rust-side engine HTTP (`/api/state`, `/api/step`, `/api/episode`, `/api/frame` indexed8→PNG), bounded
+|       +-- actions.rs          — live-confirmed engine action vocabulary (`DOOM_ACTION_*`, `action_vocabulary_json`) (Spec #2969)
+|       +-- autoplay.rs         — autoplay wire contract (`DoomAutoplayPhase`/`ErrorCode`/`Status`/`Result` + step/failure/timeout budgets) (Spec #2969)
+|       +-- decision.rs         — `ScriptedDecisionSource` deterministic decision lever + `FREDO_DOOM_AGENT_*` env seams (Spec #2969)
+|       +-- agent.rs            — bounded lockstep control loop: read→decide→validate→step, terminal-state restart via `/api/episode`, consecutive-failure budget (Spec #2969)
+|       +-- commands.rs         — open_doom_window, launch_doom_runtime, stop_doom_runtime, get_doom_status, doom_read_state, doom_step, doom_frame, start/stop/get_doom_autoplay + exit/close hooks
 +-- infrastructure/
     +-- comm/                   — Canonical wire types + the single IPC emitter
     |   +-- mod.rs              — re-exports: FredoEvent, EventBus, CommAdapter, InternalAdapter
@@ -588,13 +592,19 @@ Shipped defaults: `Ctrl+Space` (launcher), `Ctrl+Shift+P` (action palette in the
 | theming | ✗ | — | Theme customization (hidden from grid) |
 | model-storage | ✓ | — | Model file management |
 | database-client | ✓ | `db_*` commands + `settingsService` | Built-in PostgreSQL client — saved connections (OS-keychain credentials), lazy schema browser, multi-tab SQL editor + bounded results grid, history/saved queries, CSV/JSON export; read-only by default |
-| doom | ✓ | Engine HTTP via Rust commands | Dedicated Doom game window — a RESTful-DOOM runtime supervised as a bounded child process, live frames rendered to a canvas, manual whole-state read + deterministic step (Spec #2968) |
+| doom | ✓ | Engine HTTP via Rust commands | Dedicated Doom game window — a RESTful-DOOM runtime supervised as a bounded child process, live frames rendered to a canvas, manual whole-state read + deterministic step (Spec #2968); companion autonomous play via a bounded lockstep loop with a Doom-playing persona + structured-state-only inference and a deterministic scripted lever (Spec #2969) |
 
 ### Doom Runtime (`features/doom/`, Spec #2968)
 
 The first Doom Mode slice ships a **dedicated native window** (label `doom`, `index.html?view=doom`) that hosts a RESTful-DOOM engine running as a **supervised out-of-process child**. `open_doom_window` is singleton-per-label + focus-if-exists (mirroring the `terminal` window); the window mount calls the idempotent `launch_doom_runtime`, which spawns the engine on loopback and polls readiness under a finite bound, killing the child on timeout. All engine HTTP is **Rust-side** (the webview CSP `connect-src` forbids direct fetch): `doom_read_state` (`GET /api/state`), `doom_step` (`POST /api/step`, `{tics,actions}`), and `doom_frame` (`GET /api/frame` — indexed8+palette JSON decoded to a base64 PNG drawn to a canvas at `DOOM_FRAME_POLL_MS` ≈ 15 fps). Teardown is **bounded and guaranteed on every exit path** (window `CloseRequested`, `RunEvent::Exit`, start failure, startup sweep) with a hard-kill fallback and a PID-reuse image guard — no engine process outlives its window. Failure paths surface typed `DoomErrorCode` states in-window without crashing the app.
 
 **Acquisition / licensing decision (Spec #2968, AC5):** no trustworthy prebuilt RESTful-DOOM Windows binary exists upstream, so the engine is **built from source at development/QA time** by the committed `scripts/doom/build-restful-doom.ps1` (MSYS2 MINGW64) and staged at `<install_dir>/engine/restful-doom.exe` (with its MSYS2 runtime DLLs); the runtime **resolves** it (configured → PATH → staged) and never builds. The launched engine is identified by `enginePath` on `DoomStatus`/`DoomLaunchResult`, with an opt-in `FREDO_DOOM_REQUIRE_REAL_ENGINE` anti-stub guard; readiness means a `GET /api/state` 200 (not merely an open port), and a transient `GET /api/frame` 503 maps to `frameNotReady` while the poll loop keeps running. The libre **Freedoom** IWAD is the default game data (SHA-256-pinned, on-demand). The engine is GPL-2.0 and runs as an **arm's-length separate process** over loopback HTTP — the installer ships no GPL binary and no WAD. Full decision: [`docs/doom-mode-acquisition.md`](doom-mode-acquisition.md).
+
+### Doom Autoplay — companion autonomous play (`features/doom/`, Spec #2969)
+
+The second Doom Mode slice lets the owner **watch the companion play**: a bounded **lockstep control loop** (`agent.rs`) drives the same supervised engine the window already hosts. Each iteration reads the whole observation (`GET /api/state`), obtains a decision, validates it (`tics` 1–350, `actions` array), advances the frozen world (`POST /api/step`, which requires `-apilockstep`), and repeats; a terminal observation (`done == true` or `outcome == "dead"`) is never re-decided — the loop issues exactly one bounded `POST /api/episode` restart/advance and resumes. All advancement is **step-driven** (the world does not advance while idle).
+
+The decision comes from a `DoomDecisionSource`; the shared contract lives in `infrastructure/companion/doom_decision.rs` (the provider-agnostic companion contract home) so neither feature imports the other — `lib.rs` is the composition root that selects the source. Two implementations exist: `ModelDoomDecisionSource` (`features/llm_server/doom_agent.rs`) sends a **schema-constrained** (`response_format: json_schema`, `name: doom_action`) request built by the pure `build_doom_agent_request_body` over the existing `chat::run_stream` shell — the system message is `DOOM_AGENT_SYSTEM_PROMPT` (the Doom-playing persona) and the user message carries **structured game state only** (no `image_url`/`input_audio` part; the framebuffer endpoint is never fed to the model), with a bounded per-request audit JSONL under `FREDO_DOOM_AGENT_LOG_DIR`; and `ScriptedDecisionSource` (`decision.rs`), the deterministic lever behind the same interface (`FREDO_DOOM_AGENT_DECISION_SOURCE=scripted` + `FREDO_DOOM_AGENT_SCRIPT`), which makes the loop verifiable without a live model. The loop is bounded throughout (G-263): `DOOM_AUTOPLAY_MAX_STEPS` (600), `DOOM_AUTOPLAY_MAX_FAILURES` (3 consecutive → typed `Failed`), `DOOM_AUTOPLAY_DECISION_TIMEOUT_S` (30 s), `DOOM_AUTOPLAY_FAILURE_BACKOFF_MS` (250 ms); an unusable decision issues no step and never hangs. The feature-gated `doom-stub` engine (`bin/doom_stub.rs`) adds `/api/episode` plus inert-when-unset `FREDO_DOOM_STUB_PROGRESS`/`_DIE_AFTER`/`_DONE_AFTER`/`_EPISODE_FAIL` levers for deterministic QA — it is never shipped. The `doom` window gains an autoplay control + live status (`doom-autoplay-toggle`/`-status`/`-stop`), driven by the `doom-autoplay-changed` event.
 
 ### Workspace Layout (`shared/window-system/`, Spec #2949)
 
@@ -951,6 +961,9 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 | `doom_read_state` | doom | One `GET /api/state` — the whole game observation (verbatim JSON) |
 | `doom_step` | doom | One `POST /api/step` (`{tics,actions}`) — deterministic advance, returns the post-step state |
 | `doom_frame` | doom | One `GET /api/frame` — indexed8+palette decoded to a base64 PNG for the canvas |
+| `start_doom_autoplay` | doom | Start the bounded lockstep autoplay loop (companion plays; optional `maxSteps`) → `DoomAutoplayResult`; `NotReady` when the engine isn't ready |
+| `stop_doom_autoplay` | doom | Cooperatively and boundedly stop the autoplay loop |
+| `get_doom_autoplay_status` | doom | Report `DoomAutoplayStatus` (`phase`/`running`/`steps`/`decisions`/`failures`/`lastTic`/`outcome`/`code`) |
 | `feature_store_ensure_table` | storage | Create a typed-column feature namespaced table |
 | `feature_store_insert` | storage | Insert rows into a feature namespaced table |
 | `feature_store_query` | storage | Query rows with optional WHERE/ORDER BY/LIMIT |
@@ -970,6 +983,7 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 1. Initialize `AppStore` (synchronous control-plane KV on `control.db`; the data plane runs on the shared embedded-PostgreSQL engine) — managed via `app.manage()`
 2. Manage `LlamaServerState` (the managed out-of-process `llama-server` lifecycle) and run the PID-reuse-guarded startup orphan sweep — no in-process engine load
 2b. Manage `DoomRuntimeState` (the supervised Doom engine) and run its PID/image-guarded startup orphan sweep
+2c. Manage `DoomAutoplayState` + `DoomDecisionSourceState` (the autoplay loop state and the selected decision source — model or scripted — constructed in the composition root)
 3. Initialize `TerminalState` (PTY terminal) — managed via `app.manage()`
 4. Manage `EventBus` (the single `"fredo-stream-event"` emitter)
 5. Open `RtdbStore`, build the LRU cache + registry + FlushLoop, manage `Rtdb` + the ingest classifier, spawn the flush task (~5 ms) and the write-behind task (~30 ms), set retention defaults + startup prune, spawn the canonical backfill (read-only over `telemetry_spans`; one-shot completion marker)
