@@ -24,3 +24,28 @@
 - [ ] E-12: Run `scripts/doom/build-restful-doom.ps1` twice concurrently — is staging idempotent, with no half-written `restful-doom.exe`?
 - [ ] E-13: Launch with `FREDO_DOOM_REQUIRE_REAL_ENGINE=1` and a real engine whose basename differs only in case (`RESTFUL-DOOM.EXE`) — does the guard match case-insensitively on Windows?
 - [ ] E-14: While the real engine runs, check `tasklist` for any SDL-spawned second window/process — none beyond the engine PID.
+
+---
+
+## Autonomous-play slice (Spec #2969) — unscripted probes
+
+> **Verification policy: live** — probes run against the running artifact with the
+> `telemetry_spans` live-pipeline reference (managed `psql` on the PG default, G-284; a
+> disclosed `telemetry_get_stats` substitution allowed).
+>
+> **G-300:** every error/failure probe names an in-repo induction lever (scripted
+> `{"malformed":true}`/`{"error":...}`, `FREDO_DOOM_STUB_EPISODE_FAIL=1`, stub death/exit
+> levers) or is marked a static/unit pin, non-AC.
+
+- [ ] E-15: `stop_doom_autoplay` mid-decision — does the loop stop cooperatively within its
+  bound (`Stopping`→`Idle`), leaving no in-flight engine request and no orphan? (Lever: scripted loop + stop.)
+- [ ] E-16: A death observation arrives exactly while a `POST /api/step` is in flight — is the
+  restart deferred to the next iteration cleanly (no lost/duplicated episode call, no panic)?
+- [ ] E-17: A malformed decision repeatedly with a good decision interleaved — does
+  `consecutiveFailures` reset on the good decision and the loop resume, rather than latching Failed?
+- [ ] E-18: Death while `FREDO_DOOM_STUB_EPISODE_FAIL=1` — does the loop surface
+  `EngineRequestFailed` within the bound without hanging or spinning? (Lever: stub episode-500.)
+- [ ] E-19: `FREDO_DOOM_AGENT_MAX_STEPS` set very low (e.g. 2) — does the loop stop cleanly at the
+  cap with `BudgetExhausted` and no partial step? (Lever: env override.)
+- [ ] E-20: Two `start_doom_autoplay` invocations in quick succession — is exactly one loop
+  running (idempotent start), with no doubled `steps` rate and no second engine?
