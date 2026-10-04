@@ -1,5 +1,10 @@
 # desktop-chrome — Regression
 
+> **#2954 note:** the app-dock rail (`[data-testid="app-dock"]`) is REMOVED; dock-rail
+> disjoint/overlap assertions (e.g. the clock-cluster vs `app-dock` row) are RETIRED. Re-bind any
+> keep-out check to the engaged-launcher row `[data-testid="launcher-open-apps"]` when engaged (see
+> `.opencode/tests/launcher/` `#2954 extension`). The clock/LED cluster invariants stay in force.
+
 The "must not change" baseline for the desktop-chrome / window-chrome z-order surface.
 No-change invariants from #2825's non-goals; the fix must alter ONLY the desktop-chrome →
 window-chrome stacking relationship.
