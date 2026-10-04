@@ -257,6 +257,25 @@ errors.
 - [x] **S-22 PASS** — `my-workitems` `z`/`j`/`a` perform the real source-filter operation
       with `{mousedown:0,click:0,pointerdown:0}`; `r` dispatches the refresh action once.
 - [x] **F-87 E2E PASS** — app boots on the PG-default path; MM renders the 7 declared
-      `feature_mission_monitor_sessions` rollup rows; MM bar shows `S Focus session search`;
-      live `telemetry_spans` receipt via the managed `psql` lever.
+  `feature_mission_monitor_sessions` rollup rows; MM bar shows `S Focus session search`;
+  live `telemetry_spans` receipt via the managed `psql` lever.
+
+## Spec #2962 quick paths (deep nested contexts + key reuse)
+
+> Live-plan quick paths for issue #2962 (S5). **Verification policy: live** — each carries the
+> DOM/a11y assertion plus a `telemetry_spans` receipt read via the managed `psql` lever (G-284).
+> Names bind to the Architect's FINAL BINDING names block (see `functional.md` #2962 header).
+
+- [ ] S-23: **Mission Monitor declares the nested chain.** Focus Mission Monitor and read the
+      declared contexts. **Expected:** `mission-monitor.graph` (parent `mission-monitor`) and
+      `mission-monitor.detail` (parent `mission-monitor.graph`) resolve; the bar at L1 shows
+      `Sessions`; no `vite-error-overlay`; console clean. *(live receipt)*
+- [ ] S-24: **Descend twice + Escape unwind quick path.** With mode ON press `o` (→ Graph, depth 2),
+      `o` (→ Node detail, depth 3), then Escape, Escape, Escape. **Expected:**
+      `data-fredo-hotkey-context-depth` goes 1→2→3 then 3→2→1, one level per Escape; the bar rows
+      follow each level; console clean. *(live receipt)*
+- [ ] S-25: **Reused key runs the current level's action.** At L2 press `n`; at L3 press `n`.
+      **Expected:** L2 runs `mission-monitor.nextNode` (graph cursor moves), L3 runs
+      `mission-monitor.nextSection` (active section moves) — the deepest level wins, no L1
+      `nextSession`; the action is named for its level. *(live receipt)*
 
