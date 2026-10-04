@@ -70,7 +70,7 @@ Pipeline-process rules (research, references, sandbox behaviour) live in
 
 ## Settings UI Hierarchy (Spec #396, updated Spec #2868)
 
-- **The live settings surface** is `apps/ui/src/features/settings-app/components/SettingsSurface.tsx` — a sidebar-nav surface with static sections (Companion, Appearance, Fredo Setup, Telemetry) plus auto-discovered feature-level sections via `hasSettings` + `renderSettings()`. The **Appearance** pane renders `ThemingSettings` and `DockPositionSettings`.
+- **The live settings surface** is `apps/ui/src/features/settings-app/components/SettingsSurface.tsx` — a sidebar-nav surface with static sections (Companion, Appearance, Fredo Setup, Telemetry) plus auto-discovered feature-level sections via `hasSettings` + `renderSettings()`. The **Appearance** pane renders `ThemingSettings` (the dock-position control `DockPositionSettings` was removed with the persistent dock in Spec #2954).
 - **`ProfileSettingsModal.tsx` (`features/home/components/`) and `SettingsPanel.tsx` are RETIRED** — Spec #2868 removed them. Do NOT target either for new settings; do NOT cite their paths in specs or dispatch briefs. Verify the host path exists before wiring anything into it (G-207).
 - When the Architect's spec **forbidden_changes** lists the settings surface shell, that is a signal that the settings shell must not be modified — but the feature's settings content must be wired INTO it. The Architect MUST include the wiring in the capsule that creates the settings UI component (add nav item + content section to `SettingsSurface.tsx`).
 
