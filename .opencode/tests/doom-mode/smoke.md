@@ -15,3 +15,5 @@
 - [ ] S-7: Live-pipeline receipt — `telemetry_spans` returns a NON-ZERO count with a recent `max(ingested_at)` (PG via the managed `psql`, or a disclosed `telemetry_get_stats` substitution).
 - [ ] S-8: **PG-default boot** — `storage_engine_status` = PostgreSQL / PG supervisor ready (not SQLite).
 - [ ] S-9: Mission Monitor still renders live sessions with the Doom feature present (the F-MM smoke row).
+- [ ] S-10: **Doom autoplay surface reachable** — with the `doom` window open, `doom-autoplay-toggle` and `doom-autoplay-status` render (ST-7 hooks). (Autoplay slice #2969.)
+- [ ] S-11: **Autoplay start/stop quick path** — with the stub engine + scripted lever, click `doom-autoplay-toggle`: `doom-autoplay-status` shows `Running`; click `doom-autoplay-stop`: phase returns to `Idle`. No console `Error:`/`Uncaught`/`Maximum update depth exceeded`; a bounded run leaves no orphan process.
