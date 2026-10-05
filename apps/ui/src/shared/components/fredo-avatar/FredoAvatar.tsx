@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useSyncExternalStore } from 'react';
 
 import {
   buildInteriorPathD,
@@ -9,6 +9,11 @@ import {
 } from './fredoAvatarGeometry';
 import { AVATAR_SIZE, type FredoAvatarSize } from './fredoAvatarSizes';
 import type { FredoAvatarState } from './fredoAvatarStates';
+// Spec #2971 ST-5 — the module-scoped Doom visual-engagement store (ST-2), read
+// through the shipped external-store pattern (mirrors LauncherShell's
+// `performanceGate` read). ONE boolean drives the orthogonal armor overlay, so
+// the mode can never diverge from the phase and no React ref is used.
+import { isDoomVisualEngaged, subscribeDoomVisual } from '../../doom-mode';
 import './fredo-avatar.css';
 import './fredoAvatarIdle.css';
 
@@ -95,6 +100,15 @@ const INTERIOR_PATH_D = buildInteriorPathD(expandFredoRects(FREDO_AVATAR_INTERIO
 export const FredoAvatar: React.FC<FredoAvatarProps> = ({ size, state = 'idle', className }) => {
   const { width, height } = AVATAR_SIZE[size];
 
+  // Spec #2971 ST-5 — while Doom Mode is engaged the avatar wears the armor
+  // overlay. `data-doom-armor` is absent (undefined) when disengaged, so the
+  // mode-off DOM is byte-identical to the shipped avatar.
+  const doomEngaged = useSyncExternalStore(
+    subscribeDoomVisual,
+    isDoomVisualEngaged,
+    isDoomVisualEngaged,
+  );
+
   return (
     <svg
       width={width}
@@ -106,6 +120,7 @@ export const FredoAvatar: React.FC<FredoAvatarProps> = ({ size, state = 'idle', 
       shapeRendering="crispEdges"
       color="var(--accent-primary)"
       className={className}
+      data-doom-armor={doomEngaged ? 'true' : undefined}
     >
       {/* 1. Interior fill — additive, present in EVERY state (idle included),
           opaque + theme-derived. One <path>, never a <rect> (58-rect pin). */}
@@ -310,6 +325,44 @@ export const FredoAvatar: React.FC<FredoAvatarProps> = ({ size, state = 'idle', 
               <rect x={483} y={730} width={64} height={22} fill="currentColor" />
             </>
           )}
+        </g>
+      )}
+      {/* 4. Doom armor overlay (Spec #2971 ST-5) — an ORTHOGONAL layer drawn
+          AFTER the expression overlay so it composes with all 12 frozen states
+          (never a 13th state). `<path>`-ONLY: zero `<rect>`, so the shipped
+          `svg.querySelectorAll('rect') === 58` pin holds with armor ON or OFF.
+          Geometry is cleared of all six expression-bearing zones; every fill is
+          an existing token-contract var (zero literals). Rendered only while
+          Doom Mode is engaged. */}
+      {doomEngaged && (
+        <g
+          id="fredo-armor"
+          data-layer="armor"
+          aria-hidden="true"
+          pointerEvents="none"
+          className="fredo-armor"
+        >
+          {/* Helmet crest — mohawk ridge above the crown (blood-red) */}
+          <path d="M507 24 L566 106 L448 106 Z" fill="var(--status-error)" />
+          {/* Helmet brow guard — spans the upper head, above the eyes */}
+          <path d="M277 150 L737 150 L700 300 L314 300 Z" fill="var(--accent-strong)" />
+          {/* Temple guards — outer silhouette, beside the eyes (clear of the listening bars) */}
+          <path d="M74 317 L118 317 L118 585 L74 585 Z" fill="var(--accent-strong)" />
+          <path d="M896 317 L940 317 L940 585 L896 585 Z" fill="var(--accent-strong)" />
+          {/* Cheek guards — below the eyes/temple, outside the working chevrons */}
+          <path d="M74 585 L120 585 L120 690 L74 690 Z" fill="var(--text-primary)" />
+          <path d="M894 585 L940 585 L940 690 L894 690 Z" fill="var(--text-primary)" />
+          {/* Pauldrons — shoulder armor over the upper arms */}
+          <path d="M250 800 L360 800 L360 916 L250 916 Z" fill="var(--accent-strong)" />
+          <path d="M654 800 L764 800 L764 916 L654 916 Z" fill="var(--accent-strong)" />
+          {/* Chest plate + blood-red emblem */}
+          <path d="M366 824 L648 824 L648 916 L366 916 Z" fill="var(--text-primary)" />
+          <path d="M480 852 L534 852 L507 896 Z" fill="var(--status-error)" />
+          {/* Belt — blood-red waist band */}
+          <path d="M355 993 L659 993 L659 1027 L355 1027 Z" fill="var(--accent-secondary)" />
+          {/* Knee guards */}
+          <path d="M320 1085 L368 1085 L368 1160 L320 1160 Z" fill="var(--accent-strong)" />
+          <path d="M646 1085 L694 1085 L694 1160 L646 1160 Z" fill="var(--accent-strong)" />
         </g>
       )}
     </svg>

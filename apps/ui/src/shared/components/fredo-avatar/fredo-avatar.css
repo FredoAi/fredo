@@ -205,3 +205,37 @@
     transform: rotate(12deg);
   }
 }
+
+/* ── Doom armor overlay (Spec #2971 ST-5) ────────────────────────────────────
+   An ORTHOGONAL layer drawn after the expression overlay, present only while
+   Doom Mode is engaged. Scoped to `#fredo-armor` so the 58 frozen base rects
+   and the additive interior `<path>` are never animated from this file.
+
+   Enter is animated (a one-shot drop-in, ~240 ms, transform/opacity only);
+   exit is a cut — the store is a boolean, so the whole app snaps back together
+   deliberately. The `.doom-mode` hook (set by the ST-4 theme layer on `<html>`)
+   drives a mode-scoped vignette with no new DOM. */
+@keyframes fredo-armor-in {
+  to { opacity: 1; transform: none; }
+}
+
+#fredo-armor {
+  opacity: 0;
+  transform: translateY(-10px) scale(0.98);
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+  animation: fredo-armor-in 240ms ease-out forwards;
+}
+
+html.doom-mode body {
+  box-shadow: inset 0 0 160px 24px color-mix(in srgb, var(--accent-secondary) 22%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Hold the armor at its resting frame — never erased (mirrors teleport-in). */
+  #fredo-armor {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
