@@ -1,7 +1,20 @@
-import React, { createContext, useContext, useEffect, useMemo, type ReactNode } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useSyncExternalStore,
+  type ReactNode,
+} from 'react';
 import type { ThemeMode, Theme, ThemeOverrides, ThemePreset } from '../types/theme';
 import { themes, themePresets, USER_PRESET_PREFIX } from '../types/theme';
 import { usePersistedSetting } from '../../shared/hooks/usePersistedSetting';
+// #2971 ST-4 — the mode-scoped Doom layer. `DOOM_PALETTE` is the ONLY token
+// record this file imports (never added to `themePresets`/`allPresets`); the
+// module-scoped store is the ONE cross-mount engaged flag shared with the armor
+// overlay (ST-5).
+import { DOOM_PALETTE } from '../theme/doomTheme';
+import { isDoomVisualEngaged, subscribeDoomVisual } from '../../shared/doom-mode';
 // #2925 ST-1 — the three authored Life dim weights are the SINGLE number home.
 // This is a legal DOWNWARD import (app → feature); feature → feature would be
 // the forbidden edge. The provider composes the live `color-mix()` tokens from
@@ -192,6 +205,16 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
   // All selectable presets: user presets first, then the 18 built-ins.
   const allPresets = useMemo(() => [...userPresets, ...themePresets], [userPresets]);
 
+  // #2971 ST-4 — the module-scoped Doom-engagement flag (ST-2). Read through the
+  // shipped external-store pattern so a `doom-mode-changed` broadcast re-runs the
+  // theme effect and applies (or reverts) the Doom layer. Never a `useRef`: the
+  // flag must survive component/window mount cycles (ENGINEERING_RULES).
+  const doomEngaged = useSyncExternalStore(
+    subscribeDoomVisual,
+    isDoomVisualEngaged,
+    isDoomVisualEngaged,
+  );
+
   // All 15 user-overridable tokens (12 colors + 3 fonts) used to capture the
   // effective palette when persisting a new user preset.
   const USER_PRESET_TOKEN_KEYS: (keyof ThemeOverrides)[] = [
@@ -377,13 +400,65 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
       document.body.style.fontFamily = overrides.fontBase;
     }
 
+    // --- #2971 ST-4: mode-scoped Doom layer (base < preset < override < Doom) ---
+    // Applied INSIDE this single effect, AFTER the override pass and BEFORE the
+    // on-accent contrast computation, so flipping `doomEngaged` re-runs the whole
+    // base → preset → override chain from the top. The revert on
+    // `doomEngaged === false` is therefore byte-exact with ZERO storage writes:
+    // the setter API below (`setOverride`/`setPreset`/`resetTheme`) is NEVER
+    // called by this feature, so the user's persisted theme/overrides/accent stay
+    // untouched. While engaged, Doom wins (unmistakable); the three lower layers
+    // stay intact underneath and reappear verbatim when the layer is skipped.
+    // Token-first: every value comes from `DOOM_PALETTE`; no `--doom-*` namespace.
+    if (doomEngaged) {
+      root.style.setProperty('--body-bg', DOOM_PALETTE.bodyBg);
+      root.style.setProperty('--header-bg', DOOM_PALETTE.headerBg);
+      root.style.setProperty('--footer-bg', DOOM_PALETTE.footerBg);
+      root.style.setProperty('--card-bg', DOOM_PALETTE.cardBg);
+      root.style.setProperty('--card-hover-bg', DOOM_PALETTE.cardHoverBg);
+      root.style.setProperty('--text-primary', DOOM_PALETTE.textPrimary);
+      root.style.setProperty('--text-secondary', DOOM_PALETTE.textSecondary);
+      root.style.setProperty('--border-color', DOOM_PALETTE.borderColor);
+      root.style.setProperty('--accent-primary', DOOM_PALETTE.accentPrimary);
+      root.style.setProperty('--accent-secondary', DOOM_PALETTE.accentSecondary);
+      root.style.setProperty('--accent-subagent', DOOM_PALETTE.accentSubagent);
+      root.style.setProperty('--accent-nested-subagent', DOOM_PALETTE.accentNestedSubagent);
+      root.style.setProperty('--status-success', DOOM_PALETTE.statusSuccess);
+      root.style.setProperty('--status-warning', DOOM_PALETTE.statusWarning);
+      root.style.setProperty('--status-error', DOOM_PALETTE.statusError);
+      root.style.setProperty('--status-info', DOOM_PALETTE.statusInfo);
+      root.style.setProperty('--gradient-text', DOOM_PALETTE.gradientText);
+      root.style.setProperty('--gradient-button', DOOM_PALETTE.gradientButton);
+      root.style.setProperty('--node-bg', DOOM_PALETTE.nodeBg);
+      root.style.setProperty('--node-box-shadow', DOOM_PALETTE.nodeBoxShadow);
+      root.style.setProperty('--edge-gradient', DOOM_PALETTE.edgeGradient);
+      root.style.setProperty('--overlay-bg', DOOM_PALETTE.overlayBg);
+      root.style.setProperty('--shadow-dialog', DOOM_PALETTE.shadowDialog);
+
+      // Mirror the body paint to the Doom ground/ink (the base pass did this for
+      // the user theme). Body className is deliberately NOT touched here.
+      document.body.style.background = DOOM_PALETTE.bodyBg;
+      document.body.style.color = DOOM_PALETTE.textPrimary;
+
+      // Recompute the on-accent foreground from the Doom accent, otherwise
+      // `--accent-contrast` stays stale from the pre-mode accent.
+      root.style.setProperty('--accent-contrast', resolveAccentContrast(DOOM_PALETTE.accentPrimary));
+
+      // QA seams (G-187): class token + attribute on <html> only.
+      root.classList.add('doom-mode');
+      root.setAttribute('data-doom-mode', 'engaged');
+    } else {
+      root.classList.remove('doom-mode');
+      root.removeAttribute('data-doom-mode');
+    }
+
     // --- #2864 ST-1 (T5): on-accent foreground ---
     // Computed in JS from the RESOLVED accent (base → preset → override) — WCAG
     // relative luminance has no sufficient CSS equivalent. Reading the applied
     // inline value guarantees arbitrary user accentPrimary overrides are covered.
     const resolvedAccent = root.style.getPropertyValue('--accent-primary') || theme.colors.accentPrimary;
     root.style.setProperty('--accent-contrast', resolveAccentContrast(resolvedAccent));
-  }, [activeTheme, overrides, activePreset]);
+  }, [activeTheme, overrides, activePreset, doomEngaged]);
 
   const setOverride = (key: keyof ThemeOverrides, value: string) => {
     const next = { ...overrides };
