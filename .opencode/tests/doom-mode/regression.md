@@ -92,3 +92,22 @@
 - `.opencode/tests/theming/`, `.opencode/tests/settings/` — the token contract + theme-settings surfaces the Doom layer must not perturb.
 - `.opencode/tests/fredo-avatar/`, `.opencode/tests/launcher/` — the frozen 12-state vocabulary + 58-rect geometry.
 - `.opencode/tests/mission-monitor/` — F-59 E2E regression gate (unchanged surface).
+
+---
+
+## Resume-across-sessions slice (Spec #2972) — must-not-change baseline
+
+> **Verification policy: live** — the live-pipeline `telemetry_spans` reference plus
+> DOM/process/control-plane receipts per leg (managed `psql` on the PG default, G-284, or a
+> disclosed app-pool fallback, G-307). Doom emits no span. A static-only PASS is a FALSE PASS.
+
+- [ ] R-26: **Autoplay resume-by-default unchanged for prior callers** — `enter_doom_mode` and the `doom` window autoplay toggle still pass no `freshStart`, so entering/toggling resumes by default (never silently fresh); the existing `start_doom_autoplay` idempotency (`commands.rs:754`) and readiness guard (`:766`) are unmodified. (Links: `doom-mode/functional.md` slices 2–3.)
+- [ ] R-27: **Existing Doom runtime/autoplay surface unchanged** — `launch_doom_runtime`, `stop_doom_runtime`, `doom_read_state`, `doom_step`, `doom_frame`, `start/stop_doom_autoplay`, `get_doom_autoplay_status`, `doom-status-changed`, `doom-autoplay-changed`, and the window singleton behave identically; existing testids (`doom-root`, `doom-window-title`, `doom-frame-canvas`, `doom-state-readout`, `doom-step-button`, `doom-autoplay-toggle`, `doom-autoplay-status`, `doom-exit-button`, …) still render; the new save/fresh-start testids are additive. (Links: `doom-mode/functional.md` slices 1–4.)
+- [ ] R-28: **Mode-off theme/armor unchanged + no new settings entry** — the resume slice adds no settings surface and does not perturb the theme/armor layer; with the mode inactive the base/preset/override passes behave exactly as today. (Links: `theming/functional.md`, `settings/functional.md`.)
+- [ ] R-29: **Control plane other keys unchanged** — writing `doom_save_v1` does not disturb existing control-plane keys (`doom_pid`, `doom_port`, `doom_last_error`, `doom_last_error_code`, theme keys); `control_set` remains one atomic upsert (`storage/mod.rs:113-121`). (Links: `doom-mode/functional.md` slices 1–3.)
+- [ ] R-30: **Mission Monitor unaffected + no process leak** — Mission Monitor renders live sessions normally with the resume slice present (the F-69 E2E row is the gate); across every resume/restart leg zero `restful-doom.exe` outlives its window/app; no second OS window. (Links: `mission-monitor/functional.md`, `doom-mode/functional.md` F-63.)
+
+### Links added by this slice
+
+- `.opencode/tests/mission-monitor/` — F-69 E2E regression gate (unchanged surface).
+- `.opencode/tests/theming/`, `.opencode/tests/settings/` — the token contract + settings surfaces the save/fresh-start UI must not perturb.
