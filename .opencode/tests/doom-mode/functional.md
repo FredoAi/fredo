@@ -362,3 +362,86 @@
   - Edge: managed `psql` "too many clients" → disclosed app-pool fallback (G-307), named.
 
 **R-coverage:** R-1→F-51 · R-2→F-52 · R-3→F-53 · R-4→F-54 · R-5→F-55 · R-6→F-56 · R-7→F-57 · R-8→F-58.
+
+---
+
+# doom-mode — Companion resume across sessions (Spec #2972)
+
+> **Verification policy: live** — the resume point is persisted by the Rust agent loop into the
+> SQLite control plane and read back after a REAL app restart; every level transition is driven by
+> live engine HTTP. Evidence MUST carry the `telemetry_spans` live-pipeline reference (NON-ZERO
+> count + recent `max(ingested_at)`) at round start AND after the drive. **Doom emits NO OTLP span —
+> the query proves the LIVE PIPELINE, not the feature; disclose that.** Read via the managed `psql`
+> (G-284); a disclosed app-pool `feature_data_read` fallback is allowed (G-307) and MUST be named. A
+> static-only PASS is a FALSE PASS.
+>
+> **Evidence split (BINDING):** the REAL `restful-doom.exe` proves R-1/R-2/R-4/R-5. R-3's
+> advance→next-level→persist→complete chain is proven on the deterministic stub
+> `FREDO_DOOM_STUB_DONE_AFTER=<n>` (`bin/doom_stub.rs:36,335-337`) driving the REAL product loop
+> (`agent.rs:299`) + progress writer + AppStore. Disclose the split; never present a stub-only leg
+> as full live verification.
+>
+> **Real-engine re-stage (G-319/G-323):** `powershell -File scripts/doom/stage-doom-fixture.ps1
+> -FixtureDir .opencode/tmp/2972/fixtures` (no literal out-of-repo toolchain arg, G-322; exit 2 =
+> named TOOLING GAP); prefer the app DEFAULT install dir
+> `%APPDATA%\com.fredo.app\doom\engine\restful-doom.exe`; WAD digest
+> `7323bcc168c5a45ff10749b339960e98314740a734c30d4b9f3337001f9e703d` (`stage-doom-fixture.ps1:100`),
+> NOT the ZIP digest `3f9b264f…` (G-320).
+>
+> **Save-induction lever (G-275/G-300):** `FREDO_DOOM_SAVE_FILE=<path under .opencode/tmp/2972/>`
+> (inert when unset) — valid `DoomSave` (resume), `not json` (corrupt), missing path (absent),
+> unwritable path (write failure). Engine error on resume = `FREDO_DOOM_STUB_EPISODE_FAIL=1`.
+> **Stepping (G-316):** every "advances" assertion is STEP-DRIVEN. Bounded waits (G-263).
+>
+> Binding names VERBATIM (G-187): commands `get_doom_save`/`reset_doom_save`/`start_doom_autoplay(app,
+> maxSteps?, freshStart?)`; event `doom-autoplay-changed`; wire `DoomSaveStatus.{hasSave,episode,map,
+> skill,seed,completed,updatedAt}`; `DoomAutoplayStatus` added `{episode,map,completed}`;
+> `DoomAutoplayErrorCode` added `"campaignComplete"`; constants `DOOM_SAVE_KEY="doom_save_v1"`,
+> `DOOM_SAVE_VERSION=1`, `DOOM_SAVE_FILE_ENV="FREDO_DOOM_SAVE_FILE"`, `DOOM_CAMPAIGN_FIRST_EPISODE=1`,
+> `DOOM_CAMPAIGN_LAST_EPISODE=4`, `DOOM_CAMPAIGN_FIRST_MAP=1`, `DOOM_CAMPAIGN_LAST_MAP=9`,
+> `DOOM_DEFAULT_SKILL=3`, `DOOM_DEFAULT_SEED=0`; testids `doom-save-status`,
+> `doom-fresh-start-button`, `doom-fresh-start-confirm`, `doom-progress-complete`.
+
+## Resume positioning + cross-restart durability (R-1 / R-2)
+
+- [ ] F-62 (R-1, AC1) **REAL-ENGINE resume positioning — REQUIRED.** Write `.opencode/tmp/2972/save-resume.json` = `{"version":1,"episode":1,"map":2,"skill":3,"seed":0,"completed":false,"updatedAt":"<now>"}`; launch the app with `FREDO_DOOM_SAVE_FILE` pointing at it; re-stage the real engine (G-319); `enter_doom_mode` (resume default). Capture the engine request log / IPC monitor + `GET /api/state`.
+  - EXPECTED: exactly ONE `POST /api/episode {episode:1,map:2,skill:3,seed:0}` (`client.rs:364` `restart_with`) BEFORE the first `POST /api/step`; engine `/api/state` reports `level.episode=1`, `level.map=2`; the companion then steps forward (`steps`/`lastTic` strictly increase, STEP-DRIVEN, G-316); `get_doom_save` → `{hasSave:true, episode:1, map:2, skill:3, seed:0}`; `doom-save-status` renders the `E1M2` display unit.
+  - Edge: resume via the mode/toggle default AND via `start_doom_autoplay({})` (absent `freshStart`); an E4M9 boundary save; `skill`/`seed` preserved verbatim; entering with no ready engine still resumes on the next start.
+- [ ] F-63 (R-2, AC2) **REAL-ENGINE cross-restart durability — REQUIRED.** Continue F-62 until the campaign advances (a new `DoomSave` written); confirm the engine PID is gone and fully close Fredo (`RunEvent::Exit`); relaunch; re-enter Doom Mode with the same save.
+  - EXPECTED: the resume point is read from DURABLE storage — the control plane `control.db` `settings` key `doom_save_v1` via `control_get` (`storage/mod.rs:102`), NOT process memory; after restart `get_doom_save` reports the SAVED coords BEFORE any step; the engine is positioned there by exactly one `POST /api/episode`; the companion keeps progressing.
+  - Edge: restart with no prior advance (idempotent); restart after a `completed:true` run; clean exit vs hard-kill (durable either way — on-disk SQLite).
+
+## Advance → persist → complete (R-3, deterministic stub)
+
+- [ ] F-64 (R-3, AC3) **Advance→next-level→persist→complete — deterministic stub over the REAL loop.** Stub with `FREDO_DOOM_STUB_DONE_AFTER=<n>` + `FREDO_DOOM_STUB_PROGRESS=1` + the `FREDO_DOOM_SAVE_FILE` seam; observe a level exit → advance → persist.
+  - EXPECTED: on `done==true && outcome != "dead"` (`is_terminal`, `agent.rs:163-170`; handling `:384-388,415-416`) the campaign advances (map+1; episode+1/map=1 on wrap); the progress writer persists a `DoomSave` at the NEW coords (`updatedAt` advances); the loop continues at the next level (one `POST /api/episode` at the advanced coords); at the final level (E4M9) `completed:true` persisted, status `phase=completed`, `code="campaignComplete"`, `doom-progress-complete` renders.
+  - Edge: death (`outcome=="dead"`, `player.health=0`) restarts the SAME level — never advances/persists; wrap E1M9→E2M1; exactly ONE restart per terminal observation (`agent.rs:345-370`). **DISCLOSE: stub-driven chain over the real loop/writer/AppStore — not a real-engine level-exit.**
+
+## Absent/corrupt save + fresh start (R-4 / R-5)
+
+- [ ] F-65 (R-4, AC4) **Absent/corrupt save → clean run, no crash.** (a) `FREDO_DOOM_SAVE_FILE` → a missing path; (b) → a file containing `not json`; (c) unit pins: `DoomSave::parse` rejects unknown `version`, non-positive `episode`/`map`, `skill` outside `0..=4` → `None`. Enter Doom Mode for (a)/(b).
+  - EXPECTED: no crash/panic, no blocking; a clean run starts at E1M1 / `DOOM_DEFAULT_SKILL=3` / `DOOM_DEFAULT_SEED=0`; `get_doom_save` → `{hasSave:false, episode:null, map:null, skill:null, seed:null, completed:false, updatedAt:null}`; the mode enters and the companion progresses; console clean.
+  - Edge: empty file; whitespace-only; valid JSON wrong shape; unknown `version`; a directory at the seam path. Levers: missing path / `not json` file (in-repo).
+- [ ] F-66 (R-5, AC5) **Fresh start does not silently destroy a save; resume never silently starts fresh.** With a VALID save present: (a) `start_doom_autoplay({freshStart:true})` starts E1M1 and does NOT persist the initial position until the run advances — abort before any level transition leaves the prior save intact; (b) `start_doom_autoplay({})` and `enter_doom_mode` resume at the saved coords; (c) `doom-fresh-start-button` → `doom-fresh-start-confirm` drives the explicit fresh path.
+  - EXPECTED: (a) fresh run begins at E1M1; before the first advance `get_doom_save` still reports the PRIOR save UNCHANGED (byte-equal seam file); after the fresh run advances the slot is overwritten with the new coords; (b) absent `freshStart` ⇒ exactly one `POST /api/episode` at the saved coords, never E1M1; (c) the confirm is required before the fresh start proceeds.
+  - Edge: abort a fresh run immediately (window close) → prior save byte-identical; confirm dismissed → no fresh start; fresh run from a `completed:true` save; `reset_doom_save` (contract, non-AC) returns `hasSave:false` and a subsequent enter starts clean.
+
+## Continuous progress (G-123) + error paths (G-275/G-300)
+
+- [ ] F-67 (G-123 continuous) **Persisted resume point tracks progress WHILE active.** Stub `FREDO_DOOM_STUB_DONE_AFTER=<n>` driving ≥2 transitions; sample `get_doom_save` / the seam file at ≥3 points across the run (STEP-DRIVEN, G-316).
+  - EXPECTED: EVERY level transition writes exactly ONE updated `DoomSave` (`updatedAt` advances; coords track the campaign); the persisted point after a clean stop equals the last reached level; the write is best-effort and never fails the run; bounded growth — ONE fixed key (`doom_save_v1`), no append log.
+  - Edge: rapid consecutive transitions; stop mid-transition; a store write failure (F-68) does NOT stop the loop; restart mid-run resumes at the last persisted level.
+- [ ] F-68 (G-275/G-300 error paths) **Every error-path edge names its in-repo lever.** (a) engine error on resume: `FREDO_DOOM_STUB_EPISODE_FAIL=1` → `POST /api/episode` 500; (b) save READ failure: corrupt seam file (F-65b); (c) save WRITE failure: `FREDO_DOOM_SAVE_FILE` → an unwritable path (a directory / missing parent).
+  - EXPECTED: (a) typed `EngineRequestFailed` Failed within bound, no hang (reuses the F-32 lever); (b) clean run at initial (R-4); (c) the run CONTINUES — the write failure is logged and ignored (best-effort), `doom-autoplay-changed` keeps advancing, the in-memory campaign progresses.
+  - Edge: unset the lever + retry recovers; write failure then success; engine error on a fresh-start resume. Levers NAMED: `FREDO_DOOM_STUB_EPISODE_FAIL=1`, corrupt seam file, unwritable seam path.
+
+## Live receipt + E2E (REQUIRED, human directive)
+
+- [ ] F-70 (live receipt) Query `telemetry_spans` at round start AND after the drive.
+  - EXPECTED: NON-ZERO count + recent `max(ingested_at)` BOTH times. **Doom emits NO span** — the query proves the pipeline, not the feature; disclose.
+  - Edge: managed `psql` "too many clients" → disclosed app-pool `feature_data_read` fallback (G-307), named.
+- [ ] F-69 (E2E, human directive) **RUNNING app: PG-default boot + Mission Monitor + save/resume across sessions.** Boot the app end-to-end; seed one qualifying session; assert Mission Monitor; then enter Doom Mode with a seeded valid save, assert resume, exit, FULLY restart the app, re-enter, assert the save survived and resumes.
+  - EXPECTED: (a) `storage_engine_status` = `postgres` / PG supervisor ready; (b) Mission Monitor renders ≥1 live session — assert the DECLARED `sessions` row `e2e-copilot2933` has `visibleTurnCount ≥ 1` BEFORE asserting the list (`useSessionHistory.ts:46-54`; `MissionMonitorPanel.tsx:872`; drawer `:1170`); (c) the save/resume across the app restart works (durable via the control plane, F-62/F-63); (d) live-pipeline receipt `telemetry_spans` non-zero + recent `max(ingested_at)`.
+  - Edge: managed `psql` unavailable → name + DISCLOSE the app-pool `feature_data_read` fallback (G-307), never silently drop the leg; the seeded session is idempotent; the rest of the app is unaffected after the Doom exit.
+
+**R-coverage (#2972):** R-1→F-62 · R-2→F-63 · R-3→F-64 · R-4→F-65 · R-5→F-66 · G-123→F-67 · G-275/G-300→F-68 · live receipt→F-70 · E2E→F-69.
