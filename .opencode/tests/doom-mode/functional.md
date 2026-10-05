@@ -292,3 +292,73 @@
   - Edge: the PG leg needs the managed `psql` (G-284); if the ephemeral `ports.pg` is 0/unavailable, name the sanctioned app-pool `feature_data_read` fallback and DISCLOSE it — never silently drop the leg (G-307); the seeded session is idempotent; the rest of the app is unaffected after the mode exits.
 
 **`DoomModePhase` coverage:** `inactive`→F-33 pre / F-35/F-46/F-48 / F-39-42 post · `entering`→F-39 edge · `active`→F-33/F-36/F-44 · `exiting`→F-41 edge. **`DoomModeOrigin` coverage:** `code`→F-33 · `voice`→F-36/F-41 · `window`→F-39 (the `doom` window's exit control).
+
+---
+
+# doom-mode — Whole-app Doom theme + armored avatar (Spec #2971)
+
+> **Verification policy: live** — UI-rendering feature: whole-app CSS-variable restyle + an SVG armor overlay.
+> Evidence MUST carry the `telemetry_spans` live-pipeline reference (non-zero count + recent `max(ingested_at)`;
+> managed `psql` on the PG default, G-284, or a disclosed app-pool `feature_data_read` fallback, G-307).
+> **Doom emits NO OTLP span — the query proves the pipeline, not the feature; disclose that.** A static-only PASS
+> is a FALSE PASS (G-033).
+>
+> **Real-engine re-stage (G-319):** live legs need a successful `enter_doom_mode`; gitignored engine/WAD scratch is
+> NOT durable across specs — re-stage with
+> `powershell -File scripts/doom/stage-doom-fixture.ps1 -FixtureDir .opencode/tmp/2971/fixtures` (no literal
+> out-of-repo toolchain arg, G-322; exit 2 = named TOOLING GAP). WAD digest
+> `7323bcc168c5a45ff10749b339960e98314740a734c30d4b9f3337001f9e703d` (`stage-doom-fixture.ps1:100`), NOT the ZIP
+> digest `3f9b264f…` (`:97`) (G-320).
+>
+> **Stepping (G-316):** `-apilockstep` freezes the world between `POST /api/step`; this slice is phase-driven and
+> STATIC per phase — no "advances over time" leg.
+>
+> Binding names: `DoomPalette`/`DOOM_PALETTE` (`apps/ui/src/app/theme/doomTheme.ts`);
+> `setDoomVisualEngaged`/`isDoomVisualEngaged`/`subscribeDoomVisual` (`apps/ui/src/shared/doom-mode/doomVisual.ts`);
+> DOM hooks `<html class="doom-mode" data-doom-mode="engaged">`, `<svg data-doom-armor="true">`,
+> `<g id="fredo-armor" data-layer="armor">`; engaged = `phase !== 'inactive'` (`types.ts:63-65`); fail-enter lever
+> `FREDO_DOOM_MODE_FAIL_ENTER=1` (`mode.rs:29,236-243`).
+
+## Whole-app theme apply/revert (R-1..R-4, R-6)
+
+- [ ] F-51 (R-1, AC1) **REAL-ENGINE enter → app restyled via the token contract — REQUIRED.** Fresh inactive boot; re-stage the engine (G-319); snapshot `getComputedStyle(document.documentElement)` vars + `document.body` + a card/header; type `iddqd`.
+  - EXPECTED: `<html class="doom-mode" data-doom-mode="engaged">`; `--body-bg`/`--card-bg`/`--header-bg`/`--accent-primary`/`--text-primary` change to values EQUAL to `DOOM_PALETTE` fields (equality vs the imported record, not a literal); `document.body.style.background` mirrors the Doom `bodyBg`; card/header repaint. Screenshot saved under `.opencode/tmp/2971/e2e/`.
+  - Edge: `entering` phase also restyles; a surface with no direct var read restyles via the contract.
+- [ ] F-52 (R-2, AC1 token-first) **Palette reachable only through the token layer.** Static: grep `DOOM_PALETTE` importers + `--doom-`; live: sample restyled surfaces.
+  - EXPECTED: only `ThemeProvider.tsx` imports `DOOM_PALETTE`; zero `--doom-*` vars; restyled surfaces resolve through the pre-existing `--*` contract (`system.ts:56-141`); no component-local hex/rgba; changing only `DOOM_PALETTE` restyles every surface. COVERAGE assertion (G-271) — not a literal var count.
+  - Edge: derived `color-mix()` vars re-resolve live.
+- [ ] F-53 (R-3, AC2) **Armor overlay present + visibly distinct; absent when inactive.** Enter; snapshot the avatar SVG + screenshot; exit; re-snapshot.
+  - EXPECTED: `svg[data-doom-armor="true"]` + `<g id="fredo-armor" data-layer="armor">` rendered AFTER the expression overlay; dense/full-frame pixel diff shows the armored avatar distinct (G-213); base `<rect>` count unchanged and `FREDO_AVATAR_STATES.length` unchanged (frozen 12); on exit both hooks ABSENT.
+  - Edge: armor composes with a non-idle state (e.g. `error`) without mutating the vocabulary; armor is NOT a 13th state.
+- [ ] F-54 (R-4, AC3) **Exit → byte-exact revert; NO persisted-setting mutation.** Snapshot all inline `--*` vars + `document.body` + avatar outerHTML + `localStorage` theme keys before enter; enter; exit; re-snapshot.
+  - EXPECTED: byte-equal on every field; `Fredo_theme_overrides`/`Fredo_theme_preset`/`Fredo_user_presets` unchanged (`ThemeProvider.tsx:166,173,179`); `setOverride`/`setPreset`/`resetTheme` NEVER called (`:388-420`) — spy-verified; no flash of default.
+  - Edge: exit via `doom-exit-button`, `doom` window close, app exit, spoken exit — all identical.
+- [ ] F-56 (R-6, AC5) **Non-default preset + overrides + accent restored exactly.** Set preset + ≥1 override + distinct accent; snapshot resolved palette; enter; exit; re-snapshot.
+  - EXPECTED: preset id, every override key/value, resolved `--accent-primary`/`--accent-contrast` restored EXACTLY — never the stock default; while engaged Doom WINS over the lower layers.
+  - Edge: `--accent-contrast` recomputed from the Doom accent while engaged (`ThemeProvider.tsx:380-385`) then restored.
+
+## Secrecy + continuity + error path (R-5, R-7, R-8)
+
+- [ ] F-55 (R-5, AC4 negative) **Mode OFF → Doom invisible everywhere.** Fresh inactive boot; enumerate `ThemePresetSelector` options, `SettingsSurface` nav, launcher grid/search, hotkey listing; sample vars + avatar.
+  - EXPECTED: `allPresets` has NO Doom entry; selector lists no "Doom" option (`ThemingSettings.tsx:82-99`); no Doom nav item (`SettingsSurface.tsx:163-173`); no `doom-mode`/`data-doom-mode`; no `--*` var carries a `DOOM_PALETTE` value; avatar unarmored.
+  - Edge: launcher search "doom" → no result; scope = RENDERED surfaces only; `?view=doom` route remains (regression invariant).
+- [ ] F-57 (R-7, G-123 continuous) **Persistence across mount/unmount + re-renders.** While engaged, remount the avatar consumer and/or reopen a window; force ≥2 re-renders.
+  - EXPECTED: restyle + armor remain applied across every mount/unmount/re-render (module-scoped `doomVisual.ts`, never a `useRef`); removed only at `inactive`.
+  - Edge: window remount during active; re-render never flashes unarmored/unstyled.
+- [ ] F-58 (R-8, G-275 error path) **Failed enter → no residual Doom theme/armor.** Inject `FREDO_DOOM_MODE_FAIL_ENTER=1` via `dev-env.ps1 -EnvVar`; type `iddqd`.
+  - EXPECTED: `DoomModeResult{success:false,phase:"inactive",active:false,code:…}`; no `doom-mode`/`data-doom-mode`; all `--*` vars byte-equal the pre-attempt snapshot; avatar unarmored. Unset + retry → enters.
+  - Edge: lever exists (Slice 3, `mode.rs:236-243`); retry with lever still set stays `inactive`; no orphan.
+
+## Engine-free unit pins (G-172) + live receipt + E2E
+
+- [ ] F-60 (unit, engine-free) **Store + palette + armor pins.** Drive `setDoomVisualEngaged(true|false)`; render `ThemeProvider`; assert `--body-bg`/`--accent-primary`/`--accent-contrast` before→engaged→after; store idempotency; `DOOM_PALETTE` not in `allPresets`; armor presence/absence + 58-rect pin with armor OFF; the R-8 fail-enter revert.
+  - EXPECTED: all pins pass with NO engine; store notifies only on change; no leak into `allPresets`.
+  - Edge: `setDoomVisualEngaged` called twice with the same value → no notify.
+- [ ] F-59 (E2E, human directive) **RUNNING app: PG-default boot + Mission Monitor + Doom theming enter/exit.** Boot end-to-end; seed one qualifying session; enter; exit.
+  - EXPECTED: (a) `storage_engine_status` = PostgreSQL / PG supervisor ready; (b) `bun .opencode/scripts/inject-otlp-fixture.ts --copilot --fixture .opencode/scripts/copilot-exchange.fixture.json` → assert the DECLARED `sessions` row `e2e-copilot2933` qualifies (`visibleTurnCount ≥ 1`) BEFORE asserting the list (`useSessionHistory.ts:46-54`; `MissionMonitorPanel.tsx:872`; drawer `:1170`), then ≥1 row; (c) enter → themed + armored; exit → exact revert, rest of app unaffected.
+  - Edge: seed idempotent; PG leg needs managed `psql` (G-284) — else name a disclosed app-pool fallback (G-307); after exit the app is unaffected.
+- [ ] F-61 (live receipt) **Live-pipeline check.** Query `telemetry_spans` at round start AND after the drive.
+  - EXPECTED: NON-ZERO count + recent `max(ingested_at)` BOTH times. **Doom emits NO span** — the query proves the pipeline, not the feature; disclose.
+  - Edge: managed `psql` "too many clients" → disclosed app-pool fallback (G-307), named.
+
+**R-coverage:** R-1→F-51 · R-2→F-52 · R-3→F-53 · R-4→F-54 · R-5→F-55 · R-6→F-56 · R-7→F-57 · R-8→F-58.
