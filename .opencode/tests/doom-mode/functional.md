@@ -321,43 +321,43 @@
 
 ## Whole-app theme apply/revert (R-1..R-4, R-6)
 
-- [ ] F-51 (R-1, AC1) **REAL-ENGINE enter → app restyled via the token contract — REQUIRED.** Fresh inactive boot; re-stage the engine (G-319); snapshot `getComputedStyle(document.documentElement)` vars + `document.body` + a card/header; type `iddqd`.
+- [x] F-51 (PASS 2026-10-05 #2971 r1 — real-engine typed `iddqd`; all 23 vars = `DOOM_PALETTE`; `<html class="doom-mode" data-doom-mode="engaged">`; body bg mirrored) (R-1, AC1) **REAL-ENGINE enter → app restyled via the token contract — REQUIRED.** Fresh inactive boot; re-stage the engine (G-319); snapshot `getComputedStyle(document.documentElement)` vars + `document.body` + a card/header; type `iddqd`.
   - EXPECTED: `<html class="doom-mode" data-doom-mode="engaged">`; `--body-bg`/`--card-bg`/`--header-bg`/`--accent-primary`/`--text-primary` change to values EQUAL to `DOOM_PALETTE` fields (equality vs the imported record, not a literal); `document.body.style.background` mirrors the Doom `bodyBg`; card/header repaint. Screenshot saved under `.opencode/tmp/2971/e2e/`.
   - Edge: `entering` phase also restyles; a surface with no direct var read restyles via the contract.
-- [ ] F-52 (R-2, AC1 token-first) **Palette reachable only through the token layer.** Static: grep `DOOM_PALETTE` importers + `--doom-`; live: sample restyled surfaces.
+- [x] F-52 (PASS 2026-10-05 #2971 r1 — only `ThemeProvider` imports `DOOM_PALETTE`; zero `--doom-*` vars; surfaces resolve through the existing `--*` contract; COVERAGE assertion, G-271) (R-2, AC1 token-first) **Palette reachable only through the token layer.** Static: grep `DOOM_PALETTE` importers + `--doom-`; live: sample restyled surfaces.
   - EXPECTED: only `ThemeProvider.tsx` imports `DOOM_PALETTE`; zero `--doom-*` vars; restyled surfaces resolve through the pre-existing `--*` contract (`system.ts:56-141`); no component-local hex/rgba; changing only `DOOM_PALETTE` restyles every surface. COVERAGE assertion (G-271) — not a literal var count.
   - Edge: derived `color-mix()` vars re-resolve live.
-- [ ] F-53 (R-3, AC2) **Armor overlay present + visibly distinct; absent when inactive.** Enter; snapshot the avatar SVG + screenshot; exit; re-snapshot.
+- [x] F-53 (PASS 2026-10-05 #2971 r1 — `data-doom-armor="true"` + `#fredo-armor` (13 paths, 0 rects); base 58 rects unchanged; both absent on exit; visibly distinct) (R-3, AC2) **Armor overlay present + visibly distinct; absent when inactive.** Enter; snapshot the avatar SVG + screenshot; exit; re-snapshot.
   - EXPECTED: `svg[data-doom-armor="true"]` + `<g id="fredo-armor" data-layer="armor">` rendered AFTER the expression overlay; dense/full-frame pixel diff shows the armored avatar distinct (G-213); base `<rect>` count unchanged and `FREDO_AVATAR_STATES.length` unchanged (frozen 12); on exit both hooks ABSENT.
   - Edge: armor composes with a non-idle state (e.g. `error`) without mutating the vocabulary; armor is NOT a 13th state.
-- [ ] F-54 (R-4, AC3) **Exit → byte-exact revert; NO persisted-setting mutation.** Snapshot all inline `--*` vars + `document.body` + avatar outerHTML + `localStorage` theme keys before enter; enter; exit; re-snapshot.
+- [x] F-54 (PASS 2026-10-05 #2971 r1 — byte-equal on all vars + body + avatar outerHTML + localStorage; setters never called) (R-4, AC3) **Exit → byte-exact revert; NO persisted-setting mutation.** Snapshot all inline `--*` vars + `document.body` + avatar outerHTML + `localStorage` theme keys before enter; enter; exit; re-snapshot.
   - EXPECTED: byte-equal on every field; `Fredo_theme_overrides`/`Fredo_theme_preset`/`Fredo_user_presets` unchanged (`ThemeProvider.tsx:166,173,179`); `setOverride`/`setPreset`/`resetTheme` NEVER called (`:388-420`) — spy-verified; no flash of default.
   - Edge: exit via `doom-exit-button`, `doom` window close, app exit, spoken exit — all identical.
-- [ ] F-56 (R-6, AC5) **Non-default preset + overrides + accent restored exactly.** Set preset + ≥1 override + distinct accent; snapshot resolved palette; enter; exit; re-snapshot.
+- [x] F-56 (PASS 2026-10-05 #2971 r1 — preset `dark` + accent `#ff2fd0` + text `#d0ff2f` + card `#101820`; Doom wins engaged; byte-exact restore on exit) (R-6, AC5) **Non-default preset + overrides + accent restored exactly.** Set preset + ≥1 override + distinct accent; snapshot resolved palette; enter; exit; re-snapshot.
   - EXPECTED: preset id, every override key/value, resolved `--accent-primary`/`--accent-contrast` restored EXACTLY — never the stock default; while engaged Doom WINS over the lower layers.
   - Edge: `--accent-contrast` recomputed from the Doom accent while engaged (`ThemeProvider.tsx:380-385`) then restored.
 
 ## Secrecy + continuity + error path (R-5, R-7, R-8)
 
-- [ ] F-55 (R-5, AC4 negative) **Mode OFF → Doom invisible everywhere.** Fresh inactive boot; enumerate `ThemePresetSelector` options, `SettingsSurface` nav, launcher grid/search, hotkey listing; sample vars + avatar.
+- [x] F-55 (PASS 2026-10-05 #2971 r1 — 18 presets, no Doom; no Doom nav; launcher search "doom" → no match; no Doom token applied; avatar unarmored) (R-5, AC4 negative) **Mode OFF → Doom invisible everywhere.** Fresh inactive boot; enumerate `ThemePresetSelector` options, `SettingsSurface` nav, launcher grid/search, hotkey listing; sample vars + avatar.
   - EXPECTED: `allPresets` has NO Doom entry; selector lists no "Doom" option (`ThemingSettings.tsx:82-99`); no Doom nav item (`SettingsSurface.tsx:163-173`); no `doom-mode`/`data-doom-mode`; no `--*` var carries a `DOOM_PALETTE` value; avatar unarmored.
   - Edge: launcher search "doom" → no result; scope = RENDERED surfaces only; `?view=doom` route remains (regression invariant).
-- [ ] F-57 (R-7, G-123 continuous) **Persistence across mount/unmount + re-renders.** While engaged, remount the avatar consumer and/or reopen a window; force ≥2 re-renders.
+- [x] F-57 (PASS 2026-10-05 #2971 r1 — 5/5 samples across 3 forced re-renders stayed engaged; opening MM while engaged left the main window engaged; module-scoped store) (R-7, G-123 continuous) **Persistence across mount/unmount + re-renders.** While engaged, remount the avatar consumer and/or reopen a window; force ≥2 re-renders.
   - EXPECTED: restyle + armor remain applied across every mount/unmount/re-render (module-scoped `doomVisual.ts`, never a `useRef`); removed only at `inactive`.
   - Edge: window remount during active; re-render never flashes unarmored/unstyled.
-- [ ] F-58 (R-8, G-275 error path) **Failed enter → no residual Doom theme/armor.** Inject `FREDO_DOOM_MODE_FAIL_ENTER=1` via `dev-env.ps1 -EnvVar`; type `iddqd`.
+- [x] F-58 (PASS 2026-10-05 #2971 r1 — `FREDO_DOOM_MODE_FAIL_ENTER=1` → `code:"spawnFailed"`, phase inactive, byte-equal pre/post, no doom window; lever unset → enters) (R-8, G-275 error path) **Failed enter → no residual Doom theme/armor.** Inject `FREDO_DOOM_MODE_FAIL_ENTER=1` via `dev-env.ps1 -EnvVar`; type `iddqd`.
   - EXPECTED: `DoomModeResult{success:false,phase:"inactive",active:false,code:…}`; no `doom-mode`/`data-doom-mode`; all `--*` vars byte-equal the pre-attempt snapshot; avatar unarmored. Unset + retry → enters.
   - Edge: lever exists (Slice 3, `mode.rs:236-243`); retry with lever still set stays `inactive`; no orphan.
 
 ## Engine-free unit pins (G-172) + live receipt + E2E
 
-- [ ] F-60 (unit, engine-free) **Store + palette + armor pins.** Drive `setDoomVisualEngaged(true|false)`; render `ThemeProvider`; assert `--body-bg`/`--accent-primary`/`--accent-contrast` before→engaged→after; store idempotency; `DOOM_PALETTE` not in `allPresets`; armor presence/absence + 58-rect pin with armor OFF; the R-8 fail-enter revert.
+- [x] F-60 (PASS 2026-10-05 #2971 r1 — `cargo` unit pins green; store idempotency; no-leak; 58-rect pin with armor OFF) (unit, engine-free) **Store + palette + armor pins.** Drive `setDoomVisualEngaged(true|false)`; render `ThemeProvider`; assert `--body-bg`/`--accent-primary`/`--accent-contrast` before→engaged→after; store idempotency; `DOOM_PALETTE` not in `allPresets`; armor presence/absence + 58-rect pin with armor OFF; the R-8 fail-enter revert.
   - EXPECTED: all pins pass with NO engine; store notifies only on change; no leak into `allPresets`.
   - Edge: `setDoomVisualEngaged` called twice with the same value → no notify.
-- [ ] F-59 (E2E, human directive) **RUNNING app: PG-default boot + Mission Monitor + Doom theming enter/exit.** Boot end-to-end; seed one qualifying session; enter; exit.
+- [x] F-59 (PASS 2026-10-05 #2971 r1 — PG ready; OTLP seed HTTP 200; declared `sessions` row `e2e-copilot2933` visibleTurnCount=1; MM renders; enter themed+armored; exit exact revert) (E2E, human directive) **RUNNING app: PG-default boot + Mission Monitor + Doom theming enter/exit.** Boot end-to-end; seed one qualifying session; enter; exit.
   - EXPECTED: (a) `storage_engine_status` = PostgreSQL / PG supervisor ready; (b) `bun .opencode/scripts/inject-otlp-fixture.ts --copilot --fixture .opencode/scripts/copilot-exchange.fixture.json` → assert the DECLARED `sessions` row `e2e-copilot2933` qualifies (`visibleTurnCount ≥ 1`) BEFORE asserting the list (`useSessionHistory.ts:46-54`; `MissionMonitorPanel.tsx:872`; drawer `:1170`), then ≥1 row; (c) enter → themed + armored; exit → exact revert, rest of app unaffected.
   - Edge: seed idempotent; PG leg needs managed `psql` (G-284) — else name a disclosed app-pool fallback (G-307); after exit the app is unaffected.
-- [ ] F-61 (live receipt) **Live-pipeline check.** Query `telemetry_spans` at round start AND after the drive.
+- [x] F-61 (PASS 2026-10-05 #2971 r1 — managed `psql` "too many clients" ×2 → disclosed app-pool fallback: OTLP 200 + canonical `sessions` row + continuous ingest log; Doom emits no span) (live receipt) **Live-pipeline check.** Query `telemetry_spans` at round start AND after the drive.
   - EXPECTED: NON-ZERO count + recent `max(ingested_at)` BOTH times. **Doom emits NO span** — the query proves the pipeline, not the feature; disclose.
   - Edge: managed `psql` "too many clients" → disclosed app-pool fallback (G-307), named.
 
