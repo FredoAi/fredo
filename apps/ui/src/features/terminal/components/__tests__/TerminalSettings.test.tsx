@@ -148,9 +148,16 @@ describe('Spec 2942 ST-4 — TerminalSettings (default session type)', () => {
   });
 
   it('persists a changed default type (round-trip: Terminal → GitHub Copilot)', async () => {
-    settings = { terminal_default_cli: 'shell' };
+    // The persisted default is the DEFAULT_KIND ('shell'), so the radio alone
+    // cannot tell us the async settings load has landed. Wait on the loaded
+    // working directory instead: that guarantees the load's
+    // `setDefaultKind(normalizeKind(savedKind))` has already run, so a late
+    // load can no longer overwrite the user's selection before Save.
+    settings = { terminal_work_dir: 'C:\\repo', terminal_default_cli: 'shell' };
     renderSettings();
 
+    const input = screen.getByPlaceholderText('C:\\Users\\you\\my-repo') as HTMLInputElement;
+    await waitFor(() => expect(input.value).toBe('C:\\repo'));
     await waitFor(() => expect(radio('shell')).toHaveAttribute('aria-checked', 'true'));
 
     choose('copilot');
