@@ -71,3 +71,24 @@
 
 - `.opencode/tests/mission-monitor/` — F-50 E2E regression gate (unchanged surface).
 - `.opencode/tests/voice-dictation/` — the capture + model-audio pipeline the suppression gate reads (`session.rs`, `commands.rs`).
+
+---
+
+## Whole-app theme + armored avatar slice (Spec #2971) — must-not-change baseline
+
+> **Verification policy: live** — the live-pipeline `telemetry_spans` reference plus
+> DOM/screenshot/localStorage receipts per leg (managed `psql` on the PG default, G-284, or a
+> disclosed app-pool fallback, G-307). Doom emits no span. A static-only PASS is a FALSE PASS.
+
+- [ ] R-20: **Mode-off theme unchanged** — with the mode inactive, the base/preset/override passes behave exactly as today; the Doom layer is skipped and every `--*` var equals the pre-feature value. `DOOM_PALETTE` is not applied. (Links: `theming/functional.md`, `settings/functional.md`.)
+- [ ] R-21: **Frozen avatar vocabulary + geometry** — `FREDO_AVATAR_STATES.length` is unchanged (12, `fredoAvatarStates.ts:18-31`); the base `<rect>` count is unchanged; armor is an additive overlay `<g id="fredo-armor">`, never a 13th state; with the mode off, `data-doom-armor`/`#fredo-armor` are absent. (Links: `fredo-avatar/functional.md`, `launcher/functional.md`.)
+- [ ] R-22: **Persisted theme keys + setter API unchanged** — `Fredo_theme_overrides`/`Fredo_theme_preset`/`Fredo_user_presets` (`ThemeProvider.tsx:166,173,179`) are never written by this feature; `setOverride`/`setPreset`/`resetTheme` (`:388-420`) are never called. (Links: `settings/functional.md`, `theming/functional.md`.)
+- [ ] R-23: **Existing Doom surface unchanged** — `enter_doom_mode`/`exit_doom_mode`/`get_doom_mode_status`, `doom-mode-changed`, the `doom` window + real runtime, and `performanceGate` suppression behave identically; `useDoomMode.test.tsx` stays green. (Links: `doom-mode/functional.md` slices 1–3.)
+- [ ] R-24: **Mission Monitor unaffected** — renders live sessions normally with the theme/armor slice present; the F-59 E2E row is the gate. (Links: `mission-monitor/functional.md`.)
+- [ ] R-25: **No process leak / no second OS window** — across every enter/exit leg zero `restful-doom.exe` outlives its window/app; no SDL second OS window; `-noblit` still serves `/api/frame`. (Links: `doom-mode/functional.md` slices 1–3.)
+
+### Links added by this slice
+
+- `.opencode/tests/theming/`, `.opencode/tests/settings/` — the token contract + theme-settings surfaces the Doom layer must not perturb.
+- `.opencode/tests/fredo-avatar/`, `.opencode/tests/launcher/` — the frozen 12-state vocabulary + 58-rect geometry.
+- `.opencode/tests/mission-monitor/` — F-59 E2E regression gate (unchanged surface).
