@@ -23,6 +23,7 @@ import {
 } from 'react-icons/lu';
 import { adapterBridge } from '../../shared/utils/adapterBridge';
 import { tint } from '../../shared/utils/colorTint';
+import { useDoomMode } from '../../shared/doom-mode';
 import {
   DOOM_AUTOPLAY_EVENT,
   DOOM_AUTOPLAY_IDLE_STATUS,
@@ -81,6 +82,15 @@ export const DoomWindow: React.FC = () => {
     useState<DoomAutoplayStatus>(DOOM_AUTOPLAY_IDLE_STATUS);
   const [autoplayBusy, setAutoplayBusy] = useState(false);
   const [autoplayNow, setAutoplayNow] = useState(() => Date.now());
+
+  // Spec #2970 ST-6 — the Doom Mode lifecycle phase drives the header exit
+  // affordance. The `doom` window is opened by `enter_doom_mode` (origin `code`
+  // or `voice`), so it normally mounts in `entering`; the direct `?view=doom`
+  // route mounts with no mode and renders NO exit control. `inactive` → not
+  // rendered; `entering` → disabled; `active` → enabled; `exiting` → loading +
+  // disabled. Exiting with reason `window` is the exit-button path.
+  const { status: doomModeStatus, exit: exitDoomMode } = useDoomMode();
+  const doomPhase = doomModeStatus.phase;
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const lastFrameImageRef = useRef<HTMLImageElement | null>(null);
@@ -447,9 +457,31 @@ export const DoomWindow: React.FC = () => {
             color="fg.muted"
             fontFamily="mono"
             whiteSpace="nowrap"
+            // G-274: the status is an exempt child of the header row (the title
+            // Heading is the ONLY ellipsis owner) — it must never shrink.
+            flexShrink={0}
           >
             {statusLabel}
           </Text>
+          {/* Spec #2970 ST-6 (R-3.b) — the in-window exit affordance. Gated on the
+              Doom Mode phase, NOT the runtime phase: it appears only while the
+              mode is engaged. G-274: exempt child, never shrinks. */}
+          {doomPhase !== 'inactive' && (
+            <Button
+              data-testid="doom-exit-button"
+              flexShrink={0}
+              variant="solid"
+              size="sm"
+              bg="var(--status-error)"
+              color="white"
+              _hover={{ opacity: 0.9 }}
+              disabled={doomPhase !== 'active'}
+              loading={doomPhase === 'exiting'}
+              onClick={() => void exitDoomMode('window')}
+            >
+              Exit Doom Mode
+            </Button>
+          )}
         </HStack>
       </Flex>
 

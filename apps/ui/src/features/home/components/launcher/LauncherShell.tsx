@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Box, chakra, useBreakpointValue } from '@chakra-ui/react';
 
 // Own-kernel window list (Spec #2807 ST-1) — AC1: never the third-party toolbar.
@@ -12,6 +12,13 @@ import { useWindowActions } from '../../../../shared/window-system/useWindowActi
 import { arrangeOpenWindows } from '../../../../shared/window-system/workspaceLayoutStore';
 import type { WindowEntry } from '../../../../shared/window-system/windowTypes';
 import { tint } from '../../../../shared/utils/colorTint';
+// Spec #2970 ST-6 (R-4.a) — the module-scoped companion voice/audio suppression
+// gate, driven by `useDoomMode`. Read through the shipped external-store pattern
+// so the launcher follows Doom Mode without a React context or a ref.
+import {
+  isPerformanceGateActive,
+  subscribePerformanceGate,
+} from '../../../../shared/doom-mode';
 // Live stream/connection flag — mirrors StreamStatus.tsx (ONLINE dot).
 import { useConnectionStatus } from '../../../../shared/contexts/StreamContext';
 // Companion designated presence — gates the launcher mascot (#2853 ST-4).
@@ -517,6 +524,19 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // Primitive read only (AGENTS.md #523).
   const companionReplying = replyInFlight;
 
+  // Spec #2970 ST-6 (R-4.a) — the companion voice/audio suppression gate. While
+  // Doom Mode is active the module-scoped `performanceGate` is true and every
+  // launcher voice affordance closes SILENTLY (UI/UX §2): the hold gesture never
+  // arms, the Ctrl+Space chord still opens the bar but starts no session, and no
+  // voice-error alert is rendered. `voiceAvailable` is the ONE derived flag every
+  // voice gate below reads, so the suppression is visible everywhere at once.
+  const voiceSuppressed = useSyncExternalStore(
+    subscribePerformanceGate,
+    isPerformanceGateActive,
+    isPerformanceGateActive,
+  );
+  const voiceAvailable = voiceEnabled && !voiceSuppressed;
+
   // Spec #2882 ST-4 — Ctrl+Space shows/focuses the bar (see `selectCtrlSpaceAction`);
   // the launcher-origin listening cue (DR-7) is unchanged. `start`/`stop`/`cancel`
   // are stable useCallbacks, so the document listener below keeps a stable identity
@@ -592,8 +612,9 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // R-2.1 / contract 4c — the promise placeholder is offered only when the whole
   // precondition is available (voice on + not busy). Spec #2914 ST-5 (R-3): the
   // sherpa model-readiness term is gone — the gesture is gated on `voiceEnabled`
-  // alone and the backend owns start-time degradation.
-  const holdAvailable = voiceEnabled && !companionReplying;
+  // alone and the backend owns start-time degradation. Spec #2970 ST-6: the gate
+  // is `voiceAvailable` (voice enabled AND not Doom-Mode suppressed).
+  const holdAvailable = voiceAvailable && !companionReplying;
   // Spec #2887 ST-7 (R-3/AC3) — the ONE honest cue, derived from the pure
   // `deriveHoldCue` rule (see its doc). It replaces the shipped
   // `holdArmed`/`holdPending` pair at the bar: `'listening'` is reachable ONLY
@@ -1240,14 +1261,17 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // immediately and releases the microphone (the backend's own `disabled` gate is
   // the belt-and-braces second line). Keyed on the enablement flag only; the live
   // state is read from the ref so this never re-fires per session tick.
+  // Spec #2970 ST-6: `voiceAvailable` folds in Doom-Mode suppression, so a capture
+  // live at the instant suppression turns on is stopped (and announces the shipped
+  // `Voice input is off`, not a new Doom string).
   useEffect(() => {
-    if (!voiceEnabled && listeningRef.current) {
+    if (!voiceAvailable && listeningRef.current) {
       // #2878 ST-1 — a voice-disabled teardown is a DISCARD: it restores the
       // pre-session bar text. It still STOPS the session (the #2877 behavior).
       restorePreSessionBar();
       void stopVoice();
     }
-  }, [voiceEnabled, stopVoice, restorePreSessionBar]);
+  }, [voiceAvailable, stopVoice, restorePreSessionBar]);
 
   // Spec #2878 ST-1 — the launcher session lifecycle: the gesture mirrors + the
   // pre-session restore target. Primitive deps only (AGENTS.md #523 — never a raw
@@ -1539,7 +1563,9 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
           // Spec #2914 ST-5 (R-3) — the persisted enablement is the WHOLE arming
           // gate. The deleted sherpa readiness probe no longer withholds the
           // gesture; the backend capability gate owns start-time degradation.
-          voiceUsable: voiceEnabled,
+          // Spec #2970 ST-6 — `voiceAvailable` also closes the gesture while Doom
+          // Mode suppresses the pipeline.
+          voiceUsable: voiceAvailable,
           // #2892 ST-5 — the hold precondition uses the SAME `replyInFlight`
           // primitive as `holdAvailable` (the promise placeholder), so the offer
           // and the actual arm can never disagree.
@@ -1628,7 +1654,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       armHold,
       resetHoldGesture,
       signalCancel,
-      voiceEnabled,
+      voiceAvailable,
       // Spec #2946 ST-9 — the palette branches read these.
       paletteActive,
       paletteEntries,
@@ -1984,7 +2010,11 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             // Spec #2897 ST-6 (REQ-7) — a failed start / failed delivery surfaces
             // the curated model-audio copy. Spec #2914 ST-5 — the inline
             // `Use local transcription` action is GONE: there is no local path.
-            voiceErrorMessage={voiceErrorMessage}
+            // Spec #2970 ST-6 (UI/UX §2) — while Doom Mode suppresses the voice
+            // pipeline the error surface is FORCED empty: no `role="alert"` copy
+            // renders, so the suppression is silent (AC4) and the main window
+            // reveals nothing (AC3).
+            voiceErrorMessage={voiceSuppressed ? null : voiceErrorMessage}
             // Spec #2914 ST-5 (R-4) — ONE speech path: the bar renders the
             // model-audio indicator and NEVER feeds the transcript announcer —
             // `voice-transcript-announcer` stays mounted but empty.
@@ -2001,7 +2031,10 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             // notice; `limitReached` is the auto-stop's warning signal.
             modelAudioLimitMs={voice.modelAudioLimitMs}
             limitReached={voice.limitReached}
-            voiceEnabled={voiceEnabled}
+            // Spec #2970 ST-6 — the bar's own voice gate follows the suppression
+            // too, so its Ctrl+Space/announcement behavior treats Doom Mode as
+            // voice-disabled without any Doom-specific string.
+            voiceEnabled={voiceAvailable}
             ariaLabel={companionActive ? 'Search, launch, or message Fredo' : 'Search or command'}
             ariaDescribedBy="fredo-command-hint"
             // Spec #2883 ST-2 — the band measurement roots: the bar root Box's top
