@@ -298,6 +298,8 @@ final.jpeg                          # Final state after all ACs tested
 
 **Measure layout width, not zoom-scaled rects (G-040).** When a test asserts rendered WIDTH/GEOMETRY, measure the LAYOUT width (element `offsetWidth`, or the component/library store width), never `getBoundingClientRect().width` — the rect is transform-scaled whenever the viewport is zoomed (ReactFlow graph canvases are almost always non-identity). A measured width near `expected × zoom` (e.g. 320.7 ≈ 480 × 0.668) is the signature of a zoom-scaled rect, not a width defect.
 
+**A stage/acquire script's exit 0 does not prove the runtime is READY from the named install dir (G-323).** When a plan names a fixture/scratch install directory for an external runtime, the stage script's exit 0 proves only that the artifact was written. Verify the runtime's own readiness probe from that directory; if the staged copy does not become ready (e.g. a `readyTimeout` with an empty engine log), drive the real runtime from the default install directory, DISCLOSE the substitution, and never present a stub.
+
 Create the directory before testing:
 ```powershell
 $dir = ".opencode/tmp/<issue>/e2e"

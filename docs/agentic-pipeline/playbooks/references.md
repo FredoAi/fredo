@@ -64,13 +64,29 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 ---
 ## Known Failure Modes
 
+### G-324: convergence_leaves_a_planner_requested_dom_hook_unadjudicated
+- **activation_date:** 2026-10-05
+- **observed:** #2971 (Doom Mode slice 4) — the UI/UX planner proposed a NEW DOM hook (a visually-hidden `role="status"` live region announcing the engaged state) that was not in the binding names block and not required by any acceptance criterion, and requested sign-off. The SI adjudicated it at convergence (DECLINED for the slice — not an AC; recorded as a documented limitation), so the plan shipped neither an unowned hook nor a silent gap.
+- **target_failure:** a planner proposes a new DOM/testid hook (or other shared seam) that is not in the binding names block and not required by an acceptance criterion; convergence leaves the request unresolved, so the implementation either ships an unowned hook (violating single-owner hook discipline) or silently drops it, and the omission surfaces only at testing.
+- **guardrail:** At convergence, any planner-proposed hook/seam outside the binding names block and not required by an AC must be adjudicated to ONE outcome — accepted (added to the names block with a single named owner and matching QA rows) or declined (recorded as a documented limitation in the plan's Risks). An unadjudicated new hook is a plan defect.
+- **home:** playbooks/self-improver.md (convergence) + playbooks/ui-ux-expert.md + references.md (this record)
+- **effectiveness:** Pending
+
+### G-323: stage_script_exit_zero_does_not_prove_fixture_dir_runtime_readiness
+- **activation_date:** 2026-10-05
+- **observed:** #2971 (Doom Mode slice 4) — the plan named `.opencode/tmp/2971/fixtures` as the external-runtime install dir; the tester re-staged with the committed stage script (exit 0, WAD verified) but launching the app with that install dir produced `readyTimeout` with an empty engine log, so the live legs were driven against the app's default install-dir engine (the same real binary the script copies from and verifies — NOT a stub) and the substitution was disclosed. No round was burned and no false PASS resulted, but the plan's named install dir was not the driven one.
+- **target_failure:** a plan names a fixture/scratch install directory for an external runtime, and the stage script's exit 0 is treated as proof the staged runtime is launchable from that directory — but the staged copy never reaches READY, so the round silently drives a different (default install-dir) runtime or a stub.
+- **guardrail:** A stage/acquire script's exit 0 proves the artifact was written, NOT that the runtime reaches READY from the named install directory. The QA round must verify the runtime's own readiness probe from the plan-named directory; when the staged copy does not become ready, drive the real runtime from the default install directory, DISCLOSE the substitution, and never present a stub. A plan that names a fixture-dir install dir should require this readiness check, not merely a stage-script exit code.
+- **home:** playbooks/tester.md + playbooks/qa-expert.md + .opencode/skills/dev-environment/SKILL.md + references.md (this record)
+- **effectiveness:** Pending
+
 ### G-320: plan_pinned_artifact_checksum_literal_sourced_from_prose
 - **activation_date:** 2026-10-05
 - **observed:** #2970 — the plan's real-engine row pinned the Freedoom IWAD SHA-256 to the ZIP-archive digest quoted in the acquisition research, but the enforcing stage script pins the extracted WAD to a different digest; asserting the WAD against the archive digest would false-FAIL. The executor corrected it in the tester brief; no round was burned, but the plan literal named the wrong artifact. Root-cause class: `technique`.
 - **target_failure:** a plan or QA row pins a checksum/constant literal for a produced artifact by copying it from prose (a research note, a release page) instead of from the enforcing script or the artifact itself, so the literal names the wrong artifact (an archive digest asserted against an extracted file) and the row is undrivable or false-FAILs.
 - **guardrail:** When a plan or QA row pins a checksum/constant literal for a produced artifact, source it from the enforcing script (or the artifact itself) and name which artifact it belongs to; an archive digest and an extracted-file digest are different artifacts and must not be interchanged. An unverified literal is a plan test-data defect returned at convergence.
 - **home:** playbooks/software-architect.md + playbooks/qa-expert.md + playbooks/self-improver.md (convergence) + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed (2026-10-05, #2971) — the plan and QA row sourced the staged Freedoom WAD digest from the enforcing `stage-doom-fixture.ps1` (the extracted-file digest) and explicitly rejected the ZIP-archive digest; the tester verified the WAD against the enforcing-script digest and the real-engine legs ran with no false-FAIL. The plan-literal trap did not recur.
 
 ### G-321: convergence_leaves_a_qa_edge_contradicting_the_ui_ux_interaction_spec
 - **activation_date:** 2026-10-05
@@ -78,7 +94,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** a plan's QA row edge and its UI/UX interaction spec make contradictory claims about the same control's behaviour, so whichever the implementation follows, one plan statement is false and the row reads as a deviation or a phantom failure at test time.
 - **guardrail:** At convergence, when a QA row's edge and the UI/UX interaction spec make contradictory claims about the same control, reconcile them to ONE binding behaviour in the same pass and record which governs (the deliberate interaction-spec behaviour wins unless the backlog AC requires otherwise); an unreconciled contradiction is a plan defect.
 - **home:** playbooks/self-improver.md (convergence) + playbooks/ui-ux-expert.md + playbooks/qa-expert.md + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed (2026-10-05, #2971) — convergence reconciled the UI/UX interaction spec with the QA rows to one binding behaviour on every shared control (armor non-occlusion of the expression zones, instant exit, `--accent-contrast` recompute); no QA edge contradicted the UI/UX section and no deviation/phantom failure was reported at test time.
 
 ### G-322: plan_authored_command_passes_the_literal_out_of_repo_toolchain_path
 - **activation_date:** 2026-10-05
@@ -86,7 +102,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** a plan-authored command or dispatch brief passes a literal out-of-repo toolchain path (or a comma/multi-path argument) that the executing role's command matcher denies, so the named command cannot be run verbatim and the executor must improvise an equivalent.
 - **guardrail:** A plan-authored command must not pass a literal out-of-repo toolchain path as an argument — name the flag optional and state that the committed script probes the location internally; avoid comma/multi-path arguments in plan commands. Validate every plan command against the executing role's command matcher at convergence.
 - **home:** playbooks/software-architect.md + playbooks/qa-expert.md + playbooks/self-improver.md (convergence) + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed (2026-10-05, #2971) — the plan's real-engine re-stage command omitted the out-of-repo toolchain-path argument (the committed script probes the toolchain internally), and the tester ran it verbatim without a command-matcher denial. No retry was burned on an improvized equivalent.
 
 ### G-317: published_plan_seam_has_no_owning_consumer
 - **activation_date:** 2026-10-04
@@ -111,6 +127,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **guardrail:** When a spec's acceptance depends on an external runtime built/staged by a prior spec, the plan MUST either (a) require the QA round to RE-STAGE it (name the in-repo build/stage script and state that gitignored scratch is not durable across specs) and drive the combined leg, or (b) explicitly classify the real-runtime leg as a PO-accepted tooling-gap partial. Never present a stub-only demonstration of a "genuine/live" capability as full live verification; disclose it as a partial (see the provider-limited-partial rule).
 - **home:** playbooks/qa-expert.md + playbooks/software-architect.md + playbooks/self-improver.md (convergence + tester dispatch) + references.md (this record)
 - **effectiveness:** Confirmed (2026-10-05, #2970) — the plan made re-staging the real engine a critical-path first sub-task and a REQUIRED QA row (F-49), the developer built it from source into THIS spec's fixture dir, and the tester re-ran the stage script and drove the combined secret-activation → runtime → real-engine leg live (F-33/F-50); no stub-only partial shipped. (Prior: Pending — created 2026-10-04 from #2969, where the real-engine leg was absent.)
+- **re-validated:** 2026-10-05, #2971 — the plan again required re-staging via the committed stage script and the tester ran it (exit 0, WAD verified). The staged fixture-dir copy did NOT become ready (`readyTimeout` with an empty engine log), so the live legs were driven against the app's default install-dir engine — the SAME real `restful-doom.exe` (basename asserted, never the stub) — and the substitution was disclosed. The real-engine intent held (no stub-only PASS), but the plan-named install dir was not the driven one. Partial — see G-323 for the readiness rule.
 
 ### G-313: stale_app_instance_locks_the_build_binary_and_is_not_reaped_by_hygiene
 - **activation_date:** 2026-10-04
