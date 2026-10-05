@@ -41,6 +41,14 @@
 //! NOT here (later compilable units): the `doom` window + webview + main-window
 //! entry (CU-4, ST-6/ST-7).
 //!
+//! Slice 5 (#2972) adds:
+//!
+//! * [`save`] — the persisted resume contract (`DoomSave` / `DoomSaveStatus` /
+//!   `DoomCampaign`, `parse`/`serialize`, the control-plane `load`/`store` seam,
+//!   and the pinned campaign constants). ST-2.
+//! * [`progress`] — the continuous-state owner ([`progress::DoomProgressWriter`])
+//!   that persists one `DoomSave` per level transition. ST-4.
+//!
 //! # G-263
 //!
 //! Every wait in this module is finite with a hard-kill fallback and teardown on
@@ -57,5 +65,7 @@ pub mod commands;
 pub mod decision;
 pub mod mode;
 pub mod process;
+pub mod progress;
 pub mod resolver;
+pub mod save;
 pub mod state;
