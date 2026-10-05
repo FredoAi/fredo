@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::infrastructure::companion::performance_mode::PerformanceModeState;
 use crate::infrastructure::storage::AppStore;
 use crate::infrastructure::voice::capture::{self, AudioMsg};
 use crate::infrastructure::voice::state::{
@@ -265,6 +266,16 @@ fn model_audio_start_gate(capability: Option<&SttAudioCapability>) -> Option<Voi
     }
 }
 
+/// Spec #2970 ST-3 (R-4.a) — the Doom Mode suppression gate for the voice
+/// session start. While Doom Mode is active the companion voice pipeline is
+/// suppressed: the gate yields the shipped typed `disabled` error, so the caller
+/// returns BEFORE any capture is opened and no audio is ever captured. Pure, so
+/// the continuous suppression invariant is hermetically pinned without an
+/// `AppHandle` (G-123).
+fn suppression_gate(suppressed: bool) -> Option<VoiceError> {
+    suppressed.then(VoiceError::disabled)
+}
+
 /// #2897 ST-2 — take (and clear) the committed clip. Taking is destructive: a
 /// second call returns `clip: None`. The clip is the WHOLE captured audio —
 /// `truncated` is always false (REQ-6 non-lossy).
@@ -320,7 +331,16 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
         return error.into_start_result();
     }
 
-    // 2. Already-listening gate. A duplicate start stays idempotent (R-4.1) and
+    // 2. Doom Mode suppression gate (Spec #2970 ST-3 / R-4.a). While the mode is
+    // active the companion voice pipeline is suppressed: the caller returns
+    // BEFORE any capture is opened, so no audio is ever captured, and the
+    // refusal reuses the shipped typed `disabled` vocabulary (no new enum).
+    if let Some(error) = suppression_gate(app.state::<PerformanceModeState>().is_suppressed()) {
+        emit_state(app, &state_event_error(&error, Some(origin)));
+        return error.into_start_result();
+    }
+
+    // 3. Already-listening gate. A duplicate start stays idempotent (R-4.1) and
     // MUST NOT emit a false idle: the still-active session keeps its indicator
     // and Stop control until `stt_stop`/`stt_cancel` (R-5.3/AC5). The re-emit
     // carries the ACTIVE session's origin, never the newly requested one.
@@ -339,7 +359,7 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
         }
     }
 
-    // 3. Model-audio capability gate (#2897 ST-6 / REQ-7). The snapshot is
+    // 4. Model-audio capability gate (#2897 ST-6 / REQ-7). The snapshot is
     // written ONLY by the sanctioned `stt_audio_capability` probe (which lives in
     // `features/llm_server`, the crate's network-capable module); this module
     // merely reads it, so `infrastructure/voice/` stays free of network symbols
@@ -354,7 +374,7 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
         }
     }
 
-    // 4. Worker owns the `cpal::Stream` for its whole lifetime. The persisted
+    // 5. Worker owns the `cpal::Stream` for its whole lifetime. The persisted
     // device preference is resolved to a name here, but validated against the
     // live device set inside `capture` on the worker — a vanished device is the
     // typed `NoDevice` naming it (AC4), never a silent fallback.
@@ -396,7 +416,7 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
         }
     };
 
-    // 5. Await readiness off the main thread. `worker_reported` distinguishes the
+    // 6. Await readiness off the main thread. `worker_reported` distinguishes the
     // paths on which the worker has already reported/returned (safe to join) from
     // the timeout path, where the worker may still be blocked inside the native
     // capture open (ST-7.2 / F-15) — which no `Cancel` can interrupt.
@@ -1344,5 +1364,57 @@ mod tests {
         assert!(state.audio_capability().is_none());
         // A cleared snapshot is "not determined", never a failure.
         assert!(model_audio_start_gate(state.audio_capability().as_ref()).is_none());
+    }
+
+    // ── #2970 ST-3 (R-4.a) — the Doom Mode suppression gate ──────────────────
+
+    /// R-4.a: the gate refuses ONLY while suppressed and reuses the shipped
+    /// typed `disabled` code (no new error enum). The refusal shapes the SAME
+    /// `started:false` result the existing disabled gate produces.
+    #[test]
+    fn suppression_gate_refuses_with_the_shipped_disabled_code() {
+        assert!(
+            suppression_gate(false).is_none(),
+            "mode off must let the start proceed"
+        );
+
+        let error = suppression_gate(true).expect("suppressed must refuse the start");
+        assert_eq!(error.code, SttErrorCode::Disabled);
+        assert_eq!(error.detail, VoiceError::disabled().detail);
+
+        let result = error.into_start_result();
+        assert!(!result.started);
+        assert_eq!(result.code, Some(SttErrorCode::Disabled));
+        assert!(result.detail.is_some());
+        assert!(result.device_name.is_none());
+        assert!(result.sample_rate.is_none());
+    }
+
+    /// #2970 ST-3C (G-123): the CONTINUOUS suppression invariant — WHILE Doom
+    /// Mode is active, `stt_start` stays refused across the whole active window
+    /// (≥3 samples), and after exit it is restored. Scoped to the owned
+    /// `PerformanceModeState` (no global/order-dependent quantity), so the pin is
+    /// deterministic under any suite order.
+    #[test]
+    fn continuous_suppression_keeps_stt_start_refused_while_active_and_restores_after_exit() {
+        let state = PerformanceModeState::default();
+
+        // Mode off: the start proceeds (the shipped mode-off path is unchanged).
+        assert!(suppression_gate(state.is_suppressed()).is_none());
+
+        // Enter: EVERY sample across the active window is refused with `disabled`.
+        state.set_suppressed(true);
+        for sample in 0..3 {
+            let error = suppression_gate(state.is_suppressed())
+                .unwrap_or_else(|| panic!("sample {sample} must be refused while active"));
+            assert_eq!(error.code, SttErrorCode::Disabled, "sample {sample}");
+        }
+
+        // Exit: the start is restored — no residual suppression.
+        state.set_suppressed(false);
+        assert!(
+            suppression_gate(state.is_suppressed()).is_none(),
+            "exit restores stt_start"
+        );
     }
 }
