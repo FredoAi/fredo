@@ -19,6 +19,7 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::infrastructure::comm::bus::EventBus;
 use crate::infrastructure::companion::doom_decision::DoomDecisionSourceState;
+use crate::infrastructure::companion::PerformanceModeState;
 use crate::infrastructure::storage::AppStore;
 
 use super::agent::{run_autoplay_loop, DoomAutoplayConfig};
@@ -26,6 +27,10 @@ use super::autoplay::{
     DoomAutoplayErrorCode, DoomAutoplayPhase, DoomAutoplayResult, DoomAutoplayStatus,
 };
 use super::decision;
+use super::mode::{
+    fail_enter_requested, DoomModeOrigin, DoomModeResult, DoomModeState, DoomModeStatus,
+    DOOM_MODE_EVENT,
+};
 use super::state::{
     derive_phase, DoomErrorCode, DoomLaunchResult, DoomRuntimePhase, DoomRuntimeState, DoomStatus,
     DEFAULT_DOOM_PORT, DOOM_EXIT_HOOK_BOUND, DOOM_LAST_ERROR_CODE_KEY, DOOM_LAST_ERROR_KEY,
@@ -862,12 +867,14 @@ pub fn stop_doom_on_window_close(app: &AppHandle) {
 
 /// The `doom` window `CloseRequested` handler (mirrors
 /// `terminal::commands::window_close_handler`). Wired by `open_doom_window` in
-/// CU-4; a close for ANY reason tears the engine down so no orphan survives.
+/// CU-4; a close for ANY reason tears the engine down so no orphan survives AND
+/// clears Doom Mode (Spec #2970 R-3.b: closing the window is an exit path).
 pub fn doom_close_handler(app: AppHandle) -> impl Fn(&tauri::WindowEvent) + Send + Sync + 'static {
     move |event| {
         if let tauri::WindowEvent::CloseRequested { .. } = event {
             tracing::debug!(target: "fredo::doom", "CloseRequested: stopping the Doom engine");
             stop_doom_on_window_close(&app);
+            clear_mode_teardown(&app);
         }
     }
 }
@@ -914,10 +921,192 @@ pub async fn open_doom_window(app: AppHandle) -> Result<(), String> {
 /// `RunEvent::Exit` hook (SYNCHRONOUS entry): bounded teardown under
 /// `DOOM_EXIT_HOOK_BOUND`, then the marker sweep as a backstop. Quit can never
 /// block on a hung engine — the total is the bound plus a single `taskkill`.
+///
+/// Spec #2970 R-3.b: an app exit is an exit path, so it also clears Doom Mode
+/// (and its suppression) without starving the llama-server/PG exit hooks.
 pub fn stop_doom_on_exit(app: &AppHandle) {
     tauri::async_runtime::block_on(stop_runtime(app, Duration::from_secs(DOOM_EXIT_HOOK_BOUND)));
     // Backstop — also covers a hard-killed / mid-boot engine.
     process::sweep_orphan(app);
+    clear_mode_teardown(app);
+}
+
+// ── Doom Mode lifecycle (Spec #2970 ST-2) ────────────────────────────────────
+//
+// The mode is the single source of truth for "is Doom Mode active" (G-124). The
+// three commands below own the enter/exit orchestration and the global
+// `doom-mode-changed` broadcast; the suppression gate lives in
+// [`PerformanceModeState`] (shared infrastructure) so ST-3 can read it without
+// importing this feature. The mode is NEVER persisted.
+
+/// The suppression gate read from its owner (single source, no drift).
+fn is_voice_suppressed(app: &AppHandle) -> bool {
+    app.state::<PerformanceModeState>().is_suppressed()
+}
+
+/// Build the current status from the mode state + the suppression owner.
+fn current_mode_status(app: &AppHandle) -> DoomModeStatus {
+    let suppressed = is_voice_suppressed(app);
+    app.state::<DoomModeState>().status(suppressed)
+}
+
+/// Set (or clear) the shared suppression gate.
+fn set_suppression(app: &AppHandle, on: bool) {
+    app.state::<PerformanceModeState>().set_suppressed(on);
+}
+
+/// Broadcast the mode status to EVERY window through the EventBus (the
+/// sanctioned global emission path).
+fn publish_mode(app: &AppHandle, status: &DoomModeStatus) {
+    let bus = app.state::<EventBus>();
+    bus.emit_global(DOOM_MODE_EVENT, status);
+}
+
+/// Project a [`DoomModeStatus`] into a [`DoomModeResult`].
+fn mode_result(
+    status: &DoomModeStatus,
+    success: bool,
+    error: Option<String>,
+    code: Option<DoomErrorCode>,
+) -> DoomModeResult {
+    DoomModeResult {
+        success,
+        phase: status.phase,
+        active: status.active,
+        voice_suppressed: status.voice_suppressed,
+        origin: status.origin,
+        error,
+        code,
+    }
+}
+
+/// Roll an enter back to `inactive` with a typed failure and publish it — never
+/// a half-entered state (R-1.b / R-5).
+fn fail_enter(app: &AppHandle, message: String, code: Option<DoomErrorCode>) -> DoomModeResult {
+    app.state::<DoomModeState>()
+        .mark_enter_failed(message.clone(), code);
+    set_suppression(app, false);
+    let status = current_mode_status(app);
+    publish_mode(app, &status);
+    mode_result(&status, false, Some(message), code)
+}
+
+/// Clear Doom Mode + suppression on a teardown path (window close / app exit).
+/// Idempotent and broadcast only when the mode actually changed.
+fn clear_mode_teardown(app: &AppHandle) {
+    set_suppression(app, false);
+    if app.state::<DoomModeState>().clear() {
+        let status = current_mode_status(app);
+        publish_mode(app, &status);
+    }
+}
+
+/// Enter Doom Mode: idempotently launch the runtime, start the playing agent,
+/// open the `doom` window, then set the mode active + suppression on (R-1).
+///
+/// A no-op success when already `entering`/`active` (R-1.a — no second runtime,
+/// no second window). Any activation failure rolls back fully to `inactive`
+/// with no window, no runtime, and no suppression (R-1.b / R-5).
+#[tauri::command]
+pub async fn enter_doom_mode(app: AppHandle, origin: Option<String>) -> DoomModeResult {
+    let origin = origin.as_deref().and_then(DoomModeOrigin::parse);
+
+    // Idempotent — an enter already in flight, or an active mode, wins.
+    if !app.state::<DoomModeState>().begin_enter(origin) {
+        let status = current_mode_status(&app);
+        return mode_result(&status, true, None, None);
+    }
+    let entering = current_mode_status(&app);
+    publish_mode(&app, &entering);
+
+    // Injected failure seam (G-275) — R-1.b / F-35.
+    if fail_enter_requested() {
+        return fail_enter(
+            &app,
+            "Doom Mode enter failed (FREDO_DOOM_MODE_FAIL_ENTER=1).".to_string(),
+            Some(DoomErrorCode::SpawnFailed),
+        );
+    }
+
+    // 1. Runtime (idempotent exactly-one launch + bounded readiness).
+    let launch = launch_doom_runtime(app.clone()).await;
+    if !launch.success {
+        return fail_enter(
+            &app,
+            launch
+                .error
+                .unwrap_or_else(|| "the Doom runtime failed to start".to_string()),
+            launch.code,
+        );
+    }
+
+    // 2. Playing agent (idempotent bounded autoplay run).
+    let autoplay = start_doom_autoplay(app.clone(), None).await;
+    if !autoplay.success {
+        stop_doom_autoplay(app.clone()).await.ok();
+        stop_doom_runtime(app.clone()).await.ok();
+        return fail_enter(
+            &app,
+            autoplay
+                .error
+                .unwrap_or_else(|| "the Doom playing agent failed to start".to_string()),
+            None,
+        );
+    }
+
+    // 3. Window (singleton keyed by DOOM_WINDOW_LABEL).
+    if let Err(detail) = open_doom_window(app.clone()).await {
+        stop_doom_autoplay(app.clone()).await.ok();
+        stop_doom_runtime(app.clone()).await.ok();
+        return fail_enter(&app, detail, Some(DoomErrorCode::SpawnFailed));
+    }
+
+    // 4. Fully entered: mark active + turn suppression on, then broadcast.
+    app.state::<DoomModeState>().mark_active();
+    set_suppression(&app, true);
+    let status = current_mode_status(&app);
+    publish_mode(&app, &status);
+    mode_result(&status, true, None, None)
+}
+
+/// Exit Doom Mode: bounded stop of the agent + runtime, clear suppression, close
+/// the `doom` window, and clear the mode (R-3.b).
+///
+/// Idempotent — an exit while `inactive` is a no-op success (R-3.c).
+#[tauri::command]
+pub async fn exit_doom_mode(app: AppHandle, reason: Option<String>) -> DoomModeResult {
+    if let Some(reason) = reason.as_deref() {
+        tracing::debug!(target: "fredo::doom", reason, "exit_doom_mode requested");
+    }
+
+    // Idempotent — nothing to exit (R-3.c).
+    if !app.state::<DoomModeState>().begin_exit() {
+        let status = current_mode_status(&app);
+        return mode_result(&status, true, None, None);
+    }
+    let exiting = current_mode_status(&app);
+    publish_mode(&app, &exiting);
+
+    // 1. Stop the playing agent + the runtime (bounded, hard-kill fallback).
+    stop_doom_autoplay(app.clone()).await.ok();
+    stop_doom_runtime(app.clone()).await.ok();
+
+    // 2. Clear suppression + the mode, then close the window.
+    set_suppression(&app, false);
+    app.state::<DoomModeState>().clear();
+    if let Some(window) = app.get_webview_window(DOOM_WINDOW_LABEL) {
+        window.close().ok();
+    }
+
+    let status = current_mode_status(&app);
+    publish_mode(&app, &status);
+    mode_result(&status, true, None, None)
+}
+
+/// Read-only Doom Mode snapshot (the frontend mount seed + poll fallback).
+#[tauri::command]
+pub fn get_doom_mode_status(app: AppHandle) -> DoomModeStatus {
+    current_mode_status(&app)
 }
 
 #[cfg(test)]

@@ -87,4 +87,21 @@ impl EventBus {
             );
         }
     }
+
+    /// Emit `event` with `payload` to EVERY webview (a global broadcast).
+    ///
+    /// This is the sanctioned path for a cross-window state broadcast (Spec
+    /// #2970 ST-2: the Doom Mode `doom-mode-changed`): like
+    /// [`Self::emit_row_delivery_batch`], it keeps the emission behind the
+    /// EventBus so feature code never calls `AppHandle::emit` directly.
+    pub fn emit_global<T: Serialize>(&self, event: &str, payload: &T) {
+        if let Err(error) = self.app.emit(event, payload) {
+            tracing::error!(
+                target: "fredo::comm",
+                error = %error,
+                event,
+                "emit_global failed"
+            );
+        }
+    }
 }

@@ -380,6 +380,19 @@ pub fn run() {
             // `get_doom_autoplay_status` commands below own it.
             app.manage(features::doom::commands::DoomAutoplayState::default());
 
+            // -- Doom Mode state (Spec #2970 ST-2) -----------------------------
+            // The single source of truth for "is Doom Mode active" (G-124); the
+            // `enter_doom_mode` / `exit_doom_mode` / `get_doom_mode_status`
+            // commands below own it. The mode is NEVER persisted.
+            app.manage(features::doom::mode::DoomModeState::default());
+
+            // -- Companion performance-mode suppression (Spec #2970 ST-2) ------
+            // The ONE provider-agnostic boolean that gates the companion
+            // voice/audio pipeline while Doom Mode is active. Shared
+            // infrastructure so ST-3 (`infrastructure/voice` + `llm_server`) can
+            // read it without importing `features::doom`.
+            app.manage(infrastructure::companion::PerformanceModeState::default());
+
             // -- Doom decision source (Spec #2969 ST-5, binding decision 1) ----
             // The composition root selects the decision source from
             // `FREDO_DOOM_AGENT_DECISION_SOURCE` (`model` default, `scripted`
@@ -1082,6 +1095,14 @@ pub fn run() {
             features::doom::commands::start_doom_autoplay,
             features::doom::commands::stop_doom_autoplay,
             features::doom::commands::get_doom_autoplay_status,
+            // Doom Mode lifecycle (Spec #2970 ST-2): the secret-activation mode
+            // state machine. `enter` launches the runtime + agent + window and
+            // turns on the shared suppression gate; `exit` tears them down and
+            // clears suppression; `get_doom_mode_status` is the mount seed. The
+            // `doom-mode-changed` global broadcast is emitted via the EventBus.
+            features::doom::commands::enter_doom_mode,
+            features::doom::commands::exit_doom_mode,
+            features::doom::commands::get_doom_mode_status,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Fredo application")
