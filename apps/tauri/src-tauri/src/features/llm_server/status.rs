@@ -37,9 +37,10 @@
 use std::time::Duration;
 
 use serde_json::Value;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::infrastructure::companion::skills::SkillRegistry;
+use crate::infrastructure::companion::PerformanceModeState;
 
 use super::chat::{self, ChatSseFrame, ChatStreamEvent, LlmMessage};
 use super::skills::{
@@ -99,6 +100,28 @@ Example: {\"status\": \"happy\"}";
 /// where the structured path yields nothing and no retry budget remains.
 const NO_STATUS_RETRY_DETAIL: &str =
     "the companion returned no usable reply under the structured contract.";
+
+/// The readable detail for an audio turn refused while Doom Mode is active
+/// (Spec #2970, ST-4; R-4.a). The turn settles through the shipped terminal
+/// vocabulary (`llm-error` then exactly one `llm-done`) without issuing any
+/// `input_audio` request.
+const AUDIO_SUPPRESSED_DETAIL: &str =
+    "voice input is suppressed while Doom Mode is active; the audio turn was not sent.";
+
+/// Whether an audio turn must be refused before any request is issued (R-4.a):
+/// only while Doom Mode's suppression gate is on AND the turn carries audio. Pure
+/// so the gate is pinned without a live `AppHandle`.
+fn audio_turn_suppressed(audio_present: bool, suppressed: bool) -> bool {
+    audio_present && suppressed
+}
+
+/// Read the Doom Mode suppression gate from its owner. `false` when the state is
+/// not managed (a test harness / a partial boot) — the safe, mode-off default.
+fn is_performance_suppressed(app: &AppHandle) -> bool {
+    app.try_state::<PerformanceModeState>()
+        .map(|state| state.is_suppressed())
+        .unwrap_or(false)
+}
 
 // ── The schema (pure) ─────────────────────────────────────────────────────────
 
@@ -686,7 +709,7 @@ async fn run_tools_attempt(
     messages: &[LlmMessage],
     audio_base64: Option<&str>,
 ) -> Result<(), String> {
-    let registry = SkillRegistry::with_app_control();
+    let registry = SkillRegistry::with_app_control_and_doom();
     let body = match audio_base64 {
         Some(audio) => build_audio_skill_request_body(messages, audio, &registry),
         None => build_skill_request_body(messages, &registry),
@@ -755,7 +778,7 @@ async fn run_plain_retry(
     audio_base64: Option<&str>,
 ) -> Result<(), String> {
     if offer_skills {
-        let registry = SkillRegistry::with_app_control();
+        let registry = SkillRegistry::with_app_control_and_doom();
         let body = match audio_base64 {
             Some(audio) => build_audio_skill_request_body(messages, audio, &registry),
             None => build_skill_request_body(messages, &registry),
@@ -783,6 +806,18 @@ async fn run_status_chat(
     offer_skills: bool,
     audio_base64: Option<String>,
 ) -> Result<(), String> {
+    // Spec #2970 ST-4 (R-4.a) — the audio leg of `llm_chat_with_status` is
+    // refused BEFORE any request is issued while Doom Mode is active: no
+    // `input_audio` request, and the turn settles through the shipped terminal
+    // vocabulary (`llm-error` then exactly one `llm-done`), so the caller never
+    // hangs. A text-only turn is untouched (only the audio leg is suppressed).
+    if audio_turn_suppressed(audio_base64.is_some(), is_performance_suppressed(app)) {
+        for event in plan_stream_error_events(AUDIO_SUPPRESSED_DETAIL) {
+            emit_terminal_event(app, event);
+        }
+        return Ok(());
+    }
+
     if offer_skills {
         return run_tools_attempt(app, &messages, audio_base64.as_deref()).await;
     }
@@ -1303,5 +1338,46 @@ mod tests {
                     .to_string(),
             }
         )));
+    }
+
+    // ── Spec #2970 ST-4: the Doom Mode audio-leg suppression gate (R-4.a) ──────
+
+    /// The gate refuses an audio turn ONLY while Doom Mode is active; a text-only
+    /// turn and the mode-off path are untouched (N-9 no regression when off).
+    #[test]
+    fn the_audio_gate_refuses_only_an_audio_turn_while_suppressed() {
+        assert!(audio_turn_suppressed(true, true), "audio + suppressed → refused");
+        assert!(!audio_turn_suppressed(true, false), "audio + mode off → proceeds");
+        assert!(!audio_turn_suppressed(false, true), "text-only + suppressed → proceeds");
+        assert!(!audio_turn_suppressed(false, false), "text-only + mode off → proceeds");
+    }
+
+    /// The refusal settles through the shipped terminal vocabulary: one readable
+    /// `llm-error` and exactly one trailing `llm-done` (never a hang, never a
+    /// `llm-skill-call`).
+    #[test]
+    fn the_suppressed_audio_refusal_settles_with_error_then_done() {
+        let events = plan_stream_error_events(AUDIO_SUPPRESSED_DETAIL);
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], TerminalEvent::Error(_)));
+        assert_eq!(events[1], TerminalEvent::Done);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, TerminalEvent::Done))
+                .count(),
+            1,
+            "exactly one llm-done"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, TerminalEvent::SkillCall(_))),
+            "a refused audio turn executes nothing: {events:?}"
+        );
+        assert!(
+            AUDIO_SUPPRESSED_DETAIL.contains("suppressed"),
+            "the refusal detail names the suppression: {AUDIO_SUPPRESSED_DETAIL}"
+        );
     }
 }
