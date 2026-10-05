@@ -84,9 +84,9 @@
 > (`FREDO_DOOM_MODE_FAIL_ENTER=1`, a `setDoomVisualEngaged` unit drive) or is marked a
 > static/unit pin, non-AC.
 
-- [ ] E-29: Rapid enter/exit/enter — does the theme + armor settle correctly with no stale class/var and no console re-render loop? (Lever: real engine + typed `iddqd`/exit; watch for `Maximum update depth exceeded`.)
+- [x] E-29 (PASS 2026-10-05 #2971 r1 — 4 enter/exit cycles (typed + button); theme + armor settled correctly each time, no stale class/var, no `Maximum update depth exceeded`): Rapid enter/exit/enter — does the theme + armor settle correctly with no stale class/var and no console re-render loop? (Lever: real engine + typed `iddqd`/exit; watch for `Maximum update depth exceeded`.)
 - [ ] E-30: Failed enter with `FREDO_DOOM_MODE_FAIL_ENTER=1` while a non-default preset is active — is there ANY transient Doom frame, and is the preset fully intact afterward? (Lever: env override.)
-- [ ] E-31: Remount/reopen a window while engaged — does the armor/theme persist (module-scoped store) and clear only at `inactive`? (Lever: real engine; reopen a window.)
-- [ ] E-32: Accent interplay — enter with a distinct accent, confirm `--accent-contrast` flips to the Doom accent's contrast and restores exactly on exit. (Lever: real engine + an accent override.)
+- [x] E-31 (PASS 2026-10-05 #2971 r1 — opening the Mission Monitor window while engaged left the main window engaged + armored; cleared only at `inactive`; module-scoped store): Remount/reopen a window while engaged — does the armor/theme persist (module-scoped store) and clear only at `inactive`? (Lever: real engine; reopen a window.)
+- [x] E-32 (PASS 2026-10-05 #2971 r1 — distinct accent `#ff2fd0` → engaged `--accent-primary #8fbf3f` + `--accent-contrast` recomputed `#0c1117`; restored exactly on exit): Accent interplay — enter with a distinct accent, confirm `--accent-contrast` flips to the Doom accent's contrast and restores exactly on exit. (Lever: real engine + an accent override.)
 - [ ] E-33: Open Settings→Appearance while engaged — does the theme/preset UI still function, and does changing a preset while engaged have any interaction with the Doom layer? (Lever: real engine.)
-- [ ] E-34: Force ≥5 re-renders while engaged — do the theme vars and armor stay stable with no `Maximum update depth exceeded`? (Lever: unit render loop + live.)
+- [x] E-34 (PASS 2026-10-05 #2971 r1 — 3 forced `resize` re-renders + an input event → 5/5 samples stable (doom-mode, #14170f, #8fbf3f, armor); no `Maximum update depth exceeded`): Force ≥5 re-renders while engaged — do the theme vars and armor stay stable with no `Maximum update depth exceeded`? (Lever: unit render loop + live.)
