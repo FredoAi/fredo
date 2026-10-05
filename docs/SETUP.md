@@ -237,6 +237,8 @@ The Doom game window (Spec #2968) runs a RESTful-DOOM engine as a supervised chi
 
 **Companion autonomous play (Spec #2969):** with the engine running, the companion can play the game on its own via a bounded lockstep loop — start/stop it from the Doom window's autoplay control. The genuine-play leg uses the managed `llama-server` companion model; a deterministic **scripted** decision lever (`FREDO_DOOM_AGENT_DECISION_SOURCE=scripted` + `FREDO_DOOM_AGENT_SCRIPT`) exists for QA without a live model. The loop is bounded (`FREDO_DOOM_AGENT_MAX_STEPS` / `_MAX_FAILURES`) and reuses the same supervised engine child (no extra process).
 
+**Secret activation (Spec #2970):** Doom Mode is raised only by typing `iddqd` in the main window or by telling the companion "fredo, go Doom Mode" (a model-selected `doom_mode` companion skill); it leaves no settings/launcher/help entry before activation. Exit via the `doom` window's "Exit Doom Mode" button, closing the window, or "fredo, stop Doom Mode". No configuration is required; the QA failure seam `FREDO_DOOM_MODE_FAIL_ENTER=1` injects an enter failure (no half-entered state).
+
 ## Environment Variables
 
 The Tauri app does not require environment variables for basic operation. For connecting to external services (Azure DevOps, Kubernetes, Jira), configure credentials via the Settings panel in the app UI.
