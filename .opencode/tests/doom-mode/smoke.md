@@ -44,3 +44,19 @@
 - [x] S-18 (PASS 2026-10-05 #2971 r1 — `doom-exit-button` → every `--*` var + body + avatar byte-equal the pre-enter snapshot; no `doom-mode`/`data-doom-armor`; `Fredo_theme_*` unchanged): **Exit quick path** — click `doom-exit-button`: every `--*` var + `document.body` + avatar byte-equal the pre-enter snapshot; no `doom-mode`/`data-doom-armor`; persisted `Fredo_theme_*` keys unchanged.
 - [x] S-19 (PASS 2026-10-05 #2971 r1 — no Doom in `ThemePresetSelector`/`allPresets` (18 built-ins); no Doom `SettingsSurface` nav item; no Doom token applied; avatar unarmored): **Secrecy** — before activation, no "Doom" entry in `ThemePresetSelector`/`allPresets`, no Doom `SettingsSurface` nav item, no Doom token applied, avatar unarmored.
 - [x] S-20 (PASS 2026-10-05 #2971 r1 — `tauri_read_logs(console)` clean across enter/exit; only a pre-existing `motion()` deprecation WARN): **No console errors** — `tauri_read_logs(source="console", lines=50)` shows no `Error:`/`Uncaught`/`Maximum update depth exceeded` across the enter/exit legs.
+
+---
+
+## Resume-across-sessions slice (Spec #2972) — smoke additions
+
+> **Verification policy: live** — the live-pipeline `telemetry_spans` reference (non-zero count +
+> recent `max(ingested_at)`; managed `psql` on the PG default, G-284, or a disclosed app-pool
+> fallback, G-307). Doom emits no span. A static-only smoke cannot pass.
+>
+> **Real-engine scope:** the resume quick path (S-21) uses the REAL `restful-doom.exe` re-staged
+> per G-319; the stub is only for the deterministic advance/completion leg (S-23).
+
+- [ ] S-21 (REAL engine) **Resume quick path** — seed a valid `DoomSave` at E1M2 via `FREDO_DOOM_SAVE_FILE`; re-stage the real engine; enter Doom Mode. EXPECTED: the engine positions at `level.episode=1, level.map=2` (one `POST /api/episode` before the first step); `doom-save-status` renders `E1M2`; the companion steps forward. (A stub-only receipt is a FALSE PASS.)
+- [ ] S-22 **Fresh-start quick path** — with a valid save present, click `doom-fresh-start-button` → confirm (`doom-fresh-start-confirm`). EXPECTED: the run starts at E1M1; before the first advance the prior save is unchanged; `doom-save-status` updates to `E1M1` only once the run advances.
+- [ ] S-23 (stub) **Advance/complete quick path** — stub `FREDO_DOOM_STUB_DONE_AFTER=<n>` + `FREDO_DOOM_SAVE_FILE`. EXPECTED: a level exit advances + persists; at the final level `phase=completed`, `code="campaignComplete"`, `doom-progress-complete` renders. Disclose the deterministic-stub split.
+- [ ] S-24 (F-69 gate) **PG-default boot + Mission Monitor + corrupt-save safety** — boot end-to-end; seed a qualifying session; boot with a corrupt `FREDO_DOOM_SAVE_FILE` (`not json`). EXPECTED: `storage_engine_status` = PostgreSQL / PG supervisor ready; Mission Monitor renders ≥1 live session; the mode enters on a clean run with no crash; live-pipeline receipt non-zero + recent `max(ingested_at)`.
