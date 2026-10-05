@@ -90,3 +90,21 @@
 - [x] E-32 (PASS 2026-10-05 #2971 r1 — distinct accent `#ff2fd0` → engaged `--accent-primary #8fbf3f` + `--accent-contrast` recomputed `#0c1117`; restored exactly on exit): Accent interplay — enter with a distinct accent, confirm `--accent-contrast` flips to the Doom accent's contrast and restores exactly on exit. (Lever: real engine + an accent override.)
 - [ ] E-33: Open Settings→Appearance while engaged — does the theme/preset UI still function, and does changing a preset while engaged have any interaction with the Doom layer? (Lever: real engine.)
 - [x] E-34 (PASS 2026-10-05 #2971 r1 — 3 forced `resize` re-renders + an input event → 5/5 samples stable (doom-mode, #14170f, #8fbf3f, armor); no `Maximum update depth exceeded`): Force ≥5 re-renders while engaged — do the theme vars and armor stay stable with no `Maximum update depth exceeded`? (Lever: unit render loop + live.)
+
+---
+
+## Resume-across-sessions slice (Spec #2972) — unscripted probes
+
+> **Verification policy: live** — probes run against the running artifact with the
+> `telemetry_spans` live-pipeline reference (managed `psql` on the PG default, G-284, or a
+> disclosed app-pool fallback, G-307).
+>
+> **G-300:** every error/failure probe names an in-repo induction lever (`FREDO_DOOM_SAVE_FILE`
+> pointing at a corrupt/absent/unwritable path, `FREDO_DOOM_STUB_EPISODE_FAIL=1`,
+> `FREDO_DOOM_STUB_DONE_AFTER=<n>`) or is marked a static/unit pin, non-AC.
+
+- [ ] E-35: Write a `DoomSave` with an UNKNOWN `version` (e.g. `2`) to the seam — does the loader reject it (`hasSave:false`, clean run) rather than migrating/partially applying? (Lever: seam file.)
+- [ ] E-36: Hard-kill Fredo mid-run (between advances), then relaunch — is the last persisted level the resume point, and is the orphan engine swept? (Lever: hard-kill + relaunch.)
+- [ ] E-37: Start a fresh run, then close the `doom` window before the first advance — is the prior save byte-identical, with no partial overwrite? (Lever: `freshStart:true` + early close.)
+- [ ] E-38: Point `FREDO_DOOM_SAVE_FILE` at an unwritable path (a directory) during a stub advance — does the run keep progressing (best-effort write) with a logged, non-fatal failure? (Lever: unwritable seam path.)
+- [ ] E-39: Two `start_doom_autoplay` calls in quick succession, one `{freshStart:true}` and one `{}` — is exactly one loop running with a single coherent campaign (no double resume/advance)? (Lever: scripted stub + IPC monitor.)
