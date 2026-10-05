@@ -5,7 +5,9 @@
  * (`get_doom_mode_status`), a live `doom-mode-changed` subscription, and the
  * `enter`/`exit` invokers. It is ALSO the single driver of the module-scoped
  * `performanceGate` store (seed + every broadcast), so the launcher's voice
- * affordance follows the mode without a React context.
+ * affordance follows the mode without a React context, AND the single driver of
+ * the module-scoped `doomVisual` store (ST-3), so the theme layer and the armor
+ * overlay can never diverge from the phase.
  *
  * The mode is NEVER persisted: a fresh boot is always `inactive` until the seed
  * resolves.
@@ -13,10 +15,12 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { adapterBridge } from '../utils/adapterBridge';
+import { setDoomVisualEngaged } from './doomVisual';
 import { setPerformanceGateActive } from './performanceGate';
 import {
   DOOM_MODE_EVENT,
   DOOM_MODE_INACTIVE_STATUS,
+  isDoomModeEngaged,
   type DoomModeOrigin,
   type DoomModeResult,
   type DoomModeStatus,
@@ -41,6 +45,7 @@ export function useDoomMode(): UseDoomModeResult {
   const applyStatus = useCallback((next: DoomModeStatus) => {
     setStatus(next);
     setPerformanceGateActive(next.voiceSuppressed);
+    setDoomVisualEngaged(isDoomModeEngaged(next.phase));
   }, []);
 
   // Mount seed + live subscription. Registered exactly once per mount (the
