@@ -75,7 +75,7 @@ Slices 1-6 of the SQLite → embedded-PostgreSQL migration ship the **lifecycle 
 
 ---
 
-## Doom Runtime (`features/doom`, Specs #2968, #2969, #2970)
+## Doom Runtime (`features/doom`, Specs #2968, #2969, #2970, #2971)
 
 The Doom Mode foundation runs a RESTful-DOOM engine as a **supervised out-of-process child**, launched on demand by the `doom` window and controlled over loopback HTTP. The engine binary is **built from source at development/QA time** by the committed `scripts/doom/build-restful-doom.ps1` (MSYS2 MINGW64) and staged into the local app-data directory; the runtime never builds it. The default game data is the libre **Freedoom** IWAD; the installer ships **no GPL engine binary and no WAD**.
 
@@ -88,6 +88,7 @@ The Doom Mode foundation runs a RESTful-DOOM engine as a **supervised out-of-pro
 - GPL-2.0 posture: the engine runs as an **arm's-length separate process** over loopback HTTP (not linked); the acquisition UI surfaces the license/source offer
 - Companion autoplay (Spec #2969) reuses the **same supervised child** — it spawns no engine process of its own; the loop is bounded (600 steps, 3 consecutive failures, 30 s per-decision timeout) and never hangs. Its inference request carries **structured game state only** — no image/audio parts, and the framebuffer endpoint is never sent to the model
 - Secret activation (Spec #2970): Doom Mode is reachable only via its two secret triggers (`iddqd` typed in the main window, or the companion's model-selected `doom_mode` skill) and leaves **no discoverable trace** before activation; the mode is **never persisted** (a fresh boot is always `inactive`). While active it suppresses only the companion's local voice/audio **input** pipeline (capture + model-audio turn) via an in-memory gate — no audio is emitted, and every exit path (button, native window close, spoken stop, app exit) clears the gate and restores normal behavior with a bounded runtime teardown
+- Doom theme (Spec #2971): while the mode is engaged the app restyles from the **theme token contract only** (`DOOM_PALETTE` applied as a mode-scoped `ThemeProvider` layer); the palette is **never added to the preset list** (it cannot be selected in Settings), the mode-scoped override is **never persisted**, and exit restores the user's prior theme/settings byte-exactly — no residue and no changed setting
 
 **Limitations:**
 - Any process on the same machine can reach the loopback engine port; the engine has no authentication — the same local-user threat model as the IPC socket and OTLP receivers
