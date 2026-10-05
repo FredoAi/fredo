@@ -31,3 +31,16 @@
 - [x] S-14 (PASS 2026-10-05 #2970 r1 — while active (voice enabled) `stt_start` → `{started:false,code:"disabled"}`, voiceSuppressed true; after exit `stt_start` → `started:true`): **Suppression observable** — while active, `stt_start` returns `{started:false, code:"disabled"}` and `get_doom_mode_status.voiceSuppressed === true`; after the S-13 exit, `stt_start` proceeds (voice otherwise enabled).
 - [x] S-15 (PASS 2026-10-05 #2970 r1 — no Doom/iddqd on the rendered launcher grid/search, Settings sidebar, Settings→Apps, or hotkey listing; `doom-entry-button` absent): **Secrecy** — before activation, no "Doom"/"iddqd" text is rendered on the launcher grid, Settings→Apps list, Settings sidebar, or help/hotkey surfaces; `doom-entry-button` is absent. (Scope: rendered surfaces only, not source/test files.)
 - [x] S-16 (PASS 2026-10-05 #2970 r1 — PG ready; MM rendered ≥1 live session; live receipt via the disclosed app-pool substitution (see S-7)): **PG-default boot + Mission Monitor (F-50 gate)** — `storage_engine_status` = PostgreSQL / PG supervisor ready; Mission Monitor renders ≥1 live session with the secret-activation slice present; the live-pipeline receipt is non-zero with a recent `max(ingested_at)`.
+
+---
+
+## Whole-app theme + armored avatar slice (Spec #2971) — smoke additions
+
+> **Verification policy: live** — the live-pipeline `telemetry_spans` reference (non-zero count +
+> recent `max(ingested_at)`; managed `psql` on the PG default, G-284, or a disclosed app-pool
+> fallback, G-307). Doom emits no span. A static-only smoke cannot pass.
+
+- [ ] S-17: **Enter quick path (REAL engine)** — re-stage the engine (G-319); from a fresh inactive boot type `iddqd`: `<html class="doom-mode" data-doom-mode="engaged">`; the app surfaces restyle via the token contract; the avatar shows `data-doom-armor="true"` + `#fredo-armor`. (A stub-only receipt is a FALSE PASS.)
+- [ ] S-18: **Exit quick path** — click `doom-exit-button`: every `--*` var + `document.body` + avatar byte-equal the pre-enter snapshot; no `doom-mode`/`data-doom-armor`; persisted `Fredo_theme_*` keys unchanged.
+- [ ] S-19: **Secrecy** — before activation, no "Doom" entry in `ThemePresetSelector`/`allPresets`, no Doom `SettingsSurface` nav item, no Doom token applied, avatar unarmored.
+- [ ] S-20: **No console errors** — `tauri_read_logs(source="console", lines=50)` shows no `Error:`/`Uncaught`/`Maximum update depth exceeded` across the enter/exit legs.
