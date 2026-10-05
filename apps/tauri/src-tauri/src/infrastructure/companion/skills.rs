@@ -63,6 +63,38 @@ pub fn close_app_parameters() -> Value {
     })
 }
 
+/// The name of the third registered companion skill (Spec #2970, ST-4): the
+/// secret Doom Mode toggle, offered to the MODEL only (never rendered to a user).
+pub const DOOM_MODE_SKILL: &str = "doom_mode";
+
+/// The single `doom_mode` argument carrying the requested action.
+pub const DOOM_MODE_ACTION_ARG: &str = "action";
+
+/// The `doom_mode` action that enters the mode.
+pub const DOOM_MODE_ENTER: &str = "enter";
+
+/// The `doom_mode` action that leaves the mode.
+pub const DOOM_MODE_EXIT: &str = "exit";
+
+/// The capability sentence offered for `doom_mode` (mechanism-neutral). It is the
+/// wake-phrase guard: the phrase is model-interpreted (there is no STT
+/// transcript), so this description is what keeps the skill from firing on an
+/// unrelated phrase.
+pub const DOOM_MODE_DESCRIPTION: &str =
+    "Use ONLY when the user explicitly asks Fredo to enter or leave Doom Mode.";
+
+/// The declared input contract for `doom_mode`: exactly one required, non-empty
+/// string argument (`action`). The `enter`/`exit` value domain is enforced by the
+/// frontend dispatcher (ST-5), which owns execution; this registry declares only
+/// the mechanism-neutral wire shape.
+pub fn doom_mode_parameters() -> Value {
+    json!({
+        "type": "object",
+        "properties": { "action": { "type": "string" } },
+        "required": ["action"]
+    })
+}
+
 /// A provider-agnostic declaration of one companion capability.
 ///
 /// `parameters` is a JSON Schema fragment declaring the capability's inputs.
@@ -138,6 +170,22 @@ impl SkillRegistry {
             CLOSE_APP_SKILL,
             CLOSE_APP_DESCRIPTION,
             close_app_parameters(),
+        ));
+        registry
+    }
+
+    /// The Doom Mode registry: the shipped app-control pair PLUS the secret
+    /// `doom_mode` skill (Spec #2970, ST-4). Offer order is `open_app`,
+    /// `close_app`, `doom_mode`.
+    ///
+    /// Additive: [`Self::with_app_control`] keeps its shipped two-skill
+    /// declaration (and its pins) untouched.
+    pub fn with_app_control_and_doom() -> Self {
+        let mut registry = Self::with_app_control();
+        registry.register(CompanionSkill::new(
+            DOOM_MODE_SKILL,
+            DOOM_MODE_DESCRIPTION,
+            doom_mode_parameters(),
         ));
         registry
     }
@@ -387,6 +435,81 @@ mod tests {
                 "open_the_pod_bay".to_string()
             ))
         );
+    }
+
+    #[test]
+    fn with_app_control_and_doom_registers_open_app_close_app_doom_mode_in_order() {
+        let registry = SkillRegistry::with_app_control_and_doom();
+        assert_eq!(registry.len(), 3);
+        let names: Vec<&str> = registry.list().map(|skill| skill.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![OPEN_APP_SKILL, CLOSE_APP_SKILL, DOOM_MODE_SKILL],
+            "offer order is open_app, close_app, doom_mode"
+        );
+
+        let doom = registry.get(DOOM_MODE_SKILL).expect("registered under its name");
+        assert_eq!(doom.description, DOOM_MODE_DESCRIPTION);
+        assert_eq!(doom.parameters["type"], "object");
+        assert_eq!(doom.parameters["required"], json!(["action"]));
+        assert_eq!(doom.parameters["properties"]["action"]["type"], "string");
+
+        // The shipped constructors are untouched by the addition (their pins).
+        assert_eq!(SkillRegistry::with_open_app().len(), 1);
+        assert_eq!(SkillRegistry::with_app_control().len(), 2);
+    }
+
+    #[test]
+    fn doom_mode_validates_the_enter_and_exit_actions_through_the_shared_rule() {
+        let registry = SkillRegistry::with_app_control_and_doom();
+        for action in [DOOM_MODE_ENTER, DOOM_MODE_EXIT] {
+            let invocation = validate(&registry, DOOM_MODE_SKILL, &json!({ "action": action }))
+                .expect("a declared non-empty action is valid");
+            assert_eq!(invocation.skill, DOOM_MODE_SKILL);
+            assert_eq!(invocation.arguments, json!({ "action": action }));
+        }
+
+        // Fail-closed shapes match the ONE shared validation rule.
+        assert_eq!(
+            validate(&registry, DOOM_MODE_SKILL, &json!({})),
+            Err(SkillValidationError::MissingArgument("action".to_string()))
+        );
+        assert_eq!(
+            validate(&registry, DOOM_MODE_SKILL, &json!({ "action": "   " })),
+            Err(SkillValidationError::InvalidArgument(
+                "argument 'action' must not be empty".to_string()
+            ))
+        );
+        assert_eq!(
+            validate(&registry, DOOM_MODE_SKILL, &json!({ "action": 42 })),
+            Err(SkillValidationError::InvalidArgument(
+                "argument 'action' must be a string".to_string()
+            ))
+        );
+        assert_eq!(
+            validate(&registry, DOOM_MODE_SKILL, &json!({ "action": "enter", "force": true })),
+            Err(SkillValidationError::InvalidArgument(
+                "unexpected argument 'force'".to_string()
+            ))
+        );
+
+        // Not offered by the shipped app-control registry (additive only).
+        assert_eq!(
+            validate(
+                &SkillRegistry::with_app_control(),
+                DOOM_MODE_SKILL,
+                &json!({ "action": "enter" })
+            ),
+            Err(SkillValidationError::UnknownSkill(DOOM_MODE_SKILL.to_string()))
+        );
+    }
+
+    #[test]
+    fn doom_mode_binding_names_are_pinned() {
+        assert_eq!(DOOM_MODE_SKILL, "doom_mode");
+        assert_eq!(DOOM_MODE_ACTION_ARG, "action");
+        assert_eq!(DOOM_MODE_ENTER, "enter");
+        assert_eq!(DOOM_MODE_EXIT, "exit");
     }
 
     #[test]

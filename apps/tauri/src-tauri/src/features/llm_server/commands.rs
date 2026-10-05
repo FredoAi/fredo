@@ -26,14 +26,16 @@ use crate::infrastructure::companion::models::{
     ModelManifest,
 };
 use crate::infrastructure::companion::resolve_llama_server;
+use crate::infrastructure::companion::PerformanceModeState;
 use crate::infrastructure::storage::AppStore;
-use crate::infrastructure::voice::{SttAudioCapability, VoiceState};
+use crate::infrastructure::voice::{SttAudioCapability, VoiceError, VoiceState};
 
 use super::chat::{self, LlmMessage};
 use super::config::LlamaServerConfig;
 use super::health::{self, HealthProbeSource, ReqwestHealthClient};
 use super::probe;
 use super::process;
+use super::skills;
 use super::state::{LlamaServerState, ManagedServer};
 use super::{
     DEFAULT_LLAMA_SERVER_HEALTH_TIMEOUT_S, DEFAULT_LLAMA_SERVER_HOST, DEFAULT_LLAMA_SERVER_PORT,
@@ -816,8 +818,32 @@ pub fn llm_chat_with_audio(
     audio_base64: String,
     app: AppHandle,
 ) -> Result<(), String> {
+    // Spec #2970 ST-3 (R-4.a): while Doom Mode is active the companion's
+    // model-audio turn is suppressed — the request body is never built, so no
+    // `input_audio` part is ever POSTed to the model. The turn still settles on
+    // the SHIPPED terminal vocabulary (`llm-error` carrying the typed `disabled`
+    // detail, then `llm-done`) so the frontend's handler always fires (never
+    // hangs), exactly like a stream failure.
+    if let Some(error) =
+        audio_suppression_refusal(app.state::<PerformanceModeState>().is_suppressed())
+    {
+        for event in skills::plan_stream_error_events(&error.detail) {
+            skills::emit_terminal_event(&app, event);
+        }
+        return Ok(());
+    }
     chat::spawn_audio_chat(app, messages, audio_base64);
     Ok(())
+}
+
+/// Spec #2970 ST-3 (R-4.a) — the Doom Mode suppression refusal for the
+/// model-audio turn. While Doom Mode is active the companion's model-audio turn
+/// is suppressed: the refusal yields the shipped typed `disabled` error (no new
+/// error enum), so the caller never builds or POSTs an `input_audio` request.
+/// Pure, so the continuous suppression invariant is hermetically pinned without
+/// an `AppHandle` (G-123).
+fn audio_suppression_refusal(suppressed: bool) -> Option<VoiceError> {
+    suppressed.then(VoiceError::disabled)
 }
 
 /// Probe the managed model's audio-input capability (#2897 ST-6; REQ-7).
@@ -851,6 +877,7 @@ pub fn stop_llama_server_on_exit(app: &AppHandle) {
 mod tests {
     use super::*;
     use crate::infrastructure::companion::models::ModelFileSpec;
+    use crate::infrastructure::voice::SttErrorCode;
     use std::path::{Path, PathBuf};
 
     /// A small KB-scale manifest so tests never touch the 3.67 GB default.
@@ -1194,5 +1221,53 @@ mod tests {
         )
         .await;
         assert!(outcome.is_ok(), "a ready probe must succeed");
+    }
+
+    // ── #2970 ST-3 (R-4.a) — the Doom Mode suppression gate ──────────────────
+
+    /// R-4.a: the model-audio gate refuses ONLY while suppressed and reuses the
+    /// shipped typed `disabled` code (no new error enum). A refusal means the
+    /// caller returns before `spawn_audio_chat`, so no `input_audio` request is
+    /// ever built or POSTed.
+    #[test]
+    fn audio_suppression_refusal_reuses_the_shipped_disabled_code() {
+        assert!(
+            audio_suppression_refusal(false).is_none(),
+            "mode off must let the audio turn proceed"
+        );
+
+        let error =
+            audio_suppression_refusal(true).expect("suppressed must refuse the audio turn");
+        assert_eq!(error.code, SttErrorCode::Disabled);
+        assert_eq!(error.detail, VoiceError::disabled().detail);
+        // The refusal settles on the SHIPPED terminal plan (`llm-error` then
+        // `llm-done`), so the frontend's handler always fires (never hangs).
+        assert_eq!(skills::plan_stream_error_events(&error.detail).len(), 2);
+    }
+
+    /// #2970 ST-3C (G-123): the CONTINUOUS suppression invariant — WHILE Doom
+    /// Mode is active, the model-audio turn stays refused across the whole active
+    /// window (≥3 samples), and after exit it is restored. Scoped to the owned
+    /// `PerformanceModeState` (no global/order-dependent quantity), so the pin is
+    /// deterministic under any suite order.
+    #[test]
+    fn continuous_suppression_keeps_the_model_audio_turn_refused_while_active_and_restores_after_exit(
+    ) {
+        let state = PerformanceModeState::default();
+
+        assert!(audio_suppression_refusal(state.is_suppressed()).is_none());
+
+        state.set_suppressed(true);
+        for sample in 0..3 {
+            let error = audio_suppression_refusal(state.is_suppressed())
+                .unwrap_or_else(|| panic!("sample {sample} must be refused while active"));
+            assert_eq!(error.code, SttErrorCode::Disabled, "sample {sample}");
+        }
+
+        state.set_suppressed(false);
+        assert!(
+            audio_suppression_refusal(state.is_suppressed()).is_none(),
+            "exit restores the model-audio turn"
+        );
     }
 }

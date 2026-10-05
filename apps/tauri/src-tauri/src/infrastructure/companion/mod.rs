@@ -9,12 +9,14 @@
 pub mod doom_decision;
 pub mod download;
 pub mod models;
+pub mod performance_mode;
 pub mod resolver;
 pub mod skills;
 
 pub use doom_decision::{
     DoomDecision, DoomDecisionError, DoomDecisionSource, DoomDecisionSourceState,
 };
+pub use performance_mode::PerformanceModeState;
 pub use models::{
     default_manifest, file_path, is_step_complete, load_manifest, missing_files, models_subdir,
     parse_manifest, probe_files, resolve_manifest, resolve_models_dir, FileState, ModelFileSpec,

@@ -19,6 +19,8 @@ import { getFeatures, dedupeByFeatureId } from '../../featureRegistry';
 import { settingsService } from '../../settings';
 import { useCompanion } from '../../../shared/contexts/CompanionContext';
 import { useKonamiCode } from '../../../shared/hooks/useKonamiCode';
+import { useSecretCode } from '../../../shared/hooks/useSecretCode';
+import { DOOM_SECRET_CODE, useDoomMode, useDoomModeSkill } from '../../../shared/doom-mode';
 import { useAppOpenRequests } from '../hooks/useAppOpenRequests';
 import type { FredoFeatureClass } from '../../../shared/classes/FredoFeatureClass';
 
@@ -73,6 +75,17 @@ const HomeDesktop: React.FC<HomeDesktopProps> = ({ registerOpenFeature }) => {
   // keydown listener (position-independent), so it keeps working after the
   // decorative full-screen animated background was removed (#2817).
   useKonamiCode(handleKonamiCode);
+
+  // Spec #2970 ST-6 — the typed secret trigger. `useSecretCode` mirrors the
+  // document-level Konami host directly above: completing `iddqd` (five keys, no
+  // modifier, outside an editable control) enters Doom Mode with origin `code`.
+  // The hook renders NOTHING — the opened `doom` window is the sole feedback, so
+  // the secret leaves no discoverable trace before activation (AC3/R-5).
+  const { enter: enterDoomMode } = useDoomMode();
+  const handleDoomCode = useCallback(() => {
+    void enterDoomMode('code');
+  }, [enterDoomMode]);
+  useSecretCode(DOOM_SECRET_CODE, handleDoomCode);
 
   // Greet the user once on mount
   useEffect(() => {
@@ -224,6 +237,13 @@ const HomeDesktop: React.FC<HomeDesktopProps> = ({ registerOpenFeature }) => {
   // The backend addresses the `main` window only, so the terminal route never
   // receives these events.
   useAppOpenRequests({ openFeatureWindow: openApp, features: SHOWABLE_FEATURES });
+
+  // Spec #2970 ST-6 — the companion `doom_mode` dispatcher: it validates the
+  // model-selected action, invokes enter/exit, and ALWAYS pushes one
+  // deterministic reply (the 15 s watchdog can never fire). It filters only
+  // `doom_mode`, so it coexists with `useAppOpenRequests` on the same
+  // `llm-skill-call` channel without cross-talk.
+  useDoomModeSkill();
 
   // Keep the refs in sync so transition callbacks always call the latest version,
   // and register the presentation-aware opener with the Home-level ref so the

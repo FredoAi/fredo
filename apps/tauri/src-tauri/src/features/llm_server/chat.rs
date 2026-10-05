@@ -434,7 +434,7 @@ async fn run_audio_chat(
     messages: Vec<LlmMessage>,
     audio_base64: String,
 ) -> Result<(), String> {
-    let registry = SkillRegistry::with_app_control();
+    let registry = SkillRegistry::with_app_control_and_doom();
     let body = super::skills::build_audio_skill_request_body(&messages, &audio_base64, &registry);
     super::skills::run_skill_stream(app, &registry, &body).await
 }

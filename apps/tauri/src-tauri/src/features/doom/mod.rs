@@ -55,6 +55,7 @@ pub mod autoplay;
 pub mod client;
 pub mod commands;
 pub mod decision;
+pub mod mode;
 pub mod process;
 pub mod resolver;
 pub mod state;

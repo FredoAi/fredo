@@ -417,7 +417,7 @@ pub(crate) async fn run_plain_stream(app: &AppHandle, body: &Value) -> Result<()
 /// Stream one skill-aware generation: content deltas → `llm-token`; tool-call
 /// fragments buffered; at the finish the selection is validated and routed.
 async fn run_skill_chat(app: &AppHandle, messages: Vec<LlmMessage>) -> Result<(), String> {
-    let registry = SkillRegistry::with_app_control();
+    let registry = SkillRegistry::with_app_control_and_doom();
     let body = build_skill_request_body(&messages, &registry);
     run_skill_stream(app, &registry, &body).await
 }
