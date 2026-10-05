@@ -71,3 +71,22 @@
 - [x] E-26 (PASS 2026-10-05 #2970 r1 — while active `stt_start` refused `{started:false,code:"disabled"}`; the module-scoped `performanceGate` drives the launcher `voiceAvailable` gate (ST-6 unit test `launcherDoomSuppression` + the bar error surface forced empty). Direct launcher-hold gesture not driven (the launcher bar was occluded by the Setup window frame); backend suppression verified): While active, exercise the launcher voice affordance — is it gated (`performanceGate`) with no voice error surfaced, and does `stt_start` still refuse with `code:"disabled"`? (Lever: real engine + suppression.)
 - [x] E-27 (PASS 2026-10-05 #2970 r1 — exit is idempotent: `begin_exit` returns false when already `exiting`/`inactive`; F-43 verified an exit-while-inactive is a no-op success; observed the `exiting` phase settling cleanly to `inactive` with no error, no residual suppression, no orphan): Exit via the `doom` window close while a spoken "stop" is also being processed — is the double exit idempotent (no error, no residual suppression, no orphan)? (Lever: real engine + `doom_mode {action:"exit"}`.)
 - [x] E-28 (PASS 2026-10-05 #2970 r1 — re-entered Doom Mode multiple times after exits (typed and voice); each enter produced a fresh `enteredAt`, a fresh engine PID, and exactly ONE `doom` window, with no stale window): After an R-3.b exit, immediately re-type `iddqd` — does the mode re-enter cleanly with a fresh runtime and `enteredAt`, no stale window? (Lever: real engine; poll PIDs + `doom-mode-changed`.)
+
+---
+
+## Whole-app theme + armored avatar slice (Spec #2971) — unscripted probes
+
+> **Verification policy: live** — probes run against the running artifact with the
+> `telemetry_spans` live-pipeline reference (managed `psql` on the PG default, G-284, or a
+> disclosed app-pool fallback, G-307).
+>
+> **G-300:** every error/failure probe names an in-repo induction lever
+> (`FREDO_DOOM_MODE_FAIL_ENTER=1`, a `setDoomVisualEngaged` unit drive) or is marked a
+> static/unit pin, non-AC.
+
+- [ ] E-29: Rapid enter/exit/enter — does the theme + armor settle correctly with no stale class/var and no console re-render loop? (Lever: real engine + typed `iddqd`/exit; watch for `Maximum update depth exceeded`.)
+- [ ] E-30: Failed enter with `FREDO_DOOM_MODE_FAIL_ENTER=1` while a non-default preset is active — is there ANY transient Doom frame, and is the preset fully intact afterward? (Lever: env override.)
+- [ ] E-31: Remount/reopen a window while engaged — does the armor/theme persist (module-scoped store) and clear only at `inactive`? (Lever: real engine; reopen a window.)
+- [ ] E-32: Accent interplay — enter with a distinct accent, confirm `--accent-contrast` flips to the Doom accent's contrast and restores exactly on exit. (Lever: real engine + an accent override.)
+- [ ] E-33: Open Settings→Appearance while engaged — does the theme/preset UI still function, and does changing a preset while engaged have any interaction with the Doom layer? (Lever: real engine.)
+- [ ] E-34: Force ≥5 re-renders while engaged — do the theme vars and armor stay stable with no `Maximum update depth exceeded`? (Lever: unit render loop + live.)
