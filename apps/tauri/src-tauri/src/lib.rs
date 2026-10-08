@@ -1095,6 +1095,12 @@ pub fn run() {
             features::doom::commands::start_doom_autoplay,
             features::doom::commands::stop_doom_autoplay,
             features::doom::commands::get_doom_autoplay_status,
+            // Doom save/resume (Spec #2972 CU-3/ST-5): the durable resume point
+            // read (`get_doom_save`) and the explicit discard
+            // (`reset_doom_save`). Save WRITES are owned by the autoplay loop's
+            // injected progress writer, never by a command.
+            features::doom::commands::get_doom_save,
+            features::doom::commands::reset_doom_save,
             // Doom Mode lifecycle (Spec #2970 ST-2): the secret-activation mode
             // state machine. `enter` launches the runtime + agent + window and
             // turns on the shared suppression gate; `exit` tears them down and

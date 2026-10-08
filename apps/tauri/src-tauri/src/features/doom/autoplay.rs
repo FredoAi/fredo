@@ -61,6 +61,9 @@ pub enum DoomAutoplayErrorCode {
     EngineRequestFailed,
     /// The run reached its total step budget.
     BudgetExhausted,
+    /// The campaign's final level was exited — the whole game is complete
+    /// (Spec #2972 R-3).
+    CampaignComplete,
 }
 
 // ── Wire models (camelCase, IPC) ─────────────────────────────────────────────
@@ -86,6 +89,12 @@ pub struct DoomAutoplayStatus {
     pub last_tic: Option<u64>,
     /// The last observed engine outcome (e.g. `alive`, `dead`, `exited`).
     pub outcome: Option<String>,
+    /// The campaign episode currently being played (Spec #2972 R-3), when known.
+    pub episode: Option<i64>,
+    /// The campaign map currently being played (Spec #2972 R-3), when known.
+    pub map: Option<i64>,
+    /// Whether the campaign reached its final level and completed (R-3).
+    pub completed: bool,
     /// RFC3339 start timestamp of the run, when started.
     pub started_at: Option<String>,
     /// Human-readable failure detail, when the run failed.
@@ -138,6 +147,10 @@ mod tests {
                 "\"engineRequestFailed\"",
             ),
             (DoomAutoplayErrorCode::BudgetExhausted, "\"budgetExhausted\""),
+            (
+                DoomAutoplayErrorCode::CampaignComplete,
+                "\"campaignComplete\"",
+            ),
         ];
         for (code, expected) in cases {
             assert_eq!(serde_json::to_string(&code).expect("serialize"), expected);
@@ -164,6 +177,9 @@ mod tests {
             consecutive_failures: 1,
             last_tic: Some(42),
             outcome: Some("alive".to_string()),
+            episode: Some(2),
+            map: Some(3),
+            completed: false,
             started_at: Some("2026-01-01T00:00:00Z".to_string()),
             last_error: Some("boom".to_string()),
             code: Some(DoomAutoplayErrorCode::DecisionFailed),
@@ -177,6 +193,9 @@ mod tests {
         assert_eq!(value["consecutiveFailures"], 1);
         assert_eq!(value["lastTic"], 42);
         assert_eq!(value["outcome"], "alive");
+        assert_eq!(value["episode"], 2);
+        assert_eq!(value["map"], 3);
+        assert_eq!(value["completed"], false);
         assert_eq!(value["startedAt"], "2026-01-01T00:00:00Z");
         assert_eq!(value["lastError"], "boom");
         assert_eq!(value["code"], "decisionFailed");

@@ -22,11 +22,13 @@ use crate::infrastructure::companion::doom_decision::DoomDecisionSourceState;
 use crate::infrastructure::companion::PerformanceModeState;
 use crate::infrastructure::storage::AppStore;
 
-use super::agent::{run_autoplay_loop, DoomAutoplayConfig};
+use super::agent::{run_autoplay_loop, AutoplayRun, DoomAutoplayConfig};
 use super::autoplay::{
     DoomAutoplayErrorCode, DoomAutoplayPhase, DoomAutoplayResult, DoomAutoplayStatus,
 };
 use super::decision;
+use super::progress::DoomProgressWriter;
+use super::save::{self, DoomCampaign, DoomSaveStatus};
 use super::mode::{
     fail_enter_requested, DoomModeOrigin, DoomModeResult, DoomModeState, DoomModeStatus,
     DOOM_MODE_EVENT,
@@ -599,16 +601,21 @@ impl DoomAutoplayState {
     /// Atomically begin a run with `stop`. `Err(current)` when a run is already
     /// active, so two concurrent starts can never spawn two loops (R-1
     /// idempotency).
+    ///
+    /// The `Err` is boxed: `DoomAutoplayStatus` carries the live campaign fields
+    /// (Spec #2972) and would otherwise make the `Result` an over-large value
+    /// (`clippy::result_large_err`). Callers read the fields through deref.
     pub fn try_begin(
         &self,
         stop: Arc<AtomicBool>,
-    ) -> Result<DoomAutoplayStatus, DoomAutoplayStatus> {
+        campaign: &DoomCampaign,
+    ) -> Result<DoomAutoplayStatus, Box<DoomAutoplayStatus>> {
         let mut inner = self.lock();
         if inner.active.is_some() {
-            return Err(inner.status.clone());
+            return Err(Box::new(inner.status.clone()));
         }
         inner.active = Some(stop);
-        inner.status = running_status();
+        inner.status = running_status(campaign);
         Ok(inner.status.clone())
     }
 
@@ -679,6 +686,9 @@ fn idle_status() -> DoomAutoplayStatus {
         consecutive_failures: 0,
         last_tic: None,
         outcome: None,
+        episode: None,
+        map: None,
+        completed: false,
         started_at: None,
         last_error: None,
         code: None,
@@ -686,8 +696,9 @@ fn idle_status() -> DoomAutoplayStatus {
 }
 
 /// The seeded status at the moment a run begins (replaced by the loop's first
-/// observation almost immediately).
-fn running_status() -> DoomAutoplayStatus {
+/// observation almost immediately). Seeded with the resolved campaign's resume
+/// point so the `doom-autoplay-changed` payload carries it from the start.
+fn running_status(campaign: &DoomCampaign) -> DoomAutoplayStatus {
     DoomAutoplayStatus {
         phase: DoomAutoplayPhase::Running,
         running: true,
@@ -697,6 +708,9 @@ fn running_status() -> DoomAutoplayStatus {
         consecutive_failures: 0,
         last_tic: None,
         outcome: None,
+        episode: Some(campaign.episode),
+        map: Some(campaign.map),
+        completed: campaign.completed,
         started_at: Some(chrono::Utc::now().to_rfc3339()),
         last_error: None,
         code: None,
@@ -749,6 +763,7 @@ fn publish_autoplay(app: &AppHandle, status: &DoomAutoplayStatus) {
 pub async fn start_doom_autoplay(
     app: AppHandle,
     max_steps: Option<u32>,
+    fresh_start: Option<bool>,
 ) -> DoomAutoplayResult {
     // Idempotency — a live run wins immediately (no second loop).
     if let Some(status) = app.state::<DoomAutoplayState>().active_status() {
@@ -785,9 +800,23 @@ pub async fn start_doom_autoplay(
         }
     };
 
+    // Resolve the campaign to play (Spec #2972 R-1/R-5): an explicit fresh start
+    // → the campaign initial; otherwise a valid loaded save, else the initial.
+    // A `completed:true` save is preserved and reported terminal at start
+    // (G-321) — never a silent fresh run.
+    let store = app.state::<Arc<AppStore>>().inner().clone();
+    let campaign = save::resolve_start_campaign(
+        fresh_start,
+        save::load(&store).map(|saved| saved.to_campaign()),
+    );
+    let progress = DoomProgressWriter::for_store(store);
+
     let config = autoplay_config(max_steps);
     let stop = Arc::new(AtomicBool::new(false));
-    if let Err(current) = app.state::<DoomAutoplayState>().try_begin(stop.clone()) {
+    if let Err(current) = app
+        .state::<DoomAutoplayState>()
+        .try_begin(stop.clone(), &campaign)
+    {
         // Lost the race to a concurrent start — report the live run.
         return DoomAutoplayResult {
             success: true,
@@ -811,6 +840,7 @@ pub async fn start_doom_autoplay(
             port,
             source_ref,
             &config,
+            AutoplayRun { campaign, progress },
             &stop,
             move |observed| {
                 let state = observe_app.state::<DoomAutoplayState>();
@@ -827,13 +857,48 @@ pub async fn start_doom_autoplay(
         }
     });
 
+    // Report terminal completion synchronously for an already-completed save;
+    // otherwise the run is starting (the event remains the source of truth).
     DoomAutoplayResult {
         success: true,
-        phase: DoomAutoplayPhase::Running,
+        phase: if campaign.completed {
+            DoomAutoplayPhase::Completed
+        } else {
+            DoomAutoplayPhase::Running
+        },
         steps: 0,
-        code: None,
+        code: if campaign.completed {
+            Some(DoomAutoplayErrorCode::CampaignComplete)
+        } else {
+            None
+        },
         error: None,
     }
+}
+
+/// Read the persisted resume point (Spec #2972 R-1/R-2). Never fails: an absent,
+/// corrupt, or unreadable save reports `hasSave:false` with every coordinate null.
+#[tauri::command]
+pub fn get_doom_save(app: AppHandle) -> DoomSaveStatus {
+    let store = app.state::<Arc<AppStore>>().inner().clone();
+    save::load(&store)
+        .map(|saved| DoomSaveStatus::from_save(&saved))
+        .unwrap_or_else(DoomSaveStatus::absent)
+}
+
+/// Explicitly discard the persisted resume point (Spec #2972). Idempotent; always
+/// reports `hasSave:false` afterwards. A clear failure is logged, never fatal.
+#[tauri::command]
+pub fn reset_doom_save(app: AppHandle) -> DoomSaveStatus {
+    let store = app.state::<Arc<AppStore>>().inner().clone();
+    if let Err(detail) = save::clear(&store) {
+        tracing::warn!(
+            target: "fredo::doom",
+            error = %detail,
+            "doom save reset failed"
+        );
+    }
+    DoomSaveStatus::absent()
 }
 
 /// Cooperatively stop the live autoplay run (Spec #2969 ST-5).
@@ -1040,8 +1105,9 @@ pub async fn enter_doom_mode(app: AppHandle, origin: Option<String>) -> DoomMode
         );
     }
 
-    // 2. Playing agent (idempotent bounded autoplay run).
-    let autoplay = start_doom_autoplay(app.clone(), None).await;
+    // 2. Playing agent (idempotent bounded autoplay run). Entering Doom Mode is
+    // resume-by-default: `freshStart` is deliberately absent (Spec #2972 R-5).
+    let autoplay = start_doom_autoplay(app.clone(), None, None).await;
     if !autoplay.success {
         stop_doom_autoplay(app.clone()).await.ok();
         stop_doom_runtime(app.clone()).await.ok();
@@ -1219,21 +1285,28 @@ mod tests {
         assert!(!idle.running);
         assert!(idle.started_at.is_none());
 
-        let running = running_status();
+        let running = running_status(&DoomCampaign::initial());
         assert_eq!(running.phase, DoomAutoplayPhase::Running);
         assert!(running.running);
         assert!(running.started_at.is_some());
+        // The seed carries the resolved resume point (Spec #2972).
+        assert_eq!(running.episode, Some(1));
+        assert_eq!(running.map, Some(1));
+        assert!(!running.completed);
     }
 
     #[test]
     fn try_begin_is_idempotent() {
         let state = DoomAutoplayState::default();
         let first = state
-            .try_begin(Arc::new(AtomicBool::new(false)))
+            .try_begin(Arc::new(AtomicBool::new(false)), &DoomCampaign::initial())
             .expect("the first start begins a run");
         assert_eq!(first.phase, DoomAutoplayPhase::Running);
 
-        let second = state.try_begin(Arc::new(AtomicBool::new(false)));
+        let second = state.try_begin(
+            Arc::new(AtomicBool::new(false)),
+            &DoomCampaign::initial(),
+        );
         assert!(
             second.is_err(),
             "a second concurrent start must not begin a second loop"
@@ -1246,7 +1319,9 @@ mod tests {
         assert!(state.request_stop().is_none(), "idle stop is a no-op");
 
         let stop = Arc::new(AtomicBool::new(false));
-        state.try_begin(stop.clone()).expect("begin");
+        state
+            .try_begin(stop.clone(), &DoomCampaign::initial())
+            .expect("begin");
         let stopping = state.request_stop().expect("a live run can be stopped");
         assert_eq!(stopping.phase, DoomAutoplayPhase::Stopping);
         assert!(stopping.running);
@@ -1261,9 +1336,11 @@ mod tests {
     fn apply_reports_stopping_while_a_stop_winds_down() {
         let state = DoomAutoplayState::default();
         let stop = Arc::new(AtomicBool::new(false));
-        state.try_begin(stop.clone()).expect("begin");
+        state
+            .try_begin(stop.clone(), &DoomCampaign::initial())
+            .expect("begin");
 
-        let mut running = running_status();
+        let mut running = running_status(&DoomCampaign::initial());
         running.steps = 3;
         let published = state.apply(&running);
         assert_eq!(published.phase, DoomAutoplayPhase::Running);
@@ -1284,10 +1361,10 @@ mod tests {
     fn apply_clears_the_run_on_a_terminal_observation() {
         let state = DoomAutoplayState::default();
         state
-            .try_begin(Arc::new(AtomicBool::new(false)))
+            .try_begin(Arc::new(AtomicBool::new(false)), &DoomCampaign::initial())
             .expect("begin");
 
-        let mut completed = running_status();
+        let mut completed = running_status(&DoomCampaign::initial());
         completed.phase = DoomAutoplayPhase::Completed;
         completed.running = false;
         let published = state.apply(&completed);
@@ -1303,7 +1380,7 @@ mod tests {
     fn finish_clears_a_run_without_a_terminal_observation() {
         let state = DoomAutoplayState::default();
         state
-            .try_begin(Arc::new(AtomicBool::new(false)))
+            .try_begin(Arc::new(AtomicBool::new(false)), &DoomCampaign::initial())
             .expect("begin");
 
         let status = state.finish().expect("finish publishes idle");

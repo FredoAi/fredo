@@ -317,6 +317,43 @@ pub fn store(store: &AppStore, save: &DoomSave) -> Result<(), String> {
     }
 }
 
+/// Resolve the campaign to play on start (Spec #2972 R-1/R-5) — the command
+/// composition helper, kept pure so the fresh-start/resume decision is unit
+/// testable without a Tauri `AppHandle`.
+///
+/// `fresh_start == Some(true)` always yields the campaign initial (an explicitly
+/// requested fresh run); otherwise a valid loaded campaign wins, falling back to
+/// the initial when none was loaded (absent/corrupt → clean run). A
+/// `completed:true` campaign is returned as-is — the autoplay loop treats it as
+/// terminal at start (G-321); only an explicit fresh start replaces it.
+pub fn resolve_start_campaign(
+    fresh_start: Option<bool>,
+    loaded: Option<DoomCampaign>,
+) -> DoomCampaign {
+    if fresh_start == Some(true) {
+        return DoomCampaign::initial();
+    }
+    loaded.unwrap_or_else(DoomCampaign::initial)
+}
+
+/// Discard the persisted save (Spec #2972 `reset_doom_save`): clear the
+/// control-plane key, or remove the seam file when the [`DOOM_SAVE_FILE_ENV`]
+/// seam is set. Idempotent — an absent save is a no-op. A real failure is
+/// returned for the caller to log; the command still reports `hasSave:false`
+/// afterwards because a blank/unreadable slot parses as "no save".
+pub fn clear(store: &AppStore) -> Result<(), String> {
+    match seam_path() {
+        Some(path) => match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!("remove {}: {error}", path.display())),
+        },
+        None => store
+            .control_set(DOOM_SAVE_KEY, "")
+            .map_err(|error| error.to_string()),
+    }
+}
+
 /// Read + parse a save from an explicit path (the seam-file primitive).
 ///
 /// A missing file, a directory, an unreadable file, or out-of-contract JSON all
@@ -617,5 +654,56 @@ mod tests {
         if std::env::var(DOOM_SAVE_FILE_ENV).is_err() {
             assert_eq!(seam_path(), None);
         }
+    }
+
+    #[test]
+    fn resolve_start_campaign_prefers_fresh_then_loaded_then_initial() {
+        let loaded = DoomCampaign {
+            episode: 2,
+            map: 5,
+            skill: 1,
+            seed: 7,
+            completed: false,
+        };
+        // An explicit fresh start wins over a loaded save.
+        assert_eq!(
+            resolve_start_campaign(Some(true), Some(loaded)),
+            DoomCampaign::initial()
+        );
+        // Absent / false freshStart resumes the loaded save.
+        assert_eq!(resolve_start_campaign(None, Some(loaded)), loaded);
+        assert_eq!(resolve_start_campaign(Some(false), Some(loaded)), loaded);
+        // No loaded save -> the campaign initial (clean run, R-4).
+        assert_eq!(resolve_start_campaign(None, None), DoomCampaign::initial());
+        assert_eq!(
+            resolve_start_campaign(Some(false), None),
+            DoomCampaign::initial()
+        );
+        // A completed save is preserved (terminal at start, G-321); only an
+        // explicit fresh start replaces it.
+        let completed = DoomCampaign {
+            completed: true,
+            ..loaded
+        };
+        assert_eq!(resolve_start_campaign(None, Some(completed)), completed);
+        assert_eq!(
+            resolve_start_campaign(Some(true), Some(completed)),
+            DoomCampaign::initial()
+        );
+    }
+
+    #[test]
+    fn clear_discards_the_control_plane_save_idempotently() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_store = open_store(dir.path());
+        let save = sample();
+        store(&app_store, &save).expect("store");
+        assert_eq!(load(&app_store), Some(save));
+
+        clear(&app_store).expect("clear");
+        assert_eq!(load(&app_store), None, "a cleared slot is no save");
+
+        // Idempotent — clearing again is a no-op.
+        clear(&app_store).expect("clear again");
     }
 }

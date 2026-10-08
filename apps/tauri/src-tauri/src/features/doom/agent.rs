@@ -59,6 +59,8 @@ use super::autoplay::{
     DOOM_AUTOPLAY_MAX_STEPS,
 };
 use super::client::{read_state_with, restart_with, step_with, DoomHttpTransport};
+use super::progress::DoomProgressWriter;
+use super::save::DoomCampaign;
 
 // ── Measured rate basis (R-5 / AC5) ──────────────────────────────────────────
 
@@ -85,36 +87,16 @@ pub const DOOM_AUTOPLAY_RATE_TARGET_STEPS_PER_S: u32 = 40;
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
-/// The `POST /api/episode` restart/advance coordinates (R-3).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DoomEpisodeRequest {
-    /// Episode to (re)start.
-    pub episode: i64,
-    /// Map to (re)start.
-    pub map: i64,
-    /// Skill level.
-    pub skill: i64,
-    /// Deterministic seed.
-    pub seed: i64,
-}
-
-impl Default for DoomEpisodeRequest {
-    /// The slice-1 launch level (`DOOM_LAUNCH_SUFFIX` = `-warp 1 1 -skill 3`): a
-    /// deterministic restart of the same level with a fixed seed.
-    fn default() -> Self {
-        Self {
-            episode: 1,
-            map: 1,
-            skill: 3,
-            seed: 0,
-        }
-    }
-}
-
 /// The bounded budgets and pacing of one autoplay run.
+///
+/// The campaign coordinates the loop plays (and advances) are NOT part of this
+/// config: they are resolved at the composition root and passed to
+/// [`run_autoplay_loop`] as a [`DoomCampaign`] (Spec #2972 R-1/R-3), so the loop
+/// owns no default level and no `AppHandle`.
 #[derive(Clone, Copy, Debug)]
 pub struct DoomAutoplayConfig {
-    /// Total engine-advancing operations (steps + episode restarts) allowed.
+    /// Total engine-advancing operations (steps + episode restarts/advances,
+    /// including the initial resume positioning) allowed.
     pub max_steps: u32,
     /// Consecutive unusable decisions allowed before the run fails.
     pub max_failures: u32,
@@ -122,8 +104,6 @@ pub struct DoomAutoplayConfig {
     pub decision_timeout: Duration,
     /// Backoff between a failed decision and its retry.
     pub failure_backoff: Duration,
-    /// The bounded restart/advance action taken on a terminal observation.
-    pub restart: DoomEpisodeRequest,
 }
 
 impl Default for DoomAutoplayConfig {
@@ -133,7 +113,6 @@ impl Default for DoomAutoplayConfig {
             max_failures: DOOM_AUTOPLAY_MAX_FAILURES,
             decision_timeout: Duration::from_secs(DOOM_AUTOPLAY_DECISION_TIMEOUT_S),
             failure_backoff: Duration::from_millis(DOOM_AUTOPLAY_FAILURE_BACKOFF_MS),
-            restart: DoomEpisodeRequest::default(),
         }
     }
 }
@@ -158,15 +137,41 @@ pub fn validate_decision(decision: &DoomDecision) -> Result<(), String> {
     Ok(())
 }
 
+/// The terminal kind of an engine observation (Spec #2972 R-3).
+///
+/// A death restarts the SAME level (no advance); a level exit advances the
+/// campaign (or completes it at the final level).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerminalKind {
+    /// The player died (`outcome == "dead"`).
+    Death,
+    /// The level was exited (`done == true`, not a death).
+    Exit,
+}
+
+/// Classify a terminal observation, or `None` when the level is still running.
+///
+/// Death is checked first: `outcome == "dead"` is a death even if `done` is also
+/// set (the stub's death latches `done` off, but the real engine's precedence is
+/// not assumed). Everything else with `done == true` is a level exit.
+pub fn terminal_kind(observation: &Value) -> Option<TerminalKind> {
+    if observation.get("outcome").and_then(Value::as_str) == Some("dead") {
+        return Some(TerminalKind::Death);
+    }
+    if observation
+        .get("done")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Some(TerminalKind::Exit);
+    }
+    None
+}
+
 /// Whether the engine's observation reports a terminal state: the level is done or
 /// the player is dead (R-3).
 pub fn is_terminal(observation: &Value) -> bool {
-    let done = observation
-        .get("done")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let dead = observation.get("outcome").and_then(Value::as_str) == Some("dead");
-    done || dead
+    terminal_kind(observation).is_some()
 }
 
 /// The composite progress observable (ST-1 finding): `tic` strictly increases AND
@@ -228,12 +233,75 @@ fn component_improved(previous: &Value, next: &Value) -> bool {
 }
 
 /// Update the status' observation-derived fields from an engine observation.
+///
+/// Reads `tic`, `outcome`, and the live `level.episode` / `level.map` (Spec #2972:
+/// the resume feature starts reading the level coordinates the loop previously
+/// ignored).
 fn apply_observation(status: &mut DoomAutoplayStatus, observation: &Value) {
     if let Some(tic) = observation.get("tic").and_then(Value::as_u64) {
         status.last_tic = Some(tic);
     }
     if let Some(outcome) = observation.get("outcome").and_then(Value::as_str) {
         status.outcome = Some(outcome.to_string());
+    }
+    if let Some(episode) = observation.pointer("/level/episode").and_then(Value::as_i64) {
+        status.episode = Some(episode);
+    }
+    if let Some(map) = observation.pointer("/level/map").and_then(Value::as_i64) {
+        status.map = Some(map);
+    }
+}
+
+/// The running status seeded from the resolved campaign (so the resume point is
+/// visible before the first engine observation).
+fn running_status(campaign: &DoomCampaign) -> DoomAutoplayStatus {
+    DoomAutoplayStatus {
+        phase: DoomAutoplayPhase::Running,
+        running: true,
+        steps: 0,
+        decisions: 0,
+        failures: 0,
+        consecutive_failures: 0,
+        last_tic: None,
+        outcome: None,
+        episode: Some(campaign.episode),
+        map: Some(campaign.map),
+        completed: false,
+        started_at: Some(chrono::Utc::now().to_rfc3339()),
+        last_error: None,
+        code: None,
+    }
+}
+
+/// The terminal completion status for a resolved `completed:true` campaign
+/// (Spec #2972 G-321 terminality).
+fn completed_status(campaign: &DoomCampaign) -> DoomAutoplayStatus {
+    DoomAutoplayStatus {
+        phase: DoomAutoplayPhase::Completed,
+        running: false,
+        steps: 0,
+        decisions: 0,
+        failures: 0,
+        consecutive_failures: 0,
+        last_tic: None,
+        outcome: None,
+        episode: Some(campaign.episode),
+        map: Some(campaign.map),
+        completed: true,
+        started_at: Some(chrono::Utc::now().to_rfc3339()),
+        last_error: None,
+        code: Some(DoomAutoplayErrorCode::CampaignComplete),
+    }
+}
+
+/// The terminal result for a completed campaign (R-3).
+fn campaign_complete_result(steps: u32) -> DoomAutoplayResult {
+    DoomAutoplayResult {
+        success: true,
+        phase: DoomAutoplayPhase::Completed,
+        steps,
+        code: Some(DoomAutoplayErrorCode::CampaignComplete),
+        error: None,
     }
 }
 
@@ -287,6 +355,19 @@ async fn backoff(duration: Duration) {
 
 // ── The loop ─────────────────────────────────────────────────────────────────
 
+/// The campaign the loop plays plus the progress writer that persists its level
+/// transitions (Spec #2972 R-1/R-3/R-5).
+///
+/// Bundled so [`run_autoplay_loop`] keeps a focused argument list
+/// (`clippy::too_many_arguments`): the composition root resolves the campaign and
+/// injects the writer; the loop stays engine-agnostic and owns no `AppHandle`.
+pub struct AutoplayRun {
+    /// The resolved campaign to position at and advance.
+    pub campaign: DoomCampaign,
+    /// The continuous-state owner invoked on every level transition.
+    pub progress: DoomProgressWriter,
+}
+
 /// Run the bounded read → decide → validate → step loop until the step budget is
 /// exhausted, the failure budget is exhausted, a stop is requested, or an engine
 /// request fails (R-1/R-3/R-4/R-5). NEVER hangs: every wait is bounded and the
@@ -301,30 +382,72 @@ pub async fn run_autoplay_loop(
     port: u16,
     source: &dyn DoomDecisionSource,
     config: &DoomAutoplayConfig,
+    run: AutoplayRun,
     stop: &AtomicBool,
     mut observe: impl FnMut(&DoomAutoplayStatus) + Send,
 ) -> DoomAutoplayResult {
-    let mut status = DoomAutoplayStatus {
-        phase: DoomAutoplayPhase::Running,
-        running: true,
-        steps: 0,
-        decisions: 0,
-        failures: 0,
-        consecutive_failures: 0,
-        last_tic: None,
-        outcome: None,
-        started_at: Some(chrono::Utc::now().to_rfc3339()),
-        last_error: None,
-        code: None,
-    };
+    let AutoplayRun { campaign, progress } = run;
+    // Completed-save terminality (G-321, BINDING): a resolved `completed:true`
+    // campaign is terminal AT START — report completion immediately, issue NO
+    // engine request, and never silently start a fresh run or re-loop the final
+    // level. The explicit fresh-start path is the only replay path.
+    if campaign.completed {
+        let status = completed_status(&campaign);
+        observe(&status);
+        return campaign_complete_result(status.steps);
+    }
+
+    let mut status = running_status(&campaign);
     observe(&status);
 
-    // Steps AND episode restarts share the total budget so a persistently-terminal
-    // engine terminates instead of restarting forever (R-3).
+    // A stop requested before the run begins positions nothing.
+    if stop.load(Ordering::Relaxed) {
+        status.phase = DoomAutoplayPhase::Idle;
+        status.running = false;
+        observe(&status);
+        return DoomAutoplayResult {
+            success: true,
+            phase: DoomAutoplayPhase::Idle,
+            steps: status.steps,
+            code: None,
+            error: None,
+        };
+    }
+
+    // Steps AND episode restarts/advances share the total budget so a
+    // persistently-terminal engine terminates instead of restarting forever (R-3).
     let mut budget_used: u32 = 0;
-    // Set when a terminal observation was seen; consumed by exactly one restart on
-    // the next iteration — the terminal state is never re-decided (R-3).
-    let mut pending_restart = false;
+    // The campaign the loop plays; `advance()` walks it on a level exit.
+    let mut campaign = campaign;
+    // Set when a terminal observation was seen; consumed by exactly one
+    // restart/advance on the next iteration — the terminal state is never
+    // re-decided (R-3).
+    let mut pending_terminal: Option<TerminalKind> = None;
+
+    // R-1 resume positioning: position the engine at the resolved campaign coords
+    // with exactly ONE `POST /api/episode {episode,map,skill,seed}` BEFORE the
+    // first step. A failure is a typed engine failure (never a hang).
+    match restart_with(
+        transport,
+        port,
+        campaign.episode,
+        campaign.map,
+        campaign.skill,
+        campaign.seed,
+    )
+    .await
+    {
+        Ok(result) => {
+            budget_used += 1;
+            apply_observation(&mut status, &result.state);
+            observe(&status);
+        }
+        Err(error) => {
+            let result = engine_failure(&mut status, error.message);
+            observe(&status);
+            return result;
+        }
+    }
 
     while budget_used < config.max_steps {
         if stop.load(Ordering::Relaxed) {
@@ -340,31 +463,78 @@ pub async fn run_autoplay_loop(
             };
         }
 
-        // React to a terminal observation with exactly ONE bounded restart within
-        // the next iteration, then resume (R-3).
-        if pending_restart {
-            let request = config.restart;
-            match restart_with(
-                transport,
-                port,
-                request.episode,
-                request.map,
-                request.skill,
-                request.seed,
-            )
-            .await
-            {
-                Ok(result) => {
-                    pending_restart = false;
-                    budget_used += 1;
-                    apply_observation(&mut status, &result.state);
-                    observe(&status);
-                    continue;
+        // React to a terminal observation with exactly ONE bounded action on the
+        // next iteration, then resume (R-3).
+        if let Some(kind) = pending_terminal.take() {
+            match kind {
+                // Death restarts the SAME level: no advance, no persist.
+                TerminalKind::Death => {
+                    match restart_with(
+                        transport,
+                        port,
+                        campaign.episode,
+                        campaign.map,
+                        campaign.skill,
+                        campaign.seed,
+                    )
+                    .await
+                    {
+                        Ok(result) => {
+                            budget_used += 1;
+                            apply_observation(&mut status, &result.state);
+                            observe(&status);
+                            continue;
+                        }
+                        Err(error) => {
+                            let result = engine_failure(&mut status, error.message);
+                            observe(&status);
+                            return result;
+                        }
+                    }
                 }
-                Err(error) => {
-                    let result = engine_failure(&mut status, error.message);
-                    observe(&status);
-                    return result;
+                // A level exit advances the campaign, or completes it at the
+                // final level (R-3).
+                TerminalKind::Exit => {
+                    if campaign.at_final_level() {
+                        campaign.completed = true;
+                        progress.record(&campaign);
+                        status.phase = DoomAutoplayPhase::Completed;
+                        status.running = false;
+                        status.completed = true;
+                        status.code = Some(DoomAutoplayErrorCode::CampaignComplete);
+                        status.episode = Some(campaign.episode);
+                        status.map = Some(campaign.map);
+                        observe(&status);
+                        return campaign_complete_result(status.steps);
+                    }
+                    if let Some(next) = campaign.advance() {
+                        campaign = next;
+                    }
+                    progress.record(&campaign);
+                    status.episode = Some(campaign.episode);
+                    status.map = Some(campaign.map);
+                    match restart_with(
+                        transport,
+                        port,
+                        campaign.episode,
+                        campaign.map,
+                        campaign.skill,
+                        campaign.seed,
+                    )
+                    .await
+                    {
+                        Ok(result) => {
+                            budget_used += 1;
+                            apply_observation(&mut status, &result.state);
+                            observe(&status);
+                            continue;
+                        }
+                        Err(error) => {
+                            let result = engine_failure(&mut status, error.message);
+                            observe(&status);
+                            return result;
+                        }
+                    }
                 }
             }
         }
@@ -380,9 +550,9 @@ pub async fn run_autoplay_loop(
         };
         apply_observation(&mut status, &observation);
 
-        // Terminal states are restarted, never decided on (R-3).
-        if is_terminal(&observation) {
-            pending_restart = true;
+        // Terminal states are restarted/advanced, never decided on (R-3).
+        if let Some(kind) = terminal_kind(&observation) {
+            pending_terminal = Some(kind);
             observe(&status);
             continue;
         }
@@ -412,8 +582,8 @@ pub async fn run_autoplay_loop(
                         // A good decision resets the consecutive-failure budget.
                         status.consecutive_failures = 0;
                         apply_observation(&mut status, &result.state);
-                        if is_terminal(&result.state) {
-                            pending_restart = true;
+                        if let Some(kind) = terminal_kind(&result.state) {
+                            pending_terminal = Some(kind);
                         }
                         observe(&status);
                     }
@@ -468,12 +638,43 @@ mod tests {
     use super::*;
 
     use std::collections::VecDeque;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
     use serde_json::json;
 
     use crate::features::doom::client::TransportError;
+
+    /// The campaign the loop plays in a test (E1M1 defaults otherwise).
+    fn campaign(episode: i64, map: i64) -> DoomCampaign {
+        DoomCampaign {
+            episode,
+            map,
+            ..DoomCampaign::initial()
+        }
+    }
+
+    /// A no-op progress writer for tests that do not assert persistence.
+    fn no_progress() -> DoomProgressWriter {
+        DoomProgressWriter::new(|_| Ok(()))
+    }
+
+    /// A progress writer that records every persisted campaign, in order.
+    fn recording_progress() -> (DoomProgressWriter, Arc<Mutex<Vec<DoomCampaign>>>) {
+        let seen: Arc<Mutex<Vec<DoomCampaign>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let writer = DoomProgressWriter::new(move |save| {
+            sink.lock().unwrap().push(DoomCampaign {
+                episode: save.episode,
+                map: save.map,
+                skill: save.skill,
+                seed: save.seed,
+                completed: save.completed,
+            });
+            Ok(())
+        });
+        (writer, seen)
+    }
 
     // ── Fakes ────────────────────────────────────────────────────────────────
 
@@ -484,17 +685,25 @@ mod tests {
     struct FakeEngine {
         calls: Mutex<Vec<String>>,
         tic: Mutex<u64>,
+        episode: Mutex<i64>,
+        map: Mutex<i64>,
         get_queue: Mutex<VecDeque<Result<Value, TransportError>>>,
         step_queue: Mutex<VecDeque<Result<Value, TransportError>>>,
-        episode_result: Mutex<Option<Result<Value, TransportError>>>,
+        episode_queue: Mutex<VecDeque<Result<Value, TransportError>>>,
+        episode_always_error: Mutex<Option<String>>,
     }
 
     impl FakeEngine {
         fn queue_get(&self, value: Value) {
             self.get_queue.lock().unwrap().push_back(Ok(value));
         }
+        /// Make EVERY `/api/episode` call fail (the positioning-failure lever).
         fn set_episode_error(&self, message: &str) {
-            *self.episode_result.lock().unwrap() = Some(Err(TransportError::message(message)));
+            *self.episode_always_error.lock().unwrap() = Some(message.to_string());
+        }
+        /// Script the next `/api/episode` results in order (advance-failure lever).
+        fn queue_episode(&self, result: Result<Value, TransportError>) {
+            self.episode_queue.lock().unwrap().push_back(result);
         }
         fn calls(&self) -> Vec<String> {
             self.calls.lock().unwrap().clone()
@@ -502,16 +711,34 @@ mod tests {
         fn count(&self, needle: &str) -> usize {
             self.calls().iter().filter(|call| call.contains(needle)).count()
         }
+        /// The `(episode, map)` of every `POST /api/episode` body, in order.
+        fn episode_calls(&self) -> Vec<(i64, i64)> {
+            self.calls()
+                .into_iter()
+                .filter(|call| call.contains("/api/episode"))
+                .filter_map(|call| {
+                    let start = call.find('{')?;
+                    let value: Value = serde_json::from_str(&call[start..]).ok()?;
+                    Some((value.get("episode")?.as_i64()?, value.get("map")?.as_i64()?))
+                })
+                .collect()
+        }
     }
 
-    fn state_json(tic: u64, done: bool, dead: bool) -> Value {
+    /// A state observation at explicit level coordinates.
+    fn state_at(tic: u64, done: bool, dead: bool, episode: i64, map: i64) -> Value {
         json!({
             "tic": tic,
             "done": done,
             "outcome": if dead { "dead" } else if done { "exited" } else { "alive" },
-            "level": { "kills": 0, "items": 0 },
+            "level": { "episode": episode, "map": map, "kills": 0, "items": 0 },
             "player": { "x": 0, "y": 0 },
         })
+    }
+
+    /// A state observation at E1M1.
+    fn state_json(tic: u64, done: bool, dead: bool) -> Value {
+        state_at(tic, done, dead, 1, 1)
     }
 
     #[async_trait]
@@ -522,7 +749,13 @@ mod tests {
                 if let Some(scripted) = self.get_queue.lock().unwrap().pop_front() {
                     return scripted;
                 }
-                return Ok(state_json(*self.tic.lock().unwrap(), false, false));
+                return Ok(state_at(
+                    *self.tic.lock().unwrap(),
+                    false,
+                    false,
+                    *self.episode.lock().unwrap(),
+                    *self.map.lock().unwrap(),
+                ));
             }
             Err(TransportError::message(format!("unexpected GET {url}")))
         }
@@ -538,16 +771,39 @@ mod tests {
                     .and_then(Value::as_i64)
                     .unwrap_or(1)
                     .max(0) as u64;
-                let mut tic = self.tic.lock().unwrap();
-                *tic += tics;
-                return Ok(state_json(*tic, false, false));
+                let tic = {
+                    let mut tic = self.tic.lock().unwrap();
+                    *tic += tics;
+                    *tic
+                };
+                return Ok(state_at(
+                    tic,
+                    false,
+                    false,
+                    *self.episode.lock().unwrap(),
+                    *self.map.lock().unwrap(),
+                ));
             }
             if url.ends_with("/api/episode") {
-                if let Some(scripted) = self.episode_result.lock().unwrap().clone() {
+                if let Some(message) = self.episode_always_error.lock().unwrap().clone() {
+                    return Err(TransportError::message(message));
+                }
+                if let Some(scripted) = self.episode_queue.lock().unwrap().pop_front() {
                     return scripted;
                 }
+                *self.episode.lock().unwrap() = body
+                    .get("episode")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(1);
+                *self.map.lock().unwrap() = body.get("map").and_then(Value::as_i64).unwrap_or(1);
                 *self.tic.lock().unwrap() = 0;
-                return Ok(state_json(0, false, false));
+                return Ok(state_at(
+                    0,
+                    false,
+                    false,
+                    *self.episode.lock().unwrap(),
+                    *self.map.lock().unwrap(),
+                ));
             }
             Err(TransportError::message(format!("unexpected POST {url}")))
         }
@@ -624,7 +880,6 @@ mod tests {
             max_failures,
             decision_timeout: Duration::from_secs(1),
             failure_backoff: Duration::ZERO,
-            restart: DoomEpisodeRequest::default(),
         }
     }
 
@@ -647,6 +902,13 @@ mod tests {
         assert!(is_terminal(&state_json(1, true, true)));
         assert!(!is_terminal(&state_json(1, false, false)));
         assert!(!is_terminal(&json!({})));
+
+        // The death/exit discriminator (R-3): death wins even if `done` is set;
+        // a bare `done` is a level exit; neither is `None`.
+        assert_eq!(terminal_kind(&state_json(1, true, false)), Some(TerminalKind::Exit));
+        assert_eq!(terminal_kind(&state_json(1, false, true)), Some(TerminalKind::Death));
+        assert_eq!(terminal_kind(&state_json(1, true, true)), Some(TerminalKind::Death));
+        assert_eq!(terminal_kind(&state_json(1, false, false)), None);
     }
 
     #[test]
@@ -715,15 +977,75 @@ mod tests {
     // ── The loop ─────────────────────────────────────────────────────────────
 
     #[tokio::test]
+    async fn resume_positions_the_engine_once_before_the_first_step() {
+        let engine = FakeEngine::default();
+        let source = FakeSource::repeating(Ok(decision(1)));
+        let stop = AtomicBool::new(false);
+        let (progress, seen) = recording_progress();
+
+        // Budget 4 = 1 resume positioning + 3 steps.
+        let result = run_autoplay_loop(
+            &engine,
+            6666,
+            &source,
+            &config(4, 3),
+            AutoplayRun {
+                campaign: campaign(2, 3),
+                progress,
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
+
+        // Exactly ONE resume positioning, with the resolved coords.
+        assert_eq!(engine.episode_calls(), vec![(2, 3)]);
+        let calls = engine.calls();
+        let first_episode = calls
+            .iter()
+            .position(|call| call.contains("/api/episode"))
+            .expect("a positioning call");
+        let first_step = calls
+            .iter()
+            .position(|call| call.contains("/api/step"))
+            .expect("a step call");
+        assert!(
+            first_episode < first_step,
+            "positioning precedes the first step"
+        );
+        // Positioning is not a level transition -> nothing persisted (R-5).
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "no persist before the first advance"
+        );
+        assert_eq!(engine.count("/api/step"), 3);
+        assert_eq!(result.steps, 3);
+        assert_eq!(result.phase, DoomAutoplayPhase::Completed);
+        assert_eq!(result.code, Some(DoomAutoplayErrorCode::BudgetExhausted));
+    }
+
+    #[tokio::test]
     async fn happy_path_runs_the_full_step_budget() {
         let engine = FakeEngine::default();
         let source = FakeSource::repeating(Ok(decision(1)));
         let stop = AtomicBool::new(false);
         let mut statuses: Vec<DoomAutoplayStatus> = Vec::new();
 
-        let result = run_autoplay_loop(&engine, 6666, &source, &config(5, 3), &stop, |status| {
-            statuses.push(status.clone());
-        })
+        // Budget 6 = 1 positioning + 5 steps.
+        let result = run_autoplay_loop(
+            &engine,
+            6666,
+            &source,
+            &config(6, 3),
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |status| {
+                statuses.push(status.clone());
+            },
+        )
         .await;
 
         assert!(result.success);
@@ -731,16 +1053,20 @@ mod tests {
         assert_eq!(result.code, Some(DoomAutoplayErrorCode::BudgetExhausted));
         assert_eq!(result.steps, 5);
         assert_eq!(engine.count("/api/step"), 5);
-        assert_eq!(engine.count("/api/episode"), 0);
+        assert_eq!(engine.count("/api/episode"), 1);
         assert_eq!(statuses.last().unwrap().phase, DoomAutoplayPhase::Completed);
         assert_eq!(statuses.last().unwrap().steps, 5);
+        // The resume position is visible on the status.
+        assert!(statuses
+            .iter()
+            .any(|status| status.episode == Some(1) && status.map == Some(1)));
 
         // tic strictly increases across the step transitions (step-driven). The
         // terminal `Completed` observe repeats the last tic, so dedupe first.
         let mut tics: Vec<u64> = statuses.iter().filter_map(|status| status.last_tic).collect();
         tics.dedup();
         assert!(tics.windows(2).all(|pair| pair[0] < pair[1]));
-        assert_eq!(tics, vec![1, 2, 3, 4, 5]);
+        assert_eq!(tics, vec![0, 1, 2, 3, 4, 5]);
     }
 
     #[tokio::test]
@@ -750,9 +1076,20 @@ mod tests {
         let stop = AtomicBool::new(false);
         let mut statuses: Vec<DoomAutoplayStatus> = Vec::new();
 
-        let result = run_autoplay_loop(&engine, 6666, &source, &config(600, 3), &stop, |status| {
-            statuses.push(status.clone());
-        })
+        let result = run_autoplay_loop(
+            &engine,
+            6666,
+            &source,
+            &config(600, 3),
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |status| {
+                statuses.push(status.clone());
+            },
+        )
         .await;
 
         assert!(!result.success);
@@ -771,8 +1108,19 @@ mod tests {
         let source = FakeSource::repeating(Ok(decision(9999)));
         let stop = AtomicBool::new(false);
 
-        let result =
-            run_autoplay_loop(&engine, 6666, &source, &config(600, 3), &stop, |_| {}).await;
+        let result = run_autoplay_loop(
+            &engine,
+            6666,
+            &source,
+            &config(600, 3),
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
 
         assert_eq!(result.phase, DoomAutoplayPhase::Failed);
         assert_eq!(result.code, Some(DoomAutoplayErrorCode::DecisionFailed));
@@ -785,16 +1133,24 @@ mod tests {
         let engine = FakeEngine::default();
         let ok = || Ok(decision(1));
         let bad = || Err(DoomDecisionError::Malformed("bad".to_string()));
-        let source = FakeSource::sequence(
-            vec![bad(), bad(), ok(), bad(), bad(), bad()],
-            ok(),
-        );
+        let source = FakeSource::sequence(vec![bad(), bad(), ok(), bad(), bad(), bad()], ok());
         let stop = AtomicBool::new(false);
         let mut statuses: Vec<DoomAutoplayStatus> = Vec::new();
 
-        let result = run_autoplay_loop(&engine, 6666, &source, &config(600, 3), &stop, |status| {
-            statuses.push(status.clone());
-        })
+        let result = run_autoplay_loop(
+            &engine,
+            6666,
+            &source,
+            &config(600, 3),
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |status| {
+                statuses.push(status.clone());
+            },
+        )
         .await;
 
         assert_eq!(result.phase, DoomAutoplayPhase::Failed);
@@ -812,25 +1168,135 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_level_exit_advances_the_campaign_and_persists() {
+        let engine = FakeEngine::default();
+        // The first post-positioning observation is a level exit at E1M2.
+        engine.queue_get(state_at(5, true, false, 1, 2));
+        let source = FakeSource::repeating(Ok(decision(1)));
+        let stop = AtomicBool::new(false);
+        let (progress, seen) = recording_progress();
+
+        let result = run_autoplay_loop(
+            &engine,
+            6666,
+            &source,
+            &config(4, 3),
+            AutoplayRun {
+                campaign: campaign(1, 2),
+                progress,
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
+
+        // Positioning at the resolved coords, then ONE advance to E1M3.
+        assert_eq!(engine.episode_calls(), vec![(1, 2), (1, 3)]);
+        let recorded = seen.lock().unwrap().clone();
+        assert_eq!(recorded.len(), 1, "exactly one persist per level transition");
+        assert_eq!((recorded[0].episode, recorded[0].map), (1, 3));
+        assert!(!recorded[0].completed);
+        assert_eq!(result.phase, DoomAutoplayPhase::Completed);
+        assert_eq!(result.code, Some(DoomAutoplayErrorCode::BudgetExhausted));
+    }
+
+    #[tokio::test]
+    async fn a_level_exit_wraps_to_the_next_episode() {
+        let engine = FakeEngine::default();
+        engine.queue_get(state_at(5, true, false, 1, 9));
+        let source = FakeSource::repeating(Ok(decision(1)));
+        let stop = AtomicBool::new(false);
+        let (progress, seen) = recording_progress();
+
+        let _ = run_autoplay_loop(
+            &engine,
+            6666,
+            &source,
+            &config(4, 3),
+            AutoplayRun {
+                campaign: campaign(1, 9),
+                progress,
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
+
+        assert_eq!(engine.episode_calls(), vec![(1, 9), (2, 1)]);
+        let recorded = seen.lock().unwrap().clone();
+        assert_eq!((recorded[0].episode, recorded[0].map), (2, 1));
+        assert!(!recorded[0].completed);
+    }
+
+    #[tokio::test]
+    async fn a_death_restarts_the_same_level_without_advancing_or_persisting() {
+        let engine = FakeEngine::default();
+        engine.queue_get(state_at(7, false, true, 2, 5));
+        let source = FakeSource::repeating(Ok(decision(1)));
+        let stop = AtomicBool::new(false);
+        let (progress, seen) = recording_progress();
+
+        let _ = run_autoplay_loop(
+            &engine,
+            6666,
+            &source,
+            &config(4, 3),
+            AutoplayRun {
+                campaign: campaign(2, 5),
+                progress,
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
+
+        // The death restart re-issues the SAME level coords — never an advance.
+        assert_eq!(engine.episode_calls(), vec![(2, 5), (2, 5)]);
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "death never advances and never persists a new point"
+        );
+    }
+
+    #[tokio::test]
     async fn a_terminal_observation_restarts_once_then_resumes() {
         let engine = FakeEngine::default();
         engine.queue_get(state_json(5, true, false));
         let source = FakeSource::repeating(Ok(decision(1)));
         let stop = AtomicBool::new(false);
 
-        let result =
-            run_autoplay_loop(&engine, 6666, &source, &config(3, 3), &stop, |_| {}).await;
+        let result = run_autoplay_loop(
+            &engine,
+            6666,
+            &source,
+            &config(3, 3),
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
 
-        assert_eq!(engine.count("/api/episode"), 1, "exactly one restart per terminal observation");
-        // The first POST is the episode restart, never a step on the terminal state.
+        // Budget 3 = positioning + one advance restart + one step.
+        assert_eq!(
+            engine.count("/api/episode"),
+            2,
+            "positioning + exactly one advance restart per terminal observation"
+        );
         let posts: Vec<String> = engine
             .calls()
             .into_iter()
             .filter(|call| call.starts_with("POST"))
             .collect();
         assert!(posts[0].contains("/api/episode"));
-        assert_eq!(source.decide_calls(), 2, "the terminal observation is never decided on");
-        assert_eq!(result.steps, 2);
+        assert_eq!(
+            source.decide_calls(),
+            1,
+            "the terminal observation is never decided on"
+        );
+        assert_eq!(result.steps, 1);
         assert_eq!(result.phase, DoomAutoplayPhase::Completed);
     }
 
@@ -841,25 +1307,132 @@ mod tests {
         let source = FakeSource::repeating(Ok(decision(1)));
         let stop = AtomicBool::new(false);
 
-        let result =
-            run_autoplay_loop(&engine, 6666, &source, &config(3, 3), &stop, |_| {}).await;
+        let result = run_autoplay_loop(
+            &engine,
+            6666,
+            &source,
+            &config(3, 3),
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
 
-        assert_eq!(engine.count("/api/episode"), 1);
-        assert_eq!(source.decide_calls(), 2);
-        assert_eq!(result.steps, 2);
+        assert_eq!(engine.count("/api/episode"), 2, "positioning + one death restart");
+        assert_eq!(source.decide_calls(), 1);
+        assert_eq!(result.steps, 1);
         assert_eq!(result.phase, DoomAutoplayPhase::Completed);
     }
 
     #[tokio::test]
-    async fn a_failed_restart_is_a_typed_engine_failure() {
+    async fn completion_at_the_final_level_persists_completed_and_stops() {
         let engine = FakeEngine::default();
-        engine.queue_get(state_json(5, true, false));
+        // A level exit at the final campaign level (E4M9).
+        engine.queue_get(state_at(9, true, false, 4, 9));
+        let source = FakeSource::repeating(Ok(decision(1)));
+        let stop = AtomicBool::new(false);
+        let (progress, seen) = recording_progress();
+        let mut statuses: Vec<DoomAutoplayStatus> = Vec::new();
+
+        let result = run_autoplay_loop(
+            &engine,
+            6666,
+            &source,
+            &config(10, 3),
+            AutoplayRun {
+                campaign: campaign(4, 9),
+                progress,
+            },
+            &stop,
+            |status| {
+                statuses.push(status.clone());
+            },
+        )
+        .await;
+
+        assert!(result.success);
+        assert_eq!(result.phase, DoomAutoplayPhase::Completed);
+        assert_eq!(result.code, Some(DoomAutoplayErrorCode::CampaignComplete));
+        // Positioning only — the final level is not re-entered.
+        assert_eq!(engine.episode_calls(), vec![(4, 9)]);
+        let recorded = seen.lock().unwrap().clone();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!((recorded[0].episode, recorded[0].map), (4, 9));
+        assert!(recorded[0].completed, "completion persists completed=true");
+        let last = statuses.last().unwrap();
+        assert_eq!(last.phase, DoomAutoplayPhase::Completed);
+        assert!(last.completed);
+        assert!(!last.running);
+    }
+
+    #[tokio::test]
+    async fn a_completed_campaign_is_terminal_at_start() {
+        let engine = FakeEngine::default();
+        let source = FakeSource::repeating(Ok(decision(1)));
+        let stop = AtomicBool::new(false);
+        let completed = DoomCampaign {
+            completed: true,
+            ..campaign(4, 9)
+        };
+        let mut statuses: Vec<DoomAutoplayStatus> = Vec::new();
+
+        let result = run_autoplay_loop(
+            &engine,
+            6666,
+            &source,
+            &config(10, 3),
+            AutoplayRun {
+                campaign: completed,
+                progress: no_progress(),
+            },
+            &stop,
+            |status| {
+                statuses.push(status.clone());
+            },
+        )
+        .await;
+
+        assert!(result.success);
+        assert_eq!(result.phase, DoomAutoplayPhase::Completed);
+        assert_eq!(result.code, Some(DoomAutoplayErrorCode::CampaignComplete));
+        // Terminal at start: NO engine request of any kind.
+        assert_eq!(
+            engine.count("/api/episode"),
+            0,
+            "no positioning for a completed save"
+        );
+        assert_eq!(engine.count("/api/state"), 0);
+        assert_eq!(engine.count("/api/step"), 0);
+        assert_eq!(source.decide_calls(), 0);
+        let last = statuses.last().unwrap();
+        assert_eq!(last.phase, DoomAutoplayPhase::Completed);
+        assert!(last.completed);
+        assert_eq!((last.episode, last.map), (Some(4), Some(9)));
+    }
+
+    #[tokio::test]
+    async fn a_failed_positioning_is_a_typed_engine_failure() {
+        let engine = FakeEngine::default();
         engine.set_episode_error("POST /api/episode returned HTTP 500");
         let source = FakeSource::repeating(Ok(decision(1)));
         let stop = AtomicBool::new(false);
 
-        let result =
-            run_autoplay_loop(&engine, 6666, &source, &config(10, 3), &stop, |_| {}).await;
+        let result = run_autoplay_loop(
+            &engine,
+            6666,
+            &source,
+            &config(10, 3),
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
 
         assert_eq!(result.phase, DoomAutoplayPhase::Failed);
         assert_eq!(result.code, Some(DoomAutoplayErrorCode::EngineRequestFailed));
@@ -868,17 +1441,65 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_stop_request_exits_without_stepping() {
+    async fn a_failed_advance_restart_is_a_typed_engine_failure() {
+        let engine = FakeEngine::default();
+        // Positioning succeeds; the level exit's advance restart fails.
+        engine.queue_episode(Ok(state_at(0, false, false, 1, 1)));
+        engine.queue_episode(Err(TransportError::message(
+            "POST /api/episode returned HTTP 500",
+        )));
+        engine.queue_get(state_json(5, true, false));
+        let source = FakeSource::repeating(Ok(decision(1)));
+        let stop = AtomicBool::new(false);
+
+        let result = run_autoplay_loop(
+            &engine,
+            6666,
+            &source,
+            &config(10, 3),
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
+
+        assert_eq!(result.phase, DoomAutoplayPhase::Failed);
+        assert_eq!(result.code, Some(DoomAutoplayErrorCode::EngineRequestFailed));
+        assert_eq!(engine.count("/api/episode"), 2, "positioning + the failed advance");
+        assert_eq!(engine.count("/api/step"), 0);
+    }
+
+    #[tokio::test]
+    async fn a_stop_request_exits_without_positioning() {
         let engine = FakeEngine::default();
         let source = FakeSource::repeating(Ok(decision(1)));
         let stop = AtomicBool::new(true);
 
-        let result =
-            run_autoplay_loop(&engine, 6666, &source, &config(600, 3), &stop, |_| {}).await;
+        let result = run_autoplay_loop(
+            &engine,
+            6666,
+            &source,
+            &config(600, 3),
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
 
         assert!(result.success);
         assert_eq!(result.phase, DoomAutoplayPhase::Idle);
         assert_eq!(engine.count("/api/state"), 0);
+        assert_eq!(
+            engine.count("/api/episode"),
+            0,
+            "a stop before start positions nothing"
+        );
         assert_eq!(source.decide_calls(), 0);
     }
 
@@ -894,11 +1515,21 @@ mod tests {
             max_failures: 1,
             decision_timeout: Duration::from_millis(5),
             failure_backoff: Duration::ZERO,
-            restart: DoomEpisodeRequest::default(),
         };
 
-        let result =
-            run_autoplay_loop(&engine, 6666, &source, &short_timeout, &stop, |_| {}).await;
+        let result = run_autoplay_loop(
+            &engine,
+            6666,
+            &source,
+            &short_timeout,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
 
         assert_eq!(result.phase, DoomAutoplayPhase::Failed);
         assert_eq!(result.code, Some(DoomAutoplayErrorCode::DecisionFailed));
@@ -909,7 +1540,7 @@ mod tests {
     #[tokio::test]
     async fn an_engine_state_failure_is_a_typed_engine_failure() {
         let engine = FakeEngine::default();
-        // Make the very first GET /api/state fail.
+        // Make the first GET /api/state (after positioning) fail.
         engine
             .get_queue
             .lock()
@@ -920,8 +1551,19 @@ mod tests {
         let source = FakeSource::repeating(Ok(decision(1)));
         let stop = AtomicBool::new(false);
 
-        let result =
-            run_autoplay_loop(&engine, 6666, &source, &config(10, 3), &stop, |_| {}).await;
+        let result = run_autoplay_loop(
+            &engine,
+            6666,
+            &source,
+            &config(10, 3),
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
 
         assert_eq!(result.phase, DoomAutoplayPhase::Failed);
         assert_eq!(result.code, Some(DoomAutoplayErrorCode::EngineRequestFailed));
