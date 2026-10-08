@@ -15,17 +15,15 @@
 //! 2. `PgDataDirLock::acquire_in(resolve_lock_dir(app_data_dir))` — a held lock is
 //!    a clear fail-fast (exit 1), no cluster started.
 //! 3. `AppStore::open` → `ensure_password` (the shared OS-keychain credential).
-//! 4. **R-5b guard** (see [`migration_blocks`]): a legacy `fredo.db` with no
-//!    completed one-shot migration ⇒ refuse + exit 1, deferring to a GUI boot.
-//! 5. `PgRuntime` setup → knobs → start → `probe_ready`; the `HeadlessDescriptor`
+//! 4. `PgRuntime` setup → knobs → start → `probe_ready`; the `HeadlessDescriptor`
 //!    is published ONLY after readiness succeeds.
-//! 6. `build_pg_pool` → `ensure_schema` on `RtdbStore`/`SpanStore` → `RtdbCache`/
+//! 5. `build_pg_pool` → `ensure_schema` on `RtdbStore`/`SpanStore` → `RtdbCache`/
 //!    `Rtdb` with a **no-op `RowEmitter`** → `IngestClassifier` →
 //!    [`otlp::start_with_ports`]; the ST-4 writer core drains the write-behind
 //!    queue.
-//! 7. Await shutdown: SIGINT, the `FREDO_INGEST_SHUTDOWN_FILE` appearing, or
+//! 6. Await shutdown: SIGINT, the `FREDO_INGEST_SHUTDOWN_FILE` appearing, or
 //!    `FREDO_INGEST_RUN_MS` elapsing.
-//! 8. Bounded teardown (G-263): drain the queue, close the pool,
+//! 7. Bounded teardown (G-263): drain the queue, close the pool,
 //!    `PgRuntime::stop_bounded`, and clear the descriptor + PID marker + lock on
 //!    EVERY exit path (normal/error/panic).
 //!
@@ -58,7 +56,6 @@ use crate::infrastructure::rtdb::store::RtdbStore;
 use crate::infrastructure::rtdb::subscriptions::SubscriptionRegistry;
 use crate::infrastructure::storage::engine::{build_pg_pool, EngineHandle, StoreEngine};
 use crate::infrastructure::storage::boot_config::resolve_app_data_dir;
-use crate::infrastructure::storage::migration::MIGRATION_COMPLETED_KEY;
 use crate::infrastructure::storage::span_store::SpanStore;
 use crate::infrastructure::storage::AppStore;
 
@@ -198,12 +195,7 @@ pub async fn run_ingest_daemon(args: IngestDaemonArgs) -> Result<()> {
     // BEFORE the runtime so the runtime's `Drop` (hard-kill) runs first on panic.
     let _cleanup = DaemonCleanup::new(lock, lock_dir.clone(), app_store.clone());
 
-    // R-5b: whether a legacy data store needs the GUI's one-shot migration. The
-    // marker lives only in PostgreSQL, so the decision is finalized after the
-    // candidate pool exists (step 6) — see `migration_blocks`.
-    let fredo_db_exists = app_data_dir.join("fredo.db").exists();
-
-    // ── 5. Bounded cluster start (setup → knobs → start → readiness) ──────────
+    // ── 4. Bounded cluster start (setup → knobs → start → readiness) ──────────
     let pg_data_dir = match args.pg_data_dir.clone() {
         Some(dir) => dir,
         None => super::resolve_data_dir(&app_data_dir),
@@ -248,35 +240,15 @@ pub async fn run_ingest_daemon(args: IngestDaemonArgs) -> Result<()> {
     };
     descriptor::write(&lock_dir, &descriptor).context("publish the headless descriptor")?;
 
-    // ── 6. Candidate pool → R-5b guard → schema → row pipeline → receivers ────
+    // ── 5. Candidate pool → schema → row pipeline → receivers ────────────────
     let url = runtime.connection_url();
     let pg = build_pg_pool(&url, None)
         .await
         .context("[ingest] build the PostgreSQL pool")?;
 
-    // R-5b (SI adjudication): refuse when a legacy `fredo.db` exists and the
-    // one-shot migration has not completed. The marker is readable only after the
-    // candidate cluster is up; the guard runs BEFORE the engine is installed and
-    // before any receiver starts, so the daemon never ingests ahead of the
-    // migration. It defers to a GUI boot.
-    let marker_present = migration_marker_present(&pg.pool).await?;
-    if migration_blocks(fredo_db_exists, marker_present) {
-        let message = format!(
-            "legacy `fredo.db` exists at {} and the one-shot `{}` migration has not completed",
-            app_data_dir.join("fredo.db").display(),
-            MIGRATION_COMPLETED_KEY
-        );
-        eprintln!("[ingest] refusing to start: {message}");
-        eprintln!(
-            "[ingest] launch the Fredo desktop app once to complete the migration, then retry `fredo ingest`"
-        );
-        // Bounded teardown of the candidate cluster; the RAII cleanup clears the
-        // descriptor, the PID marker, and the lock.
-        pg.pool.close().await;
-        let _ = runtime.stop_bounded(stop_bound()).await;
-        return Err(anyhow!("[ingest] {message}"));
-    }
-
+    // Spec #3005 ST-5: the legacy one-shot migration (and its R-5b headless
+    // guard) is deleted — fresh-install-only, no carry. A pre-existing legacy
+    // `fredo.db` is ignored; the daemon installs PostgreSQL and ingests directly.
     engine.install(StoreEngine::Postgres(Arc::new(pg)));
 
     // Spec #3005 ST-2: hydrate the synchronous settings cache from PostgreSQL
@@ -323,13 +295,13 @@ pub async fn run_ingest_daemon(args: IngestDaemonArgs) -> Result<()> {
         "OTLP receivers starting"
     );
 
-    // ── 7. Await shutdown: signal / shutdown file / run-ms ────────────────────
+    // ── 6. Await shutdown: signal / shutdown file / run-ms ────────────────────
     let run_ms = effective_run_ms(args.run_ms, RUN_MS_ENV);
     let shutdown_file = effective_shutdown_file(args.shutdown_file.clone(), SHUTDOWN_FILE_ENV);
     let cause = await_shutdown(&mut otlp, run_ms, shutdown_file).await;
     tracing::info!(target: "fredo::ingest", ?cause, "shutdown requested");
 
-    // ── 8. Bounded teardown (G-263) ───────────────────────────────────────────
+    // ── 7. Bounded teardown (G-263) ───────────────────────────────────────────
     otlp.abort();
     let _ = otlp.await;
     // Let the writer core drain + flush what is queued (it flushes every ~30 ms).
@@ -352,25 +324,6 @@ pub async fn run_ingest_daemon(args: IngestDaemonArgs) -> Result<()> {
         )),
         _ => Ok(()),
     }
-}
-
-/// R-5b decision rule (pure): a legacy data store blocks the daemon ONLY when the
-/// one-shot migration marker is absent.
-pub fn migration_blocks(fredo_db_exists: bool, marker_present: bool) -> bool {
-    fredo_db_exists && !marker_present
-}
-
-/// Read `migration.postgres.completed` from the candidate pool's `settings`
-/// table. The marker is written ONLY by the GUI's one-shot leg
-/// (`storage::migration::run_pre_install`), so its absence means the migration
-/// has not completed.
-async fn migration_marker_present(pool: &sqlx::PgPool) -> Result<bool> {
-    let marker: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = $1")
-        .bind(MIGRATION_COMPLETED_KEY)
-        .fetch_optional(pool)
-        .await
-        .context("[ingest] read the one-shot migration marker")?;
-    Ok(marker.is_some())
 }
 
 /// Resolve the OS app-data dir the GUI uses, Tauri-free, then apply the shared
@@ -551,14 +504,6 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     use std::path::Path;
-
-    #[test]
-    fn migration_blocks_only_when_a_legacy_db_exists_and_the_marker_is_absent() {
-        assert!(migration_blocks(true, false), "un-migrated fredo.db blocks");
-        assert!(!migration_blocks(true, true), "a completed migration unblocks");
-        assert!(!migration_blocks(false, false), "a fresh install never blocks");
-        assert!(!migration_blocks(false, true));
-    }
 
     #[test]
     fn effective_port_prefers_the_flag_then_env_then_default() {

@@ -926,10 +926,6 @@ pub fn run() {
             // Windows distribution quality (Spec #2978 S4): the bounded,
             // read-only postmaster log tail (`<data_dir>/log/postgres.log`).
             applications::pg_supervisor::state::pg_server_log_tail,
-            // Cutover release gate (Spec #2978 S6): the ONE read-only decision
-            // source slice 6 consumes (acquisition mode + cutover marker →
-            // shipped default; fail-closed to SQLite; NO engine flip).
-            applications::pg_supervisor::release_gate::cutover_release_gate,
             // Built-in PostgreSQL client (Spec #2950 ST-1): all nine `db_*`
             // commands registered once. ADDITIVE — the wrappers are typed; the
             // connect/schema/query bodies land in ST-2/ST-3/ST-4.
@@ -945,14 +941,6 @@ pub fn run() {
             // Storage engine seam (Spec #2975 ST-2): the live-observable,
             // read-only engine status (dialect + fail-closed reason).
             infrastructure::storage::engine::storage_engine_status,
-            // One-shot `fredo.db` → PostgreSQL data migration (Spec #2977):
-            // the read-only live status hook (ST-6).
-            infrastructure::storage::migration::run::migration_status,
-            // Rollback verification (Spec #2979 CU-4): recompute the retained
-            // pre-cutover snapshot read-only and set `rollback.verified` only on
-            // a full checksum match (R-2.2). Bounded (G-263); never mutates the
-            // snapshot or `fredo.db`.
-            infrastructure::storage::migration::run::verify_rollback,
             // ApplicationStore (Spec #339)
             application_store::application_store_ensure_table,
             application_store::application_store_insert,

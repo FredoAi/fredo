@@ -62,7 +62,7 @@ impl ColumnType {
 }
 
 /// Map a PostgreSQL `information_schema.columns.data_type` to the shared
-/// [`ColumnType`] affinity, mirroring [`ApplicationStore::normalize_column_type`].
+/// [`ColumnType`] affinity.
 fn pg_data_type_to_column_type(data_type: &str) -> ColumnType {
     match data_type {
         "bigint" | "integer" | "smallint" => ColumnType::INTEGER,
@@ -195,21 +195,6 @@ impl ApplicationStore {
             );
         }
         Ok(full)
-    }
-
-    /// Normalize a raw physical type string to a [`ColumnType`].
-    ///
-    /// The ONE source-affinity map: the engine-selected store and the one-shot
-    /// `fredo.db` → PostgreSQL migration (`storage::migration`) both read a
-    /// physical type string through this function, so a source table's derived
-    /// target DDL can never diverge from the store's own table creation.
-    pub(crate) fn normalize_column_type(type_str: &str) -> ColumnType {
-        match type_str.to_uppercase().as_str() {
-            "INTEGER" => ColumnType::INTEGER,
-            "REAL" => ColumnType::REAL,
-            "BLOB" => ColumnType::BLOB,
-            _ => ColumnType::TEXT,
-        }
     }
 
     // ── REQ-1: ensure_table ────────────────────────────────────────────────────

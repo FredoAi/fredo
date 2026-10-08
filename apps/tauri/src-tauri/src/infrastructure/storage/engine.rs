@@ -20,8 +20,6 @@ use rusqlite::Connection;
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
-use super::migration::{MigrationGate, MigrationOutcome, MigrationStatusView};
-
 // -- Pool + server tuning constants (Spec #2975, Q-6) -------------------------
 
 /// Pool sizing: `max_connections` inside the required 5-10 band (REQ-5/EARS-5.1).
@@ -628,12 +626,6 @@ pub struct StorageEngineState {
     handle: Arc<EngineHandle>,
     fallback_reason: Mutex<Option<String>>,
     schema_inits: Mutex<Vec<PgSchemaInit>>,
-    /// The exclusive pre-install migration barrier (Spec #2977 ST-4). Held by
-    /// the migration leg across snapshot → copy → parity → install; writers
-    /// quiesce through [`Self::migration_gate`].
-    migration_gate: Arc<MigrationGate>,
-    /// The last migration outcome, for the read-only `migration_status` hook.
-    migration_outcome: Mutex<Option<MigrationOutcome>>,
 }
 
 impl StorageEngineState {
@@ -644,8 +636,6 @@ impl StorageEngineState {
             handle,
             fallback_reason: Mutex::new(None),
             schema_inits: Mutex::new(Vec::new()),
-            migration_gate: MigrationGate::new(),
-            migration_outcome: Mutex::new(None),
         })
     }
 
@@ -707,36 +697,6 @@ impl StorageEngineState {
             fallback_reason: self.fallback_reason(),
         }
     }
-
-    /// The ONE exclusive pre-install migration barrier (Spec #2977 ST-4).
-    ///
-    /// Writer call-sites (`writer_enter`) quiesce against it; the migration leg
-    /// (`migration_enter`) holds it across snapshot → copy → parity → install.
-    pub fn migration_gate(&self) -> Arc<MigrationGate> {
-        Arc::clone(&self.migration_gate)
-    }
-
-    /// Record the terminal outcome of the last migration leg (first-write is not
-    /// enforced — the supervisor runs the leg at most once per boot).
-    pub fn record_migration_outcome(&self, outcome: MigrationOutcome) {
-        *lock(&self.migration_outcome) = Some(outcome);
-    }
-
-    /// The read-only migration status view (derived from the recorded outcome).
-    pub fn migration_status_view(&self) -> MigrationStatusView {
-        match lock(&self.migration_outcome).as_ref() {
-            Some(outcome) => MigrationStatusView {
-                status: outcome.status,
-                tables: outcome.tables.clone(),
-                snapshot_path: outcome
-                    .snapshot
-                    .as_ref()
-                    .map(|snapshot| snapshot.path.display().to_string()),
-                completed: outcome.completed(),
-            },
-            None => MigrationStatusView::default(),
-        }
-    }
 }
 
 /// The live-observable engine-status hook (read-only, no state mutation).
@@ -758,7 +718,6 @@ pub async fn storage_engine_status(app: tauri::AppHandle) -> StorageEngineStatus
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure::storage::migration::MigrationStatus;
 
     /// A standalone `SqliteEngine` for the (retained) SQLite-engine tests.
     fn make_sqlite_engine(dir: &Path) -> Arc<SqliteEngine> {
@@ -973,58 +932,12 @@ mod tests {
         assert!(state.status().ready);
     }
 
-    /// CU-3 (R-1.4): a failed cutover leg records `Failed`, installs NOTHING (the
-    /// handle stays `Pending`), and reports `ready:false` + the structured reason.
-    #[test]
-    fn failed_migration_reports_not_ready_and_installs_nothing() {
-        let handle = EngineHandle::new_pending();
-        let state = StorageEngineState::new(handle);
-        state.record_migration_outcome(MigrationOutcome {
-            status: MigrationStatus::Failed,
-            tables: Vec::new(),
-            snapshot: None,
-            elapsed_ms: 7,
-        });
-        state.set_fallback_reason("[migration] parity mismatch on 'settings'".to_string());
-
-        let status = state.status();
-        assert_eq!(status.engine, Dialect::Postgres);
-        assert!(!status.ready, "a fail-closed leg must report not-ready");
-        assert_eq!(
-            status.fallback_reason.as_deref(),
-            Some("[migration] parity mismatch on 'settings'")
-        );
-        let view = state.migration_status_view();
-        assert_eq!(view.status, MigrationStatus::Failed);
-        assert!(!view.completed, "a failed leg is not completed");
-        assert!(
-            state.handle().engine().is_none(),
-            "no partially-migrated engine may be installed"
-        );
-    }
-
-    /// CU-3 (R-1.1/R-4.1): a fresh install (no source) is `Fresh`, counts as
-    /// completed, and installs PostgreSQL normally.
-    #[tokio::test]
-    async fn fresh_migration_reports_completed_and_installs_normally() {
-        let handle = EngineHandle::new_pending();
-        let state = StorageEngineState::new(handle);
-        state.record_migration_outcome(MigrationOutcome {
-            status: MigrationStatus::Fresh,
-            tables: Vec::new(),
-            snapshot: None,
-            elapsed_ms: 0,
-        });
-        assert!(
-            state.migration_status_view().completed,
-            "a fresh install is authoritative on PostgreSQL"
-        );
-        // The supervisor installs on the `Fresh` Ok path (R-1.1).
-        state.install_postgres(make_pg_engine("postgres://postgres:secret@127.0.0.1:5432/fresh"));
-        let status = state.status();
-        assert!(status.ready);
-        assert_eq!(status.fallback_reason, None);
-    }
+    // ST-5 (#3005): the migration-outcome state (`record_migration_outcome` /
+    // `migration_status_view`) retired with the one-shot migration subsystem. The
+    // fresh-install / legacy-ignore coverage is re-homed to the gated
+    // `tests/storage_engine_pg.rs` legacy-ignore phase (G-290). The fail-closed
+    // reason contract is still pinned by
+    // `storage_engine_state_keeps_the_first_fallback_reason` above.
 
     // -- ST-2 rework: startup schema-init registry ----------------------------
 

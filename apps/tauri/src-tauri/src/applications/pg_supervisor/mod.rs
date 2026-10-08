@@ -29,8 +29,8 @@
 //!
 //! Packaging slice #2978 appends: [`acquisition`] (S1/S2/S3 — build-time mode +
 //! SHA-pinned archive), the Q-17 postmaster-log configuration in [`runtime`] and
-//! the bounded log tail in [`state`] (S4), and [`release_gate`] (S6 — the
-//! read-only cutover decision source slice 6 consumes).
+//! the bounded log tail in [`state`] (S4). (S6's cutover release gate was deleted
+//! with the legacy one-shot migration subsystem, Spec #3005 ST-5.)
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -230,7 +230,6 @@ pub mod acquisition; // S1/S2/S3 (#2978): acquisition mode + pinned archive
 pub mod credentials; // ST-7 (#3005): OS-keychain loopback password
 pub mod descriptor; // CU-1/ST-1 (#2992): headless daemon descriptor
 pub mod headless; // ST-5 (#2992): the `fredo ingest` daemon
-pub mod release_gate; // S6 (#2978): cutover release gate
 pub mod runtime; // ST-1
 pub mod sweep; // ST-2
 pub mod lock; // ST-2
