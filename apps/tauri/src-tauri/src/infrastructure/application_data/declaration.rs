@@ -812,7 +812,7 @@ mod tests {
     /// This test FAILS before the `#[serde(alias = "feature")]` on
     /// `ColumnOwner::Application` with `unknown variant 'feature'`.
     #[test]
-    fn pre_rename_owner_feature_tag_deserializes_and_reserializes_canonical() {
+    fn pre_rename_owner_legacy_tag_deserializes_and_reserializes_canonical() {
         // Exact persisted `mission-monitor.sessions` shape, with the ONLY
         // application-owned column (`customName`) carrying the pre-rename tag.
         let raw = r#"{

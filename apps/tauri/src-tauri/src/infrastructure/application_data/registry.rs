@@ -847,7 +847,7 @@ mod tests {
     /// `EnsureOnly` (never a rebuild/refusal). Before the `ColumnOwner` alias
     /// this test fails with `unknown variant 'feature'`.
     #[test]
-    fn legacy_owner_feature_persisted_declaration_plans_without_unreadable_error() {
+    fn legacy_owner_tag_persisted_declaration_plans_without_unreadable_error() {
         let registry = pending_registry();
         let live = mm_sessions_declaration();
         let physical = mm_sessions_physical(&live);
