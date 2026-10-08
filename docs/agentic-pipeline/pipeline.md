@@ -75,11 +75,12 @@ flowchart TD
 **Goals:** A backlog issue with the required intake sections (## Title, ## Problem / Why now, ## Intended users, ## Proposed behavior / Scope, ## Success metrics, ## Acceptance criteria, ## Out of scope, ## Priority), Gherkin ACs, priority, and label `backlog` — agreed by the human before dispatch. The `backlog → planning` exit gate **enforces the required sections** (a backlog missing them is blocked).
 
 1. **Explore context** — understand scope, constraints, priority. Is this a trivial task (typo, label, single-file tweak) or a complex feature (new architecture, data flow, multiple surfaces)? Adjust dialogue depth accordingly.
-2. **Structured dialogue** — one question at a time. Never ask about implementation details — flag them `[Technical: defer to planning]`.
-3. **Design summary** — What, Wireframe (ASCII, UI only), Behavioral (Gherkin), Non-Behavioral, Risks/Unknowns.
-4. **User confirmation** — the human approves the summary. No dispatch until this happens.
-5. **Create backlog issue** — draft the body per the [backlog template](artifacts.md#backlog-issue), then request the state machine's `create-issue` action (labeled `backlog`). The state machine is the single GitHub writer.
-6. **Handoff to Self-Improver** — the Product Owner dispatches the Self-Improver (orchestrator) with the backlog issue number.
+2. **Split check (INVEST-S)** — is the request ONE story-sized slice? If it bundles independent value streams or otherwise fails **S (~half a sprint)**, propose an **N-way SPIDR split**, get the human's approval, and create **one backlog issue per slice** (each INVEST-clean, each with its own revision linkage). The pipeline is single-issue — the Architect can only decompose a spec into capsules on ONE issue, so an oversized backlog is unsplittable downstream. A declined split records the accepted risk in `## Out of scope / constraints`.
+3. **Structured dialogue** — one question at a time. Never ask about implementation details — flag them `[Technical: defer to planning]`.
+4. **Design summary** — What, Wireframe (ASCII, UI only), Behavioral (Gherkin), Non-Behavioral, Risks/Unknowns.
+5. **User confirmation** — the human approves the summary. No dispatch until this happens.
+6. **Create backlog issue** — draft the body per the [backlog template](artifacts.md#backlog-issue), then request the state machine's `create-issue` action (labeled `backlog`). The state machine is the single GitHub writer.
+7. **Handoff to Self-Improver** — the Product Owner dispatches the Self-Improver (orchestrator) with the backlog issue number (after a split, only the slice(s) the human chose to start).
 
 **Simplicity heuristic:** trivial tasks get a one-line summary and a single dialogue round — but the summary + confirmation step is never skipped.
 

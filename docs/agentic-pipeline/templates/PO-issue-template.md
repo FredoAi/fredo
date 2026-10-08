@@ -91,14 +91,16 @@ Scenario: <one behavior, one line>
 
 | Letter | Question | Fail → |
 |--------|----------|--------|
-| **I** | Independent — schedulable in any order? | combine/split |
+| **I** | Independent — schedulable in any order? | split (playbook 1b) |
 | **N** | Negotiable — no pre-baked solution? | remove the "how" |
 | **V** | Valuable to the *customer*? | rewrite or kill |
-| **E** | Roughly sizeable? | split |
-| **S** | Small — fits within ~half a sprint? | split (SPIDR) |
+| **E** | Roughly sizeable? | split (playbook 1b) |
+| **S** | Small — fits within ~half a sprint? | split (SPIDR — playbook 1b) |
 | **T** | Testable — can you imagine the test? | add ACs |
 
 **Ready statement:** Clear + feasible + testable + fits a sprint + the team understands it.
+
+**Split rule (I/E/S fail — do not skip):** the pipeline is **single-issue** — sub-issues are removed by design and the Architect decomposes a spec into capsules on ONE issue, so an oversized backlog can never be split downstream. Propose an **N-way SPIDR split**, get the human's approval, and create **N** backlog issues (each INVEST-clean, each with its own revision linkage). Never create one multi-feature issue. See `playbooks/product-owner.md` step 1b.
 
 ---
 
