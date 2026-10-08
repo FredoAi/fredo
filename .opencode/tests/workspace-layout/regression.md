@@ -1,75 +1,54 @@
 # workspace-layout — Regression Baseline
 
-The "must not change" baseline for the customizable workspace (issue #2949). Run on every testing phase that touches the window/workspace surface. The tiling layer is ADDITIVE — the #2807/#2924 window kernel contract, the #2924 full-bleed default, freeform float geometry, and the #2848 dock must all behave exactly as before. Links to overlapping prior/deferred suites below.
+The "must not change" baseline for the customizable workspace, now the **FancyZones-style zone model** (issue #2980, replacing the shipped 9-region arrangement UX #2949). Run on every testing phase that touches the window/workspace surface. The zone layer is ADDITIVE — the #2807/#2924 window kernel contract, the #2924 full-bleed default, freeform float geometry, the launcher/dock read-only consumption, and token-first theming must all behave exactly as before. The old arrangement path (toolbar/presets/grip overlay/`PaneDivider`/`LayoutMenu` + the launcher dock "Arrange" well) is **REMOVED** — exactly one arrangement model persists. Links to overlapping prior/deferred suites below.
 
 > **Verification policy: live** — the window/workspace surface is a rendering+persistence surface; each run needs the established live reference: a `telemetry_spans` live query via `.opencode/skills/telemetry-query/telemetry-query.ps1` (non-zero count + recent `max(ingested_at)`) at round start AND after the drive, plus DOM/screenshot/console receipts per leg. A static-only PASS is a FALSE PASS.
 
 ## Must NOT change (regression invariants)
 
-- [ ] R-1 (single-window / full-bleed default — #2924): Open one feature with no tiled arrangement active.
-  - EXPECTED: it opens full-bleed at the kernel default (`windowStore.ts:105`) via `Home.tsx:103` — rect `{0,0,hostW,hostH}`, `borderRadius:0`, 0 grips, control "Restore …" with `aria-expanded`; Restore returns a centered, cascade-free float (480×320, radius 8px, 8 grips). The tiling layer must NOT change the kernel default or the `Home.tsx` call site.
-  - Edge: a raw `openWindow` consumer opens full-bleed; maximize→restore after the workspace ships; maximize→restore returns the edited float.
+- [ ] R-1 (single-window / full-bleed default — #2924): Open one feature with layout management OFF (the store default).
+  - EXPECTED: it opens full-bleed at the kernel default (`windowStore.ts:105`) via `Home.tsx:103` — rect `{0,0,hostW,hostH}`, `borderRadius:0`, 0 grips, control "Restore …" with `aria-expanded`; Restore returns a centered, cascade-free float (480×320, radius 8px, 8 grips). The zone layer must NOT change the kernel default or the `Home.tsx` call site.
+  - Edge: a raw `openWindow` consumer opens full-bleed; maximize→restore after the zone model ships; maximize→restore returns the edited float.
 - [ ] R-2 (window-kernel contract): `windowStore.ts` / `windowTypes.ts` open/close/update/focus contract is unchanged — `updateWindow` is a spread-merge (never full replacement), `closeWindow` removes the entry BEFORE the callback (idempotent, re-entrancy-guarded), one window per feature id, focus brings a window topmost without a focus steal.
   - EXPECTED: `windowStore.test.ts` invariants still pass; a re-entrant close does not loop/crash; update-while-minimized does NOT auto-restore or steal focus.
-  - Edge: rapid double-open; close from any z-order; `WindowEntry` carries NO geometry field (layout stores ids + rects only).
-- [ ] R-3 (freeform float stays frame-local when no tiled layout is active): `WindowFrame.tsx` geometry is still component-local state; `windowGeometry.ts` remains the single pure geometry rule.
-  - EXPECTED: dragging/resizing a no-slot window produces the same float behavior as #2924; `resolveFloatGeometry`/`clampToWorkspace` unit tests green; no geometry field added to the kernel store.
-  - Edge: float a no-slot window over a tiled arrangement (z-order); drag clamp at the workspace edges.
-- [ ] R-4 (positionable dock — #2848 stays a pure read-only consumer): `AppDock` continues to consume `useWindows()`/`useWindowActions()` only, and the dock position setting persists.
-  - EXPECTED: Sidebar ↔ Bottom bar selection still relocates the dock immediately and survives a full restart; the dock lists every open window once; empty gate (0 windows → no dock). The dock stays a `useWindows()` reader for its entry list; the ONLY sanctioned layout-store write is the `dock-arrange` tiling entry (Spec #2949 AC1), which dispatches the shared `arrangeOpenWindows()` action — no other dock write into the layout store, no layout store write into the kernel. Round-2 note: prior wording said "no dock write into the layout store"; the Architect's round-2 Fix Plan authorizes the `dock-arrange` entry, so that clause is scoped to the sanctioned tiling entry only.
-  - Edge: reveal/hide over a maximized window; entry ✕ close only that app; reference `.opencode/tests/app-dock/`.
+  - Edge: rapid double-open; close from any z-order; `WindowEntry` carries NO geometry field (zone stores ids + fractional rects only).
+- [ ] R-3 (freeform float stays frame-local when layout management is OFF): `WindowFrame.tsx` geometry is still component-local state; `windowGeometry.ts` remains the single pure geometry rule.
+  - EXPECTED: dragging/resizing an unassigned window produces the same float behavior as #2924; `resolveFloatGeometry`/`clampToWorkspace` unit tests green; no geometry field added to the kernel store; the zone renderer never adds geometry to the kernel store.
+  - Edge: float an unassigned window over a zoned pane (z-order); drag clamp at the workspace edges.
+- [ ] R-4 (old arrangement path REMOVED / zone-off is inert — AC5, #2980; retires R-4'): with layout management ON and OFF, inspect the DOM and drive a plain drag.
+  - EXPECTED: the removed hooks are ALL ABSENT from the DOM — `workspace-toolbar`, `workspace-preset-*`, `workspace-arrange`, `dock-arrange`, `pane-region-*`, `pane-divider-*`, `layout-menu-button`, `workspace-announcer`; there is no competing arrange/placement affordance and exactly one `zone-announcer` (owned by `ZoneOverlay.tsx`). `workspace-layout` (root) is KEPT as the overlay/partition host.
+  - EXPECTED (OFF baseline): with `enabled=false` (or no layout assigned) NO `zone-*` overlay appears, `zone-overlay` is never mounted, `data-zone-drag` is never set, and a window drag behaves EXACTLY as the shipped freeform float (R-3).
+  - Edge: the retired `dock-arrange`/positionable-dock expectations (formerly R-4/R-4') are dropped — the dock is a pure read-only consumer and exposes no arrange entry; a chord-drag with layout management off is a no-op.
 - [ ] R-5 (launcher + `open-app` open path): the launcher tile and the `fredo open-app` CLI path still open a feature window through the full-lifecycle `openFeatureWindow`.
   - EXPECTED: both open one window per feature id with the brand chrome; no duplicate frame; reference `.opencode/tests/launcher/` + `.opencode/tests/run-cli/`.
   - Edge: `openSelf()` path; reopening an already-open feature re-focuses.
-- [ ] R-6 (theming contract — token-first, no hardcoded color): all pane/divider/drop-target colors come from theme semantic tokens → CSS vars → user theme; tints via the shared `tint()` helper.
-  - EXPECTED: zero hardcoded hex/rgba and zero `var(--x)NN` alpha-append in changed files; pane chrome re-tints under light/dark + accent override; reference `.opencode/tests/theming/` + `.opencode/tests/settings/`.
+- [ ] R-6 (theming contract — token-first, no hardcoded color): all zone/overlay/pane-target colors come from theme semantic tokens → CSS vars → user theme; tints via the shared `tint()` helper.
+  - EXPECTED: zero hardcoded hex/rgba and zero `var(--x)NN` alpha-append in changed files; zone overlay/pane chrome re-tints under light/dark + accent override; reference `.opencode/tests/theming/` + `.opencode/tests/settings/`.
   - Edge: a `var(--x)22` alpha-append or a fixed accent purple ignoring the user accent is a FAIL (#2770 round 5 precedent).
-- [ ] R-7 (keyboard / window traversal — #2946): the existing window traversal and hotkeys still work while the workspace feature ships.
-  - EXPECTED: `useWindowTraversal` Tab-boundary behavior is unchanged; window ops (close/minimize/maximize/focus) remain reachable; divider/pane keyboard nav does not capture or conflict with window traversal. Reference `.opencode/tests/hotkeys/`.
-  - Edge: divider focused then Tab; Ctrl+Tab between windows while a pane is focused.
-- [ ] R-8 (settings surface — #2868/#2948): the Settings window (`SettingsSurface.tsx`) still renders its sidebar nav (Companion / Appearance / Fredo Setup / Telemetry / Hotkeys / feature tabs) with no broken section; any workspace-layout control is additive (e.g. under Appearance) and does not break `DockPositionSettings`/`ThemingSettings`/`BackgroundSettings`.
-  - EXPECTED: Settings opens as a normal feature window; Appearance renders dock-position + theming + background controls unchanged; build green.
-  - Edge: settings window open while a tiled arrangement is active; theme switch from Settings re-tints the panes.
-- [ ] R-9 (store isolation / unbounded structures): the layout store adds no unbounded structure beyond the open-window count; persistence payload ≤ 16 KB for ≤ 12 panes; `WindowEntry` (ReactNode fields) is never serialized.
-  - EXPECTED: `resetWorkspaceLayoutStoreForTests()` exists; persisted JSON holds only ids + regions + rects; no `icon`/`component` in the JSON; snapshot reference is stable until a real mutation.
-  - Edge: 12 panes; corrupt persisted JSON; unknown version.
-- [ ] R-10 (no re-render loop / console clean): after every workspace + window interaction the console is clean.
-  - EXPECTED: no `Error:`/`Uncaught`/`Maximum update depth exceeded`; effects consume epoch/primitive signals; no array `.length` / fresh object refs in deps.
-  - Edge: rapid divider drag, repeated save/restore, theme flip.
+- [ ] R-7 (keyboard / window traversal — #2946): the existing window traversal and hotkeys still work while the zone model ships.
+  - EXPECTED: `useWindowTraversal` Tab-boundary behavior is unchanged; window ops (close/minimize/maximize/focus) remain reachable; the zone model adds NO keyboard capture/conflict. **The activation chord is modifier-only and lives OUTSIDE the keymap engine** — `normalizeKeyStroke` (`keys.ts:314-352`) rejects pure modifier keydowns, so the chord is tracked from the pointer event's modifier flags (`matchesZoneChord`, reusing `resolvePrimaryModifier` `keys.ts:158-160`) and the engine's single capture listener + dispatch (`engine.ts:678-712`) is untouched (no second `keydown` listener, no dispatch change). Reference `.opencode/tests/hotkeys/`.
+  - Edge: hold the chord then pointer-drag (no keydown recorded by the engine); Ctrl+Tab between windows while a zone pane is focused.
+- [ ] R-8 (settings surface — #2868/#2948/#2980): the Settings window (`SettingsSurface.tsx`) still renders its sidebar nav (Companion / Appearance / Fredo Setup / Telemetry / Hotkeys / feature tabs) with no broken section; the new static **Layout** section is ADDITIVE (`settings-nav-layout` → `layout-settings`) and does not break `ThemingSettings`/`BackgroundSettings` or any other section.
+  - EXPECTED: Settings opens as a normal feature window; every other static section renders unchanged; the Layout section hosts `layout-enabled-toggle`, `layout-active-select`, `layout-gap-input`, `layout-chord-select`, `layout-new-button`; build green.
+  - Edge: settings window open while zoned windows are active; theme switch from Settings re-tints the panes.
+- [ ] R-9 (store isolation / unbounded structures): the zone store adds no unbounded structure beyond the open-window count; persistence payload ≤ 16 KB for ≤ 12 zoned zones/assignments; `WindowEntry` (ReactNode fields) is never serialized.
+  - EXPECTED: `resetZoneLayoutStoreForTests()` exists; persisted JSON holds only ids + fractions + numbers (key `Fredo_layout_zones` v1); no `icon`/`component` in the JSON; snapshot reference is stable until a real mutation; the legacy `Fredo_workspace_layout` key is purged (never migrated).
+  - Edge: 12 zones; corrupt persisted JSON; unknown version; unknown `windowId` KEPT (degraded render).
+- [ ] R-10 (no re-render loop / console clean): after every zone + window interaction the console is clean.
+  - EXPECTED: no `Error:`/`Uncaught`/`Maximum update depth exceeded`; effects consume epoch/primitive signals; no array `.length` / fresh object refs in deps; the transient drag snapshot identity changes only on a real mutation; the overlay transition animates only opacity.
+  - Edge: rapid chord-drag repeat, repeated save/restore, theme flip.
 - [ ] R-11 (build + tests green / no weakened assertions): `pnpm --filter @fredo/ui typecheck` + `build` + `test:run` green; `cargo check/test/clippy --locked` green when Rust is touched; no existing assertion weakened/disabled/deleted.
-  - EXPECTED: full CI-parity set exits 0 with zero warnings; `windowStore.test.ts` + `windowGeometry.test.ts` + `dockPositionStore.test.ts` stay green.
+  - EXPECTED: full CI-parity set exits 0 with zero warnings; `windowStore.test.ts` + `windowGeometry.test.ts` + `zoneLayout.test.ts` + `zoneLayoutStore.test.ts` stay green.
   - Edge: a red local gate predicts a red PR check.
 
 ## Overlapping prior-feature suites
 
-- `.opencode/tests/window-manager/` — the kernel, full-bleed default, float, and lifecycle (R-1..R-15). Primary regression surface; run F-19 of `functional.md`.
-- `.opencode/tests/app-dock/` — the positionable dock (#2848) is the adjacent persistent consumer; must stay a pure `useWindows()` reader.
-- `.opencode/tests/launcher/` + `.opencode/tests/run-cli/` — the feature-open paths into panes.
-- `.opencode/tests/settings/` + `.opencode/tests/theming/` — a workspace control may be added under Appearance; token re-tint on theme/accent change.
-- `.opencode/tests/hotkeys/` — window traversal / keyboard parity.
-- `.opencode/tests/mission-monitor/` + `.opencode/tests/terminal/` — the panes' feature content (Mission Monitor ≡ Sessions; Terminal) must render inside a pane exactly as inside a window.
+- `.opencode/tests/window-manager/` — the kernel, full-bleed default, float, and lifecycle (R-1..R-15). Primary regression surface.
+- `.opencode/tests/launcher/` + `.opencode/tests/run-cli/` — the feature-open paths into windows; the launcher exposes no arrange entry (R-4).
+- `.opencode/tests/settings/` + `.opencode/tests/theming/` — the Layout section is added as a static nav section; token re-tint on theme/accent change.
+- `.opencode/tests/hotkeys/` — window traversal / keyboard parity; the modifier-only chord stays outside the engine (R-7).
+- `.opencode/tests/mission-monitor/` — the zoned pane's feature content (Mission Monitor ≡ Sessions) must render inside a zoned pane exactly as inside a window.
 
 ## CI-parity baseline
 
-- [ ] S-CI: the local `validate.yml` command set (`CONTRIBUTING.md:28-35`) is green on the spec tip — `typecheck`, `build`, `test:run`, `cargo check --locked`, `cargo test --locked`, `cargo clippy --locked -- -D warnings`. A workspace-layout change must not break any leg.
-
----
-
-## #2954 extension — the arrange entry relocated out of the dock (G-136)
-
-> Issue #2954 removes the persistent dock but PRESERVES the always-discoverable arrange entry
-> (`[data-testid="dock-arrange"]` → `arrangeOpenWindows()`), RELOCATED into the engaged launcher
-> (ST-2), so #2949 AC1 does not regress. The `dock-arrange` binding in this suite stays valid; the
-> dock-hosted/positionable-dock expectations in R-4 (the dock listing every window, empty gate,
-> Sidebar↔Bottom relocation) are RETIRED — the dock no longer exists. Run alongside the new
-> launcher R-71 (arrange preserved) + F-118..F-125.
-
-- [ ] R-4' (rebind of R-4's arrange clause): with ≥1 window open and 0 tiled panes, the arrange entry
-      `[data-testid="dock-arrange"]` (`aria-label="Arrange windows"`) is present in its NEW launcher
-      host and dispatches `arrangeOpenWindows()` (tiles the open windows into
-      `[data-testid="workspace-pane-<windowId>"]`). `[data-testid="app-dock"]` is `count 0`.
-  **Expected:** the arrange capability is reachable at 0 panes exactly as in #2949 AC1 — only its host
-      changed. Reference launcher R-71 + `.opencode/tests/workspace-layout/functional.md` F-1/F-22.
-  - **Retired:** R-4's "the dock lists every open window once; empty gate (0 windows → no dock)" and
-    the Sidebar↔Bottom relocation clauses — the dock and its position store are removed by #2954.
-  - **Note:** R-8's `DockPositionSettings` reference is re-bound to the removal (see `settings`).
+- [ ] S-CI: the local `validate.yml` command set (`CONTRIBUTING.md:32-43`) is green on the spec tip — `pnpm --filter @fredo/ui typecheck`, `pnpm --filter @fredo/ui build`, `pnpm --filter @fredo/ui test:run`, `cargo check --manifest-path apps/tauri/src-tauri/Cargo.toml --locked`, `cargo test --manifest-path apps/tauri/src-tauri/Cargo.toml --locked`, `cargo clippy --manifest-path apps/tauri/src-tauri/Cargo.toml --locked -- -D warnings`. A workspace-layout change must not break any leg.
