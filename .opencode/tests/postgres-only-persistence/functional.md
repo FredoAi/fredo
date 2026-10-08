@@ -160,6 +160,18 @@
 
 ## Suite-level pass/fail
 
+## Run 1 results — 2026-10-08 (spec/3005 @ `1fcdad0d`, env `spec3005` slot 1)
+
+- **F-1 PASS** — `storage_engine_status` `{"engine":"postgres","ready":true,"fallbackReason":null}` (before + after restart); recursive `.db` under app-data = 0; `cargo tree --locked` (default features) has no `rusqlite`/`libsqlite3-sys`/`sqlx-sqlite`; `cargo check --locked` = 0 warnings.
+- **F-2 PASS** — six former-control-plane keys written via `save_control_setting`; cached == durable PG read == written; all six survive a full Down/Up restart; unknown key → `null`.
+- **F-3 PASS** — `FREDO_PG_PASSWORD_FILE` sentinel `qa-3005-sentinel-a1b2c3d4` absent from app-data (recursive) and telemetry (`telemetry_logs`/`telemetry_spans`/`settings` exact-sentinel 0); `FREDO_PG_KEYCHAIN_DISABLED` headless boot exit 0.
+- **F-4 PASS** — legacy `fredo.db` SHA-256 `A4207F36…84808` + size 252 + mtime byte-identical after boot; no `-wal`/`-shm`; headless booted on PG (`start.log` new postmaster).
+- **F-5 PASS** — gate `RESULT: CLEAN`, `deny: 0` over 2207 files; `-SelfTest` PASS (control.db/fredo.db flagged, `fredo.dbclient` not).
+- **F-6 PASS** — OTLP `--copilot` fixture HTTP 200 (4 spans); declared `sessions` row `e2e-copilot2933` `visibleTurnCount=1`; 1 `.mm-session-row`; same-instant `telemetry_get_stats.spanCount=4`; 0 `.db`; re-renders after restart.
+- **E-1 DISCLOSED** — managed `psql` refused (`too many clients`); app-pool fallback (`telemetry_get_stats`/`application_data_read`/durable `get_setting`) used.
+- **E-2 PASS** — unknown key → `None`; post-restart persisted values served; hydration buffered-write/flush unit-pinned.
+- **E-3 PASS** — `boot-config.json` holds only `postgres_pid` (matches `pg_supervisor_status.pid`); cleared to `{}` on stop.
+
 PASS = F-1..F-6 green with N-1..N-5 holding and E-1..E-3 disclosed. Any `.db` file under app-data, the
 sentinel appearing in any file/log/span, a mutated legacy SQLite file, a lost setting across restart,
 the SQLite driver crate in the tree, a gate self-test miss, or a blank Mission Monitor while a
