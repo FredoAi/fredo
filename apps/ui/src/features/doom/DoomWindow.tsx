@@ -17,8 +17,10 @@ import {
   LuGamepad2,
   LuPlay,
   LuRefreshCw,
+  LuRotateCcw,
   LuSquare,
   LuStepForward,
+  LuTrophy,
   LuTriangleAlert,
 } from 'react-icons/lu';
 import { adapterBridge } from '../../shared/utils/adapterBridge';
@@ -35,6 +37,7 @@ import {
   doomErrorMessage,
   doomPhaseLabel,
   formatAutoplayElapsed,
+  formatDoomLevel,
   formatDoomState,
   truncateAutoplayError,
   type DoomAutoplayResult,
@@ -43,10 +46,40 @@ import {
   type DoomFrame,
   type DoomLaunchResult,
   type DoomRuntimePhase,
+  type DoomSaveStatus,
   type DoomStateView,
   type DoomStatusEvent,
   type DoomStepResult,
 } from './types';
+
+// ── Completion badge motion (Spec #2972, ST-6) ───────────────────────────────
+// The ONLY animation on the surface: a 150 ms opacity/transform entry, disabled
+// under `prefers-reduced-motion` (the badge renders static). Mirrors the
+// established Chakra keyframe + reduced-motion pattern (`KeyboardIntro.tsx`).
+const COMPLETE_KEYFRAMES = {
+  '@keyframes doom-complete-in': {
+    from: { opacity: 0, transform: 'translateY(-2px)' },
+    to: { opacity: 1, transform: 'translateY(0)' },
+  },
+} as const;
+const COMPLETE_MOTION_STYLE: React.CSSProperties = {
+  animation: 'doom-complete-in 150ms ease-out',
+};
+const COMPLETE_NO_MOTION_STYLE: React.CSSProperties = { animation: 'none' };
+
+/** Resolve the OS `prefers-reduced-motion` flag without adding a dependency. */
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(false);
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const query = window.matchMedia('(prefers-reduced-motion: reduce)');
+    setReduced(query.matches);
+    const onChange = (event: MediaQueryListEvent): void => setReduced(event.matches);
+    query.addEventListener?.('change', onChange);
+    return () => query.removeEventListener?.('change', onChange);
+  }, []);
+  return reduced;
+}
 
 /**
  * DoomWindow — the dedicated `doom` webview (Spec #2968 CU-4/ST-6).
@@ -83,6 +116,16 @@ export const DoomWindow: React.FC = () => {
   const [autoplayBusy, setAutoplayBusy] = useState(false);
   const [autoplayNow, setAutoplayNow] = useState(() => Date.now());
 
+  // ── Campaign save/resume (Spec #2972, ST-6) ────────────────────────────────
+  // The durable resume point is seeded ONCE from `get_doom_save` after listener
+  // registration. There is no save event, so no first-wins guard is needed; the
+  // LIVE running position flows through the extended `doom-autoplay-changed`
+  // payload (`episode`/`map`/`completed`) — never a second listener. `null` means
+  // the seed has not settled yet (the "Seeding" state).
+  const [saveStatus, setSaveStatus] = useState<DoomSaveStatus | null>(null);
+  const [freshStartPending, setFreshStartPending] = useState(false);
+  const reduceMotion = usePrefersReducedMotion();
+
   // Spec #2970 ST-6 — the Doom Mode lifecycle phase drives the header exit
   // affordance. The `doom` window is opened by `enter_doom_mode` (origin `code`
   // or `voice`), so it normally mounts in `entering`; the direct `?view=doom`
@@ -103,6 +146,10 @@ export const DoomWindow: React.FC = () => {
   // double-click must not fire two invokes before React re-renders).
   const autoplayEventSeenRef = useRef(false);
   const autoplayBusyRef = useRef(false);
+  // Spec #2972 ST-6 — fresh-start focus management (the confirm region mounts
+  // conditionally, so its ref is read only while `freshStartPending`).
+  const freshStartButtonRef = useRef<HTMLButtonElement | null>(null);
+  const freshStartConfirmRef = useRef<HTMLButtonElement | null>(null);
 
   // ── Frame drawing (canvas, letterboxed, pixelated) ─────────────────────────
   const paint = useCallback(() => {
@@ -278,6 +325,50 @@ export const DoomWindow: React.FC = () => {
     }
   }, []);
 
+  // ── Campaign controls (Spec #2972, ST-6) ────────────────────────────────────
+  // The ONLY path that passes `freshStart: true` is the confirm-gated action
+  // below (G-321); the autoplay toggle and `enter_doom_mode` keep resume-by-default.
+  const handleFreshStartRequest = useCallback(() => {
+    const active =
+      autoplayStatus.phase === 'running' || autoplayStatus.phase === 'stopping';
+    if (
+      saveStatus?.hasSave !== true ||
+      active ||
+      autoplayBusy ||
+      phase !== 'ready' ||
+      freshStartPending
+    ) {
+      return;
+    }
+    setFreshStartPending(true);
+  }, [autoplayStatus.phase, autoplayBusy, freshStartPending, phase, saveStatus]);
+
+  const handleFreshStartCancel = useCallback(() => {
+    setFreshStartPending(false);
+    // Focus returns to the affordance that opened the confirm region.
+    freshStartButtonRef.current?.focus();
+  }, []);
+
+  const handleFreshStartConfirm = useCallback(async () => {
+    if (autoplayBusyRef.current) return;
+    autoplayBusyRef.current = true;
+    setAutoplayBusy(true);
+    setFreshStartPending(false);
+    try {
+      const result = await adapterBridge.invoke<DoomAutoplayResult>('start_doom_autoplay', {
+        freshStart: true,
+      });
+      if (result && result.success === false) {
+        applyAutoplayFailure(result.code, result.error, result.steps);
+      }
+    } catch (err) {
+      applyAutoplayFailure('engineRequestFailed', String(err));
+    } finally {
+      autoplayBusyRef.current = false;
+      setAutoplayBusy(false);
+    }
+  }, [applyAutoplayFailure]);
+
   // ── Mount: register BEFORE the first call, then launch ──────────────────────
   useEffect(() => {
     mountedRef.current = true;
@@ -323,6 +414,17 @@ export const DoomWindow: React.FC = () => {
           if (status && typeof status === 'object' && 'phase' in status) {
             setAutoplayStatus(status);
           }
+        })
+        .catch(() => {});
+      // 4. Hydrate the durable resume point (Spec #2972 ST-6). Read AFTER the
+      // listeners are live; `get_doom_save` never fails, so a miss leaves the
+      // "Seeding" placeholder until the run reports a live position. No
+      // save-change event exists → no first-wins guard.
+      void adapterBridge
+        .invoke<DoomSaveStatus>('get_doom_save')
+        .then((save) => {
+          if (cancelled || !save) return;
+          setSaveStatus(save);
         })
         .catch(() => {});
     });
@@ -377,6 +479,31 @@ export const DoomWindow: React.FC = () => {
     return () => window.clearInterval(id);
   }, [autoplayStatus.phase, autoplayStatus.startedAt]);
 
+  // ── Fresh-start confirm: focus + Escape (Spec #2972, ST-6) ──────────────────
+  // Focus moves to the confirm action when the region reveals.
+  useEffect(() => {
+    if (freshStartPending) freshStartConfirmRef.current?.focus();
+  }, [freshStartPending]);
+
+  // `Escape` cancels the confirm (focus returns to the affordance).
+  useEffect(() => {
+    if (!freshStartPending) return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return;
+      setFreshStartPending(false);
+      freshStartButtonRef.current?.focus();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [freshStartPending]);
+
+  // Defensive: if autoplay becomes active while the confirm is pending, close it.
+  useEffect(() => {
+    if (autoplayStatus.phase === 'running' || autoplayStatus.phase === 'stopping') {
+      setFreshStartPending(false);
+    }
+  }, [autoplayStatus.phase]);
+
   const busy = phase === 'starting' || phase === 'stopping';
   const statusLabel = doomPhaseLabel(phase, port);
   const dotColor =
@@ -410,6 +537,60 @@ export const DoomWindow: React.FC = () => {
   // Start gated on runtime readiness; `stopping` is a bounded loading state.
   const autoplayToggleDisabled =
     autoplayBusy || autoplayStopping || (!autoplayActive && phase !== 'ready');
+
+  // ── Campaign-derived display state (Spec #2972, ST-6) ───────────────────────
+  const hasSave = saveStatus?.hasSave === true;
+  const saveSeeded = saveStatus !== null;
+  const liveEpisode =
+    typeof autoplayStatus.episode === 'number' ? autoplayStatus.episode : null;
+  const liveMap = typeof autoplayStatus.map === 'number' ? autoplayStatus.map : null;
+  const liveLevel = formatDoomLevel(liveEpisode, liveMap);
+  const savedLevel =
+    saveStatus && typeof saveStatus.episode === 'number' && typeof saveStatus.map === 'number'
+      ? formatDoomLevel(saveStatus.episode, saveStatus.map)
+      : null;
+  // A `completed:true` save is terminal (G-321) — surfaced from either source.
+  const saveCompleted = saveStatus?.completed === true || autoplayStatus.completed === true;
+
+  // Idle vs running display (UI/UX states & copy table). While running the durable
+  // slot may still hold the pre-fresh position (R-5), so the LIVE level reads as
+  // `Playing …` and the durable slot as `Resume point …` only when idle.
+  let saveStatusPrefix: string;
+  let saveStatusLevel: string | null = null;
+  if (!saveSeeded) {
+    saveStatusPrefix = '—';
+  } else if (autoplayActive) {
+    saveStatusPrefix = 'Playing';
+    saveStatusLevel = liveLevel ?? savedLevel;
+  } else if (saveCompleted) {
+    saveStatusPrefix = 'Saved at';
+    saveStatusLevel = savedLevel ?? liveLevel;
+  } else if (hasSave) {
+    saveStatusPrefix = 'Resume point';
+    saveStatusLevel = savedLevel;
+  } else {
+    saveStatusPrefix = 'No saved run — starts at';
+    saveStatusLevel = 'E1M1';
+  }
+  const saveStatusTitle = saveStatusLevel
+    ? `${saveStatusPrefix} ${saveStatusLevel}`
+    : saveStatusPrefix;
+  const completedLevel = savedLevel ?? liveLevel ?? 'E1M1';
+
+  // Fresh-start affordance gating + a truthful disabled reason (UI/UX spec).
+  const freshStartDisabled =
+    !hasSave || autoplayActive || autoplayBusy || phase !== 'ready' || freshStartPending;
+  const freshStartDisabledReason = freshStartPending
+    ? 'Confirm or cancel the fresh start first'
+    : !hasSave
+      ? 'No saved run to discard yet'
+      : autoplayActive
+        ? 'Stop autoplay first'
+        : autoplayBusy
+          ? 'Wait for autoplay to settle'
+          : phase !== 'ready'
+            ? 'Engine not ready'
+            : undefined;
 
   return (
     <Flex
@@ -677,6 +858,88 @@ export const DoomWindow: React.FC = () => {
             </Collapsible.Root>
           )}
         </Box>
+        {/* Campaign cluster (Spec #2972 ST-6) — durable progress + fresh-start. */}
+        <HStack
+          data-testid="doom-campaign-controls"
+          gap={2}
+          align="center"
+          flexShrink={0}
+          minW={0}
+        >
+          <Text
+            data-testid="doom-save-status"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            fontFamily="mono"
+            fontSize="xs"
+            color="fg.muted"
+            whiteSpace="nowrap"
+            overflow="hidden"
+            textOverflow="ellipsis"
+            minW={0}
+            title={saveStatusTitle}
+          >
+            {saveStatusLevel ? (
+              <>
+                {saveStatusPrefix}{' '}
+                <Text as="span" color="fg.default" fontWeight="medium">
+                  {saveStatusLevel}
+                </Text>
+              </>
+            ) : (
+              saveStatusPrefix
+            )}
+          </Text>
+          {saveCompleted && (
+            <Box
+              data-testid="doom-progress-complete"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+              aria-label={`Campaign complete — saved at ${completedLevel}`}
+              title={`Campaign complete — saved at ${completedLevel}`}
+              css={COMPLETE_KEYFRAMES}
+              style={reduceMotion ? COMPLETE_NO_MOTION_STYLE : COMPLETE_MOTION_STYLE}
+              display="flex"
+              alignItems="center"
+              gap={1}
+              flexShrink={0}
+              bg={tint('var(--status-success)', 12)}
+              borderColor="status.success"
+              borderWidth="1px"
+              color="status.success"
+              borderRadius="sm"
+              px={2}
+              py={0.5}
+              fontSize="xs"
+              fontFamily="mono"
+            >
+              <Icon as={LuTrophy} boxSize="12px" aria-hidden />
+              Campaign complete
+            </Box>
+          )}
+          <Button
+            ref={freshStartButtonRef}
+            data-testid="doom-fresh-start-button"
+            variant="outline"
+            size="sm"
+            flexShrink={0}
+            // The global outline rule forces `var(--border-color)`, so the warning
+            // chrome is set explicitly (never `colorPalette` on an outline button).
+            borderColor="var(--status-warning)"
+            color="var(--status-warning)"
+            _hover={{ bg: tint('var(--status-warning)', 12) }}
+            aria-expanded={freshStartPending}
+            aria-controls="doom-fresh-start-confirm-region"
+            disabled={freshStartDisabled}
+            title={freshStartDisabledReason}
+            onClick={handleFreshStartRequest}
+          >
+            <Icon as={LuRotateCcw} boxSize="14px" mr={1} aria-hidden />
+            Start fresh
+          </Button>
+        </HStack>
         <HStack gap={2} align="center" minW={0}>
           <Text
             data-testid="doom-autoplay-status"
@@ -749,6 +1012,50 @@ export const DoomWindow: React.FC = () => {
             )}
           </Button>
         </HStack>
+        {freshStartPending && (
+          <HStack
+            id="doom-fresh-start-confirm-region"
+            role="group"
+            aria-label="Confirm fresh start"
+            flexBasis="100%"
+            gap={3}
+            align="center"
+            wrap="wrap"
+          >
+            <Text
+              id="doom-fresh-start-warning"
+              role="alert"
+              fontSize="xs"
+              color="status.warning"
+              minW={0}
+            >
+              {`Start fresh at E1M1? Your saved run (${savedLevel ?? 'E1M1'}) is kept until the new run advances past its first level.`}
+            </Text>
+            <HStack gap={2} flexShrink={0} ml="auto">
+              <Button
+                ref={freshStartConfirmRef}
+                data-testid="doom-fresh-start-confirm"
+                variant="solid"
+                size="sm"
+                bg="var(--status-warning)"
+                color="white"
+                _hover={{ opacity: 0.9 }}
+                aria-describedby="doom-fresh-start-warning"
+                onClick={() => void handleFreshStartConfirm()}
+              >
+                Start fresh
+              </Button>
+              <Button
+                data-testid="doom-fresh-start-cancel"
+                variant="ghost"
+                size="sm"
+                onClick={handleFreshStartCancel}
+              >
+                Cancel
+              </Button>
+            </HStack>
+          </HStack>
+        )}
         {autoplayStatus.phase === 'failed' && (
           <Box
             data-testid="doom-autoplay-error"
