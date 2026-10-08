@@ -21,15 +21,15 @@
  * the classifier's composited child copies ride the parent `sessionId`, so a
  * parent-scoped query already covers nested/subagent activity).
  *
- * ── Why this does not use `useFeatureWatch` ───────────────────────────────────
- * `useFeatureWatch` (ST-5) always registers a watch for its ref/scope, so a
+ * ── Why this does not use `useApplicationWatch` ───────────────────────────────────
+ * `useApplicationWatch` (ST-5) always registers a watch for its ref/scope, so a
  * null session could not be represented without opening a watch for
  * `sessionId = null` (a direct R-5.1 violation). This hook therefore drives
  * the same ST-5 client/store primitives directly so the null state is a true
  * "no watch" state.
  *
  * ── Delivering only the selected session (R-5.3) ──────────────────────────────
- * The feature-data store partitions by TABLE REF (shared across consumers), so
+ * The application-data store partitions by TABLE REF (shared across consumers), so
  * the canonical `chat`/`toolUse` partitions may transiently hold rows from a
  * previously-selected session. This hook derives its own **session-scoped view**
  * from those partitions (filter `row.sessionId === sessionId`) and exposes a
@@ -49,17 +49,17 @@
  */
 
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import { featureDataUnwatch, featureDataWatch } from '../../../shared/feature-data/client';
-import type { DataTableRef, FeatureDataRow, WatchScope } from '../../../shared/feature-data/client';
-import { featureRecordKey } from '../../../shared/feature-data/registry';
+import { applicationDataUnwatch, applicationDataWatch } from '../../../shared/application-data/client';
+import type { DataTableRef, ApplicationDataRow, WatchScope } from '../../../shared/application-data/client';
+import { applicationRecordKey } from '../../../shared/application-data/registry';
 import {
-  getFeatureEpoch,
-  getFeatureRows,
-  registerKnownFeatureWatch,
-  seedFeatureRows,
-  subscribeToFeatureEpoch,
-  unregisterKnownFeatureWatch,
-} from '../../../shared/feature-data/store';
+  getApplicationEpoch,
+  getApplicationRows,
+  registerKnownApplicationWatch,
+  seedApplicationRows,
+  subscribeToApplicationEpoch,
+  unregisterKnownApplicationWatch,
+} from '../../../shared/application-data/store';
 
 /** The canonical tables a per-session activity watch covers. */
 const CHAT_REF: DataTableRef = { source: 'canonical', table: 'chat' };
@@ -80,8 +80,8 @@ function sessionScope(sessionId: string): WatchScope {
 
 interface SessionActivitySnapshot {
   sessionId: string | null;
-  chatRows: Map<string, FeatureDataRow>;
-  toolUseRows: Map<string, FeatureDataRow>;
+  chatRows: Map<string, ApplicationDataRow>;
+  toolUseRows: Map<string, ApplicationDataRow>;
   /** Monotonic per session; advances only when this session's view changes. */
   contentVersion: number;
 }
@@ -100,9 +100,9 @@ const sessionSnapshots = new Map<
 let contentVersionCounter = 0;
 
 /** Rows of one canonical table whose session key equals `sessionId`. */
-function rowsForSession(ref: DataTableRef, sessionId: string): Map<string, FeatureDataRow> {
-  const filtered = new Map<string, FeatureDataRow>();
-  for (const [key, row] of getFeatureRows(ref)) {
+function rowsForSession(ref: DataTableRef, sessionId: string): Map<string, ApplicationDataRow> {
+  const filtered = new Map<string, ApplicationDataRow>();
+  for (const [key, row] of getApplicationRows(ref)) {
     if (row.sessionId === sessionId) {
       filtered.set(key, row);
     }
@@ -111,7 +111,7 @@ function rowsForSession(ref: DataTableRef, sessionId: string): Map<string, Featu
 }
 
 /** Content fingerprint of a session's row map (order-insensitive per row). */
-function fingerprintRows(rows: Map<string, FeatureDataRow>): string {
+function fingerprintRows(rows: Map<string, ApplicationDataRow>): string {
   const entries: string[] = [];
   for (const [key, row] of rows) {
     const fields = Object.keys(row)
@@ -164,9 +164,9 @@ function describeSessionWatchError(err: unknown): string {
 /** The session's activity rows + lifecycle state. */
 export interface SessionActivityWatchResult {
   /** Live canonical chat rows for the selected session (empty when none). */
-  chatRows: Map<string, FeatureDataRow>;
+  chatRows: Map<string, ApplicationDataRow>;
   /** Live canonical tool-use rows for the selected session (empty when none). */
-  toolUseRows: Map<string, FeatureDataRow>;
+  toolUseRows: Map<string, ApplicationDataRow>;
   /** Monotonic per session; advances only on a real mutation of that session. */
   epoch: number;
   /** Verbatim backend error text, or `null`. Never swallowed. */
@@ -187,15 +187,15 @@ export function useSessionActivityWatch(
 
   // ── Re-render trigger: a real mutation of either shared canonical partition.
   const subscribeChat = useCallback(
-    (listener: () => void) => subscribeToFeatureEpoch(CHAT_REF, listener),
+    (listener: () => void) => subscribeToApplicationEpoch(CHAT_REF, listener),
     [],
   );
   const subscribeTool = useCallback(
-    (listener: () => void) => subscribeToFeatureEpoch(TOOL_USE_REF, listener),
+    (listener: () => void) => subscribeToApplicationEpoch(TOOL_USE_REF, listener),
     [],
   );
-  const chatEpoch = useSyncExternalStore(subscribeChat, () => getFeatureEpoch(CHAT_REF));
-  const toolUseEpoch = useSyncExternalStore(subscribeTool, () => getFeatureEpoch(TOOL_USE_REF));
+  const chatEpoch = useSyncExternalStore(subscribeChat, () => getApplicationEpoch(CHAT_REF));
+  const toolUseEpoch = useSyncExternalStore(subscribeTool, () => getApplicationEpoch(TOOL_USE_REF));
 
   // ── The session-scoped view (R-5.3). Referentially stable while unchanged,
   // so a previous session's late delivery cannot re-render the consumer.
@@ -220,7 +220,7 @@ export function useSessionActivityWatch(
     setError(null);
 
     const openOne = async (ref: DataTableRef): Promise<boolean> => {
-      const result = await featureDataWatch({
+      const result = await applicationDataWatch({
         ref,
         scope: sessionScope(sessionId),
         initial: true,
@@ -228,22 +228,22 @@ export function useSessionActivityWatch(
       if (cancelled) {
         // Switch/unmount happened while registration was in flight — tear the
         // watch down immediately so it cannot outlive its session (R-5.2).
-        void featureDataUnwatch({ watchIds: [result.watchId] }).catch((unwatchErr) => {
-          console.error('[useSessionActivityWatch] feature_data_unwatch failed:', unwatchErr);
+        void applicationDataUnwatch({ watchIds: [result.watchId] }).catch((unwatchErr) => {
+          console.error('[useSessionActivityWatch] application_data_unwatch failed:', unwatchErr);
         });
         return false;
       }
       openWatchIds.push(result.watchId);
-      registerKnownFeatureWatch({
+      registerKnownApplicationWatch({
         watchId: result.watchId,
-        featureId: null,
+        applicationId: null,
         table: ref.table,
         scope: `query sessionId=${sessionId}`,
         fields: null,
         registeredAt: new Date().toISOString(),
       });
       if (result.rows) {
-        seedFeatureRows(ref, result.version, result.rows, (row) => featureRecordKey(ref, row));
+        seedApplicationRows(ref, result.version, result.rows, (row) => applicationRecordKey(ref, row));
       }
       return true;
     };
@@ -256,7 +256,7 @@ export function useSessionActivityWatch(
       .catch((err) => {
         if (cancelled) return;
         const message = describeSessionWatchError(err);
-        console.error('[useSessionActivityWatch] feature_data_watch failed:', message);
+        console.error('[useSessionActivityWatch] application_data_watch failed:', message);
         setError(message);
         setReady(false);
       });
@@ -264,9 +264,9 @@ export function useSessionActivityWatch(
     return () => {
       cancelled = true;
       for (const watchId of openWatchIds) {
-        unregisterKnownFeatureWatch(watchId);
-        void featureDataUnwatch({ watchIds: [watchId] }).catch((unwatchErr) => {
-          console.error('[useSessionActivityWatch] feature_data_unwatch failed:', unwatchErr);
+        unregisterKnownApplicationWatch(watchId);
+        void applicationDataUnwatch({ watchIds: [watchId] }).catch((unwatchErr) => {
+          console.error('[useSessionActivityWatch] application_data_unwatch failed:', unwatchErr);
         });
       }
     };

@@ -404,7 +404,7 @@ vi.mock('../../hooks/useMissionMonitor', () => ({
 }));
 
 // Spec #2896 ST-6: the panel's session list comes from the declared `sessions`
-// table via `useFeatureRead` + `useFeatureWatch`.
+// table via `useApplicationRead` + `useApplicationWatch`.
 let mockDeclaredSessions: Array<{ sessionId: string; startTime: number; latestAt: string }> = [
   { sessionId: 's1', startTime: 1, latestAt: '2026-01-01T00:00:00.000Z' },
 ];
@@ -430,9 +430,9 @@ function declaredRows(): Map<string, unknown> {
   );
 }
 
-vi.mock('@/shared/hooks/useFeatureData', () => ({
-  useFeatureRead: () => ({ rows: declaredRows(), version: 1, error: null, loading: false }),
-  useFeatureWatch: () => ({ rows: declaredRows(), epoch: 1, error: null, ready: true }),
+vi.mock('@/shared/hooks/useApplicationData', () => ({
+  useApplicationRead: () => ({ rows: declaredRows(), version: 1, error: null, loading: false }),
+  useApplicationWatch: () => ({ rows: declaredRows(), epoch: 1, error: null, ready: true }),
 }));
 
 // Spec #2896 ST-6: the panel's session metrics + canvas source is the selected

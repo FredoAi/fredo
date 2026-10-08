@@ -1,8 +1,8 @@
 /**
- * Mission Monitor's feature-owned data declaration (Spec #2896, contract (a)).
+ * Mission Monitor's application-owned data declaration (Spec #2896, contract (a)).
  *
  * Mission Monitor is the acceptance-driving FIRST consumer of the realtime
- * feature-owned data layer (ST-6). Instead of re-deriving its session list from
+ * application-owned data layer (ST-6). Instead of re-deriving its session list from
  * a full Chat-row replay drain on every mount, it declares one backend-owned
  * table — `sessions` — whose rows are the CLOSED `sessionRollup` projection of
  * the canonical chat/tool-use rows (composited child copies ride the parent
@@ -18,10 +18,10 @@
  * facts from the parameters declared here (`excludeDispatchNames` /
  * `terminalStates`), so the rule is never duplicated.
  *
- * ── Feature-owned column ─────────────────────────────────────────────────────
- * `customName` is owned by the feature (`owner: 'feature'`) — written through
- * `feature_data_write` on rename. Every other column is backend-owned and must
- * never be named by a feature write (the backend rejects it).
+ * ── Application-owned column ─────────────────────────────────────────────────────
+ * `customName` is owned by the application (`owner: 'application'`) — written through
+ * `application_data_write` on rename. Every other column is backend-owned and must
+ * never be named by an application write (the backend rejects it).
  *
  * ── Retention ────────────────────────────────────────────────────────────────
  * `maxRows: 500`, no TTL (Architect A-7). At 500 the cap is invisible for real
@@ -29,16 +29,16 @@
  * stays PO-overridable via the declaration.
  *
  * The wire shape MUST stay in sync with the Rust model
- * (`apps/tauri/src-tauri/src/infrastructure/feature_data/declaration.rs`).
+ * (`apps/tauri/src-tauri/src/infrastructure/application_data/declaration.rs`).
  */
 
-import type { FeatureDataDeclaration } from '../../../shared/feature-data/declaration';
+import type { ApplicationDataDeclaration } from '../../../shared/application-data/declaration';
 
 export const MISSION_MONITOR_FEATURE_ID = 'mission-monitor';
 
 /** The declared `sessions` rollup table. */
-export const MISSION_MONITOR_DATA: FeatureDataDeclaration = {
-  featureId: MISSION_MONITOR_FEATURE_ID,
+export const MISSION_MONITOR_DATA: ApplicationDataDeclaration = {
+  applicationId: MISSION_MONITOR_FEATURE_ID,
   declarationRevision: 'mm.sessions.v2',
   tables: [
     {
@@ -55,7 +55,7 @@ export const MISSION_MONITOR_DATA: FeatureDataDeclaration = {
         { name: 'userDispatchCount', type: 'INTEGER', owner: 'backend' },
         { name: 'derivedName', type: 'TEXT', owner: 'backend', nullable: true },
         { name: 'agentName', type: 'TEXT', owner: 'backend', nullable: true },
-        { name: 'customName', type: 'TEXT', owner: 'feature', nullable: true },
+        { name: 'customName', type: 'TEXT', owner: 'application', nullable: true },
       ],
       source: {
         kind: 'sessionRollup',

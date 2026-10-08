@@ -854,8 +854,8 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
 export const MissionMonitorPanel: React.FC = () => {
   // ── Spec #2896 ST-6: the declared-table session list (S0/S1/S5/S6) ────────
   // The list reads the backend-owned declared `sessions` rollup table — an
-  // initial `feature_data_read` (first round-trip, bounded) plus a table-level
-  // `feature_data_watch` (live). No Chat replay drain, no replay watermark, no
+  // initial `application_data_read` (first round-trip, bounded) plus a table-level
+  // `application_data_watch` (live). No Chat replay drain, no replay watermark, no
   // global `deriveRowGraphState` for list qualification: the qualification
   // predicate runs over the rollup facts (Architect A-11).
   const {

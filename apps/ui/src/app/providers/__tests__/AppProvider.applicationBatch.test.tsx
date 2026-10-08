@@ -1,9 +1,9 @@
 /**
- * AppProvider feature-data routing pins — Spec #2896 ST-5.
+ * AppProvider application-data routing pins — Spec #2896 ST-5.
  *
- * The `{"featureBatch": [...]}` envelope rides the EXISTING
+ * The `{"applicationBatch": [...]}` envelope rides the EXISTING
  * "fredo-stream-event" channel and MUST be discriminated BEFORE the RTDB
- * `rowBatch` validators, then applied to the feature-data store. RTDB row
+ * `rowBatch` validators, then applied to the application-data store. RTDB row
  * deliveries keep their own path (zero regression).
  */
 
@@ -19,18 +19,18 @@ import {
   getRowMap,
 } from '../../../shared/contexts/StreamContext';
 import {
-  getFeatureEpoch,
-  getFeatureRows,
-  resetFeatureDataStoreForTests,
-} from '../../../shared/feature-data/store';
+  getApplicationEpoch,
+  getApplicationRows,
+  resetApplicationDataStoreForTests,
+} from '../../../shared/application-data/store';
 import { rowKeyString } from '../../../shared/classes/EventSubscription';
 import type { HostAdapter } from '../../adapters/HostAdapter';
-import type { DataTableRef } from '../../../shared/feature-data/client';
-import type { FeatureRowNotification, RowDelivery } from '../../../shared/classes/EventSubscription';
+import type { DataTableRef } from '../../../shared/application-data/client';
+import type { ApplicationRowNotification, RowDelivery } from '../../../shared/classes/EventSubscription';
 
-const FEATURE_REF: DataTableRef = {
-  source: 'feature',
-  featureId: 'mission-monitor',
+const APPLICATION_REF: DataTableRef = {
+  source: 'application',
+  applicationId: 'mission-monitor',
   table: 'sessions',
 };
 
@@ -59,9 +59,9 @@ function makeAdapter(): {
   };
 }
 
-const FEATURE_NOTIFICATION: FeatureRowNotification = {
+const APPLICATION_NOTIFICATION: ApplicationRowNotification = {
   watchId: 'w-1',
-  featureId: 'mission-monitor',
+  applicationId: 'mission-monitor',
   table: 'sessions',
   kind: 'update',
   key: ['ses_1'],
@@ -90,13 +90,13 @@ const ROW_DELIVERY: RowDelivery = {
 
 const NullProbe = () => null;
 
-describe('AppProvider — featureBatch routing (Spec #2896 ST-5)', () => {
+describe('AppProvider — applicationBatch routing (Spec #2896 ST-5)', () => {
   beforeEach(() => {
     resetRowStoreForTests();
-    resetFeatureDataStoreForTests();
+    resetApplicationDataStoreForTests();
   });
 
-  it('routes a featureBatch envelope to the feature-data store (one epoch bump)', () => {
+  it('routes a applicationBatch envelope to the application-data store (one epoch bump)', () => {
     const { adapter, dispatch } = makeAdapter();
     render(
       <StreamProvider>
@@ -107,14 +107,14 @@ describe('AppProvider — featureBatch routing (Spec #2896 ST-5)', () => {
     );
 
     act(() => {
-      dispatch({ featureBatch: [FEATURE_NOTIFICATION] } as unknown as Record<string, unknown>);
+      dispatch({ applicationBatch: [APPLICATION_NOTIFICATION] } as unknown as Record<string, unknown>);
     });
 
-    expect(getFeatureRows(FEATURE_REF).get(JSON.stringify(['ses_1']))).toMatchObject({
+    expect(getApplicationRows(APPLICATION_REF).get(JSON.stringify(['ses_1']))).toMatchObject({
       customName: 'Renamed',
     });
-    expect(getFeatureEpoch(FEATURE_REF)).toBe(1);
-    // The RTDB store is untouched by a feature delivery.
+    expect(getApplicationEpoch(APPLICATION_REF)).toBe(1);
+    // The RTDB store is untouched by a application delivery.
     expect(getRowEpoch('Chat')).toBe(0);
   });
 
@@ -134,10 +134,10 @@ describe('AppProvider — featureBatch routing (Spec #2896 ST-5)', () => {
 
     expect(getRowMap('Chat').get(rowKeyString(ROW_DELIVERY.key))?.userMessage).toBe('hello');
     expect(getRowEpoch('Chat')).toBe(1);
-    expect(getFeatureEpoch(FEATURE_REF)).toBe(0);
+    expect(getApplicationEpoch(APPLICATION_REF)).toBe(0);
   });
 
-  it('rejects a malformed featureBatch whole (never partially applied)', () => {
+  it('rejects a malformed applicationBatch whole (never partially applied)', () => {
     const { adapter, dispatch } = makeAdapter();
     render(
       <StreamProvider>
@@ -149,16 +149,16 @@ describe('AppProvider — featureBatch routing (Spec #2896 ST-5)', () => {
 
     act(() => {
       dispatch({
-        featureBatch: [
-          FEATURE_NOTIFICATION,
+        applicationBatch: [
+          APPLICATION_NOTIFICATION,
           // Malformed: a `remove` carrying values violates the R-3.4 contract.
-          { ...FEATURE_NOTIFICATION, kind: 'remove', values: { sessionId: 'ses_1' } },
+          { ...APPLICATION_NOTIFICATION, kind: 'remove', values: { sessionId: 'ses_1' } },
         ],
       } as unknown as Record<string, unknown>);
     });
 
-    expect(getFeatureRows(FEATURE_REF).size).toBe(0);
-    expect(getFeatureEpoch(FEATURE_REF)).toBe(0);
+    expect(getApplicationRows(APPLICATION_REF).size).toBe(0);
+    expect(getApplicationEpoch(APPLICATION_REF)).toBe(0);
   });
 
   it('ignores unrecognized payloads', () => {
@@ -176,7 +176,7 @@ describe('AppProvider — featureBatch routing (Spec #2896 ST-5)', () => {
       dispatch(null as unknown as Record<string, unknown>);
     });
 
-    expect(getFeatureEpoch(FEATURE_REF)).toBe(0);
+    expect(getApplicationEpoch(APPLICATION_REF)).toBe(0);
     expect(getRowEpoch('Chat')).toBe(0);
   });
 });

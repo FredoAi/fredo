@@ -133,9 +133,9 @@ function declaredRows(): Map<string, unknown> {
   );
 }
 
-vi.mock('@/shared/hooks/useFeatureData', () => ({
-  useFeatureRead: () => ({ rows: declaredRows(), version: 1, error: null, loading: false }),
-  useFeatureWatch: () => ({ rows: declaredRows(), epoch: 1, error: null, ready: true }),
+vi.mock('@/shared/hooks/useApplicationData', () => ({
+  useApplicationRead: () => ({ rows: declaredRows(), version: 1, error: null, loading: false }),
+  useApplicationWatch: () => ({ rows: declaredRows(), epoch: 1, error: null, ready: true }),
 }));
 
 // The canvas's activity source (ST-9) — empty; the graph itself is mocked below.

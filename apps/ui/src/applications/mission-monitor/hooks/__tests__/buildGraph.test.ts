@@ -510,7 +510,7 @@ describe('#2750 AC4: transitional text-less turn suppression', () => {
   // `fredo.tool.task` span). The round-6 backward pass re-anchors such
   // anchorless transitional turns to the NEXT visible node (the reply turn
   // that completes the exchange). This test reproduces the PERSISTED-SESSION
-  // shape: tool-use-lifecycle delivery first (FeatureStore timestamp order),
+  // shape: tool-use-lifecycle delivery first (ApplicationStore timestamp order),
   // then the dispatch chat turn (empty agentReply), then the reply turn.
   it('round-6: a user-requested dispatch from a suppressed FIRST turn (no preceding visible node) still emits exactly ONE SubagentNode anchored to the next visible node', async () => {
     const TASK_ARGS = JSON.stringify({
@@ -519,7 +519,7 @@ describe('#2750 AC4: transitional text-less turn suppression', () => {
       subagent_type: 'general',
     });
     // Persisted-session order: the task tool-use-lifecycle delivery is replayed
-    // FIRST (FeatureStore orders by timestamp ASC), before the dispatch chat
+    // FIRST (ApplicationStore orders by timestamp ASC), before the dispatch chat
     // turn and the reply turn.
     const deliveries: ContractDelivery[] = [
       // Task dispatch — the user-requested subagent (subagent_type NOT

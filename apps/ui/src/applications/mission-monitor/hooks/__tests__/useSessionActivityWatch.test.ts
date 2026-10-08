@@ -11,7 +11,7 @@
  *  - R-5.3: only rows whose session key equals the selected session surface.
  *  - same id ⇒ no re-subscribe; unmount ⇒ unsubscribe.
  *
- * The feature-data IPC client is partially mocked; the REAL ST-5 store applies
+ * The application-data IPC client is partially mocked; the REAL ST-5 store applies
  * delivered notifications, so the test exercises the production merge/version
  * path end to end.
  */
@@ -19,26 +19,26 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type {
-  FeatureDataWatchArgs,
-  FeatureDataUnwatchArgs,
-} from '@/shared/feature-data/client';
-import type { FeatureRowNotification } from '@/shared/classes/EventSubscription';
+  ApplicationDataWatchArgs,
+  ApplicationDataUnwatchArgs,
+} from '@/shared/application-data/client';
+import type { ApplicationRowNotification } from '@/shared/classes/EventSubscription';
 import {
-  applyFeatureDeliveries,
-  resetFeatureDataStoreForTests,
-} from '@/shared/feature-data/store';
+  applyApplicationDeliveries,
+  resetApplicationDataStoreForTests,
+} from '@/shared/application-data/store';
 
 const mocks = vi.hoisted(() => ({
-  featureDataWatch: vi.fn(),
-  featureDataUnwatch: vi.fn(),
+  applicationDataWatch: vi.fn(),
+  applicationDataUnwatch: vi.fn(),
 }));
 
-vi.mock('@/shared/feature-data/client', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/shared/feature-data/client')>();
+vi.mock('@/shared/application-data/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/shared/application-data/client')>();
   return {
     ...actual,
-    featureDataWatch: mocks.featureDataWatch,
-    featureDataUnwatch: mocks.featureDataUnwatch,
+    applicationDataWatch: mocks.applicationDataWatch,
+    applicationDataUnwatch: mocks.applicationDataUnwatch,
   };
 });
 
@@ -50,12 +50,12 @@ import {
 let watchSeq = 0;
 
 beforeEach(() => {
-  resetFeatureDataStoreForTests();
+  resetApplicationDataStoreForTests();
   resetSessionActivityWatchForTests();
-  mocks.featureDataWatch.mockReset();
-  mocks.featureDataUnwatch.mockReset();
+  mocks.applicationDataWatch.mockReset();
+  mocks.applicationDataUnwatch.mockReset();
   watchSeq = 0;
-  mocks.featureDataWatch.mockImplementation(async (args: FeatureDataWatchArgs) => {
+  mocks.applicationDataWatch.mockImplementation(async (args: ApplicationDataWatchArgs) => {
     watchSeq += 1;
     return {
       watchId: `w-${args.ref.table}-${watchSeq}`,
@@ -63,22 +63,22 @@ beforeEach(() => {
       rows: [],
     };
   });
-  mocks.featureDataUnwatch.mockImplementation(async (args: FeatureDataUnwatchArgs) => ({
+  mocks.applicationDataUnwatch.mockImplementation(async (args: ApplicationDataUnwatchArgs) => ({
     watchIds: args.watchIds,
   }));
 });
 
-/** A canonical chat/toolUse notification — `featureId: null` routes to the canonical partition. */
+/** A canonical chat/toolUse notification — `applicationId: null` routes to the canonical partition. */
 function canonicalNotification(
   sessionId: string,
   correlationId: string,
   watchId: string,
   version: number,
   extra: Record<string, unknown> = {},
-): FeatureRowNotification {
+): ApplicationRowNotification {
   return {
     watchId,
-    featureId: null,
+    applicationId: null,
     table: 'chat',
     kind: 'insert',
     // Canonical record key is `[correlationId, sessionId]` (ST-4 `canonical_key_of`).
@@ -111,7 +111,7 @@ describe('useSessionActivityWatch', () => {
       await Promise.resolve();
     });
 
-    expect(mocks.featureDataWatch).not.toHaveBeenCalled();
+    expect(mocks.applicationDataWatch).not.toHaveBeenCalled();
     expect(result.current.chatRows.size).toBe(0);
     expect(result.current.toolUseRows.size).toBe(0);
     expect(result.current.ready).toBe(false);
@@ -119,7 +119,7 @@ describe('useSessionActivityWatch', () => {
     // A canonical delivery while nothing is selected must not surface (R-5.1):
     // the view stays empty and the session epoch does not move.
     act(() => {
-      applyFeatureDeliveries([canonicalNotification('A', 'corr-a', 'backend-watch-a', 10)]);
+      applyApplicationDeliveries([canonicalNotification('A', 'corr-a', 'backend-watch-a', 10)]);
     });
     expect(result.current.chatRows.size).toBe(0);
     expect(result.current.epoch).toBe(0);
@@ -127,13 +127,13 @@ describe('useSessionActivityWatch', () => {
     // Selecting a session opens exactly the chat + toolUse watches.
     rerender({ sid: 'A' });
     await waitFor(() => expect(result.current.ready).toBe(true));
-    expect(mocks.featureDataWatch).toHaveBeenCalledTimes(2);
+    expect(mocks.applicationDataWatch).toHaveBeenCalledTimes(2);
 
     // Deselecting closes both and opens nothing new.
     rerender({ sid: null });
-    expect(mocks.featureDataUnwatch).toHaveBeenCalledWith({ watchIds: ['w-chat-1'] });
-    expect(mocks.featureDataUnwatch).toHaveBeenCalledWith({ watchIds: ['w-toolUse-2'] });
-    expect(mocks.featureDataWatch).toHaveBeenCalledTimes(2);
+    expect(mocks.applicationDataUnwatch).toHaveBeenCalledWith({ watchIds: ['w-chat-1'] });
+    expect(mocks.applicationDataUnwatch).toHaveBeenCalledWith({ watchIds: ['w-toolUse-2'] });
+    expect(mocks.applicationDataWatch).toHaveBeenCalledTimes(2);
     expect(result.current.chatRows.size).toBe(0);
     expect(result.current.ready).toBe(false);
   });
@@ -141,28 +141,28 @@ describe('useSessionActivityWatch', () => {
   it('closes A before opening B and never surfaces a late A delivery (R-5.2)', async () => {
     const { result, rerender } = renderSessionWatch('A');
     await waitFor(() => expect(result.current.ready).toBe(true));
-    expect(mocks.featureDataWatch).toHaveBeenCalledTimes(2);
+    expect(mocks.applicationDataWatch).toHaveBeenCalledTimes(2);
 
     rerender({ sid: 'B' });
     await waitFor(() => expect(result.current.ready).toBe(true));
 
     // A's watches were unsubscribed and B's were opened.
-    expect(mocks.featureDataUnwatch).toHaveBeenCalledWith({ watchIds: ['w-chat-1'] });
-    expect(mocks.featureDataUnwatch).toHaveBeenCalledWith({ watchIds: ['w-toolUse-2'] });
-    expect(mocks.featureDataWatch).toHaveBeenCalledTimes(4);
+    expect(mocks.applicationDataUnwatch).toHaveBeenCalledWith({ watchIds: ['w-chat-1'] });
+    expect(mocks.applicationDataUnwatch).toHaveBeenCalledWith({ watchIds: ['w-toolUse-2'] });
+    expect(mocks.applicationDataWatch).toHaveBeenCalledTimes(4);
 
     // A late A delivery (an in-flight backend flush after the switch) must not
     // appear in B's view nor advance the session epoch.
     const epochAfterSwitch = result.current.epoch;
     act(() => {
-      applyFeatureDeliveries([canonicalNotification('A', 'corr-a', 'w-chat-1', 20)]);
+      applyApplicationDeliveries([canonicalNotification('A', 'corr-a', 'w-chat-1', 20)]);
     });
     expect([...result.current.chatRows.values()].some((r) => r.sessionId === 'A')).toBe(false);
     expect(result.current.epoch).toBe(epochAfterSwitch);
 
     // B's deliveries flow.
     act(() => {
-      applyFeatureDeliveries([canonicalNotification('B', 'corr-b', 'w-chat-3', 21)]);
+      applyApplicationDeliveries([canonicalNotification('B', 'corr-b', 'w-chat-3', 21)]);
     });
     expect([...result.current.chatRows.values()].some((r) => r.sessionId === 'B')).toBe(true);
     expect(result.current.epoch).toBeGreaterThan(epochAfterSwitch);
@@ -173,7 +173,7 @@ describe('useSessionActivityWatch', () => {
     await waitFor(() => expect(result.current.ready).toBe(true));
 
     act(() => {
-      applyFeatureDeliveries([
+      applyApplicationDeliveries([
         canonicalNotification('A', 'corr-a', 'w-chat-1', 30),
         canonicalNotification('B', 'corr-b', 'w-chat-3', 31),
       ]);
@@ -193,7 +193,7 @@ describe('useSessionActivityWatch', () => {
   it('does not re-subscribe when the same session id is re-rendered (no watch churn)', async () => {
     const { result, rerender } = renderSessionWatch('A');
     await waitFor(() => expect(result.current.ready).toBe(true));
-    expect(mocks.featureDataWatch).toHaveBeenCalledTimes(2);
+    expect(mocks.applicationDataWatch).toHaveBeenCalledTimes(2);
 
     rerender({ sid: 'A' });
     rerender({ sid: 'A' });
@@ -201,8 +201,8 @@ describe('useSessionActivityWatch', () => {
       await Promise.resolve();
     });
 
-    expect(mocks.featureDataWatch).toHaveBeenCalledTimes(2);
-    expect(mocks.featureDataUnwatch).not.toHaveBeenCalled();
+    expect(mocks.applicationDataWatch).toHaveBeenCalledTimes(2);
+    expect(mocks.applicationDataUnwatch).not.toHaveBeenCalled();
   });
 
   it('unsubscribes the session watches on unmount', async () => {
@@ -211,7 +211,7 @@ describe('useSessionActivityWatch', () => {
 
     unmount();
 
-    expect(mocks.featureDataUnwatch).toHaveBeenCalledWith({ watchIds: ['w-chat-1'] });
-    expect(mocks.featureDataUnwatch).toHaveBeenCalledWith({ watchIds: ['w-toolUse-2'] });
+    expect(mocks.applicationDataUnwatch).toHaveBeenCalledWith({ watchIds: ['w-chat-1'] });
+    expect(mocks.applicationDataUnwatch).toHaveBeenCalledWith({ watchIds: ['w-toolUse-2'] });
   });
 });

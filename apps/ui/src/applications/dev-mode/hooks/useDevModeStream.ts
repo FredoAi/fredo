@@ -22,13 +22,13 @@ import {
   type RowMutation,
 } from '../../../shared/contexts/StreamContext';
 import {
-  subscribeToFeatureNotificationLog,
-  getFeatureNotificationLogVersion,
-  getFeatureNotifications,
-  clearFeatureNotifications,
-  getKnownFeatureWatches,
-  type FeatureNotificationLogEntry,
-} from '../../../shared/feature-data/store';
+  subscribeToApplicationNotificationLog,
+  getApplicationNotificationLogVersion,
+  getApplicationNotifications,
+  clearApplicationNotifications,
+  getKnownApplicationWatches,
+  type ApplicationNotificationLogEntry,
+} from '../../../shared/application-data/store';
 
 export type DevModeEventState = 'Init' | 'Update' | 'Response' | 'Error' | 'Timeout';
 
@@ -152,15 +152,15 @@ export function useDevModeStream(): DevModeStreamState {
 // ═══════════════════════════════════════════════════════════════════════════
 //
 // Reads the module-scoped capped application-data notification log from
-// `shared/feature-data/store.ts`. Every delivered `featureBatch` element is
+// `shared/application-data/store.ts`. Every delivered `applicationBatch` element is
 // recorded with `applied` (false = stale-dropped / no-op), so the Dev Mode →
 // Application Data surface makes per-watch deliveries AND non-deliveries (e.g. a
 // sibling-field watch that never fired) screenshot-visible.
 
 /** Per-watch delivery summary — a known watch with 0 deliveries stays visible. */
-export interface DevModeFeatureWatchSummary {
+export interface DevModeApplicationWatchSummary {
   watchId: string;
-  featureId: string | null;
+  applicationId: string | null;
   table: string;
   /** Human-readable scope from a hook-registered watch (`null` for IPC-only). */
   scope: string | null;
@@ -171,36 +171,36 @@ export interface DevModeFeatureWatchSummary {
   applied: number;
 }
 
-export interface DevModeFeatureDataState {
-  notifications: FeatureNotificationLogEntry[];
-  watches: DevModeFeatureWatchSummary[];
+export interface DevModeApplicationDataState {
+  notifications: ApplicationNotificationLogEntry[];
+  watches: DevModeApplicationWatchSummary[];
   isConnected: boolean;
   clear: () => void;
 }
 
-export function useDevModeFeatureData(): DevModeFeatureDataState {
+export function useDevModeApplicationData(): DevModeApplicationDataState {
   const { isConnected } = useConnectionStatus();
 
   // The log's monotonic version is the recompute driver (the log array is
   // mutated in place — depending on it would freeze the viewer).
   const version = useSyncExternalStore(
-    subscribeToFeatureNotificationLog,
-    getFeatureNotificationLogVersion,
+    subscribeToApplicationNotificationLog,
+    getApplicationNotificationLogVersion,
   );
 
   // Newest-first snapshot; the version dep re-materializes it on every record.
   const notifications = useMemo(
-    () => [...getFeatureNotifications()].reverse(),
+    () => [...getApplicationNotifications()].reverse(),
     [version],
   );
 
   const watches = useMemo(() => {
-    const byId = new Map<string, DevModeFeatureWatchSummary>();
+    const byId = new Map<string, DevModeApplicationWatchSummary>();
     // Hook-registered watches first, so a 0-delivery watch is still visible.
-    for (const known of getKnownFeatureWatches()) {
+    for (const known of getKnownApplicationWatches()) {
       byId.set(known.watchId, {
         watchId: known.watchId,
-        featureId: known.featureId,
+        applicationId: known.applicationId,
         table: known.table,
         scope: known.scope,
         fields: known.fields,
@@ -213,7 +213,7 @@ export function useDevModeFeatureData(): DevModeFeatureDataState {
       if (!entry) {
         entry = {
           watchId: notification.watchId,
-          featureId: notification.featureId,
+          applicationId: notification.applicationId,
           table: notification.table,
           scope: null,
           fields: null,
@@ -229,7 +229,7 @@ export function useDevModeFeatureData(): DevModeFeatureDataState {
   }, [notifications]);
 
   const clear = useCallback(() => {
-    clearFeatureNotifications();
+    clearApplicationNotifications();
   }, []);
 
   return { notifications, watches, isConnected, clear };

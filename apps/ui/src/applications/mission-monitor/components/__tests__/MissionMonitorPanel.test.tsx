@@ -52,7 +52,7 @@ afterEach(() => cleanup());
 let mockDeliveries: ContractDelivery[] = [];
 
 // Spec #2896 ST-6: the session list comes from the declared `sessions` table
-// (`useFeatureRead` + `useFeatureWatch`). Mock both hooks over a mutable row set.
+// (`useApplicationRead` + `useApplicationWatch`). Mock both hooks over a mutable row set.
 let mockDeclaredSessions: Array<{ sessionId: string; startTime: number; latestAt: string }> = [
   { sessionId: 's1', startTime: 1, latestAt: '2026-01-01T00:00:00.000Z' },
 ];
@@ -81,14 +81,14 @@ function declaredRows(): Map<string, unknown> {
   );
 }
 
-vi.mock('@/shared/hooks/useFeatureData', () => ({
-  useFeatureRead: () => ({
+vi.mock('@/shared/hooks/useApplicationData', () => ({
+  useApplicationRead: () => ({
     rows: declaredRows(),
     version: 1,
     error: mockSessionsError,
     loading: false,
   }),
-  useFeatureWatch: () => ({
+  useApplicationWatch: () => ({
     rows: declaredRows(),
     epoch: 1,
     error: mockSessionsError,
@@ -352,14 +352,14 @@ describe('MissionMonitorPanel', () => {
   });
 
   it('Spec #2896 ST-6 (S6/QA-3.5): a read/watch failure renders a role=alert inline status with the verbatim backend error, keeping stored sessions visible (fail-open)', () => {
-    mockSessionsError = 'feature_data_read failed: table sessions is not declared';
+    mockSessionsError = 'application_data_read failed: table sessions is not declared';
     renderWithChakra(<MissionMonitorPanel />);
 
     const alert = screen.getByTestId('mm-watch-error');
     expect(alert.getAttribute('role')).toBe('alert');
     // Verbatim backend text — never swallowed.
     expect(alert.textContent).toContain(
-      'feature_data_read failed: table sessions is not declared',
+      'application_data_read failed: table sessions is not declared',
     );
     // Fail-open: the stored session row remains visible; never the empty state.
     expect(screen.getAllByTitle('Delete session').length).toBeGreaterThanOrEqual(1);

@@ -302,23 +302,23 @@ export function rowKeyString(key: RowKey): string {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// FEATURE-DATA NOTIFICATION TYPES — Spec #2896 (ST-5)
+// APPLICATION-DATA NOTIFICATION TYPES — Spec #2896 (ST-5)
 // ═══════════════════════════════════════════════════════════════════════════
 //
 // Declared/canonical-table watches deliver on the EXISTING "fredo-stream-event"
-// channel as a `{"featureBatch": [...]}` envelope (backend:
-// `infrastructure/feature_data/envelope.rs` + `EventBus::emit_feature_delivery_batch`).
-// The `featureBatch` field discriminates it from the RTDB `{"rowBatch": ...}`
+// channel as a `{"applicationBatch": [...]}` envelope (backend:
+// `infrastructure/application_data/envelope.rs` + `EventBus::emit_application_delivery_batch`).
+// The `applicationBatch` field discriminates it from the RTDB `{"rowBatch": ...}`
 // envelope; AppProvider checks it BEFORE the RTDB validators so a malformed RTDB
-// shape can never shadow a feature delivery.
+// shape can never shadow an application delivery.
 
 /** What happened to a watched record — lowercase serde wire. */
-export type FeatureChangeKind = 'insert' | 'update' | 'remove';
+export type ApplicationChangeKind = 'insert' | 'update' | 'remove';
 
 /**
  * One notification for one watched record (contract (c)).
  *
- * - `featureId` is `null` for canonical-table watches.
+ * - `applicationId` is `null` for canonical-table watches.
  * - `key` is the declared primary-key values in declaration order; canonical
  *   watches use `[correlationId, sessionId]`.
  * - `changedFields` names the fields that changed; `values` carries the FULL
@@ -326,11 +326,11 @@ export type FeatureChangeKind = 'insert' | 'update' | 'remove';
  * - `version` is the scope version at which the change was applied (declared
  *   table `last_version`; canonical row durable `seq`).
  */
-export interface FeatureRowNotification {
+export interface ApplicationRowNotification {
   watchId: string;
-  featureId: string | null;
+  applicationId: string | null;
   table: string;
-  kind: FeatureChangeKind;
+  kind: ApplicationChangeKind;
   key: unknown[];
   changedFields: string[];
   values: Record<string, unknown> | null;
@@ -338,26 +338,26 @@ export interface FeatureRowNotification {
   timestamp: string;
 }
 
-/** The batched `{"featureBatch": [...]}` envelope on "fredo-stream-event". */
-export interface FeatureDeliveryBatch {
-  featureBatch: FeatureRowNotification[];
+/** The batched `{"applicationBatch": [...]}` envelope on "fredo-stream-event". */
+export interface ApplicationDeliveryBatch {
+  applicationBatch: ApplicationRowNotification[];
 }
 
-const FEATURE_CHANGE_KINDS: readonly string[] = ['insert', 'update', 'remove'];
+const APPLICATION_CHANGE_KINDS: readonly string[] = ['insert', 'update', 'remove'];
 
 /**
- * Discriminate one incoming "fredo-stream-event" element as a feature-data
+ * Discriminate one incoming "fredo-stream-event" element as an application-data
  * notification. Single extraction path — no heuristic fallbacks: the envelope
  * MUST carry the full pinned field set, and a `remove` MUST carry `values: null`
  * while an insert/update MUST carry current values (R-3.4).
  */
-export function isFeatureRowNotification(msg: unknown): msg is FeatureRowNotification {
+export function isApplicationRowNotification(msg: unknown): msg is ApplicationRowNotification {
   if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return false;
   const m = msg as Record<string, unknown>;
   if (typeof m.watchId !== 'string' || m.watchId.length === 0) return false;
-  if (m.featureId !== null && typeof m.featureId !== 'string') return false;
+  if (m.applicationId !== null && typeof m.applicationId !== 'string') return false;
   if (typeof m.table !== 'string' || m.table.length === 0) return false;
-  if (typeof m.kind !== 'string' || !FEATURE_CHANGE_KINDS.includes(m.kind)) return false;
+  if (typeof m.kind !== 'string' || !APPLICATION_CHANGE_KINDS.includes(m.kind)) return false;
   if (!Array.isArray(m.key)) return false;
   if (!Array.isArray(m.changedFields) || !m.changedFields.every((f) => typeof f === 'string')) {
     return false;
@@ -370,15 +370,15 @@ export function isFeatureRowNotification(msg: unknown): msg is FeatureRowNotific
 }
 
 /**
- * Discriminate an incoming "fredo-stream-event" payload as a feature-delivery
+ * Discriminate an incoming "fredo-stream-event" payload as an application-delivery
  * batch. Checked BEFORE `isRowDeliveryBatch` in AppProvider — the envelopes are
- * disjoint (`featureBatch` vs `rowBatch`), but the feature discriminator runs
- * first so feature deliveries are never mis-routed into the RTDB store. A batch
+ * disjoint (`applicationBatch` vs `rowBatch`), but the application discriminator runs
+ * first so application deliveries are never mis-routed into the RTDB store. A batch
  * with any malformed element is rejected whole (never partially applied).
  */
-export function isFeatureDeliveryBatch(msg: unknown): msg is FeatureDeliveryBatch {
+export function isApplicationDeliveryBatch(msg: unknown): msg is ApplicationDeliveryBatch {
   if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return false;
   const m = msg as Record<string, unknown>;
-  if (!Array.isArray(m.featureBatch)) return false;
-  return m.featureBatch.every((element) => isFeatureRowNotification(element));
+  if (!Array.isArray(m.applicationBatch)) return false;
+  return m.applicationBatch.every((element) => isApplicationRowNotification(element));
 }

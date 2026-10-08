@@ -1,10 +1,10 @@
 /**
- * Feature-owned data declaration model (Spec #2896, contract (a)).
+ * Application-owned data declaration model (Spec #2896, contract (a)).
  *
- * A feature declares its data structure + canonical source mapping up front.
+ * An application declares its data structure + canonical source mapping up front.
  * The backend persists and materializes it idempotently, then owns writes to the
  * declared tables. The wire shapes here MUST stay in sync with the Rust model
- * (`apps/tauri/src-tauri/src/infrastructure/feature_data/declaration.rs`).
+ * (`apps/tauri/src-tauri/src/infrastructure/application_data/declaration.rs`).
  */
 
 /** Canonical RTDB source a declaration reads rows from. */
@@ -47,24 +47,24 @@ export interface SessionRollupProjection {
   terminalStates: ['Response', 'Timeout'];
 }
 
-export interface FeatureDataTableDeclaration {
-  /** Physical table: feature_<featureId>_<name>. */
+export interface ApplicationDataTableDeclaration {
+  /** Physical table: feature_<sanitized applicationId>_<name>. */
   name: string;
   primaryKey: string[];
   columns: Array<{
     name: string;
     type: DeclaredColumnType;
     nullable?: boolean;
-    /** 'backend' = projected from `source`; 'feature' = written via feature_data_write. */
-    owner: 'backend' | 'feature';
+    /** 'backend' = projected from `source`; 'application' = written via application_data_write. */
+    owner: 'backend' | 'application';
   }>;
-  /** Omit for a purely feature-written table. */
+  /** Omit for a purely application-written table. */
   source?: RowProjection | SessionRollupProjection;
   retention?: { maxRows?: number; ttlDays?: number };
 }
 
-export interface FeatureDataDeclaration {
-  featureId: string;
+export interface ApplicationDataDeclaration {
+  applicationId: string;
   declarationRevision: string; // content hash of the declarations below
-  tables: FeatureDataTableDeclaration[];
+  tables: ApplicationDataTableDeclaration[];
 }

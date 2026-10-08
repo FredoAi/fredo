@@ -1,15 +1,15 @@
 /**
- * useFeatureData — read/watch consumer hooks for the feature-owned data layer
+ * useApplicationData — read/watch consumer hooks for the application-owned data layer
  * (Spec #2896, ST-5).
  *
  * ── Return shapes (contract (f), binding) ────────────────────────────────────
- * `useFeatureRead(ref, args?)`
+ * `useApplicationRead(ref, args?)`
  *   → `{ rows, version, error, loading }`
  *   `rows`    — the LIVE module-scoped store map for that table ref (stable
  *               identity, mutate in place); `version` — the scope version at
  *               which the read snapshot was taken; `loading` — true until the
  *               read settles.
- * `useFeatureWatch(ref, args)`
+ * `useApplicationWatch(ref, args)`
  *   → `{ rows, epoch, error, ready }`
  *   `epoch`   — monotonic per-ref counter, advancing ONLY on a real mutation
  *               (derive display state off this primitive — never map
@@ -17,7 +17,7 @@
  *   `ready`   — true once registration (+ the `initial` snapshot) resolved.
  *
  * `error` carries the VERBATIM backend text (`string[]` joined with `; `) and
- * is NEVER swallowed (unlike `shared/lib/featureStore.ts`) — the S6 failure
+ * is NEVER swallowed (unlike `shared/lib/applicationStore.ts`) — the S6 failure
  * signal / A-13. A `remove` notification is not an error.
  *
  * ── Lifecycle ────────────────────────────────────────────────────────────────
@@ -31,42 +31,42 @@
 
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import {
-  featureDataRead,
-  featureDataUnwatch,
-  featureDataWatch,
-} from '../feature-data/client';
+  applicationDataRead,
+  applicationDataUnwatch,
+  applicationDataWatch,
+} from '../application-data/client';
 import type {
   DataTableRef,
-  FeatureDataRow,
+  ApplicationDataRow,
   WatchScope,
   WhereFilter,
-} from '../feature-data/client';
-import { featureRecordKey } from '../feature-data/registry';
+} from '../application-data/client';
+import { applicationRecordKey } from '../application-data/registry';
 import {
-  getFeatureEpoch,
-  getFeatureRows,
-  featureRefKey,
-  registerKnownFeatureWatch,
-  seedFeatureRows,
-  subscribeToFeatureEpoch,
-  unregisterKnownFeatureWatch,
-} from '../feature-data/store';
+  getApplicationEpoch,
+  getApplicationRows,
+  applicationRefKey,
+  registerKnownApplicationWatch,
+  seedApplicationRows,
+  subscribeToApplicationEpoch,
+  unregisterKnownApplicationWatch,
+} from '../application-data/store';
 
-/** The read filter args — a subset of the `feature_data_read` args. */
-export interface FeatureReadArgs {
+/** The read filter args — a subset of the `application_data_read` args. */
+export interface ApplicationReadArgs {
   where?: WhereFilter[];
   orderBy?: string;
   limit?: number;
 }
 
-export interface FeatureReadResult {
-  rows: Map<string, FeatureDataRow>;
+export interface ApplicationReadResult {
+  rows: Map<string, ApplicationDataRow>;
   version: number;
   error: string | null;
   loading: boolean;
 }
 
-export interface FeatureWatchArgs {
+export interface ApplicationWatchArgs {
   scope: WatchScope;
   /** Field-granularity narrowing: deliver only when one of these changes. */
   fields?: string[];
@@ -76,15 +76,15 @@ export interface FeatureWatchArgs {
   flushMs?: number;
 }
 
-export interface FeatureWatchResult {
-  rows: Map<string, FeatureDataRow>;
+export interface ApplicationWatchResult {
+  rows: Map<string, ApplicationDataRow>;
   epoch: number;
   error: string | null;
   ready: boolean;
 }
 
 /** Normalize a hard named `string[]` rejection (or any error) to display text. */
-function describeFeatureDataError(err: unknown): string {
+function describeApplicationDataError(err: unknown): string {
   if (Array.isArray(err)) {
     return err.map((entry) => String(entry)).join('; ');
   }
@@ -95,12 +95,12 @@ function describeFeatureDataError(err: unknown): string {
 }
 
 /** Stable dep key for read args (inline object literals are safe). */
-function stableReadArgsKey(args: FeatureReadArgs): string {
+function stableReadArgsKey(args: ApplicationReadArgs): string {
   return JSON.stringify({ where: args.where ?? null, orderBy: args.orderBy ?? null, limit: args.limit ?? null });
 }
 
 /** Stable dep key for watch args (scope/fields/flushMs; `initial` defaults true). */
-function stableWatchArgsKey(args: FeatureWatchArgs): string {
+function stableWatchArgsKey(args: ApplicationWatchArgs): string {
   return JSON.stringify({
     scope: args.scope,
     fields: args.fields ?? null,
@@ -124,8 +124,8 @@ function describeScope(scope: WatchScope): string {
  * Read the current rows for a scope on demand (R-1.1/R-1.3) and seed the store
  * so subsequent notifications are version-guarded against the snapshot.
  */
-export function useFeatureRead(ref: DataTableRef, args: FeatureReadArgs = {}): FeatureReadResult {
-  const refKey = featureRefKey(ref);
+export function useApplicationRead(ref: DataTableRef, args: ApplicationReadArgs = {}): ApplicationReadResult {
+  const refKey = applicationRefKey(ref);
   const argsKey = stableReadArgsKey(args);
   const [version, setVersion] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -134,27 +134,27 @@ export function useFeatureRead(ref: DataTableRef, args: FeatureReadArgs = {}): F
   // Subscribe to real mutations so consumers re-render (stable primitive; the
   // snapshot is the epoch — never the map identity).
   const subscribe = useCallback(
-    (listener: () => void) => subscribeToFeatureEpoch(ref, listener),
+    (listener: () => void) => subscribeToApplicationEpoch(ref, listener),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [refKey],
   );
-  useSyncExternalStore(subscribe, () => getFeatureEpoch(ref));
+  useSyncExternalStore(subscribe, () => getApplicationEpoch(ref));
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    featureDataRead({ ref, where: args.where, orderBy: args.orderBy, limit: args.limit })
+    applicationDataRead({ ref, where: args.where, orderBy: args.orderBy, limit: args.limit })
       .then((result) => {
         if (cancelled) return;
-        seedFeatureRows(ref, result.version, result.rows, (row) => featureRecordKey(ref, row));
+        seedApplicationRows(ref, result.version, result.rows, (row) => applicationRecordKey(ref, row));
         setVersion(result.version);
         setError(null);
         setLoading(false);
       })
       .catch((err) => {
         if (cancelled) return;
-        const message = describeFeatureDataError(err);
-        console.error('[useFeatureRead] feature_data_read failed:', message);
+        const message = describeApplicationDataError(err);
+        console.error('[useApplicationRead] application_data_read failed:', message);
         setError(message);
         setLoading(false);
       });
@@ -164,7 +164,7 @@ export function useFeatureRead(ref: DataTableRef, args: FeatureReadArgs = {}): F
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refKey, argsKey]);
 
-  return { rows: getFeatureRows(ref), version, error, loading };
+  return { rows: getApplicationRows(ref), version, error, loading };
 }
 
 /**
@@ -172,18 +172,18 @@ export function useFeatureRead(ref: DataTableRef, args: FeatureReadArgs = {}): F
  * return the live rows + the mutation epoch. `initial` defaults to `true` so
  * the snapshot is atomic with registration (no gap — R-3.2).
  */
-export function useFeatureWatch(ref: DataTableRef, args: FeatureWatchArgs): FeatureWatchResult {
-  const refKey = featureRefKey(ref);
+export function useApplicationWatch(ref: DataTableRef, args: ApplicationWatchArgs): ApplicationWatchResult {
+  const refKey = applicationRefKey(ref);
   const argsKey = stableWatchArgsKey(args);
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
 
   const subscribe = useCallback(
-    (listener: () => void) => subscribeToFeatureEpoch(ref, listener),
+    (listener: () => void) => subscribeToApplicationEpoch(ref, listener),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [refKey],
   );
-  const epoch = useSyncExternalStore(subscribe, () => getFeatureEpoch(ref));
+  const epoch = useSyncExternalStore(subscribe, () => getApplicationEpoch(ref));
 
   useEffect(() => {
     let cancelled = false;
@@ -191,7 +191,7 @@ export function useFeatureWatch(ref: DataTableRef, args: FeatureWatchArgs): Feat
     setReady(false);
     const initial = args.initial ?? true;
 
-    featureDataWatch({
+    applicationDataWatch({
       ref,
       scope: args.scope,
       fields: args.fields,
@@ -201,30 +201,30 @@ export function useFeatureWatch(ref: DataTableRef, args: FeatureWatchArgs): Feat
       .then((result) => {
         if (cancelled) {
           // Unmounted before registration resolved — tear the watch down.
-          void featureDataUnwatch({ watchIds: [result.watchId] }).catch((unwatchErr) => {
-            console.error('[useFeatureWatch] feature_data_unwatch failed:', unwatchErr);
+          void applicationDataUnwatch({ watchIds: [result.watchId] }).catch((unwatchErr) => {
+            console.error('[useApplicationWatch] application_data_unwatch failed:', unwatchErr);
           });
           return;
         }
         watchId = result.watchId;
-        registerKnownFeatureWatch({
+        registerKnownApplicationWatch({
           watchId: result.watchId,
-          featureId: ref.source === 'canonical' ? null : ref.featureId,
+          applicationId: ref.source === 'canonical' ? null : ref.applicationId,
           table: ref.table,
           scope: describeScope(args.scope),
           fields: args.fields ?? null,
           registeredAt: new Date().toISOString(),
         });
         if (result.rows) {
-          seedFeatureRows(ref, result.version, result.rows, (row) => featureRecordKey(ref, row));
+          seedApplicationRows(ref, result.version, result.rows, (row) => applicationRecordKey(ref, row));
         }
         setError(null);
         setReady(true);
       })
       .catch((err) => {
         if (cancelled) return;
-        const message = describeFeatureDataError(err);
-        console.error('[useFeatureWatch] feature_data_watch failed:', message);
+        const message = describeApplicationDataError(err);
+        console.error('[useApplicationWatch] application_data_watch failed:', message);
         setError(message);
         setReady(false);
       });
@@ -232,14 +232,14 @@ export function useFeatureWatch(ref: DataTableRef, args: FeatureWatchArgs): Feat
     return () => {
       cancelled = true;
       if (watchId !== undefined) {
-        unregisterKnownFeatureWatch(watchId);
-        void featureDataUnwatch({ watchIds: [watchId] }).catch((unwatchErr) => {
-          console.error('[useFeatureWatch] feature_data_unwatch failed:', unwatchErr);
+        unregisterKnownApplicationWatch(watchId);
+        void applicationDataUnwatch({ watchIds: [watchId] }).catch((unwatchErr) => {
+          console.error('[useApplicationWatch] application_data_unwatch failed:', unwatchErr);
         });
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refKey, argsKey]);
 
-  return { rows: getFeatureRows(ref), epoch, error, ready };
+  return { rows: getApplicationRows(ref), epoch, error, ready };
 }

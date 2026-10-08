@@ -1,9 +1,9 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import type { MissionMonitorSession } from '../lib/graph';
 import { formatDerivedName, deriveDisplayName } from '../lib/sessionMeta';
-import { useFeatureRead, useFeatureWatch } from '../../../shared/hooks/useFeatureData';
-import type { FeatureDataRow } from '../../../shared/feature-data/client';
-import { featureDataDelete, featureDataWrite } from '../../../shared/feature-data/client';
+import { useApplicationRead, useApplicationWatch } from '../../../shared/hooks/useApplicationData';
+import type { ApplicationDataRow } from '../../../shared/application-data/client';
+import { applicationDataDelete, applicationDataWrite } from '../../../shared/application-data/client';
 import { MISSION_MONITOR_FEATURE_ID } from '../lib/dataDeclaration';
 
 // ── Spec #2896 (ST-6): the declared-table session list ───────────────────────
@@ -12,12 +12,12 @@ import { MISSION_MONITOR_FEATURE_ID } from '../lib/dataDeclaration';
 // drain. It reads the backend-owned declared `sessions` rollup table
 // (contract (a)):
 //
-//   1. `useFeatureRead` issues the initial `feature_data_read` — the list
+//   1. `useApplicationRead` issues the initial `application_data_read` — the list
 //      renders on the FIRST round-trip (bounded SELECT over ≤ 500 rows), never
 //      waiting on a `replayCompleteQueryId` marker or a full-history scan. On a
 //      warm reopen the row store is module-scoped, so the first paint already
 //      carries the stored rows (S0).
-//   2. `useFeatureWatch` registers the table-level watch — inserts / updates /
+//   2. `useApplicationWatch` registers the table-level watch — inserts / updates /
 //      removes keep the list live in place (S1).
 //
 // The declared row's PRESENCE already encodes the backend's qualification
@@ -28,14 +28,14 @@ import { MISSION_MONITOR_FEATURE_ID } from '../lib/dataDeclaration';
 //   visibleTurnCount > 0 || (nonSubagentChatRowCount > 0 && userDispatchCount > 0)
 //
 // `deliveryCount = chatRowCount`; the list sorts `latestAt` DESC — byte-identical
-// to the previous `latestTimestamp` DESC sort. Rename writes the feature-owned
-// `customName` column; delete issues `feature_data_delete` (a durable tombstone
+// to the previous `latestTimestamp` DESC sort. Rename writes the application-owned
+// `customName` column; delete issues `application_data_delete` (a durable tombstone
 // behind it, so the projection never resurrects the row).
 
 /** The declared `sessions` table ref (contract (a), ST-6). */
 export const MISSION_MONITOR_SESSIONS_REF = {
-  source: 'feature',
-  featureId: MISSION_MONITOR_FEATURE_ID,
+  source: 'application',
+  applicationId: MISSION_MONITOR_FEATURE_ID,
   table: 'sessions',
 } as const;
 
@@ -43,7 +43,7 @@ export const MISSION_MONITOR_SESSIONS_REF = {
  * Qualified-session predicate over the rollup facts — the frontend half of the
  * single shared renderability rule (Architect A-11 / `deriveRenderableSessions`).
  */
-export function sessionRollupQualifies(row: FeatureDataRow): boolean {
+export function sessionRollupQualifies(row: ApplicationDataRow): boolean {
   const visibleTurnCount = Number(row.visibleTurnCount ?? 0);
   const nonSubagentChatRowCount = Number(row.nonSubagentChatRowCount ?? 0);
   const userDispatchCount = Number(row.userDispatchCount ?? 0);
@@ -67,7 +67,7 @@ function asNumber(value: unknown): number | undefined {
  * `latestTimestamp = latestAt`; `startTime` = `startedAtNs / 1e6`, falling back
  * to the parsed `latestAt`.
  */
-function rollupRowToSession(row: FeatureDataRow): MissionMonitorSession | null {
+function rollupRowToSession(row: ApplicationDataRow): MissionMonitorSession | null {
   const sessionId = asString(row.sessionId);
   if (!sessionId) return null;
 
@@ -106,7 +106,7 @@ function rollupRowToSession(row: FeatureDataRow): MissionMonitorSession | null {
 
 // ── Module-scoped optimistic deletion (survives mount/unmount) ───────────────
 //
-// `feature_data_delete` emits a `remove` within one coalescing window; until it
+// `application_data_delete` emits a `remove` within one coalescing window; until it
 // lands, a just-deleted row must not flash back into the list on a re-render.
 // Module scope (never a React ref) per the AGENTS.md persistence rule. The
 // backend tombstone is the durable anti-resurrection guarantee; this set is
@@ -133,9 +133,9 @@ export function useDeliverySessions() {
   const userPickedRef = useRef(false);
 
   // S0: the initial read (list on the first round-trip) …
-  const read = useFeatureRead(MISSION_MONITOR_SESSIONS_REF);
+  const read = useApplicationRead(MISSION_MONITOR_SESSIONS_REF);
   // … and the table-level live watch (S1).
-  const watch = useFeatureWatch(MISSION_MONITOR_SESSIONS_REF, {
+  const watch = useApplicationWatch(MISSION_MONITOR_SESSIONS_REF, {
     scope: { kind: 'table' },
     initial: true,
   });
@@ -234,7 +234,7 @@ export function useDeliverySessions() {
   }, []);
 
   /**
-   * Delete a session: `feature_data_delete` on the declared table (the backend
+   * Delete a session: `application_data_delete` on the declared table (the backend
    * tombstones the key + emits `kind: "remove"`, so it can never be
    * re-projected). The optimistic module set suppresses the row until the
    * remove notification drops it from the shared partition.
@@ -247,8 +247,8 @@ export function useDeliverySessions() {
         setSelectedSessionId(null);
         userPickedRef.current = false;
       }
-      await featureDataDelete({
-        ref: { featureId: MISSION_MONITOR_FEATURE_ID, table: 'sessions' },
+      await applicationDataDelete({
+        ref: { applicationId: MISSION_MONITOR_FEATURE_ID, table: 'sessions' },
         key: [id],
       });
     },
@@ -256,14 +256,14 @@ export function useDeliverySessions() {
   );
 
   /**
-   * Rename a session by writing the feature-owned `customName` column. The
+   * Rename a session by writing the application-owned `customName` column. The
    * table watch delivers the `update` notification, which re-derives the list.
    * An empty/whitespace name clears the column (`null` → derived/label).
    */
   const renameSession = useCallback(async (id: string, name: string) => {
     const trimmed = name.trim();
-    await featureDataWrite({
-      ref: { featureId: MISSION_MONITOR_FEATURE_ID, table: 'sessions' },
+    await applicationDataWrite({
+      ref: { applicationId: MISSION_MONITOR_FEATURE_ID, table: 'sessions' },
       key: [id],
       set: { customName: trimmed.length > 0 ? trimmed : null },
     });

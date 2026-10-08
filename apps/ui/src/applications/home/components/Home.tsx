@@ -14,7 +14,7 @@ import { createWorkItemFeature } from '../../my-workitems';
 import { devModeFeature } from '../../dev-mode';
 import { setupFeature } from '../../setup';
 import '../../allApplications';
-import { declareAllRegisteredFeatureData } from '../../../shared/feature-data/registry';
+import { declareAllRegisteredApplicationData } from '../../../shared/application-data/registry';
 import { getApplications, dedupeByApplicationId } from '../../applicationRegistry';
 import { settingsService } from '../../settings';
 import { useCompanion } from '../../../shared/contexts/CompanionContext';
@@ -59,11 +59,11 @@ const HomeDesktop: React.FC<HomeDesktopProps> = ({ registerOpenFeature }) => {
         openAppRef.current(feature.id, feature);
       });
     });
-    // Spec #2896 ST-5 — bootstrap: materialize EVERY registered feature-data
-    // declaration with ONE idempotent `feature_data_declare` (A-17). Runs at
+    // Spec #2896 ST-5 — bootstrap: materialize EVERY registered application-data
+    // declaration with ONE idempotent `application_data_declare` (A-17). Runs at
     // runtime (after feature modules registered their declarations and after
     // main.tsx registered the adapter), never at module-evaluation time.
-    void declareAllRegisteredFeatureData();
+    void declareAllRegisteredApplicationData();
   }, []);
 
   const handleKonamiCode = useCallback(() => {

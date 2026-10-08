@@ -2,36 +2,36 @@
  * useDeliverySessions — Spec #2896 ST-6 (declared `sessions` table migration).
  *
  * The hook no longer groups a full Chat-row replay: it reads the backend-owned
- * declared `sessions` rollup table via `useFeatureRead` (initial snapshot) +
- * `useFeatureWatch` (table-level live updates), applies the documented
+ * declared `sessions` rollup table via `useApplicationRead` (initial snapshot) +
+ * `useApplicationWatch` (table-level live updates), applies the documented
  * qualification predicate over the rollup facts, and issues
- * `feature_data_delete` / `feature_data_write` for delete/rename.
+ * `application_data_delete` / `application_data_write` for delete/rename.
  *
- * These tests mock the two consumer hooks and the feature-data client, then
+ * These tests mock the two consumer hooks and the application-data client, then
  * drive the shared row map + epoch directly (the `useSyncExternalStore`
  * primitive the real hooks expose).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
-import type { FeatureDataRow } from '../../../../shared/feature-data/client';
+import type { ApplicationDataRow } from '../../../../shared/application-data/client';
 import { deriveDisplayName } from '../../lib/sessionMeta';
 
 // ── Mocked declared-table hooks (the shared partition map + epoch) ───────────
-let mockRows = new Map<string, FeatureDataRow>();
+let mockRows = new Map<string, ApplicationDataRow>();
 let mockEpoch = 1;
 let mockReadLoading = false;
 let mockReadError: string | null = null;
 let mockWatchError: string | null = null;
 let mockWatchReady = true;
 
-vi.mock('@/shared/hooks/useFeatureData', () => ({
-  useFeatureRead: () => ({
+vi.mock('@/shared/hooks/useApplicationData', () => ({
+  useApplicationRead: () => ({
     rows: mockRows,
     version: 1,
     error: mockReadError,
     loading: mockReadLoading,
   }),
-  useFeatureWatch: () => ({
+  useApplicationWatch: () => ({
     rows: mockRows,
     epoch: mockEpoch,
     error: mockWatchError,
@@ -39,20 +39,20 @@ vi.mock('@/shared/hooks/useFeatureData', () => ({
   }),
 }));
 
-const mockFeatureDataDelete = vi.fn<(args: unknown) => Promise<{ deleted: boolean }>>();
-const mockFeatureDataWrite = vi.fn<(args: unknown) => Promise<{ updated: number }>>();
+const mockApplicationDataDelete = vi.fn<(args: unknown) => Promise<{ deleted: boolean }>>();
+const mockApplicationDataWrite = vi.fn<(args: unknown) => Promise<{ updated: number }>>();
 
-vi.mock('@/shared/feature-data/client', () => ({
-  featureDataDelete: (args: unknown) => mockFeatureDataDelete(args),
-  featureDataWrite: (args: unknown) => mockFeatureDataWrite(args),
+vi.mock('@/shared/application-data/client', () => ({
+  applicationDataDelete: (args: unknown) => mockApplicationDataDelete(args),
+  applicationDataWrite: (args: unknown) => mockApplicationDataWrite(args),
 }));
 
 import { useDeliverySessions, resetSessionHistoryForTests } from '../useSessionHistory';
 
-/** A declared `sessions` rollup row (facts only + the feature-owned name). */
+/** A declared `sessions` rollup row (facts only + the application-owned name). */
 function rollupRow(
-  overrides: Partial<FeatureDataRow> & { sessionId: string },
-): FeatureDataRow {
+  overrides: Partial<ApplicationDataRow> & { sessionId: string },
+): ApplicationDataRow {
   return {
     _rowVersion: 1,
     startedAtNs: null,
@@ -68,7 +68,7 @@ function rollupRow(
   };
 }
 
-function setRows(rows: FeatureDataRow[], epoch = 1): void {
+function setRows(rows: ApplicationDataRow[], epoch = 1): void {
   mockRows = new Map(rows.map((row) => [JSON.stringify([row.sessionId]), row]));
   mockEpoch = epoch;
 }
@@ -82,8 +82,8 @@ describe('useDeliverySessions (Spec #2896 ST-6 — declared sessions table)', ()
     mockWatchError = null;
     mockWatchReady = true;
     setRows([]);
-    mockFeatureDataDelete.mockResolvedValue({ deleted: true });
-    mockFeatureDataWrite.mockResolvedValue({ updated: 1 });
+    mockApplicationDataDelete.mockResolvedValue({ deleted: true });
+    mockApplicationDataWrite.mockResolvedValue({ updated: 1 });
   });
 
   it('renders the declared rollup rows on the first read round-trip (S0)', async () => {
@@ -287,7 +287,7 @@ describe('useDeliverySessions (Spec #2896 ST-6 — declared sessions table)', ()
 
   // ── Delete / rename ────────────────────────────────────────────────────────
 
-  it('deleteSession issues feature_data_delete and immediately drops the row (anti-resurrection)', async () => {
+  it('deleteSession issues application_data_delete and immediately drops the row (anti-resurrection)', async () => {
     setRows([rollupRow({ sessionId: 'session-a', startedAtNs: 1000 * 1e6 })]);
 
     const { result } = renderHook(() => useDeliverySessions());
@@ -298,8 +298,8 @@ describe('useDeliverySessions (Spec #2896 ST-6 — declared sessions table)', ()
       await result.current.deleteSession('session-a');
     });
 
-    expect(mockFeatureDataDelete).toHaveBeenCalledWith({
-      ref: { featureId: 'mission-monitor', table: 'sessions' },
+    expect(mockApplicationDataDelete).toHaveBeenCalledWith({
+      ref: { applicationId: 'mission-monitor', table: 'sessions' },
       key: ['session-a'],
     });
     // Optimistically suppressed — the backend `remove` notification then drops
@@ -309,7 +309,7 @@ describe('useDeliverySessions (Spec #2896 ST-6 — declared sessions table)', ()
     expect(result.current.userPickedRef.current).toBe(false);
   });
 
-  it('renameSession writes the feature-owned customName column and re-derives on the update notification', async () => {
+  it('renameSession writes the application-owned customName column and re-derives on the update notification', async () => {
     setRows([rollupRow({ sessionId: 'session-a', derivedName: 'old derived' })]);
 
     const { result, rerender } = renderHook(() => useDeliverySessions());
@@ -319,8 +319,8 @@ describe('useDeliverySessions (Spec #2896 ST-6 — declared sessions table)', ()
       await result.current.renameSession('session-a', '  Renamed!  ');
     });
 
-    expect(mockFeatureDataWrite).toHaveBeenCalledWith({
-      ref: { featureId: 'mission-monitor', table: 'sessions' },
+    expect(mockApplicationDataWrite).toHaveBeenCalledWith({
+      ref: { applicationId: 'mission-monitor', table: 'sessions' },
       key: ['session-a'],
       set: { customName: 'Renamed!' },
     });
@@ -345,8 +345,8 @@ describe('useDeliverySessions (Spec #2896 ST-6 — declared sessions table)', ()
       await result.current.renameSession('session-a', '   ');
     });
 
-    expect(mockFeatureDataWrite).toHaveBeenCalledWith({
-      ref: { featureId: 'mission-monitor', table: 'sessions' },
+    expect(mockApplicationDataWrite).toHaveBeenCalledWith({
+      ref: { applicationId: 'mission-monitor', table: 'sessions' },
       key: ['session-a'],
       set: { customName: null },
     });
@@ -379,12 +379,12 @@ describe('useDeliverySessions (Spec #2896 ST-6 — declared sessions table)', ()
   });
 
   it('surfaces the verbatim read/watch error (A-13 / S6), never swallowing it', async () => {
-    mockReadError = 'feature_data_read failed: table sessions is not declared';
+    mockReadError = 'application_data_read failed: table sessions is not declared';
     setRows([]);
 
     const { result } = renderHook(() => useDeliverySessions());
     expect(result.current.error).toBe(
-      'feature_data_read failed: table sessions is not declared',
+      'application_data_read failed: table sessions is not declared',
     );
   });
 

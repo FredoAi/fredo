@@ -7,9 +7,9 @@ const MotionBox = chakra(motion.div as any) as any;
 import {
   LuWifi, LuWifiOff, LuTrash2, LuChevronDown, LuChevronRight, LuSearch, LuX,
 } from 'react-icons/lu';
-import { useDevModeStream, useDevModeFeatureData } from '../hooks/useDevModeStream';
+import { useDevModeStream, useDevModeApplicationData } from '../hooks/useDevModeStream';
 import type { DevModeStreamEvent, DevModeEventState } from '../hooks/useDevModeStream';
-import type { FeatureNotificationLogEntry } from '../../../shared/feature-data/store';
+import type { ApplicationNotificationLogEntry } from '../../../shared/application-data/store';
 import { tint } from '../../../shared/utils/colorTint';
 import { SpatiotemporalManifold } from './SpatiotemporalManifold';
 import {
@@ -225,22 +225,22 @@ const EventRow: React.FC<EventRowProps> = ({ event, index }) => {
   );
 };
 
-// ── Feature-data probe feed (Spec #2896 ST-5 / A-12) ─────────────────────────
+// ── Application-data probe feed (Spec #2896 ST-5 / A-12) ─────────────────────────
 //
 // Screenshot-visible per-watch evidence: the watch table lists every known
 // (hook-registered) watch with its delivery count — a 0-delivery watch stays
 // visible (sibling-field isolation) — and the list shows every received
-// `featureBatch` notification with whether THIS webview's store applied it
+// `applicationBatch` notification with whether THIS webview's store applied it
 // (a stale version guard drop is visible as `dropped`).
 
-const FEATURE_KIND_COLORS: Record<string, string> = {
+const APPLICATION_KIND_COLORS: Record<string, string> = {
   insert: 'var(--status-success)',
   update: 'var(--status-info)',
   remove: 'var(--status-error)',
 };
 
-const FeatureKindBadge: React.FC<{ kind: FeatureNotificationLogEntry['kind'] }> = ({ kind }) => {
-  const color = FEATURE_KIND_COLORS[kind] ?? 'var(--text-secondary)';
+const ApplicationKindBadge: React.FC<{ kind: ApplicationNotificationLogEntry['kind'] }> = ({ kind }) => {
+  const color = APPLICATION_KIND_COLORS[kind] ?? 'var(--text-secondary)';
   return (
     <Badge
       flexShrink={0}
@@ -260,8 +260,8 @@ const FeatureKindBadge: React.FC<{ kind: FeatureNotificationLogEntry['kind'] }> 
   );
 };
 
-const FeatureDataFeed: React.FC = () => {
-  const { notifications, watches, clear } = useDevModeFeatureData();
+const ApplicationDataFeed: React.FC = () => {
+  const { notifications, watches, clear } = useDevModeApplicationData();
   const appliedCount = notifications.filter((n) => n.applied).length;
   const droppedCount = notifications.length - appliedCount;
 
@@ -364,7 +364,7 @@ const FeatureDataFeed: React.FC = () => {
                 {watch.watchId.slice(0, 8)}
               </Text>
               <Text fontSize="10px" color="var(--text-secondary)" flexShrink={0}>
-                {watch.featureId ?? 'canonical'} · {watch.table}
+                {watch.applicationId ?? 'canonical'} · {watch.table}
               </Text>
               {watch.scope && (
                 <Text
@@ -429,7 +429,7 @@ const FeatureDataFeed: React.FC = () => {
           <VStack height="100%" align="center" justify="center" gap={2} color="var(--text-secondary)" pt={12}>
             <Text fontSize="13px">No application-data notifications yet</Text>
             <Text fontSize="11px" textAlign="center" maxWidth="280px">
-              Register a watch with feature_data_watch — every featureBatch delivery (and every
+              Register a watch with application_data_watch — every applicationBatch delivery (and every
               version-guard drop) appears here.
             </Text>
           </VStack>
@@ -466,9 +466,9 @@ const FeatureDataFeed: React.FC = () => {
                     {notification.watchId.slice(0, 8)}
                   </Text>
                   <Text fontSize="10px" color="var(--text-secondary)" flexShrink={0}>
-                    {notification.featureId ?? 'canonical'} · {notification.table}
+                    {notification.applicationId ?? 'canonical'} · {notification.table}
                   </Text>
-                  <FeatureKindBadge kind={notification.kind} />
+                  <ApplicationKindBadge kind={notification.kind} />
                   <Text
                     fontSize="10px"
                     color="var(--text-primary)"
@@ -571,8 +571,8 @@ export const DevMode: React.FC = () => {
 
   // Spec #2961 ST-3 (AC2): map the declared local hotkeys onto the panel's
   // existing operations. ONE window listener for the whole panel, removed on
-  // unmount; `run` is a no-op while the feature is unmounted (no subscriber),
-  // and the engine never dispatches these feature-tier actions unless Dev Mode
+  // unmount; `run` is a no-op while the application is unmounted (no subscriber),
+  // and the engine never dispatches these application-tier actions unless Dev Mode
   // is the focused window.
   useEffect(
     () =>
@@ -884,7 +884,7 @@ export const DevMode: React.FC = () => {
       </Box>
         </>
       ) : (
-        <FeatureDataFeed />
+        <ApplicationDataFeed />
       )}
     </Box>
   );
