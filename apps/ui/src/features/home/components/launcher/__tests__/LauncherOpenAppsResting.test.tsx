@@ -75,15 +75,6 @@ vi.mock('@/shared/window-system/useWindowActions', async (importOriginal) => {
   return { ...actual, useWindowActions: () => actionsMock.current };
 });
 
-// The relocated arrange control (rendered inside the row) dispatches the shared
-// store action — spy it so the positive control's mount is deterministic.
-const arrangeMock = vi.hoisted(() => ({ fn: vi.fn(() => 0) }));
-vi.mock('@/shared/window-system/workspaceLayoutStore', async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import('@/shared/window-system/workspaceLayoutStore')>();
-  return { ...actual, arrangeOpenWindows: arrangeMock.fn };
-});
-
 function win(over: Partial<WindowEntry> = {}): WindowEntry {
   return {
     id: 'mission-monitor',
@@ -160,7 +151,6 @@ beforeEach(() => {
     replyInFlight: false,
     queuedSendCount: 0,
   };
-  arrangeMock.fn.mockClear();
   vi.stubGlobal(
     'matchMedia',
     vi.fn().mockImplementation((query: string) => ({

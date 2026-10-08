@@ -9,17 +9,19 @@
  *   3. The row is ABSENT in `>` palette mode (the action list replaces the grid).
  *   4. The row is ABSENT at 0 windows (and the grid still renders — a non-vacuous
  *      absence, R-1 edge).
- *   5. The relocated arrange control (`[data-testid="dock-arrange"]`, #2949 AC1)
- *      renders on the row's heading line and dispatches `arrangeOpenWindows()`.
- *   6. Activate dispatches `focusWindow(id)` (top-window no-op guard); close
+ *   5. Activate dispatches `focusWindow(id)` (top-window no-op guard); close
  *      dispatches `closeWindow(id)` (R-3).
- *   7. The companion reply band is measured (numeric `barrierTop`) in BOTH the
+ *   6. The companion reply band is measured (numeric `barrierTop`) in BOTH the
  *      row-present and row-absent states (G-253).
+ *
+ * Spec #2980 ST-6 — the relocated arrange control (`dock-arrange` /
+ * `arrangeOpenWindows()`) was RETIRED with the #2949 arrangement path; the row is
+ * now a pure READ-ONLY window consumer (the host passes no `headingAccessory`).
  */
 
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, cleanup, fireEvent, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import type { WindowEntry } from '@/shared/window-system/windowTypes';
@@ -73,14 +75,6 @@ vi.mock('@/shared/window-system/useWindowActions', async (importOriginal) => {
   return { ...actual, useWindowActions: () => actionsMock.current };
 });
 
-// The relocated arrange entry dispatches the ONE shared store action — spy it.
-const arrangeMock = vi.hoisted(() => ({ fn: vi.fn(() => 0) }));
-vi.mock('@/shared/window-system/workspaceLayoutStore', async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import('@/shared/window-system/workspaceLayoutStore')>();
-  return { ...actual, arrangeOpenWindows: arrangeMock.fn };
-});
-
 function win(over: Partial<WindowEntry> = {}): WindowEntry {
   return {
     id: 'mission-monitor',
@@ -128,7 +122,6 @@ beforeEach(() => {
     replyInFlight: false,
     queuedSendCount: 0,
   };
-  arrangeMock.fn.mockClear();
   vi.stubGlobal(
     'matchMedia',
     vi.fn().mockImplementation((query: string) => ({
@@ -199,24 +192,6 @@ describe('LauncherShell — Open-apps row gating (R-2 / R-1 edge)', () => {
 
     expect(screen.queryByTestId('launcher-open-apps')).toBeNull();
     expect(container.querySelector('#fredo-launcher-grid')).not.toBeNull();
-  });
-});
-
-describe('LauncherShell — relocated arrange control (#2949 AC1)', () => {
-  it('renders on the row heading line and dispatches arrangeOpenWindows()', () => {
-    windowsMock.current = [win()];
-    renderShell();
-    engage();
-
-    const heading = screen.getByTestId('launcher-open-apps-heading');
-    const arrange = screen.getByTestId('dock-arrange');
-    expect(arrange).toHaveAttribute('aria-label', 'Arrange windows');
-    // On the heading line: the heading's flex row contains the control.
-    expect(heading.parentElement?.contains(arrange)).toBe(true);
-    expect(within(heading.parentElement as HTMLElement).getByTestId('dock-arrange')).toBe(arrange);
-
-    fireEvent.click(arrange);
-    expect(arrangeMock.fn).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -2,7 +2,7 @@ import React, { useRef, useEffect, useCallback, useMemo } from 'react';
 import { Box } from '@chakra-ui/react';
 import { WindowSystemProvider } from '../../../shared/window-system/WindowSystemProvider';
 import { WindowManager } from '../../../shared/window-system/WindowManager';
-import { hydrateWorkspaceLayout, reopenHydratedSlots } from '../../../shared/window-system/workspaceLayoutStore';
+import { hydrateZoneLayout, reopenZonedWindows } from '../../../shared/window-system/zoneLayoutStore';
 import { updateWindow } from '../../../shared/window-system/windowStore';
 import { useWindowActions } from '../../../shared/window-system/useWindowActions';
 import { createAppOpener } from '../../../shared/window-system/appWindows';
@@ -106,27 +106,26 @@ const HomeDesktop: React.FC<HomeDesktopProps> = ({ registerOpenFeature }) => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Boot-time hydration of the persisted tiled-workspace arrangement (Spec #2949
-  // ST-4 / R8 + AC5): HomeDesktop is an always-mounted consumer at app boot, so
-  // its first mount triggers the module-scoped store's idempotent, once-only
-  // `hydrateWorkspaceLayout()`. Without this the arrangement stays empty until
-  // some other consumer happens to mount, so a saved last-active layout would
-  // not re-tile on a restart. The store is `hydrationStarted`-once +
-  // dirty-guarded, so a later consumer's call is a harmless no-op and a late
-  // read never clobbers an in-flight user write.
+  // Boot-time hydration of the persisted ZONE configuration (Spec #2980 ST-6,
+  // R-4.2 / AC4): HomeDesktop is an always-mounted consumer at app boot, so its
+  // first mount triggers the module-scoped zone store's idempotent, once-only
+  // `hydrateZoneLayout()`. Without this the zone model stays empty until some
+  // other consumer happens to mount, so a saved active layout would not restore
+  // on a restart. The store is `hydrationStarted`-once + dirty-guarded, so a
+  // later consumer's call is a harmless no-op and a late read never clobbers an
+  // in-flight user write.
   //
-  // Round-2 (AC3/AC5): after hydration resolves, REOPEN the arrangement's
-  // windows through the full-lifecycle `openFeatureWindow` and immediately
-  // un-maximize them (`updateWindow(id, { isMaximized: false })`) so they land
-  // directly as panes in their hydrated slots — otherwise every slot renders as
-  // a degraded "App not available" placeholder. The reopen is BOOT-HYDRATION
-  // ONLY: an explicit `restoreLayout(layoutId)` keeps degrading a closed app
-  // (F-9 invariant). Unregistered ids are skipped → the degraded path renders
-  // them (R9). Mount-only ([] deps) — `openFeatureWindowRef` is read at call
-  // time and the module functions are stable, so no re-render loop (#523).
+  // After hydration resolves, REOPEN the active layout's zoned windows through
+  // the raw in-window `openFeatureWindow` and immediately un-maximize them
+  // (`updateWindow(id, { isMaximized: false })`) so they land directly in their
+  // zones instead of rendering as degraded "App not available" placeholders.
+  // The reopen is BOOT-HYDRATION ONLY, skips unregistered ids (the degraded path
+  // renders them — R-4.4), and is a no-op while layout management is disabled or
+  // no layout is active. Mount-only ([] deps) — `openFeatureWindowRef` is read at
+  // call time and the module functions are stable, so no re-render loop (#523).
   useEffect(() => {
-    void hydrateWorkspaceLayout().then(() => {
-      reopenHydratedSlots({
+    void hydrateZoneLayout().then(() => {
+      reopenZonedWindows({
         features: ALL_FEATURES,
         open: (id, feature) => openFeatureWindowRef.current(id, feature),
         update: (id, patch) => updateWindow(id, patch),
@@ -220,9 +219,9 @@ const HomeDesktop: React.FC<HomeDesktopProps> = ({ registerOpenFeature }) => {
   // presentation hydration, then branches `new-window` → the Rust singleton
   // native host (AC3) or `same-window` → the raw in-window `openFeatureWindow`.
   //
-  // Internal transition callbacks and the #2949 `reopenHydratedSlots` restore do
+  // Internal transition callbacks and the #2980 `reopenZonedWindows` restore do
   // NOT route through here — they call `openFeatureWindowRef.current` directly,
-  // so a workitem transition / tiled-workspace restore always stays in-window.
+  // so a workitem transition / zoned-workspace restore always stays in-window.
   // The bound in-window opener reads the ref at call time, so it always sees the
   // latest `openFeatureWindow`; the factory itself is created once.
   const openApp = useMemo(

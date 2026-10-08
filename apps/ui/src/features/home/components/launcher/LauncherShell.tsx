@@ -1,17 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { Box, chakra, useBreakpointValue } from '@chakra-ui/react';
+import { Box, useBreakpointValue } from '@chakra-ui/react';
 
 // Own-kernel window list (Spec #2807 ST-1) — AC1: never the third-party toolbar.
 import { useWindows } from '../../../../shared/window-system/useWindows';
 // Spec #2954 ST-2 — the in-launcher Open-apps row dispatches the SAME window
 // actions the retired dock used (focus/close only; the kernel stays read-only).
 import { useWindowActions } from '../../../../shared/window-system/useWindowActions';
-// Spec #2954 ST-2 — the relocated always-discoverable arrange entry dispatches
-// the ONE shared store action, imported from its ORIGINAL source module (the
-// retired `AppDock.tsx:48` imported it from here too — never recreate the dock).
-import { arrangeOpenWindows } from '../../../../shared/window-system/workspaceLayoutStore';
 import type { WindowEntry } from '../../../../shared/window-system/windowTypes';
-import { tint } from '../../../../shared/utils/colorTint';
 // Spec #2970 ST-6 (R-4.a) — the module-scoped companion voice/audio suppression
 // gate, driven by `useDoomMode`. Read through the shipped external-store pattern
 // so the launcher follows Doom Mode without a React context or a ref.
@@ -378,59 +373,6 @@ export function voiceStartErrorCopy(code: string | null): string | null {
  *  look has ONE definition. The overlay is z-gated below the window stack when
  *  covered. */
 
-/** Spec #2954 ST-2 — the relocated arrange glyph. A minimal 2×2 grid drawn in
- *  `currentColor` only (no hardcoded colour), matching the retired dock well. */
-function ArrangeWindowsIcon(): React.ReactElement {
-  return (
-    <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-      <rect x="2" y="2" width="4" height="4" rx="0.8" fill="currentColor" />
-      <rect x="8" y="2" width="4" height="4" rx="0.8" fill="currentColor" />
-      <rect x="2" y="8" width="4" height="4" rx="0.8" fill="currentColor" />
-      <rect x="8" y="8" width="4" height="4" rx="0.8" fill="currentColor" />
-    </svg>
-  );
-}
-
-/**
- * Spec #2954 ST-2 — the RELOCATED always-discoverable arrange entry (#2949 AC1).
- *
- * The retired dock's `[data-testid="dock-arrange"]` well was the ONLY arrange
- * control reachable at 0 tiled panes (the workspace toolbar is gated on an
- * existing pane). The testid is DELIBERATELY preserved so
- * `.opencode/tests/workspace-layout` stays bound; the control is no longer a
- * "dock" — it is the launcher Open-apps heading's trailing action, reachable
- * whenever the launcher is engaged with ≥1 open window (the only state in which
- * arranging is meaningful). It dispatches the ONE shared `arrangeOpenWindows()`
- * store action; token-native (theme vars + `tint()` only).
- */
-const LauncherArrangeControl: React.FC = () => (
-  <chakra.button
-    type="button"
-    data-testid="dock-arrange"
-    aria-label="Arrange windows"
-    title="Arrange windows"
-    onClick={() => arrangeOpenWindows()}
-    display="flex"
-    alignItems="center"
-    justifyContent="center"
-    width="24px"
-    height="24px"
-    flexShrink={0}
-    padding={0}
-    borderRadius="6px"
-    border="1px dashed"
-    borderColor="var(--border-color)"
-    bg="transparent"
-    color="var(--text-secondary)"
-    cursor="pointer"
-    transition="background-color 0.15s ease, color 0.15s ease"
-    _hover={{ bg: 'var(--card-hover-bg)', color: 'var(--text-primary)' }}
-    _focusVisible={{ outline: 'none', boxShadow: `0 0 0 2px ${tint('var(--accent-primary)', 40)}` }}
-  >
-    <ArrangeWindowsIcon />
-  </chakra.button>
-);
-
 /**
  * Spec #2954 ST-2 — the in-launcher Open-apps row HOST.
  *
@@ -473,7 +415,6 @@ const LauncherOpenAppsHost: React.FC<LauncherOpenAppsHostProps> = ({ windows }) 
       windows={windows}
       onActivate={handleActivate}
       onClose={handleClose}
-      headingAccessory={<LauncherArrangeControl />}
     />
   );
 };

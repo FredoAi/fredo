@@ -62,8 +62,8 @@ export async function closeAppOwnWindow(appId: string): Promise<boolean> {
  *      full-lifecycle kernel opener).
  *
  * A backend open failure is logged, never thrown into a render path (callers
- * are fire-and-forget). Internal transition callbacks and the #2949
- * `reopenHydratedSlots` restore do NOT go through this opener — they stay on
+ * are fire-and-forget). Internal transition callbacks and the #2980
+ * `reopenZonedWindows` restore do NOT go through this opener — they stay on
  * the raw in-window opener, so they are never re-routed by the per-app choice.
  */
 export function createAppOpener(openInWindow: InWindowOpener): AppOpener {
