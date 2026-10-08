@@ -286,6 +286,40 @@ describe('zoneLayoutStore — drag gesture (R-3.1/R-3.2/R-3.4)', () => {
     ]);
   });
 
+  it('un-maximizes the target on a successful commit (R-3.2)', () => {
+    seedActiveLayout();
+    openFeature('terminal'); // isMaximized omitted ⇒ full-bleed default
+    expect(getWindowSnapshot().find((w) => w.id === 'terminal')?.isMaximized).toBe(true);
+
+    beginZoneDrag('terminal');
+    updateZoneDragPointer(250, 400);
+    endZoneDrag(true);
+
+    expect(getZoneLayoutSnapshot().assignments).toEqual([
+      { windowId: 'terminal', layoutId: 'l1', zoneId: 'zone-0' },
+    ]);
+    expect(getWindowSnapshot().find((w) => w.id === 'terminal')?.isMaximized).toBe(false);
+  });
+
+  it('does not un-maximize on a gap release or a cancel (R-3.4)', () => {
+    seedActiveLayout();
+    openFeature('terminal');
+
+    // Gap release: a commit is requested but no zone is under the pointer.
+    beginZoneDrag('terminal');
+    updateZoneDragPointer(500, 400);
+    expect(getZoneLayoutSnapshot().hoveredZoneId).toBeNull();
+    endZoneDrag(true);
+    expect(getWindowSnapshot().find((w) => w.id === 'terminal')?.isMaximized).toBe(true);
+
+    // Cancel: a hovered zone is discarded without committing.
+    beginZoneDrag('terminal');
+    updateZoneDragPointer(250, 400);
+    endZoneDrag(false);
+    expect(getWindowSnapshot().find((w) => w.id === 'terminal')?.isMaximized).toBe(true);
+    expect(getZoneLayoutSnapshot().assignments).toEqual([]);
+  });
+
   it('leaves the assignment unchanged when released over a gap', () => {
     seedActiveLayout();
 

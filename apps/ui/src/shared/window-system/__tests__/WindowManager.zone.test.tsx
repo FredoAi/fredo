@@ -30,6 +30,7 @@ import {
   assignWindowToZone,
   beginZoneDrag,
   cancelZoneDrag,
+  endZoneDrag,
   getZoneLayoutWorkspace,
   resetZoneLayoutStoreForTests,
   saveZoneLayout,
@@ -180,6 +181,32 @@ describe('WindowManager — zone partition (R-4.3, R-3.3)', () => {
     expect(screen.getByTestId('workspace-pane-b').style.left).toBe(`${right.x}px`);
     expect(screen.queryByTestId('window-frame-a')).toBeNull();
     expect(screen.queryByTestId('window-frame-b')).toBeNull();
+  });
+
+  it('renders a maximized window as a pane after a chord-drag commit (R-3.2)', () => {
+    openFeature('a', { isMaximized: true });
+    setupZones({});
+
+    renderWithChakra(<WindowManager />);
+    // Born full-bleed: before the commit it is a float frame, not a pane.
+    expect(screen.getByTestId('window-frame-a')).toBeTruthy();
+    expect(screen.queryByTestId('workspace-pane-a')).toBeNull();
+
+    // The render above reported the workspace rect, so the drag can resolve a zone.
+    act(() => {
+      beginZoneDrag('a');
+      updateZoneDragPointer(250, 400); // over zone-0 (the left column)
+      endZoneDrag(true);
+    });
+
+    const pane = screen.getByTestId('workspace-pane-a');
+    expect(pane.getAttribute('data-zone-id')).toBe(ZONES[0].id);
+    const rect = resolveZoneRect(WS, ZONES[0], GAP);
+    expect(pane.style.left).toBe(`${rect.x}px`);
+    expect(pane.style.top).toBe(`${rect.y}px`);
+    expect(pane.style.width).toBe(`${rect.width}px`);
+    expect(pane.style.height).toBe(`${rect.height}px`);
+    expect(screen.queryByTestId('window-frame-a')).toBeNull();
   });
 
   it('renders NO pane while layout management is disabled', () => {

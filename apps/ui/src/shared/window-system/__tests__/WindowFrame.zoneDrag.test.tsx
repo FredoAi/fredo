@@ -244,6 +244,32 @@ describe('WindowFrame — eligible chord-drag (R-3.1/R-3.2)', () => {
     expect(surface.getAttribute('data-zone-drag')).toBeNull();
   });
 
+  it('un-maximizes a full-bleed window when released over a zone (R-3.2)', () => {
+    seedEnabledActiveLayout();
+    openEntry(); // isMaximized omitted ⇒ full-bleed default (the AC3 demo state)
+    const surface = renderFrame();
+    const header = headerOf(surface);
+
+    expect(getWindowSnapshot().find((w) => w.id === WINDOW_ID)?.isMaximized).toBe(true);
+
+    fireEvent.pointerDown(header, {
+      pointerId: 1,
+      button: 0,
+      altKey: true,
+      clientX: 250,
+      clientY: 400,
+    });
+    fireEvent.pointerMove(header, { pointerId: 1, clientX: 250, clientY: 400 });
+    expect(getZoneLayoutSnapshot().hoveredZoneId).toBe('zone-0');
+
+    fireEvent.pointerUp(header, { pointerId: 1, clientX: 250, clientY: 400 });
+
+    expect(getZoneLayoutSnapshot().assignments).toEqual([
+      { windowId: WINDOW_ID, layoutId: LAYOUT_ID, zoneId: 'zone-0' },
+    ]);
+    expect(getWindowSnapshot().find((w) => w.id === WINDOW_ID)?.isMaximized).toBe(false);
+  });
+
   it('leaves the assignment unchanged when released over no zone', () => {
     seedEnabledActiveLayout();
     openEntry({ isMaximized: false });

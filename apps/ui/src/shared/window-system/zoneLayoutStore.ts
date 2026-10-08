@@ -49,7 +49,7 @@ import {
   type ZoneLayout,
   type ZoneTemplateId,
 } from './zoneLayout';
-import { getWindowSnapshot } from './windowStore';
+import { getWindowSnapshot, updateWindow } from './windowStore';
 
 /** Coalescing window for persistence — rapid changes write once. */
 const PERSIST_DEBOUNCE_MS = 150;
@@ -336,6 +336,13 @@ export function endZoneDrag(commit: boolean): void {
   notify();
   if (commit && windowId !== null && zoneId !== null) {
     assignWindowToZone(windowId, zoneId);
+    // Establishing a zone placement un-maximizes its window (R-3.2) — mirrors
+    // `reopenZonedWindows`. Fredo windows are born full-bleed (`isMaximized`
+    // defaults true), so without this the renderer would keep a maximized
+    // assignment on the full-bleed frame path and never place it. Confined to
+    // the real-commit branch: gap/outside releases and Escape/cancel leave a
+    // maximized window maximized (R-3.4).
+    updateWindow(windowId, { isMaximized: false });
   }
   if (dirty) schedulePersist();
 }
