@@ -46,7 +46,7 @@
   `app-presentation-status` confirmation; after the restart the Terminal `-new-window` radio is
   `aria-checked="true"` and the store still holds the value. A pre-hydration `app-presentation-loading`
   skeleton renders before the stored value resolves (no flash of a wrong pre-selection).
-  **Data:** `clean-fredo-db.ps1` for a fresh profile; `tauri_webview_execute_js` `get_control_setting` read-back.
+  **Data:** `dev-env.ps1 -Action Down` then `-Action Up` with a fresh `FREDO_DATA_DIR` for a fresh profile; `tauri_webview_execute_js` `get_control_setting` read-back.
   **Edge:** keyboard-only radio operation; factory `-new-window` disabled; no re-render loop.
 
 - [ ] **F-2 (R-2 / AC2) — default opens in the main window; a stored `new-window` app opens in its own OS window.**

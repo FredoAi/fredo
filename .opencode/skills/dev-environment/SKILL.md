@@ -65,18 +65,20 @@ Test-only levers for the error-path ACs live in `.opencode/tests/multi-env-isola
 
 ## Fresh-slate reset (embedded PostgreSQL)
 
-The store is the embedded PostgreSQL cluster, so a fresh slate is produced by the env-scoped `Clean` action (there is no separate DB-reset script):
+The store is the embedded PostgreSQL cluster. There is no separate DB-reset script. The
+fresh-slate reset depends on the instance kind:
 
-| Command | Description |
-|---------|-------------|
-| `powershell -File .opencode/scripts/dev-env.ps1 -Action Clean -EnvId <id>` | Stop the env (manifest-scoped, image-guarded), then remove ONLY its manifest, app-data dir (`FREDO_DATA_DIR`), PostgreSQL data dir (`<env-root>/postgres`), cache, and logs. Never touches a sibling env. |
-| `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec <N> -EnvId <id> -EnvSlot <n>` | Cold-start a fresh env on a clean store (the schema is recreated on first boot). |
+| Instance | Fresh-slate reset |
+|----------|-------------------|
+| Legacy single-env (no `-EnvId`) | `powershell -File .opencode/scripts/dev-env.ps1 -Action Down`, then `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec <N>` **carrying a fresh `FREDO_DATA_DIR`** (point it at a new, empty dir). |
+| Isolated env (`-EnvId <id>`) | `powershell -File .opencode/scripts/dev-env.ps1 -Action Clean -EnvId <id>`, then `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec <N> -EnvId <id> -EnvSlot <n>`. `Clean` stops the env (manifest-scoped, image-guarded) and removes ONLY its manifest, app-data dir (`FREDO_DATA_DIR`), PostgreSQL data dir (`<env-root>/postgres`), cache, and logs — never a sibling env. |
 
 Notes:
-- The tester **cannot** `Remove-Item` the live store directly — the sandbox allowlist only permits `.opencode/*` paths. Use the env-scoped `Clean` action; never a raw path removal (G-009).
-- The managed cluster MUST be stopped before its data dir is removed — `Clean` does the manifest-scoped stop first (a sibling env is never touched).
-- `Clean` wipes `feature_mission-monitor_*` tables AND `telemetry_spans`/`telemetry_metrics`/`telemetry_logs` — everything. Use it when a spec AC requires "fresh DBs" (e.g. Mission Monitor e2e).
-- Run `Clean` BEFORE `dev-env.ps1 -Action Up` for the next test session.
+- **Legacy single-env:** `-Action Clean` is env-mode only, so a fresh slate is `-Action Down` then an `-Action Up` carrying a fresh `FREDO_DATA_DIR` (emptied or newly created) — the schema is recreated on first boot.
+- The managed cluster MUST be stopped before its data dir is removed (`Down`/`Clean` do the manifest-scoped stop first; a sibling env is never touched).
+- The tester **cannot** `Remove-Item` the live store directly — the sandbox allowlist only permits `.opencode/*` paths. Use the env-scoped `Clean` action or the `Down` → fresh-`FREDO_DATA_DIR` `Up`; never a raw path removal (G-009).
+- `Clean` (and a fresh `FREDO_DATA_DIR`) wipes `feature_mission-monitor_*` tables AND `telemetry_spans`/`telemetry_metrics`/`telemetry_logs` — everything. Use it when a spec AC requires "fresh DBs" (e.g. Mission Monitor e2e).
+- Reset the store BEFORE `dev-env.ps1 -Action Up` for the next test session.
 
 ## Evidence upload (gh-image prerequisite)
 

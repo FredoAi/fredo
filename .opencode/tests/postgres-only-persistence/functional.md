@@ -78,31 +78,36 @@
   - FAIL: the sentinel appears in any file/log/span; the secret is logged/exported; headless fails to
     boot when the keychain is unavailable.
 
-- [ ] **F-4 (R-4/AC4) — a pre-existing legacy SQLite file is ignored and stays byte-identical.**
-  Materialize a fake legacy SQLite file (valid SQLite header + a table) at
-  `.opencode/tmp/3005/appdata-legacy/legacy.db` (in-repo write scope); record its SHA-256 + byte size +
-  mtime; point `FREDO_DATA_DIR` at that dir; boot; read `storage_engine_status`; re-hash.
+- [ ] **F-4 (R-4/AC4) — a pre-existing legacy `fredo.db` is ignored and stays byte-identical.**
+  Materialize a fake legacy SQLite file (valid SQLite header + a table) literally named `fredo.db` at
+  `.opencode/tmp/3005/appdata-legacy/fredo.db` (in-repo `ephemeral-pipeline-scratch` — allowlisted
+  scratch); record its SHA-256 + byte size + mtime; point `FREDO_DATA_DIR` at that dir; boot; read
+  `storage_engine_status`; re-hash.
   - EXPECTED: the app starts on PostgreSQL (`engine:"postgres", ready:true`) and does NOT read, carry,
     or migrate the file; SHA-256 + size + mtime are byte-identical after boot; no `-wal`/`-shm` side
     files are created beside it.
   - Edge: an empty legacy file; a read-only legacy file; two consecutive boots; a legacy file present
     with no settings cache yet.
   - FAIL: a hash/size/mtime change; a `.db`-derived carry into PG `settings`; any open-for-write.
+  - NOTE: the LIVE leg uses the real filename `fredo.db` under allowlisted scratch (binding refinement
+    #4). Naming the legacy store inside this suite to assert its absence is not a gate hit — the gate
+    allowlists `.opencode/tests/**` as `test-absence-fixtures`.
 
 - [ ] **F-5 (R-5/AC5) — the residual occurrence gate denies the retired vocabulary and self-tests.**
-  Run `.opencode/scripts/check-sqlite-retired.ps1` over the repo. Create a synthetic probe under
-  `.opencode/tmp/3005/gate-selftest/probe.md` containing one of the gate's denied tokens (the token
-  table lives inside the gate script — gate-self-reference); re-run the gate.
-  - EXPECTED: the repo scan exits clean (only allowlisted-class hits); the synthetic probe IS flagged
-    (the gate's DENY property fires); the legacy engine-selection symbols are absent from the crate
-    (the gate is grep-verifiable and owns the token table); no shipped skill/script/doc/agent-permission
-    references SQLite as a LIVE store.
-  - Edge: a denied token in `.opencode/tests/**` or a product doc IS flagged; `historic-narrative`
-    prose (`references.md` guardrail history, `spikes/**`) is NOT flagged; `gate-self-reference` (the
-    checker's own token table + probe) is NOT flagged; `ephemeral-pipeline-scratch` (`.opencode/tmp/**`,
-    `.opencode/state/**`) is NOT flagged.
-  - FAIL: the gate exits 0 while a denied token sits in a DENY class; the self-test probe is NOT
-    flagged; a DENY class is silently allowlisted.
+  Run `.opencode/scripts/check-sqlite-retired.ps1` over the repo; run it again with `-SelfTest`. The
+  deny token table lives inside the gate script (class `gate-self-reference`).
+  - EXPECTED: the repo scan exits clean (only allowlisted-class hits) and prints the DENY property plus
+    hits by class; `-SelfTest` exits 0 after asserting the matcher flags `control.db` (and `fredo.db`)
+    and does NOT flag the legitimate keychain service `fredo.dbclient` (word boundary, G-330); the legacy
+    engine-selection symbols are absent from the crate; no shipped skill/script/doc/permission references
+    SQLite as a LIVE store.
+  - Edge: a denied token in a DENY-scope file IS flagged; `historic-narrative` (`references.md` guardrail
+    history, `spikes/**`, `docs/README.md`) is NOT flagged; `test-absence-fixtures` (`.opencode/tests/**`,
+    `apps/**/tests/**` — suites that NAME the legacy store to assert its absence) is NOT flagged;
+    `gate-self-reference` (the checker's own token table + probe) is NOT flagged;
+    `ephemeral-pipeline-scratch` (`.opencode/tmp/**`, `.opencode/state/**`) is NOT flagged.
+  - FAIL: the gate exits 0 while a denied token sits in a DENY class; `-SelfTest` does not fire; a DENY
+    class is silently allowlisted.
 
 - [ ] **F-6 (HUMAN DIRECTIVE, mission-monitor acceptance, E2E LIVE — G-256/G-299) — the RUNNING app boots PG-only, Mission Monitor renders live sessions, and no `.db` file remains.**
   Boot the running app on a fresh `FREDO_DATA_DIR`; confirm `storage_engine_status`. Seed one qualifying

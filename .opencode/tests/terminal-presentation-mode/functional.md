@@ -16,7 +16,7 @@
 > Evidence levers: `dev-env.ps1 -Action Up/Restart`, `tauri_driver_session start`,
 > `tauri_manage_window(action="list")`, `tauri_webview_dom_snapshot`/`screenshot`/`execute_js`,
 > `list_terminal_sessions`, `get_pty_buffer{sessionId}`, `process-hygiene.ps1 -List`,
-> `clean-fredo-db.ps1`, `fredo open-terminal …`. Live-policy gate: a `telemetry_spans`
+> a fresh `FREDO_DATA_DIR` (`dev-env.ps1 -Action Down` then `-Action Up`), `fredo open-terminal …`. Live-policy gate: a `telemetry_spans`
 > baseline via the telemetry-query skill.
 
 ## Cases
@@ -34,7 +34,7 @@
   **Expected:** exactly one native Tauri window labelled `terminal` (`index.html?view=terminal`), focused on open; the second invocation focuses that same window — never a second one; behaviour matches today's Terminal.
 
 - [x] **F-4 (REQ-4) — absent/unrecognized stored value resolves to the defined default.** (round 2 PASS: absent (`null`, both stores clear) → native `terminal` window opened (default `new-window`); unrecognized `not-a-mode` → native window + default; `" same-window "` → recognized after trim on BOTH sides (FS-2); `"Same-Window"`/JSON array → default per FS-8 unit pins.)
-  (a) `clean-fredo-db.ps1` then launch. (b) `execute_js` → `save_setting{key:"terminal_presentation_mode", value:"not-a-mode"}`, restart, launch Terminal.
+  (a) a fresh `FREDO_DATA_DIR` (`dev-env.ps1 -Action Down` then `-Action Up`) then launch. (b) `execute_js` → `save_setting{key:"terminal_presentation_mode", value:"not-a-mode"}`, restart, launch Terminal.
   **Expected:** both resolve to `new-window` with no thrown error and no crash; Terminal opens as a separate native window labelled `terminal`.
 
 - [x] **F-5 (REQ-5) — `fredo open-terminal` respects the selected mode with no stale/duplicate/orphaned window.** (round 2 PASS: same-window cold `--cli opencode --dir <valid>` → `started`, windows `[main]` only, exactly 1 live session, PTY non-empty with the opencode TUI; warm + no-args `opened` → 0 new sessions; new-window unchanged.)

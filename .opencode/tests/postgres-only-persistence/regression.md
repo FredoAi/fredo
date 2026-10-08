@@ -78,7 +78,7 @@
 ## Pinned references (G-283/G-320)
 
 - The **legacy SQLite file hash** in functional F-4 is sourced from the artifact itself (the fake file
-  written under `.opencode/tmp/3005/appdata-legacy/legacy.db`) — a named artifact, not a bare `main` path.
+  written under `.opencode/tmp/3005/appdata-legacy/fredo.db`) — a named artifact, not a bare `main` path.
 - The **gate DENY tokens** in functional F-5 are sourced from the enforcement script's own token table
   (`.opencode/scripts/check-sqlite-retired.ps1`, ST-9) — not from prose.
 - Any spec-branch baseline referenced by a leg pins the SHA stamped by the dev-env manifest at test time
