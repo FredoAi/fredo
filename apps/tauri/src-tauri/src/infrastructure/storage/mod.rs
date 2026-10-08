@@ -1,7 +1,15 @@
+pub mod boot_config;
 pub mod engine;
 pub mod application_store;
 pub mod migration;
 pub mod span_store;
+
+// The ONE synchronous boot KV + the app-data-dir resolver (Spec #3005 ST-1).
+// Relocated OUT of the legacy `migration` tree so deleting that tree cannot
+// delete the resolver the app depends on.
+pub use boot_config::{
+    resolve_app_data_dir, BootConfig, BOOT_CONFIG_FILENAME, BOOT_PID_KEY, DATA_DIR_ENV,
+};
 
 // The storage engine seam (Spec #2975 ST-1) re-exported at the module root so
 // consumers read `storage::{EngineHandle, StoreEngine, ...}`. Spec #2976 ST-1
@@ -65,6 +73,8 @@ pub struct AppStore {
     engine: Arc<EngineHandle>,
     /// The always-SQLite control plane (`control.db`, shared write connection).
     control: Arc<SqliteEngine>,
+    /// The ONE synchronous boot KV (`<app_data_dir>/boot-config.json`).
+    boot: BootConfig,
 }
 
 impl AppStore {
@@ -88,7 +98,20 @@ impl AppStore {
         )?;
         carry_legacy_settings(app_data_dir, &control)?;
 
-        Ok(AppStore { engine, control })
+        let boot = BootConfig::open(app_data_dir)?;
+
+        Ok(AppStore {
+            engine,
+            control,
+            boot,
+        })
+    }
+
+    /// The ONE synchronous boot KV (`<app_data_dir>/boot-config.json`). Holds the
+    /// postmaster PID marker ([`BOOT_PID_KEY`]) - the only key readable before
+    /// PostgreSQL exists.
+    pub fn boot(&self) -> &BootConfig {
+        &self.boot
     }
 
     /// The dedicated control-plane engine (`control.db`). Used by `lib.rs` to

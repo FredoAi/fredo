@@ -27,9 +27,8 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
-use crate::infrastructure::storage::migration::{
-    resolve_app_data_dir, MIGRATION_COMPLETED_KEY, ROLLBACK_VERIFIED_KEY,
-};
+use crate::infrastructure::storage::boot_config::resolve_app_data_dir;
+use crate::infrastructure::storage::migration::{MIGRATION_COMPLETED_KEY, ROLLBACK_VERIFIED_KEY};
 use crate::infrastructure::storage::AppStore;
 
 use super::acquisition::{PgAcquisitionMode, ACQUISITION_MODE};

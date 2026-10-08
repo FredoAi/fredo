@@ -211,7 +211,7 @@ pub fn run() {
             // target) to an in-repo fixture; the managed-PG install dir + lock stay
             // on the OS dir (`applications::pg_supervisor`), so a fixture run reuses the
             // existing install. Inert when unset (the default path is byte-identical).
-            let data_dir = infrastructure::storage::migration::resolve_app_data_dir(
+            let data_dir = infrastructure::storage::boot_config::resolve_app_data_dir(
                 &app.path()
                     .app_data_dir()
                     .expect("Failed to resolve app data dir"),

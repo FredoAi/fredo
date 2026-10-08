@@ -67,16 +67,6 @@ pub const ROLLBACK_VERIFIED_KEY: &str = "rollback.verified";
 /// [`ROLLBACK_VERIFIED_KEY`] = `"true"`.
 pub const ROLLBACK_VERIFIED_AT_KEY: &str = "rollback.verified_at";
 
-/// **G-275** app-data-dir override: when set (non-blank) the app data root used
-/// to resolve the source `fredo.db` AND the AC3 backout target is this path
-/// instead of the OS `app_data_dir()`.
-///
-/// The managed-PostgreSQL distribution install dir ([`super`] FS-1 precedent:
-/// `PG_INSTALL_SUBDIR`) and `postgres.lock` deliberately stay under the OS dir,
-/// so a fixture run reuses the existing install (no network) and the exclusive
-/// lock keeps its stable location. Inert when unset.
-pub const DATA_DIR_ENV: &str = "FREDO_DATA_DIR";
-
 /// **G-275** override for the writable scratch/snapshot dir. Default
 /// `<app_data_dir>/migration`. Inert when unset.
 pub const MIGRATION_DIR_ENV: &str = "FREDO_MIGRATION_DIR";
@@ -139,19 +129,10 @@ pub fn current_migration_fault() -> Option<MigrationFault> {
     parse_migration_fault(&std::env::var(MIGRATION_FORCE_MISMATCH_ENV).ok()?)
 }
 
-/// The ONE app-data-dir resolver (**G-275**): the non-blank [`DATA_DIR_ENV`]
-/// override when set, else the OS `app_data_dir()`.
+/// The ONE app-data-dir resolver (**G-275**) now lives in
+/// [`crate::infrastructure::storage::boot_config::resolve_app_data_dir`]
+/// (relocated out of this tree by Spec #3005 ST-1).
 ///
-/// Injected at `lib.rs` in place of the hardcoded `app.path().app_data_dir()`;
-/// the supervisor resolves the SAME dir for the migration source so
-/// `<dir>/fredo.db` and `restore_snapshot`'s target can never diverge.
-pub fn resolve_app_data_dir(os_app_data_dir: &Path) -> PathBuf {
-    match std::env::var(DATA_DIR_ENV) {
-        Ok(value) if !value.trim().is_empty() => PathBuf::from(value.trim()),
-        _ => os_app_data_dir.to_path_buf(),
-    }
-}
-
 /// Resolve the writable scratch/snapshot dir (**G-275**): the non-blank
 /// [`MIGRATION_DIR_ENV`] override when set, else `<app_data_dir>/migration`.
 pub fn resolve_migration_dir(app_data_dir: &Path) -> PathBuf {
@@ -340,32 +321,6 @@ mod tests {
             parse_migration_fault("telemetry_spans:EXPORT_ERROR"),
             Some(MigrationFault::ExportError("telemetry_spans".to_string()))
         );
-    }
-
-    #[test]
-    fn resolve_app_data_dir_prefers_a_non_blank_override() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let os = Path::new("C:/os/appdata");
-        {
-            let _g = unset_env(DATA_DIR_ENV);
-            assert_eq!(resolve_app_data_dir(os), PathBuf::from(os));
-        }
-        {
-            let _g = set_env(DATA_DIR_ENV, "  ");
-            assert_eq!(
-                resolve_app_data_dir(os),
-                PathBuf::from(os),
-                "a blank override is inert"
-            );
-        }
-        {
-            let _g = set_env(DATA_DIR_ENV, "  C:/fixture  ");
-            assert_eq!(
-                resolve_app_data_dir(os),
-                PathBuf::from("C:/fixture"),
-                "a non-blank override wins (trimmed)"
-            );
-        }
     }
 
     #[test]

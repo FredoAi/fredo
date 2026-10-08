@@ -61,9 +61,10 @@ use fredo_lib::infrastructure::rtdb::rows::RowState;
 use fredo_lib::infrastructure::storage::engine::{
     ensure_settings_schema, Dialect, EngineChoice, PgEngine, StorageEngineState,
 };
+use fredo_lib::infrastructure::storage::boot_config::resolve_app_data_dir;
 use fredo_lib::infrastructure::storage::migration::snapshot::SNAPSHOT_FILENAME;
 use fredo_lib::infrastructure::storage::migration::{
-    enumerate_tables, resolve_app_data_dir, resolve_migration_dir, restore_snapshot, run_pre_install,
+    enumerate_tables, resolve_migration_dir, restore_snapshot, run_pre_install,
     verify_rollback_snapshot, verify_snapshot, MigrationStatus, PreCutoverTable, MIGRATION_CHUNK_ROWS,
     MIGRATION_COMPLETED_KEY, ROLLBACK_PRECUTOVER_PARITY_KEY,
 };

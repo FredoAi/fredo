@@ -43,11 +43,11 @@ use super::snapshot::{
 };
 use super::tables::{enumerate_tables, TableSpec};
 use super::{
-    current_migration_fault, migration_table_budget, resolve_app_data_dir, resolve_migration_dir,
-    MigrationFault, MigrationOutcome, MigrationStatus, MIGRATION_COMPLETED_KEY,
-    MIGRATION_HARD_CEILING, ROLLBACK_PRECUTOVER_PARITY_KEY, ROLLBACK_VERIFIED_AT_KEY,
-    ROLLBACK_VERIFIED_KEY,
+    current_migration_fault, migration_table_budget, resolve_migration_dir, MigrationFault,
+    MigrationOutcome, MigrationStatus, MIGRATION_COMPLETED_KEY, MIGRATION_HARD_CEILING,
+    ROLLBACK_PRECUTOVER_PARITY_KEY, ROLLBACK_VERIFIED_AT_KEY, ROLLBACK_VERIFIED_KEY,
 };
+use crate::infrastructure::storage::boot_config::resolve_app_data_dir;
 
 /// Finite bound on the whole `verify_rollback` flow (G-263). The snapshot
 /// recompute runs on a blocking worker under this wall-clock cap; the caller is

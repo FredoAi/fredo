@@ -57,7 +57,8 @@ use crate::infrastructure::rtdb::ingest::IngestClassifier;
 use crate::infrastructure::rtdb::store::RtdbStore;
 use crate::infrastructure::rtdb::subscriptions::SubscriptionRegistry;
 use crate::infrastructure::storage::engine::{build_pg_pool, EngineHandle, StoreEngine};
-use crate::infrastructure::storage::migration::{resolve_app_data_dir, MIGRATION_COMPLETED_KEY};
+use crate::infrastructure::storage::boot_config::resolve_app_data_dir;
+use crate::infrastructure::storage::migration::MIGRATION_COMPLETED_KEY;
 use crate::infrastructure::storage::span_store::SpanStore;
 use crate::infrastructure::storage::AppStore;
 

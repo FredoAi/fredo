@@ -32,21 +32,21 @@ use super::{PG_PID_KEY, POSTGRES_IMAGE};
 
 /// Persist the managed postmaster PID marker; `None` clears it.
 ///
-/// The [`AppStore`] **control plane** (`control.db`, Spec #2979 CU-1) is the
-/// single source of truth for the marker — this helper owns the key so the write
-/// and clear paths can never drift. A failed write is ignored: the marker is
-/// best-effort recovery metadata, never load-bearing state.
+/// The boot-config JSON file (`<app_data_dir>/boot-config.json`, Spec #3005 ST-1)
+/// is the single source of truth for the marker - this helper owns the key so the
+/// write and clear paths can never drift. It is the ONLY pre-PostgreSQL key. A
+/// failed write is ignored: the marker is best-effort recovery metadata, never
+/// load-bearing state.
 pub fn persist_pid(store: &AppStore, pid: Option<u32>) {
     let value = pid.map(|pid| pid.to_string()).unwrap_or_default();
-    let _ = store.control_set(PG_PID_KEY, &value);
+    let _ = store.boot().set(PG_PID_KEY, &value);
 }
 
 /// Read the persisted postmaster PID marker (blank / malformed => `None`).
 pub fn persisted_pid(store: &AppStore) -> Option<u32> {
     store
-        .control_get(PG_PID_KEY)
-        .ok()
-        .flatten()
+        .boot()
+        .get(PG_PID_KEY)
         .and_then(|value| value.trim().parse().ok())
 }
 
@@ -200,15 +200,15 @@ mod tests {
     }
 
     #[test]
-    fn the_pid_marker_lives_on_the_control_plane() {
+    fn the_pid_marker_lives_in_the_boot_config_file() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = open_store(dir.path());
         persist_pid(&store, Some(777));
         assert!(
             dir.path()
-                .join(crate::infrastructure::storage::CONTROL_DB_FILENAME)
+                .join(crate::infrastructure::storage::BOOT_CONFIG_FILENAME)
                 .exists(),
-            "the postmaster PID marker must live on control.db (CU-1)"
+            "the postmaster PID marker must live in boot-config.json (ST-1)"
         );
         assert_eq!(persisted_pid(&store), Some(777));
     }
@@ -219,7 +219,7 @@ mod tests {
         let store = open_store(dir.path());
 
         for raw in ["", "   ", "not-a-pid", "12abc", "-1", "0x10"] {
-            store.control_set(PG_PID_KEY, raw).expect("seed marker");
+            store.boot().set(PG_PID_KEY, raw).expect("seed marker");
             assert_eq!(
                 persisted_pid(&store),
                 None,
@@ -289,7 +289,7 @@ mod tests {
         clear_kills();
         let dir = tempfile::tempdir().expect("tempdir");
         let store = open_store(dir.path());
-        store.control_set(PG_PID_KEY, "not-a-pid").expect("seed marker");
+        store.boot().set(PG_PID_KEY, "not-a-pid").expect("seed marker");
 
         let reclaimed =
             sweep_orphan_with(&store, |_| Some(POSTGRES_IMAGE.to_string()), record_kill);

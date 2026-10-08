@@ -43,8 +43,9 @@ use tauri::{AppHandle, Manager};
 use crate::infrastructure::storage::engine::{
     build_pg_pool, EngineChoice, PgPoolStage, StorageEngineState,
 };
+use crate::infrastructure::storage::boot_config::resolve_app_data_dir;
 use crate::infrastructure::storage::migration::{
-    resolve_app_data_dir, resolve_migration_dir, run_pre_install, MigrationOutcome, MigrationStatus,
+    resolve_migration_dir, run_pre_install, MigrationOutcome, MigrationStatus,
 };
 use crate::infrastructure::storage::AppStore;
 
@@ -1002,7 +1003,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = open_store(dir.path());
         // A stale marker must survive the disabled path untouched (R-1.4).
-        store.control_set(PG_PID_KEY, "4242").expect("seed marker");
+        store.boot().set(PG_PID_KEY, "4242").expect("seed marker");
 
         assert!(matches!(
             bootstrap(dir.path(), &store, false),
