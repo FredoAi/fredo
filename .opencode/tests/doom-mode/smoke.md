@@ -47,16 +47,28 @@
 
 ---
 
-## Resume-across-sessions slice (Spec #2972) — smoke additions
+## Resume-across-sessions slice (Spec #2972 / updated #3011) — smoke additions
 
 > **Verification policy: live** — the live-pipeline `telemetry_spans` reference (non-zero count +
-> recent `max(ingested_at)`; managed `psql` on the PG default, G-284, or a disclosed app-pool
-> fallback, G-307). Doom emits no span. A static-only smoke cannot pass.
+> recent `max(ingested_at)`; app-pool read `application_store_query`, G-284/G-307; `psql` is
+> pool-saturated/unreachable — NEVER named). Doom emits no span. A static-only smoke cannot pass.
 >
 > **Real-engine scope:** the resume quick path (S-21) uses the REAL `restful-doom.exe` re-staged
-> per G-319; the stub is only for the deterministic advance/completion leg (S-23).
+> per G-319 (readiness gate `get_doom_status.phase="ready"` + `GET /api/state` 200); the stub is
+> only for the deterministic advance/completion leg (S-23).
 
-- [ ] S-21 (REAL engine) **Resume quick path** — seed a valid `DoomSave` at E1M2 via `FREDO_DOOM_SAVE_FILE`; re-stage the real engine; enter Doom Mode. EXPECTED: the engine positions at `level.episode=1, level.map=2` (one `POST /api/episode` before the first step); `doom-save-status` renders `E1M2`; the companion steps forward. (A stub-only receipt is a FALSE PASS.)
-- [ ] S-22 **Fresh-start quick path** — with a valid save present, click `doom-fresh-start-button` → confirm (`doom-fresh-start-confirm`). EXPECTED: the run starts at E1M1; before the first advance the prior save is unchanged; `doom-save-status` updates to `E1M1` only once the run advances.
-- [ ] S-23 (stub) **Advance/complete quick path** — stub `FREDO_DOOM_STUB_DONE_AFTER=<n>` + `FREDO_DOOM_SAVE_FILE`. EXPECTED: a level exit advances + persists; at the final level `phase=completed`, `code="campaignComplete"`, `doom-progress-complete` renders. Disclose the deterministic-stub split.
-- [ ] S-24 (F-69 gate) **PG-default boot + Mission Monitor + corrupt-save safety** — boot end-to-end; seed a qualifying session; boot with a corrupt `FREDO_DOOM_SAVE_FILE` (`not json`). EXPECTED: `storage_engine_status` = PostgreSQL / PG supervisor ready; Mission Monitor renders ≥1 live session; the mode enters on a clean run with no crash; live-pipeline receipt non-zero + recent `max(ingested_at)`.
+- [ ] S-21 (REAL engine — updated #3011) **Resume quick path** — seed a valid `DoomSave` at E1M2 via `FREDO_DOOM_SAVE_STATE_DIR` (`<dir>/doom-save.json`); re-stage the real engine; enter Doom Mode. EXPECTED: the engine positions at `level.episode=1, level.map=2` (one `POST /api/episode` before the first step); `doom-save-status` renders `E1M2`; the companion steps forward. (A stub-only receipt is a FALSE PASS.)
+- [ ] S-22 (updated #3011) **Fresh-start quick path** — with a valid save present, click `doom-fresh-start-button` → confirm (`doom-fresh-start-confirm`). EXPECTED: the run starts at E1M1; before the first advance the prior save (`feature_doom_save` singleton row / state-dir fixture) is unchanged; `doom-save-status` updates to `E1M1` only once the run advances.
+- [ ] S-23 (stub — updated #3011) **Advance/complete quick path; ONE row / no append** — stub `FREDO_DOOM_STUB_DONE_AFTER=<n>` on the production PG path (no state-dir env). EXPECTED: a level exit advances + UPSERTS the singleton row (`application_store_query` still returns exactly ONE row); at the final level `phase=completed`, `code="campaignComplete"`, `doom-progress-complete` renders. Disclose the deterministic-stub split.
+- [ ] S-24 (F-69 gate — updated #3011) **PG-default boot + Mission Monitor + corrupt-save safety** — boot end-to-end; seed a qualifying session; boot with a corrupt state-dir fixture (`FREDO_DOOM_SAVE_STATE_DIR` → `not json`) or `FREDO_DOOM_SAVE_FORCE_FAIL=read`. EXPECTED: `storage_engine_status` = PostgreSQL / PG supervisor ready; Mission Monitor renders ≥1 live session; the mode enters on a clean run with no crash; `get_control_setting('doom_save_v1')` → null; live-pipeline receipt non-zero + recent `max(ingested_at)`.
+
+---
+
+## Dedicated PostgreSQL feature-store slice (Spec #3011) — smoke additions
+
+> **Verification policy: live** — app-pool read `application_store_query` (G-284/G-307; `psql` NOT
+> named) + the `telemetry_spans` receipt. Doom emits no span. A static-only smoke cannot pass.
+
+- [ ] S-25 (REAL engine) **PG save round-trip quick path** — drive a real level transition (production PG path); `application_store_query({applicationId:'doom',tableName:'save'})` returns exactly ONE `id='singleton'` row with the typed columns; `get_doom_save` matches. (A stub-only receipt is a FALSE PASS.)
+- [ ] S-26 **No control-plane save key** — `get_control_setting('doom_save_v1')` → null while the save exists in `feature_doom_save`; the IPC monitor shows the save/resume path touching only `doom`/`save`, never the control plane.
+- [ ] S-27 (F-MM3011 gate) **Full-restart survival** — after a durable save, fully quit + relaunch; re-enter Doom Mode; `get_doom_save` reports the saved coords BEFORE any step (row read from `feature_doom_save`).
