@@ -215,7 +215,9 @@ export type DoomAutoplayErrorCode =
   | 'notReady'
   | 'decisionFailed'
   | 'engineRequestFailed'
-  | 'budgetExhausted';
+  | 'budgetExhausted'
+  // Spec #2972 ST-6 — additive: the campaign's final level was exited.
+  | 'campaignComplete';
 
 /** The `doom-autoplay-changed` event name (ST-5 emits it to the `doom` window). */
 export const DOOM_AUTOPLAY_EVENT = 'doom-autoplay-changed';
@@ -240,6 +242,10 @@ export interface DoomAutoplayStatus {
   startedAt: string | null;
   lastError: string | null;
   code: DoomAutoplayErrorCode | null;
+  // Spec #2972 ST-6 — additive campaign position (the live running source).
+  episode: number | null;
+  map: number | null;
+  completed: boolean;
 }
 
 /** `start_doom_autoplay` result — always returned, never a hang. */
@@ -264,6 +270,9 @@ export const DOOM_AUTOPLAY_IDLE_STATUS: DoomAutoplayStatus = {
   startedAt: null,
   lastError: null,
   code: null,
+  episode: null,
+  map: null,
+  completed: false,
 };
 
 /** The human-facing failure copy per `DoomAutoplayErrorCode` (UI/UX error table). */
@@ -287,6 +296,10 @@ export const DOOM_AUTOPLAY_ERROR_MESSAGES: Record<
   budgetExhausted: {
     title: 'Run finished',
     message: 'Autoplay reached its step budget and stopped cleanly.',
+  },
+  campaignComplete: {
+    title: 'Campaign complete',
+    message: 'The companion finished the final level of the campaign. Start fresh to replay.',
   },
 };
 
@@ -349,6 +362,34 @@ export function truncateAutoplayError(value: string | null): string | null {
   if (!value) return null;
   if (value.length <= DOOM_AUTOPLAY_ERROR_MAX_CHARS) return value;
   return `${value.slice(0, DOOM_AUTOPLAY_ERROR_MAX_CHARS - 1)}…`;
+}
+
+// ── Save / resume contract (Spec #2972, ST-6) ────────────────────────────────
+//
+// Mirrors the additive Rust contract in `features/doom/save.rs` (serde camelCase
+// over IPC) verbatim — the binding names adopted by the plan. `get_doom_save`
+// returns the durable resume point; the LIVE running position is carried by the
+// extended `DoomAutoplayStatus.{episode,map,completed}`. No I/O happens here.
+
+/** `get_doom_save` / `reset_doom_save` return (serde camelCase). */
+export interface DoomSaveStatus {
+  hasSave: boolean;
+  episode: number | null;
+  map: number | null;
+  skill: number | null;
+  seed: number | null;
+  completed: boolean;
+  updatedAt: string | null;
+}
+
+/**
+ * G-187 display unit: `E{episode}M{map}` (e.g. `E1M2`). Storage stays integer
+ * `episode`/`map`/`skill`/`seed`; this is the ONLY presentation conversion.
+ * Returns `null` when either coordinate is absent.
+ */
+export function formatDoomLevel(episode: number | null, map: number | null): string | null {
+  if (episode === null || map === null) return null;
+  return `E${String(episode)}M${String(map)}`;
 }
 
 /** A one-line, non-visual description of the current frame/state. */
