@@ -841,9 +841,9 @@ fn no_local_transcription_path_remains() {
 
     // UI leg (G-183 row 14): the launcher has ONE model-audio path. Comments are
     // masked, so a doc reference to the FORMER local path cannot satisfy the pin.
-    let shell = mask(&ui_source("features/home/components/launcher/LauncherShell.tsx"));
+    let shell = mask(&ui_source("applications/home/components/launcher/LauncherShell.tsx"));
     let bar = mask(&ui_source(
-        "features/home/components/launcher/LauncherCommandBar.tsx",
+        "applications/home/components/launcher/LauncherCommandBar.tsx",
     ));
     for (name, code) in [
         ("LauncherShell.tsx", shell.as_str()),
