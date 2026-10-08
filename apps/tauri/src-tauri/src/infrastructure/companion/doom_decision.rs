@@ -1,7 +1,7 @@
 //! Provider-agnostic Doom decision contract (Spec #2969, ST-2).
 //!
-//! The Doom autoplay loop lives in `features/doom`; the model-backed decision
-//! source lives in `features/llm_server`. Cross-feature imports are forbidden
+//! The Doom autoplay loop lives in `applications/doom`; the model-backed decision
+//! source lives in `applications/llm_server`. Cross-application imports are forbidden
 //! (`AGENTS.md`), so the shared contract BOTH compile against lives here — the
 //! same provider-agnostic companion home as [`super::skills`], mirroring it.
 //!
@@ -9,12 +9,12 @@
 //! the decision value, the typed failure vocabulary, the decision-source trait,
 //! and the Tauri-managed holder. Nothing here performs I/O, spawns a process, or
 //! speaks HTTP — the trait is the interface; a mechanism adapter implements it
-//! (the model source in `features/llm_server`, ST-4; the scripted lever in
-//! `features/doom/decision.rs`, ST-2).
+//! (the model source in `applications/llm_server`, ST-4; the scripted lever in
+//! `applications/doom/decision.rs`, ST-2).
 //!
 //! The contract is deliberately free of the engine's action nouns: `actions` is
 //! an opaque JSON array ([`serde_json::Value`]) validated against the live
-//! vocabulary (`features/doom/actions`) by the consumer, never here.
+//! vocabulary (`applications/doom/actions`) by the consumer, never here.
 
 use std::sync::{Arc, Mutex};
 
@@ -64,8 +64,8 @@ impl std::error::Error for DoomDecisionError {}
 
 /// The decision source the Doom autoplay loop drives.
 ///
-/// Implemented by the model-backed source (`features/llm_server`, ST-4) and the
-/// scripted lever (`features/doom/decision.rs`, ST-2) — the SAME interface, so
+/// Implemented by the model-backed source (`applications/llm_server`, ST-4) and the
+/// scripted lever (`applications/doom/decision.rs`, ST-2) — the SAME interface, so
 /// AC1/3/4/5 are verifiable without a live model (G-172). `Send + Sync` makes
 /// `Arc<dyn DoomDecisionSource>` storable in Tauri-managed state.
 #[async_trait]

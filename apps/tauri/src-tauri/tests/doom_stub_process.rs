@@ -1,4 +1,4 @@
-//! Process-level tests for the feature-gated Doom stub engine (Spec #2968 ST-8).
+//! Process-level tests for the build-gated Doom stub engine (Spec #2968 ST-8).
 //!
 //! Compiled/run ONLY with `cargo test --features doom-stub`. Every wait here is
 //! finite and the spawned process is always killed before the test returns

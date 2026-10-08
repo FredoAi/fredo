@@ -7,7 +7,7 @@
 //! It pins:
 //!
 //! - **LOCAL-ONLY** — the capture/session decode path references no network
-//!   client, socket, or process-spawn symbol; the feature's only network-capable
+//!   client, socket, or process-spawn symbol; the application's only network-capable
 //!   component is model acquisition (outside `voice/`).
 //! - **NO IDLE RESOURCE (R-4.6)** — `VoiceState` holds no engine and no `cpal`
 //!   stream; the `cpal` stream is constructed ONLY inside the session worker
@@ -303,7 +303,7 @@ fn voice_decode_path_has_no_network_or_process_symbols() {
 fn model_acquisition_remains_the_only_network_capable_component() {
     let acquisition = crate_root()
         .join("src")
-        .join("features")
+        .join("applications")
         .join("setup")
         .join("model_download.rs");
     let code = mask(production_region(&read_source(&acquisition)));
@@ -531,14 +531,14 @@ fn source_code(relative: &str) -> String {
 #[test]
 fn model_audio_delivery_target_is_the_managed_loopback_host() {
     // The managed host default `resolve_host` falls back to.
-    let module = source_text("features/llm_server/mod.rs");
+    let module = source_text("applications/llm_server/mod.rs");
     assert!(
         module.contains("pub const DEFAULT_LLAMA_SERVER_HOST: &str = \"127.0.0.1\";"),
         "the managed-server default host must stay loopback (REQ-8)"
     );
 
     // The launch configuration default (the `--host` the managed server binds).
-    let config = production_text("features/llm_server/config.rs");
+    let config = production_text("applications/llm_server/config.rs");
     assert!(
         config.contains("host: \"127.0.0.1\".to_string(),"),
         "the `llama-server` launch config must default to the loopback host (REQ-8)"
@@ -547,7 +547,7 @@ fn model_audio_delivery_target_is_the_managed_loopback_host() {
     // The ONE chat-completions / properties URL shell: the resolved host is
     // templated, so the audio delivery can only address the managed server.
     // `format!` strings are blanked by `mask()`, hence the raw text.
-    let chat = production_text("features/llm_server/chat.rs");
+    let chat = production_text("applications/llm_server/chat.rs");
     assert!(
         chat.contains("format!(\"http://{host}:{port}{CHAT_COMPLETIONS_PATH}\")"),
         "the chat-completions URL must template the resolved host (REQ-8)"
@@ -561,7 +561,7 @@ fn model_audio_delivery_target_is_the_managed_loopback_host() {
     // loopback-defaulting helper — the request cannot bypass the managed host.
     // `chat.rs` carries a `#[cfg(test)]` helper before those items, so span them
     // over the WHOLE masked file (offsets preserved) rather than the early slice.
-    let code = source_code("features/llm_server/chat.rs");
+    let code = source_code("applications/llm_server/chat.rs");
     let resolve = item_span(&code, "fn resolve_host(");
     assert!(
         resolve.contains("DEFAULT_LLAMA_SERVER_HOST"),
@@ -582,7 +582,7 @@ fn model_audio_delivery_target_is_the_managed_loopback_host() {
     );
 
     // The health probe shares the same loopback-templated host.
-    let health = production_text("features/llm_server/health.rs");
+    let health = production_text("applications/llm_server/health.rs");
     assert!(
         health.contains("format!(\"http://{host}:{port}{HEALTH_PATH}\")"),
         "the health URL must template the resolved host (REQ-8)"
@@ -590,7 +590,7 @@ fn model_audio_delivery_target_is_the_managed_loopback_host() {
 
     // The audio delivery command must route through the managed chat module —
     // never its own transport/URL.
-    let commands = production_code("features/llm_server/commands.rs");
+    let commands = production_code("applications/llm_server/commands.rs");
     if commands.contains("fn llm_chat_with_audio(") {
         let audio_command = item_span(&commands, "fn llm_chat_with_audio(");
         assert!(
@@ -605,7 +605,7 @@ fn model_audio_delivery_target_is_the_managed_loopback_host() {
 /// REQ-8 (F-108 leg 1) — the captured clip crosses the IPC boundary only. The
 /// voice module (capture + `stt_take_audio_clip`) never references the model
 /// transport names, while the delivery surface (`llm_chat_with_audio`, the
-/// `input_audio` content part) lives only in `features/llm_server/`, which owns
+/// `input_audio` content part) lives only in `applications/llm_server/`, which owns
 /// the managed loopback client. The scan is positive-controlled on the SHIPPED
 /// `llm_chat_with_image` surface, so an audio-only green is provably not a
 /// scanner that matches nothing.
@@ -631,14 +631,14 @@ fn model_audio_surfaces_stay_on_their_ipc_side_of_the_boundary() {
     // Positive control: the already-shipped multimodal delivery command proves the
     // scan sees the surface (its name is an identifier, not a blanked literal).
     assert!(
-        delivery_files.contains(&"features/llm_server/commands.rs".to_string()),
+        delivery_files.contains(&"applications/llm_server/commands.rs".to_string()),
         "the delivery-surface scan must see the shipped llm_chat_with_image: {delivery_files:?}"
     );
 
     for file in &delivery_files {
         assert!(
-            file.starts_with("features/llm_server/") || file == "lib.rs",
-            "{file} must not carry the audio/multimodal delivery surface outside features/llm_server (REQ-8)"
+            file.starts_with("applications/llm_server/") || file == "lib.rs",
+            "{file} must not carry the audio/multimodal delivery surface outside applications/llm_server (REQ-8)"
         );
     }
     for file in &clip_files {
@@ -649,8 +649,8 @@ fn model_audio_surfaces_stay_on_their_ipc_side_of_the_boundary() {
     }
     for file in &audio_part_files {
         assert!(
-            file.starts_with("features/llm_server/"),
-            "{file} must not render the model-audio content part outside features/llm_server (REQ-8)"
+            file.starts_with("applications/llm_server/"),
+            "{file} must not render the model-audio content part outside applications/llm_server (REQ-8)"
         );
     }
 }

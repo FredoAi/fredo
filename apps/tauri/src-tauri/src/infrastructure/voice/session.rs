@@ -72,7 +72,7 @@ pub struct VoiceState {
     auto_stopped: AtomicBool,
     /// #2897 ST-6 (REQ-7): the latest model-audio capability snapshot, written by
     /// the sanctioned `stt_audio_capability` probe (which lives in
-    /// `features/llm_server`, the only network-capable module) and read by the
+    /// `applications/llm_server`, the only network-capable module) and read by the
     /// pre-start gate below. `infrastructure/voice/` never probes the network
     /// itself — it only reads this value.
     capability: Mutex<Option<SttAudioCapability>>,
@@ -361,7 +361,7 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
 
     // 4. Model-audio capability gate (#2897 ST-6 / REQ-7). The snapshot is
     // written ONLY by the sanctioned `stt_audio_capability` probe (which lives in
-    // `features/llm_server`, the crate's network-capable module); this module
+    // `applications/llm_server`, the crate's network-capable module); this module
     // merely reads it, so `infrastructure/voice/` stays free of network symbols
     // (REQ-8 / voice_invariants). A failed capability check returns BEFORE any
     // capture is opened, so no audio is transmitted, and the typed code goes out

@@ -3,12 +3,12 @@
 //! Doom Mode owns ONE provider-agnostic boolean that gates the companion's
 //! voice/audio pipeline while the mode is active. It lives in the shared
 //! `infrastructure/companion/` layer — mirroring [`super::doom_decision`] — so
-//! the voice layer (`infrastructure::voice`) and the model-audio feature
-//! (`features::llm_server`) can read it WITHOUT importing `features::doom`
-//! (cross-feature imports are forbidden, `AGENTS.md`).
+//! the voice layer (`infrastructure::voice`) and the model-audio path
+//! (`applications::llm_server`) can read it WITHOUT importing `applications::doom`
+//! (cross-application imports are forbidden, `AGENTS.md`).
 //!
 //! This module is the SINGLE producer of the suppression contract (G-255): the
-//! producer is [`DoomModeState`](crate::features::doom::mode::DoomModeState)
+//! producer is [`DoomModeState`](crate::applications::doom::mode::DoomModeState)
 //! through the `enter_doom_mode` / `exit_doom_mode` commands; ST-3 is the first
 //! consumer (the `stt_start` gate and the `llm_chat_with_audio` gate).
 //!

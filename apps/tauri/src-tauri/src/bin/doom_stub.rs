@@ -1,9 +1,9 @@
-//! In-repo, feature-gated Doom **stub engine** (Spec #2968, ST-8).
+//! In-repo, build-gated Doom **stub engine** (Spec #2968, ST-8).
 //!
 //! The real RESTful-DOOM fork is source-only (ST-1: no trustworthy prebuilt), so
 //! the runtime lifecycle, HTTP round trip, no-orphan, and every error path are
 //! made deterministically testable OFFLINE by this stub. It is **never shipped**:
-//! it lives behind `required-features = ["doom-stub"]` in `Cargo.toml`, so a
+//! it lives behind `required-applications = ["doom-stub"]` in `Cargo.toml`, so a
 //! normal `cargo build` (and the Tauri bundler) never compiles or packages it.
 //!
 //! It serves the ST-1-corrected real contract shapes on the `-apiport <port>`

@@ -15,7 +15,7 @@
 //! `%APPDATA%\com.fredo.app\fredo.db` (G-264). The fixture is served to the app
 //! through the **G-275** `FREDO_DATA_DIR` override.
 //!
-//! The DDL mirrors the production SQLite schema (`feature_data/store.rs`,
+//! The DDL mirrors the production SQLite schema (`application_data/store.rs`,
 //! `rtdb/store.rs`, `storage/span_store.rs`) so the migration's
 //! `pragma_table_info` introspection sees the same physical tables the app
 //! ships. It is a fixture, not a second product schema implementation; the
@@ -40,7 +40,7 @@ pub struct FixtureScale {
     pub telemetry_spans: usize,
     pub telemetry_logs: usize,
     pub telemetry_metrics: usize,
-    pub feature_items: usize,
+    pub application_items: usize,
     pub tombstones: usize,
 }
 
@@ -55,7 +55,7 @@ impl FixtureScale {
         telemetry_spans: 5,
         telemetry_logs: 4,
         telemetry_metrics: 4,
-        feature_items: 5,
+        application_items: 5,
         tombstones: 2,
     };
 
@@ -72,7 +72,7 @@ impl FixtureScale {
         telemetry_spans: 100_000,
         telemetry_logs: 20_000,
         telemetry_metrics: 120_000,
-        feature_items: 20_000,
+        application_items: 20_000,
         tombstones: 100,
     };
 
@@ -85,7 +85,7 @@ impl FixtureScale {
             self.telemetry_spans,
             self.telemetry_logs,
             self.telemetry_metrics,
-            self.feature_items,
+            self.application_items,
         ]
         .into_iter()
         .max()
@@ -100,7 +100,7 @@ impl FixtureScale {
             + self.telemetry_spans
             + self.telemetry_logs
             + self.telemetry_metrics
-            + self.feature_items
+            + self.application_items
             + self.tombstones
     }
 }
@@ -265,7 +265,7 @@ pub fn build_fixture(path: &Path, scale: &FixtureScale) -> Result<()> {
     seed_telemetry_spans(&conn, scale.telemetry_spans)?;
     seed_telemetry_logs(&conn, scale.telemetry_logs)?;
     seed_telemetry_metrics(&conn, scale.telemetry_metrics)?;
-    seed_feature_items(&conn, scale.feature_items)?;
+    seed_application_items(&conn, scale.application_items)?;
     drop(conn);
     Ok(())
 }
@@ -313,7 +313,7 @@ fn seed_settings(conn: &Connection) -> Result<()> {
 fn seed_feature_data_tables(conn: &Connection) -> Result<()> {
     // PRODUCTION-SHAPED declarations (ST-7a / F-15). The persisted-declaration
     // reader deserializes `declaration_json` into
-    // `FeatureDataTableDeclaration` (`registry.rs:216-226`), which REQUIRES
+    // `ApplicationDataTableDeclaration` (`registry.rs:216-226`), which REQUIRES
     // `name`/`primaryKey`/`columns` (`declaration.rs:225-235`); a
     // `sessionRollup` `source` additionally requires BOTH `excludeDispatchNames`
     // and `terminalStates` (`declaration.rs:458-466`). These strings mirror the
@@ -324,7 +324,7 @@ fn seed_feature_data_tables(conn: &Connection) -> Result<()> {
     // recomputes the (fixture-absent) physical table once after cutover from the
     // carried canonical chat/tool rows; `tools` is `1`. One row of each keeps
     // the AC4 unset(0)/set(1) edge.
-    let sessions_declaration = r#"{"name":"sessions","primaryKey":["sessionId"],"columns":[{"name":"sessionId","type":"TEXT","owner":"backend"},{"name":"provider","type":"TEXT","owner":"backend","nullable":true},{"name":"startedAtNs","type":"INTEGER","owner":"backend","nullable":true},{"name":"latestAt","type":"TEXT","owner":"backend"},{"name":"chatRowCount","type":"INTEGER","owner":"backend"},{"name":"nonSubagentChatRowCount","type":"INTEGER","owner":"backend"},{"name":"visibleTurnCount","type":"INTEGER","owner":"backend"},{"name":"userDispatchCount","type":"INTEGER","owner":"backend"},{"name":"derivedName","type":"TEXT","owner":"backend","nullable":true},{"name":"agentName","type":"TEXT","owner":"backend","nullable":true},{"name":"customName","type":"TEXT","owner":"feature","nullable":true}],"source":{"kind":"sessionRollup","excludeDispatchNames":["build","plan"],"terminalStates":["Response","Timeout"]},"retention":{"maxRows":500}}"#;
+    let sessions_declaration = r#"{"name":"sessions","primaryKey":["sessionId"],"columns":[{"name":"sessionId","type":"TEXT","owner":"backend"},{"name":"provider","type":"TEXT","owner":"backend","nullable":true},{"name":"startedAtNs","type":"INTEGER","owner":"backend","nullable":true},{"name":"latestAt","type":"TEXT","owner":"backend"},{"name":"chatRowCount","type":"INTEGER","owner":"backend"},{"name":"nonSubagentChatRowCount","type":"INTEGER","owner":"backend"},{"name":"visibleTurnCount","type":"INTEGER","owner":"backend"},{"name":"userDispatchCount","type":"INTEGER","owner":"backend"},{"name":"derivedName","type":"TEXT","owner":"backend","nullable":true},{"name":"agentName","type":"TEXT","owner":"backend","nullable":true},{"name":"customName","type":"TEXT","owner":"application","nullable":true}],"source":{"kind":"sessionRollup","excludeDispatchNames":["build","plan"],"terminalStates":["Response","Timeout"]},"retention":{"maxRows":500}}"#;
     let tools_declaration = r#"{"name":"tools","primaryKey":["toolUseId"],"columns":[{"name":"toolUseId","type":"TEXT","owner":"backend"},{"name":"toolName","type":"TEXT","owner":"backend","nullable":true}]}"#;
     let rows: [(&str, &str, &str, &str, i64, i64); 2] = [
         (
@@ -344,12 +344,12 @@ fn seed_feature_data_tables(conn: &Connection) -> Result<()> {
             1,
         ),
     ];
-    for (feature, table, declaration, revision, version, backfill) in rows {
+    for (application, table, declaration, revision, version, backfill) in rows {
         conn.execute(
             "INSERT INTO feature_data_tables
                 (feature_id, table_name, declaration_json, declaration_revision, last_version, backfill_done)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![feature, table, declaration, revision, version, backfill],
+            params![application, table, declaration, revision, version, backfill],
         )?;
     }
     Ok(())
@@ -612,7 +612,7 @@ fn seed_telemetry_metrics(conn: &Connection, count: usize) -> Result<()> {
     Ok(())
 }
 
-fn seed_feature_items(conn: &Connection, count: usize) -> Result<()> {
+fn seed_application_items(conn: &Connection, count: usize) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     for index in 0..count {
         let i = index as i64;

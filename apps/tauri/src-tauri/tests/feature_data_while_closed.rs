@@ -163,12 +163,12 @@ fn observer_is_registered_unconditionally_in_lib_rs() {
 
     // The install composes the composite, not the bare engine.
     assert!(
-        body.contains("install_row_upsert_observer(Arc::new(FeatureDataUpsertObserver {"),
+        body.contains("install_row_upsert_observer(Arc::new(ApplicationDataUpsertObserver {"),
         "lib.rs must install the composite observer (canonical watches + projection engine)"
     );
 
     // The composite feeds BOTH the canonical watch registry and the engine.
-    let composite = item_span(&masked, "impl RowUpsertObserver for FeatureDataUpsertObserver");
+    let composite = item_span(&masked, "impl RowUpsertObserver for ApplicationDataUpsertObserver");
     assert!(
         composite.contains("self.watches.on_canonical_row("),
         "the observer must feed canonical-table watches"

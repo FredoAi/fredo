@@ -5,7 +5,7 @@
 //! each target's PostgreSQL DDL from `pragma_table_info` through the ONE type map
 //! ([`ColumnType::as_pg_type`]) + [`quote_ident`].
 //! The derived DDL is compatible with
-//! [`FeatureStore::ensure_table_on_pg`](crate::infrastructure::storage::feature_store::FeatureStore::ensure_table_on_pg),
+//! [`ApplicationStore::ensure_table_on_pg`](crate::infrastructure::storage::application_store::ApplicationStore::ensure_table_on_pg),
 //! so a post-install `ensure_table` is a no-op.
 //!
 //! Every table in `fredo.db` has a primary key, so the copy is PK-keyed and
@@ -15,7 +15,7 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 
 use crate::infrastructure::storage::engine::quote_ident;
-use crate::infrastructure::storage::feature_store::{ColumnType, FeatureStore};
+use crate::infrastructure::storage::application_store::{ColumnType, ApplicationStore};
 
 /// One physical column of a source table, in declaration order.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -178,7 +178,7 @@ fn read_table_spec(conn: &Connection, table: &str) -> Result<TableSpec> {
         }
         columns.push(ColumnSpec {
             name,
-            col_type: FeatureStore::normalize_column_type(&declared_type),
+            col_type: ApplicationStore::normalize_column_type(&declared_type),
             not_null: not_null != 0,
             pk_ordinal,
         });

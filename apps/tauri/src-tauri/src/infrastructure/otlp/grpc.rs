@@ -266,7 +266,7 @@ pub(crate) fn otlp_metrics_to_points(request: &ExportMetricsServiceRequest) -> V
                         }
                     }
                     _ => {
-                        // ExponentialHistogram / Summary — not mapped by any UI feature.
+                        // ExponentialHistogram / Summary — not mapped by any UI application.
                     }
                 }
             }

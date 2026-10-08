@@ -3,13 +3,13 @@
 //! This module is the single source of truth for the required GGUF model-file
 //! layout (`<models_dir>/<subdir>/<file>`), the pinned acquisition manifest, the
 //! honest on-disk classifier, and the "step is complete" aggregator. It is
-//! consumed by BOTH `features/setup` (acquisition / readiness) and
-//! `features/llm_server` (launch-config refusal via [`is_step_complete`] +
-//! [`missing_files`]), so the two features never import each other and the layout
+//! consumed by BOTH `applications/setup` (acquisition / readiness) and
+//! `applications/llm_server` (launch-config refusal via [`is_step_complete`] +
+//! [`missing_files`]), so the two applications never import each other and the layout
 //! cannot drift (NFR-6).
 //!
-//! Originally authored for #2856 in `features/setup/model_download_state.rs`;
-//! moved here by ST-9 so `features::setup::model_download_state` can re-export it
+//! Originally authored for #2856 in `applications/setup/model_download_state.rs`;
+//! moved here by ST-9 so `applications::setup::model_download_state` can re-export it
 //! with the #2856 download wire/behavior unchanged.
 //!
 //! **Verification contract (binding):** `present` is the exact byte-size gate
@@ -209,7 +209,7 @@ pub fn models_subdir(models_dir: &Path, manifest: &ModelManifest) -> PathBuf {
 
 /// Absolute on-disk path for `spec` under `<models_dir>/<subdir>/<spec.path>`.
 ///
-/// THE shared path rule (`features/setup`'s downloader and `features/llm_server`'s
+/// THE shared path rule (`applications/setup`'s downloader and `applications/llm_server`'s
 /// launch-config resolver both derive from it — never re-implement the join).
 pub fn file_path(models_dir: &Path, manifest: &ModelManifest, spec: &ModelFileSpec) -> PathBuf {
     models_subdir(models_dir, manifest).join(&spec.path)
@@ -315,7 +315,7 @@ pub fn is_step_complete(models_dir: &Path, manifest: &ModelManifest) -> bool {
 }
 
 /// Resolve the configured `models_dir` from AppStore, falling back to
-/// `{home}/fredo-models`. Shared by BOTH features (one rule).
+/// `{home}/fredo-models`. Shared by BOTH applications (one rule).
 pub fn resolve_models_dir(app: &AppHandle) -> PathBuf {
     let configured = app
         .state::<Arc<AppStore>>()
@@ -375,7 +375,7 @@ mod tests {
         );
     }
 
-    /// The shared path builder is the ONE rule both features resolve through.
+    /// The shared path builder is the ONE rule both applications resolve through.
     #[test]
     fn file_path_resolves_under_models_dir_and_the_shared_subdir() {
         let manifest = default_manifest();

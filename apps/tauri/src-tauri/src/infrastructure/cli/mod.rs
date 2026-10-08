@@ -64,7 +64,7 @@ async fn run_async(cli: Cli) -> Result<()> {
     match cli.command {
         Commands::Setup(ref args) => return commands::setup::run_setup(args).await,
         Commands::Ingest(args) => {
-            return crate::features::pg_supervisor::headless::run_ingest_daemon(args).await;
+            return crate::applications::pg_supervisor::headless::run_ingest_daemon(args).await;
         }
         other => {
             let ipc_cmd = build_ipc_command(other);

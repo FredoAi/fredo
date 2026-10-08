@@ -1,0 +1,11 @@
+pub mod commands;
+pub mod legacy_stt;
+pub mod model_download;
+pub mod model_download_state;
+
+use crate::runtime::capability::DesktopCapable;
+
+#[allow(dead_code)]
+pub struct SetupApplication;
+
+impl DesktopCapable for SetupApplication {}

@@ -37,7 +37,7 @@ use rusqlite::Connection;
 use sqlx::{PgConnection, PgPool, Postgres, Row as _};
 
 use crate::infrastructure::storage::engine::quote_ident;
-use crate::infrastructure::storage::feature_store::ColumnType;
+use crate::infrastructure::storage::application_store::ColumnType;
 
 use super::parity::{CellValue, RowHasher};
 use super::tables::{ColumnSpec, TableSpec};

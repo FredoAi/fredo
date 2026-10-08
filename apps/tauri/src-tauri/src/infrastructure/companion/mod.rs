@@ -1,8 +1,8 @@
 //! Shared companion runtime helpers (Spec #2857).
 //!
 //! The `llama-server` executable resolver AND the required model-file layout are
-//! consumed by BOTH `features/setup` (readiness/acquisition) and
-//! `features/llm_server` (launch/config refusal). Cross-feature imports are
+//! consumed by BOTH `applications/setup` (readiness/acquisition) and
+//! `applications/llm_server` (launch/config refusal). Cross-application imports are
 //! forbidden (`AGENTS.md`), so they live here in the shared infrastructure layer
 //! — one implementation, one resolution order, one path rule.
 

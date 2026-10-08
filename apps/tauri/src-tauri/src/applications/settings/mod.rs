@@ -1,0 +1,9 @@
+pub mod autostart;
+pub mod commands;
+
+use crate::runtime::capability::DesktopCapable;
+
+#[allow(dead_code)]
+pub struct SettingsApplication;
+
+impl DesktopCapable for SettingsApplication {}
