@@ -99,12 +99,29 @@
 > `telemetry_spans` live-pipeline reference (managed `psql` on the PG default, G-284, or a
 > disclosed app-pool fallback, G-307).
 >
-> **G-300:** every error/failure probe names an in-repo induction lever (`FREDO_DOOM_SAVE_FILE`
-> pointing at a corrupt/absent/unwritable path, `FREDO_DOOM_STUB_EPISODE_FAIL=1`,
-> `FREDO_DOOM_STUB_DONE_AFTER=<n>`) or is marked a static/unit pin, non-AC.
+> **G-300:** every error/failure probe names an in-repo induction lever (`FREDO_DOOM_SAVE_STATE_DIR`
+> pointing at a corrupt/absent/unwritable path, `FREDO_DOOM_SAVE_FORCE_FAIL=read|write`,
+> `FREDO_DOOM_STUB_EPISODE_FAIL=1`, `FREDO_DOOM_STUB_DONE_AFTER=<n>`) or is marked a static/unit pin, non-AC.
+> `FREDO_DOOM_SAVE_FILE` is REMOVED (#3011) — probes must use the state-dir lever.
 
-- [ ] E-35: Write a `DoomSave` with an UNKNOWN `version` (e.g. `2`) to the seam — does the loader reject it (`hasSave:false`, clean run) rather than migrating/partially applying? (Lever: seam file.)
-- [ ] E-36: Hard-kill Fredo mid-run (between advances), then relaunch — is the last persisted level the resume point, and is the orphan engine swept? (Lever: hard-kill + relaunch.)
-- [ ] E-37: Start a fresh run, then close the `doom` window before the first advance — is the prior save byte-identical, with no partial overwrite? (Lever: `freshStart:true` + early close.)
-- [ ] E-38: Point `FREDO_DOOM_SAVE_FILE` at an unwritable path (a directory) during a stub advance — does the run keep progressing (best-effort write) with a logged, non-fatal failure? (Lever: unwritable seam path.)
+- [ ] E-35 (updated #3011): Write a `DoomSave` with an UNKNOWN `version` (e.g. `2`) to `<FREDO_DOOM_SAVE_STATE_DIR>/doom-save.json` — does the loader reject it (`hasSave:false`, clean run) rather than migrating/partially applying? (Lever: state-dir fixture.)
+- [ ] E-36: Hard-kill Fredo mid-run (between advances), then relaunch — is the last persisted `feature_doom_save` row the resume point, and is the orphan engine swept? (Lever: hard-kill + relaunch.)
+- [ ] E-37 (updated #3011): Start a fresh run, then close the `doom` window before the first advance — is the prior save (PG row / state-dir fixture) unchanged, with no partial overwrite? (Lever: `freshStart:true` + early close.)
+- [ ] E-38 (updated #3011): Point `FREDO_DOOM_SAVE_STATE_DIR` at an unwritable path (a directory at `doom-save.json`) during a stub advance — does the run keep progressing (best-effort write) with a logged, non-fatal failure? (Lever: unwritable state-dir path.) Also try `FREDO_DOOM_SAVE_FORCE_FAIL=write`.
 - [ ] E-39: Two `start_doom_autoplay` calls in quick succession, one `{freshStart:true}` and one `{}` — is exactly one loop running with a single coherent campaign (no double resume/advance)? (Lever: scripted stub + IPC monitor.)
+
+---
+
+## Dedicated PostgreSQL feature-store slice (Spec #3011) — unscripted probes
+
+> **Verification policy: live** — probes run against the running artifact with the `telemetry_spans`
+> reference and the app-pool read `application_store_query` (G-284/G-307; `psql` NOT named).
+>
+> **G-300:** every error/failure probe names an in-repo lever (`FREDO_DOOM_SAVE_STATE_DIR`,
+> `FREDO_DOOM_SAVE_FORCE_FAIL=read|write`, `FREDO_DOOM_STUB_EPISODE_FAIL=1`) or is a static/unit pin.
+
+- [ ] E-40: Kill the app BETWEEN the progress-writer upsert and the pool commit — is the singleton row left consistent (no partial/duplicate), and does the next start read a valid save or a clean no-save? (Lever: hard-kill + relaunch; PG WAL.)
+- [ ] E-41: `FREDO_DOOM_SAVE_FORCE_FAIL=write` during a live level transition — does the run continue and is the PG row provably UNCHANGED (no write)? (Lever: forced-write seam.)
+- [ ] E-42: Set `FREDO_DOOM_SAVE_FORCE_FAIL` to an UNKNOWN value (e.g. `bogus`) and to a blank string — is the seam inert (normal save/resume)? (Lever: env override.)
+- [ ] E-43: Seed a valid state-dir fixture AND a conflicting existing PG row (state-dir set) — is the state-dir lever authoritative for the leg, and does it leave the PG row untouched? (Lever: state-dir + `application_store_query`.)
+- [ ] E-44: `reset_doom_save` while a run is active — does it delete the singleton row (the only delete path), return `hasSave:false`, and NOT re-persist until the next advance? (Lever: command + row read.)
