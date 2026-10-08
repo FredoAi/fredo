@@ -330,7 +330,9 @@
                     "powershell -File scripts/doom/*": "allow",
                     "git clone*": "allow",
                     "*restful-doom*": "allow",
-                    "Remove-Item scripts/doom/*": "allow"
+                    "Remove-Item scripts/doom/*": "allow",
+                    "git apply*": "allow",
+                    "Test-Path*": "allow"
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny"
@@ -435,7 +437,8 @@
                     "gh run view*": "allow",
                     "powershell -File scripts/doom/*": "allow",
                     "*restful-doom*": "allow",
-                    "tasklist*": "allow"
+                    "tasklist*": "allow",
+                    "taskkill*": "allow"
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny",
