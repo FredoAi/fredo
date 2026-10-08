@@ -1,0 +1,104 @@
+# ============================================================================
+# grep-allowlist.txt -- retained "feature" occurrence classes for issue 2956
+# (rename "feature" -> "application"). ST-1 Phase-0 names freeze.
+# ----------------------------------------------------------------------------
+# Consumed by the ST-6 / QA-3 residual grep gate
+# (.opencode/tests/applications-rename/). The gate scans the renamed
+# source/copy surfaces --
+#   apps/ui/src/applications/** , apps/ui/src/shared/** ,
+#   apps/tauri/src-tauri/src/applications/** ,
+#   apps/tauri/src-tauri/src/infrastructure/** , docs/**
+#   (excluding docs/agentic-pipeline/**)
+# -- and FAILS on any [Ff]eature occurrence NOT retained by an entry below.
+#
+# GRAMMAR (one directive per line; blank lines and lines starting with '#' are
+# ignored; surrounding whitespace is trimmed; matching is case-sensitive):
+#   lit:<text>    a retained literal substring, anywhere in the gate scope
+#   re:<regex>    retained when this ECMAScript regex matches the text
+#   path:<glob>   every occurrence in a repo-relative path matching the glob is
+#                 retained ('*' = within a segment, '**' = across segments)
+#
+# Paths are written for the POST-RENAME tree: ST-2/ST-3/ST-4 move
+# `apps/ui/src/features/` -> `applications/` and `shared/feature-data/` ->
+# `shared/application-data/`; ST-6 applies the gate to the renamed tree.
+#
+# AUTHORITY: issue 2956 `## Triage Plan` -> Software Architect `#### Binding IN /
+# OUT scope table` + `Binding names block (G-255)` + the NO-MIGRATE persistence
+# decision (binding adjudication 1).
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# CLASS A -- Frozen on-disk PostgreSQL identifiers (NO-MIGRATE decision, AC4).
+# Physical identifiers already shipped in existing installs; retained VERBATIM as
+# a serialized on-disk contract (not user-facing). ST-5 pins each via a named
+# constant; the migration parity fixtures stay on these literals.
+# ----------------------------------------------------------------------------
+lit:feature_data_tables
+lit:feature_data_tombstones
+lit:feature_terminal_sessions
+lit:feature_id
+# per-app table prefix `feature_<sanitizedId>_<table>` -- the exact format-string
+# and comment spellings that occur in the gate scope (feature_store.rs, docs):
+lit:feature_{}_{}
+lit:feature_{}_
+lit:feature_{featureId}_{tableName}
+lit:feature_{featureId}_*
+lit:feature_<sanitized featureId>_<table>
+lit:feature_{sanitizedId}_{table}
+# NOTE: the bare prefix `feature_` (and any generic `feature_<word>` pattern) is
+# deliberately NOT an entry. The QA-3 gate self-test injects `feature_zzz_probe`
+# and it MUST be flagged -- a blanket prefix would mask the deny rule.
+
+# ----------------------------------------------------------------------------
+# CLASS B -- Retained different-sense uses (never the Fredo app concept).
+# ----------------------------------------------------------------------------
+# Optimizely product domain: the "Feature Flags" display name and the
+# `OptimizelyFlag` type/copy. The Optimizely DIRECTORY moves under
+# applications/ in ST-2, but this domain copy/type is retained; app-concept
+# identifiers in that directory (registerFeature, FredoFeatureClass, imports)
+# still rename, so the directory is NOT path-allowlisted wholesale.
+lit:Feature Flags
+lit:OptimizelyFlag
+# Azure DevOps work-item TYPE 'Feature' (like Bug/Task/Epic) -- the union type
+# and the create-form option. ADO's work-item type, not the app concept.
+re:'Bug'\s*\|\s*'Task'\s*\|\s*'User Story'\s*\|\s*'Feature'\s*\|\s*'Epic'
+lit:<option value="Feature">Feature</option>
+# MIME / HTTP media type.
+lit:application/json
+# Cargo / build "features": #[cfg(feature = ...)], required-features, the
+# `bundled` build feature, and the `doom-stub` engine feature.
+re:#\[cfg\(feature\s*=
+re:required-features\s*=
+re:^\s*feature\s*=\s*\[
+lit:feature = "bundled"
+lit:"bundled"
+lit:doom-stub
+# Pipeline meta "feature" sense -- the pipeline's own vocabulary (e.g. "feature
+# issue"), not the app concept.
+path:.opencode/**
+path:docs/agentic-pipeline/**
+# Generic English "a feature of X".
+re:\ba feature of\b
+re:\bfeatures of\b
+
+# ----------------------------------------------------------------------------
+# CLASS C -- Pre-existing app/application vocabulary, RETAINED as-is (no second
+# churn wave, no duplicated concept). The rename collapses feature* ->
+# application*; these already say app and must NOT be renamed. (Most contain no
+# `feature` substring, so they are inert for the literal scan -- they are listed
+# to pin the binding names freeze for ST-2/ST-4/ST-6.)
+# ----------------------------------------------------------------------------
+lit:AppStore
+lit:app_open
+lit:appWindows
+lit:appPresentationStore
+lit:app_window_presentation
+re:\bapp-[a-z0-9]              # app-<id> window label
+lit:?view=app&id=
+lit:fredo open-app
+lit:app-open-request
+lit:Open apps
+lit:No apps available
+# Settings -> Apps section (a copy label, not the app-concept word).
+lit:>Apps<
+path:apps/tools-mcp_DEPRECATED/**
