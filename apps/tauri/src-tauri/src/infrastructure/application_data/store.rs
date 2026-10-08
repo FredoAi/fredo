@@ -26,23 +26,48 @@ use crate::infrastructure::storage::application_store::block_on_pg;
 
 use super::declaration::{is_reserved_column, ColumnOwner, ApplicationDataTableDeclaration};
 
-/// The PostgreSQL DDL (C1 type map: `INTEGER → bigint`).
-const TABLES_DDL_PG: &str = "CREATE TABLE IF NOT EXISTS feature_data_tables (
-        feature_id            text NOT NULL,
+/// On-disk compatibility contract (Spec #2956 AC4, **NO-MIGRATE**).
+///
+/// The physical PostgreSQL identifiers of the application-data metadata plane
+/// are a serialized on-disk contract with previously shipped installs — they are
+/// NOT a user-facing surface. They are **retained verbatim**: renaming or
+/// migrating them would be a destructive PostgreSQL migration for zero user
+/// benefit and would break existing databases. Every SQL path in this module
+/// references these constants (never a raw literal); the
+/// `frozen_metadata_literals_are_pinned` unit test pins each one so a future
+/// rename cannot silently diverge.
+pub const LEGACY_META_TABLES_TABLE: &str = "feature_data_tables";
+/// Frozen tombstone metadata table (see [`LEGACY_META_TABLES_TABLE`]).
+pub const LEGACY_META_TOMBSTONES_TABLE: &str = "feature_data_tombstones";
+/// Frozen metadata column naming the owning application (see
+/// [`LEGACY_META_TABLES_TABLE`]).
+pub const LEGACY_METADATA_COLUMN: &str = "feature_id";
+
+/// The PostgreSQL DDL (C1 type map: `INTEGER → bigint`), built from the frozen
+/// NO-MIGRATE identifiers above so the physical schema has a single source.
+fn metadata_ddl_pg() -> String {
+    format!(
+        "CREATE TABLE IF NOT EXISTS {tables} (
+        {id}            text NOT NULL,
         table_name            text NOT NULL,
         declaration_json      text NOT NULL,
         declaration_revision  text NOT NULL,
         last_version          bigint NOT NULL DEFAULT 0,
         backfill_done         bigint NOT NULL DEFAULT 0,
-        PRIMARY KEY (feature_id, table_name)
+        PRIMARY KEY ({id}, table_name)
     );
-    CREATE TABLE IF NOT EXISTS feature_data_tombstones (
-        feature_id  text NOT NULL,
+    CREATE TABLE IF NOT EXISTS {tombstones} (
+        {id}  text NOT NULL,
         table_name  text NOT NULL,
         key_json    text NOT NULL,
         deleted_at  text NOT NULL,
-        PRIMARY KEY (feature_id, table_name, key_json)
-    );";
+        PRIMARY KEY ({id}, table_name, key_json)
+    );",
+        tables = LEGACY_META_TABLES_TABLE,
+        tombstones = LEGACY_META_TOMBSTONES_TABLE,
+        id = LEGACY_METADATA_COLUMN,
+    )
+}
 
 /// Metadata row for one declared table (`feature_data_tables`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -90,7 +115,8 @@ impl ApplicationDataStore {
     /// and the startup schema-init registry (`lib.rs`) both route here, so the
     /// boot contract's schema set is never re-declared (NFR-6 spirit).
     pub fn ensure_schema_on_pg(pool: &sqlx::PgPool) -> Result<()> {
-        block_on_pg(async { sqlx::raw_sql(TABLES_DDL_PG).execute(pool).await.map(|_| ()) })?;
+        let ddl = metadata_ddl_pg();
+        block_on_pg(async { sqlx::raw_sql(&ddl).execute(pool).await.map(|_| ()) })?;
         Ok(())
     }
 
@@ -100,17 +126,20 @@ impl ApplicationDataStore {
         match active.as_ref() {
             
             StoreEngine::Postgres(pg) => {
+                let sql = format!(
+                    "SELECT {id}, table_name, declaration_json, declaration_revision,
+                            last_version, backfill_done
+                     FROM {tables}
+                     WHERE {id} = $1 AND table_name = $2",
+                    id = LEGACY_METADATA_COLUMN,
+                    tables = LEGACY_META_TABLES_TABLE,
+                );
                 let row: Option<(String, String, String, String, i64, i64)> = block_on_pg(async {
-                    sqlx::query_as(
-                        "SELECT feature_id, table_name, declaration_json, declaration_revision,
-                                last_version, backfill_done
-                         FROM feature_data_tables
-                         WHERE feature_id = $1 AND table_name = $2",
-                    )
-                    .bind(feature_id)
-                    .bind(table_name)
-                    .fetch_optional(&pg.pool)
-                    .await
+                    sqlx::query_as(&sql)
+                        .bind(feature_id)
+                        .bind(table_name)
+                        .fetch_optional(&pg.pool)
+                        .await
                 })?;
                 Ok(row.map(
                     |(
@@ -139,15 +168,16 @@ impl ApplicationDataStore {
         match active.as_ref() {
             
             StoreEngine::Postgres(pg) => {
+                let sql = format!(
+                    "SELECT {id}, table_name, declaration_json, declaration_revision,
+                            last_version, backfill_done
+                     FROM {tables}
+                     ORDER BY {id}, table_name",
+                    id = LEGACY_METADATA_COLUMN,
+                    tables = LEGACY_META_TABLES_TABLE,
+                );
                 let rows: Vec<(String, String, String, String, i64, i64)> = block_on_pg(async {
-                    sqlx::query_as(
-                        "SELECT feature_id, table_name, declaration_json, declaration_revision,
-                                last_version, backfill_done
-                         FROM feature_data_tables
-                         ORDER BY feature_id, table_name",
-                    )
-                    .fetch_all(&pg.pool)
-                    .await
+                    sqlx::query_as(&sql).fetch_all(&pg.pool).await
                 })?;
                 Ok(rows
                     .into_iter()
@@ -179,27 +209,30 @@ impl ApplicationDataStore {
         match active.as_ref() {
             
             StoreEngine::Postgres(pg) => {
+                let sql = format!(
+                    "INSERT INTO {tables}
+                        ({id}, table_name, declaration_json, declaration_revision,
+                         last_version, backfill_done)
+                     VALUES ($1, $2, $3, $4, $5, $6)
+                     ON CONFLICT({id}, table_name) DO UPDATE SET
+                        declaration_json     = EXCLUDED.declaration_json,
+                        declaration_revision = EXCLUDED.declaration_revision,
+                        last_version         = EXCLUDED.last_version,
+                        backfill_done        = EXCLUDED.backfill_done",
+                    id = LEGACY_METADATA_COLUMN,
+                    tables = LEGACY_META_TABLES_TABLE,
+                );
                 block_on_pg(async {
-                    sqlx::query(
-                        "INSERT INTO feature_data_tables
-                            (feature_id, table_name, declaration_json, declaration_revision,
-                             last_version, backfill_done)
-                         VALUES ($1, $2, $3, $4, $5, $6)
-                         ON CONFLICT(feature_id, table_name) DO UPDATE SET
-                            declaration_json     = EXCLUDED.declaration_json,
-                            declaration_revision = EXCLUDED.declaration_revision,
-                            last_version         = EXCLUDED.last_version,
-                            backfill_done        = EXCLUDED.backfill_done",
-                    )
-                    .bind(&meta.feature_id)
-                    .bind(&meta.table_name)
-                    .bind(&meta.declaration_json)
-                    .bind(&meta.declaration_revision)
-                    .bind(meta.last_version)
-                    .bind(i64::from(meta.backfill_done))
-                    .execute(&pg.pool)
-                    .await
-                    .map(|_| ())
+                    sqlx::query(&sql)
+                        .bind(&meta.feature_id)
+                        .bind(&meta.table_name)
+                        .bind(&meta.declaration_json)
+                        .bind(&meta.declaration_revision)
+                        .bind(meta.last_version)
+                        .bind(i64::from(meta.backfill_done))
+                        .execute(&pg.pool)
+                        .await
+                        .map(|_| ())
                 })?;
                 Ok(())
             }
@@ -212,17 +245,20 @@ impl ApplicationDataStore {
         match active.as_ref() {
             
             StoreEngine::Postgres(pg) => {
+                let sql = format!(
+                    "UPDATE {tables} SET backfill_done = $3
+                     WHERE {id} = $1 AND table_name = $2",
+                    tables = LEGACY_META_TABLES_TABLE,
+                    id = LEGACY_METADATA_COLUMN,
+                );
                 block_on_pg(async {
-                    sqlx::query(
-                        "UPDATE feature_data_tables SET backfill_done = $3
-                         WHERE feature_id = $1 AND table_name = $2",
-                    )
-                    .bind(feature_id)
-                    .bind(table_name)
-                    .bind(i64::from(done))
-                    .execute(&pg.pool)
-                    .await
-                    .map(|_| ())
+                    sqlx::query(&sql)
+                        .bind(feature_id)
+                        .bind(table_name)
+                        .bind(i64::from(done))
+                        .execute(&pg.pool)
+                        .await
+                        .map(|_| ())
                 })?;
                 Ok(())
             }
@@ -235,17 +271,20 @@ impl ApplicationDataStore {
         match active.as_ref() {
             
             StoreEngine::Postgres(pg) => {
+                let sql = format!(
+                    "UPDATE {tables} SET last_version = $3
+                     WHERE {id} = $1 AND table_name = $2",
+                    tables = LEGACY_META_TABLES_TABLE,
+                    id = LEGACY_METADATA_COLUMN,
+                );
                 block_on_pg(async {
-                    sqlx::query(
-                        "UPDATE feature_data_tables SET last_version = $3
-                         WHERE feature_id = $1 AND table_name = $2",
-                    )
-                    .bind(feature_id)
-                    .bind(table_name)
-                    .bind(version)
-                    .execute(&pg.pool)
-                    .await
-                    .map(|_| ())
+                    sqlx::query(&sql)
+                        .bind(feature_id)
+                        .bind(table_name)
+                        .bind(version)
+                        .execute(&pg.pool)
+                        .await
+                        .map(|_| ())
                 })?;
                 Ok(())
             }
@@ -258,21 +297,24 @@ impl ApplicationDataStore {
         match active.as_ref() {
             
             StoreEngine::Postgres(pg) => {
+                let sql = format!(
+                    "INSERT INTO {tombstones}
+                        ({id}, table_name, key_json, deleted_at)
+                     VALUES ($1, $2, $3, $4)
+                     ON CONFLICT({id}, table_name, key_json) DO UPDATE SET
+                        deleted_at = EXCLUDED.deleted_at",
+                    tombstones = LEGACY_META_TOMBSTONES_TABLE,
+                    id = LEGACY_METADATA_COLUMN,
+                );
                 block_on_pg(async {
-                    sqlx::query(
-                        "INSERT INTO feature_data_tombstones
-                            (feature_id, table_name, key_json, deleted_at)
-                         VALUES ($1, $2, $3, $4)
-                         ON CONFLICT(feature_id, table_name, key_json) DO UPDATE SET
-                            deleted_at = EXCLUDED.deleted_at",
-                    )
-                    .bind(&tombstone.feature_id)
-                    .bind(&tombstone.table_name)
-                    .bind(&tombstone.key_json)
-                    .bind(&tombstone.deleted_at)
-                    .execute(&pg.pool)
-                    .await
-                    .map(|_| ())
+                    sqlx::query(&sql)
+                        .bind(&tombstone.feature_id)
+                        .bind(&tombstone.table_name)
+                        .bind(&tombstone.key_json)
+                        .bind(&tombstone.deleted_at)
+                        .execute(&pg.pool)
+                        .await
+                        .map(|_| ())
                 })?;
                 Ok(())
             }
@@ -290,16 +332,19 @@ impl ApplicationDataStore {
         match active.as_ref() {
             
             StoreEngine::Postgres(pg) => {
+                let sql = format!(
+                    "SELECT 1 FROM {tombstones}
+                     WHERE {id} = $1 AND table_name = $2 AND key_json = $3",
+                    tombstones = LEGACY_META_TOMBSTONES_TABLE,
+                    id = LEGACY_METADATA_COLUMN,
+                );
                 let found: Option<i32> = block_on_pg(async {
-                    sqlx::query_scalar(
-                        "SELECT 1 FROM feature_data_tombstones
-                         WHERE feature_id = $1 AND table_name = $2 AND key_json = $3",
-                    )
-                    .bind(feature_id)
-                    .bind(table_name)
-                    .bind(key_json)
-                    .fetch_optional(&pg.pool)
-                    .await
+                    sqlx::query_scalar(&sql)
+                        .bind(feature_id)
+                        .bind(table_name)
+                        .bind(key_json)
+                        .fetch_optional(&pg.pool)
+                        .await
                 })?;
                 Ok(found.is_some())
             }
@@ -312,17 +357,20 @@ impl ApplicationDataStore {
         match active.as_ref() {
             
             StoreEngine::Postgres(pg) => {
+                let sql = format!(
+                    "SELECT {id}, table_name, key_json, deleted_at
+                     FROM {tombstones}
+                     WHERE {id} = $1 AND table_name = $2
+                     ORDER BY key_json",
+                    id = LEGACY_METADATA_COLUMN,
+                    tombstones = LEGACY_META_TOMBSTONES_TABLE,
+                );
                 let rows: Vec<(String, String, String, String)> = block_on_pg(async {
-                    sqlx::query_as(
-                        "SELECT feature_id, table_name, key_json, deleted_at
-                         FROM feature_data_tombstones
-                         WHERE feature_id = $1 AND table_name = $2
-                         ORDER BY key_json",
-                    )
-                    .bind(feature_id)
-                    .bind(table_name)
-                    .fetch_all(&pg.pool)
-                    .await
+                    sqlx::query_as(&sql)
+                        .bind(feature_id)
+                        .bind(table_name)
+                        .fetch_all(&pg.pool)
+                        .await
                 })?;
                 Ok(rows
                     .into_iter()
@@ -436,5 +484,22 @@ mod tests {
         assert!(errors
             .iter()
             .any(|e| e.contains("'ghost'") && e.contains("not declared")));
+    }
+
+    #[test]
+    fn frozen_metadata_literals_are_pinned() {
+        // Spec #2956 AC4 (NO-MIGRATE): these physical PostgreSQL identifiers are
+        // a shipped on-disk compat contract — they must never be renamed or
+        // migrated. Pinning them here makes a future silent divergence fail.
+        assert_eq!(LEGACY_META_TABLES_TABLE, "feature_data_tables");
+        assert_eq!(LEGACY_META_TOMBSTONES_TABLE, "feature_data_tombstones");
+        assert_eq!(LEGACY_METADATA_COLUMN, "feature_id");
+
+        // The DDL is built from those exact constants (single source of truth),
+        // so the frozen names cannot drift between constant and schema.
+        let ddl = metadata_ddl_pg();
+        assert!(ddl.contains(LEGACY_META_TABLES_TABLE), "{ddl}");
+        assert!(ddl.contains(LEGACY_META_TOMBSTONES_TABLE), "{ddl}");
+        assert!(ddl.contains(LEGACY_METADATA_COLUMN), "{ddl}");
     }
 }

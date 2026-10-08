@@ -8,6 +8,23 @@ use std::sync::{Arc, OnceLock};
 use super::engine::{quote_ident, EngineHandle, StoreEngine};
 use super::migration::{MigrationGate, MigrationWriterGuard};
 
+// ── Frozen on-disk identifiers (Spec #2956 AC4, NO-MIGRATE) ───────────────────
+
+/// On-disk compatibility contract (Spec #2956 AC4, **NO-MIGRATE**).
+///
+/// The per-application physical table namespace is a serialized on-disk
+/// contract with previously shipped installs. The prefix is **retained
+/// verbatim**: renaming it would be a destructive PostgreSQL migration for zero
+/// user benefit and would break existing databases. All table-name construction
+/// references this constant; the unit tests pin its byte-identical output so a
+/// future rename cannot silently diverge.
+pub const LEGACY_TABLE_PREFIX: &str = "feature";
+
+/// Frozen terminal-sessions table (`feature_terminal_sessions`): the
+/// [`LEGACY_TABLE_PREFIX`] + the `terminal` application namespace + `sessions`.
+/// Pinned by the unit tests below.
+pub const LEGACY_TERMINAL_SESSIONS_TABLE: &str = "feature_terminal_sessions";
+
 // ── Column Types ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,9 +208,13 @@ impl ApplicationStore {
     }
 
     /// Build the full table name: `feature_{applicationId}_{tableName}`.
+    ///
+    /// `feature_` is the frozen NO-MIGRATE on-disk prefix
+    /// ([`LEGACY_TABLE_PREFIX`]); the output is byte-identical to the shipped
+    /// generator.
     fn full_table_name(feature_id: &str, table_name: &str) -> String {
         let sanitized = feature_id.replace('-', "_");
-        format!("feature_{}_{}", sanitized, table_name)
+        format!("{LEGACY_TABLE_PREFIX}_{}_{}", sanitized, table_name)
     }
 
     /// Validate that the given full table name is properly namespaced to the
@@ -201,7 +222,7 @@ impl ApplicationStore {
     pub(crate) fn validate_namespace(feature_id: &str, table_name: &str) -> Result<String> {
         let sanitized = feature_id.replace('-', "_");
         let full = Self::full_table_name(feature_id, table_name);
-        let expected_prefix = format!("feature_{}_", sanitized);
+        let expected_prefix = format!("{LEGACY_TABLE_PREFIX}_{}_", sanitized);
         if !full.starts_with(&expected_prefix) {
             bail!(
                 "Table '{}' is not in the '{}' application namespace",
@@ -930,3 +951,37 @@ pub async fn application_store_delete(
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn per_app_table_prefix_generator_is_byte_identical() {
+        // Spec #2956 AC4 (NO-MIGRATE): the generator output is the shipped
+        // on-disk contract and must stay byte-identical.
+        assert_eq!(LEGACY_TABLE_PREFIX, "feature");
+
+        // Dash sanitization + prefix, exactly as shipped.
+        assert_eq!(
+            ApplicationStore::full_table_name("mission-monitor", "sessions"),
+            "feature_mission_monitor_sessions"
+        );
+
+        // The terminal sessions table (namespace `terminal`, table `sessions`)
+        // resolves to the frozen literal.
+        assert_eq!(
+            ApplicationStore::full_table_name("terminal", "sessions"),
+            LEGACY_TERMINAL_SESSIONS_TABLE
+        );
+        assert_eq!(LEGACY_TERMINAL_SESSIONS_TABLE, "feature_terminal_sessions");
+    }
+
+    #[test]
+    fn namespace_validation_uses_the_frozen_prefix() {
+        assert_eq!(
+            ApplicationStore::validate_namespace("mission-monitor", "sessions").unwrap(),
+            "feature_mission_monitor_sessions"
+        );
+    }
+}
