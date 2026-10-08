@@ -1,153 +1,119 @@
 # workspace-layout — Functional
 
-Scope: the customizable dockable/tileable workspace (issue #2949) — several open apps rendered as panes inside the SINGLE main Fredo window, moved between regions and resized via shared dividers, arranged into named layouts that persist and auto-restore across restart. Built on the own window kernel (`apps/ui/src/shared/window-system/`) and the positionable dock (#2848). Map 1:1 to `.opencode/tmp/2949/triage.md` `## QA Expert` (QA Plan F-1..F-20; Architect EARS R1..R14, AC1..AC5). A FAIL on any AC-mapped F-row fails that AC.
+Scope: the FancyZones-style **zone layout** workspace (issue #2980) — layout management is configured in a dedicated **Layout** settings section (enable, define/edit layouts, assign, zone gap, activation chord), and windows are snapped into zones by **holding the activation chord and dragging the window header**: the zone overlay appears, the zone under the pointer highlights, release snaps the window into that zone. Config + assignments persist across restart, and zoned windows restore into their zones on first paint. This REPLACES the shipped 9-region arrangement UX (#2949 workspace toolbar/presets/grip overlay/`PaneDivider`/`LayoutMenu`, dock "Arrange" well). Built on the own window kernel (`apps/ui/src/shared/window-system/`). Map 1:1 to `.opencode/tmp/2980/triage.md` `## QA Expert` (rows R-1.1..R-5.2 + E2E + RESTART; Architect EARS R-1..R-5, AC1..AC5). A FAIL on any AC-mapped F-row fails that AC.
 
-> **Verification policy: live** — pure UI-rendering + persistence spec; the ACs are provable ONLY by observing the running artifact (`pnpm dev:tauri`). Each leg: DOM-snapshot with `getBoundingClientRect` reads, `tauri_webview_screenshot` receipt, `tauri_read_logs(source="console")` after every step. **Live-gate reference:** the round's Evidence MUST include a `telemetry_spans` live query via `.opencode/skills/telemetry-query/telemetry-query.ps1` (non-zero count + recent `max(ingested_at)` at round start AND after the drive). The workspace layout is row-INDEPENDENT (panes derive from the `useWindows()` store, opened via the launcher/CLI) — the query is the live-pipeline reference, not a layout metric. A static-only PASS is a FALSE PASS; the audit gate fails closed. A console `Error:`/`Uncaught`/`Maximum update depth exceeded` on any leg invalidates that leg.
+> **Verification policy: live** — UI-rendering + persistence + gesture spec; the ACs are provable ONLY by observing the running artifact (`pnpm dev:tauri`). Each leg: DOM-snapshot with `getBoundingClientRect` reads, `tauri_webview_screenshot` receipt, `tauri_read_logs(source="console")` after every step. **Live-gate reference:** the round's Evidence MUST include a `telemetry_spans` live query via `.opencode/skills/telemetry-query/telemetry-query.ps1` (non-zero count + recent `max(ingested_at)` at round start AND after the drive). Layout state is row-INDEPENDENT (windows derive from the `useWindows()` store; zone config from the module-scoped zone store) — the query is the live-pipeline reference, not a layout metric. A static-only PASS is a FALSE PASS; the audit gate fails closed. A console `Error:`/`Uncaught`/`Maximum update depth exceeded` on any leg invalidates that leg.
 
-> **Authoritative surface (do not substitute names).** Store `apps/ui/src/shared/window-system/workspaceLayoutStore.ts`; hook `useWorkspaceLayout()` (`useSyncExternalStore`, module-scoped, stable snapshot ref until a real mutation); pure math `paneLayout.ts`; key `Fredo_workspace_layout` (JSON `{version, activeLayoutId, activeSlots, savedLayouts}`); `DEFAULT_LAYOUT_NAME='Default'`. Root `[data-testid="workspace-layout"]`; pane `[data-testid="workspace-pane-<windowId>"]` + `data-pane-region` + `data-pane-window-id`; divider `[data-testid="pane-divider-<dividerId>"]` `role="separator"` + `aria-orientation` + `aria-label="Resize panes"`; region drop targets `[data-testid="pane-region-<region>"]` + `data-pane-drop-region`; controls `[data-testid="layout-menu-button"|"layout-save"|"layout-name-input"|"layout-restore-<layoutId>"|"layout-delete-<layoutId>"]`. **Units:** pane rect = workspace-local CSS px (`Geometry` from `windowGeometry.ts`, MIN 320×200); divider split read from its rect (no `aria-valuenow` in the contract). `windowId` = `FredoFeatureClass.id` (`terminal`, `mission-monitor`, `diagram`). **Reconciliation note:** the UI/UX Expert's section (`## UI/UX Expert`) currently publishes ALTERNATE bindings (`shared/workspace/layoutStore.ts`, `useActiveLayout`/`useWorkspaceActions`, keys `Fredo_workspace_layouts` + `Fredo_workspace_active_layout`, testids `workspace-toolbar`/`workspace-preset-*`/`workspace-save-layout`/`workspace-layout-item-*`/`pane-divider-<axis>-<index>`/`pane-drop-zone-<region>`/`workspace-pane-degraded-<windowId>`/`dock-arrange`, fractions 0..1). The Architect declares its names block AUTHORITATIVE and the UI/UX defers — these suites bind to the ARCHITECT's names. If convergence picks the UI/UX names (or a merged set), the Tester must report the gap to the QA Expert for re-binding rather than record a spurious product FAIL.
+> **Authoritative surface (do not substitute names).** Store `apps/ui/src/shared/window-system/zoneLayoutStore.ts` (module-scoped, `useSyncExternalStore`, stable snapshot ref until a real mutation); hook `useZoneLayout()`; pure math `apps/ui/src/shared/window-system/zoneLayout.ts`; key `Fredo_layout_zones` (JSON v1 `{version, enabled, activeLayoutId, layouts, gap, chord, assignments}`); legacy `Fredo_workspace_layout` is NOT migrated and is best-effort purged on first hydrate. Constants: `ZONE_LAYOUT_VERSION=1`, `DEFAULT_ZONE_GAP=8`, `MIN_ZONE_GAP=0`, `MAX_ZONE_GAP=32`, `DEFAULT_ZONE_CHORD='alt'`, `ZONE_ACTIVATION_CHORDS=['alt','primary','primary+alt','primary+shift','alt+shift']`. Renderer `ZoneOverlay.tsx` + rewritten `WorkspacePane.tsx` + `WindowManager.tsx` zone partition; settings host `features/settings-app/components/LayoutSettings.tsx` + `ZoneLayoutEditor.tsx`, wired as a STATIC "Layout" section in `SettingsSurface.tsx`. **Units:** a zone rect is a fraction 0..1 of the measured workspace; the rendered window px rect = `zone.rect × workspace`, inset `gap/2` per side, clamped to MIN 320×200; `gap` is px. The activation chord is MODIFIER-ONLY and is tracked from pointer-event modifier flags (`altKey`/`ctrlKey`/`metaKey`/`shiftKey`) — NOT the keymap engine; the `primary` token uses `resolvePrimaryModifier()`. `windowId` = `FredoFeatureClass.id` (`terminal`, `mission-monitor`, `diagram`). **Testid hooks:** `settings-nav-layout`, `layout-settings`, `layout-enabled-toggle`, `layout-active-select`, `layout-gap-input`, `layout-chord-select`, `layout-list-item-<id>`, `layout-assign-<id>`, `layout-delete-<id>`, `layout-new-button`, `layout-edit-<id>`, `layout-editor`, `layout-editor-name`, `layout-template-<templateId>`, `layout-template-count`, `layout-template-main-fraction`, `layout-editor-preview`, `layout-editor-zone-<zoneId>`, `layout-editor-split-h`, `layout-editor-split-v`, `layout-editor-confirm`, `layout-editor-cancel`, `layout-editor-error`, `zone-overlay`, `zone-target-<zoneId>` (+`data-zone-id`/`data-hovered`), `zone-announcer`, `workspace-pane-<windowId>` (+`data-zone-id`), `zone-degraded-<windowId>`, `workspace-empty-slot-<windowId>`, `workspace-slot-restore-<windowId>`, `data-zone-drag='true'`. **REMOVED hooks that must be ABSENT (R-5.1):** `workspace-toolbar`, `workspace-preset-*`, `workspace-arrange`, `dock-arrange`, `pane-region-*`, `pane-divider-*`, `layout-menu-button`, `workspace-announcer`. **Induction lever:** `tauri_ipc_execute_command('save_setting',{key:'Fredo_layout_zones',value:<json>})` then restart + read back `get_setting` (existing command pair; no new Rust command). **Before→after:** where an AC is before→after, the BEFORE state = the pre-feature app (layout management OFF / shipped 9-region toolbar); the BEFORE column may use a removed-code diff + durable recorded values. A live baseline, if required, is `dev-env.ps1 -Action Up -Spec 2980 -At <pre-change-tip>` (restore to the tested tip after); do NOT require a second `git worktree` (denied in the tester sandbox).
 
-## AC1 — panes visible simultaneously (R1, R2, R13)
+## AC1 — one Layout settings area (R-1.1..R-1.3)
 
-- [ ] F-1 (R1 / AC1): Open Terminal then Mission Monitor from the launcher grid; activate the tiled workspace.
-  - EXPECTED: `[data-testid="workspace-layout"]` contains `workspace-pane-terminal` AND `workspace-pane-mission-monitor` at the SAME time; each has a non-zero `getBoundingClientRect` and its feature content renders; neither pane's rect equals the full workspace (not one-at-a-time full-bleed). Screenshot shows both apps.
-  - Edge: 2 / 3 / 4+ panes; open via launcher tile AND `fredo open-app`; activate tiling while one window is maximized; 0 panes = clean desktop; light + dark.
-- [ ] F-2 (R2 / AC1): With one pane already placed, place a second open app that has no pane into the workspace.
-  - EXPECTED: the app is added as a pane in a default region and the existing panes reflow to share the workspace (no overlap, no pane full-bleed). `data-pane-region` present on the new pane.
-  - Edge: add to an empty workspace; add a 3rd/4th pane; add a currently-floating window; add a minimized window; add the same window twice (one pane per windowId).
-- [ ] F-13 (R13 / AC1): With a multi-pane arrangement active, maximize a pane (full-bleed), then restore it.
-  - EXPECTED: maximize covers the tiles with today's #2924 rect `{0,0,hostW,hostH}` (`borderRadius:0`, 0 grips, control "Restore …"); restore returns the tiled arrangement INTACT — sibling/pane rects unchanged, the saved arrangement uncorrupted. A window with no slot renders as a freeform float (frame-local geometry).
-  - Edge: maximize each pane in turn; float a no-slot window over the tiles (z-order); maximize then save a layout; maximize then full restart; confirm no arrangement corruption in `Fredo_workspace_layout`.
+- [ ] F-1 (R-1.1 / AC1): Boot PG-default; open Settings; click `[data-testid="settings-nav-layout"]`.
+  - EXPECTED: the `[data-testid="layout-settings"]` pane renders and hosts `layout-enabled-toggle`, `layout-active-select`, `layout-gap-input`, `layout-chord-select`, and `layout-new-button` (plus the defined-layout list). Exactly one Layout nav item exists.
+  - Edge: other static Settings sections untouched (Hotkeys still renders); re-open Settings → Layout is still the surface; the nav item is `aria-current="page"` when active and keyboard-reachable.
+- [ ] F-2 (R-1.2 / AC1): In `layout-settings`, toggle `layout-enabled-toggle` on; pick a layout in `layout-active-select`; set `layout-gap-input` = 16; pick `layout-chord-select` = `primary+alt`.
+  - EXPECTED: each change applies to the running workspace with NO relaunch (dependent controls un-dim; the active layout takes effect; rendered zone rects reflect gap 16; the chosen chord is what `matchesZoneChord` accepts) and persists via `save_setting('Fredo_layout_zones')` (read back shows enabled/active/gap/chord).
+  - Edge: `layout-gap-input` out of 0–32 clamps/reverts via `clampZoneGap` (caption "0–32 px"); `layout-active-select` disabled when `enabled=false` OR `layouts.length===0` ("Define a layout first"); `layout-chord-select` disabled when `enabled=false`.
+- [ ] F-3 (R-1.3 / AC1): After F-2, fully restart the app; reopen Settings → Layout.
+  - EXPECTED: the persisted enabled flag, active layout, defined layouts, gap, and chord reload and re-apply (values match); read back via `get_setting('Fredo_layout_zones')`.
+  - Edge: malformed / `version!==1` payload → defaults (no throw); legacy `Fredo_workspace_layout` purged on first hydrate.
 
-## AC2 — move + resize via shared divider (R3, R4, R5)
+## AC2 — define/edit layouts (R-2.1..R-2.5)
 
-- [ ] F-3 (R3 / AC2): Drag pane Terminal onto `[data-testid="pane-region-right"]` (repeat for a corner region).
-  - EXPECTED: after release the pane's `data-pane-region="right"`, its rendered rect lies inside that region of the workspace, Mission Monitor reflows, and the rendered rect matches the requested region. Screenshot before/after.
-  - Edge: all 9 regions incl. corners; move onto the region another pane occupies; rapid consecutive moves; drop outside any region (no-op or snap-back — record behavior, no crash).
-- [ ] F-4 (R4 / AC2): Drag `[data-testid="pane-divider-<dividerId>"]` between two adjacent panes along its axis.
-  - EXPECTED: BOTH adjacent pane rects change; their COMBINED extent along the divider axis is held constant (±2px); the shared edge stays coincident (no gap, no overlap); the split clamps at MIN_WIDTH/MIN_HEIGHT (320/200). Rendered sizes match the pointer.
-  - Edge: drag each extreme (min clamp both ways); vertical vs horizontal divider; 3 panes on one axis (2 dividers, each moves only its pair); drag after a pane close.
-- [ ] F-5 (R5 / AC2): During a move/resize drag, sample the rendered geometry at ≥3 points mid-gesture; read `Fredo_workspace_layout` during the gesture and immediately after release.
-  - EXPECTED: rendered pane geometry updates on each animation frame, tracking the pointer at every sampled point; the persisted value is UNCHANGED during the gesture and is written within 500 ms after release.
-  - Edge: fast flick drag; release outside the workspace; release with no movement (no spurious write); two sequential gestures; console reads at each sample.
+- [ ] F-4 (R-2.1 / AC2): Click `layout-new-button`; for each of `layout-template-columns`, `layout-template-rows`, `layout-template-grid`, `layout-template-main-side` click the template and adjust `layout-template-count` / `layout-template-main-fraction`.
+  - EXPECTED: `layout-editor-preview` paints the expected `layout-editor-zone-<zoneId>` tiles for each template within <100 ms; a `main-side` layout exposes `layout-template-main-fraction`.
+  - Edge: custom split — select a `layout-editor-zone-<zoneId>` then `layout-editor-split-h` / `layout-editor-split-v` adds a zone (`splitZone` at 0.5); split buttons disabled until a zone is selected.
+- [ ] F-5 (R-2.2 / AC2): Set `layout-editor-name`; click `layout-editor-confirm`.
+  - EXPECTED: `saveZoneLayout` persists; the editor closes; a `layout-list-item-<id>` appears with its zone/template summary and a status message announces.
+  - Edge: empty name → `layout-editor-error` shown, confirm blocked; the saved layout survives restart; `layout-editor-cancel` discards with no store write.
+- [ ] F-6 (R-2.3 / AC2): Click `layout-assign-<id>` (or select it in `layout-active-select`).
+  - EXPECTED: the running workspace uses it as active (`setActiveZoneLayout`); the row shows an "Active" text pill + `aria-current="true"`.
+  - Edge: assigning another layout switches active; deleting the active layout clears it.
+- [ ] F-7 (R-2.4 / AC2): In `layout-editor` remove all zones and attempt confirm; render a zero-zone layout's `layout-assign-<id>`.
+  - EXPECTED: `layout-editor-confirm` disabled; `layout-editor-error` explains; `layout-assign-<id>` disabled; `setActiveZoneLayout` is a no-op (no active change, no throw).
+  - Edge: a zero-`zones[]` layout does not survive reload (dropped by tolerant parse); the pure no-op assertion is a `static/unit pin — non-AC` where no live lever reaches it.
+- [ ] F-8 (R-2.5 / AC2): Assign a layout; click `layout-edit-<id>`, change its zones, confirm.
+  - EXPECTED: the workspace re-renders against the edited zones; other windows uncorrupted; no throw; status announces.
+  - Edge: draft edits leave the workspace unchanged until confirm; `layout-editor-cancel` discards.
 
-## AC3 — named save/restore + automatic default restore (R6, R7, R8, R14)
+## AC3 — chord-drag snap (R-3.1..R-3.4)
 
-- [ ] F-6 (R6 / AC3): Arrange 2 panes → open `[data-testid="layout-menu-button"]` → set `[data-testid="layout-name-input"]` = `twopane` → activate `[data-testid="layout-save"]`.
-  - EXPECTED: a `[data-testid="layout-restore-<layoutId>"]` entry named `twopane` appears; the persisted `Fredo_workspace_layout.savedLayouts` contains the snapshot — each pane's `windowId`, `region`, and `rect`.
-  - Edge: empty / duplicate / whitespace-only / very long name; save with 1 pane; save while a window is floating (no slot); delete a saved layout (`layout-delete-<layoutId>`) then confirm it is gone from the persisted JSON.
-- [ ] F-7 (R7 / AC3): Rearrange/close panes, then restore `twopane` via `layout-restore-<layoutId>`.
-  - EXPECTED: every referenced pane is placed at its saved `region` + `rect` (±2px); the arrangement REPLACES (not merges with) the current one.
-  - Edge: restore over a different arrangement; restore when some panes are already open; restore twice in a row (idempotent); restore after a theme switch.
-- [ ] F-8 (R8 / AC3/AC5): Leave a non-empty active arrangement (or mark the `Default` layout), fully quit and relaunch Fredo.
-  - EXPECTED: on FIRST paint of the workspace the last active arrangement (or the `Default` layout) renders automatically — no manual action; panes at saved regions/rects; persisted value re-read from the store.
-  - Edge: no persisted state (clean desktop, no crash); corrupt/unknown persisted value (degrades to clean/no-crash); `activeLayoutId:null` ad-hoc arrangement; default references a closed app.
-- [ ] F-14 (R14 / AC3): After a gesture end or a structural change (add/remove/move pane), read `Fredo_workspace_layout` via `settingsService.get` within 500 ms.
-  - EXPECTED: the persisted arrangement reflects the change; at most one write per gesture end (debounced ≥500 ms); a write failure never blocks or corrupts the in-memory store (best-effort, mirroring `dockPositionStore.ts:73-77`).
-  - Edge: rapid repeated gestures (coalesced); write-failure path (swallow + no crash); read during a gesture (unchanged).
+- [ ] F-9 (R-3.1 / AC3): Precondition enabled + `activeLayoutId` + a live window; hold the activation chord, pointer-down on `[data-testid="window-frame-<id>"]` header, drag across the workspace.
+  - EXPECTED: `[data-testid="zone-overlay"]` + one `zone-target-<zoneId>` per zone appear; the dragged frame gets `data-zone-drag="true"`; the zone under the pointer sets `data-hovered="true"` (others idle); `[data-testid="zone-announcer"]` announces overlay/target.
+  - Edge: chord held but pointer-down NOT on the header → no overlay; eligibility gate read at pointer-down; zero-layout active → no overlay.
+- [ ] F-10 (R-3.2 / AC3): From F-9, release the pointer over a hovered `zone-target-<zoneId>`.
+  - EXPECTED: the window renders as `[data-testid="workspace-pane-<windowId>"]` with `data-zone-id`; its px rect lies within `resolveZoneRect` (fraction×workspace, `gap/2` inset per side, clamped ≥320×200); the assignment persists (`save_setting`) and `zone-announcer` announces "Snapped {title} to {zone}".
+  - Edge: adjacent zones leave an even gutter (`gap/2` per edge); `gap=0` → flush; overlapping zones pick the topmost.
+- [ ] F-11 (R-3.3 / AC3): Turn `layout-enabled-toggle` off (or set active = "None"); chord-drag a window.
+  - EXPECTED: no `zone-overlay`; the drag behaves exactly as the shipped freeform float; `data-zone-drag` never set.
+  - Edge: enabled but zero layouts → same no-overlay / float behavior.
+- [ ] F-12 (R-3.4 / AC3): Chord-drag and release over an inter-zone gap / outside the workspace; separately press Escape mid-drag.
+  - EXPECTED: no highlight (`hoveredZoneId=null`); geometry unchanged; no assignment; no throw; `zone-announcer` "No zone — window unchanged." / "Snap cancelled — window unchanged."; focus is not moved.
+  - Edge: Escape on a non-eligible drag is a no-op.
 
-## AC4 — graceful degradation + sibling reflow (R9, R10)
+## AC4 — it sticks (R-4.1..R-4.4)
 
-- [ ] F-9 (R9 / AC4): Pre-seed a layout naming an unregistered window id (and one naming valid-but-unopened `browser-preview`), then restore it.
-  - EXPECTED: the affected slot renders EMPTY (or a still-registered app is reopened); the remaining panes keep their arrangement unchanged; no throw; console clean.
-  - Edge: unknown id; feature removed/hidden; `showable:false`; app closed after the layout was saved; ALL ids unknown (empty workspace, no crash).
-- [ ] F-10 (R10 / AC4): With a 2-pane and then a 3-pane tiled arrangement, close one pane.
-  - EXPECTED: sibling panes keep their sizes or reflow sensibly to a valid tiled arrangement (no overlap, no orphan divider); remaining panes stay interactive.
-  - Edge: close the middle pane (3-pane); close the last pane (clean workspace); close focused vs backgrounded; close a pane mid-gesture; reopen the closed app (no duplicate pane).
+- [ ] F-13 (R-4.1 / AC4): Fully restart after config changes (F-2).
+  - EXPECTED: enabled flag, `activeLayoutId`, defined layouts, gap, and chord survive and reload (read back via `get_setting`).
+  - Edge: malformed payload → defaults; legacy key purged.
+- [ ] F-14 (R-4.2 / AC4): With assignments persisted, fully restart.
+  - EXPECTED: each assignment whose window resolves to a REGISTERED feature reopens un-maximized and renders in its zone on FIRST paint (`workspace-pane-<windowId>` with `data-zone-id`).
+  - Edge: feature off after restart → no reopen; a `new-window` app is never zone-managed.
+- [ ] F-15 (R-4.3 / AC4): With enabled + assigned layout + zoned windows open, force a `WindowManager`/Home remount.
+  - EXPECTED: every open assigned window renders at its zone's resolved rect and continues to across the remount.
+  - Edge: a gap/chord change re-renders all zoned windows; the module-scoped store survives remount (no `useRef`/`useState`).
+- [ ] F-16 (R-4.4 / AC4): Seed a persisted assignment with an unregistered/closed windowId (lever below), then restart.
+  - EXPECTED: its zone renders `[data-testid="zone-degraded-<windowId>"]` (minimized → `workspace-empty-slot-<windowId>`); sibling zones/windows unchanged; nothing throws.
+  - Edge: `workspace-slot-restore-<windowId>` restores a minimized zoned pane; lever = `tauri_ipc_execute_command('save_setting',{key:'Fredo_layout_zones',value:<json-with-unknown-windowId>})`, restart, read back `get_setting`.
 
-## AC5 — persistence + token-first (R8, R11)
+## AC5 — old path removed, kernel unchanged (R-5.1, R-5.2)
 
-- [ ] F-11 (R11 / AC5): Save a layout under Classic + accentA; switch to Turbo + accentB (theming feature).
-  - EXPECTED: pane surfaces, dividers, focus rings and drop-target highlights re-tint to theme B's vars; computed bg/border trace to `--card-bg`/`--border-color`/`--accent-primary`; hover tints use `tint()` (`color-mix`). Static grep over changed files: ZERO `#[0-9a-fA-F]{3,8}`, ZERO `rgba(`/`hsla(`, ZERO `var(--x)NN` alpha-append (excluding issue-ref comments / documented data-palette exemptions).
-  - Edge: light + dark; user accent override; divider hover tint; theme switch mid-gesture; a fixed non-token color that ignores the accent is a FAIL.
+- [ ] F-17 (R-5.1 / AC5): Boot; scan the DOM with layout management both on and off.
+  - EXPECTED: `workspace-toolbar`, `workspace-preset-*`, `workspace-arrange`, `dock-arrange`, `pane-region-*`, `pane-divider-*`, `layout-menu-button`, and `workspace-announcer` are ALL absent; exactly one `zone-announcer` exists.
+  - Edge: the launcher/dock expose no arrange entry; `workspace-layout` root KEPT as the overlay/partition host.
+- [ ] F-18 (R-5.2 / AC5): PG-default boot; open/float/dock a window with the feature off.
+  - EXPECTED: kernel contract unchanged — single-window full-bleed default, freeform float math (`windowGeometry`), launcher/dock a read-only `useWindows()` consumer, token-first theming; kernel suites pass.
+  - Edge: no new Rust command/table; `WindowEntry` ReactNode never serialized.
 
-## Complex scenario (AC3)
+## End-to-end (MISSION-MONITOR)
 
-- [ ] F-15 (AC3 complex): Given a saved 2-pane layout with Terminal on the left and Mission Monitor on the right / When the user fully restarts Fredo / Then both panes are restored in those positions and sizes on first paint.
-  - EXPECTED: the two panes render at the saved regions/rects (±2px) with their content, divider in the saved place, no manual action, console clean.
-  - Edge: restart mid-arrangement; cold start after clearing caches; both apps also openable manually afterwards; restart with a third window closed.
+- [ ] F-19 (E2E / AC1+AC2+AC3+AC4): Boot PG-default; open Mission Monitor + Terminal from the launcher; Settings → Layout → enable + `layout-new-button` → `layout-template-columns` ×2 → `layout-editor-confirm` → `layout-assign-<id>`; hold the chord and drag each header over a zone (overlay + highlight + release); restart.
+  - EXPECTED: Mission Monitor renders live sessions in its window; overlay/highlight/snap work live; after restart both windows return to their zones on first paint and Mission Monitor still streams live sessions inside its zoned pane.
+  - Edge: the live-session reference is observed via `telemetry_spans` / row pipeline; a `telemetry_spans` non-zero count + recent `max(ingested_at)` bookends the round.
+
+## RESTART / persistence
+
+- [ ] F-20 (RESTART): Fully restart with a complete payload (enabled + active + layouts + gap + chord + assignments).
+  - EXPECTED: all config AND assignments survive; zoned windows restore on first paint; exactly one arrangement model persists under `Fredo_layout_zones` v1.
+  - Edge: unrelated settings unaffected; hydrate is once-only / dirty-guarded; `Fredo_workspace_layout` absent after purge.
 
 ## Non-functional
 
-- [ ] F-16 (loop guard): After EVERY pane move/resize/save/restore/close and after a theme flip, read the webview console; grep the changed layout/effect code.
-  - EXPECTED: no `Maximum update depth exceeded`/`Error:`/`Uncaught`; effect/memo deps consume epoch/primitive signals — no array `.length`, no freshly-created object refs (AGENTS #523 rule; `AppDock.tsx:33-38` precedent).
-  - Edge: rapid divider drag; repeated save/restore; theme flip mid-arrangement.
-- [ ] F-17 (persistence medium): Inspect the layout store + mount/unmount behavior.
-  - EXPECTED: module-scoped store consumed via `useSyncExternalStore`; no `useRef`/`useState`/component-local persistence for the arrangement; survives a `WindowManager`/Home remount and close-all-reopen.
-  - Edge: remount WindowManager; close all panes then reopen; HMR reload; `resetWorkspaceLayoutStoreForTests()` isolation in unit tests.
-- [ ] F-18 (keyboard): Focus a pane, then the divider; drive arrow keys and the divider's resize keys.
-  - EXPECTED: arrow keys move focus between panes; the divider's resize keys change the split; the focused pane/divider shows the global `:focus-visible` ring; divider is `role="separator"` with `aria-orientation` + `aria-label="Resize panes"`; no focus trap.
-  - Edge: first/last pane boundary; narrow viewport; many panes; screen-reader name; divider focused then arrow keys.
+- [ ] F-21 (loop guard): After EVERY chord-drag/snap/assign/layout edit/restart and a theme flip, read the webview console; grep the changed zone/settings code.
+  - EXPECTED: no `Maximum update depth exceeded`/`Error:`/`Uncaught`; effect/memo deps consume epoch/primitive signals — no array `.length`, no freshly-created object refs; the transient drag snapshot identity changes only on a real mutation.
+  - Edge: rapid repeat drags; repeated edit/assign; theme flip mid-arrangement.
+- [ ] F-22 (token-first): Inspect the computed styles of `zone-overlay`/`zone-target-*`/`workspace-pane-*`/`layout-settings` under two themes + a user accent override; static grep over changed files.
+  - EXPECTED: computed bg/border/fill trace to semantic tokens / CSS vars (`--card-bg`/`--border-color`/`--accent-primary`); tints via `tint()` (`color-mix`); ZERO `#[0-9a-fA-F]{3,8}`, ZERO `rgba(`/`hsla(`, ZERO `var(--x)NN` alpha-append (excluding issue-ref comments / documented data-palette exemptions).
+  - Edge: light + dark; the hovered `zone-target` non-colour cue (glyph + label) still reads with hue off; any fixed non-token colour is a FAIL.
+- [ ] F-23 (keyboard reachability): Tab through `layout-settings` + `layout-editor`.
+  - EXPECTED: every control is a native control reachable in DOM order with the global `:focus-visible` ring; the Layout nav item is `aria-current="page"` when active; template buttons form a labelled `radiogroup` (`aria-checked`); preview zones carry `aria-pressed`.
+  - Edge: narrow viewport; empty layout list; editor open; no focus trap (`aria-modal`/`inert` absent).
+- [ ] F-24 (drag focus): Chord-drag a window; press Escape mid-drag; complete a snap.
+  - EXPECTED: the drag does not move or trap focus (`handleHeaderPointerDown` `preventDefault()`s; no `.focus()` in begin/end/cancel); Escape cancels with no focus change; no `aria-modal`/`inert`/focus-trap in the drag path.
+  - Edge: drag from a focused vs unfocused window; a non-eligible drag (no chord) leaves focus as-is.
+- [ ] F-25 (WindowEntry never serialized): Read back `get_setting('Fredo_layout_zones')`.
+  - EXPECTED: the persisted payload holds ids + fractions + numbers only — no ReactNode/function/component fields; `WindowEntry` (`windowTypes.ts`) is never serialized.
+  - Edge: an assignment to a `new-window` app is excluded; a malformed payload is tolerated.
 
 ## Regression + CI
 
-- [ ] F-19 (regression): Run `.opencode/tests/window-manager/functional.md` F-3..F-11 + `regression.md` R-1..R-15 while the workspace feature ships.
-  - EXPECTED: open → maximize → restore → minimize → focus → close behaves exactly as #2924; one window per feature id; no focus steal; close idempotent/re-entrancy-guarded; freeform float geometry stays frame-local when no tiled layout is active; `AppDock` stays a read-only `useWindows()` consumer.
+- [ ] F-26 (regression): Run `.opencode/tests/window-manager/` (functional F-3..F-11 + regression R-1..R-15) while the workspace zone feature ships.
+  - EXPECTED: open → maximize → restore → minimize → focus → close behaves exactly as #2924; one window per feature id; no focus steal; close idempotent/re-entrancy-guarded; freeform float geometry stays frame-local; the launcher/dock stays a read-only `useWindows()` consumer.
   - Edge: rapid re-open; update-while-minimized; maximize→restore geometry; dock position/reveal; launcher open.
-- [ ] F-20 (CI-parity — F-14-style): Run `CONTRIBUTING.md:28-35`'s exact command set on the spec tip.
+- [ ] F-27 (CI-parity): Run the exact `CONTRIBUTING.md` command set on the spec tip.
   - EXPECTED: `pnpm --filter @fredo/ui typecheck`, `pnpm --filter @fredo/ui build`, `pnpm --filter @fredo/ui test:run`, `cargo check --manifest-path apps/tauri/src-tauri/Cargo.toml --locked`, `cargo test … --locked`, `cargo clippy … --locked -- -D warnings` — every step exits 0 with zero warnings; no existing assertion weakened/disabled/deleted.
   - Edge: Rust touched → cargo legs required; UI-only → UI legs required; a red local gate predicts a red PR check.
 
 ## F-row → AC map
 
-F-1/F-2/F-13 → AC1 (simultaneous panes, add/reflow, maximize/float preserved); F-3/F-4/F-5 → AC2 (move to region, divider resize combined-extent, live gesture + no mid-gesture persist); F-6/F-7/F-8/F-14 → AC3 (named save, restore, automatic restart restore, ≤500 ms persist); F-9/F-10 → AC4 (unavailable-app degradation, sibling reflow); F-11 → AC5 (token-first under theme/accent change); F-15 → AC3 complex; F-16/F-17/F-18 → NFRs (no re-render loop, module-scoped persistence, keyboard); F-19 → regression; F-20 → CI parity.
-
----
-
-## Test run (round 1) — Verdict: **FAIL** (AC1, AC2, AC3, AC5)
-
-> Live-driven via `pnpm dev:tauri` (spec/2949 @ `7bc8373c`; serving checkout confirmed by `dev-env.ps1 -Action Status`). Live `telemetry_spans`: 1365 → 1637 rows (max `ingested_at` 2026-09-26T19:51:09Z → 2026-09-26T20:09:33Z). Each leg DOM-snapshotted + rect-measured + screenshotted; console read after every leg (clean).
-
-- **F-1 (AC1) — FAIL (entry path).** With 3 feature windows open and 0 tiled panes there is NO arrange control: `workspace-toolbar` / `workspace-arrange` / `dock-arrange` / `layout-menu-button` all absent; the dock has no arrange well. `WindowManager.tsx:184` gates the toolbar on an existing pane/slot, so `workspace-arrange` (and the only app-code `addPane` caller) is unreachable at 0 panes. Rendering half PASSES once a pane is bootstrapped (terminal + mission-monitor rendered simultaneously).
-- **F-2 (AC1) — PASS.** `workspace-arrange` added an open app as a pane; existing panes reflowed (no overlap, no full-bleed).
-- **F-3 (AC2) — FAIL.** Move grip → 9-region overlay (single `workspace-announcer`) works, but committing `pane-region-bottom-right` (and `right`) did NOT change the pane's `data-pane-region`/rect — `movePane` falls back to a slot-order `reflowSlots` when the target region overlaps (`workspaceLayoutStore.ts:209`). No move announcement.
-- **F-4 (AC2) — PASS.** Divider keyboard resize: terminal 640→672, sibling 640→608, combined 1280 constant; min clamp 320 held under a −400 px drag.
-- **F-5 (AC2) — PASS.** Pointer drag: 2 sampled frames tracked the pointer (320/960 → 528/752); persisted value unchanged mid-gesture, written within the debounce after release.
-- **F-6 (AC3) — PASS.** Saved `threepane`; `savedLayouts` persisted; `layout-restore-*` entry appeared.
-- **F-7 (AC3) — PASS.** Restored `twopane` replaced the arrangement at the exact saved rects; `activeLayoutId` persisted.
-- **F-8 (AC3/AC5) — FAIL.** Full restart hydrated `activeSlots` as `workspace-pane-degraded-*` placeholders ("App not available"); apps are never reopened, and re-opened apps arrive full-bleed (maximized) requiring a manual Restore.
-- **F-9 (AC4) — PASS.** Closed-app and unknown-id slots degraded with siblings' rects intact, no throw, console clean.
-- **F-10 (AC4) — PASS.** Closing a pane removed its slot; the sibling absorbed the freed band; no orphan divider.
-- **F-11 (AC5) — PASS.** Computed colors trace to `--card-bg`/`--border-color`/`--accent-primary`; live theme switch (light-default → cyberpunk) re-tinted panes + divider; 0 colour literals and 0 `var(--x)NN` in changed files.
-- **F-13 (AC1/regr) — PASS.** Maximize/float left the tiles intact; restore returned the pane to its exact slot.
-- **F-14 (AC3) — PASS.** ≤500 ms debounced persist, one write per gesture end.
-- **F-15 (AC3 complex) — FAIL.** Saved Terminal-left / Mission-Monitor-right did not restore as panes with contents on first paint — two "App not available" placeholders instead.
-- **F-16/F-17/F-18/F-19 — PASS.** Console clean throughout; module-scoped `useSyncExternalStore` store survives restart/remount; divider `role="separator"` + Arrow resize + `:focus-visible` ring + pane arrow focus; window-kernel/full-bleed regression holds.
-- **F-20 — PASS.** `typecheck` 0, `build` 0, `test:run` 171 files / 2432 tests, `cargo check` + `cargo clippy -D warnings` 0 warnings.
-
-### Promoted from exploratory (round 1)
-
-- **F-21 (from E-11) — move-to-region must honour the requested region.** Chrome: `workspace-pane-move-<id>` + `pane-region-<region>`. EXPECTED: committing a region sets `data-pane-region` to it and moves the rendered rect into it (with siblings reflowing). ACTUAL (round 1): the pane keeps its region; panes repartition by slot order. A move must also announce `Moved <title> to <region>`.
-- **F-22 (entry-path reachability, from the AC1 probe) — an arrange entry MUST exist at 0 tiled panes.** Chrome: a reachable control (`dock-arrange` in the dock, or an always-rendered `workspace-arrange`). EXPECTED: with ≥1 open window and no panes, a visible control places the open windows as panes. ACTUAL (round 1): no control exists until a pane already does.
-- **F-23 (restart restores apps, from E-6/F-15) — restart must restore the arrangement WITH the apps' contents.** EXPECTED: after a full restart the saved panes render with content on first paint. ACTUAL (round 1): only the slots hydrate (degraded placeholders); apps are not reopened, and the normal open path opens them full-bleed.
-
----
-
-## Test run (round 2) — Verdict: **PASS** (5/5 ACs; 20/20 F-rows)
-
-> Live-driven via `pnpm dev:tauri` (spec/2949 @ `960ff034`; serving checkout confirmed before the drive and by the restart log). Live `telemetry_spans`: 1968 → 2233 rows (max `ingested_at` 2026-09-26T20:41:11Z → 2026-09-26T20:59:56Z). Full restart via `dev-env.ps1 -Action Restart -Spec 2949`. Console clean after every leg.
-
-Round-2 fixes verified (round-1 FAIL → PASS):
-
-- **F-1 (AC1) — PASS.** At 0 tiled panes (3 open full-bleed windows) `[data-testid="dock-arrange"]` is present in the DOM; revealing the left dock edge (`document pointermove clientX=2` → dock `x 0`, `visibility:visible`) and clicking it tiled **3 `workspace-pane-*` at 640-wide non-full-bleed rects** (terminal left / mission-monitor center / setup right), `frames:[]`, `degraded:[]`.
-- **F-2 (AC1) — PASS.** Query Viewer opened full-bleed (no slot) → `workspace-arrange` added it as a pane; 4 panes in a 2×2 grid, 0 overlaps, announcer "Added 1 pane".
-- **F-3 (AC2) — PASS.** 3 panes → move Terminal → `pane-region-bottom-right`: terminal `data-pane-region="bottom-right"` at `{960,527,960,491}` (exact bottom-right quarter); siblings re-homed non-overlapping; announcer **"Moved Terminal to bottom-right"**.
-- **F-4/F-5 (AC2) — PASS.** Divider drag: both adjacent panes changed, combined extent constant 1920; two distinct mid-gesture samples tracked the pointer; persisted value **unchanged mid-gesture** and written on release (<500 ms).
-- **F-6/F-7/F-14 (AC3) — PASS.** Saved `r2layout`; restore replaced the arrangement at saved rects; ≤500 ms debounced persist.
-- **F-8/F-15 (AC3/AC5) — PASS (decisive).** Persisted Terminal-left / Mission-Monitor-right → full restart → **both panes restored un-maximized with contents on first paint**, `degraded:[]`, `frames:[]`, no manual Restore.
-- **F-9/F-10 (AC4) — PASS.** Explicit restore of a closed app and of an unknown id still degrade (the boot-reopen does NOT leak into `restoreLayout`); closing a pane makes the sibling absorb, no orphan divider.
-- **F-11 (AC5) — PASS.** Live theme switch (cyberpunk → light-default) re-tints panes/borders/dividers to `--card-bg`/`--border-color`/`--accent-primary`; 0 colour literals, 0 `var(--x)NN`.
-- **F-13/F-16/F-17/F-18/F-19/F-20 — PASS.** Maximize/float/restore exact-slot return; console clean; module-scoped store survives restart; divider keyboard resize + pane arrow focus + focus ring; kernel regression holds (`windowStore`/`windowTypes`/`WindowFrame` unchanged); CI-parity green (`typecheck`/`build`/`test:run` 172 files / 2444 tests / `cargo check` / `cargo clippy -D warnings`).
-
-**Promoted F-21/F-22/F-23 now PASS** on the served tip. Round-2 observation (non-blocking): immediately after `dock-arrange` at 0 panes the panes briefly report `offsetHeight 1017` vs tiles `981`; the next structural change re-homes them to 981 — cosmetic only.
-
----
-
-## #2954 extension — `dock-arrange` host relocation (binding preserved)
-
-> Issue #2954 removes the persistent dock but keeps the arrange entry (`[data-testid="dock-arrange"]`
-> → `arrangeOpenWindows()`) RELOCATED into the engaged launcher (ST-2) — #2949 AC1 must not regress.
-> F-1/F-22's `dock-arrange` binding therefore stays valid; only the host moved (the control is no
-> longer inside an `app-dock`). The historical F-1/F-22 PASS records above are PRESERVED (they were
-> captured against the dock host and remain the evidence for the capability). Re-run the arrange leg
-> against the new launcher host as `.opencode/tests/launcher/regression.md` R-71; the dock-hosted
-> `app-dock` binding itself is retired.
+F-1/F-2/F-3 → AC1 (one Layout settings area); F-4/F-5/F-6/F-7/F-8 → AC2 (define/edit/assign layouts, zero-zone guard, live edit); F-9/F-10/F-11/F-12 → AC3 (chord-drag overlay, snap, disabled/no-layout float, no-zone/Escape unchanged); F-13/F-14/F-15/F-16 → AC4 (config persists, boot reopen, remount render, degraded/empty slot); F-17/F-18 → AC5 (removed hooks absent, kernel unchanged); F-19 → E2E (Mission Monitor); F-20 → RESTART; F-21/F-22/F-23/F-24/F-25 → NFRs (no re-render loop, token-first, keyboard, drag focus, WindowEntry not serialized); F-26 → regression (window-manager); F-27 → CI parity.
