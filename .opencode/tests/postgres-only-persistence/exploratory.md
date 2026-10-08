@@ -21,8 +21,8 @@ beyond the script.
 - [ ] **E-4:** On keychain unavailable (`FREDO_PG_KEYCHAIN_DISABLED`) does the GUI fall back to
   `fredo-loopback-fallback` WITHOUT writing it anywhere, and does a later keychain-available boot
   re-resolve consistently?
-- [ ] **E-5:** With a legacy `fredo.db` AND a stale `control.db` present, does the app still boot on PG
-  and leave BOTH files byte-identical?
+- [ ] **E-5:** With a legacy SQLite file AND a stale settings cache present, does the app still boot on
+  PG and leave the legacy file byte-identical?
 - [ ] **E-6:** Does the occurrence gate flag a denied token in an unexpected class (e.g. a `.md` under
   `docs/` vs `.opencode/tests/**`), and never flag a legitimate `historic-narrative` mention?
 - [ ] **E-7 (console):** `tauri_read_logs(source="console")` after every probe — any `Error:` /
