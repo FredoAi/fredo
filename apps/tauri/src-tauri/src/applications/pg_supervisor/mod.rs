@@ -37,9 +37,6 @@ use std::time::Duration;
 
 // ── AppStore `settings` KV keys (AppStore remains the single source of truth) ──
 
-/// Engine-enabled flag: `"true"` enables the managed server; absent means
-/// disabled (the default, so persistence is unchanged).
-pub const PG_ENABLED_KEY: &str = "postgres.enabled";
 /// PID marker for the managed postmaster (decimal; blank = cleared).
 pub const PG_PID_KEY: &str = "postgres_pid";
 /// Loopback-only cluster password (generated on first start).

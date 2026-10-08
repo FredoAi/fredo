@@ -79,7 +79,7 @@ use infrastructure::rtdb::store::{
     RTDB_RETENTION_DAYS_KEY,
 };
 use infrastructure::rtdb::subscriptions::SubscriptionRegistry;
-use infrastructure::storage::engine::{EngineChoice, EngineHandle, StorageEngineState};
+use infrastructure::storage::engine::{EngineHandle, StorageEngineState};
 use infrastructure::storage::application_store::{self, ApplicationStore};
 use infrastructure::storage::migration::MigrationGate;
 use infrastructure::storage::span_store::SpanStore;
@@ -238,12 +238,11 @@ pub fn run() {
             );
             app.manage(app_store.clone());
 
-            // -- Engine selection (Spec #2979 CU-1, reworked CU-1-R2) ----------
-            // PostgreSQL is UNCONDITIONAL. The synchronous control plane that
-            // once held the legacy `postgres.enabled` opt-out is gone (Spec #3005
-            // ST-2); the data-plane selection is therefore always PostgreSQL.
-            let engine_choice = EngineChoice::Postgres;
-            let storage_state = StorageEngineState::new(engine_handle.clone(), engine_choice);
+            // -- Storage-engine state (Spec #3005 ST-3) -------------------------
+            // PostgreSQL is the ONLY data-plane engine; the engine selector is
+            // gone. The swap-once handle starts Pending and the supervisor installs
+            // the pool on its (lazy) readiness leg.
+            let storage_state = StorageEngineState::new(engine_handle.clone());
             // Spec #2975 ST-2 rework: register the startup schema initializers
             // BEFORE the supervisor starts, so the registry is populated before
             // the background task can reach pool-ready (no timing race). They run
@@ -272,13 +271,11 @@ pub fn run() {
             let migration_gate = app.state::<Arc<StorageEngineState>>().migration_gate();
 
             // -- Embedded-PostgreSQL supervisor (Spec #2974 ST-3) --------------
-            // Spec #2979 CU-1/CU-1-R2: PostgreSQL is the UNCONDITIONAL engine, so
-            // the supervisor always starts. The legacy `postgres.enabled` control
-            // key is INERT — a carried `false` must not disable the PostgreSQL-only
-            // data plane. When enabled it acquires the exclusive data-dir lock
-            // BEFORE the orphan sweep and LAZILY starts the postmaster on a
-            // background task: `setup` NEVER awaits the boot (G-273/R-2.3), so the
-            // webview shell renders while PostgreSQL starts.
+            // Spec #3005 ST-3: PostgreSQL is the ONLY engine, so the supervisor
+            // always starts (no selector, no opt-out). It acquires the exclusive
+            // data-dir lock BEFORE the orphan sweep and LAZILY starts the postmaster
+            // on a background task: `setup` NEVER awaits the boot (G-273/R-2.3), so
+            // the webview shell renders while PostgreSQL starts.
             applications::pg_supervisor::start_supervisor(app.handle());
 
             // -- ApplicationStore (generic typed-column store for applications) --------

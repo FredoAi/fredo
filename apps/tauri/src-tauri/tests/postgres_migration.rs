@@ -59,7 +59,7 @@ use fredo_lib::infrastructure::application_data::declaration::ApplicationDataTab
 use fredo_lib::infrastructure::application_data::store::ApplicationDataStore;
 use fredo_lib::infrastructure::rtdb::rows::RowState;
 use fredo_lib::infrastructure::storage::engine::{
-    ensure_settings_schema, Dialect, EngineChoice, PgEngine, StorageEngineState,
+    ensure_settings_schema, Dialect, PgEngine, StorageEngineState,
 };
 use fredo_lib::infrastructure::storage::boot_config::resolve_app_data_dir;
 use fredo_lib::infrastructure::storage::migration::snapshot::SNAPSHOT_FILENAME;
@@ -739,7 +739,7 @@ async fn build_pool(url: &str, schema: &str) -> PgPool {
 /// `lib.rs` before the supervisor installs PostgreSQL (Spec #2979 CU-2).
 fn sqlite_state(_db_path: &Path) -> Arc<StorageEngineState> {
     let handle = EngineHandle::new_pending();
-    StorageEngineState::new(handle, EngineChoice::Postgres)
+    StorageEngineState::new(handle)
 }
 
 /// Register the SAME startup schema initializers `lib.rs` wires, so the

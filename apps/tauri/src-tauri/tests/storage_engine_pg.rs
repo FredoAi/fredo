@@ -51,7 +51,7 @@ use fredo_lib::infrastructure::rtdb::rows::RowState;
 use fredo_lib::infrastructure::storage::engine::{ensure_settings_schema, StorageEngineState};
 use fredo_lib::infrastructure::storage::application_store::{ColumnDef, ColumnType, ApplicationStore};
 use fredo_lib::infrastructure::storage::{
-    AppStore, EngineChoice, EngineHandle, PgEngine, StoreEngine,
+    AppStore, EngineHandle, PgEngine, StoreEngine,
 };
 use fredo_lib::PgRuntime;
 
@@ -301,7 +301,7 @@ async fn schema_init_scenario(url: &str, schema: &str) {
     let pool = build_pool(url, schema).await;
 
     // The ST-2 registry, populated exactly as `lib.rs` does at startup.
-    let state = StorageEngineState::new(handle.clone(), EngineChoice::Postgres);
+    let state = StorageEngineState::new(handle.clone());
     state.register_pg_schema_init(Arc::new(|pool: &sqlx::PgPool| {
         ApplicationDataStore::ensure_schema_on_pg(pool)
     }));

@@ -16,22 +16,11 @@
 //! `StorageEngineStatus`; ST-2/ST-3 wire the handle in `lib.rs`.
 
 use anyhow::Result;
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use super::migration::{MigrationGate, MigrationOutcome, MigrationStatusView};
-
-// -- Selection input names ----------------------------------------------------
-
-/// **FS-2** test/QA hook: `FREDO_STORAGE_ENGINE` (`sqlite` | `postgres`)
-/// overrides the control-plane KV key `postgres.enabled`. Inert when unset.
-pub const STORAGE_ENGINE_ENV: &str = "FREDO_STORAGE_ENGINE";
-
-/// The control-plane `settings` KV key that enables PostgreSQL. Mirrors
-/// `applications::pg_supervisor::PG_ENABLED_KEY`; declared here (not imported) so
-/// `infrastructure/` never depends on an application module.
-const PG_ENABLED_KEY: &str = "postgres.enabled";
 
 // -- Pool + server tuning constants (Spec #2975, Q-6) -------------------------
 
@@ -132,21 +121,6 @@ impl SqliteEngine {
     /// Lock the shared read-only connection (`PRAGMA query_only=ON`).
     pub fn read_only_conn(&self) -> MutexGuard<'_, Connection> {
         lock(&self.read_only)
-    }
-
-    /// Read one `settings` KV value from the control plane.
-    ///
-    /// A missing table, a missing key, or any read error yields `None` -- the
-    /// selection contract's "absent => default" rule (the default is PostgreSQL
-    /// since Spec #2979 CU-1), never a hard failure at selection time.
-    fn kv_get(&self, key: &str) -> Option<String> {
-        let conn = lock(&self.write);
-        conn.query_row(
-            "SELECT value FROM settings WHERE key = ?1",
-            params![key],
-            |row| row.get::<_, String>(0),
-        )
-        .ok()
     }
 }
 
@@ -297,48 +271,6 @@ impl EngineHandle {
             )),
         }
     }
-}
-
-// -- Engine selection ---------------------------------------------------------
-
-/// Which engine the app should run the data plane on.
-///
-/// Spec #2979 CU-1-R2: PostgreSQL is UNCONDITIONAL — the historical `Sqlite`
-/// variant was removed because post-CU-2 there is no SQLite data plane to
-/// select. Single-variant by design, mirroring the
-/// [`crate::applications::pg_supervisor::release_gate::ShippedDefault`] precedent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EngineChoice {
-    Postgres,
-}
-
-/// Resolve the engine choice (REQ-1/EARS-1.1; Spec #2979 CU-1, reworked CU-1-R2).
-///
-/// PostgreSQL is the UNCONDITIONAL data-plane engine. Neither the
-/// `FREDO_STORAGE_ENGINE` env lever nor the legacy control-plane KV key
-/// `postgres.enabled` can select SQLite (post-CU-2 there is no SQLite data
-/// plane):
-/// - `postgres` (case-insensitive) selects PostgreSQL;
-/// - the legacy `sqlite` env value is inert/rejected => PostgreSQL;
-/// - the legacy control-plane opt-out `postgres.enabled = "false"` is INERT =>
-///   PostgreSQL. A carried key out of an upgraded install must NOT disable the
-///   PostgreSQL-only data plane (CU-1-R2 defect: it left the `EngineHandle`
-///   `Pending` and bricked the app).
-///
-/// `control` is the DEDICATED control-plane engine (`control.db`), not the
-/// data-plane engine.
-pub fn select_engine(control: &SqliteEngine) -> EngineChoice {
-    let env = std::env::var(STORAGE_ENGINE_ENV).ok();
-    let kv = control.kv_get(PG_ENABLED_KEY);
-    resolve_engine_choice(env.as_deref(), kv.as_deref())
-}
-
-/// The pure precedence rule, split out so it is unit-testable without touching
-/// process-global environment state. Both inputs are retained (and ignored) so
-/// the unconditional-PostgreSQL rule stays directly testable — see the
-/// selection-precedence tests below.
-fn resolve_engine_choice(_env: Option<&str>, _kv_enabled: Option<&str>) -> EngineChoice {
-    EngineChoice::Postgres
 }
 
 // -- Identifier quoting -------------------------------------------------------
@@ -689,12 +621,11 @@ pub struct StorageEngineStatus {
 pub type PgSchemaInit = Arc<dyn Fn(&sqlx::PgPool) -> Result<()> + Send + Sync>;
 
 /// Shared engine state handed to the supervisor's background pool build and
-/// exposed by [`storage_engine_status`]: the swap-once handle, the resolved
-/// selection, the fail-closed reason recorded when the engine stays on SQLite,
-/// and the startup schema initializers run on the candidate pool pre-install.
+/// exposed by [`storage_engine_status`]: the swap-once handle, the fail-closed
+/// reason recorded when the pool could not be installed, and the startup schema
+/// initializers run on the candidate pool pre-install.
 pub struct StorageEngineState {
     handle: Arc<EngineHandle>,
-    choice: EngineChoice,
     fallback_reason: Mutex<Option<String>>,
     schema_inits: Mutex<Vec<PgSchemaInit>>,
     /// The exclusive pre-install migration barrier (Spec #2977 ST-4). Held by
@@ -706,11 +637,11 @@ pub struct StorageEngineState {
 }
 
 impl StorageEngineState {
-    /// Wrap the handle + the resolved selection and share it as Tauri state.
-    pub fn new(handle: Arc<EngineHandle>, choice: EngineChoice) -> Arc<Self> {
+    /// Wrap the swap-once handle and share it as Tauri state. PostgreSQL is the
+    /// ONLY data-plane engine (Spec #3005 ST-3 removed the selector).
+    pub fn new(handle: Arc<EngineHandle>) -> Arc<Self> {
         Arc::new(Self {
             handle,
-            choice,
             fallback_reason: Mutex::new(None),
             schema_inits: Mutex::new(Vec::new()),
             migration_gate: MigrationGate::new(),
@@ -746,11 +677,6 @@ impl StorageEngineState {
     /// The swap-once handle (cloned into the supervisor's pool build).
     pub fn handle(&self) -> Arc<EngineHandle> {
         Arc::clone(&self.handle)
-    }
-
-    /// The resolved engine selection (before the pool is ever built).
-    pub fn choice(&self) -> EngineChoice {
-        self.choice
     }
 
     /// Install the ONE PostgreSQL engine (first-wins on the swap-once handle).
@@ -834,50 +760,9 @@ mod tests {
     use super::*;
     use crate::infrastructure::storage::migration::MigrationStatus;
 
-    /// Serializes every test that mutates or reads the process-global
-    /// `FREDO_STORAGE_ENGINE`, so environment precedence is deterministic.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    struct EnvVarGuard {
-        key: &'static str,
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            std::env::remove_var(self.key);
-        }
-    }
-
-    fn set_env(key: &'static str, value: &str) -> EnvVarGuard {
-        std::env::set_var(key, value);
-        EnvVarGuard { key }
-    }
-
-    fn unset_env(key: &'static str) -> EnvVarGuard {
-        std::env::remove_var(key);
-        EnvVarGuard { key }
-    }
-
+    /// A standalone `SqliteEngine` for the (retained) SQLite-engine tests.
     fn make_sqlite_engine(dir: &Path) -> Arc<SqliteEngine> {
         SqliteEngine::open(&dir.join("fredo.db")).expect("open sqlite engine")
-    }
-
-    /// Seed the control-plane KV so a selection test can exercise precedence.
-    fn seed_kv(engine: &SqliteEngine, key: &str, value: &str) {
-        let conn = engine.write_conn();
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS settings (
-                key   TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );",
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO settings (key, value) VALUES (?1, ?2)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![key, value],
-        )
-        .unwrap();
     }
 
     /// A lazily-connected pool: enough to build a `PgEngine` for the type/handle
@@ -924,185 +809,6 @@ mod tests {
     #[test]
     fn quote_ident_handles_the_empty_identifier() {
         assert_eq!(quote_ident(""), "\"\"");
-    }
-
-    // -- selection precedence (pure rule) -------------------------------------
-
-    #[test]
-    fn resolve_engine_choice_env_postgres_overrides_kv() {
-        // The `postgres` env override is authoritative over any KV value.
-        assert_eq!(
-            resolve_engine_choice(Some("postgres"), Some("false")),
-            EngineChoice::Postgres
-        );
-    }
-
-    #[test]
-    fn resolve_engine_choice_defaults_to_postgres() {
-        // The CU-1 flip: absent env + absent/`true` KV => PostgreSQL.
-        assert_eq!(resolve_engine_choice(None, None), EngineChoice::Postgres);
-        assert_eq!(
-            resolve_engine_choice(None, Some("true")),
-            EngineChoice::Postgres
-        );
-        assert_eq!(
-            resolve_engine_choice(None, Some("")),
-            EngineChoice::Postgres
-        );
-    }
-
-    #[test]
-    fn resolve_engine_choice_treats_the_kv_opt_out_as_inert() {
-        // CU-1-R2: a carried `postgres.enabled=false` must NOT select a SQLite
-        // data plane (there is none) — it is inert and PostgreSQL is unconditional.
-        assert_eq!(
-            resolve_engine_choice(None, Some("false")),
-            EngineChoice::Postgres
-        );
-        assert_eq!(
-            resolve_engine_choice(None, Some("FALSE")),
-            EngineChoice::Postgres
-        );
-        assert_eq!(
-            resolve_engine_choice(None, Some("False")),
-            EngineChoice::Postgres
-        );
-    }
-
-    #[test]
-    fn resolve_engine_choice_rejects_the_sqlite_env_value() {
-        // `sqlite` is removed as a data-plane selection (CU-1): inert/rejected,
-        // so it can never select SQLite — even alongside an opt-out KV.
-        assert_eq!(
-            resolve_engine_choice(Some("sqlite"), None),
-            EngineChoice::Postgres
-        );
-        assert_eq!(
-            resolve_engine_choice(Some("sqlite"), Some("false")),
-            EngineChoice::Postgres
-        );
-        assert_eq!(
-            resolve_engine_choice(Some("SQLITE"), Some("true")),
-            EngineChoice::Postgres
-        );
-    }
-
-    #[test]
-    fn resolve_engine_choice_is_unconditionally_postgres_cu1_r2() {
-        // The CU-1-R2 acceptance set: every combination — including a carried
-        // `postgres.enabled=false` — resolves to PostgreSQL.
-        assert_eq!(
-            resolve_engine_choice(None, Some("false")),
-            EngineChoice::Postgres
-        );
-        assert_eq!(
-            resolve_engine_choice(None, Some("true")),
-            EngineChoice::Postgres
-        );
-        assert_eq!(resolve_engine_choice(None, None), EngineChoice::Postgres);
-        assert_eq!(
-            resolve_engine_choice(Some("sqlite"), Some("false")),
-            EngineChoice::Postgres
-        );
-        assert_eq!(
-            resolve_engine_choice(Some("postgres"), Some("false")),
-            EngineChoice::Postgres
-        );
-    }
-
-    #[test]
-    fn resolve_engine_choice_treats_blank_or_unknown_env_as_unset() {
-        assert_eq!(
-            resolve_engine_choice(Some(""), Some("true")),
-            EngineChoice::Postgres
-        );
-        assert_eq!(
-            resolve_engine_choice(Some("   "), Some("true")),
-            EngineChoice::Postgres
-        );
-        assert_eq!(
-            resolve_engine_choice(Some("bogus"), Some("true")),
-            EngineChoice::Postgres
-        );
-        assert_eq!(
-            resolve_engine_choice(Some("bogus"), None),
-            EngineChoice::Postgres
-        );
-        // A blank/unknown env still leaves the inert opt-out inert.
-        assert_eq!(
-            resolve_engine_choice(Some("bogus"), Some("false")),
-            EngineChoice::Postgres
-        );
-    }
-
-    #[test]
-    fn resolve_engine_choice_is_case_insensitive() {
-        assert_eq!(
-            resolve_engine_choice(Some("POSTGRES"), None),
-            EngineChoice::Postgres
-        );
-        assert_eq!(
-            resolve_engine_choice(None, Some("TRUE")),
-            EngineChoice::Postgres
-        );
-        assert_eq!(
-            resolve_engine_choice(None, Some("False")),
-            EngineChoice::Postgres
-        );
-    }
-
-    // -- selection over a real SqliteEngine -----------------------------------
-
-    #[test]
-    fn select_engine_env_postgres_overrides_absent_kv() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let _env = set_env(STORAGE_ENGINE_ENV, "postgres");
-        let dir = tempfile::tempdir().unwrap();
-        let engine = make_sqlite_engine(dir.path());
-        assert_eq!(select_engine(&engine), EngineChoice::Postgres);
-    }
-
-    #[test]
-    fn select_engine_env_sqlite_is_inert() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let _env = set_env(STORAGE_ENGINE_ENV, "sqlite");
-        let dir = tempfile::tempdir().unwrap();
-        let engine = make_sqlite_engine(dir.path());
-        seed_kv(&engine, PG_ENABLED_KEY, "true");
-        assert_eq!(select_engine(&engine), EngineChoice::Postgres);
-    }
-
-    #[test]
-    fn select_engine_reads_enabled_kv_when_env_unset() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let _env = unset_env(STORAGE_ENGINE_ENV);
-        let dir = tempfile::tempdir().unwrap();
-        let engine = make_sqlite_engine(dir.path());
-        seed_kv(&engine, PG_ENABLED_KEY, "true");
-        assert_eq!(select_engine(&engine), EngineChoice::Postgres);
-    }
-
-    #[test]
-    fn select_engine_defaults_to_postgres_when_nothing_is_set() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let _env = unset_env(STORAGE_ENGINE_ENV);
-        let dir = tempfile::tempdir().unwrap();
-        // No `settings` table at all -> absent KV -> PostgreSQL (CU-1 default).
-        let engine = make_sqlite_engine(dir.path());
-        assert_eq!(select_engine(&engine), EngineChoice::Postgres);
-    }
-
-    #[test]
-    fn select_engine_treats_the_seeded_kv_opt_out_as_inert() {
-        // CU-1-R2: the exact upgraded-install artifact (a `postgres.enabled=false`
-        // control row carried out of `fredo.db`) must resolve to PostgreSQL, not
-        // a (non-existent) SQLite data plane.
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let _env = unset_env(STORAGE_ENGINE_ENV);
-        let dir = tempfile::tempdir().unwrap();
-        let engine = make_sqlite_engine(dir.path());
-        seed_kv(&engine, PG_ENABLED_KEY, "false");
-        assert_eq!(select_engine(&engine), EngineChoice::Postgres);
     }
 
     // -- swap-once handle -----------------------------------------------------
@@ -1228,7 +934,7 @@ mod tests {
     #[test]
     fn storage_engine_state_starts_on_postgres_without_a_fallback_reason() {
         let handle = EngineHandle::new_pending();
-        let state = StorageEngineState::new(handle, EngineChoice::Postgres);
+        let state = StorageEngineState::new(handle);
         let status = state.status();
         assert_eq!(status.engine, Dialect::Postgres);
         assert!(
@@ -1241,7 +947,7 @@ mod tests {
     #[test]
     fn storage_engine_state_keeps_the_first_fallback_reason() {
         let handle = EngineHandle::new_pending();
-        let state = StorageEngineState::new(handle, EngineChoice::Postgres);
+        let state = StorageEngineState::new(handle);
         state.set_fallback_reason("[pool:connect] forced".to_string());
         state.set_fallback_reason("[start] later".to_string());
         assert_eq!(
@@ -1257,7 +963,7 @@ mod tests {
     #[tokio::test]
     async fn storage_engine_state_installs_postgres_once() {
         let handle = EngineHandle::new_pending();
-        let state = StorageEngineState::new(handle, EngineChoice::Postgres);
+        let state = StorageEngineState::new(handle);
         state.install_postgres(make_pg_engine("postgres://postgres:secret@127.0.0.1:5432/fredo"));
         assert_eq!(state.status().engine, Dialect::Postgres);
         assert!(state.status().ready, "an installed pool is ready");
@@ -1272,7 +978,7 @@ mod tests {
     #[test]
     fn failed_migration_reports_not_ready_and_installs_nothing() {
         let handle = EngineHandle::new_pending();
-        let state = StorageEngineState::new(handle, EngineChoice::Postgres);
+        let state = StorageEngineState::new(handle);
         state.record_migration_outcome(MigrationOutcome {
             status: MigrationStatus::Failed,
             tables: Vec::new(),
@@ -1302,7 +1008,7 @@ mod tests {
     #[tokio::test]
     async fn fresh_migration_reports_completed_and_installs_normally() {
         let handle = EngineHandle::new_pending();
-        let state = StorageEngineState::new(handle, EngineChoice::Postgres);
+        let state = StorageEngineState::new(handle);
         state.record_migration_outcome(MigrationOutcome {
             status: MigrationStatus::Fresh,
             tables: Vec::new(),
@@ -1325,7 +1031,7 @@ mod tests {
     #[tokio::test]
     async fn run_pg_schema_inits_runs_every_initializer_in_order() {
         let handle = EngineHandle::new_pending();
-        let state = StorageEngineState::new(handle, EngineChoice::Postgres);
+        let state = StorageEngineState::new(handle);
 
         // A fresh registry is empty: running it is a no-op.
         let pg = make_pg_engine("postgres://postgres:secret@127.0.0.1:5432/fredo");
@@ -1355,7 +1061,7 @@ mod tests {
         use std::sync::atomic::{AtomicBool, Ordering};
 
         let handle = EngineHandle::new_pending();
-        let state = StorageEngineState::new(handle, EngineChoice::Postgres);
+        let state = StorageEngineState::new(handle);
 
         state.register_pg_schema_init(Arc::new(|_pool| Err(anyhow::anyhow!("[init] boom"))));
         let ran = Arc::new(AtomicBool::new(false));
@@ -1442,7 +1148,7 @@ mod tests {
     #[test]
     fn register_slice3_pg_schema_inits_registers_one_init_per_store() {
         let handle = EngineHandle::new_pending();
-        let state = StorageEngineState::new(handle, EngineChoice::Postgres);
+        let state = StorageEngineState::new(handle);
         assert_eq!(state.schema_init_count(), 0);
         state.register_slice3_pg_schema_inits();
         assert_eq!(

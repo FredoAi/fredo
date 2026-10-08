@@ -17,10 +17,10 @@ pub use settings_cache::SettingsCache;
 // adds the read-only canonical seam + the slice-3 schema inits.
 pub use engine::{
     begin_read_only, ensure_rtdb_rows_schema_on_pg, ensure_telemetry_schema_on_pg, quote_ident,
-    select_engine, CanonicalReader, Dialect, EngineChoice, EngineHandle, PgEngine,
-    SqliteEngine, StoreEngine, PG_PERSISTENT_STATEMENTS, PG_POOL_ACQUIRE_TIMEOUT,
-    PG_POOL_IDLE_TIMEOUT, PG_POOL_MAX_CONNECTIONS, PG_POOL_MAX_LIFETIME,
-    PG_POOL_MIN_CONNECTIONS, PG_RTDB_ROWS_DDL, PG_TELEMETRY_DDL, STORAGE_ENGINE_ENV,
+    CanonicalReader, Dialect, EngineHandle, PgEngine, SqliteEngine, StoreEngine,
+    PG_PERSISTENT_STATEMENTS, PG_POOL_ACQUIRE_TIMEOUT, PG_POOL_IDLE_TIMEOUT,
+    PG_POOL_MAX_CONNECTIONS, PG_POOL_MAX_LIFETIME, PG_POOL_MIN_CONNECTIONS, PG_RTDB_ROWS_DDL,
+    PG_TELEMETRY_DDL,
 };
 
 // The one-shot `fredo.db` → PostgreSQL data migration (Spec #2977) re-exported

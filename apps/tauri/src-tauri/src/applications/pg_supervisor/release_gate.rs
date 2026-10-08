@@ -10,17 +10,15 @@
 //! [`decide_shipped_default`] now returns [`ShippedDefault::Postgres`]
 //! UNCONDITIONALLY: PostgreSQL is the shipped default regardless of the marker
 //! or the acquisition mode. The marker gates ONLY the one-shot export leg (see
-//! [`migration_will_run`]). This module NEVER writes the marker, changes
-//! [`select_engine`] precedence, or flips the engine; it only reads.
+//! [`migration_will_run`]). This module NEVER writes the marker, changes the
+//! engine selection, or flips the engine; it only reads.
 //!
 //! # Where the marker is read (read-only)
 //!
 //! The marker is written by the pre-install migration into the PostgreSQL
 //! `settings` table (`infrastructure/storage/migration/run.rs`). It is therefore
 //! read through the active [`AppStore`] data plane — PostgreSQL once the pool is
-//! installed, SQLite (absent) otherwise. A read error is fail-closed to `false`.
-//!
-//! [`select_engine`]: crate::infrastructure::storage::engine::select_engine
+//! installed; absent otherwise. A read error is fail-closed to `false`.
 
 use std::sync::Arc;
 
