@@ -12,18 +12,18 @@
  * `terminal/presentation.ts` is a thin delegating shim over this store.
  *
  * Persistence: a JSON object map `{ "<appId>": "same-window" | "new-window" }`
- * stored as a RAW string under the `app_window_presentation` CONTROL-plane
- * (`control.db`) KV key through `controlSettingAccessor`
- * (`get_control_setting` / `save_control_setting`) — the SAME plane the Rust
- * `app_window.rs::app_presentation` reads synchronously. It is deliberately NOT
- * the async, PostgreSQL-only data plane (`save_setting`), and it NEVER consults
+ * stored as a RAW string under the `app_window_presentation` settings key
+ * through `controlSettingAccessor` (`get_control_setting` /
+ * `save_control_setting`) — the SAME synchronous, PG-hydrated cache the Rust
+ * `app_window.rs::app_presentation` reads synchronously. It uses the
+ * synchronous accessor rather than the async data-plane `save_setting`, and it NEVER consults
  * `localStorage`: an authoritative absent read resolves to the default. The wire
  * vocabulary is REUSED unchanged from #2947 (`same-window` / `new-window`).
  *
  * Legacy migration: on the first hydrate, if the map lacks `terminal` and the
  * legacy `terminal_presentation_mode` key holds a RECOGNIZED value, it is copied
  * into `map.terminal` (one-way, idempotent). The legacy read also goes through
- * the control-plane accessor (the backend's own fallback reads it there), and the
+ * the same synchronous settings accessor (the backend's own fallback reads it there), and the
  * legacy key is never rewritten.
  *
  * Optimistic write (binding adjudication): `setAppPresentation` moves the module
@@ -38,7 +38,7 @@ import { getApplications } from '../../applications/applicationRegistry';
 
 /** Where an app opens: inside the main Fredo window or in its own native window. */
 export type AppPresentation = 'same-window' | 'new-window';
-/** Canonical AppStore control-plane KV key for the per-app map (JSON, raw string). */
+/** Canonical AppStore settings key for the per-app map (JSON, raw string). */
 export const APP_PRESENTATION_KEY = 'app_window_presentation';
 /** Legacy #2947 Terminal-only key — read once for migration, NEVER rewritten. */
 export const LEGACY_TERMINAL_PRESENTATION_KEY = 'terminal_presentation_mode';
@@ -92,7 +92,7 @@ function toPresentationMap(raw: unknown): Record<string, AppPresentation> {
 }
 
 /**
- * Parse the RAW canonical map value read from the control plane. An
+ * Parse the RAW canonical map value read from the synchronous settings store. An
  * authoritative ABSENT (`null`) / empty / malformed value resolves to an empty
  * map, so every app falls back to `DEFAULT_APP_PRESENTATION` (`same-window`).
  */

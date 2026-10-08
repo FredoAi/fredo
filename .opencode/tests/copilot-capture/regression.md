@@ -2,7 +2,7 @@
 
 > The "must not change" baseline for Copilot capture. Run on every testing phase that touches the RTDB row pipeline, the provider attribution, the OTLP receivers, `fredo emit`, or the row-consuming features.
 >
-> **Evidence policy: LIVE** — the coexistence/isolation and OpenCode-baseline legs require live `fredo.db` reads; a static-only result does not clear them.
+> **Evidence policy: LIVE** — the coexistence/isolation and OpenCode-baseline legs require live PostgreSQL store reads; a static-only result does not clear them.
 
 ## Must NOT change (regression invariants)
 

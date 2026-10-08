@@ -55,18 +55,18 @@ The companion's inference runtime is a managed `llama-server` **child process**,
 
 ## Embedded PostgreSQL (`applications/pg_supervisor`)
 
-Slices 1-6 of the SQLite → embedded-PostgreSQL migration ship the **lifecycle supervisor, the PostgreSQL-only storage engine seam, the migration of the KV/application family, the RTDB canonical store, and the SpanStore (telemetry spans/metrics/logs), the one-shot `fredo.db` data leg with a fail-closed per-table parity gate and an executable SQLite rollback, the packaging/install of the runtime (an explicit build-time acquisition mode + a SHA-256-pinned archive acquisition), and the slice-6 cutover (PostgreSQL is the DEFAULT; the SQLite data plane is removed; `rollback.verified` + the executable backout)**: PostgreSQL is the shipped default, and the SQLite **data plane** no longer exists (the legacy `fredo.db` is retained read-only as the backout artifact). The pool DSN embeds the slice-1 generated loopback secret held in the control-plane KV on `control.db` (`postgres.password`) — never logged, never in code; the role is the crate's local `postgres` superuser (least-privilege packaging is a later slice). The data leg opens the source **read-only** (a `VACUUM INTO` snapshot) and never mutates or deletes `fredo.db`; any parity mismatch leaves `migration.postgres.completed` unset, installs nothing, and leaves `fredo.db` untouched, so the data plane fails closed with a structured reason (there is no SQLite data-plane fallback). `telemetry_spans` remains strictly read-only to the RTDB/backfill path.
+The embedded-PostgreSQL subsystem ships the **lifecycle supervisor, the PostgreSQL-only storage engine seam, the KV/application family, the RTDB canonical store, and the SpanStore (telemetry spans/metrics/logs), and the packaging/install of the runtime (an explicit build-time acquisition mode + a SHA-256-pinned archive acquisition)**: PostgreSQL is the ONLY store. Spec #3005 removed SQLite entirely — the control-plane file DB, the synchronous SQLite engine, the SQLite driver dependency, and the legacy one-shot migration/backout subsystem. The pool DSN embeds the generated loopback secret held in the **OS keychain** (service `fredo.postgres`, account `loopback:password`) — never logged, never in code, never persisted in a file; the role is the crate's local `postgres` superuser (least-privilege packaging is a later slice). `telemetry_spans` remains strictly read-only to the RTDB/backfill path via `begin_read_only`.
 
 **Protections:**
 - The managed postmaster is started on every boot (PostgreSQL is the default engine); it binds an **ephemeral loopback port on `127.0.0.1`** (never OTLP 4317/4318 or the MCP bridge 9223)
 - Spawned/stopped only through `applications/pg_supervisor` — by the GUI or by the non-GUI `fredo ingest` daemon (Spec #2992); nothing else starts it ad-hoc. The daemon holds the same exclusive data-dir lock, so a second owner cannot start a cluster; a GUI launched while a headless daemon owns the cluster **attaches** to it (published pid/port descriptor) instead of starting its own
 - Every start/readiness/stop wait carries a **finite wall-clock cap** with a hard-kill (`taskkill /T /F`) fallback and guaranteed teardown on normal, error, and panic paths — the observed ~11 h unbounded `pg.stop()` hang (#2948) is closed
 - A PID-reuse-guarded startup sweep reclaims a previous run's orphan (killed only when its image is `postgres.exe`); an exclusive data-dir lock prevents two launches from touching one cluster
-- The cluster password is local-only (control-plane KV key `postgres.password` on `control.db`); OS-keyring hardening is deferred to a later slice
-- The one-shot data leg opens `fredo.db` **strictly read-only** (via a `VACUUM INTO` snapshot; the source is never checkpointed or written) and never mutates or deletes it; the pre-cutover snapshot is the executable backout. The copy/parity gate is fail-closed (no partial install, no SQLite fallback), and an exclusive gate holds storage writers quiesced across the window
+- The cluster password is a generated local-only secret stored in the **OS keychain** (service `fredo.postgres`, account `loopback:password`); it is never written to a file, a log, or telemetry. A fixed loopback-only fallback is used only when the keychain is unavailable (never logged)
+- The legacy one-shot migration/backout leg was removed by Spec #3005 (fresh-install-only; a pre-existing legacy SQLite file is ignored byte-for-byte, never read or mutated); `telemetry_spans` reads remain strictly read-only (`begin_read_only`)
 - The PostgreSQL distribution is acquired through Fredo's **SHA-256-pinned streaming engine** (skip-if-verified, `Range` resume, streaming digest seeded from the on-disk prefix, delete-on-mismatch, bounded retry) — the same engine that verifies Companion model files. A digest mismatch deletes the artifact and surfaces an actionable error; the distribution is never extracted from unverified bytes. The shipped mode is `runtime-download` (the crate default; ~0 B installer growth)
 - The optional `bundled` compile-time feature embeds the archive (no first-run network) but its **build-time** fetch is outside Fredo's SHA-pinned integrity surface — documented as a deliberate deviation, bounded by the pinned crate version + `Cargo.lock` (a SHA-pinned resource is the hardening path)
-- The read-only `cutover_release_gate` computes the shipped default from the acquisition mode + the `migration.postgres.completed` marker; slice 6 flips the engine default to PostgreSQL (the marker gates only the one-shot export leg)
+- The `cutover_release_gate` and its one-shot marker retired with the migration subsystem (Spec #3005); PostgreSQL is unconditional
 
 **Limitations:**
 - The loopback cluster is reachable by any process on the same machine (no per-client auth beyond the local password)
@@ -177,10 +177,10 @@ The `capture_screen_region` command captures physical screen pixels via the `xca
 
 ## Data Storage
 
-Settings are persisted as plain key-value pairs. The **synchronous control plane** (the `settings` KV) lives in a small SQLite `control.db` managed by `AppStore`; the migrated data plane lives on the embedded PostgreSQL cluster. Both are stored in the Tauri app data directory (`%APPDATA%\fredo` on Windows, `~/.local/share/fredo` on Linux, `~/Library/Application Support/fredo` on macOS).
+Settings are persisted as plain key-value pairs in the PostgreSQL `settings` table. A synchronous, volatile settings cache in `AppStore` is hydrated once from that table and write-throughs on every change; it holds no persistent state. The embedded PostgreSQL cluster lives in the Tauri app data directory (`%APPDATA%\fredo` on Windows, `~/.local/share/fredo` on Linux, `~/Library/Application Support/fredo` on macOS).
 
 - No credentials or secrets are stored in the settings database. The one application that handles a user secret — the built-in PostgreSQL client (`applications/db_client`) — stores the connection password in the **OS keychain** (`keyring`); the settings KV holds only secret-free connection metadata, history, saved queries, and preferences.
-- All SQL queries use parameterized statements — no string interpolation (the retained `rusqlite` control-plane path and the PostgreSQL `sqlx` data-plane path)
+- All SQL queries use parameterized statements — no string interpolation (the PostgreSQL `sqlx` path)
 - Session history in the Mission Monitor is persisted via the RTDB row store on the embedded PostgreSQL cluster, applied to the module-scoped `StreamContext` row store in-memory. Live rows are unbounded; persistence retention is bounded by the `rtdb.retention_days` / `rtdb.max_rows` knobs.
 
 ---
@@ -194,7 +194,7 @@ The IPC socket accepts newline-delimited JSON `CliCommand` messages with one var
 All payloads are deserialized via `serde_json`. Unrecognized fields are ignored, and missing required fields cause a deserialization error. The Rust type system prevents injection at the IPC boundary.
 
 ### Tauri Commands
-Tauri command arguments are passed through Tauri's built-in deserialization, not constructed from raw strings. SQL queries to `AppStore` use parameterized statements via `rusqlite` — no string interpolation.
+Tauri command arguments are passed through Tauri's built-in deserialization, not constructed from raw strings. SQL queries to `AppStore` use parameterized statements via `sqlx` — no string interpolation.
 
 ### OTLP Input
 OTLP protobuf and JSON payloads are deserialized via `opentelemetry-proto` generated types. Received signals are persisted raw on receipt and classified into canonical rows by the RTDB ingest classifier — no standalone `FredoEvent` in the OTLP delivery path. Invalid or malformed OTLP payloads are dropped without processing.

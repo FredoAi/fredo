@@ -72,7 +72,7 @@ pub fn configured_engine(app: &AppHandle) -> Option<String> {
     let env = std::env::var(DOOM_ENGINE_PATH_ENV).ok();
     let configured = app
         .state::<Arc<AppStore>>()
-        .control_get(DOOM_ENGINE_PATH_KEY)
+        .cached_get(DOOM_ENGINE_PATH_KEY)
         .ok()
         .flatten();
     non_blank(env.as_deref()).or_else(|| non_blank(configured.as_deref()))
@@ -83,7 +83,7 @@ pub fn configured_iwad(app: &AppHandle) -> Option<String> {
     let env = std::env::var(DOOM_IWAD_PATH_ENV).ok();
     let configured = app
         .state::<Arc<AppStore>>()
-        .control_get(DOOM_IWAD_PATH_KEY)
+        .cached_get(DOOM_IWAD_PATH_KEY)
         .ok()
         .flatten();
     non_blank(env.as_deref()).or_else(|| non_blank(configured.as_deref()))

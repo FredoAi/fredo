@@ -62,7 +62,6 @@ async-trait = "0.1"
 rfd = "0.14"
 kube = { version = "0.97", features = ["client", "config", "rustls-tls", "ws"] }
 k8s-openapi = { version = "0.23", features = ["v1_30"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
 tauri-plugin-shell = "2"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 futures-util = "0.3"

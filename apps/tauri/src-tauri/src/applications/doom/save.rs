@@ -7,10 +7,9 @@
 //!
 //! ## Persistence surface (binding, G-023)
 //!
-//! Writes go through the `AppStore` **control plane** (`control.db` SQLite) under
-//! the single key [`DOOM_SAVE_KEY`] — one atomic `INSERT ... ON CONFLICT(key) DO
-//! UPDATE` ([`AppStore::control_set`]). The data plane is PostgreSQL-only and
-//! fails closed while the pool is pending, so it is NOT used here.
+//! Writes go through the `AppStore` synchronous settings cache (write-through to
+//! PostgreSQL) under the single key [`DOOM_SAVE_KEY`] — one atomic `INSERT ...
+//! ON CONFLICT(key) DO UPDATE` ([`AppStore::cached_set`]).
 //!
 //! When the [`DOOM_SAVE_FILE_ENV`] seam is set to a non-empty path, `load`/`store`
 //! use that JSON file instead (inert when unset, so the production path is
@@ -297,7 +296,7 @@ pub fn load(store: &AppStore) -> Option<DoomSave> {
     match seam_path() {
         Some(path) => load_at_path(&path),
         None => {
-            let raw = store.control_get(DOOM_SAVE_KEY).ok().flatten()?;
+            let raw = store.cached_get(DOOM_SAVE_KEY).ok().flatten()?;
             DoomSave::parse(&raw)
         }
     }
@@ -312,7 +311,7 @@ pub fn store(store: &AppStore, save: &DoomSave) -> Result<(), String> {
     match seam_path() {
         Some(path) => store_at_path(&path, save),
         None => store
-            .control_set(DOOM_SAVE_KEY, &save.serialize())
+            .cached_set(DOOM_SAVE_KEY, &save.serialize())
             .map_err(|error| error.to_string()),
     }
 }
@@ -349,7 +348,7 @@ pub fn clear(store: &AppStore) -> Result<(), String> {
             Err(error) => Err(format!("remove {}: {error}", path.display())),
         },
         None => store
-            .control_set(DOOM_SAVE_KEY, "")
+            .cached_set(DOOM_SAVE_KEY, "")
             .map_err(|error| error.to_string()),
     }
 }
@@ -611,7 +610,7 @@ mod tests {
         // the single control-plane key.
         if std::env::var(DOOM_SAVE_FILE_ENV).is_err() {
             let raw = app_store
-                .control_get(DOOM_SAVE_KEY)
+                .cached_get(DOOM_SAVE_KEY)
                 .expect("control read")
                 .expect("present");
             assert_eq!(DoomSave::parse(&raw), Some(save));

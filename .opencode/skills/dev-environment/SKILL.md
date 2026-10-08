@@ -30,10 +30,10 @@ One machine can run several fully isolated Fredo environments concurrently, one 
 - **Instance selector:** `dev-env.ps1 -EnvId <id>` (default derived from `-Spec <N>` → `spec<N>`).
 - **Port block:** `-EnvSlot <n>` (slot 0 = legacy 5174/9223/4317/4318/8080; slot n≥1 = base `16000 + 10*(n-1)`, then Vite=P+0, MCP=P+1, OTLP/gRPC=P+2, OTLP/HTTP=P+3, llama=P+4). Explicit `-VitePort`/`-McpPort` overrides are recorded in the manifest; a collision fails closed (never scans to another port).
 - **Serving checkout:** `-ServingCheckout <path>` launches a per-issue checkout (`.serve/<issue>`); default = repo root (byte-identical legacy behavior).
-- **State root:** `FREDO_ENV_ROOT` (default `<repo>/.opencode/tmp/envs/<envId>`); the SQLite store is `FREDO_DATA_DIR/fredo.db` (default `<env-root>/data/fredo.db`).
+- **State root:** `FREDO_ENV_ROOT` (default `<repo>/.opencode/tmp/envs/<envId>`); the app-data dir is `FREDO_DATA_DIR` (default `<env-root>/data`) and the embedded PostgreSQL cluster's data dir is `<env-root>/postgres`.
 - **Manifest:** `<env-root>/manifest.json` (`FREDO_ENV_MANIFEST` overrides) records `ports` (vite/mcp/otlpGrpc/otlpHttp/llama/pg), `dbPath`, `pipe`, `appIdentity`, and the launched `processes[].pid`. `Down`/`Clean` kill ONLY those PIDs.
 - **Identity / routing:** `FREDO_ENV_ID` is injected into the app and every OpenCode session it spawns; the CLI pipe is `FREDO_CLI_PIPE` (`\\.\pipe\fredo-ipc-<envId>`); the MCP `appIdentifier` for an environment is its MCP port as a decimal string (e.g. `"16001"`). Read an environment's rows from ITS OWN store, never the legacy `%APPDATA%\com.fredo.app` path.
-- **Read lever is engine-dependent (G-284).** When an environment's data plane is SQLite, use the `telemetry-query` skill with `-DbPath <env-root>/data/fredo.db` (or `-Manifest <env-root>/manifest.json`). When the #2979 PostgreSQL store is live (the env may have no `fredo.db`), use the managed `psql` at the manifest's ephemeral `ports.pg` (database `postgres`) through the allowlisted `run-exitcode.ps1 -Command` wrapper; the same engine selection is built into `telemetry-query.ps1` (`-PgPort`/`-Manifest`). State which engine produced the evidence.
+- **Read lever is PostgreSQL-only (G-284, closed by Spec #3005).** Read an environment's rows through the `telemetry-query` skill (`-Manifest <env-root>/manifest.json`, or `-PgPort <ports.pg>`) — the managed `psql` against the env's embedded PostgreSQL cluster (database `postgres`). The cluster's ephemeral port is the manifest's `ports.pg`; when it reads `0` a re-resolve is required (G-307). The password lives in the OS keychain (service `fredo.postgres`, account `loopback:password`). State the port the evidence came from; if the app pool holds every connection and `psql` is refused (`too many clients`), use the named app-pool fallback (`telemetry_get_stats`) and DISCLOSE the substitution.
 
 ### Continuous isolation invariant checker (Spec #2944 ST-7)
 
@@ -63,28 +63,22 @@ Test-only levers for the error-path ACs live in `.opencode/tests/multi-env-isola
 | `... -Lever PortCollision` | A bound recorded port + an `Up` to that port; `Up` must exit non-zero with the fail-closed collision message and must not scan (AC4). |
 | `... -Lever ForgedEvidence -RunAudit` | A tampered `evidence.json` via `FREDO_EVIDENCE_FILE`; the audit must reject it (AC5). |
 
-## Cleaning the Fredo DB (fresh-slate reset for live e2e)
+## Fresh-slate reset (embedded PostgreSQL)
 
-Single script: `.opencode/scripts/clean-fredo-db.ps1` (allowed for the tester + self-improver).
+The store is the embedded PostgreSQL cluster. There is no separate DB-reset script. The
+fresh-slate reset depends on the instance kind:
 
-The tester **cannot** `Remove-Item` the live DB directly — the sandbox allowlist only permits `.opencode/*` paths, so a raw `Remove-Item "C:\Users\...\fredo.db"` is DENIED and the agent loops. Use the script instead; it is a single allowed `powershell -File` call.
-
-| Command | Description |
-|---------|-------------|
-| `powershell -File .opencode/scripts/clean-fredo-db.ps1` | Stop dev instance (`dev-env.ps1 -Action Down`), delete `%APPDATA%\com.fredo.app\fredo.db` (+ `-wal`/`-shm`), verify deletion. |
-| `powershell -File .opencode/scripts/clean-fredo-db.ps1 -Restart` | Clean, then restart the dev instance (`dev-env.ps1 -Action Up`). |
-| `powershell -File .opencode/scripts/clean-fredo-db.ps1 -Backup [-Name <n>]` | Stop the app and copy the live DB (+ `-wal`/`-shm`) into `.opencode/tmp/db-snapshots/<name>/` (default name = timestamp). Does NOT delete the live DB. Add `-Restart` to bring the app back up. |
-| `powershell -File .opencode/scripts/clean-fredo-db.ps1 -Restore -Name <n> [-Restart]` | Stop the app, replace the live DB with the named snapshot, verify. Errors with the available snapshot names when `<n>` is missing. |
-| `powershell -File .opencode/scripts/clean-fredo-db.ps1 -EnvId spec2944` | Env-scoped clean: stop that env (`-Action Down -EnvId`), delete ITS `FREDO_DATA_DIR/fredo.db` (+ `-wal`/`-shm`), verify. Never touches a sibling env. |
-| `powershell -File .opencode/scripts/clean-fredo-db.ps1 -DbPath <env-root>\data\fredo.db` | Clean an explicit SQLite path; when the path matches `<repo>/.opencode/tmp/envs/<id>/` the env id is derived so the app is stopped env-scoped (never a global kill). |
+| Instance | Fresh-slate reset |
+|----------|-------------------|
+| Legacy single-env (no `-EnvId`) | `powershell -File .opencode/scripts/dev-env.ps1 -Action Down`, then `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec <N>` **carrying a fresh `FREDO_DATA_DIR`** (point it at a new, empty dir). |
+| Isolated env (`-EnvId <id>`) | `powershell -File .opencode/scripts/dev-env.ps1 -Action Clean -EnvId <id>`, then `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec <N> -EnvId <id> -EnvSlot <n>`. `Clean` stops the env (manifest-scoped, image-guarded) and removes ONLY its manifest, app-data dir (`FREDO_DATA_DIR`), PostgreSQL data dir (`<env-root>/postgres`), cache, and logs — never a sibling env. |
 
 Notes:
-- **Corpus-size comparison levers (`-Backup` / `-Restore`).** A check that compares behavior across corpus sizes (e.g. "open time does not grow with total stored history") needs BOTH a small corpus and the real corpus back. Sequence: measure on the real DB → `-Backup -Name big` → `-Restart` (fresh small DB; drive a few fixtures) → measure → `-Restore -Name big -Restart`. Snapshots are gitignored in-repo state under `.opencode/tmp/db-snapshots/`, so the real corpus is never lost. Never use `Remove-Item` on the live DB directly (G-009).
-- The app holds `fredo.db` open (WAL) while running, so it MUST be stopped first — the script does this. If you see "fredo.db still present", the app is still up.
-- The schema is recreated on next launch (`CREATE TABLE IF NOT EXISTS` / `ensure_schema`), so a deleted DB is a fully clean slate.
-- This wipes `feature_mission-monitor_*` tables AND `telemetry_spans`/`telemetry_metrics`/`telemetry_logs` — everything. Use it when a spec AC requires "fresh DBs" (e.g. Mission Monitor e2e) or when the DB has bloated (a stray DB has grown to ~1.9 GB from accumulated telemetry).
-- The thousands of `.tmpXXXXXX\fredo.db` files under `%TEMP%` are Rust unit-test temp DBs — never clean those manually; they are test debris, ignore them.
-- Run the clean BEFORE `dev-env.ps1 -Action Up` for the next test session.
+- **Legacy single-env:** `-Action Clean` is env-mode only, so a fresh slate is `-Action Down` then an `-Action Up` carrying a fresh `FREDO_DATA_DIR` (emptied or newly created) — the schema is recreated on first boot.
+- The managed cluster MUST be stopped before its data dir is removed (`Down`/`Clean` do the manifest-scoped stop first; a sibling env is never touched).
+- The tester **cannot** `Remove-Item` the live store directly — the sandbox allowlist only permits `.opencode/*` paths. Use the env-scoped `Clean` action or the `Down` → fresh-`FREDO_DATA_DIR` `Up`; never a raw path removal (G-009).
+- `Clean` (and a fresh `FREDO_DATA_DIR`) wipes `feature_mission-monitor_*` tables AND `telemetry_spans`/`telemetry_metrics`/`telemetry_logs` — everything. Use it when a spec AC requires "fresh DBs" (e.g. Mission Monitor e2e).
+- Reset the store BEFORE `dev-env.ps1 -Action Up` for the next test session.
 
 ## Evidence upload (gh-image prerequisite)
 
@@ -103,15 +97,16 @@ Test screenshots are uploaded to GitHub as `user-attachments` by the `gh-image` 
 
 Single script: `.opencode/scripts/wait-telemetry.ps1` (allowed for the tester).
 
-Runs a readonly sqlite3 query against the live `fredo.db` in a bounded polling loop (Start-Sleep INSIDE the script — safe for sandboxes that ban direct sleep) until the query returns at least one row or the attempt budget is spent. Prints each attempt's row count. Use it for CONFIRM-COMPLETE telemetry gates (e.g. `telemetry_spans` fixture-session / task-edge queries) instead of many manual query roundtrips.
+Runs a read-only query against the live embedded PostgreSQL store in a bounded polling loop (Start-Sleep INSIDE the script — safe for sandboxes that ban direct sleep) until the query returns at least one row or the attempt budget is spent. Prints each attempt's row count. Use it for CONFIRM-COMPLETE telemetry gates (e.g. `telemetry_spans` fixture-session / task-edge queries) instead of many manual query roundtrips.
 
 | Command | Description |
 |---------|-------------|
-| `powershell -File .opencode/scripts/wait-telemetry.ps1 -Query "SELECT ... " -Attempts 20 -IntervalSec 15` | Poll every 15 s, up to 20 attempts. Exit 0 as soon as ≥1 row (a bare `0` aggregate result counts as zero rows), 1 on timeout, 2 on query/DB-not-found errors, 3 on sqlite failure. |
-| `powershell -File .opencode/scripts/wait-telemetry.ps1 -Query "SELECT ... " -DbPath "<env-root>/data/fredo.db" -Attempts 10 -IntervalSec 5` | Poll an isolated env's own SQLite store (`-DbPath`; empty ⇒ legacy fixed search order). SQLite-only — a post-#2979 PostgreSQL env has no `fredo.db`; read it via the telemetry-query skill's PG lever / `run-exitcode.ps1 -Command` instead. |
+| `powershell -File .opencode/scripts/wait-telemetry.ps1 -Query "SELECT ... " -PgPort <ports.pg> -Attempts 20 -IntervalSec 15` | Poll the env's PostgreSQL cluster at `-PgPort` every 15 s, up to 20 attempts. Exit 0 as soon as ≥1 row (a bare `0` aggregate result counts as zero rows), 1 on timeout, 2 on query-rejected / psql-not-found / port-unresolved errors, 3 on psql failure. |
+| `powershell -File .opencode/scripts/wait-telemetry.ps1 -Query "SELECT ... " -Manifest "<env-root>/manifest.json" -Attempts 10 -IntervalSec 5` | Poll an isolated env's own cluster, resolving `ports.pg` from its manifest. When the port reads `0`, re-resolve it (G-307) and pass the fresh `-PgPort`. |
 
 Notes:
-- Readonly guardrail: only SELECT / PRAGMA / WITH accepted (same DDL/DML rejection as `telemetry-query.ps1`); the `-readonly` connection never blocks the running app.
+- Read-only guardrail: only SELECT / WITH accepted (same DDL/DML rejection as `telemetry-query.ps1`); the connection sets `default_transaction_read_only=on`, so the `telemetry_spans` READ-ONLY invariant holds and the running app is never written to.
+- The password is resolved like `telemetry-query.ps1` (param → `$env:PGPASSWORD` → `FREDO_PG_PASSWORD_FILE` → loopback fallback; the live secret is in the OS keychain, service `fredo.postgres`, account `loopback:password`) and is never printed.
 - On timeout the condition was NEVER met — treat the leg as not converged (BLOCKED-environment or genuine stall per the governing fix plan); never record a mid-flight partial result as evidence.
 
 ## Native CLI exit codes (sandboxed)
@@ -210,7 +205,7 @@ When ALL live-AC evidence fails at once (Mission Monitor won't mount, Terminal s
 [ MCP ][ WS_SERVER ][ERROR] WebSocket connection error: Handshake not finished
 ```
 
-A wedged WS server blocks every MCP-command path (including `install_plugin` and Terminal) and survives `clean-fredo-db.ps1 -Restart`. Recovery is a **full Down → Up** (`dev-env.ps1 -Action Down` kills the process tree holding :9223/:5174, then `-Action Up`); verify the clean handshake log line (`[MCP][WS_SERVER][INFO] WebSocket server listening on: 127.0.0.1:9223`) before re-dispatching the tester. Never loop a round back to implementation on this signature alone — it is an environment wedge, not a spec defect (observed #2745 rounds 2-4). **Blank-window variant (`about:blank`) + orphaned OS sockets (observed #2977):** after repeated dev-env cycles the main window can stick at `about:blank` with the MCP bridge unresponsive, and a dead PID can hold OS-level LISTENING sockets on :9223/:4318 that `Down`/`process-hygiene` cannot reclaim. A subsequent `-Action Up -Spec <N>` recovers it — `Up` clears the WebView2 caches (`EBWebView/Default/{Cache,Code Cache,GPUCache}`) and kills the stale instance before launching. When :9223 stays bound the bridge auto-scans to the next free port (e.g. :9228/:9229); the driver must attach to the scanned port. The orphaned :4318 socket can leave the OTLP HTTP receiver unbound (`os error 10048`) while gRPC :4317 works — disclose it, do not report it as a product defect.
+A wedged WS server blocks every MCP-command path (including `install_plugin` and Terminal) and survives a store reset or `-Action Restart`. Recovery is a **full Down → Up** (`dev-env.ps1 -Action Down` kills the process tree holding :9223/:5174, then `-Action Up`); verify the clean handshake log line (`[MCP][WS_SERVER][INFO] WebSocket server listening on: 127.0.0.1:9223`) before re-dispatching the tester. Never loop a round back to implementation on this signature alone — it is an environment wedge, not a spec defect (observed #2745 rounds 2-4). **Blank-window variant (`about:blank`) + orphaned OS sockets (observed #2977):** after repeated dev-env cycles the main window can stick at `about:blank` with the MCP bridge unresponsive, and a dead PID can hold OS-level LISTENING sockets on :9223/:4318 that `Down`/`process-hygiene` cannot reclaim. A subsequent `-Action Up -Spec <N>` recovers it — `Up` clears the WebView2 caches (`EBWebView/Default/{Cache,Code Cache,GPUCache}`) and kills the stale instance before launching. When :9223 stays bound the bridge auto-scans to the next free port (e.g. :9228/:9229); the driver must attach to the scanned port. The orphaned :4318 socket can leave the OTLP HTTP receiver unbound (`os error 10048`) while gRPC :4317 works — disclose it, do not report it as a product defect.
 
 ### MCP driver-session staleness — the `resolveRef is not a function` signature (G-067)
 
@@ -241,7 +236,7 @@ For runtime errors, traces, and performance data from the Rust tracing subsystem
 powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 -Query "SELECT ... FROM telemetry_logs WHERE level = 'ERROR'" -Format md
 ```
 
-The telemetry-query skill has recipes for recent errors, latency percentiles, session traces, and more. Use it when process logs don't show enough detail. For an isolated env, pass `-DbPath <env-root>/data/fredo.db` (or `-Manifest <env-root>/manifest.json`); its PostgreSQL lever (`-PgPort`, G-284) is documented in that skill.
+The telemetry-query skill has recipes for recent errors, latency percentiles, session traces, and more. Use it when process logs don't show enough detail. For an isolated env, pass `-Manifest <env-root>/manifest.json` (or `-PgPort <ports.pg>`); the PostgreSQL read lever (G-284/G-307) is documented in that skill.
 
 ## E2E Testing
 

@@ -5,8 +5,9 @@
  * Replays the version-controlled fixture `fixtures/realCorpus.ts` — the REAL
  * persisted deliveries for session ses_fa968f834ffef93m4ywSDDB5HG (the
  * "Retest deep nested after restart" run, 2026-08-31 07:15Z), exported
- * verbatim from %APPDATA%\com.fredo.app\fredo.db table
- * `feature_mission_monitor_events` (root-keyed rows + the child-BFS rows) —
+ * verbatim from a historical telemetry corpus (captured before the
+ * PostgreSQL-only migration), the `feature_mission_monitor_events` table
+ * (root-keyed rows + the child-BFS rows) —
  * converted to typed rows (`fixtures/rowsFromDeliveries`, the classifier
  * semantics), and asserts the depth-3 SubagentNode presents correctly from
  * the REAL double-stamped re-key corpus:

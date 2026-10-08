@@ -1,10 +1,9 @@
-//! SpanStore — engine-selected persistence for telemetry spans, logs, and
-//! metrics (Spec #2449; PostgreSQL migration Spec #2976, ST-5).
+//! SpanStore — persistence for telemetry spans, logs, and metrics
+//! (Spec #2449; PostgreSQL migration Spec #2976, ST-5; PostgreSQL-only Spec #3005).
 //!
 //! Every read and write routes through the ONE shared [`EngineHandle`]
-//! (Spec #2975): the incumbent SQLite `fredo.db` by default, the shared
-//! PostgreSQL pool once the managed server installs it — no per-store
-//! `Mutex<Connection>`, no second pool, no per-store `Connection::open`.
+//! (Spec #2975): the shared PostgreSQL pool once the managed server installs it —
+//! no per-store `Mutex<Connection>`, no second pool, no per-store `Connection::open`.
 //!
 //! ## Schema (1:1 SQLite ⇄ PostgreSQL)
 //!

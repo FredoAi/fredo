@@ -3,8 +3,8 @@
  * session ses_fa968f834ffef93m4ywSDDB5HG (the "Retest deep nested after restart" run,
  * 2026-08-31 07:15Z — the #2770 round-6 reopen repro).
  *
- * Exported verbatim from %APPDATA%\\com.fredo.app\\fredo.db,
- * table `feature_mission_monitor_events`: the root's session-keyed rows
+ * Exported verbatim from a historical telemetry corpus (captured before the
+ * PostgreSQL-only migration), the `feature_mission_monitor_events` table: the root's session-keyed rows
  * (138 — the panel's `loadPersistedDeliveries` result) PLUS the child-BFS
  * rows (8 — `loadPersistedChildDeliveries`: 5 rows keyed under the L1
  * session id, 3 under the L2 session id; ZERO keyed by the L3 session id —

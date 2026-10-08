@@ -4,7 +4,7 @@
 //! projection engine.
 //!
 //! Since Spec #2979 CU-2 the data plane is PostgreSQL-only, so the previous
-//! runtime proof that composed a temp SQLite `fredo.db` was removed with the
+//! runtime proof that composed a temp SQLite store was removed with the
 //! SQLite data plane. The structural wiring proof below is engine-independent and
 //! is retained; the live projection proof is owned by the mission-monitor E2E
 //! suite.

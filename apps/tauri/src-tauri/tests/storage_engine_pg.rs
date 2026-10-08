@@ -48,10 +48,12 @@ use fredo_lib::infrastructure::application_data::declaration::{
 use fredo_lib::infrastructure::application_data::registry::DeclarationRegistry;
 use fredo_lib::infrastructure::application_data::store::{ApplicationDataStore, TableMeta, Tombstone};
 use fredo_lib::infrastructure::rtdb::rows::RowState;
-use fredo_lib::infrastructure::storage::engine::{ensure_settings_schema, StorageEngineState};
+use fredo_lib::infrastructure::storage::engine::{
+    begin_read_only, ensure_settings_schema, StorageEngineState,
+};
 use fredo_lib::infrastructure::storage::application_store::{ColumnDef, ColumnType, ApplicationStore};
 use fredo_lib::infrastructure::storage::{
-    AppStore, EngineChoice, EngineHandle, PgEngine, StoreEngine,
+    AppStore, EngineHandle, PgEngine, StoreEngine,
 };
 use fredo_lib::PgRuntime;
 
@@ -142,6 +144,16 @@ async fn postgres_storage_suite() {
     // mixed-case declared table is created case-preserved on PG and the quoted
     // upsert path agrees with it (ST-2 rework; pins the round-2 defect class).
     declared_table_quoting_scenario(&url, &unique_schema("declared")).await;
+    // Phase 5: fresh-install / legacy-ignore (Spec #3005 ST-5 re-home) — the
+    // one-shot SQLite migration subsystem is deleted, so a pre-existing
+    // legacy SQLite file must be IGNORED byte-for-byte and the app must still
+    // reach ready PostgreSQL (R-4.1/R-4.2, G-290).
+    legacy_ignore_scenario(&url, &unique_schema("legacy_ignore")).await;
+    // Phase 6: the read-only canonical seam (Spec #3005 ST-6 re-home) — the
+    // retired SQLite read-only guard is now PostgreSQL's
+    // `START TRANSACTION READ ONLY` (`begin_read_only`), so a write through the
+    // canonical reader's transaction must be rejected (G-290).
+    read_only_seam_scenario(&url, &unique_schema("read_only")).await;
 
     // ── G-263 teardown: finite bound + guaranteed hard-kill + no orphan ──────
     let started = Instant::now();
@@ -301,7 +313,7 @@ async fn schema_init_scenario(url: &str, schema: &str) {
     let pool = build_pool(url, schema).await;
 
     // The ST-2 registry, populated exactly as `lib.rs` does at startup.
-    let state = StorageEngineState::new(handle.clone(), EngineChoice::Postgres);
+    let state = StorageEngineState::new(handle.clone());
     state.register_pg_schema_init(Arc::new(|pool: &sqlx::PgPool| {
         ApplicationDataStore::ensure_schema_on_pg(pool)
     }));
@@ -507,6 +519,134 @@ async fn declared_table_quoting_scenario(url: &str, schema: &str) {
         read_back[0]["tokenRatio"].as_f64(),
         Some(0.25),
         "the declared `tokenRatio` double precision must round-trip"
+    );
+
+    pool.close().await;
+}
+
+// ── Phase 5: fresh-install / legacy-ignore (ST-5 re-home) ────────────────────
+
+/// Spec #3005 ST-5 re-home (G-290): the legacy one-shot SQLite →
+/// PostgreSQL migration subsystem is deleted, so PostgreSQL is fresh-install-only.
+/// A pre-existing legacy SQLite file in the app-data dir must be IGNORED — never
+/// opened, never carried, never mutated (byte-for-byte identical), with no
+/// `-wal`/`-shm` side files — and the app must still reach ready PostgreSQL
+/// through the post-migration install order (schema inits → install).
+async fn legacy_ignore_scenario(url: &str, schema: &str) {
+    let app_dir = tempfile::tempdir().expect("tempdir");
+    let legacy = app_dir.path().join("legacy.db");
+    let payload: &[u8] = b"SQLite format 3\0legacy-sqlite-file-that-must-never-be-read";
+    std::fs::write(&legacy, payload).expect("seed a legacy SQLite file");
+    let before = std::fs::read(&legacy).expect("read the legacy file before boot");
+
+    let handle = EngineHandle::new_pending();
+    let app = AppStore::open(handle.clone(), app_dir.path()).expect("app store");
+    let pool = build_pool(url, schema).await;
+
+    // The post-migration install order: schema inits on the candidate pool, then
+    // install — no migration leg, no carry.
+    let state = StorageEngineState::new(handle.clone());
+    state.register_pg_schema_init(Arc::new(|pool: &sqlx::PgPool| {
+        ApplicationDataStore::ensure_schema_on_pg(pool)
+    }));
+    state
+        .run_pg_schema_inits(&pool)
+        .expect("the schema-init registry must run on the candidate pool");
+    handle.install(StoreEngine::Postgres(Arc::new(PgEngine {
+        pool: pool.clone(),
+        url: url.to_string(),
+    })));
+
+    // The engine is ready and a data-plane write serves from PostgreSQL.
+    assert!(
+        state.status().ready,
+        "a fresh install (legacy SQLite file present) must still reach ready PostgreSQL"
+    );
+    app.set("theme", "dark")
+        .await
+        .expect("the PostgreSQL data plane must serve the write");
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'theme'")
+            .fetch_optional(&pool)
+            .await
+            .expect("read the persisted settings row");
+    assert_eq!(
+        stored.as_deref(),
+        Some("dark"),
+        "the write must persist on PostgreSQL (no carry from a legacy file)"
+    );
+
+    // The legacy file was never read or mutated, and no SQLite side files exist.
+    let after = std::fs::read(&legacy).expect("read the legacy file after boot");
+    assert_eq!(
+        after, before,
+        "the legacy SQLite file must be ignored byte-for-byte (never read/mutated)"
+    );
+    let side_files: Vec<String> = std::fs::read_dir(app_dir.path())
+        .expect("list the app-data dir")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .filter(|name| name.ends_with("-wal") || name.ends_with("-shm"))
+        .collect();
+    assert!(
+        side_files.is_empty(),
+        "no SQLite -wal/-shm side files may appear, saw {side_files:?}"
+    );
+
+    pool.close().await;
+}
+
+// ── Phase 6: read-only canonical seam (ST-6 re-home) ─────────────────────────
+
+/// Spec #3005 ST-6 re-home (G-290): the retired SQLite read-only guard pinned
+/// that a read-only connection sees committed data but rejects writes (`PRAGMA
+/// query_only=ON`). The PostgreSQL equivalent is [`begin_read_only`]
+/// (`START TRANSACTION READ ONLY`): a committed row is visible through the
+/// canonical read-only transaction, an INSERT through it is rejected by the
+/// server, and the rejected write persists nothing.
+async fn read_only_seam_scenario(url: &str, schema: &str) {
+    let pool = build_pool(url, schema).await;
+
+    sqlx::query("INSERT INTO settings (key, value) VALUES ('read_only_probe', 'visible')")
+        .execute(&pool)
+        .await
+        .expect("seed a committed row");
+
+    let mut tx = begin_read_only(&pool)
+        .await
+        .expect("begin a read-only transaction");
+
+    // A committed row is visible through the read-only transaction.
+    let visible: Option<String> =
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'read_only_probe'")
+            .fetch_optional(&mut *tx)
+            .await
+            .expect("a read through the read-only transaction must succeed");
+    assert_eq!(
+        visible.as_deref(),
+        Some("visible"),
+        "the read-only reader must see committed data"
+    );
+
+    // A write through the read-only transaction is rejected by PostgreSQL.
+    let write = sqlx::query("INSERT INTO settings (key, value) VALUES ('should_not_write', 'x')")
+        .execute(&mut *tx)
+        .await;
+    assert!(
+        write.is_err(),
+        "a read-only transaction must reject writes (START TRANSACTION READ ONLY)"
+    );
+    drop(tx);
+
+    // The rejected write left no row behind.
+    let leaked: Option<String> =
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'should_not_write'")
+            .fetch_optional(&pool)
+            .await
+            .expect("probe the rejected write");
+    assert!(
+        leaked.is_none(),
+        "the rejected write must not persist, saw {leaked:?}"
     );
 
     pool.close().await;

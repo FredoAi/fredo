@@ -1,6 +1,6 @@
 # GitHub Copilot CLI Capture — Functional Test Cases (Spec #2933)
 
-> Durable functional suite (feature domain `copilot-capture`) — capturing GitHub Copilot CLI activity into the canonical RTDB row pipeline (`chat_rows` / `tool_use_rows` / `agent_session_rows` in `fredo.db`) at parity with OpenCode, tagged with the Copilot provider token `copilot_cli`.
+> Durable functional suite (feature domain `copilot-capture`) — capturing GitHub Copilot CLI activity into the canonical RTDB row pipeline (`chat_rows` / `tool_use_rows` / `agent_session_rows` in the embedded PostgreSQL store) at parity with OpenCode, tagged with the Copilot provider token `copilot_cli`.
 >
 > **Evidence policy: LIVE** — every PASS requires a live observable: a `telemetry-query.ps1` read of the canonical row tables, a captured `useEventRows` delivery (`tauri_ipc_monitor` / `tauri_get_captured` or the Stepper Probe readout), a rendered Mission Monitor capture, a measured hook/credential check. A `cargo test`/grep-only result is a **FALSE PASS** for these rows (it clears only N-3's static half).
 >
@@ -76,7 +76,7 @@
 - [ ] N-2 (credentials never logged/persisted): on `chat_rows`/`tool_use_rows`/`agent_session_rows` (`raw_json`), `telemetry_spans` (`attributes_json`), and `telemetry_logs` (message): `SELECT COUNT(*) ... WHERE <col> LIKE '%GITHUB_TOKEN%' OR LIKE '%GH_TOKEN%' OR LIKE '%ghp_%' OR LIKE '%gho_%' OR LIKE '%github_pat_%'`.
   - EXPECTED: `0` on every column/table; the console + captured IPC traffic contain no token; **no new credential/token store** created by Fredo.
 - [ ] N-3 (`[static-allowed]` shared extract rule): `resolve_provider_token` exists ONCE in `rtdb/attrs.rs` and is consumed by both live `ingest.rs` and `backfill.rs`; `provider` present in all three `*_FIELDS` + merge tables + query schema; `cargo check` zero warnings; `pnpm --filter @fredo/ui build` clean.
-- [ ] N-4 (ingest latency parity): Copilot row visible in `fredo.db` within the flush-cadence bound of an OpenCode control measured in the same run (Copilot must not materially exceed OpenCode's baseline).
+- [ ] N-4 (ingest latency parity): Copilot row visible in the embedded PostgreSQL store within the flush-cadence bound of an OpenCode control measured in the same run (Copilot must not materially exceed OpenCode's baseline).
 - [ ] N-5 (console/console hygiene): `tauri_read_logs(source="console")` shows no `Error:` / `Uncaught` / `Maximum update depth exceeded` after subscription start/stop and app open/close.
 - [ ] N-6 (layers/theming): capture stays in `infrastructure/rtdb/` (or the chosen transport module); no cross-feature import; no new user-visible surface (if one appears, tokens only — no hardcoded hex/rgba, no invalid `var(--token)NN`).
 - [ ] N-7 (Windows shell accounted for): record the shell actually used and whether `copilot` ran (or the named blocker); never assume Windows PowerShell 5.1 (`copilot` may require PowerShell 6+).

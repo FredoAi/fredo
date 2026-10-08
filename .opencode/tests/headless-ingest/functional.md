@@ -21,14 +21,13 @@ closed. Seeded at issue **#2992**. Inherits `.opencode/tests/persistence-spike/`
 > `dev-env.ps1 -Action Down` is a known environment artifact, never a spec FAIL — the row states
 > which process it observed.
 
-> **G-284 read lever.** `telemetry-query` is SQLite-only. Read PG via the managed
-> `psql` (`%APPDATA%\com.fredo.app\postgres-install\18.6.0\bin\psql.exe`, database `postgres`)
-> through the allowlisted `run-exitcode.ps1 -Command "<psql> <uri> -c \"…\""`. URI =
-> `postgresql://postgres:<pw>@127.0.0.1:<port>/postgres`; `<port>` from
-> `<lock_dir>/headless-ingest.json`; `<pw>` = control-plane `postgres.password` from
-> `<app_data_dir>/control.db`. If the app pool holds all 8 server connections, an external `psql`
-> is refused `too many clients` — use the app-pool-backed `telemetry_get_stats` for the
-> same-instant read.
+> **G-284/G-307 read lever.** PostgreSQL is the only store. Read it via the managed
+> `psql` (database `postgres`) through the allowlisted `run-exitcode.ps1 -Command`
+> wrapper, or the `telemetry-query` skill. `<port>` from
+> `<lock_dir>/headless-ingest.json` (or `pg_supervisor_status`); `<pw>` from the OS
+> keychain (service `fredo.postgres`, account `loopback:password`). If the app pool holds all 8
+> server connections, an external `psql` is refused `too many clients` — use the app-pool-backed
+> `telemetry_get_stats` for the same-instant read.
 
 ## Cases
 
@@ -114,18 +113,17 @@ closed. Seeded at issue **#2992**. Inherits `.opencode/tests/persistence-spike/`
   backfill/SQLite-data-store use.
   **Expected:** the daemon does **not** read or write `rtdb.backfill.completed` /
   `rtdb.backfill.provider.completed.v2`; never writes `telemetry_spans` from the backfill path;
-  opens **no** SQLite DATA store — its only `control.db` access is the control-plane
-  credential/pid (the adjudicated contract, not the data plane).
-  **Edge:** pre-existing markers untouched; daemon start with an un-migrated
-  `<data_dir>/fredo.db` present (architect's adjudication pending — named blocker); grep for
-  `run_startup_backfill` / `fredo.db` migration on the daemon path.
+  opens **no** SQLite DATA store — its only settings access is the credential/pid keys
+  (the adjudicated contract, not the data plane).
+  **Edge:** pre-existing markers untouched; daemon start with a legacy SQLite file
+  present (the daemon ignores it); grep for the `run_startup_backfill` migration on the daemon path.
 
 - [ ] **F-10 (R-1/R-3, MISSION-MONITOR E2E) — shared-state attach + replay render.**
   Start the daemon against the shared resolved app-data dir (`FREDO_DATA_DIR` or OS
-  `%APPDATA%\com.fredo.app`) + shared `control.db` credential; ingest a session; launch the GUI.
+  `%APPDATA%\com.fredo.app`) + shared settings credential; ingest a session; launch the GUI.
   **Expected:** the GUI attaches (state `attached`) and Mission Monitor renders the
   headless-ingested session via `useEventRows(..., { replay: true })`; the shared-state lever
-  (same resolved app-data dir + same `control.db` credential + descriptor port) is named in the
+  (same resolved app-data dir + same settings credential + descriptor port) is named in the
   receipt.
   **Edge:** GUI already running when the daemon starts; a second session ingested after attach;
   app pool saturates connections → use `telemetry_get_stats` for the same-instant read.
@@ -141,9 +139,9 @@ closed. Seeded at issue **#2992**. Inherits `.opencode/tests/persistence-spike/`
 - [ ] **F-12 (R-3, concurrency) — control-plane concurrency.**
   While the daemon runs, boot/attach the GUI and read `postgres.password`; watch both logs for
   SQLite lock errors.
-  **Expected:** both processes open `control.db` (WAL) and read a consistent credential; no
-  `SQLITE_BUSY` / lock error on either side.
-  **Edge:** concurrent read/write of `postgres_pid`; rapid attach cycles; WAL checkpoint under
+  **Expected:** both processes read a consistent credential from the PostgreSQL settings store; no
+  lock error on either side.
+  **Edge:** concurrent read/write of `postgres_pid`; rapid attach cycles; concurrent settings writes under
   contention.
 
 - [ ] **F-13 (NFR) — regression invariants.**
@@ -204,7 +202,7 @@ actionable blocker (G-053).
   the committed fixture cannot satisfy the rollup predicate; fresh-cluster declared-table `latestat` error;
   wedged real app-data cluster; MCP-bridge 0.12/0.13.
 - [x] **F-11 PASS** — caller `FREDO_DATA_DIR` honored; default == `%APPDATA%\com.fredo.app`.
-- [x] **F-12 PASS** — daemon+GUI share `control.db` with no `SQLITE_BUSY`.
+- [x] **F-12 PASS** — daemon+GUI share the settings store with no lock error.
 - [x] **F-13 PASS (local)** — spike test present; local UI build + 2865 tests green; CI `ui-validate` red on an
   unrelated Terminal-settings flake (flagged).
 - [x] **F-14 PASS** — help names every flag + defaults + exit codes 0/1/2; usage errors non-zero.

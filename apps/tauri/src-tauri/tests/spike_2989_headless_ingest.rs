@@ -46,7 +46,7 @@
 //!
 //! Throwaway data dir `.opencode/tmp/2989/pgdata` via `FREDO_PG_DATA_DIR` and a
 //! temp control-plane `AppStore` (`tempfile::tempdir()`); the app's real data
-//! dir and `control.db` are never touched. The one-shot backfill markers
+//! dir and its settings are never touched. The one-shot backfill markers
 //! (`rtdb.backfill.completed`, `rtdb.backfill.provider.completed.v2`) are never
 //! read or written. Every start/stop/wait is finitely bounded by `PgRuntime`
 //! (G-263); `stop_bounded` hard-kills on expiry and the RAII `Drop` covers the
@@ -154,7 +154,7 @@ async fn spike_2989_headless_ingest() {
     std::fs::create_dir_all(&data_dir).expect("create the isolated FS-1 data dir");
     std::fs::create_dir_all(&install_dir).expect("create the isolated install dir");
     // Isolation: PgRuntime resolves these BEFORE it is constructed. The app's
-    // real data dir and control.db are never referenced.
+    // real data dir and settings are never referenced.
     std::env::set_var(PG_DATA_DIR_ENV, &data_dir);
     std::env::set_var(PG_INSTALL_DIR_ENV, &install_dir);
 
@@ -214,10 +214,10 @@ async fn spike_2989_headless_ingest() {
         "SPIKE_2989_TCP_127_0_0_1 reachable={ipv4_reachable}"
     ));
     record(format!(
-        "SPIKE_2989_ISOLATION data_dir={} install_dir={} control_db={}",
+        "SPIKE_2989_ISOLATION data_dir={} install_dir={} settings_scratch={}",
         data_dir.display(),
         install_dir.display(),
-        app_scratch.path().join("control.db").display()
+        app_scratch.path().display()
     ));
 
     // ── Engine + canonical row pipeline (no AppHandle) ──────────────────────

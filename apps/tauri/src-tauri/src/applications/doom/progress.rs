@@ -108,7 +108,7 @@ mod tests {
         // Only when the file seam is unset does the record live under the key.
         if std::env::var(save::DOOM_SAVE_FILE_ENV).is_err() {
             let raw = app_store
-                .control_get(DOOM_SAVE_KEY)
+                .cached_get(DOOM_SAVE_KEY)
                 .expect("control read")
                 .expect("present");
             assert_eq!(DoomSave::parse(&raw), Some(saved));
@@ -136,7 +136,7 @@ mod tests {
         // ONE fixed key — no append log.
         if std::env::var(save::DOOM_SAVE_FILE_ENV).is_err() {
             let raw = app_store
-                .control_get(DOOM_SAVE_KEY)
+                .cached_get(DOOM_SAVE_KEY)
                 .expect("control read")
                 .expect("present");
             assert_eq!(DoomSave::parse(&raw), Some(saved));

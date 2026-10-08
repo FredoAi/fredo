@@ -111,20 +111,20 @@ pub fn companion_env_overrides(env: &EnvConfig) -> Option<CompanionEnvOverrides>
     })
 }
 
-/// Persist [`companion_env_overrides`] into this environment's control plane.
+/// Persist [`companion_env_overrides`] into this environment's settings cache.
 ///
-/// The env-supplied port / companion dir are written into the per-env
-/// `control.db`, so the existing companion resolvers
-/// (`process::resolve_companion_dir`, `commands::build_launch_config`) pick them
-/// up unchanged — no dimension is re-derived. Inert on the legacy path. A write
-/// failure is logged and ignored: a missing override degrades to the
+/// The env-supplied port / companion dir are written into the synchronous
+/// settings cache (write-through to PostgreSQL), so the existing companion
+/// resolvers (`process::resolve_companion_dir`, `commands::build_launch_config`)
+/// pick them up unchanged — no dimension is re-derived. Inert on the legacy path.
+/// A write failure is logged and ignored: a missing override degrades to the
 /// persisted/default setting, never a crash.
 pub fn apply_companion_env_overrides(app: &AppHandle, env: &EnvConfig) {
     let Some(overrides) = companion_env_overrides(env) else {
         return;
     };
     let store = app.state::<Arc<AppStore>>();
-    if let Err(error) = store.control_set(LLAMA_SERVER_PORT_KEY, &overrides.port.to_string()) {
+    if let Err(error) = store.cached_set(LLAMA_SERVER_PORT_KEY, &overrides.port.to_string()) {
         tracing::warn!(
             target: "fredo::llm_server",
             error = %error,
@@ -133,7 +133,7 @@ pub fn apply_companion_env_overrides(app: &AppHandle, env: &EnvConfig) {
     }
     if let Some(dir) = &overrides.companion_dir {
         if let Err(error) =
-            store.control_set(LLAMA_SERVER_COMPANION_DIR_KEY, &dir.to_string_lossy())
+            store.cached_set(LLAMA_SERVER_COMPANION_DIR_KEY, &dir.to_string_lossy())
         {
             tracing::warn!(
                 target: "fredo::llm_server",

@@ -209,7 +209,7 @@ only F-1's static half).
   hex/rgba except the allowlisted `GHOSTTY_THEME` ANSI palette; no invalid
   `var(--token)NN` alpha-append.
 - [ ] N-5: **No persistence (non-goal)** — after `-Action Restart`, the sidebar is empty;
-  no `terminal` session rows in `fredo.db`; no resume.
+  no `terminal` session rows in the store; no resume.
   > **SUPERSEDED by #2935** (do NOT run as written): persistence/resume is now REQUIRED. The #2934
   > non-goal assertion is retained only as the historical record; the live assertions are the
   > `#2935` rows F-22..F-36 + N-9..N-17 below (a restart MUST list the persisted records).
@@ -644,7 +644,7 @@ session's `cols`/`rows` on `list_terminal_sessions`). Width is read via `offsetW
       keys; the second run is a NO-OP (idempotent, reports zero deletions); zero
       fixture/automation rows remain.
       Named store: `FeatureStore` table `feature_terminal_sessions` (feature id `terminal`,
-      table `sessions`) in the dev `fredo.db` (`persistence.rs:1-27,120-137`).
+      table `sessions`) in the dev store (`persistence.rs:1-27,120-137`).
       Edge: reused dev DB; the record cap eviction; a partial/crashed run.
 - [ ] F-53 (**R-1.1, AC1 — static pin; supporting only; ST-6**):
       `pnpm --filter @fredo/ui test featureRoots.contentRegionSizing.test.ts` — the Known

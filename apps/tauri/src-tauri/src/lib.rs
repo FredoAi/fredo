@@ -79,9 +79,8 @@ use infrastructure::rtdb::store::{
     RTDB_RETENTION_DAYS_KEY,
 };
 use infrastructure::rtdb::subscriptions::SubscriptionRegistry;
-use infrastructure::storage::engine::{select_engine, EngineHandle, StorageEngineState};
+use infrastructure::storage::engine::{EngineHandle, StorageEngineState};
 use infrastructure::storage::application_store::{self, ApplicationStore};
-use infrastructure::storage::migration::MigrationGate;
 use infrastructure::storage::span_store::SpanStore;
 use infrastructure::storage::AppStore;
 use infrastructure::telemetry::metrics_collector::MetricCollector;
@@ -125,24 +124,7 @@ impl RowUpsertObserver for ApplicationDataUpsertObserver {
 /// One declared-table retention prune cycle; every eviction fans out into the
 /// watch registry as a `remove` notification (the function itself returns the
 /// evictions and emits nothing).
-///
-/// Spec #2977 ST-4: quiesces against the exclusive migration barrier when one is
-/// installed; on timeout the prune is shed (the next cycle retries).
-async fn prune_application_data(app: &tauri::AppHandle, gate: Option<&Arc<MigrationGate>>) {
-    let _guard = match gate {
-        Some(gate) => match gate.writer_enter().await {
-            Ok(guard) => Some(guard),
-            Err(error) => {
-                tracing::warn!(
-                    target: "fredo::application_data",
-                    error = %error,
-                    "declared retention prune shed: migration barrier held past its bound"
-                );
-                return;
-            }
-        },
-        None => None,
-    };
+async fn prune_application_data(app: &tauri::AppHandle) {
     let Some(state) = app.try_state::<Arc<ApplicationDataState>>() else {
         return;
     };
@@ -207,11 +189,11 @@ pub fn run() {
             }
 
             // Spec #2977 ST-6 (G-275): the ONE app-data-dir resolver. A non-blank
-            // `FREDO_DATA_DIR` redirects the source `fredo.db` (and the AC3 backout
-            // target) to an in-repo fixture; the managed-PG install dir + lock stay
+            // `FREDO_DATA_DIR` redirects the app-data dir to an in-repo fixture; the
+            // managed-PG install dir + lock stay
             // on the OS dir (`applications::pg_supervisor`), so a fixture run reuses the
             // existing install. Inert when unset (the default path is byte-identical).
-            let data_dir = infrastructure::storage::migration::resolve_app_data_dir(
+            let data_dir = infrastructure::storage::boot_config::resolve_app_data_dir(
                 &app.path()
                     .app_data_dir()
                     .expect("Failed to resolve app data dir"),
@@ -227,26 +209,22 @@ pub fn run() {
             // registered initializers below, BEFORE the pool is installed.
             let engine_handle = EngineHandle::new_pending();
 
-            // -- Control-plane store (Spec #2979 CU-1) -------------------------
-            // The synchronous control plane lives on its OWN
-            // `<data_dir>/control.db` (split off `fredo.db`), so `fredo.db` can
-            // be retained read-only. `AppStore::open` also carries the legacy
-            // `settings` rows out of `fredo.db` READ-ONLY on first boot. The
-            // async data plane (`get`/`set`) sits ON the shared handle; the setup
-            // closure below reads config via the synchronous control API.
+            // -- Settings store (Spec #3005 ST-2) ------------------------------
+            // `AppStore` holds the volatile, PG-hydrated synchronous settings
+            // cache plus the JSON boot KV. The async data plane (`get`/`set`) sits
+            // ON the shared handle; the setup closure below reads config via the
+            // synchronous cache (hydrated on pool-ready in the supervisor).
             let app_store = Arc::new(
                 AppStore::open(engine_handle.clone(), &data_dir)
                     .expect("Failed to open settings store"),
             );
             app.manage(app_store.clone());
 
-            // -- Engine selection (Spec #2979 CU-1, reworked CU-1-R2) ----------
-            // Resolve the data-plane selection from the CONTROL plane. PostgreSQL
-            // is UNCONDITIONAL: the legacy `sqlite` env value is rejected and the
-            // legacy control-plane opt-out `postgres.enabled=false` is inert (a
-            // carried key must not disable the PostgreSQL-only data plane).
-            let engine_choice = select_engine(app_store.control_engine());
-            let storage_state = StorageEngineState::new(engine_handle.clone(), engine_choice);
+            // -- Storage-engine state (Spec #3005 ST-3) -------------------------
+            // PostgreSQL is the ONLY data-plane engine; the engine selector is
+            // gone. The swap-once handle starts Pending and the supervisor installs
+            // the pool on its (lazy) readiness leg.
+            let storage_state = StorageEngineState::new(engine_handle.clone());
             // Spec #2975 ST-2 rework: register the startup schema initializers
             // BEFORE the supervisor starts, so the registry is populated before
             // the background task can reach pool-ready (no timing race). They run
@@ -266,22 +244,12 @@ pub fn run() {
             storage_state.register_slice3_pg_schema_inits();
             app.manage(storage_state);
 
-            // Spec #2977 ST-4: the ONE shared migration barrier, cloned into
-            // every storage-write chokepoint below (the RTDB writer task, the
-            // span/metrics/log flush tasks, the watch flush, the prunes, the
-            // application-data backfill) and installed onto the `ApplicationStore` for
-            // the terminal persistence writes. The supervisor's migration leg
-            // takes the exclusive side of this SAME gate.
-            let migration_gate = app.state::<Arc<StorageEngineState>>().migration_gate();
-
             // -- Embedded-PostgreSQL supervisor (Spec #2974 ST-3) --------------
-            // Spec #2979 CU-1/CU-1-R2: PostgreSQL is the UNCONDITIONAL engine, so
-            // the supervisor always starts. The legacy `postgres.enabled` control
-            // key is INERT — a carried `false` must not disable the PostgreSQL-only
-            // data plane. When enabled it acquires the exclusive data-dir lock
-            // BEFORE the orphan sweep and LAZILY starts the postmaster on a
-            // background task: `setup` NEVER awaits the boot (G-273/R-2.3), so the
-            // webview shell renders while PostgreSQL starts.
+            // Spec #3005 ST-3: PostgreSQL is the ONLY engine, so the supervisor
+            // always starts (no selector, no opt-out). It acquires the exclusive
+            // data-dir lock BEFORE the orphan sweep and LAZILY starts the postmaster
+            // on a background task: `setup` NEVER awaits the boot (G-273/R-2.3), so
+            // the webview shell renders while PostgreSQL starts.
             applications::pg_supervisor::start_supervisor(app.handle());
 
             // -- ApplicationStore (generic typed-column store for applications) --------
@@ -291,9 +259,6 @@ pub fn run() {
             let application_store = Arc::new(
                 ApplicationStore::open(engine_handle.clone()).expect("Failed to open ApplicationStore"),
             );
-            // Spec #2977 ST-4: the terminal persistence writes quiesce through
-            // the shared migration barrier installed here.
-            application_store.install_migration_gate(migration_gate.clone());
             app.manage(application_store.clone());
 
             // -- Terminal persisted session records (Spec #2935 ST-2) ----------
@@ -302,26 +267,37 @@ pub fn run() {
             // PRE-install — so no data-plane call is needed here while the pool
             // is still pending (Spec #2979 CU-2; R-3.2 fail-closed).
 
-            // -- Tracing subscriber initialization (Spec #408) -----------------
+            // -- Tracing subscriber initialization (Spec #408; reload #3005 ST-2) --
             // Initialize before any tracing::info!/warn!/error! calls.
             // Uses a deferred LogBridgeLayer that reads from LOG_COLLECTOR_CELL,
             // which is set after LogCollector creation below.
+            //
+            // Spec #3005 ST-2 (R-2.4): the subscriber initializes at INFO and
+            // retains a `reload` handle. PostgreSQL is not up yet, so the persisted
+            // `tracing.logging_level` cannot be read synchronously; `hydrate`
+            // applies it through the retained handle later (a single `.init()`,
+            // never a re-init).
             {
-                let logging_level = app.state::<Arc<AppStore>>()
-                    .control_get("tracing.logging_level").ok().flatten()
-                    .unwrap_or_else(|| "INFO".to_string());
-
-                let env_filter = EnvFilter::try_new(&logging_level)
-                    .unwrap_or_else(|_| EnvFilter::new("INFO"));
+                let (filter_layer, reload_handle) =
+                    tracing_subscriber::reload::Layer::<EnvFilter, tracing_subscriber::Registry>::new(
+                        EnvFilter::new("INFO"),
+                    );
 
                 tracing_subscriber::registry()
-                    .with(env_filter)
+                    .with(filter_layer)
                     .with(tracing_subscriber::fmt::layer()
                         .with_target(true)
                         .with_level(true)
                         .compact())
                     .with(LogBridgeLayer::new())
                     .init();
+
+                app.state::<Arc<AppStore>>()
+                    .set_log_level_sink(Box::new(move |level: &str| {
+                        if let Ok(filter) = EnvFilter::try_new(level) {
+                            let _ = reload_handle.reload(filter);
+                        }
+                    }));
             }
 
             // -- Local test-environment wiring (Spec #2944 ST-2) ---------------
@@ -451,35 +427,23 @@ pub fn run() {
             );
             app.manage(span_store.clone());
 
-            // REQ-11: Set telemetry defaults if not already configured.
+            // REQ-11 / REQ-13 / REQ-7: register the startup defaults. Spec #3005
+            // ST-2: `hydrate` seeds each default ONLY when PostgreSQL has no row
+            // for the key, so a persisted user value survives a restart (R-2.1).
             {
                 let store_ref = app.state::<Arc<AppStore>>();
-                if store_ref.control_get("tracing.enabled").ok().flatten().is_none() {
-                    let _ = store_ref.control_set("tracing.enabled", "true");
-                }
-                if store_ref.control_get("tracing.retention_days").ok().flatten().is_none() {
-                    let _ = store_ref.control_set("tracing.retention_days", "7");
-                }
-                // REQ-13: Set metrics defaults if not already configured.
-                if store_ref.control_get("tracing.metrics_enabled").ok().flatten().is_none() {
-                    let _ = store_ref.control_set("tracing.metrics_enabled", "true");
-                }
-                if store_ref.control_get("tracing.metrics_aggregation_s").ok().flatten().is_none() {
-                    let _ = store_ref.control_set("tracing.metrics_aggregation_s", "60");
-                }
-                // REQ-7: Set logging defaults if not already configured.
-                if store_ref.control_get("tracing.logging_enabled").ok().flatten().is_none() {
-                    let _ = store_ref.control_set("tracing.logging_enabled", "true");
-                }
-                if store_ref.control_get("tracing.logging_level").ok().flatten().is_none() {
-                    let _ = store_ref.control_set("tracing.logging_level", "INFO");
-                }
+                store_ref.register_default("tracing.enabled", "true");
+                store_ref.register_default("tracing.retention_days", "7");
+                store_ref.register_default("tracing.metrics_enabled", "true");
+                store_ref.register_default("tracing.metrics_aggregation_s", "60");
+                store_ref.register_default("tracing.logging_enabled", "true");
+                store_ref.register_default("tracing.logging_level", "INFO");
             }
 
-            // REQ-9: Run retention cleanup on startup.
+            // REQ-9: Run retention cleanup on startup (pre-hydration reads default).
             let store_ref = app.state::<Arc<AppStore>>();
             let retention_days: i64 = store_ref
-                .control_get("tracing.retention_days")
+                .cached_get("tracing.retention_days")
                 .ok()
                 .flatten()
                 .and_then(|v| v.parse().ok())
@@ -517,24 +481,10 @@ pub fn run() {
 
             // REQ-6: Background flush every 1 second (5-second idle timeout).
             let flush_handle = app.handle().clone();
-            let flush_gate = migration_gate.clone();
             tauri::async_runtime::spawn(async move {
                 let mut interval = tokio::time::interval(Duration::from_secs(1));
                 loop {
                     interval.tick().await;
-                    // Spec #2977 ST-4: quiesce the storage flush against the
-                    // exclusive migration barrier.
-                    let _guard = match flush_gate.writer_enter().await {
-                        Ok(guard) => guard,
-                        Err(error) => {
-                            tracing::warn!(
-                                target: "fredo::telemetry",
-                                error = %error,
-                                "span flush shed: migration barrier held past its bound"
-                            );
-                            continue;
-                        }
-                    };
                     let collector = flush_handle.state::<Arc<SpanCollector>>();
                     let flushed = collector.flush_if_needed().await;
                     if flushed > 0 {
@@ -545,24 +495,10 @@ pub fn run() {
 
             // REQ-17: Background metrics flush every 1 second.
             let metrics_flush_handle = app.handle().clone();
-            let metrics_flush_gate = migration_gate.clone();
             tauri::async_runtime::spawn(async move {
                 let mut interval = tokio::time::interval(Duration::from_secs(1));
                 loop {
                     interval.tick().await;
-                    // Spec #2977 ST-4: quiesce the storage flush against the
-                    // exclusive migration barrier.
-                    let _guard = match metrics_flush_gate.writer_enter().await {
-                        Ok(guard) => guard,
-                        Err(error) => {
-                            tracing::warn!(
-                                target: "fredo::telemetry",
-                                error = %error,
-                                "metrics flush shed: migration barrier held past its bound"
-                            );
-                            continue;
-                        }
-                    };
                     let mc = metrics_flush_handle.state::<Arc<MetricCollector>>();
                     let flushed = mc.flush_if_needed().await;
                     if flushed > 0 {
@@ -573,24 +509,10 @@ pub fn run() {
 
             // REQ-7: Background log flush every 1 second.
             let log_flush_handle = app.handle().clone();
-            let log_flush_gate = migration_gate.clone();
             tauri::async_runtime::spawn(async move {
                 let mut interval = tokio::time::interval(Duration::from_secs(1));
                 loop {
                     interval.tick().await;
-                    // Spec #2977 ST-4: quiesce the storage flush against the
-                    // exclusive migration barrier.
-                    let _guard = match log_flush_gate.writer_enter().await {
-                        Ok(guard) => guard,
-                        Err(error) => {
-                            tracing::warn!(
-                                target: "fredo::telemetry",
-                                error = %error,
-                                "log flush shed: migration barrier held past its bound"
-                            );
-                            continue;
-                        }
-                    };
                     let lc = log_flush_handle.state::<Arc<LogCollector>>();
                     let flushed = lc.flush_if_needed().await;
                     if flushed > 0 {
@@ -678,7 +600,7 @@ pub fn run() {
                 application_store.clone(),
             ));
             // Re-materialize every persisted declaration (R-4.4: a restart over
-            // an existing fredo.db preserves the declared rows).
+            // an existing store preserves the declared rows).
             match application_registry.materialize_persisted() {
                 Ok(materialized) if !materialized.is_empty() => tracing::info!(
                     target: "fredo::application_data",
@@ -720,34 +642,18 @@ pub fn run() {
                 engine: application_engine.clone(),
                 watches: application_watches.clone(),
                 rtdb_store: rtdb_store.clone(),
-                migration_gate: migration_gate.clone(),
             }));
             // Watch flush task: emits due coalescing windows (~5 ms cadence).
             let application_flush = application_watches.clone();
-            let watch_flush_gate = migration_gate.clone();
             tauri::async_runtime::spawn(async move {
-                run_watch_flush_task(application_flush, Some(watch_flush_gate)).await;
+                run_watch_flush_task(application_flush).await;
             });
             // One-time declared-table projection backfill (A-17): spawned,
-            // never awaited on the read path. Spec #2977 ST-4: the backfill
-            // writes declared rows directly, so it quiesces against the
-            // migration barrier for its (one-shot) duration.
+            // never awaited on the read path.
             let backfill_meta = application_meta.clone();
             let backfill_engine = application_engine.clone();
             let backfill_store = rtdb_store.clone();
-            let backfill_gate = migration_gate.clone();
             tauri::async_runtime::spawn(async move {
-                let _guard = match backfill_gate.writer_enter().await {
-                    Ok(guard) => guard,
-                    Err(error) => {
-                        tracing::warn!(
-                            target: "fredo::application_data",
-                            error = %error,
-                            "declared-table backfill shed: migration barrier held past its bound"
-                        );
-                        return;
-                    }
-                };
                 infrastructure::application_data::backfill::run_backfill(
                     backfill_meta,
                     backfill_engine,
@@ -785,50 +691,44 @@ pub fn run() {
                 run_flush_task(rtdb_flush_task).await;
             });
 
-            // Set RTDB retention defaults if not already configured (AppStore
-            // KV keys — the binding config-first mechanism).
+            // Register RTDB retention defaults (AppStore KV keys — the binding
+            // config-first mechanism). Spec #3005 ST-2: seeded by `hydrate` only
+            // when PostgreSQL has no row, so a persisted override survives.
             {
                 let store_ref = app.state::<Arc<AppStore>>();
-                if store_ref.control_get(RTDB_RETENTION_DAYS_KEY).ok().flatten().is_none() {
-                    let _ = store_ref
-                        .control_set(RTDB_RETENTION_DAYS_KEY, &RTDB_DEFAULT_RETENTION_DAYS.to_string());
-                }
-                if store_ref.control_get(RTDB_MAX_ROWS_KEY).ok().flatten().is_none() {
-                    let _ = store_ref.control_set(RTDB_MAX_ROWS_KEY, &RTDB_DEFAULT_MAX_ROWS.to_string());
-                }
+                store_ref.register_default(
+                    RTDB_RETENTION_DAYS_KEY,
+                    &RTDB_DEFAULT_RETENTION_DAYS.to_string(),
+                );
+                store_ref.register_default(RTDB_MAX_ROWS_KEY, &RTDB_DEFAULT_MAX_ROWS.to_string());
             }
 
             // Retention prune on startup (mirrors the SpanStore/contract flow;
             // the writer task re-prunes on a 60-minute interval). P2.3: the
             // evicted keys route `kind: remove` deliveries through Rtdb. The
-            // prune now awaits the engine-selected store; the sync setup closure
+            // prune awaits the PostgreSQL-only store; the sync setup closure
             // bridges with `block_on` to keep the pre-writer-task ordering.
-            tauri::async_runtime::block_on(prune_with_knobs(app.handle(), Some(&migration_gate)));
+            tauri::async_runtime::block_on(prune_with_knobs(app.handle()));
 
             // Declared-table retention prune: once at startup, then on the same
             // 60-minute cadence as the RTDB writer prune (ST-7 supplies the
             // function; evictions fan out as `remove` notifications here).
-            tauri::async_runtime::block_on(prune_application_data(
-                app.handle(),
-                Some(&migration_gate),
-            ));
+            tauri::async_runtime::block_on(prune_application_data(app.handle()));
             let application_prune_handle = app.handle().clone();
-            let application_prune_gate = migration_gate.clone();
             tauri::async_runtime::spawn(async move {
                 let mut interval = tokio::time::interval(Duration::from_secs(60 * 60));
                 interval.tick().await; // consume the immediate first tick
                 loop {
                     interval.tick().await;
-                    prune_application_data(&application_prune_handle, Some(&application_prune_gate)).await;
+                    prune_application_data(&application_prune_handle).await;
                 }
             });
 
             // RTDB write-behind task: drains the bounded queue in ~30 ms
             // batches; overflow sheds the storage write, never in-memory state.
             let rtdb_writer_handle = app.handle().clone();
-            let rtdb_writer_gate = migration_gate.clone();
             tauri::async_runtime::spawn(async move {
-                run_rtdb_writer_task(rtdb_writer_handle, rtdb_rx, Some(rtdb_writer_gate)).await;
+                run_rtdb_writer_task(rtdb_writer_handle, rtdb_rx).await;
             });
 
             // RTDB canonical backfill (Spec #2788 P3.2, REQs R-2b/R-4c):
@@ -840,12 +740,9 @@ pub fn run() {
             // re-merges skip the write (no seq inflation); a one-shot
             // completion marker keeps later startups O(1).
             //
-            // Spec #2977 ST-4 quiesce note: this replay ingests INTO THE
-            // IN-MEMORY RTDB pipeline (classifier → cache → write-behind queue);
-            // it performs NO direct storage write. Its storage writes are the
-            // writer task's, which are gated below — so the canonical backfill
-            // is quiesced TRANSITIVELY without a coarse hold here (a coarse hold
-            // would stall the migration for the whole replay on a full-size DB).
+            // This replay ingests INTO THE IN-MEMORY RTDB pipeline
+            // (classifier → cache → write-behind queue); it performs NO direct
+            // storage write — its storage writes are the writer task's.
             //
             // Spec #2932 ST-6: the provider re-derivation leg runs SEQUENTIALLY
             // after it, gated by its OWN independent marker
@@ -1029,10 +926,6 @@ pub fn run() {
             // Windows distribution quality (Spec #2978 S4): the bounded,
             // read-only postmaster log tail (`<data_dir>/log/postgres.log`).
             applications::pg_supervisor::state::pg_server_log_tail,
-            // Cutover release gate (Spec #2978 S6): the ONE read-only decision
-            // source slice 6 consumes (acquisition mode + cutover marker →
-            // shipped default; fail-closed to SQLite; NO engine flip).
-            applications::pg_supervisor::release_gate::cutover_release_gate,
             // Built-in PostgreSQL client (Spec #2950 ST-1): all nine `db_*`
             // commands registered once. ADDITIVE — the wrappers are typed; the
             // connect/schema/query bodies land in ST-2/ST-3/ST-4.
@@ -1048,14 +941,6 @@ pub fn run() {
             // Storage engine seam (Spec #2975 ST-2): the live-observable,
             // read-only engine status (dialect + fail-closed reason).
             infrastructure::storage::engine::storage_engine_status,
-            // One-shot `fredo.db` → PostgreSQL data migration (Spec #2977):
-            // the read-only live status hook (ST-6).
-            infrastructure::storage::migration::run::migration_status,
-            // Rollback verification (Spec #2979 CU-4): recompute the retained
-            // pre-cutover snapshot read-only and set `rollback.verified` only on
-            // a full checksum match (R-2.2). Bounded (G-263); never mutates the
-            // snapshot or `fredo.db`.
-            infrastructure::storage::migration::run::verify_rollback,
             // ApplicationStore (Spec #339)
             application_store::application_store_ensure_table,
             application_store::application_store_insert,

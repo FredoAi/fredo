@@ -22,7 +22,7 @@ use std::path::PathBuf;
 pub const ENV_ID_ENV: &str = "FREDO_ENV_ID";
 /// Per-environment state root.
 pub const ENV_ROOT_ENV: &str = "FREDO_ENV_ROOT";
-/// App-data dir (`fredo.db`, `control.db`).
+/// App-data dir (holds the embedded PostgreSQL cluster; no SQLite store).
 pub const DATA_DIR_ENV: &str = "FREDO_DATA_DIR";
 /// Embedded-PostgreSQL data dir.
 pub const PG_DATA_DIR_ENV: &str = "FREDO_PG_DATA_DIR";

@@ -156,7 +156,7 @@ Precedence is **CLI flag > environment variable > default**. The daemon never ov
 | Exit | Meaning |
 |------|---------|
 | `0` | Graceful shutdown (SIGINT, the shutdown file, or `--run-ms` elapsed) |
-| `1` | Fail-fast — the data-dir lock is already held by another `fredo ingest`, the cluster failed to start, or an un-migrated `fredo.db` is present without the `migration.postgres.completed` marker (defer to a GUI boot) |
+| `1` | Fail-fast — the data-dir lock is already held by another `fredo ingest`, or the cluster failed to start |
 | `2` | Reserved |
 
 **Behaviour**

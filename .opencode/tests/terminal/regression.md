@@ -299,7 +299,7 @@ append evidence; on fail mark `FAIL`.
 - R-5 PASS (both-window console clean).
 - R-6 PASS (siblings Mission Monitor / Query Viewer / Settings / Stepper Probe intact).
 - R-7 PASS (Settings → Terminal discovered alongside the static sections).
-- R-8/N-5 PASS (empty sidebar after restart; no `%terminal%` table in `fredo.db`).
+- R-8/N-5 PASS (empty sidebar after restart; no `%terminal%` table in the store).
 - R-9 UNVERIFIED (no LLM turn driven in a Terminal-launched session; the
   `telemetry_spans` table is live — see the `## Tests Runs` on #2934).
 - R-10 PASS (`git diff --stat main origin/spec/2934` → no `infrastructure/rtdb/**` or
@@ -333,7 +333,7 @@ append evidence; on fail mark `FAIL`.
 - R-6 PASS (launcher grid = Mission Monitor, Query Viewer, Settings, Stepper Probe, Terminal).
 - R-7 PASS (Settings → Terminal alongside the static sections; the diff touches no other pane).
 - R-8 PASS (`list_terminal_sessions` = `[]` from the main window after the window closed;
-  `sqlite_master` has no `%terminal%`/`%run_cli%` table).
+  `information_schema.tables` has no `%terminal%`/`%run_cli%` table).
 - R-9 UNVERIFIED (no LLM turn driven in a Terminal-launched OpenCode session — G-080 cost
   ceiling; the `telemetry_spans` table is live — see the `## Tests Runs` round 3).
 - R-10 PASS (`git diff --stat main origin/spec/2934` → no `infrastructure/rtdb/**` /

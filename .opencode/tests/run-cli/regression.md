@@ -80,7 +80,7 @@ Conventions: ID prefix `R-`; observable expected outcomes. On pass keep the chec
 
 - [ ] R-17: **No persistence introduced (non-goal).** Sessions remain in-memory for the
   window's life; a restart yields an empty sidebar and no persisted session rows.
-  EXPECTED: no `terminal` session rows in `fredo.db`; no resume.
+  EXPECTED: no `terminal` session rows in the store; no resume.
   Full assertions: `terminal/functional.md` N-5 / `regression.md` R-8.
 
 ## #2942 pre-rename-suite regression cases (vertical sidebar / rename / plain shell)
@@ -163,7 +163,7 @@ Conventions: ID prefix `R-`; observable expected outcomes. On pass keep the chec
   self-exit (only that session `exited`), or window-close (all reaped); `-List` = 0 orphans.
 - R-16 PASS — no `infrastructure/rtdb/**` / `infrastructure/otlp/**` in the diff; other
   settings panes unchanged.
-- R-17 PASS — empty sidebar after restart; no `%terminal%` table in `fredo.db`.
+- R-17 PASS — empty sidebar after restart; no `%terminal%` table in the store.
 - Legacy single-session note: the old auto-close-on-exit (`commands.rs:362-364`) is
   deliberately removed — a session self-exit keeps the window open (verified live).
 
@@ -178,7 +178,7 @@ Conventions: ID prefix `R-`; observable expected outcomes. On pass keep the chec
   `process-hygiene.ps1 -List` = 0 unprotected orphan candidates.
 - R-16 PASS — no `infrastructure/rtdb/**` / `infrastructure/otlp/**` in the #2934 diff; other
   settings panes unchanged (Settings nav renders Terminal alongside the static sections).
-- R-17 PASS — empty sidebar after restart; no `%terminal%` table in `fredo.db`.
+- R-17 PASS — empty sidebar after restart; no `%terminal%` table in the store.
 
 ### Round 3 — 2026-09-24, spec/2934 @ 7ba5a99c
 
@@ -193,7 +193,7 @@ Conventions: ID prefix `R-`; observable expected outcomes. On pass keep the chec
 - R-16 PASS — no `infrastructure/rtdb/**` / `infrastructure/otlp/**` in the #2934 diff;
   `telemetry_spans`/`telemetry_logs` live (see the round-3 `## Tests Runs`); both windows'
   consoles clean.
-- R-17 PASS — `list_terminal_sessions` = `[]` after the window closed; `sqlite_master` has no
+- R-17 PASS — `list_terminal_sessions` = `[]` after the window closed; `information_schema.tables` has no
   `%terminal%`/`%run_cli%` table.
 
 ### Round 4 (Spec #2942) — 2026-09-24, spec/2942 @ 3241b90d (R-18/R-19/R-20 PASS)

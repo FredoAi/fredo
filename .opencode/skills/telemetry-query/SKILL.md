@@ -1,19 +1,19 @@
 ---
 name: telemetry-query
-description: Query Fredo's telemetry database (fredo.db) via sqlite3 CLI to inspect spans, diagnose errors, monitor performance, and check retention. Load when an agent needs to query telemetry data, export span data, or debug the tracing subsystem.
+description: Query Fredo's telemetry store (the embedded PostgreSQL cluster) to inspect spans, diagnose errors, monitor performance, and check retention. Load when an agent needs to query telemetry data, export span data, or debug the tracing subsystem.
 ---
 
-# Telemetry Query — SQLite3 Interface to fredo.db
+# Telemetry Query — Read-Only Interface to the PostgreSQL Store
 
 ## Related Skills
 
-- **dev-environment**: Dev instance lifecycle (start/stop/status/restart) and process logs. Use when you need to check if the app is running or debug startup issues.
+- **dev-environment**: Dev instance lifecycle (start/stop/status/restart) and process logs. Use when you need to check if the app is running, resolve the ephemeral PostgreSQL port, or debug startup issues.
 
 ## How It Works
 
-`telemetry-query.ps1` → `sqlite3 --readonly fredo.db` (default) **or** the managed `psql` against an isolated env's embedded PostgreSQL store (G-284) → formatted output (JSON / markdown / table)
+`telemetry-query.ps1` → managed `psql` (database `postgres`) at the env's ephemeral PostgreSQL port → formatted output (JSON / markdown / table).
 
-The telemetry subsystem stores OpenTelemetry-compatible spans in a `telemetry_spans` table inside `fredo.db`. The same database used by `AppStore` (settings KV) and `FeatureStore` (feature-level data). This skill provides a read-only query interface — no mutations, no DDL, no DML.
+PostgreSQL is the **only** persistence system (Spec #3005). The telemetry subsystem stores OpenTelemetry-compatible spans in a `telemetry_spans` table inside the embedded PostgreSQL cluster — the same store used by the settings KV, the canonical RTDB `*_rows` tables, and `telemetry_metrics` / `telemetry_logs`. This skill provides a read-only query interface — no mutations, no DDL, no DML.
 
 Span lifecycle:
 - **Init** → span created with `start_time_ns`, `status_code='UNSET'`
@@ -21,50 +21,34 @@ Span lifecycle:
 - **Response** → span closed with `status_code='OK'`, `end_time_ns` set
 - **Error** → span closed with `status_code='ERROR'`, `status_message` recorded
 
-## Finding the Database
+## Connecting to the Store
 
-```powershell
-# Tauri app data dir (Windows — the LIVE app DB; this is the path to use)
-$env:APPDATA\com.fredo.app\fredo.db
+The store is the managed embedded PostgreSQL cluster. It has **no fixed file path** — connect through the managed `psql` at the running cluster's loopback port:
 
-# Common fallback paths (searched in order by the wrapper script):
-$HOME\.fredo\fredo.db                          # Linux / macOS / manual setup
-$env:LOCALAPPDATA\com.fredo.app\fredo.db      # Windows local (non-roaming)
-# NOTE: $env:APPDATA\fredo\fredo.db does NOT exist for the packaged app — the
-# live DB lives under com.fredo.app. Only legacy/manual setups ever use it; do
-# not waste time searching there first.
-```
+1. **Port:** read it from the app's `pg_supervisor_status` (the `port` field). For an isolated dev env, the manifest records it as `ports.pg` (`-Manifest`).
+2. **Database / user:** database `postgres`, user `postgres`, host `127.0.0.1`.
+3. **Password:** the generated loopback password lives in the **OS keychain** (service `fredo.postgres`, account `loopback:password`). Supply it with `-PgPassword` (or `$env:PGPASSWORD`); the wrapper also reads `$env:FREDO_PG_PASSWORD_FILE` (first non-blank line), then the documented loopback-only fallback. The password is never printed or logged.
 
-The wrapper script searches these paths automatically. If the database is not found, it reports an error with the paths it attempted. For a live Mission Monitor / telemetry e2e, the DB is always `$env:APPDATA\com.fredo.app\fredo.db` (clean it with `powershell -File .opencode/scripts/clean-fredo-db.ps1`).
+> **G-307:** the ephemeral port can read `0` on a stale manifest/status. When it does, a re-resolve is required — re-run `dev-env.ps1 -Action Up` (or `-Action Status`) and pass the fresh `-PgPort`. Never guess a port.
+
+The wrapper locates the managed `psql` automatically (under the shared PostgreSQL install dir, or on `PATH`) and bounds the connect with `PGCONNECT_TIMEOUT=10`.
 
 ## Isolated Environments (Spec #2944)
 
-An isolated dev environment keeps its own store at `FREDO_DATA_DIR/fredo.db` (default
-`<repo>/.opencode/tmp/envs/<envId>/data/fredo.db`), recorded as `dbPath` in that environment's
-process manifest `<env-root>/manifest.json`. Pass `-DbPath` for the SQLite engine, or `-Manifest`
-to resolve both `dbPath` and `ports.pg` — never read the sibling/legacy `%APPDATA%\com.fredo.app`
-path for an isolated env.
+An isolated dev environment runs its own PostgreSQL cluster on its own ephemeral port, recorded as `ports.pg` in that environment's process manifest `<env-root>/manifest.json`. Pass `-Manifest` to resolve `ports.pg`; never read a sibling environment's cluster.
 
 ```powershell
-# SQLite: an isolated env's own store
 powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
   -Query "SELECT session_id, span_name FROM telemetry_spans" `
-  -DbPath ".opencode/tmp/envs/spec2944/data/fredo.db"
+  -Manifest ".opencode/tmp/envs/spec3005/manifest.json"
 
-# Manifest form: resolves the env's dbPath (SQLite), or ports.pg when no SQLite store exists
+# Equivalent with an explicit port (from pg_supervisor_status or the manifest):
 powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
   -Query "SELECT count(*) FROM telemetry_spans" `
-  -Manifest ".opencode/tmp/envs/spec2944/manifest.json"
+  -PgPort 64217
 ```
 
-**Engine substitution (G-284).** After the #2979 PostgreSQL cutover an environment's data plane is
-PostgreSQL and `fredo.db` may be absent — the engine-appropriate read lever is then the managed
-`psql` (database `postgres`, ephemeral port from the manifest `ports.pg`). Select it with
-`-PgPort <ports.pg>` (or `-Manifest`, when the manifest records `ports.pg` and the SQLite `dbPath`
-is absent); the wrapper locates the managed `psql` binary and bounds the connect
-(`PGCONNECT_TIMEOUT`). `wait-telemetry.ps1` is SQLite-only — for a PostgreSQL env poll via the
-allowlisted `run-exitcode.ps1 -Command` wrapper instead. Always state which engine produced the
-evidence.
+Always state which store (and port) produced the evidence. If `ports.pg` reads `0` (G-307), re-resolve and disclose it. If the app pool holds all server connections and `psql` is refused (`too many clients`), use the named app-pool fallback (`telemetry_get_stats` / `feature_data_read`) and disclose the substitution.
 
 ## CLI Reference
 
@@ -73,7 +57,6 @@ powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
   -Query "<SQL SELECT statement>" `
   [-Format json|md|table] `
   [-Limit 1000] `
-  [-DbPath <env db path>] `
   [-Manifest <env-root>/manifest.json] `
   [-PgPort <env pg port>] [-PgHost 127.0.0.1] [-PgUser postgres] [-PgDatabase postgres] [-PgPassword <pw>]
 ```
@@ -83,24 +66,25 @@ powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
 | `-Query`  | Yes      | —       | SQL SELECT query (without trailing LIMIT — appended automatically). Must be read-only. |
-| `-Format` | No       | `table` | Output format: `json` (raw JSON array), `md` (markdown table), `table` (plain sqlite3 table) |
+| `-Format` | No       | `table` | Output format: `json` (JSON array), `md` (markdown table), `table` (psql aligned table) |
 | `-Limit`  | No       | `1000`  | Maximum rows returned. Appended as `LIMIT N` unless query already contains `LIMIT`. |
-| `-DbPath` | No       | (empty) | SQLite path override (Spec #2944). Empty ⇒ the fixed search order above. Pass an isolated env's `<env-root>/data/fredo.db`. |
-| `-Manifest` | No     | (empty) | Env process-manifest path (`<env-root>/manifest.json`). Resolves `dbPath` (SQLite) and `ports.pg` (PostgreSQL). Explicit `-DbPath`/`-PgPort` win. |
-| `-PgPort` | No       | `0`     | PostgreSQL loopback port (G-284). `>0` selects the managed-`psql` engine (database `postgres`). `0` ⇒ SQLite, or the `-Manifest` `ports.pg` when selected. |
-| `-PgHost` / `-PgUser` / `-PgDatabase` / `-PgPassword` | No | `127.0.0.1` / `postgres` / `postgres` / `$env:PGPASSWORD` | PostgreSQL connection fields — used only by the PG engine. |
+| `-Manifest` | No     | (empty) | Env process-manifest path (`<env-root>/manifest.json`). Resolves `ports.pg`. Explicit `-PgPort` wins. |
+| `-PgPort` | No       | `0`     | PostgreSQL loopback port (G-284/G-307). `>0` selects the managed-`psql` engine. `0` ⇒ the `-Manifest` `ports.pg` when present; else a usage error (re-resolve). |
+| `-PgHost` / `-PgUser` / `-PgDatabase` / `-PgPassword` | No | `127.0.0.1` / `postgres` / `postgres` / `$env:PGPASSWORD` | PostgreSQL connection fields. Password resolution: param → `$env:PGPASSWORD` → `FREDO_PG_PASSWORD_FILE` → loopback fallback. |
 
 ### Guardrails (enforced by the wrapper)
 
-- ❌ **DDL/DML rejected**: `CREATE`, `ALTER`, `DROP`, `INSERT`, `UPDATE`, `DELETE` — the script scans the query and refuses to execute if any of these keywords appear (case-insensitive).
-- ✅ **Allowed**: queries must start with `SELECT`, `WITH` (CTE), or a permitted `PRAGMA`. `PRAGMA` is allowed only for `table_info`, `page_count`, `page_size`, `index_list`, and `index_info`.
+- ❌ **DDL/DML rejected**: `CREATE`, `ALTER`, `DROP`, `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`, `GRANT`, `REVOKE`, `COPY`, `VACUUM`, `REINDEX`, `CLUSTER`, `REFRESH` — the script scans the query and refuses to execute if any of these keywords appear (case-insensitive, whole-word).
+- ✅ **Allowed**: queries must start with `SELECT` or `WITH` (CTE).
 - ✅ **Default LIMIT**: If the query has no `LIMIT` clause, `LIMIT 1000` is appended automatically. Override with `-Limit N`.
-- ✅ **Read-only mode**: `sqlite3` is invoked with `-readonly` flag, preventing accidental writes even if DML somehow passes the keyword check.
-- ✅ **PostgreSQL engine**: the same statement-shape + forbidden-keyword scan applies; `psql` runs `-w` (never prompts for a password), `PGCONNECT_TIMEOUT=10`, and `ON_ERROR_STOP=1`.
+- ✅ **Read-only mode**: the connection sets `default_transaction_read_only=on` (via `PGOPTIONS`) and `ON_ERROR_STOP=1`, so the `telemetry_spans` READ-ONLY invariant holds even if DML somehow passed the keyword check.
+- ✅ **No prompt**: `psql` runs `-w` (never prompts for a password) and `PGCONNECT_TIMEOUT=10`.
 
 ---
 
 ## Query Recipes
+
+All recipes use PostgreSQL syntax. `ingested_at` / `timestamp` are stored as RFC3339 `TEXT`; cast with `::timestamptz` for date arithmetic. `labels_json` / `attributes_json` are `TEXT`; cast with `::jsonb` for key access.
 
 ### Recipe 1: Recent Error Spans
 
@@ -108,7 +92,7 @@ Find all spans that ended with an error in the last hour.
 
 ```powershell
 powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
-  -Query "SELECT span_id, span_name, status_message, datetime(start_time_ns / 1000000000, 'unixepoch') AS started_at, provider, transport FROM telemetry_spans WHERE status_code = 'ERROR' AND start_time_ns > (strftime('%%s', 'now') - 3600) * 1000000000 ORDER BY start_time_ns DESC" `
+  -Query "SELECT span_id, span_name, status_message, to_timestamp(start_time_ns / 1000000000.0) AS started_at, provider, transport FROM telemetry_spans WHERE status_code = 'ERROR' AND start_time_ns > (EXTRACT(EPOCH FROM now()) - 3600) * 1000000000 ORDER BY start_time_ns DESC" `
   -Format table
 ```
 
@@ -116,11 +100,11 @@ powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
 
 ### Recipe 2: Latency Percentiles
 
-Compute p50, p90, p99 latency in milliseconds for completed spans.
+Compute average/min/max latency in milliseconds for completed spans.
 
 ```powershell
 powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
-  -Query "SELECT span_name, COUNT(*) AS count, ROUND(AVG((end_time_ns - start_time_ns) / 1000000.0), 1) AS avg_ms, ROUND(MIN((end_time_ns - start_time_ns) / 1000000.0), 1) AS min_ms, ROUND(MAX((end_time_ns - start_time_ns) / 1000000.0), 1) AS max_ms FROM telemetry_spans WHERE end_time_ns IS NOT NULL GROUP BY span_name ORDER BY avg_ms DESC" `
+  -Query "SELECT span_name, COUNT(*) AS count, ROUND(AVG((end_time_ns - start_time_ns) / 1000000.0)::numeric, 1) AS avg_ms, ROUND(MIN((end_time_ns - start_time_ns) / 1000000.0)::numeric, 1) AS min_ms, ROUND(MAX((end_time_ns - start_time_ns) / 1000000.0)::numeric, 1) AS max_ms FROM telemetry_spans WHERE end_time_ns IS NOT NULL GROUP BY span_name ORDER BY avg_ms DESC" `
   -Format json
 ```
 
@@ -132,7 +116,7 @@ Get the full trace of spans for a specific session — follow parent-child relat
 
 ```powershell
 powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
-  -Query "SELECT span_id, parent_span_id, span_name, span_kind, status_code, datetime(start_time_ns / 1000000000, 'unixepoch') AS started_at, CASE WHEN end_time_ns IS NOT NULL THEN printf('%.1fms', (end_time_ns - start_time_ns) / 1000000.0) ELSE 'open' END AS duration FROM telemetry_spans WHERE session_id = '<session-id>' ORDER BY start_time_ns ASC" `
+  -Query "SELECT span_id, parent_span_id, span_name, span_kind, status_code, to_timestamp(start_time_ns / 1000000000.0) AS started_at, CASE WHEN end_time_ns IS NOT NULL THEN to_char((end_time_ns - start_time_ns) / 1000000.0, 'FM999990.0') || 'ms' ELSE 'open' END AS duration FROM telemetry_spans WHERE session_id = '<session-id>' ORDER BY start_time_ns ASC" `
   -Format md
 ```
 
@@ -152,37 +136,34 @@ powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
 
 ### Recipe 5: Storage Usage
 
-Check how much space the telemetry table consumes and row counts by status.
+Check how much space the telemetry tables consume, and row counts by status.
 
 ```powershell
 powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
-  -Query "SELECT status_code, COUNT(*) AS count, printf('%.2f MB', COUNT(*) * 0.001) AS est_size FROM telemetry_spans GROUP BY status_code ORDER BY count DESC" `
+  -Query "SELECT status_code, COUNT(*) AS count, to_char(COUNT(*) * 0.001, 'FM999999.00') || ' MB (rough)' AS est_size FROM telemetry_spans GROUP BY status_code ORDER BY count DESC" `
   -Format table
 ```
 
 ```powershell
-# Also check total table size via two separate PRAGMAs (page_count * page_size)
+# Accurate on-disk size of a table (indexes included):
 powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
-  -Query "PRAGMA page_count" `
-  -Format json
-powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
-  -Query "PRAGMA page_size" `
+  -Query "SELECT pg_total_relation_size('telemetry_spans') AS bytes, pg_size_pretty(pg_total_relation_size('telemetry_spans')) AS pretty" `
   -Format json
 ```
 
-→ Note: `PRAGMA` is allowed for `page_count`, `page_size`, `index_list`, `index_info`, and `table_info` only (one PRAGMA per query — `PRAGMA page_count * page_size` is invalid SQL). Total bytes = `page_count` × `page_size`. The `est_size` column is a rough approximation; use the two PRAGMAs for accurate storage bytes.
+→ `pg_total_relation_size` returns the exact bytes for the table plus its indexes/toast. The `est_size` column in the first query is a rough row-count-based approximation.
 
 ### Recipe 6: Retention Status
 
-See how old your oldest and newest spans are, and when the next retention cleanup will run.
+See how old your oldest and newest spans are.
 
 ```powershell
 powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
-  -Query "SELECT MIN(ingested_at) AS oldest_span, MAX(ingested_at) AS newest_span, COUNT(*) AS total_spans, ROUND((julianday('now') - julianday(MIN(ingested_at))) , 1) AS age_days FROM telemetry_spans" `
+  -Query "SELECT MIN(ingested_at) AS oldest_span, MAX(ingested_at) AS newest_span, COUNT(*) AS total_spans, ROUND((EXTRACT(EPOCH FROM (now() - MIN(ingested_at)::timestamptz)) / 86400.0)::numeric, 1) AS age_days FROM telemetry_spans" `
   -Format md
 ```
 
-→ Retention is configured via `tracing.retention_days` (AppStore setting, default 7). Spans older than this threshold are deleted on Fredo startup. If spans are unexpectedly missing, check the retention setting.
+→ Retention is configured via `tracing.retention_days` (settings KV, default 7). Spans older than this threshold are deleted on Fredo startup. If spans are unexpectedly missing, check the retention setting.
 
 ### Recipe 7: Table Schema Inspection
 
@@ -190,17 +171,17 @@ View the full schema and indexes of the `telemetry_spans` table.
 
 ```powershell
 powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
-  -Query "PRAGMA table_info(telemetry_spans)" `
+  -Query "SELECT ordinal_position, column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_name = 'telemetry_spans' ORDER BY ordinal_position" `
   -Format table
 ```
 
 ```powershell
 powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
-  -Query "SELECT * FROM pragma_index_list('telemetry_spans')" `
+  -Query "SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'telemetry_spans'" `
   -Format table
 ```
 
-→ Use `table_info` to check column names, types, and nullability. Use `index_list` to verify which indexes exist.
+→ Use `information_schema.columns` to check column names, types, and nullability. Use `pg_indexes` to verify which indexes exist.
 
 ---
 
@@ -210,15 +191,15 @@ The `telemetry_metrics` table stores pre-aggregated metric data derived from the
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `id` | INTEGER | Auto-increment primary key |
+| `id` | BIGINT | Identity primary key |
 | `metric_name` | TEXT | Metric identifier: `span_count`, `events_received`, `orphan_spans`, `active_sessions`, `span_duration_ms` |
 | `metric_type` | TEXT | One of `counter` (monotonically increasing), `gauge` (snapshot value), or `histogram` (bucket count) |
 | `labels_json` | TEXT | JSON dimension labels: `{"span_name":"...","status":"ok"}` for counters, `{"span_name":"...","bucket_le":"50"}` for histogram buckets |
-| `value` | REAL | The aggregated metric value: counter total, gauge reading, or histogram bucket count |
+| `value` | DOUBLE PRECISION | The aggregated metric value: counter total, gauge reading, or histogram bucket count |
 | `timestamp` | TEXT | RFC3339 timestamp of the aggregation window end |
-| `aggregation_window_s` | INTEGER | Aggregation interval in seconds (configurable 10–300) |
+| `aggregation_window_s` | BIGINT | Aggregation interval in seconds (configurable 10–300) |
 
-Metric data is written in batch every N seconds (default 60). All metric queries are read-only — the `telemetry-query.ps1` wrapper handles database location and guardrails automatically.
+Metric data is written in batch every N seconds (default 60). All metric queries are read-only — the `telemetry-query.ps1` wrapper handles connection and guardrails automatically.
 
 ### Recipe 8: Latency Percentiles from Histogram Buckets
 
@@ -226,7 +207,7 @@ Compute p50, p90, and p99 latency boundaries for each span name using accumulate
 
 ```powershell
 powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
-  -Query "WITH bucket_bounds(bucket_le, sort_order) AS (VALUES (1,1),(5,2),(10,3),(25,4),(50,5),(100,6),(250,7),(500,8),(1000,9),(2500,10),(5000,11),(10000,12)), hist_counts AS (SELECT json_extract(labels_json, '$.span_name') AS span_name, CAST(json_extract(labels_json, '$.bucket_le') AS INTEGER) AS bucket_le, SUM(value) AS cnt FROM telemetry_metrics WHERE metric_name = 'span_duration_ms' AND metric_type = 'histogram' GROUP BY span_name, CAST(json_extract(labels_json, '$.bucket_le') AS INTEGER)), span_total AS (SELECT span_name, SUM(cnt) AS total FROM hist_counts GROUP BY span_name), cumulative AS (SELECT h.span_name, CAST(h.bucket_le AS INTEGER) AS le, h.cnt, SUM(h.cnt) OVER (PARTITION BY h.span_name ORDER BY h.bucket_le) AS cum, t.total FROM hist_counts h JOIN span_total t ON h.span_name = t.span_name) SELECT span_name, MIN(CASE WHEN cum * 100.0 / total >= 50 THEN le END) AS p50_ms, MIN(CASE WHEN cum * 100.0 / total >= 90 THEN le END) AS p90_ms, MIN(CASE WHEN cum * 100.0 / total >= 99 THEN le END) AS p99_ms, MAX(total) AS span_count FROM cumulative GROUP BY span_name ORDER BY span_name" `
+  -Query "WITH bucket_bounds(bucket_le, sort_order) AS (VALUES (1,1),(5,2),(10,3),(25,4),(50,5),(100,6),(250,7),(500,8),(1000,9),(2500,10),(5000,11),(10000,12)), hist_counts AS (SELECT (labels_json::jsonb ->> 'span_name') AS span_name, ((labels_json::jsonb ->> 'bucket_le'))::int AS bucket_le, SUM(value) AS cnt FROM telemetry_metrics WHERE metric_name = 'span_duration_ms' AND metric_type = 'histogram' GROUP BY span_name, ((labels_json::jsonb ->> 'bucket_le'))::int), span_total AS (SELECT span_name, SUM(cnt) AS total FROM hist_counts GROUP BY span_name), cumulative AS (SELECT h.span_name, h.bucket_le AS le, h.cnt, SUM(h.cnt) OVER (PARTITION BY h.span_name ORDER BY h.bucket_le) AS cum, t.total FROM hist_counts h JOIN span_total t ON h.span_name = t.span_name) SELECT span_name, MIN(CASE WHEN cum * 100.0 / total >= 50 THEN le END) AS p50_ms, MIN(CASE WHEN cum * 100.0 / total >= 90 THEN le END) AS p90_ms, MIN(CASE WHEN cum * 100.0 / total >= 99 THEN le END) AS p99_ms, MAX(total) AS span_count FROM cumulative GROUP BY span_name ORDER BY span_name" `
   -Format json
 ```
 
@@ -238,7 +219,7 @@ Aggregate `span_count` counter values by hourly windows to visualize throughput 
 
 ```powershell
 powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
-  -Query "SELECT strftime('%Y-%m-%dT%H:00:00Z', timestamp) AS hour_bucket, json_extract(labels_json, '$.span_name') AS span_name, SUM(value) AS span_count FROM telemetry_metrics WHERE metric_name = 'span_count' AND metric_type = 'counter' GROUP BY hour_bucket, span_name ORDER BY hour_bucket DESC, span_count DESC" `
+  -Query "SELECT to_char(date_trunc('hour', timestamp::timestamptz), 'YYYY-MM-DD\"T\"HH24:00:00\"Z\"') AS hour_bucket, (labels_json::jsonb ->> 'span_name') AS span_name, SUM(value) AS span_count FROM telemetry_metrics WHERE metric_name = 'span_count' AND metric_type = 'counter' GROUP BY hour_bucket, span_name ORDER BY hour_bucket DESC, span_count DESC" `
   -Format md
 ```
 
@@ -250,7 +231,7 @@ Compute error rate by span name by comparing `span_count{status="error"}` to `sp
 
 ```powershell
 powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
-  -Query "WITH ok_counts AS (SELECT json_extract(labels_json, '$.span_name') AS span_name, SUM(value) AS ok_total FROM telemetry_metrics WHERE metric_name = 'span_count' AND metric_type = 'counter' AND json_extract(labels_json, '$.status') = 'ok' GROUP BY span_name), error_counts AS (SELECT json_extract(labels_json, '$.span_name') AS span_name, SUM(value) AS error_total FROM telemetry_metrics WHERE metric_name = 'span_count' AND metric_type = 'counter' AND json_extract(labels_json, '$.status') = 'error' GROUP BY span_name) SELECT COALESCE(o.span_name, e.span_name) AS span_name, COALESCE(o.ok_total, 0) AS ok_count, COALESCE(e.error_total, 0) AS error_count, COALESCE(o.ok_total, 0) + COALESCE(e.error_total, 0) AS total, ROUND(100.0 * COALESCE(e.error_total, 0) / NULLIF(COALESCE(o.ok_total, 0) + COALESCE(e.error_total, 0), 0), 1) AS error_pct FROM ok_counts o FULL OUTER JOIN error_counts e ON o.span_name = e.span_name ORDER BY error_pct DESC" `
+  -Query "WITH ok_counts AS (SELECT (labels_json::jsonb ->> 'span_name') AS span_name, SUM(value) AS ok_total FROM telemetry_metrics WHERE metric_name = 'span_count' AND metric_type = 'counter' AND (labels_json::jsonb ->> 'status') = 'ok' GROUP BY span_name), error_counts AS (SELECT (labels_json::jsonb ->> 'span_name') AS span_name, SUM(value) AS error_total FROM telemetry_metrics WHERE metric_name = 'span_count' AND metric_type = 'counter' AND (labels_json::jsonb ->> 'status') = 'error' GROUP BY span_name) SELECT COALESCE(o.span_name, e.span_name) AS span_name, COALESCE(o.ok_total, 0) AS ok_count, COALESCE(e.error_total, 0) AS error_count, COALESCE(o.ok_total, 0) + COALESCE(e.error_total, 0) AS total, ROUND((100.0 * COALESCE(e.error_total, 0) / NULLIF(COALESCE(o.ok_total, 0) + COALESCE(e.error_total, 0), 0))::numeric, 1) AS error_pct FROM ok_counts o FULL OUTER JOIN error_counts e ON o.span_name = e.span_name ORDER BY error_pct DESC" `
   -Format md
 ```
 
@@ -262,7 +243,7 @@ Estimate total accumulated duration per span name by weighting histogram bucket 
 
 ```powershell
 powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
-  -Query "WITH bucket_midpoints(bucket_le, midpoint, sort_order) AS (VALUES (1,0.5,1),(5,3,2),(10,7.5,3),(25,17.5,4),(50,37.5,5),(100,75,6),(250,175,7),(500,375,8),(1000,750,9),(2500,1750,10),(5000,3750,11),(10000,7500,12)), hist_counts AS (SELECT json_extract(labels_json, '$.span_name') AS span_name, CAST(json_extract(labels_json, '$.bucket_le') AS INTEGER) AS bucket_le, SUM(value) AS cnt FROM telemetry_metrics WHERE metric_name = 'span_duration_ms' AND metric_type = 'histogram' GROUP BY span_name, CAST(json_extract(labels_json, '$.bucket_le') AS INTEGER)) SELECT h.span_name, SUM(h.cnt * b.midpoint) AS est_total_duration_ms, SUM(h.cnt) AS span_count, ROUND(SUM(h.cnt * b.midpoint) / SUM(h.cnt), 1) AS avg_ms FROM hist_counts h JOIN bucket_midpoints b ON h.bucket_le = b.bucket_le GROUP BY h.span_name ORDER BY est_total_duration_ms DESC LIMIT 10" `
+  -Query "WITH bucket_midpoints(bucket_le, midpoint, sort_order) AS (VALUES (1,0.5,1),(5,3,2),(10,7.5,3),(25,17.5,4),(50,37.5,5),(100,75,6),(250,175,7),(500,375,8),(1000,750,9),(2500,1750,10),(5000,3750,11),(10000,7500,12)), hist_counts AS (SELECT (labels_json::jsonb ->> 'span_name') AS span_name, ((labels_json::jsonb ->> 'bucket_le'))::int AS bucket_le, SUM(value) AS cnt FROM telemetry_metrics WHERE metric_name = 'span_duration_ms' AND metric_type = 'histogram' GROUP BY span_name, ((labels_json::jsonb ->> 'bucket_le'))::int) SELECT h.span_name, SUM(h.cnt * b.midpoint) AS est_total_duration_ms, SUM(h.cnt) AS span_count, ROUND((SUM(h.cnt * b.midpoint) / SUM(h.cnt))::numeric, 1) AS avg_ms FROM hist_counts h JOIN bucket_midpoints b ON h.bucket_le = b.bucket_le GROUP BY h.span_name ORDER BY est_total_duration_ms DESC LIMIT 10" `
   -Format json
 ```
 
@@ -276,7 +257,7 @@ The `telemetry_logs` table stores structured log records captured from the Rust 
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `id` | INTEGER | Auto-increment primary key |
+| `id` | BIGINT | Identity primary key |
 | `timestamp` | TEXT | RFC3339 timestamp of the log event |
 | `level` | TEXT | Log level: `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR` |
 | `target` | TEXT | Module path (e.g., `fredo::infrastructure::otlp`) |
@@ -292,7 +273,7 @@ Find all ERROR-level log entries from the last hour, showing the module target a
 
 ```powershell
 powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
-  -Query "SELECT datetime(timestamp) AS time, level, target, message, attributes_json FROM telemetry_logs WHERE level = 'ERROR' AND timestamp > datetime('now', '-1 hour') ORDER BY timestamp DESC" `
+  -Query "SELECT timestamp, level, target, message, attributes_json FROM telemetry_logs WHERE level = 'ERROR' AND timestamp::timestamptz > now() - interval '1 hour' ORDER BY timestamp DESC" `
   -Format md
 ```
 
@@ -304,7 +285,7 @@ Aggregate log entry counts grouped by level over the last 24 hours.
 
 ```powershell
 powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
-  -Query "SELECT level, COUNT(*) AS count, ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM telemetry_logs WHERE timestamp > datetime('now', '-24 hours')), 1) AS pct FROM telemetry_logs WHERE timestamp > datetime('now', '-24 hours') GROUP BY level ORDER BY CASE level WHEN 'ERROR' THEN 1 WHEN 'WARN' THEN 2 WHEN 'INFO' THEN 3 WHEN 'DEBUG' THEN 4 WHEN 'TRACE' THEN 5 END" `
+  -Query "SELECT level, COUNT(*) AS count, ROUND((100.0 * COUNT(*) / (SELECT COUNT(*) FROM telemetry_logs WHERE timestamp::timestamptz > now() - interval '24 hours'))::numeric, 1) AS pct FROM telemetry_logs WHERE timestamp::timestamptz > now() - interval '24 hours' GROUP BY level ORDER BY CASE level WHEN 'ERROR' THEN 1 WHEN 'WARN' THEN 2 WHEN 'INFO' THEN 3 WHEN 'DEBUG' THEN 4 WHEN 'TRACE' THEN 5 END" `
   -Format md
 ```
 
@@ -316,7 +297,7 @@ Find all log entries associated with a specific trace_id, ordered by timestamp. 
 
 ```powershell
 powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
-  -Query "SELECT datetime(timestamp) AS time, level, target, message, span_id FROM telemetry_logs WHERE trace_id = '<trace-id>' ORDER BY timestamp ASC" `
+  -Query "SELECT timestamp, level, target, message, span_id FROM telemetry_logs WHERE trace_id = '<trace-id>' ORDER BY timestamp ASC" `
   -Format md
 ```
 
@@ -328,7 +309,7 @@ View the most recent log entries in chronological order with level-based severit
 
 ```powershell
 powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
-  -Query "SELECT datetime(timestamp) AS time, level, target, message, CASE WHEN trace_id IS NOT NULL THEN substr(trace_id, 1, 8) || '...' ELSE '-' END AS trace FROM telemetry_logs ORDER BY timestamp DESC LIMIT 50" `
+  -Query "SELECT timestamp, level, target, message, CASE WHEN trace_id IS NOT NULL THEN substr(trace_id, 1, 8) || '...' ELSE '-' END AS trace FROM telemetry_logs ORDER BY timestamp DESC LIMIT 50" `
   -Format table
 ```
 
@@ -340,7 +321,7 @@ Track error occurrence frequency over time, grouped by hour and module target.
 
 ```powershell
 powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
-  -Query "SELECT strftime('%Y-%m-%dT%H:00:00Z', timestamp) AS hour, target, COUNT(*) AS error_count FROM telemetry_logs WHERE level = 'ERROR' AND timestamp > datetime('now', '-7 days') GROUP BY hour, target ORDER BY hour DESC, error_count DESC" `
+  -Query "SELECT to_char(date_trunc('hour', timestamp::timestamptz), 'YYYY-MM-DD\"T\"HH24:00:00\"Z\"') AS hour, target, COUNT(*) AS error_count FROM telemetry_logs WHERE level = 'ERROR' AND timestamp::timestamptz > now() - interval '7 days' GROUP BY hour, target ORDER BY hour DESC, error_count DESC" `
   -Format json
 ```
 
@@ -350,7 +331,7 @@ powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
 
 ## Output Formats
 
-### JSON (`--format json`)
+### JSON (`-Format json`)
 
 ```json
 [
@@ -363,9 +344,9 @@ powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
 ]
 ```
 
-Raw JSON array from `sqlite3 .mode json`. Each object's keys match the column names in the SELECT statement. Useful for programmatic consumption by the agent.
+A JSON array built from `psql --csv` output. Each object's keys match the column names in the SELECT statement. Useful for programmatic consumption by the agent.
 
-### Markdown (`--format md`)
+### Markdown (`-Format md`)
 
 ```
 | span_id | span_name | status_code | duration_ms |
@@ -374,20 +355,18 @@ Raw JSON array from `sqlite3 .mode json`. Each object's keys match the column na
 | def-456 | chat.assistant | OK | 120.0 |
 ```
 
-The wrapper post-processes `sqlite3 .mode table` output into a GitHub-flavored markdown table with aligned columns. Best for pasting into GitHub issue comments and PR reviews.
+The wrapper post-processes `psql --csv` output into a GitHub-flavored markdown table with aligned columns. Best for pasting into GitHub issue comments and PR reviews.
 
-### Table (`--format table`)
+### Table (`-Format table`)
 
 ```
-+---------+----------------+-----------+-----------+
-| span_id |   span_name    | status_code | duration |
-+---------+----------------+-----------+-----------+
-| abc-123 | tool_use.Bash  | OK        | 45.2ms    |
-| def-456 | chat.assistant | OK        | 120.0ms   |
-+---------+----------------+-----------+-----------+
+ span_id |   span_name    | status_code | duration
+---------+----------------+-------------+----------
+ abc-123 | tool_use.Bash  | OK          | 45.2ms
+ def-456 | chat.assistant | OK          | 120.0ms
 ```
 
-Raw `sqlite3 .mode table` output. Best for quick terminal inspection.
+Raw `psql` aligned output (`-P pager=off`). Best for quick terminal inspection.
 
 ---
 
@@ -397,13 +376,12 @@ The wrapper script provides clear error messages for common failure modes:
 
 | Condition | Error Message |
 |-----------|---------------|
-| `sqlite3` not found | `ERROR: sqlite3 CLI not found. Install sqlite3 (choco install sqlite / scoop install sqlite / apt install sqlite3)` |
-| `psql` not found (PG engine) | `ERROR: psql CLI not found (managed embedded PostgreSQL or PATH).` |
-| `fredo.db` not found | `ERROR: fredo.db not found. Searched: <comma-separated list of paths>`. Run Fredo at least once to create the database. |
+| `psql` not found | `ERROR: psql CLI not found (managed embedded PostgreSQL or PATH).` |
+| PG port unresolved (`0`) | `ERROR: PostgreSQL port unresolved (0). Re-resolve it (G-307): read pg_supervisor_status, or re-run dev-env.ps1 -Action Up / Status, then pass the fresh -PgPort ...` |
 | Env manifest missing/invalid | `ERROR: env manifest not found: <path>` / `ERROR: env manifest is not valid JSON: <path>` (`-Manifest` only) |
-| DDL/DML in query | `ERROR: Query rejected — contains forbidden keyword: <keyword>. Only SELECT and permitted PRAGMA allowed.` |
-| Query execution failure | `ERROR: SQLite query failed: <sqlite3 stderr>` |
-| `telemetry_logs` table missing | `ERROR: no such table: telemetry_logs`. Ensure the Fredo application has been run at least once with logging enabled. |
+| DDL/DML in query | `ERROR: Query rejected: contains forbidden keyword: <keyword>. Only SELECT and WITH permitted.` |
+| Query execution failure | `ERROR: PostgreSQL query failed (exit code <n>).` |
+| `telemetry_logs` table missing | `ERROR: relation "telemetry_logs" does not exist`. Ensure the Fredo application has been run at least once with logging enabled. |
 
 ---
 

@@ -1,6 +1,6 @@
 //! Persisted Terminal session records (Spec #2935 ST-2).
 //!
-//! Each spawned Terminal session is recorded in `fredo.db` as a
+//! Each spawned Terminal session is recorded in the PostgreSQL store as a
 //! [`ApplicationStore`] table (`feature_terminal_sessions`, application id `terminal`)
 //! so it survives a window close and an app restart and can be offered for
 //! resume. The record carries **only** identity + timing + the optional
@@ -160,19 +160,13 @@ pub fn get(store: &ApplicationStore, id: &str) -> Result<Option<PersistedSession
 
 /// Insert a record, then evict the oldest beyond [`MAX_RECORDS`].
 pub fn insert(store: &ApplicationStore, record: &PersistedSession) -> Result<()> {
-    // Spec #2977 ST-4: quiesce the write against the exclusive migration barrier.
-    let _guard = store.writer_guard()?;
     store.insert(FEATURE_ID, TABLE_NAME, &[record.to_row()])?;
-    // Already inside the guard above — no re-acquire (an exclusive barrier is
-    // not re-entrant; a nested shared acquire could deadlock behind it).
     evict_oldest_beyond_max(store)?;
     Ok(())
 }
 
 /// Refresh a record's `last_active_at` (window close / session close / self-exit).
 pub fn touch(store: &ApplicationStore, id: &str, at: u64) -> Result<()> {
-    // Spec #2977 ST-4: quiesce the write against the exclusive migration barrier.
-    let _guard = store.writer_guard()?;
     let mut set_cols = Map::new();
     set_cols.insert("last_active_at".into(), json!(at));
     let mut where_cols = Map::new();
@@ -183,8 +177,6 @@ pub fn touch(store: &ApplicationStore, id: &str, at: u64) -> Result<()> {
 
 /// Persist a captured CLI-native session id onto a record.
 pub fn set_cli_session_id(store: &ApplicationStore, id: &str, cli_session_id: &str) -> Result<()> {
-    // Spec #2977 ST-4: quiesce the write against the exclusive migration barrier.
-    let _guard = store.writer_guard()?;
     let mut set_cols = Map::new();
     set_cols.insert("cli_session_id".into(), json!(cli_session_id));
     let mut where_cols = Map::new();
@@ -204,8 +196,6 @@ pub fn set_cli_session_id(store: &ApplicationStore, id: &str, cli_session_id: &s
 ///
 /// Returns the number of rows updated (`0` when no record has that `id`).
 pub fn rename(store: &ApplicationStore, id: &str, name: &str) -> Result<u64> {
-    // Spec #2977 ST-4: quiesce the write against the exclusive migration barrier.
-    let _guard = store.writer_guard()?;
     let mut set_cols = Map::new();
     set_cols.insert("title".into(), json!(name));
     let mut where_cols = Map::new();
@@ -215,13 +205,6 @@ pub fn rename(store: &ApplicationStore, id: &str, name: &str) -> Result<u64> {
 
 /// Delete one record by id (user-requested removal).
 pub fn delete(store: &ApplicationStore, id: &str) -> Result<u64> {
-    // Spec #2977 ST-4: quiesce the write against the exclusive migration barrier.
-    let _guard = store.writer_guard()?;
-    delete_locked(store, id)
-}
-
-/// The delete body, with the caller already holding the writer guard.
-fn delete_locked(store: &ApplicationStore, id: &str) -> Result<u64> {
     let mut where_cols = Map::new();
     where_cols.insert("id".into(), json!(id));
     store.delete(FEATURE_ID, TABLE_NAME, &where_cols)
@@ -230,9 +213,7 @@ fn delete_locked(store: &ApplicationStore, id: &str) -> Result<u64> {
 /// Evict every record beyond the newest [`MAX_RECORDS`] by `last_active_at`.
 /// Returns the number evicted.
 ///
-/// Private: callers already hold the writer guard (`insert` and this module's
-/// tests) — acquiring it again here would nest a shared acquire behind a waiting
-/// exclusive migration barrier (deadlock).
+/// Private: called by [`insert`] after the row is written.
 fn evict_oldest_beyond_max(store: &ApplicationStore) -> Result<u64> {
     let all = list(store)?;
     if all.len() <= MAX_RECORDS {
@@ -240,7 +221,7 @@ fn evict_oldest_beyond_max(store: &ApplicationStore) -> Result<u64> {
     }
     let mut evicted = 0;
     for record in all.into_iter().skip(MAX_RECORDS) {
-        evicted += delete_locked(store, &record.id)?;
+        evicted += delete(store, &record.id)?;
     }
     Ok(evicted)
 }

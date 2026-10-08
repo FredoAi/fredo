@@ -74,7 +74,7 @@ pub(crate) struct CollectorInner {
 impl MetricCollector {
     pub fn new(store: Arc<SpanStore>, app_store: Arc<AppStore>) -> Self {
         let enabled = app_store
-            .control_get("tracing.metrics_enabled")
+            .cached_get("tracing.metrics_enabled")
             .ok()
             .flatten()
             .map(|v| v == "true")
@@ -99,7 +99,7 @@ impl MetricCollector {
     pub fn refresh_enabled(&self) {
         let enabled = self
             .app_store
-            .control_get("tracing.metrics_enabled")
+            .cached_get("tracing.metrics_enabled")
             .ok()
             .flatten()
             .map(|v| v == "true")
@@ -213,7 +213,7 @@ impl MetricCollector {
 
         let aggregation_window_s = self
             .app_store
-            .control_get("tracing.metrics_aggregation_s")
+            .cached_get("tracing.metrics_aggregation_s")
             .ok()
             .flatten()
             .and_then(|v| v.parse::<i64>().ok())
@@ -241,7 +241,7 @@ impl MetricCollector {
             // Get aggregation window from settings
             let aggregation_window_s = self
                 .app_store
-                .control_get("tracing.metrics_aggregation_s")
+                .cached_get("tracing.metrics_aggregation_s")
                 .ok()
                 .flatten()
                 .and_then(|v| v.parse::<i64>().ok())

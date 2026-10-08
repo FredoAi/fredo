@@ -47,7 +47,7 @@ absolute path** (a glob under `.opencode/**` is a FALSE NEGATIVE — dot-dirs ar
 > OS-level screen-capture lever** — `tauri_webview_screenshot` captures the **webview viewport
 > only**, `tauri_manage_window action="info"` returns title/geometry but **no icon bitmap**, and an
 > ad-hoc `System.Drawing`/`CopyFromScreen` capture `.ps1` is **outside the closed named-script
-> allowlist** (only `dev-env.ps1` / `clean-fredo-db.ps1` / `test-scripts.ps1` /
+> allowlist** (only `dev-env.ps1` / `test-scripts.ps1` /
 > `wait-telemetry.ps1` / `process-hygiene.ps1` / `telemetry-query.ps1` are permitted). No technique
 > change exists in **any** agent sandbox.
 >

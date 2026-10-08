@@ -64,7 +64,7 @@ pub fn resolve_companion_dir(app: &AppHandle) -> Result<PathBuf, String> {
     );
     let store = app.state::<Arc<AppStore>>();
     let configured = store
-        .control_get(LLAMA_SERVER_COMPANION_DIR_KEY)
+        .cached_get(LLAMA_SERVER_COMPANION_DIR_KEY)
         .ok()
         .flatten()
         .map(|value| value.trim().to_string())
@@ -91,13 +91,13 @@ const LLAMA_SERVER_IMAGE: &str = "llama-server.exe";
 /// marker is best-effort recovery metadata, never load-bearing state.
 pub fn persist_pid(store: &AppStore, pid: Option<u32>) {
     let value = pid.map(|pid| pid.to_string()).unwrap_or_default();
-    let _ = store.control_set(LLAMA_SERVER_PID_KEY, &value);
+    let _ = store.cached_set(LLAMA_SERVER_PID_KEY, &value);
 }
 
 /// Read the persisted managed server PID marker (blank / malformed => `None`).
 pub fn persisted_pid(store: &AppStore) -> Option<u32> {
     store
-        .control_get(LLAMA_SERVER_PID_KEY)
+        .cached_get(LLAMA_SERVER_PID_KEY)
         .ok()
         .flatten()
         .and_then(|value| value.trim().parse().ok())

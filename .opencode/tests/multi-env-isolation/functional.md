@@ -13,7 +13,7 @@ observable expected outcome per case.
 
 > **Names BOUND to the Architect's Names Block** (realigned at convergence — G-255/G-187): env-ID var
 > `FREDO_ENV_ID`; per-env root `FREDO_ENV_ROOT` (default `<repo>/.opencode/tmp/envs/<envId>`);
-> data-dir `FREDO_DATA_DIR` = `<env-root>/data` (`fredo.db` + `control.db`); port selection via
+> data-dir `FREDO_DATA_DIR` = `<env-root>/data` (app-data) and PostgreSQL data dir `<env-root>/postgres`; port selection via
 > `-EnvSlot` (slot 0 = legacy 5174/9223/4317/4318/8080; slot n≥1 = `16000 + 10*(n-1)`) with explicit
 > `-VitePort`/`-McpPort` overrides and OTLP ports via `FREDO_INGEST_GRPC_PORT`/`FREDO_INGEST_HTTP_PORT`;
 > instance selector `dev-env.ps1 -EnvId <id>`; MCP `appIdentifier` = the env's MCP port decimal string
@@ -41,9 +41,8 @@ observable expected outcome per case.
   ports, other env untouched; a deliberately colliding port → fail-closed (F-4).
 
 - [ ] **F-2 (AC2, data + identity isolation).** Send the SAME session ID to both A and B (per-env
-  OTLP fixture / `fredo emit` into each env's receiver). Read each env's OWN `fredo.db`
-  (`run-exitcode.ps1 -Command "sqlite3 -readonly <envDbPath> ..."`; `telemetry-query` for the
-  single-DB case; managed-psql if the #2979 store is live). Capture each env's app/WebView
+  OTLP fixture / `fredo emit` into each env's receiver). Read each env's OWN PostgreSQL store
+  (managed `psql` / the `telemetry-query` skill at that env's `ports.pg`; G-284/G-307). Capture each env's app/WebView
   identity (`tauri_driver_session status` + window label).
   **Expected:** A's DB holds exactly A's copy of the shared session id; B's DB holds exactly B's
   copy; zero rows/sessions in A carry B's env identity and vice-versa; A and B have distinct

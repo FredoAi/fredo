@@ -78,7 +78,7 @@ pub fn resolve_llama_server_order(
 pub fn resolve_llama_server(app: &AppHandle) -> Result<Option<PathBuf>, String> {
     let configured = app
         .state::<Arc<AppStore>>()
-        .control_get(LLAMA_SERVER_SETTING_KEY)
+        .cached_get(LLAMA_SERVER_SETTING_KEY)
         .map_err(|e| e.to_string())?;
     Ok(resolve_llama_server_order(
         configured.as_deref(),

@@ -45,7 +45,7 @@
   **Edge / FAIL:** a `tokio::spawn` or a feature→feature import.
 
 - [ ] **R-6 (AppStore KV contract unchanged):** the `settings(key,value)` KV shape is unchanged; the
-  PG marker is a new KEY in the same KV, not a schema change to `fredo.db`.
+  PG marker is a new KEY in the same KV, not a schema change to the store.
   **Edge / FAIL:** a `settings` table migration or a schema change.
 
 - [ ] **R-7 (build gates):** `cargo check --locked` zero warnings AND

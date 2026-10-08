@@ -39,7 +39,7 @@ pub fn telemetry_toggle(
 ) -> Result<(), String> {
     let value = if enabled { "true" } else { "false" };
     app_store
-        .control_set("tracing.enabled", value)
+        .cached_set("tracing.enabled", value)
         .map_err(|e| e.to_string())?;
     collector.refresh_enabled();
     Ok(())
@@ -55,7 +55,7 @@ pub async fn telemetry_metrics_toggle(
 ) -> Result<(), String> {
     let value = if enabled { "true" } else { "false" };
     app_store
-        .control_set("tracing.metrics_enabled", value)
+        .cached_set("tracing.metrics_enabled", value)
         .map_err(|e| e.to_string())?;
     if enabled {
         metric_collector.refresh_enabled();
@@ -76,7 +76,7 @@ pub async fn telemetry_logging_toggle(
 ) -> Result<(), String> {
     let value = if enabled { "true" } else { "false" };
     app_store
-        .control_set("tracing.logging_enabled", value)
+        .cached_set("tracing.logging_enabled", value)
         .map_err(|e| e.to_string())?;
     if enabled {
         log_collector.refresh_enabled();
@@ -101,7 +101,7 @@ pub fn telemetry_logging_set_level(
         ));
     }
     app_store
-        .control_set("tracing.logging_level", &level)
+        .cached_set("tracing.logging_level", &level)
         .map_err(|e| e.to_string())?;
     Ok(())
 }

@@ -10,14 +10,14 @@ Unscripted edge/failure probes for the storage engine seam + shared async Postgr
 
 > **Induction levers (G-275):** `FREDO_PG_POOL_FORCE_FAIL=1` (forced pool-build failure at a named
 > stage) and `FREDO_PG_DATA_DIR` (`features/pg_supervisor/mod.rs:65`, a writable dir under
-> `.opencode/tmp/2975/` — use it to probe failure paths). Engine selection is `FREDO_STORAGE_ENGINE`
-> (`sqlite`|`postgres`).
+> `.opencode/tmp/2975/` — use it to probe failure paths). PostgreSQL is the only engine (Spec #3005
+> removed the engine selector).
 
 ## Prompt lines
 
 - [ ] **E-1:** What happens when PG is selected but the pool itself cannot connect (server up, auth
-  wrong / database missing) — does the engine seam fall back to SQLite, fail closed with a structured
-  error, or hang? Is `fredo.db` untouched either way?
+  wrong / database missing) — does the engine seam fail closed with a structured
+  error, or hang? Is any legacy SQLite file untouched either way?
 - [ ] **E-2:** Does a long-running store operation hold a pooled connection, and can a burst of
   store reads/writes exhaust `max_connections` (5–10) or queue cleanly without deadlock?
 - [ ] **E-3:** Are dynamic `feature_*` identifiers safe against an adversarial/odd feature id — mixed
@@ -29,8 +29,8 @@ Unscripted edge/failure probes for the storage engine seam + shared async Postgr
   embedded NUL) round-trip byte-identically through `BYTEA` + the JSON bridge?
 - [ ] **E-6:** Does the read-only pool handle truly reject a write on PG (not just by convention),
   and does it do so without poisoning the shared pool for the writers?
-- [ ] **E-7:** On repeated boot cycles across engines (SQLite → PG → SQLite), is `fredo.db` never
-  mutated when PG is active, and does the SQLite build always reopen the same file cleanly?
+- [ ] **E-7:** On repeated boot cycles, is any legacy SQLite file never
+  mutated, and does the app always reopen the same PostgreSQL store cleanly?
 - [ ] **E-8:** Does a `feature_data_tables` row whose declared physical table is missing/corrupt
   fail closed, or does the projection path silently produce an empty/partial result?
 - [ ] **E-9:** What is the tuned peak RSS profile over a sustained session (not just boot) — does
@@ -74,7 +74,7 @@ Unscripted edge/failure probes for the storage engine seam + shared async Postgr
 - [ ] **E-18:** A burst larger than `RTDB_MAX_EMISSION_BATCH = 512` — is it chunked correctly with no
   dropped/duplicated envelope, and does the coalescing window still merge rows into fewer batches?
 - [ ] **E-19:** Does a PG store failure (induced via `FREDO_PG_POOL_FORCE_FAIL=1` / `FREDO_PG_DATA_DIR`
-  under `.opencode/tmp/2976/`) fall back to SQLite WITHOUT mutating `fredo.db`, and does the RTDB row
-  pipeline keep serving from SQLite?
+  under `.opencode/tmp/2976/`) fail closed WITHOUT mutating any legacy SQLite file, and does the RTDB row
+  pipeline surface a structured error?
 - [ ] **E-20 (console):** `tauri_read_logs(source="console")` after every probe — any `Error:` /
   `Uncaught` / `Maximum update depth exceeded` is a defect that invalidates that leg's evidence.

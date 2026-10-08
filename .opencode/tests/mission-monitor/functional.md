@@ -303,7 +303,7 @@
 - [x] F-38 (QA-4.3, **PASS 2026-09-19 #2896 round 3**): the declared `feature_mission_monitor_sessions` holds **31 rows** = exactly the 31 canonically-qualifying, non-tombstoned sessions (SQL: 187 canonical chat sessions → 31 qualifying after the lowercase `response`/`timeout` terminal-blank rule and 13 tombstones; 0 missing). `feature_data_tables['mission-monitor'].backfill_done = 1` WITH rows. Backfill logs: row leg `fed=0`, rollup leg `fed=210 elapsed_ms=4377`, final `declared-table projection backfill complete tables=1 completed=1 failed=0 fed=210`. Cold restarts (08:10:58 and 08:16:57) re-materialize only (`persisted declared tables re-materialized tables=1`) with **no** backfill leg re-drain (marker respected). NFR-1 measurable.
 - [x] F-42 (S0+S5, **PASS 2026-09-19 #2896 round 3**): MM open renders stored rows in the first painted frame — 31 `.mm-session-row` nodes in the drawer container (overflow auto, scrollHeight 1395) and a selected session's Chat node; `No sessions yet` / `Waiting for agent activity` never present during mount (MutationObserver `sawEmpty=false`, `sawSpinner=false`). Screenshot: the Sessions drawer with the stored list. (Genuinely-empty S5 leg not re-driven this round — time-boxed; no regression evidence.)
 - [ ] F-41 (S4, **UNVERIFIED 2026-09-19 #2896 round 3** — named blocker retained): MM auto-selects the newest stored session on open (`useSessionHistory.ts` auto-select + `userPickedRef`), and clicking the selected row re-selects (verified: click `r3-change-A` → still selected, `NoSessionSelected` absent). `sessions.length > 0 && selectedSessionId === null` is not a steady state; no deselect affordance exists. Per the round-3 Fix Plan this is a technique/scope reachability gap (R-5.1 remains unit-covered; a live S4 steady state needs a new deselect affordance = out of non-goals), not a product defect.
-- [ ] F-43 (S6, **UNVERIFIED 2026-09-19 #2896 round 3** — named blocker retained): the `mm-watch-error` leg's sanctioned lever (drop the declared table on the disposable DB) is **sandbox-denied** — `sqlite3 "<appdata>\fredo.db" "DROP TABLE IF EXISTS feature_mission_monitor_sessions"` → permission denied (only `sqlite3 -readonly` is allowlisted); no product command invalidates a declared table. The `mm-watch-disconnected` leg has no product lever at all (`isConnected` is a mount-lifetime flag; `AppProvider.tsx:88-92`; no stream-health signal). The hook-level hard rejection remains live-verified (`feature '<x>' has not declared table '<y>' (call feature_data_declare first)`).
+- [ ] F-43 (S6, **UNVERIFIED 2026-09-19 #2896 round 3** — named blocker retained): the `mm-watch-error` leg's sanctioned lever (drop the declared table on the disposable DB) is **sandbox-denied** — a direct DROP/DML against the store is not permitted (only read-only reads are allowlisted); no product command invalidates a declared table. The `mm-watch-disconnected` leg has no product lever at all (`isConnected` is a mount-lifetime flag; `AppProvider.tsx:88-92`; no stream-health signal). The hook-level hard rejection remains live-verified (`feature '<x>' has not declared table '<y>' (call feature_data_declare first)`).
 - [x] F-44/F-45 (S2/S3 + drawer chrome, **PASS-observed 2026-09-19 #2896 round 3**): selection renders the stored session's Chat node; drawer/rename/search/token-bar/DetailPanel chrome unchanged (screenshots); all surfaces use CSS vars (`var(--card-bg)`, `var(--border-color)`, `var(--text-secondary)`, `var(--status-error)`) — no hardcoded hex.
 - [x] N-16 (NFR-1, **PASS 2026-09-19 #2896 round 3**): A-14 Δ pair measured live — large corpus (31 sessions / 30,320 chat rows) mount→first-session-row Δ = **39.8 ms** and **92.7 ms** (two runs); small corpus (3 sessions / 3 chat rows, SI-B disposable DB) Δ = **62.4 ms**. 92.7 ≤ 250 ms absolute PASS; 92.7 ≤ 2.0 × max(62.4, 100 ms floor) = 200 ms PASS. No growth with total history.
 - [x] N-17 (NFR-2, **PASS 2026-09-19 #2896 round 3**): the projection ran unconditionally (no read/watch gating) — with MM closed a canonical `fredo emit` projected a declared row; `feature_data_while_closed.rs` still green on the branch.
@@ -405,7 +405,7 @@
 ## Migrated store end-to-end acceptance (HUMAN DIRECTIVE — MANDATORY)
 
 - [ ] **F-54 (HUMAN DIRECTIVE, slice 3 #2976 — duplicate of `postgres-stores` F-39). Boot the app on the migrated PostgreSQL store and verify Mission Monitor still renders LIVE agent sessions / tools / tokens / graph for BOTH an OpenCode session AND a Copilot session at ONE instant, cross-checked against `telemetry_spans` and the migrated row tables — NO regression vs the pre-migration rendering.**
-  Procedure: start PG-selected on the migrated store (`FREDO_STORAGE_ENGINE=postgres`); drive a live
+  Procedure: start on the PostgreSQL store (the only store); drive a live
   OpenCode session through the **Terminal** feature (`write_pty_input` with a trailing `\r`) AND inject
   a Copilot split-turn session via the in-repo producer; open Mission Monitor; select each session in
   turn at one instant; snapshot the DOM + screenshot; query `telemetry_spans` +
@@ -435,7 +435,7 @@
 
 ## Round 1 — 2026-10-01, `spec/2976 @ c83a0b62` — **F-54 PASS**
 
-PG-selected boot (`FREDO_STORAGE_ENGINE=postgres`). Live OpenCode session driven through **Terminal**
+PostgreSQL boot (the only store). Live OpenCode session driven through **Terminal**
 (`spawn_terminal_session` + `write_pty_input` with trailing `\r`), session `ses_f076afb13ffepyVcchvL1Onuya`;
 Copilot session via the committed split-turn producer
 (`bun .opencode/scripts/inject-otlp-fixture.ts --copilot --fixture .opencode/scripts/copilot-turn-split.fixture.json`),
@@ -486,18 +486,18 @@ backends 7 ≤ 8. Persistence re-verified after a full restart. Console clean (o
   backout to prove reversibility.**
   Procedure: capture a pre-cutover Mission Monitor baseline (DOM + screenshot + source rows) on the
   BEFORE leg (`dev-env.ps1 -Action Up -Spec 2979 -At <pre-change-tip>`); cut over the real corpus
-  (bounded per table, G-286); boot on the PostgreSQL-default path (no `FREDO_STORAGE_ENGINE` override);
+  (bounded per table, G-286); boot on the PostgreSQL store;
   drive a live OpenCode session through the **Terminal** feature (`write_pty_input` with a trailing
   `\r`) AND inject a Copilot split-turn session via the in-repo producer; open Mission Monitor; select
   each session at one instant; snapshot the DOM + screenshot; read the migrated store via managed
-  `psql` at the SAME instant. Then execute the SQLite backout (stop app → restore the pre-cutover
-  snapshot over `fredo.db` → start the SQLite build) and confirm the restored counts/checksums.
+  `psql` at the SAME instant. Then execute the historical SQLite backout (stop app → restore the
+  pre-cutover snapshot over the legacy SQLite file → start the pre-cutover build) and confirm the restored counts/checksums.
   - EXPECTED: BOTH sessions listed as distinct entries (never merged, never one hidden); selecting
     each renders its chat node(s) + `── USER ──` + `── TOOLS (N) ──` + RESPONSE + token figures + the
     graph at the SAME structural detail as the pre-cutover SQLite baseline; the rendered
     session/tool/token values equal the same-instant `telemetry_spans` rows AND the columns of the
-    migrated `*_rows` tables (served by PostgreSQL, not the SQLite fallback); the backout is executed
-    and the restored `fredo.db` checksums match the pre-cutover values; `rollback.verified == true`.
+    migrated `*_rows` tables (served by PostgreSQL, not a SQLite fallback); the backout is executed
+    and the restored legacy-file checksums match the pre-cutover values; `rollback.verified == true`.
     No regression vs the pre-cutover rendering.
   - Edge: OpenCode-only; Copilot-only; both in one store; switching back and forth; rows landing
     mid-stream; a stale SQLite read (FAIL); a blank/partial panel while rows exist (FAIL); the Copilot

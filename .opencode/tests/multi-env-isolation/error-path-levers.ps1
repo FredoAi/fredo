@@ -154,7 +154,7 @@ function Write-DecoyManifest {
     servedCommit    = ""
     ports           = [ordered]@{ vite = 0; mcp = 0; otlpGrpc = 0; otlpHttp = 0; llama = 0 }
     dataDir         = (Join-Path $script:TmpDir "decoy-data")
-    dbPath          = (Join-Path $script:TmpDir "decoy-data\fredo.db")
+    dbPath          = (Join-Path $script:TmpDir "decoy-data")
     pipe            = "\\.\pipe\fredo-ipc-$EnvId"
     webviewProfile  = (Join-Path $script:TmpDir "decoy-webview")
     appIdentity     = "com.fredo.app#$EnvId"
@@ -321,7 +321,7 @@ if ($Lever -eq "ForgedEvidence") {
     envId           = "spec2944"
     servingCheckout = $otherRoot
     servedCommit    = "0000000000000000000000000000000000000000"
-    dbPath          = (Join-Path $otherRoot "data\fredo.db")
+    dbPath          = (Join-Path $otherRoot "data")
     endpoints       = [ordered]@{
       vite     = 16000
       mcp      = 16001

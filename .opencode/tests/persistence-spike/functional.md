@@ -95,7 +95,7 @@ NOT evidence).
   **Expected:** (a) zero errors AND zero warnings; (b) exit 0, zero TS errors; (c) diff
   touches NO production persistence path — `infrastructure/storage/*`,
   `infrastructure/rtdb/*`, observability/`sqlx` + `telemetry_spans` code, RTDB row wire
-  types (`RowDelivery`/`RowDeliveryBatch`), `fredo.db` schema/migrations; PoC isolated
+   types (`RowDelivery`/`RowDeliveryBatch`), storage schema/migrations; PoC isolated
   (e.g. `spikes/…`), not a member of the production workspace, deps not added to
   `apps/tauri/Cargo.toml`. **FAIL** = any production file changed, PoC wired into
   `AppRuntime`, or either build red. **No "unknown" escape.**

@@ -244,7 +244,7 @@ Persists a run's observations as a structured guardrail record in `references.md
 
 ## Recipe 5: Pipeline Event-Log Data Extraction
 
-Standardized extraction patterns for the 3 Self-Improver data sources. These are **pipeline state-machine event logs + metrics** — NOT fredo.db product telemetry. The SI never queries `fredo.db` (telemetry/observability is the Software Architect's scope).
+Standardized extraction patterns for the 3 Self-Improver data sources. These are **pipeline state-machine event logs + metrics** — NOT product telemetry. The SI never queries the product telemetry store (telemetry/observability is the Software Architect's scope).
 
 **Source 1: per-issue event logs + state-machine metrics**
 

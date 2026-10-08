@@ -3,10 +3,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
 use sqlx::{Column as _, PgPool, Postgres, Row as _, TypeInfo as _};
 use std::collections::{BTreeSet, HashMap};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use super::engine::{quote_ident, EngineHandle, StoreEngine};
-use super::migration::{MigrationGate, MigrationWriterGuard};
 
 // ── Frozen on-disk identifiers (Spec #2956 AC4, NO-MIGRATE) ───────────────────
 
@@ -63,7 +62,7 @@ impl ColumnType {
 }
 
 /// Map a PostgreSQL `information_schema.columns.data_type` to the shared
-/// [`ColumnType`] affinity, mirroring [`ApplicationStore::normalize_column_type`].
+/// [`ColumnType`] affinity.
 fn pg_data_type_to_column_type(data_type: &str) -> ColumnType {
     match data_type {
         "bigint" | "integer" | "smallint" => ColumnType::INTEGER,
@@ -153,10 +152,6 @@ pub struct DeleteArgs {
 /// (`to_regclass`, `information_schema.columns`).
 pub struct ApplicationStore {
     engine: Arc<EngineHandle>,
-    /// The shared migration barrier (Spec #2977 ST-4). Installed once at startup
-    /// by `lib.rs`; unset in unit tests, where a write is ungated (a migration
-    /// cannot be running without that state).
-    migration_gate: OnceLock<Arc<MigrationGate>>,
 }
 
 /// One physical column of an application-namespaced table, as reported by
@@ -173,38 +168,7 @@ pub(crate) struct PhysicalColumn {
 impl ApplicationStore {
     /// Wrap the shared engine handle.
     pub fn open(engine: Arc<EngineHandle>) -> Result<Self> {
-        Ok(ApplicationStore {
-            engine,
-            migration_gate: OnceLock::new(),
-        })
-    }
-
-    /// Install the shared migration barrier (Spec #2977 ST-4). Called once at
-    /// startup; the terminal persistence writes quiesce through it. Idempotent.
-    pub(crate) fn install_migration_gate(&self, gate: Arc<MigrationGate>) {
-        let _ = self.migration_gate.set(gate);
-    }
-
-    /// Acquire the shared writer barrier for an ASYNC write entry point (the
-    /// `application_store_*` IPC commands). `Ok(None)` when no gate is installed
-    /// (unit tests) — the write is then ungated. `Err` means the migration held
-    /// the barrier past its bound and the write must be shed (G-263).
-    pub(crate) async fn writer_guard_async(
-        &self,
-    ) -> Result<Option<MigrationWriterGuard<'_>>> {
-        match self.migration_gate.get() {
-            Some(gate) => gate.writer_enter().await.map(Some),
-            None => Ok(None),
-        }
-    }
-
-    /// Acquire the shared writer barrier for a SYNCHRONOUS write entry point
-    /// (the terminal persistence writes). Bounded; see [`Self::writer_guard_async`].
-    pub(crate) fn writer_guard(&self) -> Result<Option<MigrationWriterGuard<'_>>> {
-        match self.migration_gate.get() {
-            Some(gate) => gate.writer_enter_blocking().map(Some),
-            None => Ok(None),
-        }
+        Ok(ApplicationStore { engine })
     }
 
     /// Build the full table name: `feature_{applicationId}_{tableName}`.
@@ -231,21 +195,6 @@ impl ApplicationStore {
             );
         }
         Ok(full)
-    }
-
-    /// Normalize a raw physical type string to a [`ColumnType`].
-    ///
-    /// The ONE source-affinity map: the engine-selected store and the one-shot
-    /// `fredo.db` → PostgreSQL migration (`storage::migration`) both read a
-    /// physical type string through this function, so a source table's derived
-    /// target DDL can never diverge from the store's own table creation.
-    pub(crate) fn normalize_column_type(type_str: &str) -> ColumnType {
-        match type_str.to_uppercase().as_str() {
-            "INTEGER" => ColumnType::INTEGER,
-            "REAL" => ColumnType::REAL,
-            "BLOB" => ColumnType::BLOB,
-            _ => ColumnType::TEXT,
-        }
     }
 
     // ── REQ-1: ensure_table ────────────────────────────────────────────────────
@@ -891,8 +840,6 @@ pub async fn application_store_insert(
     table_name: String,
     rows: Vec<serde_json::Map<String, JsonValue>>,
 ) -> Result<u64, String> {
-    // Spec #2977 ST-4: quiesce the write against the exclusive migration barrier.
-    let _guard = state.writer_guard_async().await.map_err(|e| e.to_string())?;
     state
         .insert(&application_id, &table_name, &rows)
         .map_err(|e| e.to_string())
@@ -928,8 +875,6 @@ pub async fn application_store_update(
     set_cols: serde_json::Map<String, JsonValue>,
     where_cols: serde_json::Map<String, JsonValue>,
 ) -> Result<u64, String> {
-    // Spec #2977 ST-4: quiesce the write against the exclusive migration barrier.
-    let _guard = state.writer_guard_async().await.map_err(|e| e.to_string())?;
     state
         .update(&application_id, &table_name, &set_cols, &where_cols)
         .map_err(|e| e.to_string())
@@ -943,8 +888,6 @@ pub async fn application_store_delete(
     table_name: String,
     where_cols: serde_json::Map<String, JsonValue>,
 ) -> Result<u64, String> {
-    // Spec #2977 ST-4: quiesce the write against the exclusive migration barrier.
-    let _guard = state.writer_guard_async().await.map_err(|e| e.to_string())?;
     state
         .delete(&application_id, &table_name, &where_cols)
         .map_err(|e| e.to_string())

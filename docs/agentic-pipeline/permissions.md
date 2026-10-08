@@ -31,8 +31,8 @@ summary. If you find a mismatch, report it - do not work around the sandbox.
   carries an `external_directory` map. opencode defaults that category to `ask` — which is NOT a
   hard block (it auto-approves in `--auto`, and a single "always" approval re-opens the path for
   the whole session), so an agent can reach out-of-repo files unless a rule DENIES them. The only
-  sanctioned out-of-repo paths are the **live DB directory** (`%APPDATA%\com.fredo.app\fredo.db`,
-  or `%LOCALAPPDATA%` on non-roaming installs) and the **installed-plugin path**
+  sanctioned out-of-repo paths are the **app-data directory** (`%APPDATA%\com.fredo.app`,
+  or `%LOCALAPPDATA%` on non-roaming installs — it holds the embedded PostgreSQL cluster) and the **installed-plugin path**
   (`~/.config/opencode/plugins/`); everything else must be denied. **An explicit deny for one path
   is not repo-scoping** (G-009 default-deny variant): the map must deny by default and re-allow
   only those documented paths. The Self-Improver owns this map via
@@ -93,12 +93,12 @@ written. Four layers stop a loop; keep all four enabled:
 | Agent | edit | extra bash (beyond baseline) | gotchas / what is DENIED |
 |-------|------|-----------------------------|--------------------------|
 | `product-owner` | tmp + refs | (baseline only) | GitHub output: `create-issue` + `Status` comments (PO amendments, #2734); never gate artifacts. |
-| `software-architect` | tmp + refs | `sqlite3*` (read-only telemetry) | Research/planning only - no code edits, no gh/git writes. |
+| `software-architect` | tmp + refs | `telemetry-query.ps1` (read-only PostgreSQL telemetry) | Research/planning only - no code edits, no gh/git writes. |
 | `ui-ux-expert` | tmp + refs | (baseline only) | Design assets only - no code edits. |
-| `qa-expert` | tmp + refs + `.opencode/tests/**` | `sqlite3*` | Writes only under `.opencode/tests/`; sole test-suite author. |
+| `qa-expert` | tmp + refs + `.opencode/tests/**` | `telemetry-query.ps1` (read-only PostgreSQL telemetry) | Writes only under `.opencode/tests/`; sole test-suite author. |
 | `developer` | **allow (all files)** | `git checkout/switch/add/commit/rebase/stash`, `git push origin HEAD:spec/<N>` (never main/master/force), `cargo/pnpm/npm/npx/node/rustc`, `copilot*` (Copilot CLI live-capture leg, spec #2933), `Remove-Item .opencode/*` | NO `gh pr create/edit`, NO `git push` to main/master/force, NO `git merge main/master`, NO `git commit --no-verify`. |
-| `tester` | tmp + refs + `.opencode/tests/**` | `dev-env.ps1`, `clean-fredo-db.ps1`, `test-scripts.ps1`, `telemetry-query.ps1`, `git checkout/add/commit`, `git push origin HEAD:spec/<N>`, `bun/npm/pnpm`, `cargo check/clippy/test` (CI-parity re-run of the Rust gates), `copilot*` (Copilot CLI live-capture leg, spec #2933), `Test-Path`, `fredo`, `Copy-Item/New-Item/Remove-Item/Set-Content .opencode/*`, `$env:OPENCODE_ENABLE_TELEMETRY=...` | NO raw `Remove-Item` outside `.opencode/*` - the live DB is deleted via `clean-fredo-db.ps1`, NOT a direct path (sandbox denies it, G-009). NO gh writes, NO command chains. NO direct `opencode` CLI invocation — live opencode sessions are launched ONLY through Fredo's Terminal feature (write_pty_input, never `opencode run`). `external_directory` **denies by default** — only the live-DB directory and the installed-plugin path are re-allowed (G-009), so no out-of-repo read/write is reachable. |
-| `self-improver` | **allow** | `sqlite3`, `dev-env.ps1`, `clean-fredo-db.ps1`, `test-scripts.ps1`, `git add/commit/push`, `git push origin main` (doc-sync ONLY), `git merge` (never main/master), `git checkout`, `git push origin HEAD:spec/<N>`, `bun/npm/pnpm/cargo`, `.opencode/*` file ops, `$env:OPENCODE_ENABLE_TELEMETRY=...` | NO force-push, NO `git push origin main` except the doc-sync, NO merge of main/master, NO gh writes. NO direct `opencode` CLI invocation — live opencode sessions run only via Fredo's Terminal feature. |
+| `tester` | tmp + refs + `.opencode/tests/**` | `dev-env.ps1`, `test-scripts.ps1`, `telemetry-query.ps1`, `git checkout/add/commit`, `git push origin HEAD:spec/<N>`, `bun/npm/pnpm`, `cargo check/clippy/test` (CI-parity re-run of the Rust gates), `copilot*` (Copilot CLI live-capture leg, spec #2933), `Test-Path`, `fredo`, `Copy-Item/New-Item/Remove-Item/Set-Content .opencode/*`, `$env:OPENCODE_ENABLE_TELEMETRY=...` | NO raw `Remove-Item` outside `.opencode/*` - the store is reset via `dev-env.ps1 -Action Clean`, NOT a direct path (sandbox denies it, G-009). NO gh writes, NO command chains. NO direct `opencode` CLI invocation — live opencode sessions are launched ONLY through Fredo's Terminal feature (write_pty_input, never `opencode run`). `external_directory` **denies by default** — only the app-data directory and the installed-plugin path are re-allowed (G-009), so no out-of-repo read/write is reachable. |
+| `self-improver` | **allow** | `dev-env.ps1`, `test-scripts.ps1`, `git add/commit/push`, `git push origin main` (doc-sync ONLY), `git merge` (never main/master), `git checkout`, `git push origin HEAD:spec/<N>`, `bun/npm/pnpm/cargo`, `.opencode/*` file ops, `$env:OPENCODE_ENABLE_TELEMETRY=...` | NO force-push, NO `git push origin main` except the doc-sync, NO merge of main/master, NO gh writes. NO direct `opencode` CLI invocation — live opencode sessions run only via Fredo's Terminal feature. |
 
 ## Final-report issues section (required)
 

@@ -139,14 +139,14 @@ pub fn app_presentation(app: &AppHandle, app_id: &str) -> AppPresentation {
     };
     let map = parse_presentation_map(
         store
-            .control_get(APP_WINDOW_PRESENTATION_KEY)
+            .cached_get(APP_WINDOW_PRESENTATION_KEY)
             .ok()
             .flatten()
             .as_deref(),
     );
     let legacy = if app_id == "terminal" && !map.contains_key(app_id) {
         store
-            .control_get(LEGACY_TERMINAL_PRESENTATION_KEY)
+            .cached_get(LEGACY_TERMINAL_PRESENTATION_KEY)
             .ok()
             .flatten()
     } else {
