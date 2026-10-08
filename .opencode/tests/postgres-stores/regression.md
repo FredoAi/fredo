@@ -26,10 +26,10 @@
   cross-check `telemetry_spans` at the same instant. Functional F-16 mirrored as a standing invariant.
   **Edge / FAIL:** a blank/empty Mission Monitor while stored/live rows exist.
 
-- [ ] **R-3 (SQLite path byte-identical when selected):** with SQLite selected, the default-boot
-  behaviour and the existing store unit tests are byte-identical to pre-slice; `fredo.db` is opened
-  exactly as before; no `fredo.db` schema change.
-  **Edge / FAIL:** any user-visible change, a `fredo.db` schema change, or a red existing test.
+- [ ] **R-3 (SQLite path retired, #3005):** PostgreSQL is the only engine; a pre-existing legacy SQLite
+  file is ignored (never opened) and the existing store unit tests are byte-identical to pre-slice; no
+  storage schema change.
+  **Edge / FAIL:** any user-visible change, a storage schema change, or a red existing test.
 
 - [ ] **R-4 (`telemetry_spans` stays strictly READ-ONLY):** the RTDB canonical backfill and the
   declared-table backfill never write `telemetry_spans`; the read-only contract is preserved on the

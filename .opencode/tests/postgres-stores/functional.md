@@ -26,8 +26,8 @@ extended by every following Postgres store slice.
 > dir under `.opencode/tmp/2975/pgdata-corrupt`; a corrupt/absent override induces the PG start failure
 > F-9 needs. Both are the binding seams F-9 exercises.
 
-> **Binding names (G-255):** engine selection = `FREDO_STORAGE_ENGINE` (`sqlite`|`postgres`), overriding
-> the KV `postgres.enabled`; SQLite is the default. The pool is a single `sqlx::PgPool` built on the
+> **Binding names (G-255):** PostgreSQL is the ONLY engine (Spec #3005 removed the engine selector);
+> the KV `postgres.enabled` key is gone. The pool is a single `sqlx::PgPool` built on the
 > background task after the supervisor's `await_ready` and installed once into the shared
 > `EngineHandle`; every migrated store holds an `Arc<EngineHandle>` clone. Live hook:
 > `storage_engine_status` → `{ engine, fallbackReason }`.
@@ -78,24 +78,18 @@ extended by every following Postgres store slice.
 - [ ] **F-7 (AC2, QA-2.4) — statement translation exercised live on the built app.**
   Drive each translated statement through the running stores.
   **Expected:** `INSERT OR IGNORE → ON CONFLICT DO NOTHING`; `excluded. → EXCLUDED.`; `?n → $n`;
-  existence probe via `to_regclass`/`information_schema` (not `sqlite_master`); dynamic identifiers
-  quoted. Live receipt: a successful round-trip per translation. **FAIL** = a `sqlite_master` probe,
+  existence probe via `to_regclass`/`information_schema`; dynamic identifiers
+  quoted. Live receipt: a successful round-trip per translation. **FAIL** = a SQLite-catalog probe,
   a raw `?n`, or a `sqlite`-only construct left in the path.
 
-- [ ] **F-8 (AC3, QA-3.1) — SQLite selected: behaviour + tests unchanged.**
-  Boot with SQLite selected (default); run the existing store test suite and a UI smoke.
-  **Expected:** behaviour and tests are unchanged from pre-slice; the app boots, stores read/write,
-  Mission Monitor renders; no new prompt/error/UI change; no `fredo.db` schema change. **FAIL** =
-  any user-visible change or a red test.
+- [ ] **F-8 (AC3, QA-3.1) — [HISTORICAL #2975; RETIRED by #3005] SQLite-engine behaviour.** The SQLite
+  engine was removed by #3005, so this row no longer runs; PostgreSQL is the only engine. Retained for
+  the record: pre-#3005 the SQLite default was byte-for-byte behaviour-preserving.
 
-- [ ] **F-9 (AC3, QA-3.2, G-275) — PG start/selection/pool failure → SQLite fallback, `fredo.db` untouched.**
-  With `FREDO_STORAGE_ENGINE=postgres`, induce the failure via BOTH shipped seams: (i)
-  `FREDO_PG_POOL_FORCE_FAIL=1`; (ii) `FREDO_PG_DATA_DIR` pointed at a corrupt/absent writable dir under
-  `.opencode/tmp/2975/pgdata-corrupt`. Record `fredo.db` size + SHA-256 + mtime before/after.
-  **Expected:** the failure falls back to SQLite; the app boots and operates on SQLite;
-  `storage_engine_status` reports `engine == "sqlite"` + a non-null `fallbackReason`; `fredo.db` is
-  byte-identical before/after — never mutated; a structured, non-fatal error is logged; the failure is
-  bounded. **FAIL** = a crash, a mutated `fredo.db`, or an unbounded wait.
+- [ ] **F-9 (AC3, QA-3.2, G-275) — [HISTORICAL #2975; RETIRED by #3005] PG failure → SQLite fallback.**
+  The SQLite fallback was removed by #3005: a PG start/pool failure now fails closed with a structured
+  reason and never touches a legacy SQLite file. Retained for the record: pre-#3005 the fallback booted
+  on SQLite with a non-null `fallbackReason` and the legacy file byte-identical.
 
 - [ ] **F-10 (AC4, QA-4.1) — duplicate-PK `INSERT OR IGNORE` silently idempotent on PG.**
   Insert the same PK twice through the ignore path.
@@ -156,7 +150,7 @@ extended by every following Postgres store slice.
 
 - [ ] **F-18 (promoted from E-1/E-7, FAIL #2975 round 1) — PG-selected boot must initialize the
   feature-data schema on the pool and render Mission Monitor.**
-  Boot with `FREDO_STORAGE_ENGINE=postgres`; open Mission Monitor; read the PG catalogs.
+  Boot on PostgreSQL; open Mission Monitor; read the PG catalogs.
   **Expected:** `feature_data_tables` / `feature_data_tombstones` (and the declared `feature_*` tables)
   exist on the PG pool after the swap; feature-data declare/read/watch succeed; Mission Monitor lists
   the live sessions. **Actual (round 1, `spec/2975 @ 9638a3d9`):** live PG boot `public` holds ONLY
@@ -216,8 +210,8 @@ extended by every following Postgres store slice.
 
 - [ ] **N-1 (pool sizing / RSS):** `max_connections` 5–10 + tuned server memory knobs, measured
   before/after (F-14); the #2948 RSS regression stays MITIGATE + RE-MEASURE.
-- [ ] **N-2 (fail-closed):** a PG failure never mutates `fredo.db` and never crashes the app (F-9);
-  SQLite remains the backout.
+- [ ] **N-2 (fail-closed):** a PG failure never mutates a legacy SQLite file and never crashes the app
+  (F-9); PostgreSQL is the only store.
 - [ ] **N-3 (build hygiene):** F-17 green; `cargo check` alone does not clear the clippy gate.
 - [ ] **N-4 (no row-pipeline regression):** Mission Monitor still renders from the store (F-16);
   emission remains ONLY via `EventBus.emit_row_delivery_batch`; row-merge semantics unchanged.
@@ -352,7 +346,7 @@ extended by every following Postgres store slice.
   regression vs SQLite (faster or equal). A restatement with no re-measurement = FAIL.
 
 - [ ] **F-36 (REQ-5/AC5) — data-dir growth position: MITIGATE + RE-MEASURE (spike +57.8 MiB).**
-  Measure the data-dir footprint (SQLite `fredo.db` + PG data dir) on the BEFORE and AFTER legs.
+  Measure the data-dir footprint (the PostgreSQL data dir — no SQLite file) on the BEFORE and AFTER legs.
   **Expected:** a literal BEFORE|AFTER|Δ byte table; position stated verbatim **MITIGATE +
   RE-MEASURE**; a mitigation implemented (memory/connection knobs, vacuum/WAL sizing). A restatement
   with no re-measurement = FAIL.
@@ -398,22 +392,22 @@ extended by every following Postgres store slice.
   restatement with no re-measurement = FAIL.
 - [ ] **N-6 (bounded / non-blocking):** no leg runs unbounded; the write-behind path never blocks on
   the pool; the cache update + enqueue stay synchronous (F-23/F-30); start/stop are finite (G-263).
-- [ ] **N-7 (build hygiene):** F-38 green; Windows-first; no `#[allow(...)]`; `fredo.db` untouched
-  when SQLite is selected.
+- [ ] **N-7 (build hygiene):** F-38 green; Windows-first; no `#[allow(...)]`; any legacy SQLite file
+  untouched when the store is unavailable.
 - [ ] **N-8 (preservation contract):** R-19..R-27 (regression.md) pin every preserved constant + the
   sole emission path + merge/seq semantics — any FAIL is a slice-wide FAIL.
 
 ## Suite-level pass/fail
 
 PASS = F-1..F-20 (slices 1–2) all green AND F-21..F-41 (slice 3) all green, with N-1..N-8 holding.
-Any per-store connection, any user-visible change under SQLite, a mutated `fredo.db` on PG failure, a
-count/checksum mismatch, a row-pipeline semantic change, a write reaching `telemetry_spans`, a blank
-Mission Monitor while rows exist, or an unbounded wait = **FAIL**.
+Any per-store connection, any user-visible change under the removed SQLite path, a mutated legacy SQLite
+file on a PG failure, a count/checksum mismatch, a row-pipeline semantic change, a write reaching
+`telemetry_spans`, a blank Mission Monitor while rows exist, or an unbounded wait = **FAIL**.
 
 ## Round 1 — 2026-10-01, `spec/2976 @ c83a0b62` — **ALL PASS**
 
-Harness: PG-selected cold boot (`FREDO_STORAGE_ENGINE=postgres`); `storage_engine_status.engine = "postgres"`.
-The `telemetry-query` skill is SQLite-only and the slice moves the tables to PG, so live receipts used the
+Harness: PostgreSQL cold boot; `storage_engine_status.engine = "postgres"`.
+The `telemetry-query` skill now reads the PostgreSQL store and the slice moves the tables to PG, so live receipts used the
 managed `psql` (`%APPDATA%\com.fredo.app\postgres-install\18.6.0\bin\psql.exe` via `run-exitcode.ps1`) —
 a plan/tooling gap, disclosed in the verdict.
 

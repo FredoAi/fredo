@@ -14,7 +14,7 @@
 //!   NAMED errors; no data is ever deleted (R-4.3).
 //!
 //! `materialize_persisted` loads every persisted declaration at startup and
-//! re-runs the same idempotent creation — a restart over an existing `fredo.db`
+//! re-runs the same idempotent creation — a restart over an existing store
 //! keeps the declared rows (R-4.4).
 
 use std::sync::Arc;

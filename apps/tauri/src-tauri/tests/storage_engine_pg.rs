@@ -145,8 +145,8 @@ async fn postgres_storage_suite() {
     // upsert path agrees with it (ST-2 rework; pins the round-2 defect class).
     declared_table_quoting_scenario(&url, &unique_schema("declared")).await;
     // Phase 5: fresh-install / legacy-ignore (Spec #3005 ST-5 re-home) — the
-    // one-shot `fredo.db` migration subsystem is deleted, so a pre-existing
-    // legacy `fredo.db` must be IGNORED byte-for-byte and the app must still
+    // one-shot SQLite migration subsystem is deleted, so a pre-existing
+    // legacy SQLite file must be IGNORED byte-for-byte and the app must still
     // reach ready PostgreSQL (R-4.1/R-4.2, G-290).
     legacy_ignore_scenario(&url, &unique_schema("legacy_ignore")).await;
     // Phase 6: the read-only canonical seam (Spec #3005 ST-6 re-home) — the
@@ -526,17 +526,17 @@ async fn declared_table_quoting_scenario(url: &str, schema: &str) {
 
 // ── Phase 5: fresh-install / legacy-ignore (ST-5 re-home) ────────────────────
 
-/// Spec #3005 ST-5 re-home (G-290): the legacy one-shot `fredo.db` →
+/// Spec #3005 ST-5 re-home (G-290): the legacy one-shot SQLite →
 /// PostgreSQL migration subsystem is deleted, so PostgreSQL is fresh-install-only.
-/// A pre-existing legacy `fredo.db` in the app-data dir must be IGNORED — never
+/// A pre-existing legacy SQLite file in the app-data dir must be IGNORED — never
 /// opened, never carried, never mutated (byte-for-byte identical), with no
 /// `-wal`/`-shm` side files — and the app must still reach ready PostgreSQL
 /// through the post-migration install order (schema inits → install).
 async fn legacy_ignore_scenario(url: &str, schema: &str) {
     let app_dir = tempfile::tempdir().expect("tempdir");
-    let legacy = app_dir.path().join("fredo.db");
-    let payload: &[u8] = b"SQLite format 3\0legacy-fredo-db-that-must-never-be-read";
-    std::fs::write(&legacy, payload).expect("seed a legacy fredo.db");
+    let legacy = app_dir.path().join("legacy.db");
+    let payload: &[u8] = b"SQLite format 3\0legacy-sqlite-file-that-must-never-be-read";
+    std::fs::write(&legacy, payload).expect("seed a legacy SQLite file");
     let before = std::fs::read(&legacy).expect("read the legacy file before boot");
 
     let handle = EngineHandle::new_pending();
@@ -560,7 +560,7 @@ async fn legacy_ignore_scenario(url: &str, schema: &str) {
     // The engine is ready and a data-plane write serves from PostgreSQL.
     assert!(
         state.status().ready,
-        "a fresh install (legacy fredo.db present) must still reach ready PostgreSQL"
+        "a fresh install (legacy SQLite file present) must still reach ready PostgreSQL"
     );
     app.set("theme", "dark")
         .await
@@ -573,14 +573,14 @@ async fn legacy_ignore_scenario(url: &str, schema: &str) {
     assert_eq!(
         stored.as_deref(),
         Some("dark"),
-        "the write must persist on PostgreSQL (no carry from fredo.db)"
+        "the write must persist on PostgreSQL (no carry from a legacy file)"
     );
 
     // The legacy file was never read or mutated, and no SQLite side files exist.
     let after = std::fs::read(&legacy).expect("read the legacy file after boot");
     assert_eq!(
         after, before,
-        "the legacy fredo.db must be ignored byte-for-byte (never read/mutated)"
+        "the legacy SQLite file must be ignored byte-for-byte (never read/mutated)"
     );
     let side_files: Vec<String> = std::fs::read_dir(app_dir.path())
         .expect("list the app-data dir")

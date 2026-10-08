@@ -1,9 +1,9 @@
 # postgres-only-persistence — Functional
 
 > Durable functional suite for the **PostgreSQL-as-the-ONLY-database** feature domain (spec #3005):
-> remove SQLite (`rusqlite`/`SqliteEngine`), replace the synchronous `control.db` control plane with a
-> PG-hydrated in-memory settings cache + a JSON `boot-config.json` (postmaster PID marker only), move
-> the PG loopback password to the OS keychain, delete the legacy `fredo.db` migration/backout subsystem,
+> remove SQLite (its driver crate and its synchronous engine), replace the synchronous file-backed
+> control plane with a PG-hydrated in-memory settings cache + a JSON `boot-config.json` (postmaster PID
+> marker only), move the PG loopback password to the OS keychain, delete the legacy SQLite migration/backout subsystem,
 > and sweep agent-facing artifacts off SQLite. One `- [ ]` case per EARS requirement R-1..R-5 (1:1 with
 > AC1..AC5) plus the human-directed Mission-Monitor E2E leg.
 >
@@ -39,13 +39,14 @@
 - [ ] **F-1 (R-1/AC1) — fresh-install cold start → PostgreSQL ready; NO `.db` under app-data.**
   Point `FREDO_DATA_DIR` at a fresh `.opencode/tmp/3005/appdata-fresh`; boot. Read
   `storage_engine_status` (`infrastructure/storage/engine.rs:818`); recurse the app-data dir for `*.db`;
-  run `cargo tree -i rusqlite` + grep `Cargo.toml`/`Cargo.lock`; run `cargo check`.
+  run the residual gate's dependency-tree check (the gate owns the deny token table) + grep
+  `Cargo.toml`/`Cargo.lock`; run `cargo check`.
   - EXPECTED: `{ engine:"postgres", ready:true }`; `Get-ChildItem -Recurse -Filter *.db` returns ZERO
-    files anywhere under the app-data dir; `rusqlite` is absent from the dependency tree AND
+    files anywhere under the app-data dir; the SQLite driver crate is absent from the dependency tree AND
     `Cargo.toml`/`Cargo.lock`; `cargo check` emits ZERO warnings.
   - Edge: existing empty data dir; dir containing only `boot-config.json`; pre-seeded keychain; long
     path; a second boot over the same dir creates no `.db`.
-  - FAIL: `ready:false`; any `.db` file; `rusqlite` present; any `cargo check` warning.
+  - FAIL: `ready:false`; any `.db` file; the SQLite driver crate present; any `cargo check` warning.
 
 - [ ] **F-2 (R-2/AC2) — formerly-control-plane settings round-trip through the shipped surface AND survive a restart.**
   Through the shipped seam `save_control_setting`/`get_control_setting`
@@ -77,24 +78,25 @@
   - FAIL: the sentinel appears in any file/log/span; the secret is logged/exported; headless fails to
     boot when the keychain is unavailable.
 
-- [ ] **F-4 (R-4/AC4) — a pre-existing legacy `fredo.db` is ignored and stays byte-identical.**
-  Materialize a fake legacy `fredo.db` (valid SQLite header + a table) at
-  `.opencode/tmp/3005/appdata-legacy/fredo.db` (in-repo write scope); record its SHA-256 + byte size +
+- [ ] **F-4 (R-4/AC4) — a pre-existing legacy SQLite file is ignored and stays byte-identical.**
+  Materialize a fake legacy SQLite file (valid SQLite header + a table) at
+  `.opencode/tmp/3005/appdata-legacy/legacy.db` (in-repo write scope); record its SHA-256 + byte size +
   mtime; point `FREDO_DATA_DIR` at that dir; boot; read `storage_engine_status`; re-hash.
   - EXPECTED: the app starts on PostgreSQL (`engine:"postgres", ready:true`) and does NOT read, carry,
     or migrate the file; SHA-256 + size + mtime are byte-identical after boot; no `-wal`/`-shm` side
     files are created beside it.
-  - Edge: empty `fredo.db`; read-only `fredo.db`; two consecutive boots; a `fredo.db` present with
-    `control.db` absent.
+  - Edge: an empty legacy file; a read-only legacy file; two consecutive boots; a legacy file present
+    with no settings cache yet.
   - FAIL: a hash/size/mtime change; a `.db`-derived carry into PG `settings`; any open-for-write.
 
 - [ ] **F-5 (R-5/AC5) — the residual occurrence gate denies the retired vocabulary and self-tests.**
   Run `.opencode/scripts/check-sqlite-retired.ps1` over the repo. Create a synthetic probe under
-  `.opencode/tmp/3005/gate-selftest/probe.md` containing the denied token `control.db`; re-run the gate.
+  `.opencode/tmp/3005/gate-selftest/probe.md` containing one of the gate's denied tokens (the token
+  table lives inside the gate script — gate-self-reference); re-run the gate.
   - EXPECTED: the repo scan exits clean (only allowlisted-class hits); the synthetic probe IS flagged
-    (the gate's DENY property fires); `FREDO_STORAGE_ENGINE`/`select_engine`/`EngineChoice` are absent
-    from the crate (grep-verifiable); no shipped skill/script/doc/agent-permission references
-    SQLite/`fredo.db`/`control.db` as a LIVE store.
+    (the gate's DENY property fires); the legacy engine-selection symbols are absent from the crate
+    (the gate is grep-verifiable and owns the token table); no shipped skill/script/doc/agent-permission
+    references SQLite as a LIVE store.
   - Edge: a denied token in `.opencode/tests/**` or a product doc IS flagged; `historic-narrative`
     prose (`references.md` guardrail history, `spikes/**`) is NOT flagged; `gate-self-reference` (the
     checker's own token table + probe) is NOT flagged; `ephemeral-pipeline-scratch` (`.opencode/tmp/**`,
@@ -154,6 +156,6 @@
 ## Suite-level pass/fail
 
 PASS = F-1..F-6 green with N-1..N-5 holding and E-1..E-3 disclosed. Any `.db` file under app-data, the
-sentinel appearing in any file/log/span, a mutated legacy `fredo.db`, a lost setting across restart,
-`rusqlite` in the tree, a gate self-test miss, or a blank Mission Monitor while a qualifying declared
-row exists = **FAIL**.
+sentinel appearing in any file/log/span, a mutated legacy SQLite file, a lost setting across restart,
+the SQLite driver crate in the tree, a gate self-test miss, or a blank Mission Monitor while a
+qualifying declared row exists = **FAIL**.

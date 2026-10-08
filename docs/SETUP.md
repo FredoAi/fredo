@@ -202,34 +202,19 @@ Stop it with Ctrl+C (SIGINT) or `--shutdown-file`; shutdown is bounded and leave
 
 **Auto-start at login.** Settings → **Ingest** installs a per-user login entry that runs `fredo ingest` at sign-in, so capture is continuous without keeping the GUI open. Disabling the toggle removes the entry. No administrator rights are required (an OS-level service is out of scope).
 
-> **Upgraded installs:** if you still have an un-migrated `fredo.db`, the daemon refuses to start (exit `1`) and defers to a GUI boot to run the one-shot PostgreSQL migration — so it never ingests rows ahead of the migration.
+> **Upgraded installs:** PostgreSQL is the only store (Spec #3005). A pre-existing legacy SQLite file in the data dir is ignored byte-for-byte — the daemon never reads, carries, or migrates it. There is no cutover leg.
 
-## PostgreSQL Persistence, Cutover, and Rollback
+## PostgreSQL Persistence
 
-Fredo's migrated stores are backed by an **embedded PostgreSQL** engine, which is the shipped default (Spec #2979). The legacy `fredo.db` file is retained read-only as the backout artifact.
+Fredo persists everything in an **embedded PostgreSQL** cluster — the only store since Spec #3005. The cluster runs on an ephemeral loopback port, is managed by the lifecycle supervisor (`applications/pg_supervisor`), and shares its data dir and credential with the `fredo ingest` daemon.
 
-### Fresh vs. upgraded installs
+- **Store:** settings, canonical RTDB rows (`chat_rows` / `tool_use_rows` / `agent_session_rows`), and telemetry (`telemetry_spans` / `telemetry_metrics` / `telemetry_logs`) live in the cluster database `postgres`. No `.db` file is created or read under the app-data dir.
+- **Settings:** a synchronous, volatile cache in `AppStore` is hydrated once from the PostgreSQL `settings` table and write-throughs on every change.
+- **Password:** the generated loopback password lives in the **OS keychain** (service `fredo.postgres`, account `loopback:password`) — never in a file, log, or telemetry. A fixed loopback-only fallback is used only when the keychain is unavailable.
 
-- **Fresh install** (no `fredo.db`): starts directly on PostgreSQL with no migration leg.
-- **Upgraded install** (an existing `fredo.db`): runs a **one-shot cutover** — every physical table is copied into PostgreSQL under a per-table row-count **and SHA-256 checksum parity gate**. The `migration.postgres.completed` marker is written only after a fully parity-clean run, so a second startup skips the leg. A failed leg is fail-closed: nothing is installed and the next startup re-runs the read-only export.
+### Legacy data
 
-### Snapshot retention (Q-13)
-
-A parity-checked cutover leaves **exactly one** pre-cutover snapshot, `fredo.pre-cutover.db`, under the resolved migration directory (`<app_data_dir>/migration` unless `FREDO_MIGRATION_DIR` overrides it). It is:
-
-- **retained read-only for the life of the release** alongside `fredo.db` — it is the executable SQLite backout;
-- **overwritten per cutover attempt** (a re-run after a failed parity gate replaces the single file); and
-- **pruned only at the next release's cleanup** — never automatically by the migration leg.
-
-The migration leg never mutates or deletes `fredo.db`.
-
-### Rollback verification (`rollback.verified`)
-
-A parity-clean cutover records the pre-cutover per-table row counts and SHA-256 checksums. The `verify_rollback` command recomputes the retained snapshot's checksums **read-only** and sets `rollback.verified = "true"` (plus `rollback.verified_at`, RFC-3339) **only when every recomputed checksum equals the recorded pre-cutover value**. On any mismatch it records `"false"` and reports the mismatch; the snapshot and `fredo.db` are never modified. The cutover release gate reports this as `rollbackVerified`.
-
-### Downgrade policy (Q-14 / R-4.3) — accepted loss
-
-The retained `fredo.db` is **byte-identical to the pre-cutover state**. Rows written **after** the cutover live only in PostgreSQL and are **not reverse-exported** (a PostgreSQL → SQLite incremental export is explicitly out of scope). A downgrade to a pre-cutover build therefore reads the pre-cutover state and **does not** see post-cutover rows — this data loss is **accepted** and is the documented trade-off of the PostgreSQL cutover. To back out: stop the app, restore `fredo.pre-cutover.db` over `fredo.db` (or use the retained `fredo.db`), then start the pre-cutover build.
+Spec #3005 is **fresh-install-only**. There is no migration, cutover, snapshot, rollback, or downgrade path, and no reverse export: every current setting is dropped (defaults are re-seeded on PostgreSQL), and any pre-existing legacy SQLite file in the data dir is ignored byte-for-byte — never read, carried, mutated, or deleted.
 
 ## Doom Mode (optional)
 

@@ -1349,7 +1349,10 @@ if ($IsEnvMode) {
   $CompanionDir = Join-Path $EnvRoot "companion"
   $CliPipe      = "\\.\pipe\fredo-ipc-$EnvId"
   $AppIdentity  = "com.fredo.app#$EnvId"
-  $DbPath       = Join-Path $DataDir "fredo.db"
+  # Spec #3005: the store is the embedded PostgreSQL cluster; the manifest
+  # records the app-data dir (the cluster data dir is <env-root>/postgres and the
+  # ephemeral port is ports.pg). No SQLite file exists.
+  $DbPath       = $DataDir
   $LogDir       = Join-Path $EnvRoot "logs"
 
   if ($Manifest) {

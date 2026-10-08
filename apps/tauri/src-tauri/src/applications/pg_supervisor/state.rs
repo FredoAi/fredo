@@ -513,9 +513,9 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf) {
 /// headless attach path: build ONE bounded pool, run the registered schema
 /// initializers, and install the engine.
 ///
-/// Spec #3005 ST-5: the legacy one-shot `fredo.db` → PostgreSQL migration is
+/// Spec #3005 ST-5: the legacy one-shot SQLite → PostgreSQL migration is
 /// deleted (fresh-install-only, no carry, data loss accepted). PostgreSQL is
-/// installed directly after the schema inits; any pre-existing legacy `fredo.db`
+/// installed directly after the schema inits; any pre-existing legacy SQLite file
 /// is ignored — never opened, never carried. The retired migration markers
 /// (`migration.postgres.completed` / `rollback.*`) stay as unread PG rows.
 ///

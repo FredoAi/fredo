@@ -74,11 +74,11 @@
  * default is `127.0.0.1:4317` / `:4318`) and pass `--port` (and `--host` when
  * the receiver is not on loopback):
  *   bun .opencode/scripts/inject-otlp-fixture.ts --port 16002 --host 127.0.0.1 --count 1
- * The injected rows land in that env's own store (`FREDO_DATA_DIR/fredo.db`,
- * i.e. the manifest `dbPath`) — read them back with the telemetry-query skill's
- * `-DbPath` (or its PostgreSQL lever when the #2979 store is live), never the
- * legacy `%APPDATA%\com.fredo.app` path. The CONFIRM receipts below print the
- * legacy path; substitute the target env's manifest `dbPath` for an isolated env.
+ * The injected rows land in that env's own embedded PostgreSQL store — read
+ * them back with the telemetry-query skill (`-PgPort <ports.pg>` or
+ * `-Manifest <env-root>/manifest.json`; G-284/G-307), never a sibling or legacy
+ * path. The CONFIRM receipts below print the managed-psql wrapper with a
+ * `<ports.pg>` placeholder; substitute the target env's manifest `ports.pg`.
  *
  * Delegation-tree mode (--parent, #2768 round 2): spans shaped EXACTLY like the
  * real F5/F4B rows (attribute keys copied verbatim from telemetry_spans). For
@@ -791,16 +791,16 @@ async function runCopilotMode() {
     console.log(`Injected span: session=${sessionId} name=${s.name} trace_id ${s.traceId} span_id ${s.spanId}`)
   }
 
-  const db = '$env:APPDATA\\com.fredo.app\\fredo.db'
-  console.log(`CONFIRM chat_rows: sqlite3 -readonly "${db}" "SELECT session_id, correlation_id, provider, model, user_message, agent_reply, prompt_tokens, completion_tokens, cache_read_tokens, cost_usd FROM chat_rows WHERE session_id = '${sessionId}'"`)
-  console.log(`CONFIRM tool_use_rows: sqlite3 -readonly "${db}" "SELECT session_id, correlation_id, provider, tool_name, tool_success, tool_error, duration_ms, tool_input_json, tool_output_json FROM tool_use_rows WHERE session_id = '${sessionId}'"`)
-  console.log(`CONFIRM agent_session_rows: sqlite3 -readonly "${db}" "SELECT session_id, correlation_id, provider, total_tokens, total_messages, total_cost_usd, agent_name FROM agent_session_rows WHERE session_id = '${sessionId}'"`)
+  const confirmPrefix = `powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 -Format md -PgPort <ports.pg> -Query`
+  console.log(`CONFIRM chat_rows: ${confirmPrefix} "SELECT session_id, correlation_id, provider, model, user_message, agent_reply, prompt_tokens, completion_tokens, cache_read_tokens, cost_usd FROM chat_rows WHERE session_id = '${sessionId}'"`)
+  console.log(`CONFIRM tool_use_rows: ${confirmPrefix} "SELECT session_id, correlation_id, provider, tool_name, tool_success, tool_error, duration_ms, tool_input_json, tool_output_json FROM tool_use_rows WHERE session_id = '${sessionId}'"`)
+  console.log(`CONFIRM agent_session_rows: ${confirmPrefix} "SELECT session_id, correlation_id, provider, total_tokens, total_messages, total_cost_usd, agent_name FROM agent_session_rows WHERE session_id = '${sessionId}'"`)
   console.log(`EXPECT every row provider = 'copilot_cli'; chat_rows prompt_tokens = 321 / completion_tokens = 184 (PER-CALL, never a delta); agent_session_rows total_tokens = 13211 (12480+731), total_messages / total_cost_usd NULL; tool_use_rows duration_ms = 50, tool_success = 1.`)
-  console.log(`R-3.2 discriminator (${contentOff ? 'content OFF — the four content keys must be ABSENT from raw_json' : 'content ON — content must be present in raw_json'}): sqlite3 -readonly "${db}" "SELECT session_id, raw_json FROM chat_rows WHERE session_id = '${sessionId}'" (check gen_ai.input.messages / gen_ai.output.messages) and tool_use_rows.raw_json (check gen_ai.tool.call.arguments / gen_ai.tool.call.result).`)
+  console.log(`R-3.2 discriminator (${contentOff ? 'content OFF — the four content keys must be ABSENT from raw_json' : 'content ON — content must be present in raw_json'}): ${confirmPrefix} "SELECT session_id, raw_json FROM chat_rows WHERE session_id = '${sessionId}'" (check gen_ai.input.messages / gen_ai.output.messages) and tool_use_rows.raw_json (check gen_ai.tool.call.arguments / gen_ai.tool.call.result).`)
   if (contentOff) {
     console.log(`Content-off gate: chat_rows and tool_use_rows MUST still exist (structural rows), user_message / agent_reply / tool_input_json / tool_output_json MUST be NULL, and raw_json MUST NOT carry the content keys — never a silent empty result.`)
   }
-  console.log(`Raw-span receipt: sqlite3 -readonly "${db}" "SELECT span_name, session_id, transport, end_time_ns FROM telemetry_spans WHERE attributes_json LIKE '%${sessionId}%' ORDER BY start_time_ns"`)
+  console.log(`Raw-span receipt: ${confirmPrefix} "SELECT span_name, session_id, transport, end_time_ns FROM telemetry_spans WHERE attributes_json LIKE '%${sessionId}%' ORDER BY start_time_ns"`)
   console.log(`Done — Copilot OTLP/HTTP leg exported to ${url}.`)
 }
 
@@ -888,7 +888,7 @@ async function main() {
   for (const s of spans) {
     const traceHex = Buffer.from(s.traceId).toString('hex')
     const spanHex = Buffer.from(s.spanId).toString('hex')
-    console.log(`CONFIRM session=${s.sessionId} span=${s.spanName}: sqlite3 -readonly "$env:APPDATA\\com.fredo.app\\fredo.db" "SELECT session_id, span_name, trace_id, span_id, status_code, end_time_ns FROM telemetry_spans WHERE trace_id = '${traceHex}' AND span_id = '${spanHex}'"`)
+    console.log(`CONFIRM session=${s.sessionId} span=${s.spanName}: powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 -Format md -PgPort <ports.pg> -Query "SELECT session_id, span_name, trace_id, span_id, status_code, end_time_ns FROM telemetry_spans WHERE trace_id = '${traceHex}' AND span_id = '${spanHex}'"`)
   }
 
   // Identity probe (fix round 5, plan R1): the session filter alone is NOT
@@ -898,9 +898,9 @@ async function main() {
   // session_id derivation (or attrs-only persistence).
   const spanList = spans.map((s) => `'${Buffer.from(s.spanId).toString('hex')}'`).join(', ')
   const traceList = spans.map((s) => `'${Buffer.from(s.traceId).toString('hex')}'`).join(', ')
-  console.log(`IDENTITY PROBE (decides under ANY derived session_id — copy-paste): sqlite3 -readonly "$env:APPDATA\\com.fredo.app\\fredo.db" "SELECT span_id, trace_id, session_id, span_name, transport, end_time_ns, ingested_at FROM telemetry_spans WHERE span_id IN (${spanList}) OR trace_id IN (${traceList}) OR attributes_json LIKE '%${prefix}%'"`)
+  console.log(`IDENTITY PROBE (decides under ANY derived session_id — copy-paste): powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 -Format md -PgPort <ports.pg> -Query "SELECT span_id, trace_id, session_id, span_name, transport, end_time_ns, ingested_at FROM telemetry_spans WHERE span_id IN (${spanList}) OR trace_id IN (${traceList}) OR attributes_json LIKE '%${prefix}%'"`)
   console.log(`Gate: each CONFIRM query must return exactly 1 row whose trace_id = the 32-hex trace hex AND span_id = the 16-hex span hex printed above (end_time_ns IS NOT NULL; status_code 'UNSET' expected). If a persisted row's span_id equals a printed TRACE hex instead, the receipt query is conflating trace_id under a span-id label — re-check the receipt query, do NOT re-export.`)
-  console.log(`Receiver-log receipt — capture IMMEDIATELY (before any DB clean/wipe): sqlite3 -readonly "$env:APPDATA\\com.fredo.app\\fredo.db" "SELECT timestamp, message, attributes_json FROM telemetry_logs WHERE message IN ('gRPC export received','raw OTLP spans persisted') ORDER BY timestamp DESC LIMIT 12;" — expect ONE 'gRPC export received'/'raw OTLP spans persisted' pair (span_count:1 / inserted:1) per injected span.`)
+  console.log(`Receiver-log receipt — capture IMMEDIATELY (before any store clean/wipe): powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 -Format md -PgPort <ports.pg> -Query "SELECT timestamp, message, attributes_json FROM telemetry_logs WHERE message IN ('gRPC export received','raw OTLP spans persisted') ORDER BY timestamp DESC LIMIT 12" — expect ONE 'gRPC export received'/'raw OTLP spans persisted' pair (span_count:1 / inserted:1) per injected span.`)
 
   // Final verdict (fix round 5): a failed export is a hard, loud exit — the
   // telemetry rows CANNOT exist, so the CONFIRM gates must not be run.

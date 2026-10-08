@@ -117,8 +117,8 @@
 - [ ] **E-47:** Restart the app on the migrated store (same PG data dir) and reopen MM — do all
   sessions and the current values return, with no duplicate and no reset seq visible in the rows?
 - [ ] **E-48:** Induce a PG store failure (`FREDO_PG_POOL_FORCE_FAIL=1` / a corrupt `FREDO_PG_DATA_DIR`
-  under `.opencode/tmp/2976/`) — does MM stay functional on the SQLite fallback with `fredo.db` untouched,
-  or does it blank?
+  under `.opencode/tmp/2976/`) — does MM fail closed with a structured reason (with any legacy SQLite
+  file untouched), or does it blank?
 - [ ] **E-49:** A large live corpus (many sessions / rows) on the migrated store — does MM's first paint
   and interaction latency stay bounded (no full-history scan introduced by the store swap)?
 - [ ] **E-50 (console):** `tauri_read_logs(source="console")` after every probe — any `Error:` /

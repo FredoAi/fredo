@@ -2,7 +2,7 @@
 
 > The "must not change" baseline for provider attribution on the canonical RTDB rows. Run on every testing phase that touches the row pipeline, the query language, `fredo emit`, the canonical backfill, or the frontend row wire types.
 >
-> **Evidence policy: LIVE** — the migration/data-loss and latency legs require a live `fredo.db` read; a static-only result does not clear them.
+> **Evidence policy: LIVE** — the migration/data-loss and latency legs require a live PostgreSQL store read; a static-only result does not clear them.
 
 ## Must NOT change (regression invariants)
 

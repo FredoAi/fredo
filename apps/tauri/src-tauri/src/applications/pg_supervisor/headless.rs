@@ -248,7 +248,7 @@ pub async fn run_ingest_daemon(args: IngestDaemonArgs) -> Result<()> {
 
     // Spec #3005 ST-5: the legacy one-shot migration (and its R-5b headless
     // guard) is deleted — fresh-install-only, no carry. A pre-existing legacy
-    // `fredo.db` is ignored; the daemon installs PostgreSQL and ingests directly.
+    // SQLite file is ignored; the daemon installs PostgreSQL and ingests directly.
     engine.install(StoreEngine::Postgres(Arc::new(pg)));
 
     // Spec #3005 ST-2: hydrate the synchronous settings cache from PostgreSQL

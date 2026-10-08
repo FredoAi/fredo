@@ -2,7 +2,7 @@
 
 > **Withdrawn artifacts:** the spike PoC crates `spikes/2948-embedded-postgres/` and `spikes/2964-postgres-migration/` (and the four `2964-postgres-migration-approach/*.md` section files) were deleted after the fact. Only the durable research records remain, as flat `spikes/<issue>-<slug>.md`. The crate paths cited in this suite record real `#2948`/`#2964` observations made while those artifacts existed; they are kept as evidence and are **not** a live dependency.
 
-Feature: local persistence (embedded SQLite / `fredo.db`, RTDB row store, observability
+Feature: local persistence (embedded store, RTDB row store, observability
 `sqlx`). Issue #2948 is a **spike** that must have ZERO production impact. Regression here
 is the negative-case baseline (AC5) plus linked suites whose surface overlaps persistence.
 
@@ -11,10 +11,10 @@ is the negative-case baseline (AC5) plus linked suites whose surface overlaps pe
 
 ## No-change baseline (AC5)
 
-- [x] **R-1: `fredo.db` persistence path untouched.**
-  `infrastructure/storage/*` and any `fredo.db` schema/migration code are byte-identical
+- [x] **R-1: the storage persistence path untouched.**
+  `infrastructure/storage/*` and any storage schema/migration code are byte-identical
   to `main` (diff shows no hunks).
-  **Expected:** no changed files under the fredo.db/SQLite persistence surface.
+  **Expected:** no changed files under the storage/SQLite persistence surface.
   **FAIL:** any hunk (even formatting) in that surface.
   **Round 1 (2026-09-26) result: PASS.** `git diff --name-only 283b4a3 origin/spec/2948`
   returns no path under `infrastructure/storage/**`.
@@ -65,7 +65,7 @@ is the negative-case baseline (AC5) plus linked suites whose surface overlaps pe
 ## Notes
 
 - This suite is reusable: any future spec that touches local persistence
-  (`infrastructure/storage/`, `infrastructure/rtdb/`, `fredo.db`) runs it and extends it —
+  (`infrastructure/storage/`, `infrastructure/rtdb/`, the storage surface) runs it and extends it —
   at that point R-1..R-5 become true regression invariants, not spike-only checks.
 - **Round 1 (2026-09-26) suite outcome: PASS (R-1..R-5 green; R-6 N/A).** Zero production
   impact confirmed.

@@ -24,7 +24,7 @@
 > **Verification policy: live** — every case is driven in the RUNNING app and a PASS must carry a
 > live `telemetry_spans` receipt (non-zero + recent `max(ingested_at)`). A static-only PASS is a
 > FALSE PASS. Live lever: managed `psql` (database `postgres`, URI from `pg_supervisor_status`,
-> password from the control-plane `control.db` key) via the allowlisted
+> password from the OS keychain) via the allowlisted
 > `run-exitcode.ps1 -Command` wrapper; fall back to the app-pool-backed `telemetry_get_stats` when
 > the pool is saturated (disclose the substitution). Spans come from a live OTLP-ingested app
 > action — the CLI `fredo emit` path writes rows, not spans (G-256).

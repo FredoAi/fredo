@@ -1,8 +1,8 @@
 # RTDB Provider Attribution — Functional Test Cases (Spec #2932)
 
-> Durable functional suite (feature domain `rtdb-provider-attribution`) — provider attribution on the canonical RTDB rows (`chat_rows` / `tool_use_rows` / `agent_session_rows` in `fredo.db`). One `- [ ]` case per requirement; the `(Arch Rx)` tag maps each case to the Architect's EARS clauses.
+> Durable functional suite (feature domain `rtdb-provider-attribution`) — provider attribution on the canonical RTDB rows (`chat_rows` / `tool_use_rows` / `agent_session_rows` in the embedded PostgreSQL store). One `- [ ]` case per requirement; the `(Arch Rx)` tag maps each case to the Architect's EARS clauses.
 >
-> **Evidence policy: LIVE** — a PASS requires a live observable: a `telemetry-query.ps1` read against `fredo.db`, an injected `fredo emit`/OTLP-fixture row read back from those tables, or (F-5) an IPC/subscription capture. A `cargo test`/grep-only result is a FALSE PASS for these rows (it clears only N3's static half).
+> **Evidence policy: LIVE** — a PASS requires a live observable: a `telemetry-query.ps1` read against the embedded PostgreSQL store, an injected `fredo emit`/OTLP-fixture row read back from those tables, or (F-5) an IPC/subscription capture. A `cargo test`/grep-only result is a FALSE PASS for these rows (it clears only N3's static half).
 >
 > **Bound vocabulary (Architect):** `open_code` / `claude_code` / `copilot_cli` / `internal` / `unknown`, resolved from the OTLP **resource identity** `service.name` (`fredo-opencode-plugin → open_code`; `copilot-cli → copilot_cli`; else `unknown`). Assert these literals exactly.
 >

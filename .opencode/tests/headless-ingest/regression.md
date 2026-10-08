@@ -36,10 +36,10 @@ RTDB row pipeline, the control plane, or the autostart settings runs this suite 
   **Expected:** all green; the new attach path never starts/stops/sweeps a headless postmaster.
   **FAIL:** any regression in the supervisor's owned-cluster lifecycle.
 
-- [ ] **R-5: control-plane contract unchanged.**
-  The `control.db` schema and `postgres.password`/`postgres_pid` keys are unchanged; the GUI and
-  daemon read one credential.
-  **Expected:** same schema/keys; no data-plane table added to `control.db`. **FAIL:** schema or
+- [ ] **R-5: settings contract unchanged.**
+  The PostgreSQL `settings` schema and the `postgres.password`/`postgres_pid` keys are unchanged; the
+  GUI and daemon read one credential.
+  **Expected:** same schema/keys; no data-plane table added to the settings store. **FAIL:** schema or
   key drift.
 
 - [ ] **R-6: pool sizing unchanged.**

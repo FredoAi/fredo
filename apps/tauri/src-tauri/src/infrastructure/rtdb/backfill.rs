@@ -3,7 +3,7 @@
 //!
 //! Re-derives canonical RTDB rows (`chat_rows` / `tool_use_rows` /
 //! `agent_session_rows`) for PRE-CUTOVER history by replaying the existing
-//! `telemetry_spans` table (in fredo.db, DDL at `span_store.rs:66-93`)
+//! `telemetry_spans` table (in the PostgreSQL store, DDL at `span_store.rs:66-93`)
 //! through the SAME [`IngestClassifier`] the live OTLP receivers feed —
 //! NFR-6: ONE shared extract-rule implementation, so re-derivation is
 //! byte-comparable with live derivation. Each persisted span row is
@@ -67,8 +67,8 @@
 //!
 //! ## Read-only invariant
 //!
-//! The backfill opens its OWN `SQLITE_OPEN_READ_ONLY` connection to
-//! fredo.db — RTDB code cannot write `telemetry_spans` through it (the
+//! The backfill reads `telemetry_spans` through the read-only canonical
+//! handle — RTDB code cannot write it (the
 //! `rtdb_never_creates_or_touches_telemetry_tables` invariant in store.rs
 //! stays intact). Malformed spans (non-JSON attributes) are skipped with a
 //! `tracing::warn`, never a panic; an empty or missing `telemetry_spans`

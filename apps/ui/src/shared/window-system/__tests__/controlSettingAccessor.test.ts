@@ -1,9 +1,9 @@
 /**
  * controlSettingAccessor tests (Spec #2955 B-2/B-3).
  *
- * Pins the control-plane (`control.db`) KV seam the presentation store persists
- * through: `get_control_setting` / `save_control_setting` — NOT the async data
- * plane (`save_setting`). An absent read (`None`) is `null` and is authoritative
+ * Pins the synchronous settings seam (a PG-hydrated cache) the presentation
+ * store persists through: `get_control_setting` / `save_control_setting` — NOT
+ * the async data plane (`save_setting`). An absent read (`None`) is `null` and is authoritative
  * (no `localStorage` shadow).
  */
 

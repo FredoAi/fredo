@@ -43,5 +43,5 @@ app-boot + core-path sanity plus the store quick paths. Full detail lives in `fu
 ## Smoke-level pass/fail
 
 PASS = S-1..S-3, S-6..S-12 green; S-4/S-5 green or a named blocker. Any per-store connection, any
-unbounded wait, a mutated `fredo.db` on PG failure, a row-pipeline semantic change, a write reaching
+unbounded wait, a mutated legacy SQLite file on PG failure, a row-pipeline semantic change, a write reaching
 `telemetry_spans`, or a blank Mission Monitor while live rows exist = **FAIL**.

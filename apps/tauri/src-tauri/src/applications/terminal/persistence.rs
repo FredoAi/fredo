@@ -1,6 +1,6 @@
 //! Persisted Terminal session records (Spec #2935 ST-2).
 //!
-//! Each spawned Terminal session is recorded in `fredo.db` as a
+//! Each spawned Terminal session is recorded in the PostgreSQL store as a
 //! [`ApplicationStore`] table (`feature_terminal_sessions`, application id `terminal`)
 //! so it survives a window close and an app restart and can be offered for
 //! resume. The record carries **only** identity + timing + the optional

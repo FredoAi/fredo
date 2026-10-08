@@ -189,8 +189,8 @@ pub fn run() {
             }
 
             // Spec #2977 ST-6 (G-275): the ONE app-data-dir resolver. A non-blank
-            // `FREDO_DATA_DIR` redirects the source `fredo.db` (and the AC3 backout
-            // target) to an in-repo fixture; the managed-PG install dir + lock stay
+            // `FREDO_DATA_DIR` redirects the app-data dir to an in-repo fixture; the
+            // managed-PG install dir + lock stay
             // on the OS dir (`applications::pg_supervisor`), so a fixture run reuses the
             // existing install. Inert when unset (the default path is byte-identical).
             let data_dir = infrastructure::storage::boot_config::resolve_app_data_dir(
@@ -600,7 +600,7 @@ pub fn run() {
                 application_store.clone(),
             ));
             // Re-materialize every persisted declaration (R-4.4: a restart over
-            // an existing fredo.db preserves the declared rows).
+            // an existing store preserves the declared rows).
             match application_registry.materialize_persisted() {
                 Ok(materialized) if !materialized.is_empty() => tracing::info!(
                     target: "fredo::application_data",

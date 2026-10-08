@@ -38,11 +38,10 @@ Sanity check: `& $fredoBin --version` should print version info.
 whose pipe you hit. The legacy default is `\\.\pipe\fredo-ipc`; an isolated environment uses
 `FREDO_CLI_PIPE` (`\\.\pipe\fredo-ipc-<envId>`). Run the CLI from a shell carrying that
 environment's `FREDO_CLI_PIPE` (and `FREDO_ENV_ID`) so the emit lands in that environment only —
-never a sibling's. The rows persist in that environment's own store (`FREDO_DATA_DIR/fredo.db`,
-recorded as `dbPath` in `<env-root>/manifest.json`); verify them with the `telemetry-query` skill's
-`-DbPath` (or its PostgreSQL lever when the #2979 store is live — G-284), never the legacy
-`%APPDATA%\com.fredo.app` path. The environment's MCP `appIdentifier` is its MCP port as a decimal
-string (e.g. `"16001"`).
+never a sibling's. The rows persist in that environment's own embedded PostgreSQL store; verify them
+with the `telemetry-query` skill's `-Manifest`/`-PgPort` lever (the manifest records `ports.pg`,
+G-284/G-307), never a sibling or legacy path. The environment's MCP `appIdentifier` is its MCP port as
+a decimal string (e.g. `"16001"`).
 
 ## Using `fredo emit` Directly
 
@@ -87,7 +86,7 @@ All effects now come from classified RTDB rows (the v1 delivery streams no longe
 | `agent_session` | `response` | Session aggregate patch (total_tokens / total_messages / total_cost_usd) |
 | `infrastructure` / `ui` / `custom` | any | Classified only through the CLI mock shapes — no dedicated UI consumer today |
 
-→ Verify via Mission Monitor DOM captures or the row stores (`chat_rows`/`tool_use_rows`/`agent_session_rows` in the target env's `fredo.db` — `FREDO_DATA_DIR/fredo.db` / manifest `dbPath` for an isolated env — read-only via the telemetry-query skill).
+→ Verify via Mission Monitor DOM captures or the row stores (`chat_rows`/`tool_use_rows`/`agent_session_rows` in the target env's embedded PostgreSQL store — read-only via the telemetry-query skill, `-Manifest`/`-PgPort`).
 
 ---
 
@@ -97,7 +96,7 @@ All effects now come from classified RTDB rows (the v1 delivery streams no longe
 
 ### Verification Recipe
 
-To check which spans a given agent session actually produced, load the **`telemetry-query`** skill and use its sanctioned wrapper. It owns `fredo.db` path resolution, enforces read-only guardrails, and uses the `telemetry_spans.session_id` column — do NOT call `sqlite3 fredo.db` directly:
+To check which spans a given agent session actually produced, load the **`telemetry-query`** skill and use its sanctioned wrapper. It owns the PostgreSQL connection (port + keychain password), enforces read-only guardrails, and uses the `telemetry_spans.session_id` column — do NOT open the store directly:
 
 ```powershell
 # 1. Find the session ID from Mission Monitor or query telemetry
