@@ -433,7 +433,8 @@
                     "powershell -File scripts/doom/*": "allow",
                     "*restful-doom*": "allow",
                     "tasklist*": "allow",
-                    "taskkill*": "allow"
+                    "taskkill*": "allow",
+                    "powershell -File .opencode/scripts/check-sqlite-retired.ps1*": "allow"
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny",
@@ -564,7 +565,8 @@
                     "$env:OPENCODE_ENABLE_TELEMETRY*Set-Content*": "deny",
                     "$env:OPENCODE_ENABLE_TELEMETRY*Copy-Item*": "deny",
                     "$env:OPENCODE_ENABLE_TELEMETRY*New-Item*": "deny",
-                    "gh run view*": "allow"
+                    "gh run view*": "allow",
+                    "powershell -File .opencode/scripts/check-sqlite-retired.ps1*": "allow"
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny"
