@@ -48,21 +48,25 @@
     path; a second boot over the same dir creates no `.db`.
   - FAIL: `ready:false`; any `.db` file; the SQLite driver crate present; any `cargo check` warning.
 
-- [ ] **F-2 (R-2/AC2) — formerly-control-plane settings round-trip through the shipped surface AND survive a restart.**
+- [ ] **F-2 (R-2/AC2, amended #3011) — formerly-control-plane settings round-trip through the shipped surface AND survive a restart; the Doom SAVE key is NOT in the control plane.**
   Through the shipped seam `save_control_setting`/`get_control_setting`
   (`applications/settings/commands.rs:32,41`, consumed by
   `apps/ui/src/shared/window-system/controlSettingAccessor.ts:28,34`), write one value per named family:
-  Doom save (`doom_save_v1`), tracing level (`tracing.logging_level`), terminal path (`terminal_work_dir`),
+  Doom non-save setting (`doom_port`), tracing level (`tracing.logging_level`), terminal path (`terminal_work_dir`),
   RTDB retention (`rtdb.retention_days`/`rtdb.max_rows`), app-window presentation
-  (`app_window_presentation`). Read each back; fully restart the app; read each back again.
-  - EXPECTED: each value equals its written value both before AND after the restart; the cache
-    (`AppStore::cached_get`) and the durable read (`AppStore::get`) agree; the persisted row is present
-    in the PostgreSQL `settings` table.
+  (`app_window_presentation`). Read each back; fully restart the app; read each back again. Then, with the
+  Doom save exercised (Spec #3011), read `get_control_setting('doom_save_v1')` and the PG `feature_doom_save`
+  row via `application_store_query({applicationId:'doom', tableName:'save'})`.
+  - EXPECTED: each control-plane value equals its written value both before AND after the restart; the cache
+  (`AppStore::cached_get`) and the durable read (`AppStore::get`) agree; the persisted row is present
+  in the PostgreSQL `settings` table. `get_control_setting('doom_save_v1')` → null (the Doom SAVE no longer
+  lives in the control plane); the save lives in exactly ONE `feature_doom_save` row `id='singleton'`.
   - Edge: write before `hydrate` completes (buffered, flushed by `hydrate`, R-2.2/R-2.3); an unknown key
     returns `None` (consumer default, never `Some("")`); a value changed twice then restart → latest
     value; the tracing subscriber applies the reloaded level without re-initialising (R-2.4).
   - FAIL: a value lost across restart; a duplicate `settings` row; the persisted value absent from PG;
-    `Some("")` for an unknown key.
+    `Some("")` for an unknown key; a `doom_save_v1` control-plane key present after a Doom save; the save
+    NOT in `feature_doom_save`.
 
 - [ ] **F-3 (R-3/AC3) — password in the OS keychain ONLY; a sentinel never appears in any app-data file, log, or telemetry (negative).**
   With `FREDO_PG_PASSWORD_FILE` seeding the sentinel `qa-3005-sentinel-<guid8>`, boot the app. Then
