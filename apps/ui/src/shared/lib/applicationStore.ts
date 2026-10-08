@@ -10,7 +10,7 @@
  * ── Usage ────────────────────────────────────────────────────────────────────
  * ```ts
  * import { applicationStoreInsert } from '../../shared/lib/applicationStore';
- * await applicationStoreEnsureTable({ featureId: 'mission-monitor', tableName: 'sessions', columns: [...] });
+ * await applicationStoreEnsureTable({ applicationId: 'mission-monitor', tableName: 'sessions', columns: [...] });
  * ```
  */
 import { adapterBridge } from '../utils/adapterBridge';
@@ -27,19 +27,19 @@ export interface ApplicationStoreColumnDef {
 }
 
 export interface ApplicationStoreEnsureTableArgs {
-  featureId: string;
+  applicationId: string;
   tableName: string;
   columns: ApplicationStoreColumnDef[];
 }
 
 export interface ApplicationStoreInsertArgs {
-  featureId: string;
+  applicationId: string;
   tableName: string;
   rows: Record<string, unknown>[];
 }
 
 export interface ApplicationStoreQueryArgs {
-  featureId: string;
+  applicationId: string;
   tableName: string;
   whereCols?: Record<string, unknown>;
   orderBy?: string;
@@ -47,14 +47,14 @@ export interface ApplicationStoreQueryArgs {
 }
 
 export interface ApplicationStoreUpdateArgs {
-  featureId: string;
+  applicationId: string;
   tableName: string;
   setCols: Record<string, unknown>;
   whereCols: Record<string, unknown>;
 }
 
 export interface ApplicationStoreDeleteArgs {
-  featureId: string;
+  applicationId: string;
   tableName: string;
   whereCols: Record<string, unknown>;
 }

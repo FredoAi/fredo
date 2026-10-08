@@ -97,7 +97,7 @@ pub(crate) fn block_on_pg<F: std::future::Future>(future: F) -> F::Output {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnsureTableArgs {
-    pub feature_id: String,
+    pub application_id: String,
     pub table_name: String,
     pub columns: Vec<ColumnDef>,
 }
@@ -105,7 +105,7 @@ pub struct EnsureTableArgs {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InsertArgs {
-    pub feature_id: String,
+    pub application_id: String,
     pub table_name: String,
     pub rows: Vec<serde_json::Map<String, JsonValue>>,
 }
@@ -113,7 +113,7 @@ pub struct InsertArgs {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryArgs {
-    pub feature_id: String,
+    pub application_id: String,
     pub table_name: String,
     #[serde(default)]
     pub where_cols: Option<serde_json::Map<String, JsonValue>>,
@@ -126,7 +126,7 @@ pub struct QueryArgs {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateArgs {
-    pub feature_id: String,
+    pub application_id: String,
     pub table_name: String,
     pub set_cols: serde_json::Map<String, JsonValue>,
     pub where_cols: serde_json::Map<String, JsonValue>,
@@ -135,7 +135,7 @@ pub struct UpdateArgs {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeleteArgs {
-    pub feature_id: String,
+    pub application_id: String,
     pub table_name: String,
     pub where_cols: serde_json::Map<String, JsonValue>,
 }
@@ -212,22 +212,22 @@ impl ApplicationStore {
     /// `feature_` is the frozen NO-MIGRATE on-disk prefix
     /// ([`LEGACY_TABLE_PREFIX`]); the output is byte-identical to the shipped
     /// generator.
-    fn full_table_name(feature_id: &str, table_name: &str) -> String {
-        let sanitized = feature_id.replace('-', "_");
+    fn full_table_name(application_id: &str, table_name: &str) -> String {
+        let sanitized = application_id.replace('-', "_");
         format!("{LEGACY_TABLE_PREFIX}_{}_{}", sanitized, table_name)
     }
 
     /// Validate that the given full table name is properly namespaced to the
     /// application. The ONLY source of a dynamic identifier.
-    pub(crate) fn validate_namespace(feature_id: &str, table_name: &str) -> Result<String> {
-        let sanitized = feature_id.replace('-', "_");
-        let full = Self::full_table_name(feature_id, table_name);
+    pub(crate) fn validate_namespace(application_id: &str, table_name: &str) -> Result<String> {
+        let sanitized = application_id.replace('-', "_");
+        let full = Self::full_table_name(application_id, table_name);
         let expected_prefix = format!("{LEGACY_TABLE_PREFIX}_{}_", sanitized);
         if !full.starts_with(&expected_prefix) {
             bail!(
                 "Table '{}' is not in the '{}' application namespace",
                 full,
-                feature_id
+                application_id
             );
         }
         Ok(full)
@@ -253,7 +253,7 @@ impl ApplicationStore {
     /// Create an application-namespaced table with typed columns (idempotent).
     pub fn ensure_table(
         &self,
-        feature_id: &str,
+        application_id: &str,
         table_name: &str,
         columns: &[ColumnDef],
     ) -> Result<()> {
@@ -261,7 +261,7 @@ impl ApplicationStore {
         match active.as_ref() {
             
             StoreEngine::Postgres(pg) => {
-                Self::ensure_table_on_pg(&pg.pool, feature_id, table_name, columns)
+                Self::ensure_table_on_pg(&pg.pool, application_id, table_name, columns)
             }
         }
     }
@@ -275,11 +275,11 @@ impl ApplicationStore {
     /// table name is namespace-validated on entry.
     pub fn ensure_table_on_pg(
         pool: &PgPool,
-        feature_id: &str,
+        application_id: &str,
         table_name: &str,
         columns: &[ColumnDef],
     ) -> Result<()> {
-        let full = Self::validate_namespace(feature_id, table_name)?;
+        let full = Self::validate_namespace(application_id, table_name)?;
         let defs: Vec<String> = columns
             .iter()
             .map(|c| {
@@ -338,14 +338,14 @@ impl ApplicationStore {
     /// is silently ignored on both engines.
     pub fn insert(
         &self,
-        feature_id: &str,
+        application_id: &str,
         table_name: &str,
         rows: &[serde_json::Map<String, JsonValue>],
     ) -> Result<u64> {
         if rows.is_empty() {
             return Ok(0);
         }
-        let full = Self::validate_namespace(feature_id, table_name)?;
+        let full = Self::validate_namespace(application_id, table_name)?;
         let col_types = self.column_types(&full)?;
         let col_names: Vec<&str> = rows[0].keys().map(|s| s.as_str()).collect();
         if col_names.is_empty() {
@@ -394,7 +394,7 @@ impl ApplicationStore {
     /// column set is the deterministic union of the keys present across `rows`.
     pub fn upsert(
         &self,
-        feature_id: &str,
+        application_id: &str,
         table_name: &str,
         primary_key: &[String],
         rows: &[serde_json::Map<String, JsonValue>],
@@ -402,7 +402,7 @@ impl ApplicationStore {
         if rows.is_empty() {
             return Ok(0);
         }
-        let full = Self::validate_namespace(feature_id, table_name)?;
+        let full = Self::validate_namespace(application_id, table_name)?;
         let col_types = self.column_types(&full)?;
 
         let mut columns: Vec<&str> = Vec::new();
@@ -589,13 +589,13 @@ impl ApplicationStore {
     /// Query rows with optional WHERE, ORDER BY, and LIMIT.
     pub fn query(
         &self,
-        feature_id: &str,
+        application_id: &str,
         table_name: &str,
         where_cols: Option<&serde_json::Map<String, JsonValue>>,
         order_by: Option<&str>,
         limit: Option<u64>,
     ) -> Result<Vec<serde_json::Map<String, JsonValue>>> {
-        let full = Self::validate_namespace(feature_id, table_name)?;
+        let full = Self::validate_namespace(application_id, table_name)?;
         let active = self.engine.engine_or_err()?;
         match active.as_ref() {
             
@@ -641,12 +641,12 @@ impl ApplicationStore {
     /// Update rows matching WHERE. Returns the count of updated rows.
     pub fn update(
         &self,
-        feature_id: &str,
+        application_id: &str,
         table_name: &str,
         set_cols: &serde_json::Map<String, JsonValue>,
         where_cols: &serde_json::Map<String, JsonValue>,
     ) -> Result<u64> {
-        let full = Self::validate_namespace(feature_id, table_name)?;
+        let full = Self::validate_namespace(application_id, table_name)?;
         if set_cols.is_empty() {
             return Ok(0);
         }
@@ -690,11 +690,11 @@ impl ApplicationStore {
     /// Delete rows matching WHERE. Returns the count of deleted rows.
     pub fn delete(
         &self,
-        feature_id: &str,
+        application_id: &str,
         table_name: &str,
         where_cols: &serde_json::Map<String, JsonValue>,
     ) -> Result<u64> {
-        let full = Self::validate_namespace(feature_id, table_name)?;
+        let full = Self::validate_namespace(application_id, table_name)?;
         if where_cols.is_empty() {
             return Ok(0);
         }
@@ -874,12 +874,12 @@ fn pg_row_to_json(row: &sqlx::postgres::PgRow) -> Result<Map<String, JsonValue>>
 #[tauri::command]
 pub fn application_store_ensure_table(
     state: tauri::State<'_, Arc<ApplicationStore>>,
-    feature_id: String,
+    application_id: String,
     table_name: String,
     columns: Vec<ColumnDef>,
 ) -> Result<(), String> {
     state
-        .ensure_table(&feature_id, &table_name, &columns)
+        .ensure_table(&application_id, &table_name, &columns)
         .map_err(|e| e.to_string())
 }
 
@@ -887,14 +887,14 @@ pub fn application_store_ensure_table(
 #[tauri::command]
 pub async fn application_store_insert(
     state: tauri::State<'_, Arc<ApplicationStore>>,
-    feature_id: String,
+    application_id: String,
     table_name: String,
     rows: Vec<serde_json::Map<String, JsonValue>>,
 ) -> Result<u64, String> {
     // Spec #2977 ST-4: quiesce the write against the exclusive migration barrier.
     let _guard = state.writer_guard_async().await.map_err(|e| e.to_string())?;
     state
-        .insert(&feature_id, &table_name, &rows)
+        .insert(&application_id, &table_name, &rows)
         .map_err(|e| e.to_string())
 }
 
@@ -902,7 +902,7 @@ pub async fn application_store_insert(
 #[tauri::command]
 pub fn application_store_query(
     state: tauri::State<'_, Arc<ApplicationStore>>,
-    feature_id: String,
+    application_id: String,
     table_name: String,
     where_cols: Option<serde_json::Map<String, JsonValue>>,
     order_by: Option<String>,
@@ -910,7 +910,7 @@ pub fn application_store_query(
 ) -> Result<Vec<serde_json::Map<String, JsonValue>>, String> {
     state
         .query(
-            &feature_id,
+            &application_id,
             &table_name,
             where_cols.as_ref(),
             order_by.as_deref(),
@@ -923,7 +923,7 @@ pub fn application_store_query(
 #[tauri::command]
 pub async fn application_store_update(
     state: tauri::State<'_, Arc<ApplicationStore>>,
-    feature_id: String,
+    application_id: String,
     table_name: String,
     set_cols: serde_json::Map<String, JsonValue>,
     where_cols: serde_json::Map<String, JsonValue>,
@@ -931,7 +931,7 @@ pub async fn application_store_update(
     // Spec #2977 ST-4: quiesce the write against the exclusive migration barrier.
     let _guard = state.writer_guard_async().await.map_err(|e| e.to_string())?;
     state
-        .update(&feature_id, &table_name, &set_cols, &where_cols)
+        .update(&application_id, &table_name, &set_cols, &where_cols)
         .map_err(|e| e.to_string())
 }
 
@@ -939,14 +939,14 @@ pub async fn application_store_update(
 #[tauri::command]
 pub async fn application_store_delete(
     state: tauri::State<'_, Arc<ApplicationStore>>,
-    feature_id: String,
+    application_id: String,
     table_name: String,
     where_cols: serde_json::Map<String, JsonValue>,
 ) -> Result<u64, String> {
     // Spec #2977 ST-4: quiesce the write against the exclusive migration barrier.
     let _guard = state.writer_guard_async().await.map_err(|e| e.to_string())?;
     state
-        .delete(&feature_id, &table_name, &where_cols)
+        .delete(&application_id, &table_name, &where_cols)
         .map_err(|e| e.to_string())
 }
 
