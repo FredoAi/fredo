@@ -367,7 +367,7 @@ impl StreamOutcome {
 }
 
 fn store_string(app: &AppHandle, key: &str) -> Option<String> {
-    app.state::<Arc<AppStore>>().control_get(key).ok().flatten()
+    app.state::<Arc<AppStore>>().cached_get(key).ok().flatten()
 }
 
 /// Read the server port WITHOUT mutating any state: the live active port when

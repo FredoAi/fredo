@@ -1280,12 +1280,12 @@ pub async fn spawn_terminal_session(
     // the stored Copilot path (which only applies to a Copilot session).
     let binary_override = test_override.as_ref().and_then(|o| o.binary.clone()).or_else(|| {
         if cli == SessionKind::Copilot {
-            store.control_get(COPILOT_PATH_KEY).ok().flatten()
+            store.cached_get(COPILOT_PATH_KEY).ok().flatten()
         } else {
             None
         }
     });
-    let pwsh = powershell_shell(store.control_get(PWSH_PATH_KEY).ok().flatten().as_deref());
+    let pwsh = powershell_shell(store.cached_get(PWSH_PATH_KEY).ok().flatten().as_deref());
 
     let created_at = now_ms();
 
@@ -1502,11 +1502,11 @@ pub async fn resume_terminal_session(
 
     // Diagnostic override settings, same precedence as a fresh spawn.
     let binary_override = if record.cli == SessionKind::Copilot {
-        store.control_get(COPILOT_PATH_KEY).ok().flatten()
+        store.cached_get(COPILOT_PATH_KEY).ok().flatten()
     } else {
         None
     };
-    let pwsh = powershell_shell(store.control_get(PWSH_PATH_KEY).ok().flatten().as_deref());
+    let pwsh = powershell_shell(store.cached_get(PWSH_PATH_KEY).ok().flatten().as_deref());
 
     let form = match prepare_session(record.cli, &record.work_dir, binary_override, &pwsh, None) {
         Ok(form) => form,

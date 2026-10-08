@@ -140,7 +140,7 @@ async fn read_view() -> Result<IngestAutostartView, String> {
 /// Mirror the effective registry state onto the `ingest.autostart` KV key.
 fn mirror_autostart(store: &Arc<AppStore>, enabled: bool) -> Result<(), String> {
     store
-        .control_set(AUTOSTART_KEY, if enabled { "true" } else { "false" })
+        .cached_set(AUTOSTART_KEY, if enabled { "true" } else { "false" })
         .map_err(|e| e.to_string())
 }
 

@@ -1,6 +1,6 @@
 //! The ONE synchronous boot KV (Spec #3005, ST-1).
 //!
-//! PostgreSQL is the ONLY database; the synchronous `control.db` control plane is
+//! PostgreSQL is the ONLY database; the synchronous SQLite control plane is
 //! gone. Exactly ONE key must be readable BEFORE PostgreSQL exists: the managed
 //! postmaster PID marker. It lives in a small JSON file,
 //! `<app_data_dir>/boot-config.json`, with a single documented key

@@ -57,7 +57,7 @@ pub fn resolve_install_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let env = std::env::var(DOOM_INSTALL_DIR_ENV).ok();
     let store = app.state::<Arc<AppStore>>();
     let configured = store
-        .control_get(DOOM_INSTALL_DIR_KEY)
+        .cached_get(DOOM_INSTALL_DIR_KEY)
         .ok()
         .flatten();
     if let Some(dir) = resolve_doom_path(env.as_deref(), configured.as_deref()) {
@@ -111,7 +111,7 @@ pub fn build_launch_args(iwad: &str, port: u16) -> Vec<String> {
 /// PID with any other image is never killed.
 pub fn expected_engine_image(store: &AppStore) -> String {
     let env = std::env::var(DOOM_ENGINE_PATH_ENV).ok();
-    let configured = store.control_get(DOOM_ENGINE_PATH_KEY).ok().flatten();
+    let configured = store.cached_get(DOOM_ENGINE_PATH_KEY).ok().flatten();
     resolve_doom_path(env.as_deref(), configured.as_deref())
         .and_then(|path| {
             Path::new(&path)
@@ -128,13 +128,13 @@ pub fn expected_engine_image(store: &AppStore) -> String {
 /// ignored — the marker is best-effort recovery metadata, never load-bearing.
 pub fn persist_pid(store: &AppStore, pid: Option<u32>) {
     let value = pid.map(|pid| pid.to_string()).unwrap_or_default();
-    let _ = store.control_set(DOOM_PID_KEY, &value);
+    let _ = store.cached_set(DOOM_PID_KEY, &value);
 }
 
 /// Read the persisted engine PID marker (blank / malformed => `None`).
 pub fn persisted_pid(store: &AppStore) -> Option<u32> {
     store
-        .control_get(DOOM_PID_KEY)
+        .cached_get(DOOM_PID_KEY)
         .ok()
         .flatten()
         .and_then(|value| value.trim().parse().ok())
@@ -493,7 +493,7 @@ mod tests {
         assert_eq!(expected_engine_image(&store), DOOM_IMAGE_DEFAULT);
 
         store
-            .control_set(DOOM_ENGINE_PATH_KEY, r"C:\tools\doom-stub.exe")
+            .cached_set(DOOM_ENGINE_PATH_KEY, r"C:\tools\doom-stub.exe")
             .expect("seed engine path");
         // NOTE: the env override wins when set in the process env; unset in CI.
         let expected = expected_engine_image(&store);
@@ -521,7 +521,7 @@ mod tests {
         let store = open_store(dir.path());
 
         for raw in ["", "   ", "not-a-pid", "12abc", "-1", "0x10"] {
-            store.control_set(DOOM_PID_KEY, raw).expect("seed marker");
+            store.cached_set(DOOM_PID_KEY, raw).expect("seed marker");
             assert_eq!(persisted_pid(&store), None, "marker {raw:?} must not parse");
         }
     }

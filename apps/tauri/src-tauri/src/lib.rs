@@ -79,7 +79,7 @@ use infrastructure::rtdb::store::{
     RTDB_RETENTION_DAYS_KEY,
 };
 use infrastructure::rtdb::subscriptions::SubscriptionRegistry;
-use infrastructure::storage::engine::{select_engine, EngineHandle, StorageEngineState};
+use infrastructure::storage::engine::{EngineChoice, EngineHandle, StorageEngineState};
 use infrastructure::storage::application_store::{self, ApplicationStore};
 use infrastructure::storage::migration::MigrationGate;
 use infrastructure::storage::span_store::SpanStore;
@@ -227,13 +227,11 @@ pub fn run() {
             // registered initializers below, BEFORE the pool is installed.
             let engine_handle = EngineHandle::new_pending();
 
-            // -- Control-plane store (Spec #2979 CU-1) -------------------------
-            // The synchronous control plane lives on its OWN
-            // `<data_dir>/control.db` (split off `fredo.db`), so `fredo.db` can
-            // be retained read-only. `AppStore::open` also carries the legacy
-            // `settings` rows out of `fredo.db` READ-ONLY on first boot. The
-            // async data plane (`get`/`set`) sits ON the shared handle; the setup
-            // closure below reads config via the synchronous control API.
+            // -- Settings store (Spec #3005 ST-2) ------------------------------
+            // `AppStore` holds the volatile, PG-hydrated synchronous settings
+            // cache plus the JSON boot KV. The async data plane (`get`/`set`) sits
+            // ON the shared handle; the setup closure below reads config via the
+            // synchronous cache (hydrated on pool-ready in the supervisor).
             let app_store = Arc::new(
                 AppStore::open(engine_handle.clone(), &data_dir)
                     .expect("Failed to open settings store"),
@@ -241,11 +239,10 @@ pub fn run() {
             app.manage(app_store.clone());
 
             // -- Engine selection (Spec #2979 CU-1, reworked CU-1-R2) ----------
-            // Resolve the data-plane selection from the CONTROL plane. PostgreSQL
-            // is UNCONDITIONAL: the legacy `sqlite` env value is rejected and the
-            // legacy control-plane opt-out `postgres.enabled=false` is inert (a
-            // carried key must not disable the PostgreSQL-only data plane).
-            let engine_choice = select_engine(app_store.control_engine());
+            // PostgreSQL is UNCONDITIONAL. The synchronous control plane that
+            // once held the legacy `postgres.enabled` opt-out is gone (Spec #3005
+            // ST-2); the data-plane selection is therefore always PostgreSQL.
+            let engine_choice = EngineChoice::Postgres;
             let storage_state = StorageEngineState::new(engine_handle.clone(), engine_choice);
             // Spec #2975 ST-2 rework: register the startup schema initializers
             // BEFORE the supervisor starts, so the registry is populated before
@@ -302,26 +299,37 @@ pub fn run() {
             // PRE-install — so no data-plane call is needed here while the pool
             // is still pending (Spec #2979 CU-2; R-3.2 fail-closed).
 
-            // -- Tracing subscriber initialization (Spec #408) -----------------
+            // -- Tracing subscriber initialization (Spec #408; reload #3005 ST-2) --
             // Initialize before any tracing::info!/warn!/error! calls.
             // Uses a deferred LogBridgeLayer that reads from LOG_COLLECTOR_CELL,
             // which is set after LogCollector creation below.
+            //
+            // Spec #3005 ST-2 (R-2.4): the subscriber initializes at INFO and
+            // retains a `reload` handle. PostgreSQL is not up yet, so the persisted
+            // `tracing.logging_level` cannot be read synchronously; `hydrate`
+            // applies it through the retained handle later (a single `.init()`,
+            // never a re-init).
             {
-                let logging_level = app.state::<Arc<AppStore>>()
-                    .control_get("tracing.logging_level").ok().flatten()
-                    .unwrap_or_else(|| "INFO".to_string());
-
-                let env_filter = EnvFilter::try_new(&logging_level)
-                    .unwrap_or_else(|_| EnvFilter::new("INFO"));
+                let (filter_layer, reload_handle) =
+                    tracing_subscriber::reload::Layer::<EnvFilter, tracing_subscriber::Registry>::new(
+                        EnvFilter::new("INFO"),
+                    );
 
                 tracing_subscriber::registry()
-                    .with(env_filter)
+                    .with(filter_layer)
                     .with(tracing_subscriber::fmt::layer()
                         .with_target(true)
                         .with_level(true)
                         .compact())
                     .with(LogBridgeLayer::new())
                     .init();
+
+                app.state::<Arc<AppStore>>()
+                    .set_log_level_sink(Box::new(move |level: &str| {
+                        if let Ok(filter) = EnvFilter::try_new(level) {
+                            let _ = reload_handle.reload(filter);
+                        }
+                    }));
             }
 
             // -- Local test-environment wiring (Spec #2944 ST-2) ---------------
@@ -451,35 +459,23 @@ pub fn run() {
             );
             app.manage(span_store.clone());
 
-            // REQ-11: Set telemetry defaults if not already configured.
+            // REQ-11 / REQ-13 / REQ-7: register the startup defaults. Spec #3005
+            // ST-2: `hydrate` seeds each default ONLY when PostgreSQL has no row
+            // for the key, so a persisted user value survives a restart (R-2.1).
             {
                 let store_ref = app.state::<Arc<AppStore>>();
-                if store_ref.control_get("tracing.enabled").ok().flatten().is_none() {
-                    let _ = store_ref.control_set("tracing.enabled", "true");
-                }
-                if store_ref.control_get("tracing.retention_days").ok().flatten().is_none() {
-                    let _ = store_ref.control_set("tracing.retention_days", "7");
-                }
-                // REQ-13: Set metrics defaults if not already configured.
-                if store_ref.control_get("tracing.metrics_enabled").ok().flatten().is_none() {
-                    let _ = store_ref.control_set("tracing.metrics_enabled", "true");
-                }
-                if store_ref.control_get("tracing.metrics_aggregation_s").ok().flatten().is_none() {
-                    let _ = store_ref.control_set("tracing.metrics_aggregation_s", "60");
-                }
-                // REQ-7: Set logging defaults if not already configured.
-                if store_ref.control_get("tracing.logging_enabled").ok().flatten().is_none() {
-                    let _ = store_ref.control_set("tracing.logging_enabled", "true");
-                }
-                if store_ref.control_get("tracing.logging_level").ok().flatten().is_none() {
-                    let _ = store_ref.control_set("tracing.logging_level", "INFO");
-                }
+                store_ref.register_default("tracing.enabled", "true");
+                store_ref.register_default("tracing.retention_days", "7");
+                store_ref.register_default("tracing.metrics_enabled", "true");
+                store_ref.register_default("tracing.metrics_aggregation_s", "60");
+                store_ref.register_default("tracing.logging_enabled", "true");
+                store_ref.register_default("tracing.logging_level", "INFO");
             }
 
-            // REQ-9: Run retention cleanup on startup.
+            // REQ-9: Run retention cleanup on startup (pre-hydration reads default).
             let store_ref = app.state::<Arc<AppStore>>();
             let retention_days: i64 = store_ref
-                .control_get("tracing.retention_days")
+                .cached_get("tracing.retention_days")
                 .ok()
                 .flatten()
                 .and_then(|v| v.parse().ok())
@@ -785,17 +781,16 @@ pub fn run() {
                 run_flush_task(rtdb_flush_task).await;
             });
 
-            // Set RTDB retention defaults if not already configured (AppStore
-            // KV keys — the binding config-first mechanism).
+            // Register RTDB retention defaults (AppStore KV keys — the binding
+            // config-first mechanism). Spec #3005 ST-2: seeded by `hydrate` only
+            // when PostgreSQL has no row, so a persisted override survives.
             {
                 let store_ref = app.state::<Arc<AppStore>>();
-                if store_ref.control_get(RTDB_RETENTION_DAYS_KEY).ok().flatten().is_none() {
-                    let _ = store_ref
-                        .control_set(RTDB_RETENTION_DAYS_KEY, &RTDB_DEFAULT_RETENTION_DAYS.to_string());
-                }
-                if store_ref.control_get(RTDB_MAX_ROWS_KEY).ok().flatten().is_none() {
-                    let _ = store_ref.control_set(RTDB_MAX_ROWS_KEY, &RTDB_DEFAULT_MAX_ROWS.to_string());
-                }
+                store_ref.register_default(
+                    RTDB_RETENTION_DAYS_KEY,
+                    &RTDB_DEFAULT_RETENTION_DAYS.to_string(),
+                );
+                store_ref.register_default(RTDB_MAX_ROWS_KEY, &RTDB_DEFAULT_MAX_ROWS.to_string());
             }
 
             // Retention prune on startup (mirrors the SpanStore/contract flow;

@@ -298,7 +298,7 @@ pub async fn backfill_from_telemetry(
 /// spans are skipped inside [`backfill_from_telemetry`], never a panic.
 pub async fn run_startup_backfill(app: &tauri::AppHandle, engine: Arc<EngineHandle>) {
     let app_store = app.state::<Arc<AppStore>>();
-    if matches!(app_store.control_get(BACKFILL_COMPLETED_KEY), Ok(Some(_))) {
+    if matches!(app_store.get(BACKFILL_COMPLETED_KEY).await, Ok(Some(_))) {
         tracing::debug!(
             target: "fredo::rtdb::backfill",
             "rtdb canonical backfill already completed — skipping"
@@ -324,7 +324,7 @@ pub async fn run_startup_backfill(app: &tauri::AppHandle, engine: Arc<EngineHand
             // on the next startup instead of latching done.
             if summary.spans_read > 0 {
                 let stamped = chrono::Utc::now().to_rfc3339();
-                if let Err(e) = app_store.control_set(BACKFILL_COMPLETED_KEY, &stamped) {
+                if let Err(e) = app_store.set(BACKFILL_COMPLETED_KEY, &stamped).await {
                     tracing::warn!(
                         target: "fredo::rtdb::backfill",
                         error = %e,
@@ -430,7 +430,7 @@ async fn provider_rebackfill_pass(
     classifier: &IngestClassifier,
     engine: &EngineHandle,
 ) -> Result<Option<ProviderReattributionSummary>> {
-    if matches!(app_store.control_get(BACKFILL_PROVIDER_COMPLETED_KEY), Ok(Some(_))) {
+    if matches!(app_store.get(BACKFILL_PROVIDER_COMPLETED_KEY).await, Ok(Some(_))) {
         return Ok(None);
     }
 
@@ -491,7 +491,7 @@ async fn provider_rebackfill_pass(
 
     if summary.spans_read > 0 {
         let stamped = chrono::Utc::now().to_rfc3339();
-        app_store.control_set(BACKFILL_PROVIDER_COMPLETED_KEY, &stamped)?;
+        app_store.set(BACKFILL_PROVIDER_COMPLETED_KEY, &stamped).await?;
     }
     Ok(Some(summary))
 }
@@ -506,7 +506,7 @@ async fn provider_rebackfill_pass(
 /// Spawned by lib.rs; tolerates a missing/empty telemetry tier.
 pub async fn run_startup_provider_rebackfill(app: &tauri::AppHandle, engine: Arc<EngineHandle>) {
     let app_store = app.state::<Arc<AppStore>>();
-    if matches!(app_store.control_get(BACKFILL_PROVIDER_COMPLETED_KEY), Ok(Some(_))) {
+    if matches!(app_store.get(BACKFILL_PROVIDER_COMPLETED_KEY).await, Ok(Some(_))) {
         tracing::debug!(
             target: "fredo::rtdb::backfill",
             "rtdb provider re-derivation already completed — skipping"

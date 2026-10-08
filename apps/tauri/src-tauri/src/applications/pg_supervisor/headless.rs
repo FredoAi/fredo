@@ -38,10 +38,10 @@
 //!
 //! # Hard non-goals (R-5)
 //!
-//! No `run_startup_backfill`; no `rtdb.backfill.*` read/write; no `fredo.db`
-//! migration (the daemon refuses instead, R-5b); no SQLite **data** store — the
-//! only SQLite access is the shared control-plane `control.db` (credential + PID
-//! marker), which the SAME-credential requirement mandates.
+//! No `run_startup_backfill`; no `rtdb.backfill.*` read/write; no SQLite
+//! **data** store — the daemon shares the GUI's PostgreSQL cluster and its
+//! synchronous settings cache (credential + PID marker), which the
+//! SAME-credential requirement mandates.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -185,11 +185,11 @@ pub async fn run_ingest_daemon(args: IngestDaemonArgs) -> Result<()> {
         }
     };
 
-    // ── 3. Control-plane credential (the SAME control.db the GUI uses) ────────
+    // ── 3. Shared credential (the SAME synchronous cache/keychain the GUI uses) ─
     let engine = EngineHandle::new_pending();
     let app_store = Arc::new(
         AppStore::open(engine.clone(), &app_data_dir)
-            .context("open the control-plane store (control.db)")?,
+            .context("open the settings store")?,
     );
     let password = ensure_password(&app_store);
 
@@ -277,6 +277,11 @@ pub async fn run_ingest_daemon(args: IngestDaemonArgs) -> Result<()> {
     }
 
     engine.install(StoreEngine::Postgres(Arc::new(pg)));
+
+    // Spec #3005 ST-2: hydrate the synchronous settings cache from PostgreSQL
+    // once the pool is installed (R-2.2); a hydration failure leaves the cache at
+    // defaults and never blocks boot (N-2).
+    let _ = app_store.hydrate().await;
 
     let rtdb_store = Arc::new(RtdbStore::open(engine.clone()).context("RtdbStore::open")?);
     rtdb_store

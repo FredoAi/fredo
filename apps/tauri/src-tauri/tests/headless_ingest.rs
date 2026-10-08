@@ -214,7 +214,7 @@ fn seed_password(app_dir: &Path) {
     let engine = EngineHandle::new_pending();
     let store = AppStore::open(engine, app_dir).expect("open the scratch control plane");
     store
-        .control_set(PG_PASSWORD_KEY, E2E_PASSWORD)
+        .cached_set(PG_PASSWORD_KEY, E2E_PASSWORD)
         .expect("seed the shared credential");
 }
 

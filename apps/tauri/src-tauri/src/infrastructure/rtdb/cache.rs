@@ -628,13 +628,13 @@ pub fn read_knobs(app_store: &AppStore) -> (i64, i64) {
         RTDB_RETENTION_DAYS_KEY,
     };
     let retention_days = app_store
-        .control_get(RTDB_RETENTION_DAYS_KEY)
+        .cached_get(RTDB_RETENTION_DAYS_KEY)
         .ok()
         .flatten()
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(RTDB_DEFAULT_RETENTION_DAYS);
     let max_rows = app_store
-        .control_get(RTDB_MAX_ROWS_KEY)
+        .cached_get(RTDB_MAX_ROWS_KEY)
         .ok()
         .flatten()
         .and_then(|v| v.parse::<i64>().ok())
@@ -677,9 +677,9 @@ mod tests {
         }
     }
 
-    /// A cache + control-plane AppStore over a PENDING data-plane handle (no
-    /// PostgreSQL pool is installed in unit tests). The TempDir is returned so
-    /// the control-plane `control.db` outlives the store.
+    /// A cache + synchronous-settings AppStore over a PENDING data-plane handle
+    /// (no PostgreSQL pool is installed in unit tests). The TempDir is returned so
+    /// the app-data dir outlives the store.
     fn make_cache() -> (Arc<RtdbCache>, Arc<AppStore>, tempfile::TempDir) {
         let engine = EngineHandle::new_pending();
         let store = Arc::new(RtdbStore::open(engine.clone()).expect("RtdbStore::open"));
@@ -698,8 +698,8 @@ mod tests {
             read_knobs(&app_store),
             (RTDB_DEFAULT_RETENTION_DAYS, RTDB_DEFAULT_MAX_ROWS)
         );
-        app_store.control_set(RTDB_RETENTION_DAYS_KEY, "3").unwrap();
-        app_store.control_set(RTDB_MAX_ROWS_KEY, "42").unwrap();
+        app_store.cached_set(RTDB_RETENTION_DAYS_KEY, "3").unwrap();
+        app_store.cached_set(RTDB_MAX_ROWS_KEY, "42").unwrap();
         assert_eq!(read_knobs(&app_store), (3, 42));
     }
 

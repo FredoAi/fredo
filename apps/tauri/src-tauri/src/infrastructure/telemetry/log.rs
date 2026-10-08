@@ -108,7 +108,7 @@ impl LogCollector {
     /// Reads `tracing.logging_enabled` from AppStore to initialize the cache.
     pub fn new(store: Arc<SpanStore>, app_store: Arc<AppStore>) -> Self {
         let enabled = app_store
-            .control_get("tracing.logging_enabled")
+            .cached_get("tracing.logging_enabled")
             .ok()
             .flatten()
             .map(|v| v == "true")
@@ -128,7 +128,7 @@ impl LogCollector {
     pub fn refresh_enabled(&self) {
         let enabled = self
             .app_store
-            .control_get("tracing.logging_enabled")
+            .cached_get("tracing.logging_enabled")
             .ok()
             .flatten()
             .map(|v| v == "true")

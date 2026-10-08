@@ -127,7 +127,7 @@ pub fn resolve_retention(
 }
 
 fn knob_u64(app: &AppStore, key: &str) -> Result<Option<u64>> {
-    Ok(match app.control_get(key)? {
+    Ok(match app.cached_get(key)? {
         Some(raw) => raw.trim().parse::<u64>().ok(),
         None => None,
     })

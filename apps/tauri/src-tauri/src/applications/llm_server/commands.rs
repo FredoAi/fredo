@@ -117,7 +117,7 @@ pub struct LlamaServerConfigPreview {
 
 fn get_setting(app: &AppHandle, key: &str) -> Option<String> {
     app.state::<Arc<AppStore>>()
-        .control_get(key)
+        .cached_get(key)
         .ok()
         .flatten()
         .map(|value| value.trim().to_string())
@@ -125,7 +125,7 @@ fn get_setting(app: &AppHandle, key: &str) -> Option<String> {
 }
 
 fn set_setting(app: &AppHandle, key: &str, value: &str) {
-    let _ = app.state::<Arc<AppStore>>().control_set(key, value);
+    let _ = app.state::<Arc<AppStore>>().cached_set(key, value);
 }
 
 fn get_u16(app: &AppHandle, key: &str, default: u16) -> u16 {

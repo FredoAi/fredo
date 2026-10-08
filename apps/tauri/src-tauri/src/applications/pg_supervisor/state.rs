@@ -5,11 +5,11 @@
 //! ([`super::runtime`]) / startup-safety primitives ([`super::sweep`],
 //! [`super::lock`]). It owns:
 //!
-//! * the boot decision: since Spec #2979 CU-1 the engine default is PostgreSQL,
-//!   so the supervisor starts unless the legacy control-plane key
-//!   `postgres.enabled=false` opts out (nothing is locked, swept, or spawned —
-//!   SQLite persistence is untouched, R-1.4). The PID/password markers it reads
-//!   and writes live on the dedicated control plane (`control.db`);
+//! * the boot decision: PostgreSQL is UNCONDITIONAL (Spec #3005 ST-3 removes the
+//!   engine selector), so the supervisor always starts (nothing is locked,
+//!   swept, or spawned on any opt-out path). The PID marker it reads and writes
+//!   lives in the JSON boot KV; the password lives in the synchronous settings
+//!   cache (and, from ST-7, the OS keychain);
 //! * the exclusive data-dir lock acquired BEFORE the orphan sweep (R-4.5);
 //! * the LAZY background start — `lib.rs` setup NEVER awaits `setup()/start()/
 //!   probe_ready()` (G-273/R-2.3), so the webview shell renders while the
@@ -244,7 +244,7 @@ enum Bootstrap {
 fn pg_enabled(store: &AppStore) -> bool {
     // The legacy key is read for diagnostics only; its value NEVER disables the
     // PostgreSQL-only data plane.
-    let carried = store.control_get(PG_ENABLED_KEY).ok().flatten();
+    let carried = store.cached_get(PG_ENABLED_KEY).ok().flatten();
     if carried.is_some() {
         tracing::debug!(
             target: "fredo::pg_supervisor",
@@ -295,13 +295,13 @@ fn bootstrap(app_data_dir: &Path, store: &AppStore, enabled: bool) -> Bootstrap 
 /// with the headless daemon (Spec #2992 CU-2), which must use the SAME
 /// control-plane credential.
 pub(crate) fn ensure_password(store: &AppStore) -> String {
-    if let Ok(Some(password)) = store.control_get(PG_PASSWORD_KEY) {
+    if let Ok(Some(password)) = store.cached_get(PG_PASSWORD_KEY) {
         if !password.is_empty() {
             return password;
         }
     }
     let password = uuid::Uuid::new_v4().simple().to_string();
-    let _ = store.control_set(PG_PASSWORD_KEY, &password);
+    let _ = store.cached_set(PG_PASSWORD_KEY, &password);
     password
 }
 
@@ -504,6 +504,12 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf, data_dir: PathBuf) 
             // the engine. The SAME helper backs the CU-1 headless attach path, so
             // the two legs can never diverge.
             install_engine_on_pool(&engine, &runtime.connection_url(), &data_dir).await;
+
+            // Spec #3005 ST-2: hydrate the synchronous settings cache from
+            // PostgreSQL ONCE the pool is installed (R-2.2), applying the
+            // persisted tracing level through the reload handle. A hydration
+            // failure leaves the cache at defaults and never blocks boot (N-2).
+            let _ = store.hydrate().await;
 
             if let Ok(mut guard) = state.runtime.lock() {
                 *guard = Some(runtime);
@@ -720,6 +726,8 @@ async fn run_attach(app: AppHandle, headless: HeadlessDescriptor, data_dir: Path
     let password = ensure_password(&store);
     let url = attach_connection_url(DEFAULT_PG_HOST, headless.port, &password);
     install_engine_on_pool(&engine, &url, &data_dir).await;
+    // Spec #3005 ST-2: hydrate the synchronous cache on the attach leg too.
+    let _ = store.hydrate().await;
 
     state.set_attached(headless.port, headless.pid);
     tracing::info!(
@@ -968,7 +976,7 @@ mod tests {
 
         assert!(pg_enabled(&store), "absent flag still enables PostgreSQL");
         for raw in ["false", "FALSE", "False", "0", "no", "", "  false", "true"] {
-            store.control_set(PG_ENABLED_KEY, raw).expect("seed flag");
+            store.cached_set(PG_ENABLED_KEY, raw).expect("seed flag");
             assert!(
                 pg_enabled(&store),
                 "{raw:?} must not disable the PostgreSQL default"
@@ -977,24 +985,18 @@ mod tests {
     }
 
     #[test]
-    fn the_postgres_password_lives_on_the_control_plane() {
+    fn the_postgres_password_lives_on_the_synchronous_cache() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = open_store(dir.path());
 
         let password = ensure_password(&store);
         assert!(!password.is_empty(), "a password is generated on first use");
         assert_eq!(
-            store.control_get(PG_PASSWORD_KEY).expect("read"),
+            store.cached_get(PG_PASSWORD_KEY).expect("read"),
             Some(password.clone()),
-            "the password is persisted on the control plane"
+            "the password is held in the synchronous settings cache (ST-2)"
         );
-        assert!(
-            dir.path()
-                .join(crate::infrastructure::storage::CONTROL_DB_FILENAME)
-                .exists(),
-            "the control plane must be materialized on control.db (CU-1)"
-        );
-        // Reused, never regenerated.
+        // Reused, never regenerated (within a process).
         assert_eq!(ensure_password(&store), password);
     }
 
@@ -1026,7 +1028,7 @@ mod tests {
     fn enabled_bootstrap_acquires_the_lock_before_sweeping() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = open_store(dir.path());
-        store.control_set(PG_ENABLED_KEY, "true").expect("enable");
+        store.cached_set(PG_ENABLED_KEY, "true").expect("enable");
 
         match bootstrap(dir.path(), &store, true) {
             Bootstrap::Locked(lock, data_dir) => {
@@ -1046,7 +1048,7 @@ mod tests {
     fn a_second_bootstrap_reports_failed_with_a_structured_error() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = open_store(dir.path());
-        store.control_set(PG_ENABLED_KEY, "true").expect("enable");
+        store.cached_set(PG_ENABLED_KEY, "true").expect("enable");
         let held = PgDataDirLock::acquire(dir.path()).expect("hold the lock");
 
         match bootstrap(dir.path(), &store, true) {

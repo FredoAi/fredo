@@ -86,26 +86,26 @@ fn persist_managed_pid(app: &AppHandle, pid: Option<u32>) {
 
 fn set_last_error(app: &AppHandle, message: &str, code: DoomErrorCode) {
     let store = app.state::<Arc<AppStore>>();
-    let _ = store.control_set(DOOM_LAST_ERROR_KEY, message);
-    let _ = store.control_set(DOOM_LAST_ERROR_CODE_KEY, code.as_str());
+    let _ = store.cached_set(DOOM_LAST_ERROR_KEY, message);
+    let _ = store.cached_set(DOOM_LAST_ERROR_CODE_KEY, code.as_str());
 }
 
 fn clear_last_error(app: &AppHandle) {
     let store = app.state::<Arc<AppStore>>();
-    let _ = store.control_set(DOOM_LAST_ERROR_KEY, "");
-    let _ = store.control_set(DOOM_LAST_ERROR_CODE_KEY, "");
+    let _ = store.cached_set(DOOM_LAST_ERROR_KEY, "");
+    let _ = store.cached_set(DOOM_LAST_ERROR_CODE_KEY, "");
 }
 
 fn read_last_error(app: &AppHandle) -> (Option<String>, Option<DoomErrorCode>) {
     let store = app.state::<Arc<AppStore>>();
     let message = store
-        .control_get(DOOM_LAST_ERROR_KEY)
+        .cached_get(DOOM_LAST_ERROR_KEY)
         .ok()
         .flatten()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     let code = store
-        .control_get(DOOM_LAST_ERROR_CODE_KEY)
+        .cached_get(DOOM_LAST_ERROR_CODE_KEY)
         .ok()
         .flatten()
         .and_then(|value| DoomErrorCode::parse(&value));
@@ -122,7 +122,7 @@ fn env_u64(key: &str) -> Option<u64> {
 
 fn setting(app: &AppHandle, key: &str) -> Option<String> {
     app.state::<Arc<AppStore>>()
-        .control_get(key)
+        .cached_get(key)
         .ok()
         .flatten()
 }
@@ -1229,7 +1229,7 @@ mod tests {
         let store = open_store(dir.path());
         assert_eq!(
             store
-                .control_get(DOOM_PORT_KEY)
+                .cached_get(DOOM_PORT_KEY)
                 .ok()
                 .flatten()
                 .and_then(|v| v.trim().parse::<u16>().ok())
@@ -1242,17 +1242,17 @@ mod tests {
     fn error_persistence_round_trips_through_the_store() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = open_store(dir.path());
-        store.control_set(DOOM_LAST_ERROR_KEY, "boom").expect("set");
+        store.cached_set(DOOM_LAST_ERROR_KEY, "boom").expect("set");
         store
-            .control_set(DOOM_LAST_ERROR_CODE_KEY, "readyTimeout")
+            .cached_set(DOOM_LAST_ERROR_CODE_KEY, "readyTimeout")
             .expect("set code");
         assert_eq!(
-            store.control_get(DOOM_LAST_ERROR_KEY).ok().flatten().as_deref(),
+            store.cached_get(DOOM_LAST_ERROR_KEY).ok().flatten().as_deref(),
             Some("boom")
         );
         assert_eq!(
             store
-                .control_get(DOOM_LAST_ERROR_CODE_KEY)
+                .cached_get(DOOM_LAST_ERROR_CODE_KEY)
                 .ok()
                 .flatten()
                 .and_then(|v| DoomErrorCode::parse(&v)),

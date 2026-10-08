@@ -213,7 +213,7 @@ impl SpanCollector {
     /// Create a new SpanCollector.
     pub fn new(store: Arc<SpanStore>, app_store: Arc<AppStore>) -> Self {
         let enabled = app_store
-            .control_get("tracing.enabled")
+            .cached_get("tracing.enabled")
             .ok()
             .flatten()
             .map(|v| v == "true")
@@ -235,7 +235,7 @@ impl SpanCollector {
     pub fn refresh_enabled(&self) {
         let enabled = self
             .app_store
-            .control_get("tracing.enabled")
+            .cached_get("tracing.enabled")
             .ok()
             .flatten()
             .map(|v| v == "true")

@@ -319,7 +319,7 @@ pub fn is_step_complete(models_dir: &Path, manifest: &ModelManifest) -> bool {
 pub fn resolve_models_dir(app: &AppHandle) -> PathBuf {
     let configured = app
         .state::<Arc<AppStore>>()
-        .control_get(MODELS_DIR_KEY)
+        .cached_get(MODELS_DIR_KEY)
         .ok()
         .flatten();
     if let Some(dir) = configured {
@@ -340,7 +340,7 @@ pub fn resolve_models_dir(app: &AppHandle) -> PathBuf {
 pub fn resolve_manifest(app: &AppHandle) -> ModelManifest {
     let override_json = app
         .state::<Arc<AppStore>>()
-        .control_get(MODEL_MANIFEST_PATH_KEY)
+        .cached_get(MODEL_MANIFEST_PATH_KEY)
         .ok()
         .flatten();
     match load_manifest(override_json.as_deref()) {
