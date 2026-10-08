@@ -1,10 +1,10 @@
 //! `llama-server` executable resolution (Spec #2857 ST-1).
 //!
-//! Shared by `features/setup` (readiness detection) and `features/llm_server`
+//! Shared by `applications/setup` (readiness detection) and `applications/llm_server`
 //! (launch) so both consume ONE resolution order — configured
 //! `llama_server_path` → PATH `llama-server` → winget Links shim.
 //!
-//! PURE MOVE of the #2855 resolver out of `features/setup/commands.rs`; the
+//! PURE MOVE of the #2855 resolver out of `applications/setup/commands.rs`; the
 //! resolution order and the wire output of `check_companion_readiness` are
 //! unchanged.
 
@@ -17,7 +17,7 @@ use crate::infrastructure::storage::AppStore;
 pub const LLAMA_SERVER_BIN: &str = "llama-server";
 pub const LLAMA_SERVER_SETTING_KEY: &str = "llama_server_path";
 
-/// Resolve an executable on PATH (first match). Local helper — no cross-feature import.
+/// Resolve an executable on PATH (first match). Local helper — no cross-application import.
 fn find_on_path(bin: &str) -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     let finder = "where";

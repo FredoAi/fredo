@@ -1,8 +1,8 @@
 /**
- * Supporting types for FredoFeatureClass
+ * Supporting types for FredoApplicationClass
  */
 
-import type { FredoFeatureClass } from './FredoFeatureClass';
+import type { FredoApplicationClass } from './FredoApplicationClass';
 
 /**
  * Grid item configuration
@@ -19,5 +19,5 @@ export interface GridItemConfig {
  */
 export interface GridItem {
   id: string;
-  feature: FredoFeatureClass;
+  feature: FredoApplicationClass;
 }

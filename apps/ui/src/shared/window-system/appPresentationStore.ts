@@ -34,7 +34,7 @@
 
 import { useSyncExternalStore } from 'react';
 import { getControlSetting, saveControlSetting } from './controlSettingAccessor';
-import { getFeatures } from '../../features/featureRegistry';
+import { getApplications } from '../../applications/applicationRegistry';
 
 /** Where an app opens: inside the main Fredo window or in its own native window. */
 export type AppPresentation = 'same-window' | 'new-window';
@@ -111,7 +111,7 @@ function parseCanonicalMap(raw: string | null): unknown {
  * so its effective mode is forced to the default (Architect decision 6).
  */
 function isMultiWindowApp(appId: string): boolean {
-  return getFeatures().some((feature) => feature.id === appId && feature.isMultiWindow);
+  return getApplications().some((feature) => feature.id === appId && feature.isMultiWindow);
 }
 
 /**

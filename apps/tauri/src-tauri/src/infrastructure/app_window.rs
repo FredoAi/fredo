@@ -131,7 +131,7 @@ fn resolve_presentation(
 /// has no Terminal entry), else [`DEFAULT_APP_PRESENTATION`].
 ///
 /// The map is ONE KV read; the legacy read happens only on the pre-hydrate
-/// Terminal path, so the per-chunk [`crate::features::terminal::commands::terminal_host_label`]
+/// Terminal path, so the per-chunk [`crate::applications::terminal::commands::terminal_host_label`]
 /// hot path stays a single lookup + small parse in steady state.
 pub fn app_presentation(app: &AppHandle, app_id: &str) -> AppPresentation {
     let Some(store) = app.try_state::<Arc<AppStore>>() else {
@@ -202,9 +202,9 @@ pub async fn open_app_window(
 ) -> Result<(), String> {
     match app_id.as_str() {
         "terminal" => {
-            crate::features::terminal::commands::open_terminal_window_with_intent(&app, None).await
+            crate::applications::terminal::commands::open_terminal_window_with_intent(&app, None).await
         }
-        "doom" => crate::features::doom::commands::open_doom_window(app).await,
+        "doom" => crate::applications::doom::commands::open_doom_window(app).await,
         _ => open_generic_app_window(&app, &app_id, title),
     }
 }
@@ -212,17 +212,17 @@ pub async fn open_app_window(
 /// Close an app's native window if one is open; `Ok(true)` when one was closed.
 ///
 /// Terminal drains + tree-kills its sessions through the shipped
-/// [`crate::features::terminal::commands::close_terminal_window`]; Doom and
+/// [`crate::applications::terminal::commands::close_terminal_window`]; Doom and
 /// generic apps simply close their window (their `CloseRequested` handlers own
 /// teardown where one exists).
 #[tauri::command]
 pub async fn close_app_window(app_id: String, app: AppHandle) -> Result<bool, String> {
     if app_id == "terminal" {
         let existed = app
-            .get_webview_window(crate::features::terminal::commands::WINDOW_LABEL)
+            .get_webview_window(crate::applications::terminal::commands::WINDOW_LABEL)
             .is_some();
         if existed {
-            crate::features::terminal::commands::close_terminal_window(
+            crate::applications::terminal::commands::close_terminal_window(
                 app.clone(),
                 app.state(),
                 app.state(),

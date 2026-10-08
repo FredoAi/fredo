@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { act, cleanup, renderHook } from '@testing-library/react';
 
-import { settingsService } from '../../../features/settings';
+import { settingsService } from '../../../applications/settings';
 import { createDefaultKeymap, saveKeymap } from '../persistence';
 import {
   clearPendingSequence,

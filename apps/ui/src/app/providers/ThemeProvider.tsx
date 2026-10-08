@@ -23,7 +23,7 @@ import {
   LIFE_CELL_MIX,
   LIFE_NEUTRAL_BG_MIX,
   LIFE_SCRIM_WEIGHT,
-} from '../../features/home/components/background/life/lifeConstants';
+} from '../../applications/home/components/background/life/lifeConstants';
 
 export interface ThemeContextType {
   currentTheme: ThemeMode;

@@ -17,13 +17,13 @@
 
 import { adapterBridge } from '../utils/adapterBridge';
 import { getAppPresentation, hydrateAppPresentation } from './appPresentationStore';
-import type { FredoFeatureClass } from '../classes/FredoFeatureClass';
+import type { FredoApplicationClass } from '../classes/FredoApplicationClass';
 
 /** The shipped full-lifecycle in-window opener Home supplies to the ONE opener. */
-export type InWindowOpener = (id: string, feature: FredoFeatureClass) => void;
+export type InWindowOpener = (id: string, feature: FredoApplicationClass) => void;
 
 /** The user-facing opener signature — `openApp(id, feature)`. */
-export type AppOpener = (id: string, feature: FredoFeatureClass) => void;
+export type AppOpener = (id: string, feature: FredoApplicationClass) => void;
 
 /**
  * Open (or focus) an app's own native window. The backend opens the bespoke

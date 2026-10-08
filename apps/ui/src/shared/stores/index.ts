@@ -3,14 +3,14 @@
  *
  * Convention: each file in this directory is a lightweight module-scope store
  * for state that must survive across React tree unmounts or be shared between
- * a feature's class instance (FredoFeatureClass) and its components.
+ * a feature's class instance (FredoApplicationClass) and its components.
  *
  * SAD equivalent: the managed Tauri `State<T>` values registered in `lib.rs`.
  *
  * Guidelines:
  *   - Prefer `useState` / `useReducer` inside hooks for component-local state.
  *   - Use a store here only when state must outlive a component or be accessed
- *     from an FredoFeatureClass method (which has no hook access).
+ *     from an FredoApplicationClass method (which has no hook access).
  *   - Name files after the feature: `diagramStore.ts`, `terminalStore.ts`, etc.
  *   - Export a plain object or a factory function — no global singletons that
  *     make testing hard.

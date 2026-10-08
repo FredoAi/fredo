@@ -3,7 +3,7 @@
 //! The canonical field set is grounded in the de-facto shape produced by the
 //! OTLP adapter's normalization (`infrastructure/comm/adapters/otlp.rs`,
 //! Spec #551/#568 contract-trust pipeline) and consumed by the Mission Monitor
-//! frontend (`apps/ui/src/features/mission-monitor/`):
+//! frontend (`apps/ui/src/applications/mission-monitor/`):
 //!
 //! - Chat turn: `userMessage` / `agentReply` / `promptTokens` /
 //!   `completionTokens` / `cacheReadTokens` (per-turn delta, #2723) /

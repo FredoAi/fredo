@@ -4,7 +4,7 @@
 //! Neither CLI may be invoked from an agent shell (`docs/agentic-pipeline/permissions.md`
 //! denies direct `opencode` execution; only `copilot*` is allowlisted), so the probe
 //! runs **from product code** — this `#[ignore]`d integration test resolves each CLI
-//! exactly the way `features/terminal/commands.rs` does (`cli_candidates` order +
+//! exactly the way `applications/terminal/commands.rs` does (`cli_candidates` order +
 //! `where`, then the `.cmd`/`.bat` → `cmd.exe /C`, `.ps1` → `pwsh -File` launch
 //! wrapping) and runs `<cli> --help` plus any listing surface, printing a
 //! machine-readable summary.
@@ -35,12 +35,12 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_ECHO: usize = 12_000;
 
 /// The Windows candidate order for `opencode`, mirroring
-/// `features/terminal/commands.rs::cli_candidates` (native `.exe`, then the
+/// `applications/terminal/commands.rs::cli_candidates` (native `.exe`, then the
 /// `.cmd`/`.bat` shims, then the bare name).
 const OPENCODE_CANDIDATES: &[&str] = &["opencode.exe", "opencode.cmd", "opencode.bat", "opencode"];
 
 /// The Windows candidate order for `copilot`, mirroring
-/// `features/terminal/commands.rs::cli_candidates` (native `.exe`, then the
+/// `applications/terminal/commands.rs::cli_candidates` (native `.exe`, then the
 /// `.cmd`/`.bat` shims, then a `.ps1`, then the bare name).
 const COPILOT_CANDIDATES: &[&str] =
     &["copilot.exe", "copilot.cmd", "copilot.bat", "copilot.ps1", "copilot"];

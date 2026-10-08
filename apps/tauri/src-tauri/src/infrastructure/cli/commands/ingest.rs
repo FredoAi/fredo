@@ -1,7 +1,7 @@
 //! `fredo ingest` — the headless ingest daemon subcommand (Spec #2992, ST-5).
 //!
 //! The clap surface only. The daemon lifecycle lives in
-//! [`crate::features::pg_supervisor::headless::run_ingest_daemon`]; this struct
+//! [`crate::applications::pg_supervisor::headless::run_ingest_daemon`]; this struct
 //! is re-exported there as `IngestDaemonArgs` (the frozen names-block type).
 //!
 //! # Value mapping (G-296: CLI flag > env > default)

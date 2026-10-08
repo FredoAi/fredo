@@ -6,8 +6,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { ReactElement } from 'react';
 import type { IconType } from 'react-icons';
 
-import { FredoFeatureClass } from '../../classes/FredoFeatureClass';
-import { registerFeature } from '../../../features/featureRegistry';
+import { FredoApplicationClass } from '../../classes/FredoApplicationClass';
+import { registerApplication } from '../../../applications/applicationRegistry';
 import {
   getHotkeyAction,
   listHotkeyActions,
@@ -17,9 +17,9 @@ import {
   resetRegistryForTests,
   runHotkeyAction,
 } from '../registry';
-import type { FeatureHotkeyAction } from '../types';
+import type { ApplicationHotkeyAction } from '../types';
 
-function action(actionId: string, overrides: Partial<FeatureHotkeyAction> = {}): FeatureHotkeyAction {
+function action(actionId: string, overrides: Partial<ApplicationHotkeyAction> = {}): ApplicationHotkeyAction {
   return {
     actionId,
     title: `Action ${actionId}`,
@@ -214,7 +214,7 @@ describe('additive unavailableReason contract (Spec #2959 ST-2)', () => {
 
 describe('feature-instance discovery (R-2.1)', () => {
   it('inherits an empty frozen default contribution', () => {
-    class BareFeature extends FredoFeatureClass {
+    class BareFeature extends FredoApplicationClass {
       readonly id = 'bare-widget';
       readonly name = 'Bare';
       readonly icon = (() => null) as unknown as IconType;
@@ -230,11 +230,11 @@ describe('feature-instance discovery (R-2.1)', () => {
   });
 
   it('auto-discovers hotkeys declared on a registered feature instance', () => {
-    class DemoFeature extends FredoFeatureClass {
+    class DemoFeature extends FredoApplicationClass {
       readonly id = 'demo-widget';
       readonly name = 'Demo';
       readonly icon = (() => null) as unknown as IconType;
-      override readonly hotkeys: readonly FeatureHotkeyAction[] = [
+      override readonly hotkeys: readonly ApplicationHotkeyAction[] = [
         action('demo-widget.focus', { defaultSequence: 'g g' }),
       ];
       render(): ReactElement {
@@ -242,7 +242,7 @@ describe('feature-instance discovery (R-2.1)', () => {
       }
     }
 
-    registerFeature(new DemoFeature());
+    registerApplication(new DemoFeature());
 
     const entry = listHotkeyActions().find((row) => row.actionId === 'demo-widget.focus');
     expect(entry).toBeDefined();

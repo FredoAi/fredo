@@ -15,7 +15,7 @@ import {
   VIM_PRESET_ACTION_IDS,
   VIM_PRESET_SNAPSHOT_KEY,
 } from '../vimPreset';
-import type { FeatureHotkeyAction } from '../types';
+import type { ApplicationHotkeyAction } from '../types';
 
 function fredo(actionId: string, defaultSequence: string | null): void {
   registerFredoAction({ actionId, title: actionId, defaultSequence, run: () => {} });

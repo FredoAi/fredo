@@ -2,8 +2,8 @@
  * Spec #2946 ST-2 — the action registry + declared-action contribution API
  * (contract block 3, R-2.1/R-2.2/R-2.3).
  *
- * A feature declares hotkey actions ONCE (`FredoFeatureClass.hotkeys`); the
- * platform discovers every registered feature (`featureRegistry.getFeatures()`),
+ * A feature declares hotkey actions ONCE (`FredoApplicationClass.hotkeys`); the
+ * platform discovers every registered feature (`applicationRegistry.getApplications()`),
  * merges its declarations with explicitly-registered feature actions and the
  * Fredo-tier actions, and exposes ONE listing. No feature supplies listing code.
  *
@@ -17,14 +17,14 @@
  * an unchanged listing.
  */
 
-import { getFeatures } from '../../features/featureRegistry';
+import { getApplications } from '../../applications/applicationRegistry';
 import { parseSequence } from './keys';
 import { resolveBaseContextId } from './contexts';
 import {
   isValidHotkeyActionId,
   tierForActionId,
-  type FeatureHotkeyAction,
-  type FeatureHotkeyContext,
+  type ApplicationHotkeyAction,
+  type ApplicationHotkeyContext,
   type HotkeyActionId,
   type HotkeyContextId,
   type HotkeyInvocationContext,
@@ -36,15 +36,15 @@ import {
 /** The structural shape the registry discovers on a registered feature. */
 export interface HotkeyContributor {
   readonly id: string;
-  readonly hotkeys?: readonly FeatureHotkeyAction[];
+  readonly hotkeys?: readonly ApplicationHotkeyAction[];
   /** Spec #2958 — the feature's declared interaction contexts. */
-  readonly hotkeysContexts?: readonly FeatureHotkeyContext[];
+  readonly hotkeysContexts?: readonly ApplicationHotkeyContext[];
 }
 
 type HotkeyRun = (ctx: HotkeyInvocationContext) => void | Promise<void>;
 
 interface Declaration {
-  readonly action: FeatureHotkeyAction;
+  readonly action: ApplicationHotkeyAction;
   readonly featureId?: string;
 }
 
@@ -66,20 +66,20 @@ function invalidate(): void {
  * Register a Fredo-tier action (tier `fredo`, `fredo.` prefix expected — the
  * prefix is validated at list time and surfaced as `invalid` when wrong).
  */
-export function registerFredoAction(action: FeatureHotkeyAction): void {
+export function registerFredoAction(action: ApplicationHotkeyAction): void {
   fredoDeclarations.push({ action });
   invalidate();
 }
 
 /**
  * Register actions for a feature that does not declare them through
- * `FredoFeatureClass.hotkeys` (e.g. a non-class contributor). Declarations for a
- * feature already discovered via `registerFeature()` are ignored, so the same
+ * `FredoApplicationClass.hotkeys` (e.g. a non-class contributor). Declarations for a
+ * feature already discovered via `registerApplication()` are ignored, so the same
  * feature can never be listed twice.
  */
 export function registerFeatureHotkeys(
   featureId: string,
-  actions: readonly FeatureHotkeyAction[],
+  actions: readonly ApplicationHotkeyAction[],
 ): void {
   if (typeof featureId !== 'string' || featureId.length === 0) return;
   const existing = featureDeclarations.get(featureId) ?? [];
@@ -103,7 +103,7 @@ export function registerHotkeyHandler(
 }
 
 /** Validate ONE declaration; returns a human-readable diagnostic or `undefined`. */
-function validateDeclaration(action: FeatureHotkeyAction, featureId?: string): string | undefined {
+function validateDeclaration(action: ApplicationHotkeyAction, featureId?: string): string | undefined {
   if (!action || typeof action.actionId !== 'string') return 'Missing action id';
   const actionId = action.actionId;
   if (!isValidHotkeyActionId(actionId)) return `Malformed action id "${actionId}"`;
@@ -144,7 +144,7 @@ function collectDeclarations(): Declaration[] {
   const out: Declaration[] = [...fredoDeclarations];
   let features: readonly HotkeyContributor[] = [];
   try {
-    features = getFeatures();
+    features = getApplications();
   } catch {
     features = [];
   }
@@ -203,7 +203,7 @@ function buildList(): readonly RegisteredHotkeyAction[] {
 export function listHotkeyActions(): readonly RegisteredHotkeyAction[] {
   let featureCount = 0;
   try {
-    featureCount = getFeatures().length;
+    featureCount = getApplications().length;
   } catch {
     featureCount = 0;
   }

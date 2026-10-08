@@ -13,16 +13,16 @@ export { sendFeatureResponse, type GenericFeatureResponse } from './utils/featur
 export { tint } from './utils/colorTint';
 export type { DesktopCapable, McpCapable } from './capability';
 export {
-  featureStoreEnsureTable,
-  featureStoreInsert,
-  featureStoreQuery,
-  featureStoreUpdate,
-  featureStoreDelete,
-  type FeatureStoreColumnDef,
-  type FeatureStoreEnsureTableArgs,
-  type FeatureStoreInsertArgs,
-  type FeatureStoreQueryArgs,
-  type FeatureStoreUpdateArgs,
-  type FeatureStoreDeleteArgs,
-  type FeatureStoreRow,
-} from './lib/featureStore';
+  applicationStoreEnsureTable,
+  applicationStoreInsert,
+  applicationStoreQuery,
+  applicationStoreUpdate,
+  applicationStoreDelete,
+  type ApplicationStoreColumnDef,
+  type ApplicationStoreEnsureTableArgs,
+  type ApplicationStoreInsertArgs,
+  type ApplicationStoreQueryArgs,
+  type ApplicationStoreUpdateArgs,
+  type ApplicationStoreDeleteArgs,
+  type ApplicationStoreRow,
+} from './lib/applicationStore';

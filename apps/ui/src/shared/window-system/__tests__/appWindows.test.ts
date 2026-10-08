@@ -11,7 +11,7 @@
  *     the in-window opener (the native host is NOT touched);
  *   - a hydration read failure falls back to `same-window` (R-4).
  *
- * `controlSettingAccessor` + `featureRegistry` are mocked at the same seams as
+ * `controlSettingAccessor` + `applicationRegistry` are mocked at the same seams as
  * the sibling appPresentationStore test, so the suite stays host-agnostic.
  */
 
@@ -22,25 +22,25 @@ vi.mock('../controlSettingAccessor', () => ({
   saveControlSetting: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../../../features/featureRegistry', () => ({
-  getFeatures: vi.fn(() => []),
+vi.mock('../../../applications/applicationRegistry', () => ({
+  getApplications: vi.fn(() => []),
 }));
 
 import { adapterBridge } from '../../utils/adapterBridge';
 import { getControlSetting } from '../controlSettingAccessor';
-import { getFeatures } from '../../../features/featureRegistry';
+import { getApplications } from '../../../applications/applicationRegistry';
 import {
   APP_PRESENTATION_KEY,
   resetAppPresentationStoreForTests,
 } from '../appPresentationStore';
 import { closeAppOwnWindow, createAppOpener, openAppInOwnWindow } from '../appWindows';
-import type { FredoFeatureClass } from '../../classes/FredoFeatureClass';
+import type { FredoApplicationClass } from '../../classes/FredoApplicationClass';
 
 const getMock = getControlSetting as unknown as ReturnType<typeof vi.fn>;
-const getFeaturesMock = getFeatures as unknown as ReturnType<typeof vi.fn>;
+const getApplicationsMock = getApplications as unknown as ReturnType<typeof vi.fn>;
 
-const feature = (id: string, name: string): FredoFeatureClass =>
-  ({ id, name }) as unknown as FredoFeatureClass;
+const feature = (id: string, name: string): FredoApplicationClass =>
+  ({ id, name }) as unknown as FredoApplicationClass;
 
 const TERMINAL = feature('terminal', 'Terminal');
 const QUERY_VIEWER = feature('query-viewer', 'Query Viewer');
@@ -64,7 +64,7 @@ describe('appWindows (Spec #2955 ST-4 — native host seam + ONE opener)', () =>
   beforeEach(() => {
     vi.clearAllMocks();
     resetAppPresentationStoreForTests();
-    getFeaturesMock.mockReturnValue([]);
+    getApplicationsMock.mockReturnValue([]);
     stored({});
     invokeMock = vi.fn().mockResolvedValue(undefined);
     adapterBridge.setInvoke(invokeMock as never);
@@ -142,7 +142,7 @@ describe('appWindows (Spec #2955 ST-4 — native host seam + ONE opener)', () =>
   });
 
   it('defensively opens a factory (isMultiWindow) app in-window even if new-window is stored', async () => {
-    getFeaturesMock.mockReturnValue([{ id: 'query-viewer', isMultiWindow: true }]);
+    getApplicationsMock.mockReturnValue([{ id: 'query-viewer', isMultiWindow: true }]);
     stored({ 'query-viewer': 'new-window' });
     const inWindow = vi.fn();
 

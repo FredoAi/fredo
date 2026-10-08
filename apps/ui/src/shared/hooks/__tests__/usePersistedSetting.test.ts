@@ -10,7 +10,7 @@ import { renderHook, act, waitFor } from '@testing-library/react';
 import { usePersistedSetting } from '../usePersistedSetting';
 
 // Mock settingsService
-vi.mock('../../../features/settings', () => ({
+vi.mock('../../../applications/settings', () => ({
   settingsService: {
     get: vi.fn(),
     set: vi.fn().mockResolvedValue(undefined),
@@ -18,7 +18,7 @@ vi.mock('../../../features/settings', () => ({
   serializeValue: (v: unknown) => JSON.stringify(v),
 }));
 
-import { settingsService } from '../../../features/settings';
+import { settingsService } from '../../../applications/settings';
 
 describe('usePersistedSetting', () => {
   beforeEach(() => {

@@ -2,12 +2,12 @@
  * usePersistedSetting
  *
  * Drop-in replacement for useState + manual save calls.
- * All persistence is routed through `settingsService` (features/settings)
+ * All persistence is routed through `settingsService` (applications/settings)
  * which handles the Tauri SQLite write + localStorage fallback.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { settingsService, serializeValue } from '../../features/settings';
+import { settingsService, serializeValue } from '../../applications/settings';
 
 type Serialize<T> = (value: T) => string;
 type Deserialize<T> = (raw: string) => T;

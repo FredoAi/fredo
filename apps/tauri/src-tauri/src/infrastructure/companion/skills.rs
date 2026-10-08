@@ -10,7 +10,7 @@
 //! - The vocabulary here is deliberately mechanism-neutral: a skill is declared
 //!   as `name` / `description` / `parameters` and nothing more. The nouns of any
 //!   particular wire format belong to the mechanism adapter (ST-5), never here.
-//! - It imports no UI or feature module, performs **no execution** and does no
+//! - It imports no UI or application module, performs **no execution** and does no
 //!   window work: [`validate`] only checks a model-selected call against the
 //!   registry; execution is bound by the caller (ST-5).
 //!
@@ -27,7 +27,7 @@ pub const OPEN_APP_ARGUMENT: &str = "app";
 
 /// The capability sentence offered for `open_app` (mechanism-neutral).
 pub const OPEN_APP_DESCRIPTION: &str =
-    "Open a Fredo desktop app/feature by the name the user said. Use ONLY for an explicit open request.";
+    "Open a Fredo desktop app/application by the name the user said. Use ONLY for an explicit open request.";
 
 /// The declared input contract for `open_app`: exactly one required, non-empty
 /// string argument (`app`) — no other argument is declared, so extra arguments
@@ -50,7 +50,7 @@ pub const CLOSE_APP_ARGUMENT: &str = "app";
 
 /// The capability sentence offered for `close_app` (mechanism-neutral).
 pub const CLOSE_APP_DESCRIPTION: &str =
-    "Close an open Fredo desktop app/feature by the name the user said. Use ONLY for an explicit close request.";
+    "Close an open Fredo desktop app/application by the name the user said. Use ONLY for an explicit close request.";
 
 /// The declared input contract for `close_app`: exactly one required, non-empty
 /// string argument (`app`) — byte-for-byte the SAME shape as

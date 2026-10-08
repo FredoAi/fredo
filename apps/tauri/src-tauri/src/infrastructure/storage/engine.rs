@@ -9,7 +9,7 @@
 //! Scope of ST-1: types + helpers ONLY. No store method changes, no PG pool
 //! wiring. The SQLite path is byte-identical to the incumbent one
 //! (`SqliteEngine::open` reproduces the two incumbent connection conventions:
-//! the WAL write handle `FeatureStore` established and the `PRAGMA
+//! the WAL write handle `ApplicationStore` established and the `PRAGMA
 //! query_only=ON` read-only guard `ProjectionEngine` established).
 //!
 //! Later sub-tasks append to this module: ST-2 adds the bounded pool build +
@@ -29,8 +29,8 @@ use super::migration::{MigrationGate, MigrationOutcome, MigrationStatusView};
 pub const STORAGE_ENGINE_ENV: &str = "FREDO_STORAGE_ENGINE";
 
 /// The control-plane `settings` KV key that enables PostgreSQL. Mirrors
-/// `features::pg_supervisor::PG_ENABLED_KEY`; declared here (not imported) so
-/// `infrastructure/` never depends on a feature module.
+/// `applications::pg_supervisor::PG_ENABLED_KEY`; declared here (not imported) so
+/// `infrastructure/` never depends on an application module.
 const PG_ENABLED_KEY: &str = "postgres.enabled";
 
 // -- Pool + server tuning constants (Spec #2975, Q-6) -------------------------
@@ -306,7 +306,7 @@ impl EngineHandle {
 /// Spec #2979 CU-1-R2: PostgreSQL is UNCONDITIONAL — the historical `Sqlite`
 /// variant was removed because post-CU-2 there is no SQLite data plane to
 /// select. Single-variant by design, mirroring the
-/// [`crate::features::pg_supervisor::release_gate::ShippedDefault`] precedent.
+/// [`crate::applications::pg_supervisor::release_gate::ShippedDefault`] precedent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EngineChoice {
     Postgres,
@@ -346,7 +346,7 @@ fn resolve_engine_choice(_env: Option<&str>, _kv_enabled: Option<&str>) -> Engin
 /// Double-quote a dynamic SQL identifier, doubling any embedded `"` (Q-9).
 ///
 /// The ONLY identifier-quoting rule; identifiers are derived solely from
-/// [`crate::infrastructure::storage::feature_store::FeatureStore::validate_namespace`].
+/// [`crate::infrastructure::storage::application_store::ApplicationStore::validate_namespace`].
 pub fn quote_ident(ident: &str) -> String {
     format!("\"{}\"", ident.replace('"', "\"\""))
 }
@@ -372,7 +372,7 @@ fn lock_write<T>(rwlock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
 pub const PG_POOL_BUILD_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// A named stage of the bounded pool build. The **FS-4** injectable fault seam
-/// (`FREDO_PG_POOL_FORCE_FAIL`, owned by `features::pg_supervisor`) forces the
+/// (`FREDO_PG_POOL_FORCE_FAIL`, owned by `applications::pg_supervisor`) forces the
 /// build to fail AT one of these stages, so the fail-closed `Pending` outcome
 /// (no engine installed; there is NO SQLite data-plane fallback) is observable
 /// without corrupting a real data dir (G-275).
@@ -614,7 +614,7 @@ CREATE INDEX IF NOT EXISTS idx_metrics_name_time ON telemetry_metrics(metric_nam
 /// Create the three RTDB canonical `*_rows` tables on a PostgreSQL pool
 /// (idempotent). Runs the PostgreSQL arm of `RtdbStore::ensure_schema`.
 pub fn ensure_rtdb_rows_schema_on_pg(pool: &sqlx::PgPool) -> Result<()> {
-    super::feature_store::block_on_pg(async {
+    super::application_store::block_on_pg(async {
         sqlx::raw_sql(PG_RTDB_ROWS_DDL).execute(pool).await.map(|_| ())
     })?;
     Ok(())
@@ -624,7 +624,7 @@ pub fn ensure_rtdb_rows_schema_on_pg(pool: &sqlx::PgPool) -> Result<()> {
 /// PostgreSQL arm of `SpanStore::ensure_schema` / `ensure_logs_schema` /
 /// `ensure_metrics_schema`.
 pub fn ensure_telemetry_schema_on_pg(pool: &sqlx::PgPool) -> Result<()> {
-    super::feature_store::block_on_pg(async {
+    super::application_store::block_on_pg(async {
         sqlx::raw_sql(PG_TELEMETRY_DDL).execute(pool).await.map(|_| ())
     })?;
     Ok(())
@@ -639,7 +639,7 @@ impl StorageEngineState {
     /// ([`ensure_rtdb_rows_schema_on_pg`]) and `telemetry_spans` /
     /// `telemetry_logs` / `telemetry_metrics` ([`ensure_telemetry_schema_on_pg`]).
     /// They run against the candidate pool BEFORE it is installed, so the six
-    /// tables exist before any feature op. Like every registered initializer, a
+    /// tables exist before any application op. Like every registered initializer, a
     /// failure is fail-closed (the pool is never installed).
     pub fn register_slice3_pg_schema_inits(&self) {
         self.register_pg_schema_init(Arc::new(ensure_rtdb_rows_schema_on_pg));
@@ -683,7 +683,7 @@ pub struct StorageEngineStatus {
 /// A PostgreSQL schema initializer run against the **candidate** pool BEFORE it
 /// is installed into the swap-once handle (Spec #2975 ST-2 rework).
 ///
-/// Registered at startup in `lib.rs` (the feature-data metadata tables + the
+/// Registered at startup in `lib.rs` (the application-data metadata tables + the
 /// terminal record table). `Fn` (not `FnMut`) so it can be cloned out of the
 /// registry and run without holding the registry lock.
 pub type PgSchemaInit = Arc<dyn Fn(&sqlx::PgPool) -> Result<()> + Send + Sync>;
@@ -720,7 +720,7 @@ impl StorageEngineState {
 
     /// Register a schema initializer to run against the candidate pool BEFORE
     /// the engine is installed. Populated at startup so the full startup schema
-    /// set exists on PostgreSQL before any feature operation.
+    /// set exists on PostgreSQL before any application operation.
     pub fn register_pg_schema_init(&self, init: PgSchemaInit) {
         lock(&self.schema_inits).push(init);
     }

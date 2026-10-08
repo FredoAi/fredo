@@ -524,7 +524,7 @@ describe('PO#13 — zero shortcut-usage telemetry', () => {
   it('macros.ts and MacroEditor.tsx contain no telemetry emission path', () => {
     for (const relative of [
       'src/shared/hotkeys/macros.ts',
-      'src/features/settings-app/components/MacroEditor.tsx',
+      'src/applications/settings-app/components/MacroEditor.tsx',
     ]) {
       const source = readFileSync(resolve(process.cwd(), relative), 'utf8');
       const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
@@ -537,7 +537,7 @@ describe('PO#13 — zero shortcut-usage telemetry', () => {
 
 describe('MacroEditor source token hygiene', () => {
   const SOURCE = readFileSync(
-    resolve(process.cwd(), 'src/features/settings-app/components/MacroEditor.tsx'),
+    resolve(process.cwd(), 'src/applications/settings-app/components/MacroEditor.tsx'),
     'utf8',
   );
   const code = SOURCE.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');

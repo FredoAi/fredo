@@ -11,7 +11,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { settingsService } from '../../../features/settings';
+import { settingsService } from '../../../applications/settings';
 import {
   INTRO_SEEN_STORAGE_KEY,
   INTRO_SEEN_STORAGE_VALUE,

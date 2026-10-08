@@ -6,7 +6,7 @@
  * PURE/registry by design: declarations + ONE deterministic resolution function
  * and helpers, with NO DOM, NO React and NO navigation-stack state — the
  * module-scoped stack lives in `contextStack.ts` (ST-2). The only ambient read
- * is the registered-feature list (`getFeatures()`), exactly like `registry.ts`.
+ * is the registered-feature list (`getApplications()`), exactly like `registry.ts`.
  *
  * DEPTH semantics (binding): depth is the PATH LENGTH — base only = 1; each
  * explicit descent adds 1. `getHotkeyContextPath()` (ST-2) returns
@@ -30,12 +30,12 @@
  * defaultSequence: s })))`. Entries with an `invalid` diagnostic are dropped.
  */
 
-import { getFeatures } from '../../features/featureRegistry';
+import { getApplications } from '../../applications/applicationRegistry';
 import { parseSequence } from './keys';
 import {
   ROOT_CONTEXT_ID,
   isValidHotkeyActionId,
-  type FeatureHotkeyContext,
+  type ApplicationHotkeyContext,
   type HotkeyContextId,
   type RegisteredHotkeyAction,
   type ResolvedBinding,
@@ -55,11 +55,11 @@ export interface RegisteredHotkeyContext {
 /** The structural shape the registry discovers on a registered feature. */
 export interface HotkeyContextContributor {
   readonly id: string;
-  readonly hotkeysContexts?: readonly FeatureHotkeyContext[];
+  readonly hotkeysContexts?: readonly ApplicationHotkeyContext[];
 }
 
 interface ContextDeclaration {
-  readonly context: FeatureHotkeyContext;
+  readonly context: ApplicationHotkeyContext;
   readonly featureId?: string;
 }
 
@@ -77,7 +77,7 @@ const ROOT_CONTEXT: RegisteredHotkeyContext = Object.freeze({
 
 /** Explicit platform (`fredo.*`) declarations, in registration order. */
 const platformDeclarations: ContextDeclaration[] = [];
-/** Explicit feature declarations only for features NOT discovered via `getFeatures()`. */
+/** Explicit feature declarations only for features NOT discovered via `getApplications()`. */
 const explicitFeatureContexts = new Map<string, ContextDeclaration[]>();
 
 let registryRevision = 0;
@@ -95,7 +95,7 @@ function invalidate(): void {
  * `featureId`; a feature context passes its owning `featureId` (the id must be
  * `<featureId>.`-prefixed — validated at list time).
  */
-export function registerHotkeyContext(context: FeatureHotkeyContext, featureId?: string): void {
+export function registerHotkeyContext(context: ApplicationHotkeyContext, featureId?: string): void {
   if (!context || typeof context !== 'object') return;
   if (featureId === undefined) {
     platformDeclarations.push({ context });
@@ -110,12 +110,12 @@ export function registerHotkeyContext(context: FeatureHotkeyContext, featureId?:
 
 /**
  * Register the contexts a feature declares. Declarations for a feature already
- * discovered through `FredoFeatureClass.hotkeysContexts` are ignored, so a
+ * discovered through `FredoApplicationClass.hotkeysContexts` are ignored, so a
  * feature can never be listed twice (mirrors `registerFeatureHotkeys`).
  */
-export function registerFeatureHotkeyContexts(
+export function registerApplicationHotkeyContexts(
   featureId: string,
-  contexts: readonly FeatureHotkeyContext[],
+  contexts: readonly ApplicationHotkeyContext[],
 ): void {
   if (typeof featureId !== 'string' || featureId.length === 0) return;
   if (!Array.isArray(contexts) || contexts.length === 0) return;
@@ -132,7 +132,7 @@ function collectFeatures(): CollectedFeature[] {
 
   let features: readonly HotkeyContextContributor[] = [];
   try {
-    features = getFeatures();
+    features = getApplications();
   } catch {
     features = [];
   }
@@ -247,7 +247,7 @@ function buildList(): readonly RegisteredHotkeyContext[] {
 export function listHotkeyContexts(): readonly RegisteredHotkeyContext[] {
   let featureCount = 0;
   try {
-    featureCount = getFeatures().length;
+    featureCount = getApplications().length;
   } catch {
     featureCount = 0;
   }

@@ -6,7 +6,7 @@ export { ThemeProvider, useTheme, ThemeContext } from './app/providers/ThemeProv
 export type { ThemeContextType } from './app/providers/ThemeProvider';
 
 // ── Settings service ──────────────────────────────────────────────────────────
-export { settingsService, serializeValue } from './features/settings';
+export { settingsService, serializeValue } from './applications/settings';
 
 export { StreamProvider, useStream } from './shared/contexts/StreamContext';
 
@@ -124,7 +124,7 @@ export type { GenericFeatureResponse } from './shared/utils/featureResponseApi';
 export { API_BASE_URL, STEP_STATUSES } from './shared/constants';
 
 // ── Feature classes ───────────────────────────────────────────────────────────
-export { FredoFeatureClass } from './shared/classes/FredoFeatureClass';
+export { FredoApplicationClass } from './shared/classes/FredoApplicationClass';
 export type { GridItemConfig } from './shared/classes/types';
 
 // ── Hotkeys (Spec #2946 ST-2) ─────────────────────────────────────────────────
@@ -192,7 +192,7 @@ export {
 } from './shared/hotkeys/persistence';
 export type { RecordingLatch } from './shared/hotkeys/persistence';
 export type {
-  FeatureHotkeyAction,
+  ApplicationHotkeyAction,
   HotkeyActionId,
   HotkeyCandidate,
   HotkeyEvent,

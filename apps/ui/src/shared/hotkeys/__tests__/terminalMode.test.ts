@@ -17,7 +17,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { settingsService } from '../../../features/settings';
+import { settingsService } from '../../../applications/settings';
 import { getAnnouncement, resetHotkeyAnnouncer } from '../announcer';
 import {
   BODY_PASSTHROUGH_ATTR as ENGINE_PASSTHROUGH_ATTR,

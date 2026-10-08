@@ -11,10 +11,28 @@ Pipeline-process rules (research, references, sandbox behaviour) live in
 
 ---
 
+## Human-owned touchpoints (never pipeline-edited)
+
+Two repo-root files are **human-owned**: the pipeline and its agents MUST NOT edit them, and a
+required update to either is a **human follow-up**, not an automated change. They are listed
+here (and in `docs/README.md`) rather than changed by the rename of the app concept to
+**application**:
+
+- **`AGENTS.md`** — the human/agent operating guide. `opencode.json` injects it into every
+  agent session; its content is the human's to maintain.
+- **`opencode.json`** — the agent/session configuration (instructions, permissions, model).
+  Only the agent `permission` blocks are machine-editable (via the pipeline `set-permission`
+  action); everything else is human-owned.
+
+When a rename or refactor reaches a reference to `AGENTS.md` or `opencode.json`, update the
+reference in documentation and leave the two files themselves for the human.
+
+---
+
 ## Backend (Rust/Tauri)
 
 - Never create follow-up backlog issues from within a spec. The pipeline loops until all ACs pass. If an AC is blocked by infrastructure or architectural constraints, loop back to Phase 2 (Architect) and redesign the spec scope to include those fixes. The human alone abandons a spec.
-- No cross-feature imports — features never import from other features
+- No cross-application imports — applications never import from other applications
 - Always use `tauri::async_runtime::spawn` — never `tokio::spawn` (panics with "no reactor")
 - Register new commands in `lib.rs` → `AppRuntime`
 - Zero warnings — do not suppress with `#[allow(...)]`
@@ -24,28 +42,28 @@ Pipeline-process rules (research, references, sandbox behaviour) live in
 - Serde: structs crossing IPC use `#[serde(rename_all = "camelCase")]`; enums use `#[serde(rename_all = "PascalCase")]`
 - clap: use `#[derive(Parser)]`; keep `Args` structs small and focused
 - Error handling: use `anyhow::Result`; propagate with `?`, never `unwrap()`
-- State belongs in the feature module, not in `infrastructure/`
+- State belongs in the application module, not in `infrastructure/`
 - Emit events via `EventBus`, never call `app_handle.emit()` directly
 - MCP bridge binds to `127.0.0.1:9223` (localhost only, pinned in `lib.rs`) — deterministic, no port scanning
 - OTLP receivers bind to `127.0.0.1:4317` (gRPC) and `127.0.0.1:4318` (HTTP); only spans reach the UI, metrics/logs dropped
 - **OTel GenAI semantic conventions are the source of truth** for all `gen_ai.*` emission from `apps/opencode-plugin` (spans, agent spans, events, exceptions, metrics). Reference: https://github.com/open-telemetry/semantic-conventions-genai/tree/main/docs/gen-ai/ (files: `gen-ai-spans.md`, `gen-ai-agent-spans.md`, `gen-ai-events.md`, `gen-ai-exceptions.md`, `gen-ai-metrics.md`). Any attribute emitted under `gen_ai.*` MUST match a key defined in that registry; a convention the spec renamed (e.g. legacy `gen_ai.system` → `gen_ai.provider.name`) MUST be emitted under its current spec name. Deviations require a PO-amended acceptance criterion — triage may never silently substitute an AC's observable key.
-- Companion inference runs out-of-process via a managed `llama-server` sidecar (installed from Companion setup, launched only through the managed server feature); the in-process `LlmEngine` is retired. Never spawn `llama-server` ad-hoc from feature code.
+- Companion inference runs out-of-process via a managed `llama-server` sidecar (installed from Companion setup, launched only through the managed server application); the in-process `LlmEngine` is retired. Never spawn `llama-server` ad-hoc from application code.
 
 ## Frontend (React/TypeScript)
 
-- All grid features extend `FredoFeatureClass`
+- All grid applications extend `FredoApplicationClass`
 - Never statically import `@tauri-apps/api` — only dynamic imports in `TauriAdapter.ts`
 - Use `adapterBridge.invoke()` for Tauri commands from non-React code
 - Use `crypto.randomUUID()` — no `uuid` package installed
-- Register features via `registerFeature()` in `index.ts`
-- Never edit `Home.tsx` to add features — it calls `getFeatures()` automatically
+- Register applications via `registerApplication()` in `index.ts`
+- Never edit `Home.tsx` to add applications — it calls `getApplications()` automatically
 - All public API consumed by `apps/tauri` must be exported from `src/index.ts`
-- Features read live agent activity via `useEventRows(eventType, args, options)` — typed RTDB row queries with replay + live patches; `ready` resolves on the backend's per-query replay-completion marker, never on subscribe resolution alone
+- Applications read live agent activity via `useEventRows(eventType, args, options)` — typed RTDB row queries with replay + live patches; `ready` resolves on the backend's per-query replay-completion marker, never on subscribe resolution alone
 - The row store is module-scoped (`StreamContext.tsx`): `insert` spread-merges so init-time fields survive, `update` carries seq-guarded stale-patch drops, `remove` is only ever retention eviction. Do not bypass these semantics.
 - The backend filters per-query by declared args, but the partition map is shared per event type — arg-scoped consumers filter their own rows client-side (epoch-keyed memo)
 - StreamContext carries only the connection flag + the row store — derive display state via `useMemo`/`useSyncExternalStore` off the row-store epoch, never poll the backend
-- **Persistence across mount/unmount:** React refs (`useRef`) reset on every component mount — do NOT use them to track state that must survive component close/reopen cycles (e.g. deleted session IDs, user preferences). Use module-scoped state (module-level `Map`/`Set`, the FeatureStore, or the `AppStore` control plane) instead.
-- **SQLite FeatureStore upserts:** Use `featureStoreUpdate` (atomic UPDATE) to modify existing rows. Never use `featureStoreDelete` + `featureStoreInsert` as an upsert — the delete+insert window allows concurrent operations to interleave.
+- **Persistence across mount/unmount:** React refs (`useRef`) reset on every component mount — do NOT use them to track state that must survive component close/reopen cycles (e.g. deleted session IDs, user preferences). Use module-scoped state (module-level `Map`/`Set`, the ApplicationStore, or the `AppStore` control plane) instead.
+- **SQLite ApplicationStore upserts:** Use `applicationStoreUpdate` (atomic UPDATE) to modify existing rows. Never use `applicationStoreDelete` + `applicationStoreInsert` as an upsert — the delete+insert window allows concurrent operations to interleave.
 - **Ordered async persistence:** When persisting multiple items where order or completeness matters (e.g., delivery events before updating delivery count), use `await` inside the loop, not fire-and-forget. Wrap in an async IIFE if inside a non-async effect.
 - **Row patch merging is never full replacement:** update patches carry partial content. The store spread-merges (`{ ...row, ...patch }`) — init-time data (user message, session metadata) survives through subsequent patches. Never reintroduce code that replaces whole row objects from a patch.
 - **ReactFlow edges second-pass:** When building ReactFlow graphs, build all nodes first (pass 1), then build all edges (pass 2) referencing the complete node set via `Set<string>`. Never create edges interleaved with node creation — `nodeOrder` may reorder entries across graph rebuilds, causing parent-existence checks to fail when children appear before parents.
@@ -60,9 +78,9 @@ Pipeline-process rules (research, references, sandbox behaviour) live in
 ## Chakra UI v3
 
 - v3 only — use `disabled` not `isDisabled`, `loading` not `isLoading`, `colorPalette` not `colorScheme`
-- **All colors come from the theming feature — never hardcode hex/rgba.** The color flow: Chakra semantic tokens (`bg.*`, `fg.*`, `accent.*`, `status.*`, `border.*` in `apps/ui/src/app/theme/system.ts`) → CSS variables (`--body-bg`, `--card-bg`, `--text-primary`, `--accent-primary`, `--status-*`, set by `ThemeProvider`) → user theme (light/dark + accent via the theming feature). Components read a token (`bg="bg.surface"`) or its var (`bg="var(--card-bg)"`), never a raw value. The theming feature must be able to restyle every surface by changing only its token definitions.
+- **All colors come from the theming application — never hardcode hex/rgba.** The color flow: Chakra semantic tokens (`bg.*`, `fg.*`, `accent.*`, `status.*`, `border.*` in `apps/ui/src/app/theme/system.ts`) → CSS variables (`--body-bg`, `--card-bg`, `--text-primary`, `--accent-primary`, `--status-*`, set by `ThemeProvider`) → user theme (light/dark + accent via the theming application). Components read a token (`bg="bg.surface"`) or its var (`bg="var(--card-bg)"`), never a raw value. The theming application must be able to restyle every surface by changing only its token definitions.
 - **Tint/hover variants use `color-mix` via the shared `tint()` helper** (`apps/ui/src/shared/utils/colorTint.ts`): `tint('var(--accent-primary)', 22)` → `color-mix(in srgb, var(--accent-primary) 22%, transparent)` — NOT `rgba(147,51,234,0.2)` (a hardcoded alpha purple that ignores the user's accent choice). **NEVER alpha-append onto a var() reference** — `var(--accent-primary)22` is INVALID CSS: var() substitution splices tokens without re-lexing, so the appended digits stay a separate token and the browser drops the whole declaration at computed-value time (#2770 round 5: this silently killed the Mission Monitor stripe/borders everywhere it was used). Alpha-append is valid ONLY on literal hex strings (e.g. `` `${'#a855f7'}28` `` — JS concatenation yields a valid 8-digit hex before CSS parsing). `color-mix()` computes live from the var at paint time, so user accent/theme overrides re-tint every surface with zero extra code; Chromium 111+ (WebView2 evergreen).
-- **Token-first:** a color with no token must be ADDED to the theming feature before it is used — a semantic token in `system.ts` mapped to a CSS var with light + dark values in the theme. No one-off inline colors in components.
+- **Token-first:** a color with no token must be ADDED to the theming application before it is used — a semantic token in `system.ts` mapped to a CSS var with light + dark values in the theme. No one-off inline colors in components.
 - Allowed literals: `transparent`, `inherit`, `currentColor`, `none`, and non-UI-chrome data/art palettes (terminal ANSI colors, 3D canvas particles) — migrate even those to theme vars where feasible.
 - Compound components: `<Tabs.Root>`, `<Dialog.Root>`, `<Field.Root>`
 - **`NativeSelect` component:** `NativeSelect.Root` + `NativeSelect.Field` + `NativeSelect.Indicator` render a native HTML `<select>` element that does NOT inherit Chakra theme tokens (`--card-bg`, `--text-primary`, `--border-color`). The result is unstyled browser-default dropdowns that don't adapt to Fredo's theme. Prefer `<chakra.select>` with explicit CSS variable props (`bg`, `borderColor`, `color`, `_hover`, `_focus`, `_disabled`) for dropdowns that must match the application theme. Spec #431 fix (PR #437): replaced 3 NativeSelect usages with `chakra.select` + CSS variable props.
@@ -70,9 +88,9 @@ Pipeline-process rules (research, references, sandbox behaviour) live in
 
 ## Settings UI Hierarchy (Spec #396, updated Spec #2868)
 
-- **The live settings surface** is `apps/ui/src/features/settings-app/components/SettingsSurface.tsx` — a sidebar-nav surface with static sections (Companion, Appearance, Fredo Setup, Telemetry) plus auto-discovered feature-level sections via `hasSettings` + `renderSettings()`. The **Appearance** pane renders `ThemingSettings` (the dock-position control `DockPositionSettings` was removed with the persistent dock in Spec #2954).
-- **`ProfileSettingsModal.tsx` (`features/home/components/`) and `SettingsPanel.tsx` are RETIRED** — Spec #2868 removed them. Do NOT target either for new settings; do NOT cite their paths in specs or dispatch briefs. Verify the host path exists before wiring anything into it (G-207).
-- When the Architect's spec **forbidden_changes** lists the settings surface shell, that is a signal that the settings shell must not be modified — but the feature's settings content must be wired INTO it. The Architect MUST include the wiring in the capsule that creates the settings UI component (add nav item + content section to `SettingsSurface.tsx`).
+- **The live settings surface** is `apps/ui/src/applications/settings-app/components/SettingsSurface.tsx` — a sidebar-nav surface with static sections (Companion, Appearance, Fredo Setup, Telemetry) plus auto-discovered application-level sections via `hasSettings` + `renderSettings()`. The **Appearance** pane renders `ThemingSettings` (the dock-position control `DockPositionSettings` was removed with the persistent dock in Spec #2954).
+- **`ProfileSettingsModal.tsx` (`applications/home/components/`) and `SettingsPanel.tsx` are RETIRED** — Spec #2868 removed them. Do NOT target either for new settings; do NOT cite their paths in specs or dispatch briefs. Verify the host path exists before wiring anything into it (G-207).
+- When the Architect's spec **forbidden_changes** lists the settings surface shell, that is a signal that the settings shell must not be modified — but the application's settings content must be wired INTO it. The Architect MUST include the wiring in the capsule that creates the settings UI component (add nav item + content section to `SettingsSurface.tsx`).
 
 ---
 

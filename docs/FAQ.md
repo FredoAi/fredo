@@ -4,7 +4,7 @@
 
 ### What is Fredo?
 
-Fredo is a desktop platform for working with AI coding agents. It packages a Rust backend (Tauri v2) and a reactive React 19 UI into a single desktop app. Agents send telemetry to local OTLP receivers, which persist every raw span/metric/log on receipt and then classify each one onto canonical rows. Those rows stream to the UI in real time as row deliveries, and declarative frontend features subscribe to them via `useEventRows` — no polling. Fredo also includes local OTLP receivers (gRPC :4317, HTTP :4318) and a companion backed by a managed out-of-process `llama-server`.
+Fredo is a desktop platform for working with AI coding agents. It packages a Rust backend (Tauri v2) and a reactive React 19 UI into a single desktop app. Agents send telemetry to local OTLP receivers, which persist every raw span/metric/log on receipt and then classify each one onto canonical rows. Those rows stream to the UI in real time as row deliveries, and declarative frontend applications subscribe to them via `useEventRows` — no polling. Fredo also includes local OTLP receivers (gRPC :4317, HTTP :4318) and a companion backed by a managed out-of-process `llama-server`.
 
 ### Is this a commercial product?
 
@@ -25,7 +25,7 @@ Raw telemetry is persisted on receipt and then classified by the **RTDB ingest c
 
 ### Can I use Fredo entirely with the keyboard?
 
-Yes — Fredo ships a keyboard-first hotkey system (Spec #2946). Press `?` anywhere outside a text field for a searchable cheat sheet. `Ctrl+Space` opens the launcher, `Ctrl+Shift+P` opens its action list (type `>` for the same list), `Ctrl+Tab` / `Ctrl+Shift+Tab` (or `Ctrl+1..9`) move focus between windows, and `g g` jumps to the first window. Both app-global and feature-local shortcuts appear in one listing under **Settings → Hotkeys**, where you can search, rebind (conflicts are surfaced before they take effect), reset, and opt into a Vim preset (leader = Space, `hjkl`). Multi-key sequences and named or recorded macros are supported; typed text is never captured by a recording. Your changes persist across restarts. While a terminal session has focus every key goes to the shell except `Ctrl+Shift+F10`, which releases the keyboard back to Fredo. Fredo also understands **named interaction contexts** (Spec #2958): a key can mean different things in a deeper part of an app than at its top level, an action can take you one level deeper, and `Escape` steps back exactly one level — restoring the actions of the context you came from — while at the top level `Escape` keeps its usual behaviour. Each context change is shown as a labelled indicator and announced to screen readers. As a shipped demonstration, `Ctrl+K` descends into a reference context where `y` does something that `y` does not do at the top level. Real per-app sets now ship (Spec #2961): Mission Monitor, the Infrastructure Diagram, My Work Items, Feature Flags, and Dev Mode each declare their own keys while focused — so the same key does different things in different apps, the current meaning is always shown beside the key, and an action that is not available right now is shown as unavailable with a reason rather than as a dead entry. `Ctrl+Shift+F8` toggles **keyboard mode** (Spec #2959): while it is on, a persistent key bar at the bottom edge always shows the actions your current context offers, each with its key, and it follows you live as you descend, step back, or change the focused app — no re-entry needed. The bar never steals your typing, focus, or clicks; it is hidden while a terminal owns the keyboard, and it tells a screen reader the mode, the context, and a short list of available actions on entry and on every context change. Fredo also tells you which regime you are in (Spec #2960): while you are typing in a field a persistent **Typing** signal says letters are text and navigation keys are inactive, outside a field it reads **Navigating** (and notes when keyboard mode is on), and each change is announced to screen readers — never signalled by colour alone. A **Keys** button is always on screen: activate it to see the current context's keys and how to turn on keyboard mode, so you can discover the model without knowing any chord. On first use a short, dismissible card introduces this once and never returns. An action that is declared but not currently usable (for example, a bare key while you are typing) is shown as unavailable with the reason, and a context with no actions shows a clear empty state rather than a blank bar.
+Yes — Fredo ships a keyboard-first hotkey system (Spec #2946). Press `?` anywhere outside a text field for a searchable cheat sheet. `Ctrl+Space` opens the launcher, `Ctrl+Shift+P` opens its action list (type `>` for the same list), `Ctrl+Tab` / `Ctrl+Shift+Tab` (or `Ctrl+1..9`) move focus between windows, and `g g` jumps to the first window. Both app-global and application-local shortcuts appear in one listing under **Settings → Hotkeys**, where you can search, rebind (conflicts are surfaced before they take effect), reset, and opt into a Vim preset (leader = Space, `hjkl`). Multi-key sequences and named or recorded macros are supported; typed text is never captured by a recording. Your changes persist across restarts. While a terminal session has focus every key goes to the shell except `Ctrl+Shift+F10`, which releases the keyboard back to Fredo. Fredo also understands **named interaction contexts** (Spec #2958): a key can mean different things in a deeper part of an app than at its top level, an action can take you one level deeper, and `Escape` steps back exactly one level — restoring the actions of the context you came from — while at the top level `Escape` keeps its usual behaviour. Each context change is shown as a labelled indicator and announced to screen readers. As a shipped demonstration, `Ctrl+K` descends into a reference context where `y` does something that `y` does not do at the top level. Real per-app sets now ship (Spec #2961): Mission Monitor, the Infrastructure Diagram, My Work Items, Feature Flags, and Dev Mode each declare their own keys while focused — so the same key does different things in different apps, the current meaning is always shown beside the key, and an action that is not available right now is shown as unavailable with a reason rather than as a dead entry. `Ctrl+Shift+F8` toggles **keyboard mode** (Spec #2959): while it is on, a persistent key bar at the bottom edge always shows the actions your current context offers, each with its key, and it follows you live as you descend, step back, or change the focused app — no re-entry needed. The bar never steals your typing, focus, or clicks; it is hidden while a terminal owns the keyboard, and it tells a screen reader the mode, the context, and a short list of available actions on entry and on every context change. Fredo also tells you which regime you are in (Spec #2960): while you are typing in a field a persistent **Typing** signal says letters are text and navigation keys are inactive, outside a field it reads **Navigating** (and notes when keyboard mode is on), and each change is announced to screen readers — never signalled by colour alone. A **Keys** button is always on screen: activate it to see the current context's keys and how to turn on keyboard mode, so you can discover the model without knowing any chord. On first use a short, dismissible card introduces this once and never returns. An action that is declared but not currently usable (for example, a bare key while you are typing) is shown as unavailable with the reason, and a context with no actions shows a clear empty state rather than a blank bar.
 
 Nested keyboard flows (Spec #2962) extend this: an app can nest more than two levels deep, the same key can deliberately mean different things at each level (the current meaning is always shown in the key bar, and a key shadowed by a deeper level is shown as unavailable with a `Shadowed by …` reason), and `Escape` steps back exactly one level at a time from the deepest level to the top. As a shipped demonstration, Mission Monitor nests Sessions → Graph → Node detail, where `n`/`p`/`o` are reused at every level. Leaving the app or closing its window while nested clears the nested state, so re-entering always starts at the top level.
 
@@ -61,21 +61,21 @@ See `docs/SETUP.md` for full prerequisites.
 - Windows: WebView2 (bundled with Windows 10+)
 - macOS: Xcode Command Line Tools
 
-### How do I add a new UI feature?
+### How do I add a new UI application?
 
-1. Create `apps/ui/src/features/<name>/`
-2. Add `<Name>Feature.tsx` extending `FredoFeatureClass` — set `id`, `name`, `icon`, `showable`, and `render()`
-3. Add `index.ts` that calls `registerFeature(new <Name>Feature())`
-4. The feature is auto-discovered by `allFeatures.ts` via `import.meta.glob` — no manual import needed
+1. Create `apps/ui/src/applications/<name>/`
+2. Add `<Name>Feature.tsx` extending `FredoApplicationClass` — set `id`, `name`, `icon`, `showable`, and `render()`
+3. Add `index.ts` that calls `registerApplication(new <Name>Feature())`
+4. The application is auto-discovered by `allApplications.ts` via `import.meta.glob` — no manual import needed
 
-The feature appears in the navigation grid if `showable = true`. To consume live agent activity, subscribe to the RTDB row store with `useEventRows(eventType, args, options)` inside `render()` — see the docs below.
+The application appears in the navigation grid if `showable = true`. To consume live agent activity, subscribe to the RTDB row store with `useEventRows(eventType, args, options)` inside `render()` — see the docs below.
 
-### How do I add a new Rust feature?
+### How do I add a new Rust application?
 
-1. Create `src-tauri/src/features/<name>/` with `mod.rs`, `commands.rs`, and any `models.rs` / `service.rs` / `state.rs` needed
+1. Create `src-tauri/src/applications/<name>/` with `mod.rs`, `commands.rs`, and any `models.rs` / `service.rs` / `state.rs` needed
 2. Implement `DesktopCapable` (and/or `CliCapable`) in `mod.rs`
-3. Register the feature's Tauri state and command handlers in `lib.rs` → `AppRuntime`
-4. Re-export the module in `features/mod.rs`
+3. Register the application's Tauri state and command handlers in `lib.rs` → `AppRuntime`
+4. Re-export the module in `applications/mod.rs`
 
 ### How do I test the event flow end-to-end in dev mode?
 
@@ -169,7 +169,7 @@ Yes. Companion inference is served by a managed **`llama-server`** child process
 
 ### Does Fredo support voice input?
 
-Yes — an **opt-in, on-device** voice-input feature (**Settings → Companion → Voice input**; default off). There is **no separate voice model to download or set up**: enabling voice and choosing an input device is all the setup it needs, and the audio you capture is understood by the locally-managed companion model itself. It has exactly **one speech path**, and **no audio or transcript ever leaves your machine** — the only place the recording goes is the loopback `llama-server` on your machine. To dictate, focus the launcher's search bar while it is **empty** and **hold Space** (#2882); listening continues only while Space is held, and releasing finishes the utterance, releases the microphone, and hands the recording to the companion model — **no transcript is shown** — whose reply appears in the normal conversation surface. A quick tap of Space is an ordinary space character, and so is any Space typed into a bar that already contains text; with voice input disabled, holding Space captures nothing, surfaces no error, and an ordinary space lands. The bar's cue (the `Listening` chip and placeholder, announced as text) appears only when capture is live and indicates the capture for its whole duration, with the processing state shown while the model interprets the recording. Model audio needs a model that can interpret audio: if the installed model does not support audio, or the local model server is not running, Fredo tells you instead of sending anything. A recording is capped at about 30 seconds, with a visible stop at the limit that keeps the entire recording. Cancel (Escape or the bar's cancel control) discards the utterance and sends nothing, and a dictated turn is sent exactly once. Separately, **Ctrl+Space** brings the launcher command bar to the front and focuses its search field — nothing else: it never starts or stops listening, and it never closes the bar.
+Yes — an **opt-in, on-device** voice-input capability (**Settings → Companion → Voice input**; default off). There is **no separate voice model to download or set up**: enabling voice and choosing an input device is all the setup it needs, and the audio you capture is understood by the locally-managed companion model itself. It has exactly **one speech path**, and **no audio or transcript ever leaves your machine** — the only place the recording goes is the loopback `llama-server` on your machine. To dictate, focus the launcher's search bar while it is **empty** and **hold Space** (#2882); listening continues only while Space is held, and releasing finishes the utterance, releases the microphone, and hands the recording to the companion model — **no transcript is shown** — whose reply appears in the normal conversation surface. A quick tap of Space is an ordinary space character, and so is any Space typed into a bar that already contains text; with voice input disabled, holding Space captures nothing, surfaces no error, and an ordinary space lands. The bar's cue (the `Listening` chip and placeholder, announced as text) appears only when capture is live and indicates the capture for its whole duration, with the processing state shown while the model interprets the recording. Model audio needs a model that can interpret audio: if the installed model does not support audio, or the local model server is not running, Fredo tells you instead of sending anything. A recording is capped at about 30 seconds, with a visible stop at the limit that keeps the entire recording. Cancel (Escape or the bar's cancel control) discards the utterance and sends nothing, and a dictated turn is sent exactly once. Separately, **Ctrl+Space** brings the launcher command bar to the front and focuses its search field — nothing else: it never starts or stops listening, and it never closes the bar.
 
 ### Can I choose how my speech is handled?
 
@@ -177,7 +177,7 @@ There is exactly **one speech path** — **model audio** — so there is nothing
 
 ### Does dictation put text in the bar?
 
-No — dictation is model audio only, so there is no dictated transcript and no text is written into the bar. When you hold Space and release, the recording is handed to the locally-managed companion model as that turn's input (only over the loopback `llama-server`) and Fredo's reply appears in the normal conversation surface. Dictation is the only voice feature: no wake word, no always-on listening, no voice commands, and nothing listens while you are not dictating. The earlier on-device transcription engine, and its sentence-casing of dictated text, was removed in #2914.
+No — dictation is model audio only, so there is no dictated transcript and no text is written into the bar. When you hold Space and release, the recording is handed to the locally-managed companion model as that turn's input (only over the loopback `llama-server`) and Fredo's reply appears in the normal conversation surface. Dictation is the only voice capability: no wake word, no always-on listening, no voice commands, and nothing listens while you are not dictating. The earlier on-device transcription engine, and its sentence-casing of dictated text, was removed in #2914.
 
 ---
 
@@ -188,10 +188,10 @@ No — dictation is model audio only, so there is no dictated transcript and no 
 The `comm` module (`infrastructure/comm/`) holds the canonical wire types and the single IPC emitter. Since the RTDB row pipeline became the only delivery path it is deliberately small:
 
 - **`FredoEvent`** — the CLI wire format (`fredo emit`) and classifier input: id, eventType, state, provider, transport, sessionId, correlationId, toolName, payload, error, metadata, timestamp. Serialized as camelCase. It is the CLI wire format and classifier input — it never crosses IPC to the webview.
-- **`EventBus`** — the single emitter for the `"fredo-stream-event"` Tauri IPC channel: RTDB `RowDeliveryBatch` envelopes via `emit_row_delivery_batch` and feature-data `FeatureDeliveryBatch` envelopes (`{"featureBatch": …}`) via `emit_feature_delivery_batch`.
+- **`EventBus`** — the single emitter for the `"fredo-stream-event"` Tauri IPC channel: RTDB `RowDeliveryBatch` envelopes via `emit_row_delivery_batch` and application-data `ApplicationDeliveryBatch` envelopes (`{"applicationBatch": …}`) via `emit_application_delivery_batch`.
 - **`CommAdapter`** trait — implemented by `InternalAdapter` (the `fredo emit` enrichment).
 
-Raw `FredoEvent` never crosses IPC; the channel carries only projected envelope families (`RowDelivery`/`RowDeliveryBatch`, `FeatureDeliveryBatch`).
+Raw `FredoEvent` never crosses IPC; the channel carries only projected envelope families (`RowDelivery`/`RowDeliveryBatch`, `ApplicationDeliveryBatch`).
 
 ### What is the RTDB row pipeline?
 
@@ -203,11 +203,11 @@ The production event pipeline (`infrastructure/rtdb/`):
 - **`flush.rs`** — coalescing windows, batch chunking, and per-query replay-complete settle markers.
 - **`query/`** — the GraphQL-inspired typed query language, e.g. `chat(sessionId = "s1") { userMessage }`.
 
-### What is the feature-owned data layer?
+### What is the application-owned data layer?
 
-A feature-owned, durable data layer ON TOP of the canonical rows (`infrastructure/feature_data/`). A feature declares the structure it owns plus a source mapping (a field projection over a canonical table, or a closed `sessionRollup` aggregate); the backend materializes the declared tables idempotently on every launch and owns their writes, so the data is correct while the feature's UI is closed. Declared tables live on the same active engine as `feature_<sanitized featureId>_<table>` (the embedded PostgreSQL cluster), isolated per `featureId`, and survive restarts.
+An application-owned, durable data layer ON TOP of the canonical rows (`infrastructure/application_data/`). An application declares the structure it owns plus a source mapping (a field projection over a canonical table, or a closed `sessionRollup` aggregate); the backend materializes the declared tables idempotently on every launch and owns their writes, so the data is correct while the application's UI is closed. Declared tables live on the same active engine as `feature_<sanitized featureId>_<table>` (the embedded PostgreSQL cluster), isolated per `applicationId`, and survive restarts.
 
-Features then **read on demand** (`feature_data_read` — rows plus the scope version and the resolved retention bound) and **watch at table / record / field granularity** (`feature_data_watch` with optional field narrowing and an optional atomic initial snapshot; `feature_data_unwatch` per watch). Notifications ride the `"fredo-stream-event"` channel as `FeatureDeliveryBatch` (`{"featureBatch": …}`) carrying the changed fields and their CURRENT values at a version; a removal is a distinct `remove` with no value. Writes go through `feature_data_write` (feature-owned columns only; an unchanged value is a silent no-op) and deletions through `feature_data_delete` (tombstoned — never resurrected). Retention is declared per table and evicts oldest-first with a removal per evicted row. Materialization is schema-aware: a foreign same-named table is quarantined, never dropped, and a column removal/retype is refused with a hard named error.
+Applications then **read on demand** (`application_data_read` — rows plus the scope version and the resolved retention bound) and **watch at table / record / field granularity** (`application_data_watch` with optional field narrowing and an optional atomic initial snapshot; `application_data_unwatch` per watch). Notifications ride the `"fredo-stream-event"` channel as `ApplicationDeliveryBatch` (`{"applicationBatch": …}`) carrying the changed fields and their CURRENT values at a version; a removal is a distinct `remove` with no value. Writes go through `application_data_write` (application-owned columns only; an unchanged value is a silent no-op) and deletions through `application_data_delete` (tombstoned — never resurrected). Retention is declared per table and evicts oldest-first with a removal per evicted row. Materialization is schema-aware: a foreign same-named table is quarantined, never dropped, and a column removal/retype is refused with a hard named error.
 
 ### What is the Event Flow?
 
@@ -215,28 +215,28 @@ Features then **read on demand** (`feature_data_read` — rows plus the scope ve
 Agent (OTLP) → OTLP receivers (raw persist on receipt) → IngestClassifier → RowUpserts
              → Rtdb (merge → durable seq → subscriptions) → FlushLoop → EventBus
              → Tauri IPC "fredo-stream-event" (RowDeliveryBatch) → TauriAdapter
-             → AppProvider → StreamContext row store → useEventRows(eventType, args) → features
+             → AppProvider → StreamContext row store → useEventRows(eventType, args) → applications
 
 fredo emit → named pipe → CliCommand::EmitEvent → InternalAdapter → classifier → same rows
 ```
 
-### What is `FredoFeatureClass`?
+### What is `FredoApplicationClass`?
 
-The TypeScript abstract base class every grid-based UI feature extends. It declares the feature's `id`, `name`, `icon`, `showable` flag, and `render()` method. Features read live agent activity by subscribing to the RTDB row store with `useEventRows(eventType, args, options)`. Optional properties: `isMultiWindow`, `hasSettings`/`renderSettings()`, `gridConfig`, lifecycle hooks `onMount()`/`onUnmount()`.
+The TypeScript abstract base class every grid-based UI application extends. It declares the application's `id`, `name`, `icon`, `showable` flag, and `render()` method. Applications read live agent activity by subscribing to the RTDB row store with `useEventRows(eventType, args, options)`. Optional properties: `isMultiWindow`, `hasSettings`/`renderSettings()`, `gridConfig`, lifecycle hooks `onMount()`/`onUnmount()`.
 
-### What is `featureRegistry`?
+### What is `applicationRegistry`?
 
-A global `Map<string, FredoFeatureClass>` populated at app startup via side-effect imports in `allFeatures.ts`. It mirrors Rust's `AppRuntime` — the explicit list of everything the app knows about.
+A global `Map<string, FredoApplicationClass>` populated at app startup via side-effect imports in `allApplications.ts`. It mirrors Rust's `AppRuntime` — the explicit list of everything the app knows about.
 
 ### What is `StreamContext`?
 
-StreamContext carries the Tauri IPC connection flag plus the module-scoped RTDB row store. It is the single source of truth for feature data. Row deliveries are applied with these semantics:
+StreamContext carries the Tauri IPC connection flag plus the module-scoped RTDB row store. It is the single source of truth for application data. Row deliveries are applied with these semantics:
 
 - **`insert`** — full-row set with spread-merge so init-time fields survive
 - **`update`** — `{ ...row, ...patch }` with seq-guarded stale-patch drops
 - **`remove`** — delete key (only ever retention eviction)
 
-The row store is module-scoped, so it survives feature mount/unmount cycles. Features never poll the backend — they derive display state off the row-store `epoch`. Raw `FredoEvent` never crosses IPC to the frontend.
+The row store is module-scoped, so it survives application mount/unmount cycles. Applications never poll the backend — they derive display state off the row-store `epoch`. Raw `FredoEvent` never crosses IPC to the frontend.
 
 ### What is `useEventRows`?
 
@@ -251,11 +251,11 @@ The typed row-subscription hook: `useEventRows(eventType, args, options)` subscr
 
 ### What is the `HostAdapter`?
 
-An interface that abstracts the transport between the UI and its host environment. `TauriAdapter` uses `@tauri-apps/api`; `DevAdapter` uses an in-memory emitter. No feature code ever imports `@tauri-apps/api` directly — only `TauriAdapter.ts` is allowed to.
+An interface that abstracts the transport between the UI and its host environment. `TauriAdapter` uses `@tauri-apps/api`; `DevAdapter` uses an in-memory emitter. No application code ever imports `@tauri-apps/api` directly — only `TauriAdapter.ts` is allowed to.
 
 ### What does `correlationId` do?
 
-It ties related rows together within a session (e.g. an `Init` event that started a tool call to its `Response`). Feature ownership of a task dispatch derives from the correlationId's session prefix.
+It ties related rows together within a session (e.g. an `Init` event that started a tool call to its `Response`). Application ownership of a task dispatch derives from the correlationId's session prefix.
 
 ### What is the FredoCompanion?
 

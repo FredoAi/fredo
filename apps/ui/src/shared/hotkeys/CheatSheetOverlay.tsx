@@ -139,11 +139,11 @@ export function collectCheatSheetGroups(): readonly CheatSheetGroup[] {
 }
 
 function tierTag(tier: HotkeyTier): string {
-  return tier === 'fredo' ? 'Global' : 'Feature';
+  return tier === 'fredo' ? 'Global' : 'Application';
 }
 
 function tierAttr(group: CheatSheetGroup): string {
-  return group.tier === 'fredo' ? 'global' : `feature:${group.featureId ?? 'unknown'}`;
+  return group.tier === 'fredo' ? 'global' : `application:${group.featureId ?? 'unknown'}`;
 }
 
 /** The lower-cased search haystack for one row (title / id / feature / key text). */
@@ -327,7 +327,7 @@ export function CheatSheetOverlay({ platform }: CheatSheetOverlayProps) {
             ref={searchRef}
             data-testid={CHEATSHEET_SEARCH_TESTID}
             aria-label="Search hotkeys"
-            placeholder="Search actions, keys, or features"
+            placeholder="Search actions, keys, or applications"
             size="sm"
             value={query}
             onChange={(event) => setQuery(event.target.value)}

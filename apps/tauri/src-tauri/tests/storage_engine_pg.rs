@@ -1,8 +1,8 @@
 //! PostgreSQL storage regression suite (Spec #2975 ST-6; PG-only since Spec
 //! #2979 CU-2).
 //!
-//! This integration binary drives the migrated `AppStore` / `FeatureStore` /
-//! `FeatureDataStore` against the REAL embedded PostgreSQL server (the slice-1
+//! This integration binary drives the migrated `AppStore` / `ApplicationStore` /
+//! `ApplicationDataStore` against the REAL embedded PostgreSQL server (the slice-1
 //! bounded `PgRuntime`) and pins the consolidated PostgreSQL behavior:
 //! schema init, quoted identifiers, declared-table quoting, the Mission Monitor
 //! declaration, the fixture run, and the bounded-runtime teardown contract.
@@ -41,15 +41,15 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Map, Value as JsonValue};
 
-use fredo_lib::infrastructure::feature_data::declaration::{
-    ColumnOwner, DataSource, DeclaredColumn, DeclaredColumnType, FeatureDataDeclaration,
-    FeatureDataTableDeclaration, Retention, SessionRollupKind, SessionRollupProjection,
+use fredo_lib::infrastructure::application_data::declaration::{
+    ColumnOwner, DataSource, DeclaredColumn, DeclaredColumnType, ApplicationDataDeclaration,
+    ApplicationDataTableDeclaration, Retention, SessionRollupKind, SessionRollupProjection,
 };
-use fredo_lib::infrastructure::feature_data::registry::DeclarationRegistry;
-use fredo_lib::infrastructure::feature_data::store::{FeatureDataStore, TableMeta, Tombstone};
+use fredo_lib::infrastructure::application_data::registry::DeclarationRegistry;
+use fredo_lib::infrastructure::application_data::store::{ApplicationDataStore, TableMeta, Tombstone};
 use fredo_lib::infrastructure::rtdb::rows::RowState;
 use fredo_lib::infrastructure::storage::engine::{ensure_settings_schema, StorageEngineState};
-use fredo_lib::infrastructure::storage::feature_store::{ColumnDef, ColumnType, FeatureStore};
+use fredo_lib::infrastructure::storage::application_store::{ColumnDef, ColumnType, ApplicationStore};
 use fredo_lib::infrastructure::storage::{
     AppStore, EngineChoice, EngineHandle, PgEngine, StoreEngine,
 };
@@ -172,8 +172,8 @@ async fn postgres_fixture_scenario(url: &str, schema: &str) {
     let app_scratch = tempfile::tempdir().expect("tempdir");
     let handle = EngineHandle::new_pending();
     let app = AppStore::open(handle.clone(), app_scratch.path()).expect("app store");
-    let features = FeatureStore::open(handle.clone()).expect("feature store");
-    let data = FeatureDataStore::open(handle.clone()).expect("data store");
+    let applications = ApplicationStore::open(handle.clone()).expect("application store");
+    let data = ApplicationDataStore::open(handle.clone()).expect("data store");
 
     let pool = build_pool(url, schema).await;
     assert!(
@@ -186,13 +186,13 @@ async fn postgres_fixture_scenario(url: &str, schema: &str) {
     })));
 
     // Run the fixture against PostgreSQL.
-    let obs = run_fixture(&app, &features, &data).await;
+    let obs = run_fixture(&app, &applications, &data).await;
     assert!(
         obs.contains(&format!("blob.a={}", hex(&[0, 1, 2, 127, 128, 254, 255]))),
         "the BLOB must round-trip byte-identically (EARS-4.2), observables: {obs:?}"
     );
 
-    // EARS-4.4 / F-13: the hyphenated feature id yields the physical name.
+    // EARS-4.4 / F-13: the hyphenated application id yields the physical name.
     let pg_physical: Option<String> = sqlx::query_scalar("SELECT to_regclass($1)::text")
         .bind(PHYSICAL_TABLE)
         .fetch_one(&pool)
@@ -221,7 +221,7 @@ async fn postgres_fixture_scenario(url: &str, schema: &str) {
     let item_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM feature_mission_monitor_items")
         .fetch_one(&pool)
         .await
-        .expect("count feature items");
+        .expect("count application items");
     assert_eq!(item_count, 3, "three distinct fixture rows persist on PostgreSQL");
 
     pool.close().await;
@@ -231,7 +231,7 @@ async fn postgres_fixture_scenario(url: &str, schema: &str) {
 /// identifier would be folded to lowercase by PostgreSQL).
 async fn quoted_identifier_scenario(url: &str, schema: &str) {
     let handle = EngineHandle::new_pending();
-    let features = FeatureStore::open(handle.clone()).expect("feature store");
+    let applications = ApplicationStore::open(handle.clone()).expect("application store");
 
     let pool = build_pool(url, schema).await;
     handle.install(StoreEngine::Postgres(Arc::new(PgEngine {
@@ -245,7 +245,7 @@ async fn quoted_identifier_scenario(url: &str, schema: &str) {
         nullable: false,
         primary_key: true,
     }];
-    features
+    applications
         .ensure_table("CaseTest", "widgets", &cols)
         .expect("create a mixed-case table");
 
@@ -273,12 +273,12 @@ async fn quoted_identifier_scenario(url: &str, schema: &str) {
     let mut row = Map::new();
     row.insert("id".to_string(), json!("w1"));
     assert_eq!(
-        features
+        applications
             .insert("CaseTest", "widgets", &[row])
             .expect("insert"),
         1
     );
-    let got = features
+    let got = applications
         .query("CaseTest", "widgets", None, None, None)
         .expect("query");
     assert_eq!(got.len(), 1);
@@ -290,7 +290,7 @@ async fn quoted_identifier_scenario(url: &str, schema: &str) {
 // ── Phase 3: ST-2 startup schema-init registry (boot-gap pin) ────────────────
 
 /// The startup schema-init registry creates the FULL startup schema set on the
-/// **candidate** PostgreSQL pool BEFORE install, so a feature-data operation
+/// **candidate** PostgreSQL pool BEFORE install, so an application-data operation
 /// succeeds with NO pre-called `ensure_schema()` — the exact boot gap that made
 /// the PG-selected app fail `no existe la relación «feature_data_tables»`
 /// (ST-6 rework, ST-2 contract).
@@ -303,7 +303,7 @@ async fn schema_init_scenario(url: &str, schema: &str) {
     // The ST-2 registry, populated exactly as `lib.rs` does at startup.
     let state = StorageEngineState::new(handle.clone(), EngineChoice::Postgres);
     state.register_pg_schema_init(Arc::new(|pool: &sqlx::PgPool| {
-        FeatureDataStore::ensure_schema_on_pg(pool)
+        ApplicationDataStore::ensure_schema_on_pg(pool)
     }));
     state.register_pg_schema_init(Arc::new(|pool: &sqlx::PgPool| {
         fredo_lib::ensure_terminal_table_on_pg(pool)
@@ -317,7 +317,7 @@ async fn schema_init_scenario(url: &str, schema: &str) {
     );
     assert!(
         !pg_has_table(&pool, schema, "feature_data_tables").await,
-        "the feature-data schema must NOT exist on the candidate pool pre-registry"
+        "the application-data schema must NOT exist on the candidate pool pre-registry"
     );
 
     state
@@ -342,9 +342,9 @@ async fn schema_init_scenario(url: &str, schema: &str) {
         .run_pg_schema_inits(&pool)
         .expect("a registry re-run must be an idempotent no-op");
 
-    // Install, then a feature-data op must succeed WITHOUT any prior
+    // Install, then an application-data op must succeed WITHOUT any prior
     // `ensure_schema()` — the boot contract the round-1 defect violated.
-    let data = FeatureDataStore::open(handle.clone()).expect("data store");
+    let data = ApplicationDataStore::open(handle.clone()).expect("data store");
     handle.install(StoreEngine::Postgres(Arc::new(PgEngine {
         pool: pool.clone(),
         url: url.to_string(),
@@ -377,14 +377,14 @@ async fn declared_table_quoting_scenario(url: &str, schema: &str) {
         url: url.to_string(),
     })));
 
-    let data = Arc::new(FeatureDataStore::open(handle.clone()).expect("data store"));
-    let features = Arc::new(FeatureStore::open(handle.clone()).expect("feature store"));
+    let data = Arc::new(ApplicationDataStore::open(handle.clone()).expect("data store"));
+    let applications = Arc::new(ApplicationStore::open(handle.clone()).expect("application store"));
     data.ensure_schema()
-        .expect("create the feature-data schema on the candidate pool");
+        .expect("create the application-data schema on the candidate pool");
 
     // Declare the MM-shaped table through the SAME registry path a live
-    // `feature_data_declare` takes (mixed-case PK `sessionId` + `chatRowCount`).
-    let registry = DeclarationRegistry::new(data.clone(), features.clone());
+    // `application_data_declare` takes (mixed-case PK `sessionId` + `chatRowCount`).
+    let registry = DeclarationRegistry::new(data.clone(), applications.clone());
     let materialized = registry
         .declare(&mm_sessions_declaration())
         .expect("the mixed-case declared table must materialize");
@@ -464,7 +464,7 @@ async fn declared_table_quoting_scenario(url: &str, schema: &str) {
         "the declared primary key must physically key on the case-preserved `sessionId`"
     );
 
-    // (iii) The quoted write path (FeatureStore::upsert) agrees with the created
+    // (iii) The quoted write path (ApplicationStore::upsert) agrees with the created
     // schema — the exact write that failed on the folded table.
     let mut row = Map::new();
     row.insert("sessionId".to_string(), json!("s1"));
@@ -477,7 +477,7 @@ async fn declared_table_quoting_scenario(url: &str, schema: &str) {
     row.insert("tokenRatio".to_string(), json!(0.25));
     row.insert("_row_version".to_string(), json!(1));
     row.insert("_updated_at".to_string(), json!(T0));
-    let written = features
+    let written = applications
         .upsert(
             "mission-monitor",
             "sessions",
@@ -487,7 +487,7 @@ async fn declared_table_quoting_scenario(url: &str, schema: &str) {
         .expect("a declared-row upsert must succeed on the quoted declared schema");
     assert_eq!(written, 1, "the declared-row upsert must write exactly one row");
 
-    let read_back = features
+    let read_back = applications
         .query("mission-monitor", "sessions", None, None, None)
         .expect("query the declared table");
     assert_eq!(read_back.len(), 1, "the upserted row must read back");
@@ -515,11 +515,11 @@ async fn declared_table_quoting_scenario(url: &str, schema: &str) {
 /// The MM-shaped declaration whose unquoted DDL PostgreSQL folded — mirrors the
 /// registry unit-test declaration: mixed-case PK `sessionId`, mixed-case column
 /// `chatRowCount`.
-fn mm_sessions_declaration() -> FeatureDataDeclaration {
-    FeatureDataDeclaration {
+fn mm_sessions_declaration() -> ApplicationDataDeclaration {
+    ApplicationDataDeclaration {
         feature_id: "mission-monitor".to_string(),
         declaration_revision: "mm.sessions.v1".to_string(),
-        tables: vec![FeatureDataTableDeclaration {
+        tables: vec![ApplicationDataTableDeclaration {
             name: "sessions".to_string(),
             primary_key: vec!["sessionId".to_string()],
             columns: vec![
@@ -570,8 +570,8 @@ fn mm_sessions_declaration() -> FeatureDataDeclaration {
 /// `name=value` observables.
 async fn run_fixture(
     app: &AppStore,
-    features: &FeatureStore,
-    data: &FeatureDataStore,
+    applications: &ApplicationStore,
+    data: &ApplicationDataStore,
 ) -> Vec<String> {
     let mut out = Vec::new();
 
@@ -603,10 +603,10 @@ async fn run_fixture(
     ));
 
     // ── dynamic feature_* (EARS-2.2, EARS-2.4, EARS-4.1, EARS-4.2, EARS-4.4) ─
-    features
+    applications
         .ensure_table(FEATURE_ID, "items", &item_columns())
         .expect("ensure table");
-    features
+    applications
         .ensure_table(FEATURE_ID, "items", &item_columns())
         .expect("ensure table is idempotent");
 
@@ -618,16 +618,16 @@ async fn run_fixture(
     ];
     out.push(format!(
         "insert.first={}",
-        features.insert(FEATURE_ID, "items", &seed).expect("insert")
+        applications.insert(FEATURE_ID, "items", &seed).expect("insert")
     ));
 
     // EARS-4.1: a duplicate PK is silently ignored — the original row wins.
     let dup = vec![item("a", "SHOULD-NOT-WIN", 999, 9.5, &[7], 99, T0)];
     out.push(format!(
         "insert.dup={}",
-        features.insert(FEATURE_ID, "items", &dup).expect("dup insert")
+        applications.insert(FEATURE_ID, "items", &dup).expect("dup insert")
     ));
-    let a = features
+    let a = applications
         .query(FEATURE_ID, "items", Some(&where_eq(&[("id", "a")])), None, None)
         .expect("query a");
     out.push(format!("row.a.label={}", a[0]["label"]));
@@ -636,18 +636,18 @@ async fn run_fixture(
     let updated = vec![item("b", "beta-updated", 20, 2.25, &[9, 9], 2, T1)];
     out.push(format!(
         "upsert.b={}",
-        features
+        applications
             .upsert(FEATURE_ID, "items", &["id".to_string()], &updated)
             .expect("upsert")
     ));
-    let b = features
+    let b = applications
         .query(FEATURE_ID, "items", Some(&where_eq(&[("id", "b")])), None, None)
         .expect("query b");
     out.push(format!("row.b.label={}", b[0]["label"]));
     out.push(format!("row.b.version={}", b[0]["_row_version"]));
 
     // F-7: a multi-parameter query (`$n`, order preserved).
-    let multi = features
+    let multi = applications
         .query(
             FEATURE_ID,
             "items",
@@ -661,13 +661,13 @@ async fn run_fixture(
     out.push(format!("blob.a={}", hex(&bytes_of(&a[0]["payload"]))));
     out.push(format!(
         "all.len={}",
-        features
+        applications
             .query(FEATURE_ID, "items", None, Some("id"), None)
             .expect("query all")
             .len()
     ));
 
-    // ── feature_data_* (EARS-2.2, EARS-2.3) ──────────────────────────────────
+    // ── application_data_* (EARS-2.2, EARS-2.3) ──────────────────────────────────
     data.ensure_schema().expect("ensure schema");
     data.ensure_schema().expect("ensure schema is idempotent");
     data.put_table(&meta(FEATURE_ID, "sessions", false, 0))
@@ -757,20 +757,20 @@ fn where_eq(pairs: &[(&str, &str)]) -> Map<String, JsonValue> {
         .collect()
 }
 
-fn meta(feature: &str, table: &str, backfill_done: bool, last_version: i64) -> TableMeta {
+fn meta(application: &str, table: &str, backfill_done: bool, last_version: i64) -> TableMeta {
     TableMeta {
-        feature_id: feature.to_string(),
+        feature_id: application.to_string(),
         table_name: table.to_string(),
-        declaration_json: format!(r#"{{"featureId":"{feature}","table":"{table}"}}"#),
+        declaration_json: format!(r#"{{"applicationId":"{application}","table":"{table}"}}"#),
         declaration_revision: "mm.sessions.v2".to_string(),
         last_version,
         backfill_done,
     }
 }
 
-fn tombstone(feature: &str, table: &str, key_json: &str, deleted_at: &str) -> Tombstone {
+fn tombstone(application: &str, table: &str, key_json: &str, deleted_at: &str) -> Tombstone {
     Tombstone {
-        feature_id: feature.to_string(),
+        feature_id: application.to_string(),
         table_name: table.to_string(),
         key_json: key_json.to_string(),
         deleted_at: deleted_at.to_string(),

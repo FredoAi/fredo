@@ -193,18 +193,18 @@ fn next_request_id() -> String {
 
 // ── IPC dispatch ──────────────────────────────────────────────────────────────
 
-/// Register a feature-open request, emit it to the main window, and wait a
+/// Register an application-open request, emit it to the main window, and wait a
 /// BOUNDED [`APP_OPEN_CONFIRM_TIMEOUT`] for the frontend's confirmation.
 ///
 /// This is the ONE shared round trip behind [`dispatch_open_app`] and the
-/// Terminal same-window CLI leg (`features/terminal/open_terminal.rs`, Spec
+/// Terminal same-window CLI leg (`applications/terminal/open_terminal.rs`, Spec
 /// #2947 ST-5), so no second resolver or event vocabulary is introduced: the
 /// Rust side NEVER resolves identities itself — the ONE resolution rule lives in
 /// the webview (R-2.7).
 ///
 /// `None` when the request could not be emitted or was not confirmed in time;
 /// the pending registry is cleaned on every exit path.
-pub async fn confirm_feature_open(
+pub async fn confirm_application_open(
     app: &AppHandle,
     identity: &str,
 ) -> Option<AppOpenConfirmation> {
@@ -252,7 +252,7 @@ pub async fn confirm_feature_open(
 /// Handle one `CliCommand::OpenApp` from the IPC server: run the shared confirm
 /// round trip and translate it into the CLI response.
 pub async fn dispatch_open_app(identity: String, app: &AppHandle) -> CliResponse {
-    match confirm_feature_open(app, &identity).await {
+    match confirm_application_open(app, &identity).await {
         Some(confirmation) => response_from_confirmation(confirmation),
         None => unavailable_response(&identity, None),
     }

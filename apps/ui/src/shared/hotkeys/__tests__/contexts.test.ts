@@ -11,11 +11,11 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { ReactElement } from 'react';
 import type { IconType } from 'react-icons';
 
-import { FredoFeatureClass } from '../../classes/FredoFeatureClass';
-import { registerFeature } from '../../../features/featureRegistry';
+import { FredoApplicationClass } from '../../classes/FredoApplicationClass';
+import { registerApplication } from '../../../applications/applicationRegistry';
 import {
   ROOT_CONTEXT_ID,
-  type FeatureHotkeyAction,
+  type ApplicationHotkeyAction,
   type RegisteredHotkeyAction,
 } from '../types';
 import {
@@ -23,7 +23,7 @@ import {
   isPlatformContext,
   isValidHotkeyContextId,
   listHotkeyContexts,
-  registerFeatureHotkeyContexts,
+  registerApplicationHotkeyContexts,
   registerHotkeyContext,
   resetContextRegistryForTests,
   resolveBaseContextId,
@@ -42,8 +42,8 @@ import { decideDispatch } from '../sequence';
 
 function featureAction(
   actionId: string,
-  overrides: Partial<FeatureHotkeyAction> = {},
-): FeatureHotkeyAction {
+  overrides: Partial<ApplicationHotkeyAction> = {},
+): ApplicationHotkeyAction {
   return {
     actionId,
     title: `Action ${actionId}`,
@@ -105,7 +105,7 @@ describe('context registry identity', () => {
 
 describe('context registration + synthesized bases', () => {
   it('synthesizes a base context for each registered feature', () => {
-    registerFeatureHotkeyContexts('demo', [
+    registerApplicationHotkeyContexts('demo', [
       { contextId: 'demo.canvas', parentId: 'demo', title: 'Canvas' },
     ]);
 
@@ -131,7 +131,7 @@ describe('context registration + synthesized bases', () => {
   });
 
   it('flags malformed, foreign-prefixed, and unknown-parent contexts', () => {
-    registerFeatureHotkeyContexts('demo', [
+    registerApplicationHotkeyContexts('demo', [
       { contextId: 'other.canvas', parentId: 'demo', title: 'Foreign' },
       { contextId: 'Bad Id', parentId: 'demo', title: 'Malformed' },
       { contextId: 'demo.lonely', parentId: 'nope.missing', title: 'Orphan' },
@@ -150,14 +150,14 @@ describe('context registration + synthesized bases', () => {
   });
 
   it('flags a feature declaring the platform namespace', () => {
-    registerFeatureHotkeyContexts('demo', [
+    registerApplicationHotkeyContexts('demo', [
       { contextId: 'fredo.mine', parentId: ROOT_CONTEXT_ID, title: 'Mine' },
     ]);
     expect(getHotkeyContext('fredo.mine')?.invalid).toMatch(/may not declare the platform context/);
   });
 
   it('clears explicit registrations but keeps ROOT on reset', () => {
-    registerFeatureHotkeyContexts('demo', [
+    registerApplicationHotkeyContexts('demo', [
       { contextId: 'demo.canvas', parentId: 'demo', title: 'Canvas' },
     ]);
     resetContextRegistryForTests();
@@ -166,7 +166,7 @@ describe('context registration + synthesized bases', () => {
   });
 
   it('discovers contexts declared on a registered feature instance', () => {
-    class CtxFeature extends FredoFeatureClass {
+    class CtxFeature extends FredoApplicationClass {
       readonly id = 'ctx-demo';
       readonly name = 'Ctx Demo';
       readonly icon = (() => null) as unknown as IconType;
@@ -177,7 +177,7 @@ describe('context registration + synthesized bases', () => {
         return null as unknown as ReactElement;
       }
     }
-    registerFeature(new CtxFeature());
+    registerApplication(new CtxFeature());
 
     expect(getHotkeyContext('ctx-demo')?.featureId).toBe('ctx-demo');
     expect(getHotkeyContext('ctx-demo.canvas')?.title).toBe('Canvas');

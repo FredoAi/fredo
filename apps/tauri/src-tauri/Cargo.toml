@@ -28,7 +28,7 @@ required-features = ["doom-stub"]
 # Acquisition-mode build-time switch (Spec #2978 S1). The shipped default is the
 # crate `runtime-download` mode (`default = []`, no `bundled`), so the installer
 # does not grow and the distribution is fetched on first run through Fredo's
-# SHA-256-pinned streaming engine (`features/pg_supervisor/acquisition.rs`).
+# SHA-256-pinned streaming engine (`applications/pg_supervisor/acquisition.rs`).
 #
 # `bundled` compile-time-embeds the PostgreSQL archive into the binary (+54,048,768 B
 # installer growth) and removes the first-run network fetch. It is deliberately

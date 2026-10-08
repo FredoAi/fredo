@@ -55,8 +55,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use fredo_lib::infrastructure::feature_data::declaration::FeatureDataTableDeclaration;
-use fredo_lib::infrastructure::feature_data::store::FeatureDataStore;
+use fredo_lib::infrastructure::application_data::declaration::ApplicationDataTableDeclaration;
+use fredo_lib::infrastructure::application_data::store::ApplicationDataStore;
 use fredo_lib::infrastructure::rtdb::rows::RowState;
 use fredo_lib::infrastructure::storage::engine::{
     ensure_settings_schema, Dialect, EngineChoice, PgEngine, StorageEngineState,
@@ -746,7 +746,7 @@ fn sqlite_state(_db_path: &Path) -> Arc<StorageEngineState> {
 /// production order: schema inits → `run_pre_install` → install).
 fn register_schema_inits(state: &Arc<StorageEngineState>) {
     state.register_pg_schema_init(Arc::new(|pool: &sqlx::PgPool| {
-        FeatureDataStore::ensure_schema_on_pg(pool)
+        ApplicationDataStore::ensure_schema_on_pg(pool)
     }));
     state.register_pg_schema_init(Arc::new(|pool: &sqlx::PgPool| {
         fredo_lib::ensure_terminal_table_on_pg(pool)
@@ -855,7 +855,7 @@ fn fixture_generator_is_deterministic() {
 /// again pass the gated suite while failing to render in Mission Monitor:
 ///
 /// * every `feature_data_tables.declaration_json` deserializes into the
-///   production [`FeatureDataTableDeclaration`] (the persisted reader's
+///   production [`ApplicationDataTableDeclaration`] (the persisted reader's
 ///   contract — `registry.rs:216-226`); and
 /// * every `chat_rows` / `tool_use_rows` / `agent_session_rows.state` value is
 ///   the canonical LOWERCASE storage form ([`RowState::as_str`],
@@ -895,11 +895,11 @@ fn fixture_rows_are_production_shaped() {
     };
     assert!(
         !declarations.is_empty(),
-        "the fixture must declare at least one feature table"
+        "the fixture must declare at least one application table"
     );
-    for (feature, table, json) in &declarations {
-        serde_json::from_str::<FeatureDataTableDeclaration>(json).unwrap_or_else(|error| {
-            panic!("declaration_json for '{feature}.{table}' must deserialize: {error}\n{json}")
+    for (application, table, json) in &declarations {
+        serde_json::from_str::<ApplicationDataTableDeclaration>(json).unwrap_or_else(|error| {
+            panic!("declaration_json for '{application}.{table}' must deserialize: {error}\n{json}")
         });
     }
 

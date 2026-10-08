@@ -19,7 +19,7 @@
  * preview and calls `applyVimPreset`.
  */
 
-import { settingsService } from '../../features/settings';
+import { settingsService } from '../../applications/settings';
 import { classifyBinding } from './conflicts';
 import { VIM_PRESET } from './defaults';
 import { getDefaultBinding } from './persistence';

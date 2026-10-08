@@ -24,7 +24,7 @@
 //!   result set — no delivery is emitted, and its membership is forgotten so
 //!   the next qualifying mutation re-`Insert`s with a full-row re-sync.
 //!
-//! Bounded internal state (NFR-2 — feature scale, no caps needed, but every
+//! Bounded internal state (NFR-2 — application scale, no caps needed, but every
 //! map is bounded):
 //! - `subscriptions` — one entry per registered query; removed by
 //!   `unregister`. Bounded by the number of live UI subscriptions (P2.3

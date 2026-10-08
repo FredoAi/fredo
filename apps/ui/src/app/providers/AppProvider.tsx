@@ -7,9 +7,9 @@ import React, {
   type ReactNode,
 } from 'react';
 import { useStream, applyRowDelivery, applyRowDeliveries, endReplayDrain } from '../../shared/contexts/StreamContext';
-import { isFeatureDeliveryBatch, isRowDelivery, isRowDeliveryBatch, replayCompleteQueryIdOf } from '../../shared/classes/EventSubscription';
-import { applyFeatureDeliveries } from '../../shared/feature-data/store';
-import { FeatureDataProvider } from '../../shared/contexts/FeatureDataContext';
+import { isApplicationDeliveryBatch, isRowDelivery, isRowDeliveryBatch, replayCompleteQueryIdOf } from '../../shared/classes/EventSubscription';
+import { applyApplicationDeliveries } from '../../shared/application-data/store';
+import { ApplicationDataProvider } from '../../shared/contexts/ApplicationDataContext';
 import { STEP_STATUSES } from '../../shared/constants';
 import type { HostAdapter } from '../adapters/HostAdapter';
 
@@ -92,8 +92,8 @@ export const AppProvider: React.FC<AppProviderProps> = ({ adapter, children }) =
   }, []);
 
   // Forward messages from the host's "fredo-stream-event" IPC channel:
-  // FEATURE-DATA batches ({"featureBatch": [...]}, Spec #2896 ST-5) are checked
-  // FIRST and applied to the feature-data store; RTDB BATCH envelopes
+  // APPLICATION-DATA batches ({"applicationBatch": [...]}, Spec #2896 ST-5) are checked
+  // FIRST and applied to the application-data store; RTDB BATCH envelopes
   // ({"rowBatch": [...]}, F-33 fix W-1) follow and are applied via the bulk
   // path (one epoch bump per touched partition; during a replay drain the bumps
   // collapse to ONE settle at the replayCompleteQueryId marker — applied BEFORE
@@ -101,13 +101,13 @@ export const AppProvider: React.FC<AppProviderProps> = ({ adapter, children }) =
   // envelopes keep the per-delivery path. Anything else is dropped.
   useEffect(() => {
     const unsubscribe = adapter.onMessage((msg: Record<string, unknown>) => {
-      // Spec #2896 ST-5 — FEATURE-DATA BATCH envelope. Rides the SAME
-      // "fredo-stream-event" channel as a `{"featureBatch": [...]}` payload and
+      // Spec #2896 ST-5 — APPLICATION-DATA BATCH envelope. Rides the SAME
+      // "fredo-stream-event" channel as a `{"applicationBatch": [...]}` payload and
       // is checked BEFORE the RTDB validators (the envelopes are disjoint, but
-      // the feature discriminator runs first so a feature delivery is never
+      // the application discriminator runs first so an application delivery is never
       // mis-routed into the RTDB row store).
-      if (isFeatureDeliveryBatch(msg)) {
-        applyFeatureDeliveries(msg.featureBatch);
+      if (isApplicationDeliveryBatch(msg)) {
+        applyApplicationDeliveries(msg.applicationBatch);
         return;
       }
 
@@ -150,7 +150,7 @@ export const AppProvider: React.FC<AppProviderProps> = ({ adapter, children }) =
         setViewingLiveDiagram, setIsLoadingDiagram, setDiagramError, setParseError,
       }}
     >
-      <FeatureDataProvider>{children}</FeatureDataProvider>
+      <ApplicationDataProvider>{children}</ApplicationDataProvider>
     </AppContext.Provider>
   );
 };

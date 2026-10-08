@@ -154,7 +154,7 @@ async fn dispatch_command(cmd: CliCommand, app: &AppHandle) -> CliResponse {
             crate::infrastructure::app_open::dispatch_open_app(identity, app).await
         }
         CliCommand::OpenTerminal { cli, work_dir } => {
-            crate::features::terminal::open_terminal::dispatch_open_terminal(cli, work_dir, app).await
+            crate::applications::terminal::open_terminal::dispatch_open_terminal(cli, work_dir, app).await
         }
     }
 }

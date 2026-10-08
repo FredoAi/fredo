@@ -51,7 +51,7 @@ Settings are managed via Tauri commands invoked from the UI Settings panel, not 
 
 ### `fredo open-app`
 
-Opens (or raises) a Fredo app window by identity. `<IDENTITY>` is a feature's **stable id** (`mission-monitor`) or its **display name** (`Mission Monitor`) — matching is case-insensitive, quotes are allowed, and there is no alias table. The running app's webview performs the ONE identity resolution and opens the window through the same kernel opener the launcher grid uses.
+Opens (or raises) a Fredo app window by identity. `<IDENTITY>` is an application's **stable id** (`mission-monitor`) or its **display name** (`Mission Monitor`) — matching is case-insensitive, quotes are allowed, and there is no alias table. The running app's webview performs the ONE identity resolution and opens the window through the same kernel opener the launcher grid uses.
 
 ```bash
 fredo open-app <IDENTITY>
@@ -59,7 +59,7 @@ fredo open-app <IDENTITY>
 
 | Argument | Required | Description |
 |----------|----------|-------------|
-| `<IDENTITY>` | Yes | Feature stable id (`mission-monitor`) or display name (`Mission Monitor`) |
+| `<IDENTITY>` | Yes | Application stable id (`mission-monitor`) or display name (`Mission Monitor`) |
 
 **Outcome and exit codes**
 
@@ -173,7 +173,7 @@ Precedence is **CLI flag > environment variable > default**. The daemon never ov
 
 ## Setup (via UI)
 
-OTel configuration and CLI tool detection are handled through the **Setup** feature in the Fredo UI, not via CLI subcommands. Available Tauri commands:
+OTel configuration and CLI tool detection are handled through the **Setup** application in the Fredo UI, not via CLI subcommands. Available Tauri commands:
 
 | Command | Description |
 |---------|-------------|
