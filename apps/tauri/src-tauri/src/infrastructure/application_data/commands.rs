@@ -37,7 +37,6 @@ use crate::infrastructure::application_data::watch::{
 use crate::infrastructure::rtdb::cache::read_knobs;
 use crate::infrastructure::rtdb::store::{RowKind, RtdbStore};
 use crate::infrastructure::storage::application_store::ApplicationStore;
-use crate::infrastructure::storage::migration::{MigrationGate, MigrationWriterGuard};
 use crate::infrastructure::storage::AppStore;
 
 // ── Shared state ────────────────────────────────────────────────────────────
@@ -60,10 +59,6 @@ pub struct ApplicationDataState {
     pub watches: Arc<WatchRegistry>,
     /// Canonical `*_rows` reads (read-only snapshot selects).
     pub rtdb_store: Arc<RtdbStore>,
-    /// The shared migration barrier (Spec #2977 ST-4). The write / delete /
-    /// declare IPC commands quiesce through it, so no declared-table or metadata
-    /// write can land while the exclusive migration window is open.
-    pub migration_gate: Arc<MigrationGate>,
 }
 
 // ── Wire types ──────────────────────────────────────────────────────────────
@@ -868,13 +863,6 @@ pub fn declare(
 
 // ── Tauri command wrappers ──────────────────────────────────────────────────
 
-/// Acquire the shared writer barrier for an application-data write command (Spec
-/// #2977 ST-4). Bounded by the gate; on timeout the write is shed with a hard
-/// named error rather than hang (G-263).
-async fn acquire_writer(gate: &MigrationGate) -> Result<MigrationWriterGuard<'_>, Vec<String>> {
-    gate.writer_enter().await.map_err(to_errors)
-}
-
 #[tauri::command]
 pub async fn application_data_read(
     state: tauri::State<'_, Arc<ApplicationDataState>>,
@@ -904,8 +892,6 @@ pub async fn application_data_write(
     state: tauri::State<'_, Arc<ApplicationDataState>>,
     args: ApplicationDataWriteArgs,
 ) -> Result<ApplicationDataWriteResult, Vec<String>> {
-    // Spec #2977 ST-4: quiesce the write against the exclusive migration barrier.
-    let _guard = acquire_writer(state.migration_gate.as_ref()).await?;
     write(state.inner(), args)
 }
 
@@ -914,8 +900,6 @@ pub async fn application_data_delete(
     state: tauri::State<'_, Arc<ApplicationDataState>>,
     args: ApplicationDataDeleteArgs,
 ) -> Result<ApplicationDataDeleteResult, Vec<String>> {
-    // Spec #2977 ST-4: quiesce the write against the exclusive migration barrier.
-    let _guard = acquire_writer(state.migration_gate.as_ref()).await?;
     delete(state.inner(), args)
 }
 
@@ -924,25 +908,11 @@ pub async fn application_data_declare(
     state: tauri::State<'_, Arc<ApplicationDataState>>,
     args: ApplicationDataDeclareArgs,
 ) -> Result<ApplicationDataDeclareResult, Vec<String>> {
-    // Spec #2977 ST-4: quiesce the declaration write against the migration barrier.
-    let _guard = acquire_writer(state.migration_gate.as_ref()).await?;
     let result = declare(state.inner(), args)?;
     // First run persists + materializes + backfills: kick the one-time
-    // read-only projection in the background (reads never block on it). The
-    // spawned task quiesces its own direct writes against the same barrier.
+    // read-only projection in the background (reads never block on it).
     let state = Arc::clone(state.inner());
     tauri::async_runtime::spawn(async move {
-        let _guard = match state.migration_gate.writer_enter().await {
-            Ok(guard) => guard,
-            Err(error) => {
-                tracing::warn!(
-                    target: "fredo::application_data",
-                    error = %error,
-                    "declared-table backfill shed: migration barrier held past its bound"
-                );
-                return;
-            }
-        };
         backfill::run_backfill(
             state.meta.clone(),
             state.engine.clone(),

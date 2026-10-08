@@ -54,7 +54,6 @@ use crate::infrastructure::application_data::projection::{
 use crate::infrastructure::rtdb::commands::IngestRow;
 use crate::infrastructure::rtdb::flush::DEFAULT_FLUSH_MS;
 use crate::infrastructure::rtdb::project::rfc3339_now;
-use crate::infrastructure::storage::migration::MigrationGate;
 
 /// The notification sink the registry flushes batches into (production: the
 /// `EventBus`'s `emit_application_delivery_batch`; tests: a collector).
@@ -519,31 +518,10 @@ fn canonical_record(row: &IngestRow) -> (&'static str, Vec<JsonValue>, Map<Strin
 
 /// Background flush task: emits due coalescing windows at a ~5 ms cadence
 /// (mirrors the RTDB flush loop). Spawned by lib.rs.
-///
-/// Spec #2977 ST-4: each cycle quiesces against the exclusive migration barrier
-/// when one is installed, so no notification-driven write can land while the
-/// migration window is open. `None` (unit tests) leaves the task ungated.
-pub async fn run_watch_flush_task(
-    registry: Arc<WatchRegistry>,
-    gate: Option<Arc<MigrationGate>>,
-) {
+pub async fn run_watch_flush_task(registry: Arc<WatchRegistry>) {
     let mut interval = tokio::time::interval(Duration::from_millis(5));
     loop {
         interval.tick().await;
-        let _guard = match gate.as_ref() {
-            Some(gate) => match gate.writer_enter().await {
-                Ok(guard) => Some(guard),
-                Err(error) => {
-                    tracing::warn!(
-                        target: "fredo::application_data",
-                        error = %error,
-                        "watch flush shed: migration barrier held past its bound"
-                    );
-                    continue;
-                }
-            },
-            None => None,
-        };
         registry.flush_due();
     }
 }

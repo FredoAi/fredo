@@ -307,7 +307,7 @@ pub async fn run_ingest_daemon(args: IngestDaemonArgs) -> Result<()> {
 
     // ST-4 AppHandle-free writer core drains the write-behind queue. `rtdb: None`
     // — there are no subscribers to route retention evictions to.
-    let writer = tokio::spawn(run_writer_task_core(cache, app_store.clone(), None, rx, None));
+    let writer = tokio::spawn(run_writer_task_core(cache, app_store.clone(), None, rx));
     let ctx = Arc::new(ReceiverContext {
         classifier,
         span_store,
