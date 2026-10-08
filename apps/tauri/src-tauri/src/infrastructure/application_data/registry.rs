@@ -747,3 +747,139 @@ fn create_table_sql(full: &str, table: &ApplicationDataTableDeclaration) -> Stri
         defs.join(", ")
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infrastructure::application_data::declaration::{
+        ColumnOwner, DataSource, Retention, SessionRollupKind, SessionRollupProjection,
+    };
+    use crate::infrastructure::rtdb::rows::RowState;
+    use crate::infrastructure::storage::engine::EngineHandle;
+
+    /// The canonical (post-rename) `mission-monitor.sessions` declaration — the
+    /// live declaration a re-declare carries.
+    fn mm_sessions_declaration() -> ApplicationDataTableDeclaration {
+        let backend = |name: &str, ty: DeclaredColumnType, nullable: bool| DeclaredColumn {
+            name: name.to_string(),
+            col_type: ty,
+            nullable,
+            owner: ColumnOwner::Backend,
+        };
+        ApplicationDataTableDeclaration {
+            name: "sessions".to_string(),
+            primary_key: vec!["sessionId".to_string()],
+            columns: vec![
+                backend("sessionId", DeclaredColumnType::Text, false),
+                backend("provider", DeclaredColumnType::Text, true),
+                backend("startedAtNs", DeclaredColumnType::Integer, true),
+                backend("latestAt", DeclaredColumnType::Text, false),
+                backend("chatRowCount", DeclaredColumnType::Integer, false),
+                backend("nonSubagentChatRowCount", DeclaredColumnType::Integer, false),
+                backend("visibleTurnCount", DeclaredColumnType::Integer, false),
+                backend("userDispatchCount", DeclaredColumnType::Integer, false),
+                backend("derivedName", DeclaredColumnType::Text, true),
+                backend("agentName", DeclaredColumnType::Text, true),
+                DeclaredColumn {
+                    name: "customName".to_string(),
+                    col_type: DeclaredColumnType::Text,
+                    nullable: true,
+                    owner: ColumnOwner::Application,
+                },
+            ],
+            source: Some(DataSource::SessionRollup(SessionRollupProjection {
+                kind: SessionRollupKind::SessionRollup,
+                exclude_dispatch_names: vec!["build".to_string(), "plan".to_string()],
+                terminal_states: vec![RowState::Response, RowState::Timeout],
+            })),
+            retention: Some(Retention {
+                max_rows: Some(500),
+                ttl_days: None,
+            }),
+        }
+    }
+
+    /// The physical declared-layer schema matching [`mm_sessions_declaration`]:
+    /// the declared columns plus the two NOT NULL reserved columns, with the
+    /// primary key physically on `sessionId`.
+    fn mm_sessions_physical(table: &ApplicationDataTableDeclaration) -> Vec<PhysicalColumn> {
+        let mut columns: Vec<PhysicalColumn> = table
+            .columns
+            .iter()
+            .map(|column| PhysicalColumn {
+                name: column.name.clone(),
+                sql_type: declared_affinity(column.col_type).as_pg_type().to_string(),
+                col_type: declared_affinity(column.col_type),
+                not_null: table.is_primary_key(&column.name) || !column.nullable,
+                primary_key: table.is_primary_key(&column.name),
+            })
+            .collect();
+        columns.push(PhysicalColumn {
+            name: "_row_version".to_string(),
+            sql_type: ColumnType::INTEGER.as_pg_type().to_string(),
+            col_type: ColumnType::INTEGER,
+            not_null: true,
+            primary_key: false,
+        });
+        columns.push(PhysicalColumn {
+            name: "_updated_at".to_string(),
+            sql_type: ColumnType::TEXT.as_pg_type().to_string(),
+            col_type: ColumnType::TEXT,
+            not_null: true,
+            primary_key: false,
+        });
+        columns
+    }
+
+    fn pending_registry() -> DeclarationRegistry {
+        let handle = EngineHandle::new_pending();
+        DeclarationRegistry::new(
+            Arc::new(ApplicationDataStore::open(handle.clone()).expect("data store")),
+            Arc::new(ApplicationStore::open(handle).expect("application store")),
+        )
+    }
+
+    /// Spec #2956 round 2, AC4. A persisted `TableMeta` whose `declaration_json`
+    /// carries the pre-rename `"owner":"feature"` tag must resolve through the
+    /// SAME persisted-read/plan path ([`DeclarationRegistry::compute_plan`]) the
+    /// seven read sites use, with no "unreadable" error. The live declaration
+    /// matches the persisted one, so the resolution is the non-destructive
+    /// `EnsureOnly` (never a rebuild/refusal). Before the `ColumnOwner` alias
+    /// this test fails with `unknown variant 'feature'`.
+    #[test]
+    fn legacy_owner_feature_persisted_declaration_plans_without_unreadable_error() {
+        let registry = pending_registry();
+        let live = mm_sessions_declaration();
+        let physical = mm_sessions_physical(&live);
+
+        // The real persisted `feature_data_tables.declaration_json` shape with the
+        // pre-rename `ColumnOwner` tag on the application-owned column.
+        let legacy_json = serde_json::to_string(&live)
+            .unwrap()
+            .replace(r#""owner":"application""#, r#""owner":"feature""#);
+        assert!(
+            legacy_json.contains(r#""owner":"feature""#),
+            "fixture must carry the legacy tag: {legacy_json}"
+        );
+
+        let meta = TableMeta {
+            feature_id: "mission-monitor".to_string(),
+            table_name: "sessions".to_string(),
+            declaration_json: legacy_json,
+            declaration_revision: "mm.sessions.v2".to_string(),
+            last_version: 0,
+            backfill_done: true,
+        };
+
+        let plan = registry
+            .compute_plan("mission-monitor", &live, Some(&meta), &physical)
+            .expect(
+                "a pre-rename persisted `owner:\"feature\"` declaration must not be 'unreadable'",
+            );
+        assert_eq!(
+            plan,
+            MigrationPlan::EnsureOnly,
+            "an unchanged pre-rename declaration must resolve to a non-destructive EnsureOnly"
+        );
+    }
+}

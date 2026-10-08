@@ -99,10 +99,20 @@ impl DeclaredColumnType {
 
 /// Who owns a declared column: the backend projection (`backend`) or application
 /// writes through `application_data_write` (`application`).
+///
+/// **Persisted on-disk tag (Spec #2956 NO-MIGRATE).** The variant tag is
+/// persisted inside `feature_data_tables.declaration_json` (see
+/// [`ApplicationDataTableDeclaration`], written by the registry). Spec #2956
+/// renamed the app concept and this variant `Feature` → `Application`, but
+/// existing installs hold rows whose `declaration_json` still says
+/// `"owner":"feature"`. The pre-rename tag is accepted as a **deserialize-only**
+/// alias so those rows still parse; serialization keeps emitting the canonical
+/// `"application"` (alias never affects the serializer).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ColumnOwner {
     Backend,
+    #[serde(alias = "feature")]
     Application,
 }
 
@@ -786,6 +796,71 @@ mod tests {
             Some(&FieldMapping::Literal {
                 literal: serde_json::json!("x")
             })
+        );
+    }
+
+    /// Spec #2956 round 2, AC4 (NO-MIGRATE on-disk contract).
+    ///
+    /// A per-table declaration persisted BEFORE the rename
+    /// (`feature_data_tables.declaration_json`) carries the old `ColumnOwner`
+    /// tag `"owner":"feature"` on its application-owned column. The real shape is
+    /// mirrored from the Mission Monitor `sessions` declaration
+    /// (`apps/ui/src/applications/mission-monitor/lib/dataDeclaration.ts`). The
+    /// legacy tag must deserialize to [`ColumnOwner::Application`], and
+    /// re-serializing must emit the canonical `"application"`.
+    ///
+    /// This test FAILS before the `#[serde(alias = "feature")]` on
+    /// `ColumnOwner::Application` with `unknown variant 'feature'`.
+    #[test]
+    fn pre_rename_owner_feature_tag_deserializes_and_reserializes_canonical() {
+        // Exact persisted `mission-monitor.sessions` shape, with the ONLY
+        // application-owned column (`customName`) carrying the pre-rename tag.
+        let raw = r#"{
+            "name": "sessions",
+            "primaryKey": ["sessionId"],
+            "columns": [
+                { "name": "sessionId", "type": "TEXT", "owner": "backend" },
+                { "name": "provider", "type": "TEXT", "owner": "backend", "nullable": true },
+                { "name": "startedAtNs", "type": "INTEGER", "owner": "backend", "nullable": true },
+                { "name": "latestAt", "type": "TEXT", "owner": "backend" },
+                { "name": "chatRowCount", "type": "INTEGER", "owner": "backend" },
+                { "name": "nonSubagentChatRowCount", "type": "INTEGER", "owner": "backend" },
+                { "name": "visibleTurnCount", "type": "INTEGER", "owner": "backend" },
+                { "name": "userDispatchCount", "type": "INTEGER", "owner": "backend" },
+                { "name": "derivedName", "type": "TEXT", "owner": "backend", "nullable": true },
+                { "name": "agentName", "type": "TEXT", "owner": "backend", "nullable": true },
+                { "name": "customName", "type": "TEXT", "owner": "feature", "nullable": true }
+            ],
+            "source": {
+                "kind": "sessionRollup",
+                "excludeDispatchNames": ["build", "plan"],
+                "terminalStates": ["Response", "Timeout"]
+            },
+            "retention": { "maxRows": 500 }
+        }"#;
+
+        let declaration: ApplicationDataTableDeclaration = serde_json::from_str(raw)
+            .expect("pre-rename `owner:\"feature\"` must deserialize (#2956 NO-MIGRATE contract)");
+
+        let application_owned = declaration
+            .column("customName")
+            .expect("the application-owned `customName` column must be present");
+        assert_eq!(application_owned.owner, ColumnOwner::Application);
+
+        // Canonical re-serialization: the app-owned column emits `"application"`.
+        let value = serde_json::to_value(&declaration).unwrap();
+        let custom_name = value["columns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == "customName")
+            .expect("customName in the serialized form");
+        assert_eq!(custom_name["owner"], "application");
+
+        let text = serde_json::to_string(&declaration).unwrap();
+        assert!(
+            !text.contains(r#""feature""#),
+            "canonical serialization must never emit the legacy tag: {text}"
         );
     }
 }
