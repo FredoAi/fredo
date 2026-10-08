@@ -8,8 +8,8 @@
 //! * the boot decision: PostgreSQL is UNCONDITIONAL (Spec #3005 ST-3 removes the
 //!   engine selector), so the supervisor always starts (nothing is locked,
 //!   swept, or spawned on any opt-out path). The PID marker it reads and writes
-//!   lives in the JSON boot KV; the password lives in the synchronous settings
-//!   cache (and, from ST-7, the OS keychain);
+//!   lives in the JSON boot KV; the password lives in the OS keychain
+//!   ([`crate::applications::pg_supervisor::credentials`], Spec #3005 ST-7);
 //! * the exclusive data-dir lock acquired BEFORE the orphan sweep (R-4.5);
 //! * the LAZY background start — `lib.rs` setup NEVER awaits `setup()/start()/
 //!   probe_ready()` (G-273/R-2.3), so the webview shell renders while the
@@ -49,12 +49,13 @@ use crate::infrastructure::storage::migration::{
 };
 use crate::infrastructure::storage::AppStore;
 
+use super::credentials::PgCredential;
 use super::descriptor::{self, HeadlessDescriptor};
 use super::lock::PgDataDirLock;
 use super::runtime::{wait_until, PgRuntime, StopOutcome};
 use super::sweep::{persist_pid, sweep_orphan, sweep_postmaster_pid_file};
 use super::{
-    DEFAULT_PG_HOST, PG_DEATH_WAIT_BOUND, PG_EXIT_HOOK_BOUND, PG_PASSWORD_KEY, PG_STOP_BOUND,
+    DEFAULT_PG_HOST, PG_DEATH_WAIT_BOUND, PG_EXIT_HOOK_BOUND, PG_STOP_BOUND,
 };
 
 /// Lifecycle state exposed by [`pg_supervisor_status`] / the readiness gate.
@@ -264,18 +265,14 @@ fn bootstrap(app_data_dir: &Path, store: &AppStore) -> Bootstrap {
     }
 }
 
-/// The password for the loopback-only cluster, generated once and reused. Shared
-/// with the headless daemon (Spec #2992 CU-2), which must use the SAME
-/// control-plane credential.
-pub(crate) fn ensure_password(store: &AppStore) -> String {
-    if let Ok(Some(password)) = store.cached_get(PG_PASSWORD_KEY) {
-        if !password.is_empty() {
-            return password;
-        }
-    }
-    let password = uuid::Uuid::new_v4().simple().to_string();
-    let _ = store.cached_set(PG_PASSWORD_KEY, &password);
-    password
+/// Resolve the loopback-only cluster password from the OS keychain (Spec #3005
+/// ST-7). Shared with the headless daemon (Spec #2992 CU-2), which must use the
+/// SAME credential. The password is NEVER written to the synchronous settings
+/// cache nor the PostgreSQL `settings` table; when the keychain is unavailable
+/// the documented [`PgCredential::resolve`] fallback applies (warned WITHOUT its
+/// value).
+pub(crate) fn ensure_password(credential: &PgCredential) -> String {
+    credential.resolve()
 }
 
 /// Startup entry (SYNCHRONOUS, never awaits): read the flag; when enabled,
@@ -409,7 +406,7 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf, data_dir: PathBuf) 
         .try_state::<Arc<StorageEngineState>>()
         .map(|state| state.inner().clone());
 
-    let password = ensure_password(&store);
+    let password = ensure_password(&PgCredential::keyring());
     let mut runtime = PgRuntime::new(&os_app_data_dir, password);
     tracing::info!(
         target: "fredo::pg_supervisor",
@@ -673,7 +670,7 @@ async fn run_attach(app: AppHandle, headless: HeadlessDescriptor, data_dir: Path
         .try_state::<Arc<StorageEngineState>>()
         .map(|state| state.inner().clone());
 
-    let password = ensure_password(&store);
+    let password = ensure_password(&PgCredential::keyring());
     let url = attach_connection_url(DEFAULT_PG_HOST, headless.port, &password);
     install_engine_on_pool(&engine, &url, &data_dir).await;
     // Spec #3005 ST-2: hydrate the synchronous cache on the attach leg too.
@@ -915,20 +912,28 @@ mod tests {
         AppStore::open(EngineHandle::new_pending(), dir).expect("open app store")
     }
 
+    /// ST-7 (G-290): re-homed from the old password-in-control-plane coverage. The
+    /// password resolves ONLY through the OS-keychain seam and is NEVER written to
+    /// the synchronous settings cache.
     #[test]
-    fn the_postgres_password_lives_on_the_synchronous_cache() {
+    fn the_postgres_password_resolves_from_the_keychain_not_the_cache() {
+        use crate::applications::pg_supervisor::credentials::MemoryPgCredential;
+
         let dir = tempfile::tempdir().expect("tempdir");
         let store = open_store(dir.path());
+        let credential = PgCredential::with_store(Arc::new(MemoryPgCredential::with_password(
+            "keychain-secret",
+        )));
 
-        let password = ensure_password(&store);
-        assert!(!password.is_empty(), "a password is generated on first use");
+        let password = ensure_password(&credential);
+        assert_eq!(password, "keychain-secret", "the keychain credential is reused");
         assert_eq!(
-            store.cached_get(PG_PASSWORD_KEY).expect("read"),
-            Some(password.clone()),
-            "the password is held in the synchronous settings cache (ST-2)"
+            store.cached_get("postgres.password").expect("read"),
+            None,
+            "the password is NEVER written to the synchronous settings cache"
         );
         // Reused, never regenerated (within a process).
-        assert_eq!(ensure_password(&store), password);
+        assert_eq!(ensure_password(&credential), "keychain-secret");
     }
 
     #[cfg(target_os = "windows")]

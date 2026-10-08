@@ -14,7 +14,7 @@
 //!    `FREDO_DATA_DIR`.
 //! 2. `PgDataDirLock::acquire_in(resolve_lock_dir(app_data_dir))` — a held lock is
 //!    a clear fail-fast (exit 1), no cluster started.
-//! 3. `AppStore::open` → `ensure_password` (the shared control-plane credential).
+//! 3. `AppStore::open` → `ensure_password` (the shared OS-keychain credential).
 //! 4. **R-5b guard** (see [`migration_blocks`]): a legacy `fredo.db` with no
 //!    completed one-shot migration ⇒ refuse + exit 1, deferring to a GUI boot.
 //! 5. `PgRuntime` setup → knobs → start → `probe_ready`; the `HeadlessDescriptor`
@@ -62,6 +62,7 @@ use crate::infrastructure::storage::migration::MIGRATION_COMPLETED_KEY;
 use crate::infrastructure::storage::span_store::SpanStore;
 use crate::infrastructure::storage::AppStore;
 
+use super::credentials::PgCredential;
 use super::descriptor::{self, HeadlessDescriptor};
 use super::lock::PgDataDirLock;
 use super::runtime::PgRuntime;
@@ -185,13 +186,13 @@ pub async fn run_ingest_daemon(args: IngestDaemonArgs) -> Result<()> {
         }
     };
 
-    // ── 3. Shared credential (the SAME synchronous cache/keychain the GUI uses) ─
+    // ── 3. Shared credential (the SAME OS keychain the GUI uses) ──────────────
     let engine = EngineHandle::new_pending();
     let app_store = Arc::new(
         AppStore::open(engine.clone(), &app_data_dir)
             .context("open the settings store")?,
     );
-    let password = ensure_password(&app_store);
+    let password = ensure_password(&PgCredential::keyring());
 
     // RAII teardown: descriptor + PID marker + lock on every exit path. Declared
     // BEFORE the runtime so the runtime's `Drop` (hard-kill) runs first on panic.

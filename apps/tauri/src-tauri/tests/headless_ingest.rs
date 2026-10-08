@@ -49,8 +49,7 @@ use std::process::{ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use fredo_lib::descriptor::HeadlessDescriptor;
-use fredo_lib::infrastructure::storage::engine::{build_pg_pool, EngineHandle, PgEngine};
-use fredo_lib::infrastructure::storage::AppStore;
+use fredo_lib::infrastructure::storage::engine::{build_pg_pool, PgEngine};
 use tokio::process::{Child, Command};
 
 /// The gate. The test is a no-op unless this is exactly `1`.
@@ -59,11 +58,14 @@ const GATE_ENV: &str = "FREDO_INGEST_E2E";
 /// it. The scratch cluster is rebuilt fresh each run, so the count is
 /// deterministic.
 const FIXTURE_SESSION_ID: &str = "headless-ingest-e2e-session";
-/// Fixed shared control-plane credential pre-seeded before the daemon starts, so
-/// the test can build its own PG pool against the daemon-owned cluster.
+/// Fixed shared credential seeded through the `FREDO_PG_PASSWORD_FILE` induction
+/// seam (Spec #3005 ST-7) before the daemon starts, so the test can build its own
+/// PG pool against the daemon-owned cluster. The password is never persisted in
+/// the control plane (keychain-only, R-3.2).
 const E2E_PASSWORD: &str = "headless-ingest-e2e-password";
-/// The control-plane credential key (`pg_supervisor::PG_PASSWORD_KEY`).
-const PG_PASSWORD_KEY: &str = "postgres.password";
+/// The password-file induction seam
+/// (`pg_supervisor::credentials::PG_PASSWORD_FILE_ENV`).
+const PG_PASSWORD_FILE_ENV: &str = "FREDO_PG_PASSWORD_FILE";
 /// Hard `--run-ms` self-terminate passed to every child (a lost-lever safety).
 const CHILD_RUN_MS: u64 = 300_000;
 /// Bounded readiness wait (covers a cold `setup()`/initdb on a warm install).
@@ -116,6 +118,8 @@ struct Ctx {
     lock_dir: PathBuf,
     stop_flag: PathBuf,
     desc_path: PathBuf,
+    /// The `FREDO_PG_PASSWORD_FILE` sentinel seed (Spec #3005 ST-7).
+    password_file: PathBuf,
     grpc_port: u16,
     http_port: u16,
 }
@@ -207,15 +211,12 @@ fn read_descriptor(path: &Path) -> Option<HeadlessDescriptor> {
     serde_json::from_slice(&bytes).ok()
 }
 
-/// Pre-seed the shared control-plane credential on the scratch app-data dir so
-/// the test can authenticate to the daemon-owned cluster without racing the
-/// daemon's own control-plane writes.
-fn seed_password(app_dir: &Path) {
-    let engine = EngineHandle::new_pending();
-    let store = AppStore::open(engine, app_dir).expect("open the scratch control plane");
-    store
-        .cached_set(PG_PASSWORD_KEY, E2E_PASSWORD)
-        .expect("seed the shared credential");
+/// Seed the shared loopback credential through the Spec #3005 ST-7
+/// `FREDO_PG_PASSWORD_FILE` induction seam so the test can authenticate to the
+/// daemon-owned cluster with the SAME password. The password is never persisted
+/// in the control plane (keychain-only, R-3.2).
+fn seed_password(password_file: &Path) {
+    std::fs::write(password_file, E2E_PASSWORD).expect("seed the shared credential");
 }
 
 /// Spawn the real `fredo ingest` binary against `ctx`; logs land under scratch.
@@ -237,6 +238,7 @@ fn spawn_daemon(bin: &str, ctx: &Ctx, label: &str) -> (DaemonGuard, PathBuf) {
         // scratch lock dir (blank is inert, G-296).
         .env("FREDO_INGEST_DESCRIPTOR", "")
         .env("FREDO_PG_STOP_HANG_MS", "")
+        .env(PG_PASSWORD_FILE_ENV, &ctx.password_file)
         .arg("--run-ms")
         .arg(CHILD_RUN_MS.to_string())
         .stdout(Stdio::from(stdout))
@@ -567,6 +569,7 @@ async fn headless_ingest_end_to_end() {
     std::fs::create_dir_all(&lock_dir).expect("create the scratch lock dir");
 
     let desc_path = lock_dir.join("headless-ingest.json");
+    let password_file = scratch.join("pg-password.txt");
     let ctx = Ctx {
         scratch: scratch.clone(),
         app_dir: app_dir.clone(),
@@ -574,10 +577,11 @@ async fn headless_ingest_end_to_end() {
         lock_dir,
         stop_flag: scratch.join("stop.flag"),
         desc_path,
+        password_file,
         grpc_port: free_port(),
         http_port: free_port(),
     };
-    seed_password(&app_dir);
+    seed_password(&ctx.password_file);
 
     let bin = env!("CARGO_BIN_EXE_fredo");
     let pg_before = postgres_pids().await;

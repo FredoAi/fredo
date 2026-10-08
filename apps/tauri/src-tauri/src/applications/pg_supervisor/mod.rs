@@ -39,8 +39,6 @@ use std::time::Duration;
 
 /// PID marker for the managed postmaster (decimal; blank = cleared).
 pub const PG_PID_KEY: &str = "postgres_pid";
-/// Loopback-only cluster password (generated on first start).
-pub const PG_PASSWORD_KEY: &str = "postgres.password";
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -229,6 +227,7 @@ pub const PG_EXIT_HOOK_BOUND: Duration = Duration::from_secs(5);
 pub const PG_DEATH_WAIT_BOUND: Duration = Duration::from_secs(20);
 
 pub mod acquisition; // S1/S2/S3 (#2978): acquisition mode + pinned archive
+pub mod credentials; // ST-7 (#3005): OS-keychain loopback password
 pub mod descriptor; // CU-1/ST-1 (#2992): headless daemon descriptor
 pub mod headless; // ST-5 (#2992): the `fredo ingest` daemon
 pub mod release_gate; // S6 (#2978): cutover release gate
