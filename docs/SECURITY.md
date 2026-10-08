@@ -45,7 +45,7 @@ The companion's inference runtime is a managed `llama-server` **child process**,
 
 **Protections:**
 - Loopback-only binding prevents external access
-- Spawned and stopped only through the `features/llm_server` commands; the process is never started ad-hoc from other feature code
+- Spawned and stopped only through the `applications/llm_server` commands; the process is never started ad-hoc from other application code
 - Terminated on app exit (kill-on-exit hook); a PID-reuse-guarded startup sweep reclaims an orphan after a hard-kill, so no stale server survives
 - The generated launch config and model paths come from the local settings DB — no network fetch at launch
 
@@ -53,13 +53,13 @@ The companion's inference runtime is a managed `llama-server` **child process**,
 - Any process on the same machine can reach the loopback port
 - The server has no authentication — the same local-user threat model as the IPC socket and OTLP receivers
 
-## Embedded PostgreSQL (`features/pg_supervisor`)
+## Embedded PostgreSQL (`applications/pg_supervisor`)
 
-Slices 1-6 of the SQLite → embedded-PostgreSQL migration ship the **lifecycle supervisor, the PostgreSQL-only storage engine seam, the migration of the KV/feature family, the RTDB canonical store, and the SpanStore (telemetry spans/metrics/logs), the one-shot `fredo.db` data leg with a fail-closed per-table parity gate and an executable SQLite rollback, the packaging/install of the runtime (an explicit build-time acquisition mode + a SHA-256-pinned archive acquisition), and the slice-6 cutover (PostgreSQL is the DEFAULT; the SQLite data plane is removed; `rollback.verified` + the executable backout)**: PostgreSQL is the shipped default, and the SQLite **data plane** no longer exists (the legacy `fredo.db` is retained read-only as the backout artifact). The pool DSN embeds the slice-1 generated loopback secret held in the control-plane KV on `control.db` (`postgres.password`) — never logged, never in code; the role is the crate's local `postgres` superuser (least-privilege packaging is a later slice). The data leg opens the source **read-only** (a `VACUUM INTO` snapshot) and never mutates or deletes `fredo.db`; any parity mismatch leaves `migration.postgres.completed` unset, installs nothing, and leaves `fredo.db` untouched, so the data plane fails closed with a structured reason (there is no SQLite data-plane fallback). `telemetry_spans` remains strictly read-only to the RTDB/backfill path.
+Slices 1-6 of the SQLite → embedded-PostgreSQL migration ship the **lifecycle supervisor, the PostgreSQL-only storage engine seam, the migration of the KV/application family, the RTDB canonical store, and the SpanStore (telemetry spans/metrics/logs), the one-shot `fredo.db` data leg with a fail-closed per-table parity gate and an executable SQLite rollback, the packaging/install of the runtime (an explicit build-time acquisition mode + a SHA-256-pinned archive acquisition), and the slice-6 cutover (PostgreSQL is the DEFAULT; the SQLite data plane is removed; `rollback.verified` + the executable backout)**: PostgreSQL is the shipped default, and the SQLite **data plane** no longer exists (the legacy `fredo.db` is retained read-only as the backout artifact). The pool DSN embeds the slice-1 generated loopback secret held in the control-plane KV on `control.db` (`postgres.password`) — never logged, never in code; the role is the crate's local `postgres` superuser (least-privilege packaging is a later slice). The data leg opens the source **read-only** (a `VACUUM INTO` snapshot) and never mutates or deletes `fredo.db`; any parity mismatch leaves `migration.postgres.completed` unset, installs nothing, and leaves `fredo.db` untouched, so the data plane fails closed with a structured reason (there is no SQLite data-plane fallback). `telemetry_spans` remains strictly read-only to the RTDB/backfill path.
 
 **Protections:**
 - The managed postmaster is started on every boot (PostgreSQL is the default engine); it binds an **ephemeral loopback port on `127.0.0.1`** (never OTLP 4317/4318 or the MCP bridge 9223)
-- Spawned/stopped only through `features/pg_supervisor` — by the GUI or by the non-GUI `fredo ingest` daemon (Spec #2992); nothing else starts it ad-hoc. The daemon holds the same exclusive data-dir lock, so a second owner cannot start a cluster; a GUI launched while a headless daemon owns the cluster **attaches** to it (published pid/port descriptor) instead of starting its own
+- Spawned/stopped only through `applications/pg_supervisor` — by the GUI or by the non-GUI `fredo ingest` daemon (Spec #2992); nothing else starts it ad-hoc. The daemon holds the same exclusive data-dir lock, so a second owner cannot start a cluster; a GUI launched while a headless daemon owns the cluster **attaches** to it (published pid/port descriptor) instead of starting its own
 - Every start/readiness/stop wait carries a **finite wall-clock cap** with a hard-kill (`taskkill /T /F`) fallback and guaranteed teardown on normal, error, and panic paths — the observed ~11 h unbounded `pg.stop()` hang (#2948) is closed
 - A PID-reuse-guarded startup sweep reclaims a previous run's orphan (killed only when its image is `postgres.exe`); an exclusive data-dir lock prevents two launches from touching one cluster
 - The cluster password is local-only (control-plane KV key `postgres.password` on `control.db`); OS-keyring hardening is deferred to a later slice
@@ -75,14 +75,14 @@ Slices 1-6 of the SQLite → embedded-PostgreSQL migration ship the **lifecycle 
 
 ---
 
-## Doom Runtime (`features/doom`, Specs #2968, #2969, #2970, #2971)
+## Doom Runtime (`applications/doom`, Specs #2968, #2969, #2970, #2971)
 
 The Doom Mode foundation runs a RESTful-DOOM engine as a **supervised out-of-process child**, launched on demand by the `doom` window and controlled over loopback HTTP. The engine binary is **built from source at development/QA time** by the committed `scripts/doom/build-restful-doom.ps1` (MSYS2 MINGW64) and staged into the local app-data directory; the runtime never builds it. The default game data is the libre **Freedoom** IWAD; the installer ships **no GPL engine binary and no WAD**.
 
 **Protections:**
 - Loopback-only: the engine binds `127.0.0.1:{port}` only — never a public interface
 - All engine HTTP is **Rust-side**; the webview CSP `connect-src 'self' ipc: http://ipc.localhost` is unchanged, so the webview cannot fetch the engine directly (it only receives base64 PNG frames)
-- Spawned/stopped only through `features/doom`; terminated on window close **and** app exit (`RunEvent::Exit`), both **bounded** with a `taskkill /T /F` hard-kill fallback and guaranteed teardown on every exit path — no engine process outlives its window
+- Spawned/stopped only through `applications/doom`; terminated on window close **and** app exit (`RunEvent::Exit`), both **bounded** with a `taskkill /T /F` hard-kill fallback and guaranteed teardown on every exit path — no engine process outlives its window
 - A PID-reuse-guarded startup sweep (image name + PID marker) reclaims an orphan after a hard-kill
 - Acquisition is SHA-256-pinned and fail-closed; the shipped default has **no** engine archive URL (no unverified download), and a configured archive without a pinned SHA-256 is refused
 - GPL-2.0 posture: the engine runs as an **arm's-length separate process** over loopback HTTP (not linked); the acquisition UI surfaces the license/source offer
@@ -97,7 +97,7 @@ The Doom Mode foundation runs a RESTful-DOOM engine as a **supervised out-of-pro
 
 ---
 
-## Database Client (`features/db_client`, Spec #2950)
+## Database Client (`applications/db_client`, Spec #2950)
 
 The built-in PostgreSQL client connects to **external** PostgreSQL databases (separate per-connection pools; the embedded-PostgreSQL persistence plane is never touched).
 
@@ -160,7 +160,7 @@ No filesystem permissions are granted to the webview. All filesystem operations 
 
 ---
 
-## Screenshot Feature
+## Screenshot Application
 
 The `capture_screen_region` command captures physical screen pixels via the `xcap` crate.
 
@@ -171,7 +171,7 @@ The `capture_screen_region` command captures physical screen pixels via the `xca
 
 **Limitations:**
 - Can capture any visible content on the screen (including sensitive information)
-- Intended for use by AI companion features requiring visual context
+- Intended for use by AI companion capabilities requiring visual context
 
 ---
 
@@ -179,7 +179,7 @@ The `capture_screen_region` command captures physical screen pixels via the `xca
 
 Settings are persisted as plain key-value pairs. The **synchronous control plane** (the `settings` KV) lives in a small SQLite `control.db` managed by `AppStore`; the migrated data plane lives on the embedded PostgreSQL cluster. Both are stored in the Tauri app data directory (`%APPDATA%\fredo` on Windows, `~/.local/share/fredo` on Linux, `~/Library/Application Support/fredo` on macOS).
 
-- No credentials or secrets are stored in the settings database. The one feature that handles a user secret — the built-in PostgreSQL client (`features/db_client`) — stores the connection password in the **OS keychain** (`keyring`); the settings KV holds only secret-free connection metadata, history, saved queries, and preferences.
+- No credentials or secrets are stored in the settings database. The one application that handles a user secret — the built-in PostgreSQL client (`applications/db_client`) — stores the connection password in the **OS keychain** (`keyring`); the settings KV holds only secret-free connection metadata, history, saved queries, and preferences.
 - All SQL queries use parameterized statements — no string interpolation (the retained `rusqlite` control-plane path and the PostgreSQL `sqlx` data-plane path)
 - Session history in the Mission Monitor is persisted via the RTDB row store on the embedded PostgreSQL cluster, applied to the module-scoped `StreamContext` row store in-memory. Live rows are unbounded; persistence retention is bounded by the `rtdb.retention_days` / `rtdb.max_rows` knobs.
 
@@ -208,8 +208,8 @@ The React UI renders all agent-provided content via React's JSX (no `dangerously
 
 - The Rust backend and the React webview run in separate processes (Tauri architecture)
 - The webview has no access to the filesystem, PTY, or IPC socket — only to declared Tauri commands and events
-- The communication layer (`infrastructure/comm/`) and the RTDB row pipeline (`infrastructure/rtdb/`) provide the security boundary between agent input and frontend features. OTLP receivers persist raw spans and the ingest classifier maps them onto canonical rows; `fredo emit` CLI events are enriched by `InternalAdapter` and fed through the same classifier. `EventBus.emit_row_delivery_batch` emits `RowDeliveryBatch` envelopes on the `fredo-stream-event` IPC channel; raw `FredoEvent` never crosses IPC.
-- The feature-owned data layer (`infrastructure/feature_data/`) sits ON TOP of the canonical rows: a feature declares its structure and source mapping, and the backend materializes/writes its declared tables on the same active engine (`feature_<sanitized featureId>_<table>`; the embedded PostgreSQL cluster). Every read/watch/write is validated against the requesting `featureId`, so one feature never observes or mutates another's data; canonical rows are READ-ONLY to the projection. Notifications ride the same `fredo-stream-event` channel as `FeatureDeliveryBatch` envelopes, discriminated in `AppProvider` before the RTDB validators.
+- The communication layer (`infrastructure/comm/`) and the RTDB row pipeline (`infrastructure/rtdb/`) provide the security boundary between agent input and frontend applications. OTLP receivers persist raw spans and the ingest classifier maps them onto canonical rows; `fredo emit` CLI events are enriched by `InternalAdapter` and fed through the same classifier. `EventBus.emit_row_delivery_batch` emits `RowDeliveryBatch` envelopes on the `fredo-stream-event` IPC channel; raw `FredoEvent` never crosses IPC.
+- The application-owned data layer (`infrastructure/application_data/`) sits ON TOP of the canonical rows: an application declares its structure and source mapping, and the backend materializes/writes its declared tables on the same active engine (`feature_<sanitized featureId>_<table>`; the embedded PostgreSQL cluster). Every read/watch/write is validated against the requesting `applicationId`, so one application never observes or mutates another's data; canonical rows are READ-ONLY to the projection. Notifications ride the same `fredo-stream-event` channel as `ApplicationDeliveryBatch` envelopes, discriminated in `AppProvider` before the RTDB validators.
 - The PTY terminal spawns child processes as the same OS user; no privilege escalation occurs
 - OTLP receivers run as separate tokio tasks within the same process; no additional processes spawned
 
@@ -223,7 +223,7 @@ Fredo's automated agentic pipeline uses GitHub issues as its communication backb
 
 A repo-level interaction limit (`collaborators_only`) is set as a temporal belt-and-suspenders. It is **temporary by design** — GitHub caps interaction-limit expiry at six months, so it must be re-applied — and it is not a permanent control. The durable guard is per-conversation lock-on-create.
 
-**How to report a real issue:** report security vulnerabilities privately via the repository's Security tab (a private advisory) — see [Reporting Security Issues](#reporting-security-issues) below. For non-security bug reports and feature requests, open a regular GitHub issue. Public comments on a locked pipeline issue are not read by the pipeline.
+**How to report a real issue:** report security vulnerabilities privately via the repository's Security tab (a private advisory) — see [Reporting Security Issues](#reporting-security-issues) below. For non-security bug reports and enhancement requests, open a regular GitHub issue. Public comments on a locked pipeline issue are not read by the pipeline.
 
 ---
 

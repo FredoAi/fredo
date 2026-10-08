@@ -8,7 +8,7 @@
 3. **[CLI Guide](CLI_GUIDE.md)** — All `fredo` CLI commands
 
 ### For System Architects
-1. **[Architecture Overview](ARCHITECTURE.md)** — Complete system design: Rust module map, event pipeline, IPC protocol, feature modules, Tauri commands, startup sequence
+1. **[Architecture Overview](ARCHITECTURE.md)** — Complete system design: Rust module map, event pipeline, IPC protocol, application modules, Tauri commands, startup sequence
 2. **[agentic-pipeline](agentic-pipeline/README.md)** — Agentic SDD pipeline: agent roles, design protocol, implementation lifecycle, quality gates, continuous improvement
 
 ---
@@ -19,7 +19,7 @@ Core product and engineering documentation.
 
 | Document | Purpose |
 |----------|---------|
-| [Architecture](ARCHITECTURE.md) | Communication layer, RTDB row store + ingest classifier, Rust module map, IPC protocol, OTLP receivers, Tauri commands, feature modules, agent integrations, startup sequence |
+| [Architecture](ARCHITECTURE.md) | Communication layer, RTDB row store + ingest classifier, Rust module map, IPC protocol, OTLP receivers, Tauri commands, application modules, agent integrations, startup sequence |
 | [Setup Guide](SETUP.md) | Prerequisites, install, dev commands, model download, OTLP configuration |
 | [CLI Guide](CLI_GUIDE.md) | All `fredo` CLI subcommands with examples |
 | [Security](SECURITY.md) | IPC socket security, OTLP, Tauri capabilities, input handling, process isolation |
@@ -37,6 +37,11 @@ Core product and engineering documentation.
 | [Security Policy](../.github/SECURITY.md) | Reporting a vulnerability privately, supported versions, coordinated disclosure, and what is **not** a vulnerability |
 | [AGENTS.md](../AGENTS.md) | **Auto-loaded into every agent session** — how the main session works with the human (Edit / Backlog / Implement-a-backlog-item routing) plus explore/debug guidance and pointers into the docs. Not a reading document: the harness injects it |
 | [ENGINEERING_RULES.md](ENGINEERING_RULES.md) | **Auto-injected into every agent session** via `opencode.json` — the binding engineering rules (backend, frontend, Chakra UI, settings). A change that violates one is wrong even if it builds |
+
+> **Human-owned touchpoints.** [`AGENTS.md`](../AGENTS.md) and [`opencode.json`](../opencode.json)
+> are **human-owned**: the pipeline and its agents never edit them. A required change to either is
+> a **human follow-up** — see
+> [`ENGINEERING_RULES.md` → Human-owned touchpoints](ENGINEERING_RULES.md#human-owned-touchpoints-never-pipeline-edited).
 
 ## Maintainer Runbooks
 

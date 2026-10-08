@@ -111,7 +111,7 @@ URL/SHA-256 stay unset. Building from source (§2.3) does **not** depend on this
 
 ### 2.6 Shipped acquisition surface (CU-3 / ST-4)
 
-`apps/tauri/src-tauri/src/features/doom/acquisition.rs` implements the decision above:
+`apps/tauri/src-tauri/src/applications/doom/acquisition.rs` implements the decision above:
 
 - **No default engine archive URL is compiled in** (`DOOM_ENGINE_ARCHIVE_URL_DEFAULT` is the empty
   string). `acquire_engine` therefore returns `Ok(None)` on the shipped default, and

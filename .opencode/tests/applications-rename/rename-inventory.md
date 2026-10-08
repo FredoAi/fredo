@@ -192,3 +192,25 @@ allowlist pins only the exact frozen format-string/comment spellings and **no ge
    pipeline-edited (AC5) — they are required human touchpoints (ST-6 lists them).
 6. **`docs/app-icons.md` does not exist** (confirmed) — the backlog's "geometric features" OUT class
    is stale; nothing to retain.
+
+## Residual grep gate (ST-6 deliverable)
+
+`residual-grep-gate.js` (Node — the same toolchain this suite's Phase-0 scanner used) consumes this
+directory's `grep-allowlist.txt` and FAILS (exit 1) on any un-allowlisted `[Ff]eature` occurrence
+over the renamed product/copy surfaces:
+
+`apps/ui/src/applications/**`, `apps/ui/src/shared/**`,
+`apps/tauri/src-tauri/src/applications/**`, `apps/tauri/src-tauri/src/infrastructure/**`, `docs/**`.
+
+- **Run:** `node .opencode/tests/applications-rename/residual-grep-gate.js`
+  (`--json` / `--summary` / `--tokens` for machine-readable output).
+- **Self-test (G-300):** `node .opencode/tests/applications-rename/residual-grep-gate.js --selftest`
+  injects a `feature_zzz_probe` token under `.opencode/tmp/2956/` and asserts it is flagged — the
+  allowlist deliberately has no blanket `feature_` entry.
+- **Scoped rules:** an `in:<glob> lit:<text>` / `in:<glob> re:<regex>` entry applies a retained
+  `lit:`/`re:` rule ONLY to matching paths. ST-2/ST-3 intentionally retained the app-concept
+  identifier spelling in code (component/local names, `<Name>Feature` components, metadata
+  fields, test fixtures) — see the Class D entries — and `featureId` metadata is scoped so a
+  stale `featureId` invoke arg in the wire-contract files
+  (`shared/lib/applicationStore.ts`, `shared/application-data/**`, `application_store.rs`,
+  `application_data/**`) is still flagged.

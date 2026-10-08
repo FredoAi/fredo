@@ -83,7 +83,7 @@ The companion's runtime prerequisites are checked in-app. Open **Settings → Co
 
 Each prerequisite reports its own honest state (`checking` / `missing` / `installed` / `error`); the wizard is never shown as complete while a prerequisite is missing. Once all prerequisites are satisfied, the normal Companion controls (Show Fredo Companion, idle auto-return, Teleport tip) replace the wizard. If `winget` is unavailable or the install fails, the wizard shows an actionable error and stays in the not-set-up state.
 
-Voice input is a **shipped, opt-in** feature (default off): **Settings → Companion → Voice input** holds the enable/disable switch, the input-device selection, and the model-audio capability row. There is **no separate voice model to download or set up** — enabling voice and choosing an input device is all the setup it needs. It has exactly **one speech path**: the captured utterance is handed to the locally-managed companion model itself (the same model the Companion setup installs) and **no transcript is shown**. All capture and understanding run on-device — audio never leaves the machine.
+Voice input is a **shipped, opt-in** capability (default off): **Settings → Companion → Voice input** holds the enable/disable switch, the input-device selection, and the model-audio capability row. There is **no separate voice model to download or set up** — enabling voice and choosing an input device is all the setup it needs. It has exactly **one speech path**: the captured utterance is handed to the locally-managed companion model itself (the same model the Companion setup installs) and **no transcript is shown**. All capture and understanding run on-device — audio never leaves the machine.
 
 **How it works.** A captured utterance is handed to the locally-managed companion model as that turn's input, and **no transcript is shown** — the model's reply appears in the normal conversation surface. Model audio is available only when the installed companion model supports audio; when it does not, or the local model server is not running, Fredo says so (nothing is sent). The recording is bounded (about 30 s) with a visible auto-stop at the limit that keeps the whole clip, and it is delivered only to the loopback `llama-server` — nothing leaves the machine.
 
@@ -107,7 +107,7 @@ export OPENCODE_OTLP_PROTOCOL=grpc
 
 ### Using the Setup Wizard
 
-Open Fredo → Setup feature → the wizard automatically detects OpenCode and configures OTLP.
+Open Fredo → Setup application → the wizard automatically detects OpenCode and configures OTLP.
 
 ## Development
 

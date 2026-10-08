@@ -73,13 +73,83 @@ re:^\s*feature\s*=\s*\[
 lit:feature = "bundled"
 lit:"bundled"
 lit:doom-stub
+# Cargo/build-feature prose spellings that occur in the product docs (the
+# "Cargo/build features" OUT class).
+re:compile-time feature
+re:Cargo feature
+re:feature-gated
+re:`bundled` feature
 # Pipeline meta "feature" sense -- the pipeline's own vocabulary (e.g. "feature
 # issue"), not the app concept.
 path:.opencode/**
 path:docs/agentic-pipeline/**
+# Archived historical documentation for retired side projects (the browser
+# extension + the deprecated tools-mcp service). ST-1's inventory classifies
+# docs/archive/** as OUT (archive): verbatim snapshots, not the shipped
+# product surface, so the rename must not rewrite them.
+path:docs/archive/**
 # Generic English "a feature of X".
 re:\ba feature of\b
 re:\bfeatures of\b
+
+# ----------------------------------------------------------------------------
+# CLASS D -- Retained app-concept identifier vocabulary in PRODUCT CODE.
+# ST-2/ST-3 briefs renamed the binding-name contracts (directories, base class,
+# registry entry points, data layer, Tauri commands, wire discriminator, user
+# copy) and intentionally RETAINED the remaining app-concept identifier
+# spelling in code -- component/local names, `<Name>Feature` components,
+# metadata fields, test fixtures. ST-3's Status flagged these for this
+# allowlist ("the QA-3 sweep scope/allowlist (ST-6) should account for them").
+# Scoped to the code roots so `docs/**` stays strict. The patterns deliberately
+# do NOT match `feature_<lowercase>` (e.g. the QA-3 self-test token
+# `feature_zzz_probe`), so the deny property still holds.
+# ----------------------------------------------------------------------------
+in:apps/ui/src/** re:\b[A-Za-z0-9_]*Feature[A-Za-z0-9_]*\b
+in:apps/ui/src/** re:\bfeature(?!Id\b)[A-Z][A-Za-z0-9_]*\b
+in:apps/ui/src/** re:\bfeature\b
+in:apps/ui/src/** re:\bfeatures\b
+in:apps/tauri/src-tauri/src/** re:\b[A-Za-z0-9_]*Feature[A-Za-z0-9_]*\b
+in:apps/tauri/src-tauri/src/** re:\bfeature(?!Id\b)[A-Z][A-Za-z0-9_]*\b
+in:apps/tauri/src-tauri/src/** re:\bfeature\b
+in:apps/tauri/src-tauri/src/** re:\bfeatures\b
+# Concrete generated frozen-table names (prefix + namespace + table) that occur
+# as unit-test/doc examples in the scanned Rust modules.
+lit:feature_mission_monitor_sessions
+lit:feature_mission_monitor_events
+lit:feature_mission_monitor_items
+lit:feature_mission_monitor_deleted_sessions
+# Remaining exact spellings of the frozen per-app prefix as they occur in
+# comments/doc examples (never a blanket `feature_` entry -- the probe token
+# `feature_zzz_probe` must stay flagged).
+lit:feature_<sanitized applicationId>_<name>
+lit:feature_<sanitized applicationId>_<table>
+lit:feature_<sanitized id>_<table>
+lit:feature_{applicationId}_{tableName}
+lit:feature_*
+lit:is the frozen NO-MIGRATE on-disk prefix
+# Retained snake_case helper name (Rust `AppRuntime::register_feature()` doc ref)
+# and a retained local ref name in the launcher app-opener hook.
+lit:register_feature
+lit:featuresRef
+# Retained camelCase hotkey/metadata field `featureId` (NOT a request/wire arg).
+# Scoped so a stale `featureId` invoke arg in the wire-contract files
+# (`shared/lib/applicationStore.ts`, `shared/application-data/**`,
+# `application_store.rs`, `application_data/**`) is still flagged (ST-1 note 1).
+in:apps/ui/src/applications/** lit:featureId
+in:apps/ui/src/shared/hotkeys/** lit:featureId
+in:apps/ui/src/shared/classes/** lit:featureId
+in:apps/ui/src/shared/utils/featureResponseApi.ts lit:featureId
+in:apps/ui/src/shared/utils/responseQueue.ts lit:featureId
+# Retained code identifiers that the docs legitimately reference (docs must
+# stay consistent with the post-rename code): the companion's nested
+# `features/` game-module directory, the concrete `<Name>Feature.tsx`
+# component-file convention, and the Doom app's `doomFeature`/`DoomFeature`/
+# `DoomEntry` symbols named in the secrecy description.
+in:docs/** lit:+-- features/
+in:docs/** lit:<Name>Feature
+in:docs/** lit:doomFeature
+in:docs/** lit:DoomFeature
+in:docs/** lit:DoomEntry
 
 # ----------------------------------------------------------------------------
 # CLASS C -- Pre-existing app/application vocabulary, RETAINED as-is (no second
