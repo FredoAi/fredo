@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { Box, Button, HStack, Icon, Text, VStack } from '@chakra-ui/react';
-import { LuPalette, LuBot, LuSave, LuSettings2, LuActivity, LuKeyboard, LuDatabase, LuAppWindow } from 'react-icons/lu';
+import { LuPalette, LuBot, LuSave, LuSettings2, LuActivity, LuKeyboard, LuDatabase, LuAppWindow, LuLayoutGrid } from 'react-icons/lu';
 import { CompanionSettingsPanel } from '../../../shared/components/companion/CompanionSettingsPanel';
 import { SettingsSaveProvider, useSettingsSaveContext } from '../../settings/SettingsSaveContext';
 import { ThemingSettings } from '../../theming';
@@ -11,6 +11,7 @@ import { getFeatures, dedupeByFeatureId } from '../../featureRegistry';
 import { tint } from '../../../shared/utils/colorTint';
 import { HotkeysSettings, HOTKEYS_NAV_ID } from './HotkeysSettings';
 import { AppPresentationSettings } from './AppPresentationSettings';
+import { LayoutSettings, LAYOUT_NAV_ID } from './LayoutSettings';
 
 /**
  * SettingsSurface — the inner Settings shell (Spec #2868 ST-1).
@@ -124,7 +125,7 @@ export const SettingsSurface: React.FC = () => {
     [],
   );
 
-  type StaticSection = 'appearance' | 'companion' | 'telemetry' | 'ingest';
+  type StaticSection = 'appearance' | 'companion' | 'telemetry' | 'ingest' | 'layout';
   type SectionId = StaticSection | string;
   const [activeSection, setActiveSection] = useState<SectionId>('companion');
 
@@ -181,6 +182,9 @@ export const SettingsSurface: React.FC = () => {
         {/* Static: Hotkeys (Spec #2946 ST-6 — platform-level, immediate write-through) */}
         <NavItem id={HOTKEYS_NAV_ID} label="Hotkeys" icon={LuKeyboard} activeSection={activeSection} onClick={setActiveSection} />
 
+        {/* Static: Layout (Spec #2980 ST-2 — platform-level, immediate write-through) */}
+        <NavItem id={LAYOUT_NAV_ID} label="Layout" icon={LuLayoutGrid} activeSection={activeSection} onClick={setActiveSection} testId="settings-nav-layout" />
+
         {/* Feature settings */}
         {featureSettingsTabs.length > 0 && (
           <Text
@@ -235,6 +239,9 @@ export const SettingsSurface: React.FC = () => {
             )}
             {activeSection === HOTKEYS_NAV_ID && (
               <Box p={0} minH="100%"><HotkeysSettings /></Box>
+            )}
+            {activeSection === LAYOUT_NAV_ID && (
+              <Box p={0} minH="100%"><LayoutSettings /></Box>
             )}
             {featureSettingsTabs.map((feature) =>
               activeSection === feature.id ? (

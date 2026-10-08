@@ -1,16 +1,14 @@
 /**
- * Continuous token-first chrome audit — Spec #2949 ST-8 (R11 / AC5).
+ * Zoned pane + overlay chrome — token-first audit — Spec #2980 ST-4 (R-5.2 NFR).
  *
- * R11 is a CONTINUOUS-STATE requirement: pane + divider chrome must re-tint
- * live under a theme/accent change. That holds only if every colour is a theme
- * CSS var, a Chakra semantic token, or a `tint()` color-mix — with NO hardcoded
- * hex/rgba, NO `var(--x)NN` alpha-append (the #2770 trap), and NO new theming
- * token. `WindowFrame.test.tsx` REQ-9 scans the whole `window-system` directory;
- * this is the focused ST-8 pin that names the pane/divider chrome specifically,
- * so a regression that copies a literal into these two files fails here first.
+ * The zone redesign is token-first: every colour in the zoned pane and the
+ * overlay must be a Chakra semantic token, a theme CSS var, or a `tint()`
+ * color-mix — with NO hardcoded hex/rgba, NO `var(--x)NN` alpha-append (the
+ * #2770 trap), and no new theming token. This is the focused ST-4 pin that names
+ * the two ST-4 paints specifically, so a regression that copies a literal into
+ * either file fails here first.
  *
- * ST-3/ST-5 already routed every pane/divider colour through tokens/vars/`tint()`
- * — ST-8 is a verification + pin (no new token, no new code path).
+ * (The retired `PaneDivider.tsx` is not audited — ST-6 deletes it.)
  */
 
 import { describe, it, expect } from 'vitest';
@@ -30,16 +28,16 @@ function readSource(file: string): { raw: string; code: string; rel: string } {
 }
 
 const PANE = readSource('WorkspacePane.tsx');
-const DIVIDER = readSource('PaneDivider.tsx');
+const OVERLAY = readSource('ZoneOverlay.tsx');
 
-describe('pane + divider chrome — token-first audit (R11)', () => {
+describe('zoned pane + overlay chrome — token-first audit (R-5.2)', () => {
   it('audits the real files (guards against an empty read passing vacuously)', () => {
     expect(PANE.code).toContain('workspace-pane-');
-    expect(DIVIDER.code).toContain('pane-divider-');
+    expect(OVERLAY.code).toContain('zone-overlay');
   });
 
   it('contains no hex / rgb() / hsl() colour literal in code', () => {
-    for (const { code, rel } of [PANE, DIVIDER]) {
+    for (const { code, rel } of [PANE, OVERLAY]) {
       const hex = [...code.matchAll(/#[0-9a-fA-F]{3,8}\b/g)].map((m) => m[0]);
       expect(hex, `${rel}: hex colour literal(s) ${JSON.stringify(hex)}`).toEqual([]);
 
@@ -52,24 +50,25 @@ describe('pane + divider chrome — token-first audit (R11)', () => {
   });
 
   it('contains no var(--x)NN alpha-append (#2770 trap)', () => {
-    for (const { code, rel } of [PANE, DIVIDER]) {
+    for (const { code, rel } of [PANE, OVERLAY]) {
       const appends = [...code.matchAll(/var\(--[a-z0-9-]+\)[0-9]/g)].map((m) => m[0]);
       expect(appends, `${rel}: var() alpha-append ${JSON.stringify(appends)}`).toEqual([]);
     }
   });
 
   it('routes every tint through the shared color-mix helper', () => {
-    for (const { code, rel } of [PANE, DIVIDER]) {
+    for (const { code, rel } of [PANE, OVERLAY]) {
       expect(code, `${rel} must use tint()`).toContain('tint(');
-      expect(code, `${rel} must import the shared tint helper`).toContain("from '../utils/colorTint'");
+      expect(code, `${rel} must import the shared tint helper`).toContain(
+        "from '../utils/colorTint'",
+      );
+      // The accent chrome is tinted from the LIVE accent var, not a literal.
+      expect(code).toContain("tint('var(--accent-primary)'");
     }
-    // The accent chrome is tinted from the LIVE accent var, not a literal.
-    expect(PANE.code).toContain("tint('var(--accent-primary)'");
-    expect(DIVIDER.code).toContain("tint('var(--accent-primary)'");
   });
 
-  it('declares the pane/divider chrome from theme tokens / CSS vars', () => {
-    const surface = `${PANE.code}\n${DIVIDER.code}`;
+  it('declares the chrome from theme tokens / CSS vars', () => {
+    const surface = `${PANE.code}\n${OVERLAY.code}`;
     for (const token of [
       'bg.surface',
       'accent.default',
@@ -78,16 +77,15 @@ describe('pane + divider chrome — token-first audit (R11)', () => {
       'var(--header-bg)',
       'var(--card-hover-bg)',
     ]) {
-      expect(surface, `token ${token} must drive the pane/divider chrome`).toContain(token);
+      expect(surface, `token ${token} must drive the zoned chrome`).toContain(token);
     }
   });
 
-  it('never suppresses the focus ring (no outline: none on pane/divider)', () => {
-    for (const { code, rel } of [PANE, DIVIDER]) {
-      expect(code).not.toMatch(/outline\s*[:=]\s*['"]none['"]/);
+  it('never suppresses the focus ring (no outline: none)', () => {
+    for (const { code, rel } of [PANE, OVERLAY]) {
+      expect(code, `${rel} must not suppress the focus ring`).not.toMatch(
+        /outline\s*[:=]\s*['"]none['"]/,
+      );
     }
-    // The global :focus-visible guarantee is honoured by the divider's own ring.
-    expect(DIVIDER.code).toContain('var(--accent-primary)');
-    expect(DIVIDER.code).toContain('_focusVisible');
   });
 });

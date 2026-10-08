@@ -1,24 +1,21 @@
 /**
- * WorkspacePane edge-behavior tests — Spec #2949 ST-6 (R9/R10) + ST-7 (R12).
+ * WorkspacePane edge-behavior tests — Spec #2980 ST-4 (rewritten from #2949).
  *
- * Pins the degradation, reflow and keyboard contracts on the real
- * `WindowManager` render:
+ * Pins the degradation / empty / control contracts on the real
+ * `WindowManager` zoned render:
  *
- *   - R9 — a placement with no matching open window renders a `role="status"`
- *     degraded slot (`workspace-pane-degraded-<id>`) with visible "App not
- *     available" text and a Close-slot control; siblings keep their exact rects;
- *     no divider is produced for the degraded slot; nothing throws.
- *   - R10 — minimizing keeps the `PaneSlot` and renders the empty-slot restore
- *     affordance (`workspace-slot-restore-<id>`); restoring re-tiles the pane.
- *     Closing a pane drops the placement and reflows the freed space into the
- *     sibling (no orphan divider).
- *   - R12 — Arrow keys move focus between panes, with a boundary no-op; the
- *     divider keeps its own Arrow-resize (the pane handler never hijacks it);
- *     panes/dividers stay Tab-reachable and the focus cue is not colour-only.
+ *   - R-4.4 — an active-layout assignment whose window is not open renders a
+ *     `role="status"` degraded zone (`zone-degraded-<id>`) with visible "App not
+ *     available" text and a token-first "Remove from zone" control; siblings
+ *     keep their exact rects; nothing throws.
+ *   - R-4.4 — minimizing keeps the assignment and renders the empty-slot restore
+ *     affordance (`workspace-empty-slot-<id>` + `workspace-slot-restore-<id>`);
+ *     restoring re-renders the pane.
+ *   - R-5.2 — closing a pane drops the window AND its zone assignment; the float
+ *     control maximizes into the full-bleed frame.
  *
- * jsdom has no layout engine, so the measured tiling region is stubbed at the
- * prototype level for `[data-testid="workspace-tiles"]`. `settingsService` is
- * mocked (the layout store persists through it).
+ * jsdom has no layout engine, so `[data-testid="workspace-layout"]` is stubbed
+ * at the prototype level. `settingsService` is mocked.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -26,18 +23,16 @@ import { cleanup, fireEvent, screen } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { WindowManager } from '../WindowManager';
+import { getWindowSnapshot, openWindow, resetWindowStoreForTests } from '../windowStore';
 import {
-  getWindowSnapshot,
-  openWindow,
-  resetWindowStoreForTests,
-} from '../windowStore';
-import {
-  addPane,
-  getLayoutSnapshot,
-  resetWorkspaceLayoutStoreForTests,
-  setLayoutWorkspace,
-} from '../workspaceLayoutStore';
-import { DIVIDER_KEYBOARD_STEP } from '../PaneDivider';
+  assignWindowToZone,
+  getZoneLayoutSnapshot,
+  resetZoneLayoutStoreForTests,
+  saveZoneLayout,
+  setActiveZoneLayout,
+  setZoneLayoutEnabled,
+} from '../zoneLayoutStore';
+import { buildTemplateZones, resolveZoneRect } from '../zoneLayout';
 import type { OpenWindowParams } from '../windowTypes';
 
 vi.mock('../../../features/settings', async (importOriginal) => {
@@ -53,6 +48,9 @@ vi.mock('../../../features/settings', async (importOriginal) => {
 });
 
 const WS = { width: 1000, height: 800 };
+const GAP = 8;
+const LAYOUT_ID = 'layout-work';
+const ZONES = buildTemplateZones('columns', { columns: 2 });
 
 function rectOf(width: number, height: number): DOMRect {
   return {
@@ -82,24 +80,24 @@ function openFeature(id: string, overrides: Partial<OpenWindowParams> = {}): voi
   });
 }
 
-/** Two tiled panes side by side: `a` left, `b` right. */
-function twoPanes(): void {
-  openFeature('a');
-  openFeature('b');
-  addPane('a', 'left');
-  addPane('b', 'right');
+function setupZones(assignments: Record<string, string> = {}): void {
+  saveZoneLayout({ id: LAYOUT_ID, name: 'Work', template: 'columns', zones: ZONES });
+  setActiveZoneLayout(LAYOUT_ID);
+  setZoneLayoutEnabled(true);
+  for (const [windowId, zoneId] of Object.entries(assignments)) {
+    assignWindowToZone(windowId, zoneId);
+  }
 }
 
 let rectSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
   resetWindowStoreForTests();
-  resetWorkspaceLayoutStoreForTests();
-  setLayoutWorkspace(WS);
+  resetZoneLayoutStoreForTests();
   rectSpy = vi
     .spyOn(Element.prototype, 'getBoundingClientRect')
     .mockImplementation(function (this: Element) {
-      if (this instanceof HTMLElement && this.dataset.testid === 'workspace-tiles') {
+      if (this instanceof HTMLElement && this.dataset.testid === 'workspace-layout') {
         return rectOf(WS.width, WS.height);
       }
       return rectOf(0, 0);
@@ -110,158 +108,102 @@ afterEach(() => {
   rectSpy.mockRestore();
   cleanup();
   resetWindowStoreForTests();
-  resetWorkspaceLayoutStoreForTests();
+  resetZoneLayoutStoreForTests();
 });
 
-describe('WorkspacePane — degraded slot (R9)', () => {
-  it('renders a role="status" App-not-available slot and keeps sibling rects', () => {
+describe('WorkspacePane — degraded zone (R-4.4)', () => {
+  it('renders a role="status" App-not-available zone and keeps sibling rects', () => {
     openFeature('a');
-    addPane('ghost', 'left');
-    addPane('a', 'right');
+    setupZones({ ghost: ZONES[0].id, a: ZONES[1].id });
 
     const { container } = renderWithChakra(<WindowManager />);
 
-    const degraded = screen.getByTestId('workspace-pane-degraded-ghost');
+    const degraded = screen.getByTestId('zone-degraded-ghost');
     expect(degraded.getAttribute('role')).toBe('status');
     expect(degraded.textContent).toContain('App not available');
+    expect(screen.getByTestId('zone-degraded-remove-ghost').textContent).toContain(
+      'Remove from zone',
+    );
 
     // The open sibling pane keeps its exact (right-half) rect.
     const paneA = screen.getByTestId('workspace-pane-a');
-    expect(paneA.style.left).toBe('500px');
-    expect(paneA.style.width).toBe('500px');
+    const right = resolveZoneRect(WS, ZONES[1], GAP);
+    expect(paneA.style.left).toBe(`${right.x}px`);
+    expect(paneA.style.width).toBe(`${right.width}px`);
 
-    // A degraded slot must NOT produce a divider.
+    // No retired divider hooks are produced.
     expect(container.querySelectorAll('[data-testid^="pane-divider-"]')).toHaveLength(0);
   });
 
-  it('closes the placement from the degraded slot and reflows the sibling', () => {
-    openFeature('a');
-    addPane('ghost', 'left');
-    addPane('a', 'right');
+  it('removes the assignment from the degraded zone', () => {
+    setupZones({ ghost: ZONES[0].id });
     renderWithChakra(<WindowManager />);
 
-    fireEvent.click(screen.getByTestId('workspace-degraded-close-ghost'));
+    fireEvent.click(screen.getByTestId('zone-degraded-remove-ghost'));
 
-    expect(screen.queryByTestId('workspace-pane-degraded-ghost')).toBeNull();
-    const paneA = screen.getByTestId('workspace-pane-a');
-    expect(paneA.style.left).toBe('0px');
-    expect(paneA.style.width).toBe('1000px');
+    expect(screen.queryByTestId('zone-degraded-ghost')).toBeNull();
+    expect(getZoneLayoutSnapshot().assignments).toEqual([]);
   });
 
-  it('renders every unknown placement without throwing', () => {
-    addPane('ghost-one', 'left');
-    addPane('ghost-two', 'right');
+  it('renders every unknown assignment without throwing', () => {
+    setupZones({ 'ghost-one': ZONES[0].id, 'ghost-two': ZONES[1].id });
 
     renderWithChakra(<WindowManager />);
 
-    expect(screen.getByTestId('workspace-pane-degraded-ghost-one')).toBeTruthy();
-    expect(screen.getByTestId('workspace-pane-degraded-ghost-two')).toBeTruthy();
+    expect(screen.getByTestId('zone-degraded-ghost-one')).toBeTruthy();
+    expect(screen.getByTestId('zone-degraded-ghost-two')).toBeTruthy();
   });
 });
 
-describe('WorkspacePane — minimize / close reflow (R10)', () => {
-  it('minimizing keeps the PaneSlot and renders the empty-slot restore affordance', () => {
-    twoPanes();
+describe('WorkspacePane — minimize / close (R-4.4, R-5.2)', () => {
+  it('minimizing keeps the assignment and renders the empty-slot restore affordance', () => {
+    openFeature('a');
+    openFeature('b');
+    setupZones({ a: ZONES[0].id, b: ZONES[1].id });
     renderWithChakra(<WindowManager />);
 
     fireEvent.click(screen.getByTestId('workspace-pane-minimize-a'));
 
-    // The pane leaves the render, but its slot survives.
+    // The pane leaves the render, but its assignment survives.
     expect(screen.queryByTestId('workspace-pane-a')).toBeNull();
     expect(screen.getByTestId('workspace-empty-slot-a')).toBeTruthy();
     const restore = screen.getByTestId('workspace-slot-restore-a');
     expect(restore).toBeTruthy();
-    expect(getLayoutSnapshot().activeSlots.map((s) => s.windowId)).toEqual(['a', 'b']);
+    expect(getZoneLayoutSnapshot().assignments.map((entry) => entry.windowId)).toEqual(['a', 'b']);
     // The sibling stays an interactive pane.
     expect(screen.getByTestId('workspace-pane-b')).toBeTruthy();
 
-    // Restoring re-tiles the pane.
+    // Restoring re-renders the pane.
     fireEvent.click(restore);
     expect(screen.getByTestId('workspace-pane-a')).toBeTruthy();
     expect(screen.queryByTestId('workspace-empty-slot-a')).toBeNull();
   });
 
-  it('closing a pane drops its placement and reflows the sibling (no orphan divider)', () => {
-    twoPanes();
-    const { container } = renderWithChakra(<WindowManager />);
-    expect(container.querySelector('[data-testid="pane-divider-vertical:a:b"]')).not.toBeNull();
-
-    fireEvent.click(screen.getByTestId('workspace-pane-close-a'));
-
-    expect(screen.queryByTestId('workspace-pane-a')).toBeNull();
-    const paneB = screen.getByTestId('workspace-pane-b');
-    expect(paneB.style.left).toBe('0px');
-    expect(paneB.style.width).toBe('1000px');
-    expect(container.querySelectorAll('[data-testid^="pane-divider-"]')).toHaveLength(0);
-    expect(screen.queryByTestId('window-frame-a')).toBeNull();
-  });
-
-  it('closing the last pane clears the arrangement (plain desktop)', () => {
+  it('closing a pane drops the window and its assignment', () => {
     openFeature('a');
-    addPane('a', 'center');
+    openFeature('b');
+    setupZones({ a: ZONES[0].id, b: ZONES[1].id });
     renderWithChakra(<WindowManager />);
 
     fireEvent.click(screen.getByTestId('workspace-pane-close-a'));
 
     expect(screen.queryByTestId('workspace-pane-a')).toBeNull();
-    expect(getLayoutSnapshot().activeSlots).toEqual([]);
-  });
-});
-
-describe('WorkspacePane — keyboard reachability (R12)', () => {
-  it('moves focus to the neighbouring pane with Arrow keys', () => {
-    twoPanes();
-    renderWithChakra(<WindowManager />);
-
-    const paneA = screen.getByTestId('workspace-pane-a');
-    const paneB = screen.getByTestId('workspace-pane-b');
-    paneA.focus();
-
-    fireEvent.keyDown(paneA, { key: 'ArrowRight' });
-
-    expect(document.activeElement).toBe(paneB);
-    expect(getWindowSnapshot().find((w) => w.id === 'b')?.focused).toBe(true);
+    expect(screen.queryByTestId('window-frame-a')).toBeNull();
+    expect(getWindowSnapshot().some((win) => win.id === 'a')).toBe(false);
+    expect(getZoneLayoutSnapshot().assignments.map((entry) => entry.windowId)).toEqual(['b']);
+    // A cleared assignment never degrades into a placeholder.
+    expect(screen.queryByTestId('zone-degraded-a')).toBeNull();
   });
 
-  it('is a boundary no-op at the last pane (no focus trap)', () => {
-    twoPanes();
+  it('the float control maximizes the pane and clears no assignment', () => {
+    openFeature('a');
+    setupZones({ a: ZONES[0].id });
     renderWithChakra(<WindowManager />);
 
-    const paneB = screen.getByTestId('workspace-pane-b');
-    paneB.focus();
-    fireEvent.keyDown(paneB, { key: 'ArrowRight' });
+    fireEvent.click(screen.getByTestId('workspace-pane-float-a'));
 
-    expect(document.activeElement).toBe(paneB);
-  });
-
-  it('never hijacks the divider Arrow-resize', () => {
-    twoPanes();
-    renderWithChakra(<WindowManager />);
-
-    fireEvent.keyDown(screen.getByTestId('pane-divider-vertical:a:b'), { key: 'ArrowRight' });
-
-    const a = getLayoutSnapshot().activeSlots.find((s) => s.windowId === 'a')!;
-    expect(a.rect.width).toBe(500 + DIVIDER_KEYBOARD_STEP);
-  });
-
-  it('keeps panes and the divider Tab-reachable with a non-colour-only focus cue', () => {
-    twoPanes();
-    renderWithChakra(<WindowManager />);
-
-    const paneA = screen.getByTestId('workspace-pane-a');
-    expect(paneA.tabIndex).toBe(0);
-    expect(paneA.getAttribute('role')).toBe('region');
-
-    const divider = screen.getByTestId('pane-divider-vertical:a:b');
-    expect(divider.tabIndex).toBe(0);
-    expect(divider.getAttribute('role')).toBe('separator');
-    expect(divider.getAttribute('aria-orientation')).toBe('vertical');
-    expect(divider.getAttribute('aria-label')).toBe('Resize panes');
-
-    // The focused pane (the last opened = b) marks its title (weight + colour
-    // change), so the cue is never colour-only.
-    const focusedPane = screen.getByTestId('workspace-pane-b');
-    expect(focusedPane.getAttribute('data-focused')).toBe('true');
-    expect(focusedPane.querySelector('[data-focused-title="true"]')).not.toBeNull();
+    expect(screen.queryByTestId('workspace-pane-a')).toBeNull();
+    expect(screen.getByTestId('window-frame-a').style.width).toBe('100%');
+    expect(getZoneLayoutSnapshot().assignments.map((entry) => entry.windowId)).toEqual(['a']);
   });
 });

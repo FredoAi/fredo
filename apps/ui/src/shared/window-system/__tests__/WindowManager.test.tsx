@@ -1,41 +1,39 @@
 /**
- * WindowManager tiling-render tests — Spec #2949 ST-2 (R1, R2, R13).
+ * WindowManager partition tests — Spec #2980 ST-4 (rewritten from #2949 ST-2).
  *
- * Pins the render partition the tiled workspace is built on:
+ * Pins the render partition the zoned workspace is built on:
  *
- *   - an open window with NO placement still renders as the existing freeform
- *     `WindowFrame` (R13 — the full-bleed default is untouched);
- *   - a placed, non-maximized, non-minimized window renders as a
- *     `WorkspacePane` at its slot rect, and two of them are visible
- *     SIMULTANEOUSLY without either covering the whole workspace (R1);
- *   - the pane carries the binding `workspace-pane-*` DOM contract (region /
- *     window-id / role / aria / tabIndex / focused + move/float/close controls);
- *   - maximizing (float control) leaves the tiling layer for the full-bleed
- *     frame (R13), and the remaining pane survives;
- *   - the arrangement entry (`workspace-arrange`) places every open
- *     non-minimized window and clears full-bleed (R2).
+ *   - an open window with NO assignment renders as the existing freeform
+ *     `WindowFrame` (R-3.3 / R-5.2 — the full-bleed default is untouched);
+ *   - a window holding an assignment in the active layout renders as a
+ *     `WorkspacePane` at its `resolveZoneRect` px rect, and two of them are
+ *     visible SIMULTANEOUSLY (R-4.3);
+ *   - the pane carries the binding `workspace-pane-*` DOM contract (zone id /
+ *     layout id / window id / role / aria / tabIndex / focused + float/close
+ *     controls);
+ *   - maximizing (float control) leaves the zoned layer for the full-bleed
+ *     frame (R-5.2), and the sibling pane survives;
+ *   - the retired arrangement toolbar is never rendered (R-5.1).
  *
- * jsdom has no layout engine, so the measured tiling region is stubbed at the
- * prototype level for `[data-testid="workspace-tiles"]` (the element the
- * manager measures via `ResizeObserver`). `settingsService` is mocked (the
- * layout store persists through it) so the suite stays host-agnostic.
+ * jsdom has no layout engine, so `[data-testid="workspace-layout"]` is stubbed
+ * at the prototype level. `settingsService` is mocked (the zone store persists
+ * through it).
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, cleanup, fireEvent, screen } from '@testing-library/react';
+import { cleanup, fireEvent, screen } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { WindowManager } from '../WindowManager';
+import { focusWindow, openWindow, resetWindowStoreForTests } from '../windowStore';
 import {
-  focusWindow,
-  openWindow,
-  resetWindowStoreForTests,
-} from '../windowStore';
-import {
-  addPane,
-  resetWorkspaceLayoutStoreForTests,
-  setLayoutWorkspace,
-} from '../workspaceLayoutStore';
+  assignWindowToZone,
+  resetZoneLayoutStoreForTests,
+  saveZoneLayout,
+  setActiveZoneLayout,
+  setZoneLayoutEnabled,
+} from '../zoneLayoutStore';
+import { buildTemplateZones, resolveZoneRect } from '../zoneLayout';
 import type { OpenWindowParams } from '../windowTypes';
 
 vi.mock('../../../features/settings', async (importOriginal) => {
@@ -51,6 +49,9 @@ vi.mock('../../../features/settings', async (importOriginal) => {
 });
 
 const WS = { width: 1000, height: 800 };
+const GAP = 8;
+const LAYOUT_ID = 'layout-work';
+const ZONES = buildTemplateZones('columns', { columns: 2 });
 
 function rectOf(width: number, height: number): DOMRect {
   return {
@@ -66,7 +67,7 @@ function rectOf(width: number, height: number): DOMRect {
   } as DOMRect;
 }
 
-/** Open a real kernel-store window; `isMaximized` omitted ⇒ full-bleed default. */
+/** Open a real kernel-store window; `isMaximized: false` ⇒ floating. */
 function openFeature(id: string, overrides: Partial<OpenWindowParams> = {}): void {
   openWindow({
     id,
@@ -80,15 +81,24 @@ function openFeature(id: string, overrides: Partial<OpenWindowParams> = {}): voi
   });
 }
 
+function setupZones(assignments: Record<string, string> = {}): void {
+  saveZoneLayout({ id: LAYOUT_ID, name: 'Work', template: 'columns', zones: ZONES });
+  setActiveZoneLayout(LAYOUT_ID);
+  setZoneLayoutEnabled(true);
+  for (const [windowId, zoneId] of Object.entries(assignments)) {
+    assignWindowToZone(windowId, zoneId);
+  }
+}
+
 let rectSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
   resetWindowStoreForTests();
-  resetWorkspaceLayoutStoreForTests();
+  resetZoneLayoutStoreForTests();
   rectSpy = vi
     .spyOn(Element.prototype, 'getBoundingClientRect')
     .mockImplementation(function (this: Element) {
-      if (this instanceof HTMLElement && this.dataset.testid === 'workspace-tiles') {
+      if (this instanceof HTMLElement && this.dataset.testid === 'workspace-layout') {
         return rectOf(WS.width, WS.height);
       }
       return rectOf(0, 0);
@@ -99,26 +109,25 @@ afterEach(() => {
   rectSpy.mockRestore();
   cleanup();
   resetWindowStoreForTests();
-  resetWorkspaceLayoutStoreForTests();
+  resetZoneLayoutStoreForTests();
 });
 
-describe('WindowManager — render partition (R1, R13)', () => {
-  it('renders an un-slotted window as the existing freeform frame (R13 default)', () => {
-    openFeature('a');
+describe('WindowManager — render partition (R-4.3, R-5.2)', () => {
+  it('renders an unassigned window as the existing freeform frame (R-3.3)', () => {
+    openFeature('a', { isMaximized: false });
+    setupZones({});
+
     const { container } = renderWithChakra(<WindowManager />);
 
     expect(screen.getByTestId('window-frame-a')).toBeTruthy();
     expect(screen.queryByTestId('workspace-pane-a')).toBeNull();
-    // The tiling layer exists but holds no pane for an un-slotted window.
     expect(container.querySelector('[data-testid="workspace-layout"]')).not.toBeNull();
   });
 
-  it('renders two placed windows as simultaneous panes that share the workspace (R1)', () => {
-    setLayoutWorkspace(WS);
+  it('renders two assigned windows as simultaneous panes that share the workspace (R-4.3)', () => {
     openFeature('a', { isMaximized: false });
     openFeature('b', { isMaximized: false });
-    addPane('a', 'left');
-    addPane('b', 'right');
+    setupZones({ a: ZONES[0].id, b: ZONES[1].id });
 
     const { container } = renderWithChakra(<WindowManager />);
 
@@ -127,13 +136,13 @@ describe('WindowManager — render partition (R1, R13)', () => {
     expect(paneA).toBeTruthy();
     expect(paneB).toBeTruthy();
 
-    // Neither is a full-bleed frame, and the two render side by side.
-    expect(screen.queryByTestId('window-frame-a')).toBeNull();
-    expect(paneA.style.width).toBe('500px');
-    expect(paneA.style.left).toBe('0px');
-    expect(paneB.style.left).toBe('500px');
-    expect(paneB.style.width).toBe('500px');
+    const left = resolveZoneRect(WS, ZONES[0], GAP);
+    const right = resolveZoneRect(WS, ZONES[1], GAP);
+    expect(paneA.style.left).toBe(`${left.x}px`);
+    expect(paneA.style.width).toBe(`${left.width}px`);
+    expect(paneB.style.left).toBe(`${right.x}px`);
     expect(parseFloat(paneA.style.width)).toBeLessThan(WS.width);
+    expect(screen.queryByTestId('window-frame-a')).toBeNull();
 
     // The binding tiling layer CONTAINS both panes.
     const layer = container.querySelector('[data-testid="workspace-layout"]') as HTMLElement;
@@ -141,63 +150,59 @@ describe('WindowManager — render partition (R1, R13)', () => {
     expect(layer.contains(paneB)).toBe(true);
   });
 
-  it('keeps a maximized window with a placement full-bleed (R13)', () => {
-    setLayoutWorkspace(WS);
+  it('keeps a maximized assigned window full-bleed (R-5.2)', () => {
     openFeature('a'); // full-bleed default
-    addPane('a', 'left');
+    setupZones({ a: ZONES[0].id });
 
     renderWithChakra(<WindowManager />);
 
     expect(screen.queryByTestId('workspace-pane-a')).toBeNull();
     expect(screen.getByTestId('window-frame-a').style.width).toBe('100%');
   });
-
-  it('leaves a minimized placed window on the frame path (hidden)', () => {
-    setLayoutWorkspace(WS);
-    openFeature('a', { isMaximized: false });
-    addPane('a', 'left');
-    focusWindow('a', { minimize: true });
-
-    renderWithChakra(<WindowManager />);
-
-    expect(screen.queryByTestId('workspace-pane-a')).toBeNull();
-    const frame = screen.getByTestId('window-frame-a');
-    expect(getComputedStyle(frame).display).toBe('none');
-  });
 });
 
 describe('WorkspacePane — binding DOM contract', () => {
-  it('exposes region / window-id / role / aria / tabIndex / focused + controls', () => {
-    setLayoutWorkspace(WS);
+  it('exposes zone / layout / window / role / aria / tabIndex / focused + controls', () => {
     openFeature('a', { isMaximized: false });
-    addPane('a', 'left');
+    setupZones({ a: ZONES[0].id });
 
     renderWithChakra(<WindowManager />);
 
     const pane = screen.getByTestId('workspace-pane-a');
-    expect(pane.getAttribute('data-pane-region')).toBe('left');
-    expect(pane.getAttribute('data-pane-window-id')).toBe('a');
+    expect(pane.getAttribute('data-zone-id')).toBe(ZONES[0].id);
+    expect(pane.getAttribute('data-zone-layout-id')).toBe(LAYOUT_ID);
+    expect(pane.getAttribute('data-zone-window-id')).toBe('a');
     expect(pane.getAttribute('role')).toBe('region');
     expect(pane.getAttribute('aria-label')).toBe('A');
     expect(pane.getAttribute('data-focused')).toBe('true');
     expect(pane.tabIndex).toBe(0);
 
-    expect(screen.getByTestId('workspace-pane-move-a')).toBeTruthy();
     expect(screen.getByTestId('workspace-pane-float-a')).toBeTruthy();
     expect(screen.getByTestId('workspace-pane-close-a')).toBeTruthy();
 
     // The window's component renders inside the pane content region.
-    expect(screen.getByTestId('workspace-pane-content-a').contains(screen.getByTestId('content-a'))).toBe(true);
+    expect(
+      screen.getByTestId('workspace-pane-content-a').contains(screen.getByTestId('content-a')),
+    ).toBe(true);
+  });
+
+  it('renders no retired grip or region-overlay hooks', () => {
+    openFeature('a', { isMaximized: false });
+    setupZones({ a: ZONES[0].id });
+
+    renderWithChakra(<WindowManager />);
+
+    expect(screen.queryByTestId('workspace-pane-move-a')).toBeNull();
+    expect(screen.queryByTestId(/^pane-region-/)).toBeNull();
+    expect(screen.queryByTestId(/^pane-divider-/)).toBeNull();
   });
 });
 
-describe('WindowManager — pane controls (R13)', () => {
-  it('the float control un-tiles the pane into the full-bleed frame', () => {
-    setLayoutWorkspace(WS);
+describe('WindowManager — pane controls (R-5.2)', () => {
+  it('the float control un-zones the pane into the full-bleed frame', () => {
     openFeature('a', { isMaximized: false });
     openFeature('b', { isMaximized: false });
-    addPane('a', 'left');
-    addPane('b', 'right');
+    setupZones({ a: ZONES[0].id, b: ZONES[1].id });
 
     renderWithChakra(<WindowManager />);
     fireEvent.click(screen.getByTestId('workspace-pane-float-a'));
@@ -208,56 +213,29 @@ describe('WindowManager — pane controls (R13)', () => {
     expect(screen.getByTestId('workspace-pane-b')).toBeTruthy();
   });
 
-  it('the close control closes the window and drops its placement', () => {
-    setLayoutWorkspace(WS);
+  it('a minimized assigned window keeps its zone as a hidden frame', () => {
     openFeature('a', { isMaximized: false });
-    openFeature('b', { isMaximized: false });
-    addPane('a', 'left');
-    addPane('b', 'right');
+    setupZones({ a: ZONES[0].id });
+    focusWindow('a', { minimize: true });
 
     renderWithChakra(<WindowManager />);
-    fireEvent.click(screen.getByTestId('workspace-pane-close-a'));
 
     expect(screen.queryByTestId('workspace-pane-a')).toBeNull();
-    expect(screen.queryByTestId('window-frame-a')).toBeNull();
-    expect(screen.getByTestId('workspace-pane-b')).toBeTruthy();
+    expect(screen.getByTestId('workspace-empty-slot-a')).toBeTruthy();
+    const frame = screen.getByTestId('window-frame-a');
+    expect(getComputedStyle(frame).display).toBe('none');
   });
 });
 
-describe('WindowManager — arrangement toolbar (R2)', () => {
-  it('renders the toolbar only while at least one pane is tiled', () => {
-    renderWithChakra(<WindowManager />);
-    expect(screen.queryByTestId('workspace-toolbar')).toBeNull();
-
-    act(() => {
-      openFeature('a'); // full-bleed default, no placement
-    });
-    // ST-5: an open but un-tiled window does NOT show the toolbar.
-    expect(screen.queryByTestId('workspace-toolbar')).toBeNull();
-
-    act(() => {
-      openFeature('a', { isMaximized: false });
-      addPane('a', 'center');
-    });
-    expect(screen.getByTestId('workspace-toolbar')).toBeTruthy();
-  });
-
-  it('arrange places every open non-minimized window and clears full-bleed', () => {
-    setLayoutWorkspace(WS);
-    openFeature('a', { isMaximized: false }); // tiled → reveals the toolbar
-    addPane('a', 'center');
-    openFeature('b'); // full-bleed default
-    openFeature('c', { isMaximized: true });
-    focusWindow('c', { minimize: true }); // minimized ⇒ excluded
+describe('WindowManager — retired toolbar (R-5.1)', () => {
+  it('never renders the arrangement toolbar', () => {
+    openFeature('a', { isMaximized: false });
+    setupZones({ a: ZONES[0].id });
 
     renderWithChakra(<WindowManager />);
-    fireEvent.click(screen.getByTestId('workspace-arrange'));
 
-    expect(screen.getByTestId('workspace-pane-a')).toBeTruthy();
-    expect(screen.getByTestId('workspace-pane-b')).toBeTruthy();
-    expect(screen.queryByTestId('window-frame-a')).toBeNull();
-    expect(screen.queryByTestId('window-frame-b')).toBeNull();
-    // Minimized window is neither arranged nor rendered as a pane.
-    expect(screen.queryByTestId('workspace-pane-c')).toBeNull();
+    expect(screen.queryByTestId('workspace-toolbar')).toBeNull();
+    expect(screen.queryByTestId('workspace-arrange')).toBeNull();
+    expect(screen.queryByTestId('workspace-announcer')).toBeNull();
   });
 });
