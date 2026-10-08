@@ -1,23 +1,17 @@
-//! Storage engine seam (Spec #2975, ST-1).
+//! Storage engine seam (Spec #2975, ST-1; PostgreSQL-only since Spec #3005 ST-6).
 //!
 //! The ONE seam every migrated store consumes, so no consumer invents its own
-//! connection or dialect. This module is the producer for the SQLite ->
-//! PostgreSQL migration: it defines the engine types, the swap-once shared
-//! handle, the selection precedence, the identifier-quoting rule, and the pool
-//! sizing constants.
+//! connection or dialect. It defines the engine types, the swap-once shared
+//! handle, the read-only canonical seam, the identifier-quoting rule, and the
+//! pool sizing constants.
 //!
-//! Scope of ST-1: types + helpers ONLY. No store method changes, no PG pool
-//! wiring. The SQLite path is byte-identical to the incumbent one
-//! (`SqliteEngine::open` reproduces the two incumbent connection conventions:
-//! the WAL write handle `ApplicationStore` established and the `PRAGMA
-//! query_only=ON` read-only guard `ProjectionEngine` established).
-//!
-//! Later sub-tasks append to this module: ST-2 adds the bounded pool build +
-//! `StorageEngineStatus`; ST-2/ST-3 wire the handle in `lib.rs`.
+//! PostgreSQL is the ONLY engine. The SQLite data plane was removed by Spec
+//! #2979 CU-2; the SQLite control plane and its file-database dependency were
+//! removed by Spec #3005 ST-6. The one synchronous pre-PostgreSQL key lives in
+//! [`super::boot_config`] and the synchronous settings plane is the volatile
+//! [`super::settings_cache::SettingsCache`].
 
 use anyhow::Result;
-use rusqlite::Connection;
-use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 // -- Pool + server tuning constants (Spec #2975, Q-6) -------------------------
@@ -74,54 +68,6 @@ pub enum Dialect {
 
 // -- Engines ------------------------------------------------------------------
 
-/// The ONE synchronous SQLite engine: the pre-PostgreSQL **control plane**
-/// (Spec #2979 CU-1/CU-2). Since CU-2 removed the SQLite data plane, `rusqlite`
-/// is retained ONLY here (the control plane) and in the one-shot migration
-/// module (`storage/migration/**`). It opens two connections over the SAME
-/// control-plane database (`<app_data_dir>/control.db`).
-///
-/// - `write` is the single write handle, in WAL journal mode.
-/// - `read_only` is a second handle pinned with `PRAGMA query_only=ON`.
-pub struct SqliteEngine {
-    write: Mutex<Connection>,
-    read_only: Mutex<Connection>,
-}
-
-impl SqliteEngine {
-    /// Open (or create) `db_path` and build the shared write + read-only
-    /// handles. Parent directories are created.
-    pub fn open(db_path: &Path) -> Result<Arc<Self>> {
-        if let Some(parent) = db_path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
-        }
-
-        let write = Connection::open(db_path)?;
-        write.execute_batch("PRAGMA journal_mode=WAL;")?;
-
-        let read_only = Connection::open(db_path)?;
-        // Canonical reads are read-only by contract (NFR-2); the pragma is the
-        // incumbent guard, preserved verbatim.
-        read_only.execute_batch("PRAGMA query_only=ON;")?;
-
-        Ok(Arc::new(SqliteEngine {
-            write: Mutex::new(write),
-            read_only: Mutex::new(read_only),
-        }))
-    }
-
-    /// Lock the shared write connection (poison-recovering).
-    pub fn write_conn(&self) -> MutexGuard<'_, Connection> {
-        lock(&self.write)
-    }
-
-    /// Lock the shared read-only connection (`PRAGMA query_only=ON`).
-    pub fn read_only_conn(&self) -> MutexGuard<'_, Connection> {
-        lock(&self.read_only)
-    }
-}
-
 /// ONE shared async PostgreSQL pool for the migrated family. Built once by ST-2
 /// on the background task after the supervisor's readiness resolves; installed
 /// exactly once into an [`EngineHandle`].
@@ -132,10 +78,9 @@ pub struct PgEngine {
 
 /// The active data-plane engine. Cloned into every migrated store.
 ///
-/// Since Spec #2979 CU-2 the migrated stores are PostgreSQL-only: the SQLite
-/// arm is removed, so this enum has a single variant. The synchronous control
-/// plane (`control.db`) is NOT part of this seam — it stays on [`SqliteEngine`]
-/// directly.
+/// Since Spec #2979 CU-2 the migrated stores are PostgreSQL-only, so this enum
+/// has a single variant. The synchronous control plane is the volatile
+/// [`super::settings_cache::SettingsCache`] (Spec #3005 ST-2), not a file DB.
 #[derive(Clone)]
 pub enum StoreEngine {
     Postgres(Arc<PgEngine>),
@@ -719,11 +664,6 @@ pub async fn storage_engine_status(app: tauri::AppHandle) -> StorageEngineStatus
 mod tests {
     use super::*;
 
-    /// A standalone `SqliteEngine` for the (retained) SQLite-engine tests.
-    fn make_sqlite_engine(dir: &Path) -> Arc<SqliteEngine> {
-        SqliteEngine::open(&dir.join("fredo.db")).expect("open sqlite engine")
-    }
-
     /// A lazily-connected pool: enough to build a `PgEngine` for the type/handle
     /// tests without a live server.
     fn make_pg_engine(url: &str) -> PgEngine {
@@ -801,56 +741,12 @@ mod tests {
         assert_eq!(pg.url, first_url, "install must run at most once");
     }
 
-    // -- SQLite write / read-only connection split ----------------------------
-
-    #[test]
-    fn sqlite_engine_write_is_visible_through_the_read_only_connection() {
-        let dir = tempfile::tempdir().unwrap();
-        let engine = make_sqlite_engine(dir.path());
-
-        {
-            let write = engine.write_conn();
-            write
-                .execute_batch("CREATE TABLE probe (id TEXT PRIMARY KEY, value TEXT NOT NULL);")
-                .unwrap();
-            write
-                .execute("INSERT INTO probe (id, value) VALUES ('a', 'hello')", [])
-                .unwrap();
-        }
-
-        let read = engine.read_only_conn();
-        let value: String = read
-            .query_row("SELECT value FROM probe WHERE id = 'a'", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(value, "hello");
-    }
-
-    #[test]
-    fn sqlite_engine_read_only_connection_rejects_writes() {
-        let dir = tempfile::tempdir().unwrap();
-        let engine = make_sqlite_engine(dir.path());
-        engine
-            .write_conn()
-            .execute_batch("CREATE TABLE probe (id TEXT PRIMARY KEY);")
-            .unwrap();
-
-        {
-            let read = engine.read_only_conn();
-            assert!(
-                read.execute("INSERT INTO probe (id) VALUES ('x')", []).is_err(),
-                "the read-only connection must reject writes"
-            );
-        }
-
-        // The rejected write left the table empty.
-        let count: i64 = engine
-            .write_conn()
-            .query_row("SELECT COUNT(*) FROM probe", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(count, 0);
-    }
+    // -- Read-only canonical seam (Spec #3005 ST-6 re-home) -------------------
+    //
+    // The retired SQLite read-only guard (`PRAGMA query_only=ON`) is now
+    // PostgreSQL's `START TRANSACTION READ ONLY` (see `begin_read_only` below).
+    // The write-rejection property is pinned against a live server in the gated
+    // `tests/storage_engine_pg.rs` read-only phase (G-290 coverage re-home).
 
     // -- ST-2: pool-build fault seam -----------------------------------------
 

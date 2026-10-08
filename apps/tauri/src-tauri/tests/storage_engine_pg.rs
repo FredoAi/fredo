@@ -48,7 +48,9 @@ use fredo_lib::infrastructure::application_data::declaration::{
 use fredo_lib::infrastructure::application_data::registry::DeclarationRegistry;
 use fredo_lib::infrastructure::application_data::store::{ApplicationDataStore, TableMeta, Tombstone};
 use fredo_lib::infrastructure::rtdb::rows::RowState;
-use fredo_lib::infrastructure::storage::engine::{ensure_settings_schema, StorageEngineState};
+use fredo_lib::infrastructure::storage::engine::{
+    begin_read_only, ensure_settings_schema, StorageEngineState,
+};
 use fredo_lib::infrastructure::storage::application_store::{ColumnDef, ColumnType, ApplicationStore};
 use fredo_lib::infrastructure::storage::{
     AppStore, EngineHandle, PgEngine, StoreEngine,
@@ -147,6 +149,11 @@ async fn postgres_storage_suite() {
     // legacy `fredo.db` must be IGNORED byte-for-byte and the app must still
     // reach ready PostgreSQL (R-4.1/R-4.2, G-290).
     legacy_ignore_scenario(&url, &unique_schema("legacy_ignore")).await;
+    // Phase 6: the read-only canonical seam (Spec #3005 ST-6 re-home) — the
+    // retired SQLite read-only guard is now PostgreSQL's
+    // `START TRANSACTION READ ONLY` (`begin_read_only`), so a write through the
+    // canonical reader's transaction must be rejected (G-290).
+    read_only_seam_scenario(&url, &unique_schema("read_only")).await;
 
     // ── G-263 teardown: finite bound + guaranteed hard-kill + no orphan ──────
     let started = Instant::now();
@@ -584,6 +591,62 @@ async fn legacy_ignore_scenario(url: &str, schema: &str) {
     assert!(
         side_files.is_empty(),
         "no SQLite -wal/-shm side files may appear, saw {side_files:?}"
+    );
+
+    pool.close().await;
+}
+
+// ── Phase 6: read-only canonical seam (ST-6 re-home) ─────────────────────────
+
+/// Spec #3005 ST-6 re-home (G-290): the retired SQLite read-only guard pinned
+/// that a read-only connection sees committed data but rejects writes (`PRAGMA
+/// query_only=ON`). The PostgreSQL equivalent is [`begin_read_only`]
+/// (`START TRANSACTION READ ONLY`): a committed row is visible through the
+/// canonical read-only transaction, an INSERT through it is rejected by the
+/// server, and the rejected write persists nothing.
+async fn read_only_seam_scenario(url: &str, schema: &str) {
+    let pool = build_pool(url, schema).await;
+
+    sqlx::query("INSERT INTO settings (key, value) VALUES ('read_only_probe', 'visible')")
+        .execute(&pool)
+        .await
+        .expect("seed a committed row");
+
+    let mut tx = begin_read_only(&pool)
+        .await
+        .expect("begin a read-only transaction");
+
+    // A committed row is visible through the read-only transaction.
+    let visible: Option<String> =
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'read_only_probe'")
+            .fetch_optional(&mut *tx)
+            .await
+            .expect("a read through the read-only transaction must succeed");
+    assert_eq!(
+        visible.as_deref(),
+        Some("visible"),
+        "the read-only reader must see committed data"
+    );
+
+    // A write through the read-only transaction is rejected by PostgreSQL.
+    let write = sqlx::query("INSERT INTO settings (key, value) VALUES ('should_not_write', 'x')")
+        .execute(&mut *tx)
+        .await;
+    assert!(
+        write.is_err(),
+        "a read-only transaction must reject writes (START TRANSACTION READ ONLY)"
+    );
+    drop(tx);
+
+    // The rejected write left no row behind.
+    let leaked: Option<String> =
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'should_not_write'")
+            .fetch_optional(&pool)
+            .await
+            .expect("probe the rejected write");
+    assert!(
+        leaked.is_none(),
+        "the rejected write must not persist, saw {leaked:?}"
     );
 
     pool.close().await;
