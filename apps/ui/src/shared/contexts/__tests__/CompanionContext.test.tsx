@@ -54,7 +54,7 @@ import {
   REPLY_LEAVE_GRACE_SETTING_KEY,
 } from '@/shared/contexts/CompanionContext';
 import type { CompanionSendDisposition } from '@/shared/contexts/CompanionContext';
-import { settingsService } from '@/features/settings';
+import { settingsService } from '@/applications/settings';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
 
 // ── Module mocks / environment ──────────────────────────────────────────────

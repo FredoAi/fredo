@@ -1,11 +1,11 @@
 import React from 'react';
 import { useExtension } from '../providers/ExtensionProvider';
-import { Home } from '../../features/home';
-import { ArchitectureDiagram } from '../../features/diagram/components/ArchitectureDiagram';
-import { DevMode } from '../../features/dev-mode';
-import { TerminalWindow } from '../../features/terminal';
-import { DoomWindow } from '../../features/doom';
-import { StandaloneAppWindow } from '../../features/app-window';
+import { Home } from '../../applications/home';
+import { ArchitectureDiagram } from '../../applications/diagram/components/ArchitectureDiagram';
+import { DevMode } from '../../applications/dev-mode';
+import { TerminalWindow } from '../../applications/terminal';
+import { DoomWindow } from '../../applications/doom';
+import { StandaloneAppWindow } from '../../applications/app-window';
 
 export const Router: React.FC = () => {
   // Terminal window route — opened as a separate Tauri webview

@@ -31,7 +31,7 @@ vi.mock('../../utils/adapterBridge', () => ({
   },
 }));
 
-vi.mock('../../../features/settings', () => ({
+vi.mock('../../../applications/settings', () => ({
   settingsService: {
     get: vi.fn(),
     set: vi.fn().mockResolvedValue(undefined),
@@ -42,7 +42,7 @@ vi.mock('../../../features/settings', () => ({
 import { ThemeProvider } from '../../../app/providers/ThemeProvider';
 import { DOOM_PALETTE } from '../../../app/theme/doomTheme';
 import { FredoAvatar } from '../../components/fredo-avatar/FredoAvatar';
-import { settingsService } from '../../../features/settings';
+import { settingsService } from '../../../applications/settings';
 import { isDoomVisualEngaged, setDoomVisualEngaged } from '../doomVisual';
 import {
   DOOM_MODE_EVENT,

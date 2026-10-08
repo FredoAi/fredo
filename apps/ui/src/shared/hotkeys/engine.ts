@@ -77,7 +77,7 @@ import { focusWindow, getWindowSnapshot } from '../window-system/windowStore';
 import {
   ROOT_CONTEXT_ID,
   type DispatchDecision,
-  type FeatureHotkeyAction,
+  type ApplicationHotkeyAction,
   type FocusContext,
   type HotkeyCandidate,
   type HotkeyContextId,
@@ -287,7 +287,7 @@ export function registerDefaultFredoActions(): void {
   registerReferenceContext();
   for (const def of DEFAULT_FREDO_ACTION_DEFS) {
     if (getHotkeyAction(def.actionId) !== null) continue;
-    const action: FeatureHotkeyAction = {
+    const action: ApplicationHotkeyAction = {
       actionId: def.actionId,
       title: def.title,
       description: def.description,

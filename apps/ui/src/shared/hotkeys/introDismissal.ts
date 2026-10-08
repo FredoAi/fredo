@@ -3,7 +3,7 @@
  *
  * The first-run card is shown at most ONCE per profile. Its "seen" state is a
  * single sibling KV entry in the ONE settings channel (`settingsService`,
- * `features/settings/index.tsx`) — no new Rust command, no new table.
+ * `applications/settings/index.tsx`) — no new Rust command, no new table.
  *
  * Storage unit: the LITERAL string `'true'` when seen; the key is ABSENT when
  * the intro has never been dismissed (the plan's Controls table).
@@ -20,7 +20,7 @@
  * from a mount effect.
  */
 
-import { settingsService } from '../../features/settings';
+import { settingsService } from '../../applications/settings';
 
 /** The AppStore/localStorage key recording that the one-time intro was seen. */
 export const INTRO_SEEN_STORAGE_KEY = 'fredo.hotkeys.introSeen';

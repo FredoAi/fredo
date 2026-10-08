@@ -123,7 +123,7 @@ export function resetAnnouncement(reason: ResetReason, prefix: string, platform?
 }
 
 function tierLabel(candidate: HotkeyCandidate): string {
-  return candidate.tier === 'fredo' ? 'Global' : 'Feature';
+  return candidate.tier === 'fredo' ? 'Global' : 'Application';
 }
 
 export interface WhichKeyOverlayProps {

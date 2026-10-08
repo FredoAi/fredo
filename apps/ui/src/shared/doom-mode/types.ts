@@ -1,7 +1,7 @@
 /**
  * Doom Mode secret-activation wire mirror (Spec #2970, ST-5).
  *
- * Mirrors the Rust contract in `features/doom/mode.rs` (serde camelCase over
+ * Mirrors the Rust contract in `applications/doom/mode.rs` (serde camelCase over
  * IPC) verbatim — the binding names adopted by the plan. No I/O happens here:
  * the types describe what the ST-2 commands/event deliver, and the constants
  * are the ONE frontend source of the trigger/skill/event vocabulary.

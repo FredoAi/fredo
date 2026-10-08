@@ -1,5 +1,5 @@
 /**
- * adapterBridge — lets non-React code (e.g. FredoFeatureClass instances) call
+ * adapterBridge — lets non-React code (e.g. FredoApplicationClass instances) call
  * Tauri commands without needing access to the React context.
  *
  * AppProvider registers the adapter's invoke fn on mount so it's always

@@ -17,7 +17,7 @@
  * holds ACROSS webviews (G-124).
  */
 
-import { settingsService } from '../../features/settings';
+import { settingsService } from '../../applications/settings';
 import { MINIMAL_DEFAULT_BINDINGS } from './defaults';
 import {
   CURRENT_SCHEMA_VERSION,

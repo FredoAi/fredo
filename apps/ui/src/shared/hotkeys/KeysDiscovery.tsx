@@ -108,7 +108,7 @@ export function orderDiscoveryBindings(
 }
 
 function tierTag(tier: HotkeyTier): string {
-  return tier === 'fredo' ? 'Global' : 'Feature';
+  return tier === 'fredo' ? 'Global' : 'Application';
 }
 
 export interface KeysDiscoveryProps {

@@ -30,7 +30,7 @@
 
 import { useSyncExternalStore } from 'react';
 
-import { settingsService, serializeValue } from '../../features/settings';
+import { settingsService, serializeValue } from '../../applications/settings';
 
 import {
   clampZoneGap,

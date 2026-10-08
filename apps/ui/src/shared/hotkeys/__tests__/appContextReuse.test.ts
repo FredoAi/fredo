@@ -17,8 +17,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { ReactElement } from 'react';
 import type { IconType } from 'react-icons';
 
-import { FredoFeatureClass } from '../../classes/FredoFeatureClass';
-import { registerFeature } from '../../../features/featureRegistry';
+import { FredoApplicationClass } from '../../classes/FredoApplicationClass';
+import { registerApplication } from '../../../applications/applicationRegistry';
 import {
   registerFeatureHotkeys,
   registerFredoAction,
@@ -29,7 +29,7 @@ import { resetHotkeyContextForTests } from '../contextStack';
 import { resetKeymapStoreForTests } from '../store';
 import { resolveActiveBindings, type FocusSnapshot } from '../engine';
 import { buildKeyboardBarModel, type KeyboardBarModelInput } from '../keyboardBarModel';
-import type { FeatureHotkeyAction, ResolvedBinding } from '../types';
+import type { ApplicationHotkeyAction, ResolvedBinding } from '../types';
 
 const NO_ICON = (() => null) as unknown as IconType;
 
@@ -38,7 +38,7 @@ const NO_ICON = (() => null) as unknown as IconType;
  * registry has no test reset, so it is registered ONCE at module scope; an
  * action-less feature contributes nothing to any other assertion.
  */
-class EmptyAppFeature extends FredoFeatureClass {
+class EmptyAppFeature extends FredoApplicationClass {
   readonly id = 'app-empty';
   readonly name = 'App Empty';
   readonly icon = NO_ICON;
@@ -47,10 +47,10 @@ class EmptyAppFeature extends FredoFeatureClass {
   }
 }
 
-registerFeature(new EmptyAppFeature());
+registerApplication(new EmptyAppFeature());
 
 /** A feature-tier declaration bound to the shared key `x`. */
-function sharedKeyAction(actionId: string): FeatureHotkeyAction {
+function sharedKeyAction(actionId: string): ApplicationHotkeyAction {
   return {
     actionId,
     title: `Action ${actionId}`,

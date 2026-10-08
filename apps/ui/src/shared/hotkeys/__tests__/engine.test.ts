@@ -21,7 +21,7 @@ import {
 import { getAnnouncement, resetHotkeyAnnouncer } from '../announcer';
 import {
   getHotkeyContext,
-  registerFeatureHotkeyContexts,
+  registerApplicationHotkeyContexts,
   registerHotkeyContext,
   resetContextRegistryForTests,
 } from '../contexts';
@@ -74,7 +74,7 @@ import {
   subscribeFocusSnapshot,
 } from '../engine';
 import { regimeForFocusSnapshot } from '../inputRegime';
-import { ROOT_CONTEXT_ID, type DispatchDecision, type FeatureHotkeyAction } from '../types';
+import { ROOT_CONTEXT_ID, type DispatchDecision, type ApplicationHotkeyAction } from '../types';
 
 // ── Harness helpers ──────────────────────────────────────────────────────────
 
@@ -83,7 +83,7 @@ function fredoRun(
   options: { defaultSequence?: string | null; run?: ReturnType<typeof vi.fn> } = {},
 ): ReturnType<typeof vi.fn> {
   const run = options.run ?? vi.fn();
-  const action: FeatureHotkeyAction = {
+  const action: ApplicationHotkeyAction = {
     actionId,
     title: `Action ${actionId}`,
     defaultSequence: options.defaultSequence ?? null,
@@ -118,7 +118,7 @@ function fredoContextAction(
   } = {},
 ): ReturnType<typeof vi.fn> {
   const run = options.run ?? vi.fn();
-  const action: FeatureHotkeyAction = {
+  const action: ApplicationHotkeyAction = {
     actionId,
     title: `Action ${actionId}`,
     defaultSequence: options.defaultSequence ?? null,
@@ -641,7 +641,7 @@ describe('engine — interaction-context wiring (Spec #2958)', () => {
   });
 
   it('R-1.1: the DEEPEST binding on the path wins for a reused key', () => {
-    registerFeatureHotkeyContexts('demo', [
+    registerApplicationHotkeyContexts('demo', [
       { contextId: 'demo.canvas', parentId: 'demo', title: 'Canvas' },
     ]);
     const baseRun = vi.fn();
@@ -1043,7 +1043,7 @@ describe('engine — continuous nested-state invariant (Spec #2962 ST-4)', () =>
     canvasRun: ReturnType<typeof vi.fn>;
     nodeRun: ReturnType<typeof vi.fn>;
   } {
-    registerFeatureHotkeyContexts('demo', [
+    registerApplicationHotkeyContexts('demo', [
       { contextId: 'demo.canvas', parentId: 'demo', title: 'Canvas' },
       { contextId: 'demo.canvas.node', parentId: 'demo.canvas', title: 'Node' },
     ]);

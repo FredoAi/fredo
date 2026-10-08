@@ -18,7 +18,7 @@ import { setDoomVisualEngaged } from '../../../shared/doom-mode';
 
 // Same settings mock pattern as ThemeProvider.test.tsx — every persisted key
 // resolves to its typed default, so the provider starts from the stock base.
-vi.mock('../../../features/settings', () => ({
+vi.mock('../../../applications/settings', () => ({
   settingsService: {
     get: vi.fn(),
     set: vi.fn().mockResolvedValue(undefined),
@@ -26,7 +26,7 @@ vi.mock('../../../features/settings', () => ({
   serializeValue: (v: unknown) => JSON.stringify(v),
 }));
 
-import { settingsService } from '../../../features/settings';
+import { settingsService } from '../../../applications/settings';
 
 const getMock = settingsService.get as ReturnType<typeof vi.fn>;
 const setMock = settingsService.set as ReturnType<typeof vi.fn>;

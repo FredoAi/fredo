@@ -49,8 +49,8 @@ import {
   type ZoneLayout,
 } from '../zoneLayout';
 
-vi.mock('../../../features/settings', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../../features/settings')>();
+vi.mock('../../../applications/settings', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../applications/settings')>();
   return {
     ...actual,
     settingsService: {
@@ -61,7 +61,7 @@ vi.mock('../../../features/settings', async (importOriginal) => {
   };
 });
 
-import { settingsService } from '../../../features/settings';
+import { settingsService } from '../../../applications/settings';
 
 const getMock = settingsService.get as unknown as ReturnType<typeof vi.fn>;
 const setMock = settingsService.set as unknown as ReturnType<typeof vi.fn>;

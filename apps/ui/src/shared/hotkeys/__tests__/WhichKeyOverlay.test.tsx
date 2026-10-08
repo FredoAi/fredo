@@ -169,7 +169,7 @@ describe('WhichKeyOverlay — pending state (R-3.2)', () => {
     const item = container.querySelector<HTMLElement>(
       `[data-testid="${WHICHKEY_NEXT_ITEM_TESTID}"]`,
     );
-    expect(item).toHaveTextContent('Feature');
+    expect(item).toHaveTextContent('Application');
   });
 
   it('renders the overlay synchronously on the store change (no async gate)', () => {

@@ -12,7 +12,7 @@ import { themes, themePresets } from '../../types/theme';
 import { system } from '../../theme/system';
 
 // Mock settingsService (same pattern as usePersistedSetting.test.ts)
-vi.mock('../../../features/settings', () => ({
+vi.mock('../../../applications/settings', () => ({
   settingsService: {
     get: vi.fn(),
     set: vi.fn().mockResolvedValue(undefined),
@@ -20,7 +20,7 @@ vi.mock('../../../features/settings', () => ({
   serializeValue: (v: unknown) => JSON.stringify(v),
 }));
 
-import { settingsService } from '../../../features/settings';
+import { settingsService } from '../../../applications/settings';
 
 describe('ThemeProvider invalid persisted theme fallback', () => {
   beforeEach(() => {

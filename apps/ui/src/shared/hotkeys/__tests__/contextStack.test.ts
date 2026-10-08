@@ -12,7 +12,7 @@ import { act, cleanup, renderHook } from '@testing-library/react';
 
 import { getAnnouncement, resetHotkeyAnnouncer } from '../announcer';
 import {
-  registerFeatureHotkeyContexts,
+  registerApplicationHotkeyContexts,
   registerHotkeyContext,
   resetContextRegistryForTests,
 } from '../contexts';
@@ -45,7 +45,7 @@ function openFeature(id: string): void {
 }
 
 function registerDemoContexts(): void {
-  registerFeatureHotkeyContexts('demo', [
+  registerApplicationHotkeyContexts('demo', [
     { contextId: 'demo.canvas', parentId: 'demo', title: 'Canvas' },
     { contextId: 'demo.canvas.node', parentId: 'demo.canvas', title: 'Node' },
   ]);
@@ -166,7 +166,7 @@ describe('enter / exit mechanics (R-2.1, R-3.1, R-3.2)', () => {
   });
 
   it('refuses an invalid context', () => {
-    registerFeatureHotkeyContexts('bad', [
+    registerApplicationHotkeyContexts('bad', [
       { contextId: 'other.foreign', parentId: 'bad', title: 'Foreign' },
     ]);
     expect(enterHotkeyContext('other.foreign')).toBe(false);

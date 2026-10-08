@@ -36,8 +36,8 @@ import {
 import { buildTemplateZones, resolveZoneRect } from '../zoneLayout';
 import type { OpenWindowParams } from '../windowTypes';
 
-vi.mock('../../../features/settings', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../../features/settings')>();
+vi.mock('../../../applications/settings', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../applications/settings')>();
   return {
     ...actual,
     settingsService: {

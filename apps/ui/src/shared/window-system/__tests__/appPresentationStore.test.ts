@@ -14,7 +14,7 @@
  *   - the factory (`isMultiWindow`) defensive read;
  *   - the `useSyncExternalStore` bindings.
  *
- * `controlSettingAccessor` (the control-plane KV seam) and `featureRegistry`
+ * `controlSettingAccessor` (the control-plane KV seam) and `applicationRegistry`
  * are mocked, so the suite stays host-agnostic and deterministic.
  */
 
@@ -26,8 +26,8 @@ vi.mock('../controlSettingAccessor', () => ({
   saveControlSetting: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../../../features/featureRegistry', () => ({
-  getFeatures: vi.fn(() => []),
+vi.mock('../../../applications/applicationRegistry', () => ({
+  getApplications: vi.fn(() => []),
 }));
 
 import {
@@ -46,11 +46,11 @@ import {
   useAppPresentationMap,
 } from '../appPresentationStore';
 import { getControlSetting, saveControlSetting } from '../controlSettingAccessor';
-import { getFeatures } from '../../../features/featureRegistry';
+import { getApplications } from '../../../applications/applicationRegistry';
 
 const getMock = getControlSetting as unknown as ReturnType<typeof vi.fn>;
 const setMock = saveControlSetting as unknown as ReturnType<typeof vi.fn>;
-const getFeaturesMock = getFeatures as unknown as ReturnType<typeof vi.fn>;
+const getApplicationsMock = getApplications as unknown as ReturnType<typeof vi.fn>;
 
 /**
  * Route the control-plane accessor by key: the canonical key returns the RAW
@@ -69,7 +69,7 @@ describe('appPresentationStore (Spec #2955 ST-2 — generalized per-app presenta
   beforeEach(() => {
     vi.clearAllMocks();
     resetAppPresentationStoreForTests();
-    getFeaturesMock.mockReturnValue([]);
+    getApplicationsMock.mockReturnValue([]);
     setMock.mockResolvedValue(undefined);
     stored({});
   });
@@ -271,7 +271,7 @@ describe('appPresentationStore (Spec #2955 ST-2 — generalized per-app presenta
   });
 
   it('defensively returns same-window for a factory (isMultiWindow) app', async () => {
-    getFeaturesMock.mockReturnValue([{ id: 'query-viewer', isMultiWindow: true }]);
+    getApplicationsMock.mockReturnValue([{ id: 'query-viewer', isMultiWindow: true }]);
     stored({ 'query-viewer': 'new-window', terminal: 'new-window' });
     await hydrateAppPresentation();
 

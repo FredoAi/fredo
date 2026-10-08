@@ -115,7 +115,7 @@ export interface HotkeyInvocationContext {
  * path. `enabled()` is an availability probe — a false result skips the action
  * AND shows it as unavailable-with-reason.
  */
-export interface FeatureHotkeyAction {
+export interface ApplicationHotkeyAction {
   readonly actionId: HotkeyActionId;
   readonly title: string;
   readonly description?: string;
@@ -146,7 +146,7 @@ export interface FeatureHotkeyAction {
  * The empty context contribution a feature with no declared contexts inherits
  * (Spec #2958 ST-1). Frozen so every feature instance points at the SAME object.
  */
-export const EMPTY_HOTKEY_CONTEXTS: readonly FeatureHotkeyContext[] = Object.freeze([]);
+export const EMPTY_HOTKEY_CONTEXTS: readonly ApplicationHotkeyContext[] = Object.freeze([]);
 
 /**
  * A named interaction context a feature (or the platform) declares (Spec #2958).
@@ -155,7 +155,7 @@ export const EMPTY_HOTKEY_CONTEXTS: readonly FeatureHotkeyContext[] = Object.fre
  * same feature's `<featureId>.*`. The per-feature BASE context is synthesized by
  * the context registry and does not need declaring.
  */
-export interface FeatureHotkeyContext {
+export interface ApplicationHotkeyContext {
   readonly contextId: HotkeyContextId;
   readonly parentId: HotkeyContextId;
   readonly title: string;
@@ -166,7 +166,7 @@ export interface FeatureHotkeyContext {
  * singleton so every feature instance points at the SAME object — no per-instance
  * allocation and no accidental mutation of the default declaration.
  */
-export const EMPTY_HOTKEYS: readonly FeatureHotkeyAction[] = Object.freeze([]);
+export const EMPTY_HOTKEYS: readonly ApplicationHotkeyAction[] = Object.freeze([]);
 
 /**
  * A registered action as listed by the registry (ST-2 fills this). `invalid`

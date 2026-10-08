@@ -14,16 +14,16 @@ import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 
-vi.mock('@/features/home', () => ({ Home: () => <div data-testid="route-home" /> }));
-vi.mock('@/features/diagram/components/ArchitectureDiagram', () => ({
+vi.mock('@/applications/home', () => ({ Home: () => <div data-testid="route-home" /> }));
+vi.mock('@/applications/diagram/components/ArchitectureDiagram', () => ({
   ArchitectureDiagram: () => <div data-testid="route-diagram" />,
 }));
-vi.mock('@/features/dev-mode', () => ({ DevMode: () => <div data-testid="route-dev-mode" /> }));
-vi.mock('@/features/terminal', () => ({
+vi.mock('@/applications/dev-mode', () => ({ DevMode: () => <div data-testid="route-dev-mode" /> }));
+vi.mock('@/applications/terminal', () => ({
   TerminalWindow: () => <div data-testid="route-terminal" />,
 }));
-vi.mock('@/features/doom', () => ({ DoomWindow: () => <div data-testid="route-doom" /> }));
-vi.mock('@/features/app-window', () => ({
+vi.mock('@/applications/doom', () => ({ DoomWindow: () => <div data-testid="route-doom" /> }));
+vi.mock('@/applications/app-window', () => ({
   StandaloneAppWindow: () => <div data-testid="route-app-window" />,
 }));
 vi.mock('@/app/providers/ExtensionProvider', () => ({
