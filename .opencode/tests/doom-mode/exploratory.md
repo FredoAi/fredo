@@ -16,13 +16,13 @@
 - [ ] E-4: Hard-kill Fredo mid-`ready`, then relaunch — does the startup sweep reclaim the orphan and never kill an unrelated reused PID?
 - [ ] E-5: Two simultaneous `doom_read_state` calls — is the round trip still single-request each, with no interleaving corruption?
 - [ ] E-6: Open the `doom` window, then open it from a second entry path — still exactly one window/engine?
-- [ ] E-7: `FREDO_DOOM_ARCHIVE_URL` reachable but `_SHA256` mismatched — is the failure typed `acquireFailed` and fail-closed (no partial staged binary used)?
+- [ ] E-7 (SUPERSEDED by #3013 — the engine runtime-download acquisition leg is REMOVED; there is no engine archive URL anymore. Kept for history; see F-92.): Reachable-but-mismatched engine-archive seam — is the failure typed `acquireFailed` and fail-closed (no partial staged binary used)?
 - [ ] E-8: Boot with a stale `doom_install_dir` PID marker whose PID now belongs to an unrelated process — the image guard must refuse to kill it.
 - [ ] E-9: Theme/light-dark on the error state and status readout — theme tokens only, no hardcoded hex.
 - [ ] E-10: The `doom` window is open when the app exits — both the Doom and llama-server/PG exit hooks complete within their bounds.
 - [ ] E-11: The real engine serves `GET /api/frame` 503 during graphics init — capture the transient window and confirm the window never latches `error` (R-1.4 natural lever); if the window is too racy to observe reliably, record that and cite the ST-6 frame-503 seam request.
 - [ ] E-12: Run `scripts/doom/build-restful-doom.ps1` twice concurrently — is staging idempotent, with no half-written `restful-doom.exe`?
-- [ ] E-13: Launch with `FREDO_DOOM_REQUIRE_REAL_ENGINE=1` and a real engine whose basename differs only in case (`RESTFUL-DOOM.EXE`) — does the guard match case-insensitively on Windows?
+- [ ] E-13 (SUPERSEDED by #3013 — the anti-stub env seam is REMOVED; a stub can no longer be offered as a real engine. Kept for history; see the #3013 probes E-53..): Launch with the (now-removed) anti-stub env seam and a real engine whose basename differs only in case (`RESTFUL-DOOM.EXE`) — does the guard match case-insensitively on Windows?
 - [ ] E-14: While the real engine runs, check `tasklist` for any SDL-spawned second window/process — none beyond the engine PID.
 
 ---
@@ -59,9 +59,9 @@
 > G-284; a disclosed substitution allowed).
 >
 > **G-300:** every error/failure probe names an in-repo induction lever
-> (`FREDO_DOOM_MODE_FAIL_ENTER=1`, `FREDO_DOOM_ENGINE_PATH=...invalid.exe`,
-> `FREDO_DOOM_IWAD_PATH=...missing.wad`, `FREDO_DOOM_STOP_TIMEOUT_S` +
-> `FREDO_DOOM_STUB_HANG=1`) or is marked a static/unit pin, non-AC.
+> (`FREDO_DOOM_MODE_FAIL_ENTER=1`, `FREDO_DOOM_IWAD_PATH=...missing.wad`,
+> `FREDO_DOOM_STOP_TIMEOUT_S` + `FREDO_DOOM_STUB_HANG=1`) or is marked a static/unit pin, non-AC.
+> The engine-path lever used by this historical slice is REMOVED by #3013 (see the #3013 probes).
 
 - [x] E-21 (OBSERVATION 2026-10-05 #2970 r1 — with focus in `launcher-command-input`, `iddqd` did NOT activate (mode stayed `inactive`). `useSecretCode` deliberately ignores keydowns originating inside `input`/`textarea`/`select`/`[contenteditable]` (`useSecretCode.ts:19-24,45`) so ordinary typing cannot hijack a field. This DEVIATES from the plan's F-33 edge ("focus in an input still triggers"); the F-33 core criteria pass. Disclosed, not a core FAIL — deliberate, documented design): Type `iddqd` while a text input is focused — does the document-level listener (`useKonamiCode.ts:55-60`) still trigger, or does the field swallow it? (Lever: real engine; observe the mode event.)
 - [x] E-22 (PASS 2026-10-05 #2970 r1 — `begin_enter` returns false while `entering`/`active`, so a second trigger is a no-op success; F-34 verified re-trigger while active keeps ONE window/PID and unchanged `enteredAt`; the `entering` case is the same pure transition, unit-pinned in mode.rs): Trigger the typed activation while the mode is already `entering` — is the second attempt a clean no-op (no second runtime, no second window)? (Lever: real engine; poll PIDs + window list.)
@@ -146,3 +146,22 @@
 - [ ] E-50: Corrupt `.restful-doom-commit` (blank/whitespace) with the `.exe` present — is the staged engine rejected and provisioning re-run? (Lever: fixture marker.)
 - [ ] E-51: Interleave a failed provisioning with an existing healthy staged engine — is the previously staged engine left untouched (fail-closed), or is it clobbered? (Lever: `FREDO_DOOM_BUILD_OFFLINE=1` on a healthy install.)
 - [ ] E-52: Point `FREDO_DOOM_INSTALL_DIR` at an unwritable directory — is the failure typed (`installDirInvalid`) with no crash and no orphan? (Lever: read-only/absent dir.)
+
+---
+
+## Managed-only engine resolution slice (Spec #3013) — unscripted probes
+
+> **Verification policy: live** — probes run against the running artifact with the `telemetry_spans`
+> live-pipeline reference (non-zero count + recent `max(ingested_at)`; app-pool read, G-307; fallback
+> managed `psql` at the manifest `ports.pg`, G-284, DISCLOSED). Doom emits no span.
+>
+> **G-300:** every error/failure probe names an in-repo lever (`FREDO_DOOM_FAIL_ENGINE_SPAWN=1`, the
+> `fail-engine`/`absent` fixture dirs under `.opencode/tmp/3013/fixtures/`, retained
+> `FREDO_DOOM_INSTALL_DIR`) or is marked a static/unit pin, non-AC.
+
+- [ ] E-53: Put a DIFFERENT `restful-doom.exe` earlier on `PATH` — does resolution still pick the managed `<install_dir>/engine/restful-doom.exe` (PATH never consulted)? (Lever: PATH-scoped copy + managed fixture.)
+- [ ] E-54: Seed the (removed) engine-path setting row in the AppStore and set the (removed) engine-path env seam to a valid engine — is BOTH ignored (managed-only), with the managed engine still chosen? (Lever: seeded setting + env; observe `DoomStatus.enginePath`.)
+- [ ] E-55: Corrupt `.restful-doom-commit` (blank/whitespace) while the managed `.exe` is present — is the staged predicate rejected (`provisionFailed`/provisioning state) with NO substitute and NO download? (Lever: fixture marker.)
+- [ ] E-56: Set `FREDO_DOOM_FAIL_ENGINE_SPAWN` to unknown/blank values (`""`, `"yes"`, `"2"`, `"01"`) — is the lever inert (launch proceeds) in every case, active ONLY for a trimmed `"1"`? (Lever: env override over a staged managed engine.)
+- [ ] E-57: Relocate/remove the managed install dir between two boots — does boot 2 report the provisioning/failure state with NO filesystem hunt outside the repo + managed dir (G-172)? (Lever: retained `FREDO_DOOM_INSTALL_DIR`.)
+- [ ] E-58: Invoke `launch_doom_runtime` twice in quick succession with a staged managed engine — exactly ONE managed engine PID, ONE `doom` window, idempotent (no second spawn, no re-download)? (Lever: managed fixture + `tasklist`.)
