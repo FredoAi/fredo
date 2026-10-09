@@ -6,3 +6,6 @@ AGENTS.md text eol=lf
 # Build patches are applied with `git apply`, whose context lines must be LF;
 # autocrlf would rewrite them to CRLF on checkout and break the engine build.
 scripts/doom/patches/*.patch text eol=lf
+# Vendored RESTful-DOOM source (Spec #3012): keep the committed tree LF so the
+# in-repo MinGW patches apply cleanly, and exclude it from language stats.
+vendor/restful-doom/** text eol=lf linguist-vendored

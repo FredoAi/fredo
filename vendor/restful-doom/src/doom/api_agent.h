@@ -1,0 +1,48 @@
+//
+// Agent-facing API: one observation per request, lockstep tics, episodes.
+//
+// The endpoints in the other api_*_controller files are built for a human
+// poking at a running game. An agent needs something different: the WHOLE
+// observation in one round trip, the game advancing only when it says so, an
+// episode it can restart reproducibly, and a record of what happened in
+// between. That is what lives here.
+//
+
+#ifndef __API_AGENT_H__
+#define __API_AGENT_H__
+
+#include "api.h"
+
+// Called from API_Init once the socket is up.
+void API_Agent_Init(void);
+
+// Whether -apilockstep was given: the game advances only on request.
+boolean API_Agent_Lockstep(void);
+
+// Called once per tic from API_RunIO, before the game runs the tic. In
+// lockstep this is where the loop is handed to the API and blocks.
+void API_Agent_PerTic(void);
+
+/* Forget the previous-tic baseline events are derived from, and drop anything
+ * already derived. For a snapshot restore - see api_agent.c. */
+void API_Agent_Rebaseline(void);
+
+// Called from P_DamageMobj whenever the console player loses health, so that
+// a `hurt` or `death` event can name what did it. The EVENT is still derived
+// from the health diff, as every other event is; this only supplies the
+// attribution, which a diff has no way to see - by the time the health has
+// changed, what changed it is gone. An episode that ends in a death is
+// otherwise a mystery: the transcript says the player died at decision 769
+// and nothing at all about what killed it.
+void API_Agent_NoteDamage(mobj_t *source, int damage);
+
+// Endpoints.
+api_response_t API_GetState(void);
+api_response_t API_PostStep(cJSON *req);
+api_response_t API_PostEpisode(cJSON *req);
+api_response_t API_GetFrame(void);
+api_response_t API_GetMap(void);
+api_response_t API_GetRouteDebug(void);
+api_response_t API_PostRouteTo(cJSON *req);
+
+#endif
