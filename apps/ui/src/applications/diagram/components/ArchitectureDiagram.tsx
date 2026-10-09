@@ -677,7 +677,7 @@ export const ArchitectureDiagram: React.FC<ArchitectureDiagramProps> = ({ onFocu
             <Input
               ref={searchInputRef}
               data-testid="diagram-search-input"
-              data-hotkey="s"
+              data-hotkey="d"
               placeholder="Search nodes..."
               value={searchQuery}
               onChange={(e) => handleSearch(e.target.value)}

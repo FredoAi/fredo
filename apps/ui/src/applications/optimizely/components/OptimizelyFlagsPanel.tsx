@@ -457,7 +457,7 @@ export const OptimizelyFlagsPanel: React.FC = () => {
           onClick={refetch}
           disabled={isLoading}
           data-testid="optimizely-refresh"
-          data-hotkey="r"
+          data-hotkey="f"
           _hover={{ color: 'var(--text-primary)', background: 'var(--card-hover-bg)' }}
         >
           <LuRefreshCw size={13} />
@@ -529,7 +529,7 @@ export const OptimizelyFlagsPanel: React.FC = () => {
           <Input
             ref={searchInputRef}
             data-testid="optimizely-search-input"
-            data-hotkey="s"
+            data-hotkey="q"
             placeholder="Search by name or key"
             value={search}
             onChange={(e) => setSearch(e.target.value)}

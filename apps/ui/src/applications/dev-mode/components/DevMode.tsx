@@ -586,7 +586,7 @@ export const DevMode: React.FC = () => {
             )}
           </HStack>
           {events.length > 0 && (
-            <Button data-testid="dev-mode-clear-events" data-hotkey="c" size="xs" variant="ghost" color="var(--text-secondary)" _hover={{ color: '#ef4444', background: '#ef444415' }} onClick={clearEvents} aria-label="Clear events" px={2} height="24px">
+            <Button data-testid="dev-mode-clear-events" data-hotkey="x" size="xs" variant="ghost" color="var(--text-secondary)" _hover={{ color: '#ef4444', background: '#ef444415' }} onClick={clearEvents} aria-label="Clear events" px={2} height="24px">
               <HStack gap={1}>
                 <LuTrash2 size={11} />
                 <Text fontSize="10px">Clear</Text>
@@ -642,7 +642,7 @@ export const DevMode: React.FC = () => {
             <Input
               ref={filterInputRef}
               data-testid="dev-mode-filter-input"
-              data-hotkey="s"
+              data-hotkey="i"
               value={query}
               onChange={(e) => setQuery(e.currentTarget.value)}
               placeholder="Filter by event type or payload…"
@@ -710,7 +710,7 @@ export const DevMode: React.FC = () => {
             <Box
               as="button"
               data-testid="dev-mode-show-all-states"
-              data-hotkey="a"
+              data-hotkey="b"
               onClick={() => setActiveStates(new Set(ALL_STATES))}
               px="7px"
               py="2px"
