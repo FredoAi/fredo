@@ -11,8 +11,9 @@
 //! 2. when none is usable and the run is not offline, download the pinned MSYS2
 //!    base archive through Fredo's ONE streaming acquisition engine
 //!    ([`acquisition::acquire_archive_with`]) with a REAL [`ProgressReporter`]
-//!    that emits `doom-provision-progress`, then extract it with the Windows
-//!    `tar.exe`;
+//!    that emits `doom-provision-progress`, then extract it **in-process**
+//!    (pure-Rust xz decode → Rust `tar` crate) so the managed path never depends
+//!    on a host PATH `tar` (ST-6, F-78);
 //! 3. build the vendored source by spawning
 //!    `scripts/doom/build-restful-doom.ps1 -SourceDir <vendor> -Msys2Root <root>`
 //!    and parsing its stderr `STEP` markers;
@@ -22,15 +23,18 @@
 //!
 //! Every wait is wall-clock bounded and hard-killed with
 //! [`process::kill_pid_tree`] on every exit path: the toolchain download is
-//! wrapped in `tokio::time::timeout`, and the extract/build children are raced
-//! against the cancel flag and an absolute deadline, hard-killing the whole
-//! child tree (`powershell → bash → make`) when either fires. The three bounds
-//! are read through their test-only env seams (inert when unset; defaults
-//! 1800/900/900 s) so the bounded-timeout AC is live-inducible.
+//! wrapped in `tokio::time::timeout`, the extract race is a `spawn_blocking`
+//! task raced against the cancel flag and an absolute deadline (a blocked
+//! thread spawns no OS process, so there is no orphan to face for it), and the
+//! build child is raced against the cancel flag and an absolute deadline,
+//! hard-killing the whole child tree (`powershell → bash → make`) when either
+//! fires. The three bounds are read through their test-only env seams (inert
+//! when unset; defaults 1800/900/900 s) so the bounded-timeout AC is live-inducible.
 //!
 //! Nothing here changes the engine resolver order or the mode lifecycle — it
 //! only makes the staged candidate exist (ST-3 wires first activation).
 
+use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -70,6 +74,11 @@ pub const DOOM_ENGINE_COMMIT_MARKER: &str = ".restful-doom-commit";
 pub const DOOM_TOOLCHAIN_SUBDIR: &str = "toolchain";
 /// The usable-root probe relative to a toolchain root.
 pub const DOOM_TOOLCHAIN_BASH_REL: &str = "usr/bin/bash.exe";
+/// Intermediate `.tar` decoded from the pinned `.tar.xz` (under the toolchain
+/// dir); removed once the tar is extracted (ST-6).
+const DOOM_TOOLCHAIN_TAR_TMP: &str = ".msys2-extract.tar";
+/// The staging dir the archive is unpacked into before the final move.
+const DOOM_TOOLCHAIN_STAGING_DIR: &str = ".msys2-extract";
 /// Script basename that builds the engine.
 pub const DOOM_BUILD_SCRIPT_BASENAME: &str = "build-restful-doom.ps1";
 
@@ -704,6 +713,7 @@ impl ProgressReporter for DoomProvisionReporter {
 // ── The run ───────────────────────────────────────────────────────────────────
 
 /// A typed provisioning failure that maps to a phase + code.
+#[derive(Debug)]
 enum ProvisionFailure {
     Code(DoomProvisionErrorCode, String),
     Timeout,
@@ -836,79 +846,116 @@ fn find_extracted_root(staging: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Extract the toolchain archive into `<install_dir>/toolchain/msys2` using the
-/// Windows `tar.exe`, bounded + cancellable with a hard-kill fallback.
+/// A `toolchainExtractFailed` failure carrying a detail message.
+fn extract_failed(message: String) -> ProvisionFailure {
+    ProvisionFailure::Code(DoomProvisionErrorCode::ToolchainExtractFailed, message)
+}
+
+/// Decode `archive` (a `.tar.xz`) into a temp `.tar` under `toolchain_dir`, then
+/// extract that tar into `staging` — **entirely in-process** (ST-6, F-78): a
+/// pure-Rust `lzma-rs` xz decode plus the Rust `tar` crate. No host `tar` and no
+/// child process is involved, so there is nothing to orphan. The cancel flag and
+/// the absolute `deadline` are honoured between tar entries.
+fn extract_tar_xz_blocking(
+    archive: &Path,
+    toolchain_dir: &Path,
+    staging: &Path,
+    cancel: &Arc<AtomicBool>,
+    deadline: Instant,
+) -> Result<(), ProvisionFailure> {
+    let tar_path = toolchain_dir.join(DOOM_TOOLCHAIN_TAR_TMP);
+    let _ = std::fs::remove_file(&tar_path);
+
+    // 1. Pure-Rust xz decode: `.tar.xz` → temp `.tar` (no liblzma, no host tar).
+    let mut input = BufReader::new(std::fs::File::open(archive).map_err(|error| {
+        extract_failed(format!("could not open {}: {error}", archive.display()))
+    })?);
+    let mut output = BufWriter::new(std::fs::File::create(&tar_path).map_err(|error| {
+        extract_failed(format!("could not create {}: {error}", tar_path.display()))
+    })?);
+    lzma_rs::xz_decompress(&mut input, &mut output)
+        .map_err(|error| extract_failed(format!("could not decode the xz archive: {error}")))?;
+    output
+        .flush()
+        .map_err(|error| extract_failed(format!("could not write {}: {error}", tar_path.display())))?;
+    drop(output);
+
+    // 2. Rust `tar` extraction into staging, cancel/budget-aware per entry.
+    let tar_file = std::fs::File::open(&tar_path).map_err(|error| {
+        extract_failed(format!("could not reopen {}: {error}", tar_path.display()))
+    })?;
+    let mut tar_archive = tar::Archive::new(BufReader::new(tar_file));
+    let entries = tar_archive
+        .entries()
+        .map_err(|error| extract_failed(format!("could not read the tar archive: {error}")))?;
+    for entry in entries {
+        if cancel.load(Ordering::Relaxed) {
+            let _ = std::fs::remove_file(&tar_path);
+            return Err(ProvisionFailure::Cancelled);
+        }
+        if Instant::now() >= deadline {
+            let _ = std::fs::remove_file(&tar_path);
+            return Err(ProvisionFailure::Timeout);
+        }
+        let mut entry = entry
+            .map_err(|error| extract_failed(format!("could not read a tar entry: {error}")))?;
+        let unpacked = entry
+            .unpack_in(staging)
+            .map_err(|error| extract_failed(format!("could not extract a tar entry: {error}")))?;
+        if !unpacked {
+            let _ = std::fs::remove_file(&tar_path);
+            return Err(extract_failed(
+                "the archive contains an entry outside the extraction dir".to_string(),
+            ));
+        }
+    }
+    let _ = std::fs::remove_file(&tar_path);
+    Ok(())
+}
+
+/// Extract the toolchain archive into `<install_dir>/toolchain/msys2` with the
+/// in-process extractor, bounded + cancellable. Runs on a blocking thread so the
+/// cancel flag/timeout can win without blocking the async runtime (ST-6).
 async fn extract_archive(
     run: &ProvisionRun<'_>,
     archive: &Path,
     budget: Duration,
 ) -> Result<(), ProvisionFailure> {
     let toolchain_dir = run.install_dir.join(DOOM_TOOLCHAIN_SUBDIR);
-    let staging = toolchain_dir.join(".msys2-extract");
+    let staging = toolchain_dir.join(DOOM_TOOLCHAIN_STAGING_DIR);
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging).map_err(|error| {
-        ProvisionFailure::Code(
-            DoomProvisionErrorCode::ToolchainExtractFailed,
-            format!("could not create {}: {error}", staging.display()),
-        )
+        extract_failed(format!("could not create {}: {error}", staging.display()))
     })?;
 
-    let mut command = tokio::process::Command::new("tar");
-    command
-        .arg("-xf")
-        .arg(archive)
-        .arg("-C")
-        .arg(&staging)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    #[cfg(target_os = "windows")]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-    let mut child = command.spawn().map_err(|error| {
-        ProvisionFailure::Code(
-            DoomProvisionErrorCode::ToolchainExtractFailed,
-            format!("could not start tar: {error}"),
-        )
-    })?;
-    let pid = child.id().ok_or_else(|| {
-        ProvisionFailure::Code(
-            DoomProvisionErrorCode::ToolchainExtractFailed,
-            "the tar child has no process id".to_string(),
-        )
-    })?;
+    let deadline = Instant::now() + budget;
+    let handle = tauri::async_runtime::spawn_blocking({
+        let archive = archive.to_path_buf();
+        let toolchain_dir = toolchain_dir.clone();
+        let staging = staging.clone();
+        let cancel = run.cancel.clone();
+        move || extract_tar_xz_blocking(&archive, &toolchain_dir, &staging, &cancel, deadline)
+    });
+    tokio::pin!(handle);
 
-    let wait = child.wait();
-    tokio::pin!(wait);
     let failure = tokio::select! {
-        status = &mut wait => match status {
-            Ok(status) if status.success() => None,
-            Ok(status) => Some(ProvisionFailure::Code(
-                DoomProvisionErrorCode::ToolchainExtractFailed,
-                format!("tar exited with code {:?}", status.code()),
-            )),
-            Err(error) => Some(ProvisionFailure::Code(
-                DoomProvisionErrorCode::ToolchainExtractFailed,
-                format!("the tar wait failed: {error}"),
-            )),
+        result = &mut handle => match result {
+            Ok(Ok(())) => None,
+            Ok(Err(failure)) => Some(failure),
+            Err(join_error) => Some(extract_failed(format!(
+                "the extraction task failed: {join_error}"
+            ))),
         },
         _ = wait_cancel(run.cancel) => Some(ProvisionFailure::Cancelled),
         _ = tokio::time::sleep(budget) => Some(ProvisionFailure::Timeout),
     };
     if let Some(failure) = failure {
-        process::kill_pid_tree(pid);
         let _ = std::fs::remove_dir_all(&staging);
         return Err(failure);
     }
 
     let extracted = find_extracted_root(&staging).ok_or_else(|| {
-        ProvisionFailure::Code(
-            DoomProvisionErrorCode::ToolchainExtractFailed,
-            format!("the archive produced no {}", DOOM_TOOLCHAIN_BASH_REL),
-        )
+        extract_failed(format!("the archive produced no {}", DOOM_TOOLCHAIN_BASH_REL))
     })?;
     let target = toolchain_dir.join("msys2");
     let _ = std::fs::remove_dir_all(&target);
@@ -920,10 +967,9 @@ async fn extract_archive(
         result
     };
     moved.map_err(|error| {
-        ProvisionFailure::Code(
-            DoomProvisionErrorCode::ToolchainExtractFailed,
-            format!("could not move the extracted toolchain into place: {error}"),
-        )
+        extract_failed(format!(
+            "could not move the extracted toolchain into place: {error}"
+        ))
     })
 }
 
@@ -1576,5 +1622,102 @@ mod tests {
             display_phase(DoomProvisionPhase::Idle, false, false, true),
             DoomProvisionPhase::AwaitingInstallDir
         );
+    }
+
+    #[test]
+    fn the_in_process_extractor_round_trips_a_tar_xz_without_host_tar() {
+        // ST-9 (F-78 regression): a crafted `.tar.xz` goes through the NEW
+        // in-process extractor — no host `tar`, no child process. If the
+        // extractor ever regresses to a PATH `tar`, this fixture (built purely
+        // from the `tar` + `lzma-rs` crates) proves the path is self-sufficient.
+        use std::io::Read as _;
+
+        // Build a tiny tar containing the one usable-root probe file.
+        let payload: &[u8] = b"MZ in-process extractor fixture";
+        let mut tar_bytes: Vec<u8> = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_bytes);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(payload.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "msys2/usr/bin/bash.exe", payload)
+                .expect("append tar entry");
+            builder.finish().expect("finish tar");
+        }
+
+        // Compress to xz (pure Rust) — the same `.tar.xz` class as the pin.
+        let mut xz_bytes: Vec<u8> = Vec::new();
+        lzma_rs::xz_compress(&mut &tar_bytes[..], &mut xz_bytes).expect("xz compress");
+        assert_eq!(&xz_bytes[..6], &[0xFD, b'7', b'z', b'X', b'Z', 0x00]);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let toolchain_dir = dir.path().join("toolchain");
+        let staging = toolchain_dir.join(DOOM_TOOLCHAIN_STAGING_DIR);
+        std::fs::create_dir_all(&staging).expect("mkdir staging");
+        let archive = toolchain_dir.join("fixture.tar.xz");
+        std::fs::write(&archive, &xz_bytes).expect("write archive");
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        extract_tar_xz_blocking(
+            &archive,
+            &toolchain_dir,
+            &staging,
+            &cancel,
+            Instant::now() + Duration::from_secs(30),
+        )
+        .expect("in-process extract");
+
+        // The SHARED root checks see the extracted toolchain...
+        let root = find_extracted_root(&staging).expect("extracted root");
+        assert!(usable_root(&root));
+        let bash = root.join("usr").join("bin").join("bash.exe");
+        let mut contents = String::new();
+        std::fs::File::open(&bash)
+            .expect("open bash")
+            .read_to_string(&mut contents)
+            .expect("read bash");
+        assert_eq!(contents, "MZ in-process extractor fixture");
+        // ...and the intermediate `.tar` was cleaned up.
+        assert!(!toolchain_dir.join(DOOM_TOOLCHAIN_TAR_TMP).exists());
+    }
+
+    #[test]
+    fn the_in_process_extractor_honours_a_pre_set_cancel_flag() {
+        // A pre-requested cancel must abort the per-entry loop, not extract.
+        let payload: &[u8] = b"MZ fixture";
+        let mut tar_bytes: Vec<u8> = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_bytes);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(payload.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "msys2/usr/bin/bash.exe", payload)
+                .expect("append tar entry");
+            builder.finish().expect("finish tar");
+        }
+        let mut xz_bytes: Vec<u8> = Vec::new();
+        lzma_rs::xz_compress(&mut &tar_bytes[..], &mut xz_bytes).expect("xz compress");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let toolchain_dir = dir.path().join("toolchain");
+        let staging = toolchain_dir.join(DOOM_TOOLCHAIN_STAGING_DIR);
+        std::fs::create_dir_all(&staging).expect("mkdir staging");
+        let archive = toolchain_dir.join("fixture.tar.xz");
+        std::fs::write(&archive, &xz_bytes).expect("write archive");
+
+        let cancel = Arc::new(AtomicBool::new(true));
+        let outcome = extract_tar_xz_blocking(
+            &archive,
+            &toolchain_dir,
+            &staging,
+            &cancel,
+            Instant::now() + Duration::from_secs(30),
+        );
+        assert!(matches!(outcome, Err(ProvisionFailure::Cancelled)));
+        assert!(find_extracted_root(&staging).is_none());
     }
 }

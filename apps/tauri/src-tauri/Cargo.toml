@@ -83,6 +83,14 @@ sha2 = "0.10"
 # extractor. `flate2` is already in the resolved dependency graph (via
 # `postgresql_embedded`/`tar`), so this adds no new supply-chain surface.
 flate2 = "1"
+# In-process `.tar.xz` extraction for Doom toolchain provisioning (Spec #3012
+# ST-6, F-78). The managed first-use path MUST NOT depend on a host PATH `tar`
+# (stock Windows `bsdtar 3.5.2` lacks liblzma/xz and exits 1 on the pinned
+# archive): `lzma-rs` decodes the xz in pure Rust and the `tar` crate unpacks
+# the result. `tar` is already in the resolved graph (via `postgresql_embedded`);
+# `lzma-rs` adds no host-native dependency.
+tar = "0.4"
+lzma-rs = "0.3"
 schemars = "1"
 # PostgreSQL (for observability tools)
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "json", "chrono"] }
