@@ -226,7 +226,7 @@ The Doom game window (Spec #2968) runs a RESTful-DOOM engine as a supervised chi
 
 **Doom theme + armored avatar (Spec #2971):** while Doom Mode is active the whole app restyles to a Doom-inspired palette (driven entirely by the theme token contract) and the Fredo avatar wears Doom armor; on exit every surface and the avatar revert to the user's prior theme exactly. The Doom theme is never offered in Settings and is never persisted — no configuration is required.
 
-**Save/resume across sessions (Spec #2972):** entering Doom Mode resumes from the last saved campaign point (stored in the local SQLite control plane under `doom_save_v1`; no cloud). The Doom window shows the resume point, a completion badge, and a confirm-gated "Start fresh" control. The QA seam `FREDO_DOOM_SAVE_FILE=<path>` points the save at a JSON file instead of the control plane (inert when unset). No configuration is required.
+**Save/resume across sessions (Spec #2972, store moved Spec #3011):** entering Doom Mode resumes from the last saved campaign point (stored as one typed row in the dedicated PostgreSQL feature table `feature_doom_save`; no cloud). The Doom window shows the resume point, a completion badge, and a confirm-gated "Start fresh" control. The test-only levers `FREDO_DOOM_SAVE_STATE_DIR=<dir>` (a JSON state dir) and `FREDO_DOOM_SAVE_FORCE_FAIL=read|write` (in-process fault injection) induce the save's error paths (inert when unset). No configuration is required.
 
 ## Environment Variables
 
