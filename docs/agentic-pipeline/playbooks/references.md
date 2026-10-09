@@ -64,6 +64,22 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 ---
 ## Known Failure Modes
 
+### G-339: manual_post_comments_flush_posts_a_stale_fix_plan
+- **activation_date:** 2026-10-09
+- **observed:** #3007 — the SI ran the manual `post-comments` flush to publish the tester verdict (required before `testing → audit`), but a pending architect `fix-plan.md` (class `environment`, authored for diagnosis only) was ALSO flushed and posted as `## Fix Plan (round 2)`, even though the round had PASSed and no rework re-entry was in flight. The transition-driven flush guards a FIRST-entry stray, but the manual flush posted it because a prior implementation entry existed. Root-cause class: `defect` (machine/process).
+- **target_failure:** the manual `post-comments` flush posts a pending `fix-plan.md` as a `## Fix Plan (round N)` whenever a prior implementation entry exists, so a diagnostic/environment-class fix plan — not a real rework — lands on the timeline and mis-stamps a round.
+- **guardrail:** Before a manual `post-comments` flush, HOLD ASIDE (rename) any pending `fix-plan.md` that is not an actual pending rework, so only the intended draft (e.g. the Tests Runs verdict) posts; the transition-driven flush owns the Fix Plan channel. The durable fix is machine-side: the manual flush should skip `fix-plan.md` unless a rework re-entry is actually in flight.
+- **home:** playbooks/self-improver.md (draft-flush discipline) + references.md (this record). Open follow-up: a machine-side manual-flush guard in `pipeline-state.rs` (skip a stray `fix-plan.md` unless a rework re-entry is in flight).
+- **effectiveness:** Pending
+
+### G-338: recurring_webview_bridge_wedge_needs_an_evidence_order_change
+- **activation_date:** 2026-10-09
+- **observed:** #3007 testing — the round's verdict was blocked twice by the WebView2/MCP-bridge wedge (`about:blank`, `execute_js` timeouts) that survived `Down→Up`, `Clean→Up` and slot switches; the ACs verified by the EARLY legs passed, while the F-102/F-112 error/transient stub-lever legs (driven LAST) were the ones blocked. Recovery that completed every row: a fresh clean env slot + `Hygiene -Kill` + the G-067 driver stop/start ladder + driving the fragile stub-lever rows FIRST. Root-cause class: `environment`.
+- **target_failure:** a live round drives its error/transient legs LAST, so when the recurring webview/bridge wedge sets in after the heavy legs those rows stay UNVERIFIED and an identical re-issue reproduces the same gap.
+- **guardrail:** When a live round is blocked by a recurring webview/bridge wedge, change the EVIDENCE STRATEGY — bring up a fresh clean env slot, clear process orphans, run the driver stop/start ladder between native-window interactions, and drive the fragile error/transient stub-lever rows FIRST (before the heavy open/autoplay/close legs); re-issue only with the reordered brief, never the identical one.
+- **home:** .opencode/skills/dev-environment/SKILL.md + playbooks/tester.md + playbooks/self-improver.md (dispatch) + references.md (this record)
+- **effectiveness:** Pending (first application 2026-10-09, #3007 — the reordered resume completed every outstanding row and PASSed; confirm on the next wedge recurrence)
+
 ### G-337: removal_sweep_file_list_omits_non_code_reference_sites
 - **activation_date:** 2026-10-09
 - **observed:** #3013 round 1 — the plan's AC1/AC3 required a grep-verifiable removal of a Doom engine-resolution identifier set, and the ST-5 sweep unit declared only three product docs. After the code removal, three additional non-code reference sites surfaced that the AC's zero-hit grep would have hit: the CU-1 `failure_seam.rs` doc-comment (named two removed seams), `scripts/doom/README.md` (three removed seams + a stale resolver-order story), and `apps/tauri/src-tauri/tests/voice_invariants.rs` (a vacuous `acquire_engine` literal in an unrelated voice-decoupling banned-symbol list). The SI folded all three into the sweep unit before the testing round, so no round was burned and the tester's re-grep returned zero hits. Root-cause class: `scope`.
@@ -78,7 +94,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** an isolated-env port pair is permanently wedged by a dead PID's OS socket that `Down` cannot reclaim; a round that needs that slot either fails to boot or silently runs on the legacy/shared instance.
 - **guardrail:** When an isolated env slot's ports are bound by a dead PID's socket, do NOT loop `Down`/`Up` on that slot — run the round on the SAME env id at a CLEAN slot and disclose the slot in the verdict (the env stays isolated by its manifest). A sanctioned env-scoped force-port-clear is the durable fix (a `dev-env.ps1` addition, routed to the SI). Never fall back to the legacy shared instance to escape a wedged slot.
 - **home:** .opencode/skills/dev-environment/SKILL.md + .opencode/scripts/dev-env.ps1 (candidate force-port-clear) + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed (2026-10-09, #3007) — the dead-PID sockets on the legacy `:9223`/`:4318` and on successive slot ports were never reclaimed by `Down`; the round ran on clean slots (slot 2→8) with `Hygiene -Kill` clearing the per-attempt process orphans, and every slot switch booted. The durable force-port-clear remains the open follow-up.
 
 ### G-335: app_spawns_a_non_rust_child_with_windows_verbatim_paths
 - **activation_date:** 2026-10-09
@@ -94,7 +110,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** a fix plan's procedure/tests line cites a seam name, flag, or external-tool path that is not present in the shipped code/artifact; the executing role either cannot drive the row, or a literal assertion false-negatives on a correct install.
 - **guardrail:** A plan/fix-plan procedure line (env seam, flag, tool path) MUST be traced to the shipped code/artifact, never assumed — env-seam names to the defining source, external-tool paths to the artifact's real file layout (MSYS2 autotools are extensionless wrappers, not `.exe`). A tester that finds a plan-named seam/path absent discloses it and uses the real one; the SI routes the correction to the Architect for the next round. Prefer a single names block (G-255) carrying the exact seam/path literals.
 - **home:** playbooks/software-architect.md (fix-plan + plan citations) + playbooks/tester.md (disclose a brief inaccuracy) + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed (2026-10-09, #3007) — the plan's error-lever names were traced to `src/bin/doom_stub.rs` at convergence and the tester drove them verbatim; the plan-literal defects that DID surface were command-argument issues (a PowerShell `param()` `$PSScriptRoot` default + an omitted per-env OTLP port), not seam-name inventions — those route to the plan-command guardrails (G-322 family).
 
 ### G-333: upsert_pk_list_confuses_the_row_value_with_the_primary_key_column
 - **activation_date:** 2026-10-08
@@ -159,6 +175,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **guardrail:** When a live round is interrupted by an environment wedge, do NOT clear a partial PASS token. Recover the environment (Down then Up on the same env id + slot) and RESUME the tester session to complete the outstanding rows; only a verdict whose every AC row is PASS may proceed. An environment-limited batch of UNVERIFIED AC rows is a completion gap to re-drive — not a PASS, and not a spec defect.
 - **home:** playbooks/self-improver.md (audit/convergence + tester dispatch) + playbooks/tester.md + references.md (this record)
 - **effectiveness:** Applied (2026-10-08, #2956) — the `about:blank` wedge recurred on the first tip-switch `Up` in testing rounds 1 and 3; the tester recovered with an explicit `Down` → `Up` on the same env id and re-drove the affected rows — no partial PASS was cleared and no under-verified round merged. Re-validated (2026-10-09, #3012) — the wedge recurred (orphaned slot-1 socket + recurring MCP `execute_js` timeouts); each round recovered via `Down`/`Up` on the same env id+slot plus a driver-session stop/start ladder, no partial PASS was cleared, and the final PASS round carried only live-verified rows.
+- **re-validated:** 2026-10-09, #3007 — the wedge recurred TWICE across the testing entry (each time after the heavy Doom-window open/autoplay/close legs), leaving F-102/F-112 UNVERIFIED twice; the SI recovered the env and resumed the tester, and the completion re-drive — with the fragile stub-lever rows ordered FIRST on a fresh clean slot + the driver stop/start ladder — completed every row for a legitimate PASS. No partial PASS was cleared; the first two documents were correctly FAIL. (The ORDER change is recorded as G-338.)
 
 ### G-325: resumed_run_reuses_or_destroys_a_leftover_worktree_from_the_aborted_run
 - **activation_date:** 2026-10-07
@@ -225,7 +242,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** a developer subagent posts a routine progress `Status` comment on the feature issue, adding noise to a channel reserved for blockers/escalations and inviting a later agent to mistake it for a decision or a blocker; the sub-task return already carries the report.
 - **guardrail:** A developer dispatch brief must state that the sub-task's final report is the only deliverable channel — do NOT post a `Status` comment unless BLOCKED (then use the `block` action). The developer playbook must say the same. (Distinct from the Status body-file rule, which governs a Status comment when one IS legitimately posted.)
 - **home:** playbooks/developer.md + playbooks/self-improver.md (dispatch briefs) + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Partial (2026-10-09, #3007) — RECURRED: the ST-3/ST-4 developer posted a routine `Status` comment carrying its sub-task progress/verification (the sub-task return already carries the report). The SI's dispatch briefs did not repeat the "no routine Status comment" line. Reinforce the line in every developer brief, not only in the playbook.
 
 ### G-319: external_runtime_fixture_from_a_prior_spec_is_gone_by_the_qa_round
 - **activation_date:** 2026-10-04
@@ -272,6 +289,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** playbooks/qa-expert.md + playbooks/software-architect.md + playbooks/self-improver.md (convergence) + references.md (this record)
 - **effectiveness:** Confirmed (2026-10-04, #2969) — convergence validated every QA lever against the runtime's actual semantics (the ST-6 stub levers were checked against the stub handler; the per-step RTT target was MEASURED live by ST-1, not guessed) and every "advances" row was step-driven because `-apilockstep` freezes the world between steps; the tester drove all rows without substituting a lever. The one inert seam (`FREDO_DOOM_AGENT_STEP_TICS`) was disclosed as a plan defect (G-317), not a row failure.
 - **re-validated:** 2026-10-05, #2970 — convergence validated the failure levers (fail-enter flag, invalid engine path, missing IWAD) and the step-driven expectation against the lockstep runtime; the tester drove every row with the named levers and no lever mismatch. The one limitation (the model-selection voice leg) was a technique finding per the plan's own rule. Confirmed.
+- **re-validated:** 2026-10-09, #3007 — the plan initially bound the QA transient-state row to `FREDO_DOOM_STUB_HANG` as the readyTimeout lever; the SI's convergence pass (cross-checking the stub source / the #2968 note) realigned it to `FREDO_DOOM_STUB_EXIT`, scoped `_HANG` to the bounded stop leg, and used `_FRAME_503` for the transient reconnecting note. The tester drove every row with the corrected levers; no lever mismatch reached the round. Confirmed.
 
 ### G-312: declared_backend_read_setting_not_verified_on_the_plane_the_backend_reads
 - **activation_date:** 2026-10-04
