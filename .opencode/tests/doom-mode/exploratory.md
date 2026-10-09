@@ -125,3 +125,24 @@
 - [ ] E-42: Set `FREDO_DOOM_SAVE_FORCE_FAIL` to an UNKNOWN value (e.g. `bogus`) and to a blank string — is the seam inert (normal save/resume)? (Lever: env override.)
 - [ ] E-43: Seed a valid state-dir fixture AND a conflicting existing PG row (state-dir set) — is the state-dir lever authoritative for the leg, and does it leave the PG row untouched? (Lever: state-dir + `application_store_query`.)
 - [ ] E-44: `reset_doom_save` while a run is active — does it delete the singleton row (the only delete path), return `hasSave:false`, and NOT re-persist until the next advance? (Lever: command + row read.)
+
+---
+
+## Engine-provisioning slice (Spec #3012) — unscripted probes
+
+> **Verification policy: live** — probes run against the running artifact with the `telemetry_spans`
+> reference (app-pool read, G-307; fallback managed `psql` at the manifest `ports.pg`, G-284,
+> DISCLOSED).
+>
+> **G-300:** every error/failure probe names an in-repo lever (`FREDO_DOOM_BUILD_OFFLINE=1`,
+> `FREDO_DOOM_TOOLCHAIN_ROOT` lacking bash, `FREDO_DOOM_TOOLCHAIN_ARCHIVE_URL/_SHA256/_BYTES`,
+> `FREDO_DOOM_SOURCE_DIR`, UI cancel, a test-only timeout override) or is a static/unit pin, non-AC.
+
+- [ ] E-45: Double-click `doom-provision-confirm` / invoke `provision_doom_engine` twice in quick succession — is exactly ONE provisioning run active (idempotent), with no doubled download and no second build tree? (Lever: IPC monitor + process inventory.)
+- [ ] E-46: Cancel exactly as the build stages the engine — is the half-written `restful-doom.exe` discarded (never launched), with zero orphans? (Lever: `doom-provision-cancel` timed at the `stage` step.)
+- [ ] E-47: Set `FREDO_DOOM_TOOLCHAIN_ROOT` to a dir containing a `usr/bin/bash.exe` that is NOT runnable (e.g. a text file named `bash.exe`) — does the usable-root probe still reject it (`toolchainUnavailable`) rather than mis-launch? (Lever: crafted root.)
+- [ ] E-48: Hard-kill Fredo mid-build, then relaunch — is the build child swept, is no half-engine considered staged, and does the next activation re-provision cleanly? (Lever: hard-kill + relaunch.)
+- [ ] E-49: Replace `vendor/restful-doom/` contents with a tree at a DIFFERENT commit (or with the marker removed) while a staged engine exists — does the marker mismatch force re-provision? (Lever: scratch copy + `FREDO_DOOM_SOURCE_DIR`.)
+- [ ] E-50: Corrupt `.restful-doom-commit` (blank/whitespace) with the `.exe` present — is the staged engine rejected and provisioning re-run? (Lever: fixture marker.)
+- [ ] E-51: Interleave a failed provisioning with an existing healthy staged engine — is the previously staged engine left untouched (fail-closed), or is it clobbered? (Lever: `FREDO_DOOM_BUILD_OFFLINE=1` on a healthy install.)
+- [ ] E-52: Point `FREDO_DOOM_INSTALL_DIR` at an unwritable directory — is the failure typed (`installDirInvalid`) with no crash and no orphan? (Lever: read-only/absent dir.)
