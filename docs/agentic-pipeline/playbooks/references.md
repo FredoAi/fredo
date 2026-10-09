@@ -64,6 +64,30 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 ---
 ## Known Failure Modes
 
+### G-336: orphan_os_socket_on_an_isolated_env_slot_is_unreclaimable_by_down
+- **activation_date:** 2026-10-09
+- **observed:** #3012 testing rounds 2–4 — an orphaned OS-level LISTENING socket on isolated env slot 1 (ports 16001/16003) was held by a DEAD PID; `dev-env.ps1 -Action Down -EnvId spec3012` cannot reclaim it and no allowlisted port-teardown lever exists (`netstat`/`Get-NetTCPConnection` denied), so every round ran on the SAME env id at slot 2 (disclosed). Root-cause class: `environment`.
+- **target_failure:** an isolated-env port pair is permanently wedged by a dead PID's OS socket that `Down` cannot reclaim; a round that needs that slot either fails to boot or silently runs on the legacy/shared instance.
+- **guardrail:** When an isolated env slot's ports are bound by a dead PID's socket, do NOT loop `Down`/`Up` on that slot — run the round on the SAME env id at a CLEAN slot and disclose the slot in the verdict (the env stays isolated by its manifest). A sanctioned env-scoped force-port-clear is the durable fix (a `dev-env.ps1` addition, routed to the SI). Never fall back to the legacy shared instance to escape a wedged slot.
+- **home:** .opencode/skills/dev-environment/SKILL.md + .opencode/scripts/dev-env.ps1 (candidate force-port-clear) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-335: app_spawns_a_non_rust_child_with_windows_verbatim_paths
+- **activation_date:** 2026-10-09
+- **observed:** #3012 round 3 FAIL — the provisioner passed `resource_dir()`-derived `\\?\` verbatim paths as `-File`/`-SourceDir`/`-Msys2Root`/`-InstallDir` to the PowerShell build script; PowerShell 5.1 cannot process the verbatim form (`Cannot process argument because the value of argument "drive" is null`), while the SAME script + root + install dir succeeds with normal paths. Fixed in round 4 by stripping `\\?\` at the spawn boundary + workspace-first dev resolution. Root-cause class: `defect`.
+- **target_failure:** application code passes a Windows `\\?\`-prefixed (verbatim) path to a non-Rust child process (PowerShell, a CLI, a shell), whose path handling cannot parse it, so the child fails on a path that is valid for Rust — surfacing as an opaque step failure rather than a path error.
+- **guardrail:** Any path crossing a spawn boundary to a non-Rust child MUST be de-verbatimed (strip `\\?\`, mapping `\\?\UNC\…` → `\\…`) — especially paths from `resource_dir()`/canonicalization. In a debug build, prefer resolving the adjacent workspace tree over the bundled resource snapshot so the child runs against current source. Name the spawn-boundary normalization as its own line in any provisioning/external-tool plan.
+- **home:** playbooks/software-architect.md (external-tool spawn boundary) + playbooks/developer.md + references.md (this record)
+- **effectiveness:** Confirmed (2026-10-09, #3012 round 4) — after de-verbatiming, the captured app-spawned child carried clean paths (repo tree, no `\\?\` prefix) and the managed build ran end-to-end to `ready` live.
+
+### G-334: fixplan_procedure_cites_unverified_seam_or_artifact_names
+- **activation_date:** 2026-10-09
+- **observed:** #3012 round-2 fix plan (architect-authored) cited a non-existent env seam `FREDO_DOOM_AGENT_SOURCE_SCRIPTED` (the shipped seams are `FREDO_DOOM_AGENT_DECISION_SOURCE=scripted` + `FREDO_DOOM_AGENT_SCRIPT`) and a tool path `<root>/usr/bin/autoreconf.exe` (MSYS2 ships extensionless autotools wrappers — no `.exe`); the tester disclosed the seam inaccuracy and the developer corrected the guard to the shipped names with package-manifest evidence. Root-cause class: `defect`.
+- **target_failure:** a fix plan's procedure/tests line cites a seam name, flag, or external-tool path that is not present in the shipped code/artifact; the executing role either cannot drive the row, or a literal assertion false-negatives on a correct install.
+- **guardrail:** A plan/fix-plan procedure line (env seam, flag, tool path) MUST be traced to the shipped code/artifact, never assumed — env-seam names to the defining source, external-tool paths to the artifact's real file layout (MSYS2 autotools are extensionless wrappers, not `.exe`). A tester that finds a plan-named seam/path absent discloses it and uses the real one; the SI routes the correction to the Architect for the next round. Prefer a single names block (G-255) carrying the exact seam/path literals.
+- **home:** playbooks/software-architect.md (fix-plan + plan citations) + playbooks/tester.md (disclose a brief inaccuracy) + references.md (this record)
+- **effectiveness:** Pending
+
 ### G-333: upsert_pk_list_confuses_the_row_value_with_the_primary_key_column
 - **activation_date:** 2026-10-08
 - **observed:** #3011 round 1 FAIL — the Doom save store passed `[DOOM_SAVE_ROW_ID]` (the row KEY VALUE, `"singleton"`) as the `primary_key` COLUMN-NAME list to `ApplicationStore::upsert`, emitting `ON CONFLICT("singleton")` → PostgreSQL `column "singleton" does not exist`. The best-effort writer swallowed the error and the loop kept advancing, so ZERO rows ever persisted while the plan's source-pin of the SQL shape (`INSERT … ON CONFLICT(<cols>) DO UPDATE`) stayed green; only a live round-trip caught it. Fixed in round 2 by passing `["id"]` (`save.rs`). Root-cause class: `defect`.
@@ -110,7 +134,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** a per-issue dev env must restart on its isolated slot/ports, but the dev-env Restart verb does not persist the slot, so it silently falls back to the legacy single-env ports — the round drives the wrong instance (or a stale shared cluster) and the intended isolated env is never reached.
 - **guardrail:** Recover or restart a per-issue dev env with an explicit Down followed by an Up that carries the SAME env id AND slot — never rely on the Restart verb to preserve the slot. When a tester brief names the boot command, name the isolated-env form (env id + slot) so the round does not enter the legacy shared path.
 - **home:** .opencode/skills/dev-environment/SKILL.md + playbooks/self-improver.md (tester brief) + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Applied (2026-10-09, #3012) — every env restart used the explicit `Down -EnvId <id>` → `Up -EnvId <id> -EnvSlot <n>` form (never the `Restart` verb); the isolated env booted on its own slot each round and the legacy shared path was never entered.
 
 ### G-327: plan_interaction_flow_step_not_owned_by_a_subtask_line
 - **activation_date:** 2026-10-08
@@ -126,7 +150,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** a mid-round environment wedge (blank webview, orphan DB/socket) leaves a batch of AC-relevant rows UNVERIFIED, but the tester still writes a PASS token; the machine gate parses the token + telemetry reference and clears, so an under-verified round merges.
 - **guardrail:** When a live round is interrupted by an environment wedge, do NOT clear a partial PASS token. Recover the environment (Down then Up on the same env id + slot) and RESUME the tester session to complete the outstanding rows; only a verdict whose every AC row is PASS may proceed. An environment-limited batch of UNVERIFIED AC rows is a completion gap to re-drive — not a PASS, and not a spec defect.
 - **home:** playbooks/self-improver.md (audit/convergence + tester dispatch) + playbooks/tester.md + references.md (this record)
-- **effectiveness:** Applied (2026-10-08, #2956) — the `about:blank` wedge recurred on the first tip-switch `Up` in testing rounds 1 and 3; the tester recovered with an explicit `Down` → `Up` on the same env id and re-drove the affected rows — no partial PASS was cleared and no under-verified round merged.
+- **effectiveness:** Applied (2026-10-08, #2956) — the `about:blank` wedge recurred on the first tip-switch `Up` in testing rounds 1 and 3; the tester recovered with an explicit `Down` → `Up` on the same env id and re-drove the affected rows — no partial PASS was cleared and no under-verified round merged. Re-validated (2026-10-09, #3012) — the wedge recurred (orphaned slot-1 socket + recurring MCP `execute_js` timeouts); each round recovered via `Down`/`Up` on the same env id+slot plus a driver-session stop/start ladder, no partial PASS was cleared, and the final PASS round carried only live-verified rows.
 
 ### G-325: resumed_run_reuses_or_destroys_a_leftover_worktree_from_the_aborted_run
 - **activation_date:** 2026-10-07
@@ -220,6 +244,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** playbooks/software-architect.md (decomposition) + playbooks/developer.md + playbooks/qa-expert.md (build row) + playbooks/self-improver.md (dispatch) + references.md (this record)
 - **effectiveness:** Partial (2026-10-04, #2969) — the plan made ST-1 a critical-path Phase-0 sub-task and the developer EXECUTED the real built `restful-doom.exe` LIVE (probe run, accepted action vocabulary pinned, per-step RTT measured) before the persona/script were authored, so no guessed vocabulary shipped. ST-1 reused the already-staged artifact rather than re-running the build script, so the build gate itself was not re-exercised this round.
 - **re-validated:** 2026-10-05, #2970 — ST-1 executed the from-source build (pinned engine commit, mingw portability patch, autotools + make) as the critical-path first dispatch, producing the real engine in this spec's fixture dir; the tester then re-ran the stage script (idempotent) and drove the engine live. The build gate was executed, not assumed. Confirmed.
+- **re-validated:** 2026-10-09, #3012 — the managed first-use build gate was EXECUTED live (no host MSYS2, no `FREDO_DOOM_TOOLCHAIN_ROOT`), driving the vendored build end-to-end to `ready` (real PE + `GET /api/state` 200) — only after three rounds of real defects (missing autotools, then `\\?\` spawn paths) were fixed; the gate is precisely what forced those defects out. Confirmed.
 
 ### G-315: powershell_helper_returns_command_output_and_non_ascii_source_desyncs_ps5
 - **activation_date:** 2026-10-04
@@ -746,6 +771,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **re-validated:** 2026-09-27, #2975 — a tester dispatch TWICE failed at the provider with a Bad Request on a full brief, while a trivial probe to the same role returned READY; re-dispatching with a compact brief that pointed at the POSTED plan/verdict/fix-plan completed the round. The remedy held — keep orchestrator briefs lean.
 - **re-validated + refined:** 2026-10-08, #2980 — the `tester` role returned consecutive provider 400 Bad Requests on FRESH dispatches with briefs of ~0.5–3 KB while a trivial probe to the same role succeeded; shrinking to a ~600-char brief completed the round, and a later continuation (completing rows after an environment-wedge recovery) was completed by RESUMING the successful session via its task id rather than a fresh dispatch. Refinement: the remedy is not only "shrink the brief" — for a role with a very large tool surface (the tester's MCP/`tauri_*` set) the request budget is small, so prefer SESSION RESUME for continuations and keep fresh briefs minimal.
 - **re-validated:** 2026-10-08, #2956 — a FRESH `tester` dispatch with a ~2 KB round-2 brief failed at the provider (400 invalid_request_error) while the SAME role had succeeded on the round-1 brief; the SI resumed the successful round-1 tester session with a compact continuation (~600 chars) and it completed round 2, and resumed again for round 3. The remedy held exactly as recorded.
+- **re-validated:** 2026-10-09, #3012 — the SI dispatched every tester round by RESUMING ONE tester session (`task_id`) with compact continuations (~1–2 KB); the resumed session completed rounds 2–4 (three dispatches) with NO provider 400 at all. Resume-first for tester continuations is the strongest form of the remedy.
 
 ### G-262: native_cli_exit_code_unreadable_in_the_deny_chaining_sandbox
 - **activation_date:** 2026-09-26
