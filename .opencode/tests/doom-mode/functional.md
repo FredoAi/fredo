@@ -8,7 +8,7 @@
 >
 > **Test data (G-172):** REAL engine via the ST-2 build script (staged `restful-doom.exe`); Freedoom IWAD 0.13.0 (SHA-256 `3f9b264f3e3ce503b4fb7f6bdcb1f419d93c7b546f4df3e874dd878db9688f59`) via the pinned `acquire_iwad`; STUB = in-repo feature-gated `doom-stub`, built `cargo build --features doom-stub`, honoring `FREDO_DOOM_STUB_HANG` / `FREDO_DOOM_STUB_EXIT` / `FREDO_DOOM_STUB_FAIL`; fixtures staged by `scripts/doom/stage-doom-fixture.ps1` (ST-6) into `.opencode/tmp/2968/fixtures/`. ENV overrides injected only via the dev-environment skill (`dev-env.ps1 -Action Up -Spec 2968 -EnvVar "NAME=value"`). Scratch dir `.opencode/tmp/2968/doom-install`. PG reads use the managed `psql` (G-284; the `telemetry-query` skill is SQLite-only).
 >
-> Binding names adopted VERBATIM: engine `restful-doom.exe`; fields `DoomLaunchResult.enginePath` / `DoomStatus.enginePath` (camelCase); error code `frameNotReady` (`GET /api/frame` HTTP 503 = transient); env seams `FREDO_DOOM_REQUIRE_REAL_ENGINE`, `FREDO_DOOM_BUILD_OFFLINE`, `FREDO_DOOM_ENGINE_PATH`, `FREDO_DOOM_IWAD_PATH`, `FREDO_DOOM_INSTALL_DIR`, `FREDO_DOOM_READY_TIMEOUT_S`, `FREDO_DOOM_STOP_TIMEOUT_S`, `FREDO_DOOM_ARCHIVE_URL`/`_SHA256`/`_BYTES`; window label `doom`, URL `index.html?view=doom`; commands `open_doom_window`, `launch_doom_runtime`, `stop_doom_runtime`, `get_doom_status`, `doom_read_state`, `doom_step`, `doom_frame`; testids `doom-root`, `doom-window-title`, `doom-status`, `doom-frame-canvas`, `doom-frame-desc`, `doom-start-button`, `doom-error`, `doom-retry-button`, `doom-state-readout`, `doom-step-button`, `doom-frame-reconnecting`, `doom-entry-button`; timeouts `DOOM_READY_TIMEOUT_S=30`, `DOOM_STOP_TIMEOUT_S=5`, `DOOM_EXIT_HOOK_BOUND=5`, `DOOM_REQUEST_TIMEOUT_S=10`, `DOOM_FRAME_POLL_MS=66`; event `doom-status-changed`; doc `docs/doom-mode-acquisition.md`; launch argv `restful-doom.exe -apilockstep -noblit -nosound -nomusic -iwad <freedoom1.wad> -warp 1 1 -skill 3 -apiport <port>`.
+> Binding names adopted VERBATIM: engine `restful-doom.exe`; fields `DoomLaunchResult.enginePath` / `DoomStatus.enginePath` (camelCase); error code `frameNotReady` (`GET /api/frame` HTTP 503 = transient); env seams `FREDO_DOOM_BUILD_OFFLINE`, `FREDO_DOOM_IWAD_PATH`, `FREDO_DOOM_INSTALL_DIR`, `FREDO_DOOM_READY_TIMEOUT_S`, `FREDO_DOOM_STOP_TIMEOUT_S` (the #2968 engine-path / require-real-engine / engine-archive acquisition seams are REMOVED by #3013 — see the #3013 slice at the end of this file); window label `doom`, URL `index.html?view=doom`; commands `open_doom_window`, `launch_doom_runtime`, `stop_doom_runtime`, `get_doom_status`, `doom_read_state`, `doom_step`, `doom_frame`; testids `doom-root`, `doom-window-title`, `doom-status`, `doom-frame-canvas`, `doom-frame-desc`, `doom-start-button`, `doom-error`, `doom-retry-button`, `doom-state-readout`, `doom-step-button`, `doom-frame-reconnecting`, `doom-entry-button`; timeouts `DOOM_READY_TIMEOUT_S=30`, `DOOM_STOP_TIMEOUT_S=5`, `DOOM_EXIT_HOOK_BOUND=5`, `DOOM_REQUEST_TIMEOUT_S=10`, `DOOM_FRAME_POLL_MS=66`; event `doom-status-changed`; doc `docs/doom-mode-acquisition.md`; launch argv `restful-doom.exe -apilockstep -noblit -nosound -nomusic -iwad <freedoom1.wad> -warp 1 1 -skill 3 -apiport <port>`.
 
 ## Real engine — build, identity, live frame (R-1.1 / R-5.1)
 
@@ -63,10 +63,10 @@
 
 ## Error states (R-4.1 / R-4.2 / R-4.3 / R-4.4 / R-4.5)
 
-- [ ] F-11 (R-4.1, AC4) **Missing/invalid engine.** `FREDO_DOOM_ENGINE_PATH` → a nonexistent/invalid exe (fixture dir `.opencode/tmp/2968/fixtures/`).
+- [ ] F-11 (SUPERSEDED by #3013 — the engine-path env seam is REMOVED; managed-only resolution no longer accepts a supplied/invalid engine path. Kept for history; superseded by F-92/F-94.) (R-4.1, AC4 — historical) **Missing/invalid managed engine (historical).** Supply a nonexistent/invalid `.exe` via the (now-removed) engine-path env seam (fixture dir `.opencode/tmp/2968/fixtures/`).
   - EXPECTED: `doom-error` renders a clear message + `doom-retry-button`; code `notConfigured`/`spawnFailed`; no crash/panic; rest of Fredo normal.
   - Edge: retry after supplying a valid path recovers; the window is never blank/white.
-- [ ] F-12 (R-4.1 + ST-3, AC4) **Anti-stub refusal.** `FREDO_DOOM_REQUIRE_REAL_ENGINE=1` + `FREDO_DOOM_ENGINE_PATH` = the built stub.
+- [ ] F-12 (SUPERSEDED by #3013 — the anti-stub env seam is REMOVED; the managed engine is structurally `restful-doom.exe` with the pinned commit marker + MZ header, so a stub cannot masquerade. Kept for history; superseded by F-92/F-93.) (R-4.1 + ST-3, AC4 — historical) **Anti-stub refusal (historical).** Set the (now-removed) anti-stub env seam + the (now-removed) engine-path seam = the built stub.
   - EXPECTED: the runtime REFUSES an engine whose basename ≠ `restful-doom.exe` (typed error); the stub is never launched-as-real; a stub PASS can never masquerade (G-033).
   - Edge: env unset → inert; refusal does not crash; the real path still launches after refusal.
 - [ ] F-13 (R-4.3, AC4) `FREDO_DOOM_READY_TIMEOUT_S=2` + STUB that never answers `/api/state` (`FREDO_DOOM_STUB_HANG=1`).
@@ -78,9 +78,9 @@
 - [ ] F-15 (R-4.5, AC4) While any `doom` error state is shown, drive Mission Monitor + the main window.
   - EXPECTED: the rest of Fredo is fully functional; only the `doom` window is affected; console clean.
   - Edge: the error state does not block the main webview; exit hooks still work from the error state.
-- [ ] F-18 (R-4.1, AC4) **Acquire failure.** `FREDO_DOOM_ARCHIVE_URL` unreachable + `_SHA256`/`_BYTES` set.
+- [ ] F-18 (SUPERSEDED by #3013 — the engine runtime-download acquisition leg is REMOVED; no engine is ever downloaded. Kept for history; superseded by F-92.) (R-4.1, AC4 — historical) **Engine acquire failure (historical).** Point the (now-removed) engine archive URL seam at an unreachable URL.
   - EXPECTED: code `acquireFailed`; fail-closed (no partial binary used); clear message; no crash.
-  - Edge: URL reachable but SHA-256 mismatched → `acquireFailed`; missing `_BYTES` → refused.
+  - Edge: URL reachable but SHA-256 mismatched → `acquireFailed`; missing byte count → refused.
 - [ ] F-19 (R-4.1, AC4) **Missing IWAD.** `FREDO_DOOM_IWAD_PATH` → missing file.
   - EXPECTED: `doom-error` with a clear message; code `notConfigured`; no crash; rest of Fredo normal.
   - Edge: retry after supplying a WAD recovers; the corrupt-WAD leg has no in-repo lever → scoped as a static pin (non-AC, G-300).
@@ -278,14 +278,14 @@
 - [x] F-47 (PASS 2026-10-05 #2970 r1 — consumer-negative: an unrelated `llm-skill-call {skill:"weather"}` produced no `doom_mode` dispatch; mode stayed `inactive`; no half-entered state. Live model non-selection leg not driven (technique limitation, same as F-36/F-37)) (R-5, AC5) **Near-miss unrelated spoken phrase.** Speak a phrase the model does not map to `doom_mode` (e.g. "fredo, play some music").
   - EXPECTED: no `doom_mode` skill call; mode stays `inactive`; no half-entered state.
   - Edge: a phrase containing "doom" unrelated to the command.
-- [x] F-48 (PASS 2026-10-05 #2970 r1 — (a) `FREDO_DOOM_ENGINE_PATH=…doom-engine.invalid.exe` typed `iddqd` → `code:"spawnFailed"`, phase `inactive`, no window, zero engine; (b) `FREDO_DOOM_IWAD_PATH=…missing.wad` typed `iddqd` → `code:"notConfigured"`, phase `inactive`, no window, zero engine. No half-entered state in either leg) (R-5, AC5) **No half-entered on runtime failure.** Leg (a): `FREDO_DOOM_ENGINE_PATH=<fixture>/engine/doom-engine.invalid.exe` (spawnFailed). Leg (b): `FREDO_DOOM_IWAD_PATH=<fixture>/freedoom/missing.wad` (notConfigured). In each, type `iddqd`.
-  - EXPECTED: each attempt → typed failure (`lastError`/`code`), `phase==="inactive"`, `active===false`, `voiceSuppressed===false`, NO `doom` window, NO orphan engine, no suppression.
-  - Edge: retry after supplying a valid path recovers; no partial window.
+- [ ] F-48 (SUPERSEDED by #3013 for leg (a) — the engine-path env seam is REMOVED; the spawnFailed induction moves to the `FREDO_DOOM_FAIL_ENGINE_SPAWN=1` lever and the `fail-engine` fixture (F-94). Leg (b), the IWAD `notConfigured` leg, is RETAINED below. Prior PASS 2026-10-05 #2970 r1 kept for history.) (R-5, AC5) **No half-entered on runtime failure.**
+  - Leg (b) RETAINED: `FREDO_DOOM_IWAD_PATH=<fixture>/freedoom/missing.wad` → `code:"notConfigured"`, phase `inactive`, no window, zero engine. In each attempt: typed failure (`lastError`/`code`), `phase==="inactive"`, `active===false`, `voiceSuppressed===false`, NO `doom` window, NO orphan engine, no suppression.
+  - Edge: retry after supplying a valid WAD recovers; no partial window.
 
 ## Real-engine re-stage + E2E (REQUIRED)
 
 - [x] F-49 (PASS 2026-10-05 #2970 r1 — `scripts/doom/stage-doom-fixture.ps1 -FixtureDir .opencode/tmp/2970/fixtures` exit 0 ("Engine already staged" / "IWAD already staged and verified" / `stage-doom-fixture: OK`) + exports printed; `engine/restful-doom.exe` 4,925,610 B PE, SHA-256 `EC1D3140…`; `engine/doom-engine.invalid.exe` present (24 B); `freedoom/freedoom1.wad` 28,795,076 B SHA-256 `7323bcc168c5a45ff10749b339960e98314740a734c30d4b9f3337001f9e703d` (per the binding correction; `3f9b264f…` is the ZIP archive pin, not the WAD). The staged engine launched and rendered live under F-33/F-50) (ST-1, G-314) **REAL-ENGINE build+stage — REQUIRED.** Run `powershell -File scripts/doom/stage-doom-fixture.ps1 -FixtureDir .opencode/tmp/2970/fixtures -Msys2Root C:\msys64` (invokes `scripts/doom/build-restful-doom.ps1` when needed).
-  - EXPECTED: exit 0; stdout carries `FREDO_DOOM_INSTALL_DIR` / `FREDO_DOOM_ENGINE_PATH` / `FREDO_DOOM_IWAD_PATH`; `<fixture>/engine/restful-doom.exe` is a PE image; `<fixture>/freedoom/freedoom1.wad` SHA-256 `3f9b264f3e3ce503b4fb7f6bdcb1f419d93c7b546f4df3e874dd878db9688f59`; `<fixture>/engine/doom-engine.invalid.exe` present; the staged engine launches and renders. NOTE: the script's default FixtureDir is `.opencode/tmp/2968/fixtures` (`stage-doom-fixture.ps1:130`) → the explicit `-FixtureDir` is REQUIRED.
+  - EXPECTED: exit 0; stdout carries `FREDO_DOOM_INSTALL_DIR` / `FREDO_DOOM_IWAD_PATH` (the engine-path export is REMOVED by #3013; the script now stages `absent/` + `fail-engine/` too); `<fixture>/engine/restful-doom.exe` is a PE image; `<fixture>/freedoom/freedoom1.wad` SHA-256 `3f9b264f3e3ce503b4fb7f6bdcb1f419d93c7b546f4df3e874dd878db9688f59`; `<fixture>/engine/doom-engine.invalid.exe` present; the staged engine launches and renders. NOTE: the script's default FixtureDir is `.opencode/tmp/2968/fixtures` (`stage-doom-fixture.ps1:130`) → the explicit `-FixtureDir` is REQUIRED.
   - Edge: toolchain absent → exit 2 (named TOOLING GAP → `block`, G-172); prior staging is NOT assumed (gitignored scratch is not durable); never commit the engine/WAD (G-172); a stub-only receipt is a FALSE PASS (G-033/G-319). If the leg genuinely cannot run, `block` with exact specifics — never present as full live verification.
 - [x] F-50 (PASS 2026-10-05 #2970 r1 — (a) `storage_engine_status={engine:"postgres",ready:true}`; (b) seeded `bun .opencode/scripts/inject-otlp-fixture.ts --copilot` → HTTP 200, 4 spans; declared `sessions` row `e2e-copilot2933` `visibleTurnCount=1`; Mission Monitor rendered the list (copilot session shows `fredo-copilot-2933-sentinel`, gpt-4o node, token bar 12,480/731); (c) pre-activation main window Doom-free, typed `iddqd` → `doom-mode-changed active origin:"code"` + `doom` window + real engine pid 29820; (d) live receipt: PG engine + OTLP/HTTP ingest 200 + app-pool canonical reads. Exact `telemetry_spans` COUNT/MAX via psql unavailable — embedded PG `max_connections=8` fully consumed by the app pool; `telemetry_get_stats` exceeds the bridge request timeout; disclosed substitution (G-284/G-307)) (E2E, human directive) **RUNNING app: PG-default boot + Mission Monitor + secret activation, no discoverable trace.** Boot the app end-to-end; seed one qualifying session; then activate Doom Mode.
   - EXPECTED: (a) `storage_engine_status` = PostgreSQL / PG supervisor ready (PG-default boot path); (b) seed `bun .opencode/scripts/inject-otlp-fixture.ts --copilot --fixture .opencode/scripts/copilot-exchange.fixture.json` → assert the DECLARED `sessions` row for `e2e-copilot2933` has `visibleTurnCount ≥ 1` BEFORE asserting the list; Mission Monitor renders ≥1 live session; (c) typed `iddqd` raises Doom Mode (`doom` window + `doom-mode-changed active`) while no Doom surface is discoverable pre-activation (F-38); (d) live-pipeline receipt `telemetry_spans` non-zero + recent `max(ingested_at)`.
@@ -636,3 +636,96 @@
 - [ ] N-6: status emitted at most once per downstream tick; `get_doom_provision_status` poll fallback returns the live phase while an event is missed.
 
 **R-coverage (#3012):** R-1.1→F-75 · R-1.2→F-76 · R-2.1→F-77 · R-2.2→F-78 · R-2.3→F-79 · R-2.4→F-80 · R-3.1→F-81 · R-4.1→F-82 · R-4.2→F-83 · R-4.3→F-84 · R-4.4→F-85 · R-5.1→F-86 · R-5.2→F-87 · live receipt→F-88 · E2E→F-89 · N-1..N-6.
+
+---
+
+# doom-mode — Managed-only engine resolution (Spec #3013)
+
+> **Verification policy: live** — engine resolution becomes managed-only and every AC is observed
+> on the RUNNING app: `DoomLaunchResult.code` / `DoomStatus.enginePath`, the `doom-mode-changed`
+> and `doom-provision-progress` events, the engine PID via
+> `tasklist /FI "IMAGENAME eq restful-doom.exe"`, and the real build's OWN readiness probe
+> `GET /api/state` 200 (G-314/G-323). Doom Mode is NOT an OTLP emitter — the live-policy Evidence
+> MUST carry a `telemetry_spans` LIVE-PIPELINE receipt (NON-ZERO count + recent `max(ingested_at)`)
+> queried DURING the run; the query proves the pipeline, not the feature — DISCLOSE that. A
+> static-only PASS is a FALSE PASS (G-033). All waits bounded (G-263).
+>
+> **BINDING names (Architect G-255):** REMOVED — the engine-path env seam, the engine-path setting,
+> the anti-stub env seam, the PATH-lookup resolver, the configured-engine reader, the anti-stub guard
+> predicates, and the engine runtime-download acquisition leg (its download entry point, extractors,
+> and engine-archive consts/fns). The FULL literal identifier set is enumerated in the Implementation
+> Plan NAMES block; this suite describes them by ROLE so the F-95 grep is not self-tripping. ADDED —
+> env `FREDO_DOOM_FAIL_ENGINE_SPAWN`
+> (trimmed == `"1"` → true; inert else), module `applications/doom/failure_seam.rs`, predicate
+> `failure_seam::fail_engine_spawn_requested()` returning `DoomErrorCode::SpawnFailed` BEFORE
+> `process::spawn_doom`. RETAINED — env `FREDO_DOOM_INSTALL_DIR`, `FREDO_DOOM_IWAD_PATH`,
+> `FREDO_DOOM_MODE_FAIL_ENTER`, `FREDO_DOOM_TOOLCHAIN_ROOT`, commands
+> `launch_doom_runtime`/`enter_doom_mode`/`get_doom_status`/`provision_doom_engine`, wire models +
+> testids unchanged.
+>
+> **In-repo fixtures (G-172/G-275/G-300):** `scripts/doom/stage-doom-fixture.ps1 -FixtureDir
+> .opencode/tmp/3013/fixtures` stages `absent/` (empty install dir → AC2/AC4 negative) and
+> `fail-engine/engine/restful-doom.exe` (MZ-only, non-runnable; `.restful-doom-commit` ==
+> `DOOM_VENDOR_COMMIT` → a REAL spawn failure). Both are driven by the RETAINED
+> `FREDO_DOOM_INSTALL_DIR`. The deterministic test-only lever is `FREDO_DOOM_FAIL_ENGINE_SPAWN=1`.
+> No scratch outside `.opencode/tmp/3013/`; never commit an engine/WAD (G-172).
+
+## Managed-only resolution (R-1 / R-1.a / AC1)
+
+- [ ] F-90 (R-1, AC1 — REQUIRED) **The ONLY engine used is the one Fredo built into the managed install dir.** Stage the REAL managed engine (`scripts/doom/stage-doom-fixture.ps1`, or #3012 first-use provisioning) under a chosen install dir; `launch_doom_runtime`; read `DoomLaunchResult` + `get_doom_status`; `tasklist /FI "IMAGENAME eq restful-doom.exe"`; capture the IPC monitor across the launch.
+  - EXPECTED: `DoomLaunchResult.enginePath` AND `DoomStatus.enginePath` == `<install_dir>/engine/restful-doom.exe` (byte-equal); exactly ONE `restful-doom.exe` PID; the IPC monitor shows NO `where`/`which` spawn, NO archive/HTTP fetch; the game renders (live frame / `/api/state` 200).
+  - Edge: PATH contains another `restful-doom.exe` → still the managed one; the managed dir is non-default (retained `FREDO_DOOM_INSTALL_DIR`) → resolves inside it.
+- [ ] F-91 (R-1.a, AC1) **No configured override honored.** (a) set the (removed) engine-path env seam to a DIFFERENT valid engine `.exe`; (b) seed the (removed) engine-path setting's AppStore row; invoke `launch_doom_runtime` each time.
+  - EXPECTED: both legs resolve the SAME managed `<install_dir>/engine/restful-doom.exe` (the override is IGNORED, not read); exactly ONE managed PID; no resolved-override path in `DoomLaunchResult`/`get_doom_status`.
+  - Edge: override points at a missing file → still managed (no failure induced by the override); override unset → managed.
+
+## Absent/unbuilt managed engine → provisioning state, no substitute (R-2 / AC2)
+
+- [ ] F-92 (R-2, AC2 — REQUIRED) **Empty install dir → provisioning/failure state, NO substitute and NO download.** `FREDO_DOOM_INSTALL_DIR=.opencode/tmp/3013/fixtures/absent`; invoke `launch_doom_runtime` and separately type `iddqd`.
+  - EXPECTED: `DoomLaunchResult.code` ∈ {`provisionRequired` (no install dir chosen), `provisionFailed`/`notConfigured`}; a typed `lastError`; `doom-mode-changed` stays `inactive`; NO `doom` window; ZERO `restful-doom.exe` PID; NO PATH spawn; NO download; no crash.
+  - Edge: unreadable/removed install dir; a dir with the engine missing the commit marker; a dir with a non-MZ `.exe` (all → provisioning/failure state, never a substitute).
+- [ ] F-93 (R-2, AC2) **Real spawn failure of a staged managed engine — no substitute.** `FREDO_DOOM_INSTALL_DIR=.opencode/tmp/3013/fixtures/fail-engine` (staged predicate PASSES: MZ + commit marker; the exe is non-runnable); launch.
+  - EXPECTED: the real `process::spawn_doom` fails → `DoomErrorCode::SpawnFailed`, typed `lastError`; ZERO engine PID; NO fallback and NO download; no crash; rest of Fredo normal.
+  - Edge: retry unchanged; mode stays `inactive` (no half-entered window).
+
+## Removed seam + replacement induction lever (R-3 / AC3)
+
+- [ ] F-94 (R-3, AC3 — REQUIRED) **Deterministic spawn-failure induction via the in-repo test-only lever + inert edges.** Launch the app with `FREDO_DOOM_FAIL_ENGINE_SPAWN=1` (a staged managed engine present); invoke `launch_doom_runtime`.
+  - EXPECTED: `DoomErrorCode::SpawnFailed` is returned BEFORE `process::spawn_doom` — `tasklist` shows NO engine PID; no `doom` window; mode `inactive`. Then, with the lever set to each of `0`, `true`, `01`, blank, and unset, the launch proceeds normally (INERT).
+  - Edge: value `"1 "` (trailing space, trimmed) → active; `"1"` only; unset/blank/other → false; unset the lever + retry → launches.
+- [ ] F-95 (R-3, AC3 — REQUIRED) **Grep-verifiable removal of the #2968 seams.** Run the grep over `apps/`, `docs/`, `scripts/`, `.opencode/tests/` for the FULL identifier set the Implementation Plan NAMES block lists as REMOVED (the engine-path env + setting, the anti-stub env + guard, the PATH-lookup resolver, the configured-engine reader, and the runtime-download acquisition functions/extractors/archive consts — the exact literal set is in the plan NAMES block).
+  - EXPECTED: ZERO hits across all four roots (the suite was pre-cleaned of these literals — this row cross-references the plan rather than restating them, so the grep is not self-tripping). The replacement lever exists in `applications/doom/failure_seam.rs` with a pure parser unit test (F-100 runs `cargo test`).
+  - Edge: a hit in a superseded historical row must have been scrubbed; docs are updated in-slice; `AGENTS.md`/`opencode.json` are human-owned — out of scope.
+
+## Deterministic across restarts + bounded search (R-4 / AC4)
+
+- [ ] F-96 (R-4, AC4 — REQUIRED) **Deterministic resolution across app restarts; searches nothing outside repo + managed install dir (G-172).** With a validated staged engine, restart the app 3× and read `get_doom_status.enginePath` each boot; watch for any out-of-repo access.
+  - EXPECTED: byte-equal `enginePath` (`<install_dir>/engine/restful-doom.exe`) on every boot; NO `where`/`which`/drive scan; NO filesystem search outside the repo + the managed install dir; the engine launches + renders each boot.
+  - Edge: install dir chosen via retained `FREDO_DOOM_INSTALL_DIR` vs the `doom_install_dir` setting vs `{app_data_dir}/doom`; restart immediately after a failed launch (no partial state).
+
+## Regression invariant — #3012 first-use build/run (mandatory)
+
+- [ ] F-97 (regression invariant R-3012, G-314/G-323 — REQUIRED) **REAL build in the target toolchain ending in the runtime's OWN readiness probe.** Clean install dir + managed toolchain → `provision_doom_engine` (or `build-restful-doom.ps1` with its internally-probed toolchain, G-322) → launch → poll `GET /api/state`.
+  - EXPECTED: the build EXECUTES in the real toolchain and stages `<install_dir>/engine/restful-doom.exe` (PE, basename `restful-doom.exe`, `.restful-doom-commit` == `DOOM_VENDOR_COMMIT`); the launched runtime answers `GET /api/state` 200 (+ a live frame). A build/acquire exit 0 ALONE is NOT sufficient — the readiness probe is the gate.
+  - Edge: toolchain absent → exit 2 = named TOOLING GAP (`block`, G-172); source-marker mismatch → re-provision; ZERO orphans after teardown; the staged engine is NEVER a stub (a stub-only receipt is a FALSE PASS, G-033).
+
+## Live receipt + CI-parity + E2E (human directive)
+
+- [ ] F-98 (live receipt — REQUIRED) Query `telemetry_spans` via the app-pool telemetry read at round start AND after the drive.
+  - EXPECTED: NON-ZERO count + recent `max(ingested_at)` BOTH times. **Doom emits NO span — the query proves the LIVE PIPELINE, not the feature; DISCLOSE it.** Key the Doom observables to `DoomLaunchResult.code` / `DoomStatus.enginePath`, `doom-mode-changed` / `doom-provision-progress`, and the engine PID via `tasklist`.
+  - Edge: app-pool saturated → managed `psql` at the manifest `ports.pg` or a disclosed `telemetry_get_stats` substitution (G-284/G-307); never the `fredo emit` CLI path (G-256).
+- [ ] F-100 (NFR CI-parity, F-14-style — REQUIRED) Run the CI-parity command set.
+  - EXPECTED: `cargo check --locked` ZERO warnings (no `#[allow(...)]`); `cargo test --locked` green INCLUDING the `failure_seam` pure-parser unit test; `pnpm --filter @fredo/ui build` green; console clean of `Error:` / `Uncaught` / `Maximum update depth exceeded`.
+  - Edge: no wire/schema change — `DoomErrorCode` / `DoomLaunchResult` / `DoomStatus` / `DoomProvisionStatus` shapes + camelCase + testids unchanged.
+- [ ] F-99 (E2E, human directive — REQUIRED) **RUNNING app: PG-only boot + Mission-Monitor live sessions + Doom resolves and runs ONLY the Fredo-built engine.** Procedure: (1) boot end-to-end (PG-default); (2) seed a rollup-qualifying OTLP session — `bun .opencode/scripts/inject-otlp-fixture.ts --copilot --fixture .opencode/scripts/copilot-exchange.fixture.json` → real OTLP/HTTP receiver `:4318/v1/traces`; (3) stage/verify the managed engine; (4) enter Doom Mode.
+  - EXPECTED: (a) `storage_engine_status` = `{engine:"postgres", ready:true}`; (b) Mission Monitor renders ≥1 live session — assert the DECLARED `sessions` row for `e2e-copilot2933` has `visibleTurnCount ≥ 1` BEFORE asserting the list (`useSessionHistory.ts:46-54`; `MissionMonitorPanel.tsx:872`; drawer `:1170`); (c) Doom runs ONLY the Fredo-built managed engine — `DoomStatus.enginePath` inside the install dir, exactly ONE PID, no PATH spawn / no download; (d) `telemetry_spans` non-zero + recent `max(ingested_at)`.
+  - Edge: the PG leg uses the app-pool telemetry read (G-284/G-307), DISCLOSED if fallback; the seeded session is idempotent; the rest of the app is unaffected after the Doom exit.
+
+## Non-functional (N-1..N-4)
+
+- [ ] N-1: after EVERY leg (absent engine, fail-engine, lever, success, restart) — ZERO `restful-doom.exe` and ZERO orphan processes.
+- [ ] N-2: bounded waits — ready ≤ `DOOM_READY_TIMEOUT_S`; no unbounded wait anywhere (G-263).
+- [ ] N-3: no app regression — Mission Monitor, terminal, `llama-server`, PG supervisor exit hooks, and the existing Doom runtime/autoplay/secret/theme/save surfaces behave identically; console clean.
+- [ ] N-4: resolution search is bounded to the repo + the managed install dir only (G-172); the engine binds loopback only; the webview CSP is unchanged.
+
+**R-coverage (#3013):** R-1→F-90 · R-1.a→F-91 · R-2→F-92/F-93 · R-3→F-94/F-95 · R-4→F-96 · #3012 regression→F-97 · live receipt→F-98 · E2E→F-99 · CI-parity→F-100 · N-1..N-4.
