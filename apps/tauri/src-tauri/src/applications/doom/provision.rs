@@ -485,6 +485,29 @@ pub fn archive_filename_for(url: &str) -> String {
     }
 }
 
+/// Strip the Windows verbatim (`\\?\`) prefix from a path (ST-15).
+///
+/// The app must never hand a verbatim path to a non-Rust child: PowerShell 5.1
+/// and MSYS2 cannot process the verbatim form (they raise `Cannot process
+/// argument because the value of argument "drive" is null`). This is a pure
+/// string operation (no `cfg`, no dependency) over the raw path text, so it
+/// unit-tests on every platform.
+///
+/// - `\\?\C:\a\b` → `C:\a\b` (device path)
+/// - `\\?\UNC\server\share\x` → `\\server\share\x` (UNC device path)
+/// - any other path is returned unchanged (no-op)
+fn strip_verbatim_prefix(path: &Path) -> PathBuf {
+    let raw = path.as_os_str().to_string_lossy();
+    // The UNC form must be matched before the generic `\\?\` prefix.
+    if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = raw.strip_prefix(r"\\?\") {
+        return PathBuf::from(rest);
+    }
+    path.to_path_buf()
+}
+
 /// A usable toolchain root has `<root>/usr/bin/bash.exe`.
 fn usable_root(root: &Path) -> bool {
     let mut probe = root.to_path_buf();
@@ -531,10 +554,25 @@ pub fn resolve_build_inputs_root(_app: &AppHandle) -> Option<PathBuf> {
 }
 
 /// Resolve the RESTful-DOOM source tree: `FREDO_DOOM_SOURCE_DIR` override →
-/// bundled `<resource>/doom/source` → `<root>/vendor/restful-doom`.
+/// (debug) workspace `<root>/vendor/restful-doom` → bundled
+/// `<resource>/doom/source` → `<root>/vendor/restful-doom`.
+///
+/// Workspace-first in dev (ST-15): `resource_dir()` yields a stale
+/// `target/debug/doom/*` snapshot AND a Windows verbatim `\\?\` path; the
+/// compile-time repo checkout (env-overridable via `FREDO_DOOM_BUILD_ROOT`) is
+/// the correct dev source, mirroring `applications/setup/commands.rs`. The
+/// bundled resource dir remains the packaged-release fallback.
 pub fn resolve_source_dir(app: &AppHandle) -> Option<PathBuf> {
     if let Some(env) = non_blank_env(DOOM_SOURCE_DIR_ENV) {
         return Some(PathBuf::from(env));
+    }
+    if cfg!(debug_assertions) {
+        if let Some(root) = resolve_build_inputs_root(app) {
+            let workspace = root.join("vendor").join("restful-doom");
+            if workspace.join("configure.ac").is_file() {
+                return Some(workspace);
+            }
+        }
     }
     if let Ok(resource_dir) = app.path().resource_dir() {
         let bundled = resource_dir.join("doom").join("source");
@@ -546,9 +584,23 @@ pub fn resolve_source_dir(app: &AppHandle) -> Option<PathBuf> {
     Some(root.join("vendor").join("restful-doom"))
 }
 
-/// Resolve the build script: bundled `<resource>/doom/scripts/<basename>` →
-/// `<root>/scripts/doom/<basename>`.
+/// Resolve the build script: (debug) workspace
+/// `<root>/scripts/doom/<basename>` → bundled
+/// `<resource>/doom/scripts/<basename>` → `<root>/scripts/doom/<basename>`.
+///
+/// Workspace-first in dev (ST-15), same rationale as [`resolve_source_dir`].
 pub fn resolve_build_script(app: &AppHandle) -> Option<PathBuf> {
+    if cfg!(debug_assertions) {
+        if let Some(root) = resolve_build_inputs_root(app) {
+            let workspace = root
+                .join("scripts")
+                .join("doom")
+                .join(DOOM_BUILD_SCRIPT_BASENAME);
+            if workspace.is_file() {
+                return Some(workspace);
+            }
+        }
+    }
     if let Ok(resource_dir) = app.path().resource_dir() {
         let bundled = resource_dir
             .join("doom")
@@ -1062,19 +1114,27 @@ async fn build_engine(
     build_script: &Path,
     budget: Duration,
 ) -> Result<(), ProvisionFailure> {
+    // ST-15: PowerShell 5.1 / MSYS2 cannot process the Windows verbatim `\\?\`
+    // form. Normalize EVERY path argument at the spawn boundary — this covers
+    // `-File`, `-SourceDir`, `-Msys2Root`, `-InstallDir` in one place, and
+    // restores a correct `$PSScriptRoot` for the script's patch dir.
+    let build_script = strip_verbatim_prefix(build_script);
+    let source_dir = strip_verbatim_prefix(source_dir);
+    let toolchain_root = strip_verbatim_prefix(toolchain_root);
+    let install_dir = strip_verbatim_prefix(run.install_dir);
     let mut command = tokio::process::Command::new("powershell");
     command
         .arg("-NoProfile")
         .arg("-ExecutionPolicy")
         .arg("Bypass")
         .arg("-File")
-        .arg(build_script)
+        .arg(&build_script)
         .arg("-SourceDir")
-        .arg(source_dir)
+        .arg(&source_dir)
         .arg("-Msys2Root")
-        .arg(toolchain_root)
+        .arg(&toolchain_root)
         .arg("-InstallDir")
-        .arg(run.install_dir)
+        .arg(&install_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -1588,6 +1648,33 @@ mod tests {
             assert_eq!(spec.sha256, DOOM_TOOLCHAIN_PIN.sha256);
             assert_eq!(spec.bytes, DOOM_TOOLCHAIN_PIN.bytes);
         }
+    }
+
+    #[test]
+    fn strip_verbatim_prefix_normalizes_windows_paths() {
+        // ST-15: PowerShell 5.1 / MSYS2 cannot process the verbatim form, so the
+        // spawn boundary must de-verbatim every path argument. The helper is a
+        // pure string op, so this pin runs on every platform.
+        // Device-path form.
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"\\?\C:\a\b")),
+            PathBuf::from(r"C:\a\b")
+        );
+        // UNC device-path form.
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"\\?\UNC\server\share\x")),
+            PathBuf::from(r"\\server\share\x")
+        );
+        // A normal path is a no-op.
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"C:\a\b")),
+            PathBuf::from(r"C:\a\b")
+        );
+        // A normal UNC path is a no-op too (only the `\\?\` prefix is special).
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"\\server\share\x")),
+            PathBuf::from(r"\\server\share\x")
+        );
     }
 
     #[test]
