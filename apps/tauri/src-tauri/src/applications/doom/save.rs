@@ -456,6 +456,20 @@ pub fn load(store: &ApplicationStore) -> Option<DoomSave> {
     rows.first().and_then(DoomSave::from_row)
 }
 
+/// The `feature_doom_save` primary-key **column** list for the single row.
+///
+/// The key COLUMN is `id` (declared `PRIMARY KEY` in [`DoomSave::columns`] and
+/// written by [`DoomSave::to_row`]); [`DOOM_SAVE_ROW_ID`] (`"singleton"`) is the
+/// VALUE held in that column. [`ApplicationStore::upsert`] treats this list as
+/// column names verbatim, so passing the row value here emitted
+/// `ON CONFLICT("singleton")` → PostgreSQL `column "singleton" does not exist` →
+/// every save failed (best-effort) and NO row ever persisted (Spec #3011
+/// round-2 defect). Kept as a named constructor so the column/value distinction
+/// is pinned by [`tests::store_primary_key_is_the_id_column_never_the_row_value`].
+fn save_primary_key_columns() -> [String; 1] {
+    ["id".to_string()]
+}
+
 /// Persist the save, returning an error on any failure (the caller logs and
 /// ignores it — a save write never fails the autoplay run).
 ///
@@ -471,7 +485,7 @@ pub fn store(store: &ApplicationStore, save: &DoomSave) -> Result<(), String> {
             "doom save write failed (forced by FREDO_DOOM_SAVE_FORCE_FAIL=write)".to_string(),
         );
     }
-    let primary_key = [DOOM_SAVE_ROW_ID.to_string()];
+    let primary_key = save_primary_key_columns();
     store
         .upsert(
             DOOM_SAVE_FEATURE_ID,
@@ -624,6 +638,40 @@ mod tests {
             assert!(!columns[index].nullable);
         }
         assert_eq!(columns[7].col_type, ColumnType::TEXT);
+    }
+
+    /// Regression pin (Spec #3011 round 2): `store`'s upsert key list is the PK
+    /// **column** `id`, never the row **value** `"singleton"`. The pre-fix code
+    /// passed `[DOOM_SAVE_ROW_ID.to_string()]`, so `ApplicationStore::upsert`
+    /// emitted `ON CONFLICT("singleton")` and every save failed with
+    /// `column "singleton" does not exist`. A future column/value swap now fails
+    /// `cargo test`.
+    #[test]
+    fn store_primary_key_is_the_id_column_never_the_row_value() {
+        let primary_key = save_primary_key_columns();
+        assert_eq!(primary_key, ["id".to_string()], "the PK COLUMN is `id`");
+        assert_ne!(
+            primary_key,
+            [DOOM_SAVE_ROW_ID.to_string()],
+            "the PK list must never be the row VALUE `{}`",
+            DOOM_SAVE_ROW_ID
+        );
+
+        // The list agrees with the declared schema PK column and with the row
+        // key `to_row` actually writes.
+        let columns = DoomSave::columns();
+        assert!(columns[0].primary_key);
+        assert_eq!(columns[0].name, primary_key[0]);
+        let row = sample().to_row();
+        assert!(
+            row.contains_key(primary_key[0].as_str()),
+            "the PK column must be present in the written row"
+        );
+        assert_eq!(
+            row.get(primary_key[0].as_str()).and_then(Value::as_str),
+            Some(DOOM_SAVE_ROW_ID),
+            "the PK column holds the singleton value"
+        );
     }
 
     #[test]
