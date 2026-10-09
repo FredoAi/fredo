@@ -6,10 +6,18 @@ probes for Spec #2946. Run beyond the scripted functional cases. A confirmed fin
 PROMOTES to `functional.md` as a new `F-` row (keep the origin note).
 
 Conventions: ID prefix `E-`. Evidence is LIVE + MEASURED (DOM/screenshot/`document.activeElement`
-+ a `telemetry_spans` live-run receipt). Record expected vs actual; mark `FAIL` with repro if
-behaviour is wrong.
++ a `telemetry_spans` live-run receipt; via `telemetry-query.ps1`, or the managed
+`psql`/`run-exitcode.ps1` fallback on the PG-default path — G-284). Record expected vs actual;
+mark `FAIL` with repro if behaviour is wrong.
 
-## Probe prompts
+> **#3009 supersedes (OBSOLETE — do NOT re-run on `spec/3009`).** The configurable-hotkeys
+> platform is REMOVED. The `#2946` probes E-1..E-15 (config/macros/which-key/rebind), the
+> `#2958` interaction-context probes E-16..E-24, the `#2959` persistent-key-bar probes
+> E-25..E-33, the `#2960` signal/discovery probes E-34..E-42, the `#2961` per-app probes
+> E-43..E-48, and the `#2962` deep-nesting probes E-49..E-55 are OBSOLETE. New probes for the
+> element-declared model are E-56..E-65 below. Do NOT delete the superseded probes.
+
+## Probe prompts — **#3009 supersedes (OBSOLETE)**
 
 - [ ] E-1: **Two global handlers race.** Fire a chord that both the new hotkey layer and an
       existing `document` keydown listener could handle (e.g. Ctrl+Space, or a chord the
@@ -72,7 +80,7 @@ behaviour is wrong.
       then replay it after the target window is closed or a different feature is focused. Is the
       failure surfaced, or does it silently no-op / act on the wrong surface? Promotes to F-19.
 
-## Spec #2958 — interaction-context probes
+## Spec #2958 — interaction-context probes — **#3009 supersedes (OBSOLETE)**
 
 - [ ] E-16: **Escape with a pending sequence AND a descended context.** Descend, then arm a
       pending sequence (leader/`g`), then press Escape. Which wins — context unwind, pending
@@ -100,7 +108,7 @@ behaviour is wrong.
       Is the context reset to the platform root (no dangling context), or does it survive stale?
       Promotes to F-34/F-40.
 
-## Spec #2959 — persistent key-bar probes
+## Spec #2959 — persistent key-bar probes — **#3009 supersedes (OBSOLETE)**
 
 - [ ] E-25: **Entry chord under a suppressed focus.** Fire the mode entry chord (a) in a focused
       `input`/`contenteditable`, (b) in a focused terminal session, (c) with a modal open. Does the
@@ -378,7 +386,7 @@ providers `fredo-opencode-plugin` / `opencode-go`). Console clean.
 Teardown: keyboard mode toggled OFF; appearance preset restored to `light-default`; the persisted
 keymap was left unchanged (test residue).
 
-## Spec #2960 — typing-vs-navigating signal + discovery probes
+## Spec #2960 — typing-vs-navigating signal + discovery probes — **#3009 supersedes (OBSOLETE)**
 
 > Live-plan probes for issue #2960 (S3). Selectors REALIGNED at convergence to the Architect's
 > FINAL BINDING names block (panel form: `hotkeys-input-regime*`, `hotkeys-keys-discovery*`,
@@ -411,7 +419,7 @@ keymap was left unchanged (test residue).
       affordance, and the first-run hint in the accessibility tree. A colour-only or un-announced
       state promotes to F-66.
 
-## Spec #2961 — per-app contextual-action probes
+## Spec #2961 — per-app contextual-action probes — **#3009 supersedes (OBSOLETE)**
 
 > Live-plan probes for issue #2961 (S4). Names bind to the Architect's FINAL BINDING names block
 > (see `functional.md` #2961 header). A confirmed finding PROMOTES to `functional.md` as a new
@@ -472,7 +480,7 @@ No confirmed defect → no new F- row promoted.
 Teardown: keyboard mode toggled OFF; appearance preset left at the served default; no test
 binding was created (probes used the shipped keymap only).
 
-## Spec #2962 — deep-nesting probes
+## Spec #2962 — deep-nesting probes — **#3009 supersedes (OBSOLETE)**
 
 > Live-plan probes for issue #2962 (S5). Names bind to the Architect's FINAL BINDING names block
 > (see `functional.md` #2962 header). A confirmed finding PROMOTES to `functional.md` as a new
@@ -507,5 +515,52 @@ binding was created (probes used the shipped keymap only).
 Teardown (run after this suite): unwound to L1 (depth 1); keyboard mode toggled OFF; the
 Mission Monitor window left open on the default layout; no test binding created (the probes use
 the shipped keymap only).
+
+## Spec #3009 — element-declared hotkey probes
+
+> Live-plan probes for issue #3009. A confirmed finding PROMOTES to `functional.md` as a new
+> `F-` row (keep the origin note). Receipts via `telemetry-query.ps1` (or the managed
+> `psql`/`run-exitcode.ps1` fallback on the PG-default path, G-284). Every dynamic lever is
+> `tauri_webview_execute_js`.
+
+- [ ] E-56: **Element mounted AFTER load (childList).** Inject a new element carrying
+      `data-hotkey="k"` into the document after first paint. Does the MutationObserver discover it
+      (bar row + count increment + the bare key fires), or is the discovery render-time-only? A
+      missed late element promotes to F-96/F-95.
+- [ ] E-57: **Attribute mutated in place (attributes).** Change an existing element's
+      `data-hotkey="a"` → `"b"` (same node). Does the registry re-key (old key stops, new key
+      fires, bar row updates), or does a stale binding linger? A stale binding promotes to F-96.
+- [ ] E-58: **Duplicate introduced then removed.** Inject a second `data-hotkey="a"`; read
+      `data-fredo-hotkey-duplicate` + `hotkeys-duplicate-error`; remove it. Does the hook clear and
+      the DEV error stop on the next flush? A hook stuck `"true"` after removal promotes to F-100.
+- [ ] E-59: **Pending sequence across focus change / window switch.** Press the prefix `a` of
+      `a+b`, then change focus / switch window mid-sequence. Does the pending state reset cleanly
+      (no cross-surface completion), and does `data-fredo-pending-sequence` clear? A completion in
+      the new surface promotes to F-99.
+- [ ] E-60: **Invalid + duplicate together.** Inject both a duplicate `data-hotkey="a"` and an
+      invalid `data-hotkey="!"`. Are both handled independently (duplicate hook set; invalid
+      excluded) with no crash? A dropped/confused diagnostic promotes to F-100/F-101.
+- [ ] E-61: **Zero hotkeys after unmounting the last element.** Remove the last `data-hotkey`
+      element. Does the bar hide (`empty`/null) and `data-fredo-hotkey-count` fall to `0`? A
+      lingering bar/row promotes to F-96.
+- [ ] E-62: **Text-entry vs terminal boundary.** Press a bare element key in a focused text field,
+      then a modifier chord (`Ctrl+Space`); repeat in a focused terminal. Which reaches the field/
+      PTY and which fires? A bare key firing in text-entry, or `Ctrl+Space` reaching the launcher
+      from the terminal, promotes to F-97/F-103 (adjudication A1).
+- [ ] E-63: **Rapid mount/unmount storm.** Toggle many `data-hotkey` elements in/out rapidly; watch
+      render counts + console. Does the bar recompute settle (revision-keyed, coalesced microtask)
+      with no `Maximum update depth exceeded` / no flicker storm? A loop promotes to F-108.
+- [ ] E-64: **Title resolution.** Compare a row's title for (a) `data-hotkey-label` present, (b) an
+      accessible name, (c) neither. Does the display use the declared precedence (label ⇒
+      accessible name ⇒ uppercased key) with a non-color-only channel? A wrong/blank title promotes
+      to F-96.
+- [ ] E-65: **Portal / late-rendered control.** Open a dialog whose control carries `data-hotkey`
+      after initial load. Is the portal-discovered element aggregated app-wide (bar row + fires)?
+      A missed portal element promotes to F-96 (the ST-1 discovery justification depends on it).
+
+Teardown (run after this suite): remove every injected probe element
+(`tauri_webview_execute_js`), confirm `data-fredo-hotkey-count` returns to the shipped baseline and
+`data-fredo-hotkey-duplicate` is absent; no persisted binding exists (the new model is config-free).
+
 
 
