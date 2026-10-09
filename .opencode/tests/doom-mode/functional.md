@@ -521,3 +521,118 @@
 - [ ] N-5: console clean of `Error:` / `Uncaught` / `Maximum update depth exceeded` across every leg; Mission Monitor/terminal/PG exit hooks unchanged.
 
 **R-coverage (#3011):** R-1→F-71 · R-2→F-72 · R-3→F-73 · R-4→F-74 · live receipt→F-70 · E2E→F-69/F-MM3011 · N-1..N-5.
+
+---
+
+# doom-mode — Engine provisioning from vendored in-repo source (Spec #3012)
+
+> **Verification policy: live** — this slice renders the provisioning UI, acquires a real MSYS2
+> toolchain, BUILDS the real `restful-doom.exe` from `vendor/restful-doom/` in the real toolchain,
+> and LAUNCHES it. Evidence MUST carry the `telemetry_spans` live-pipeline reference (NON-ZERO count
+> + recent `max(ingested_at)`) at round start AND after the drive. **Doom emits NO OTLP span — the
+> query proves the LIVE PIPELINE, not the feature; disclose that.** Live read lever (G-284/G-307):
+> prefer the app-pool telemetry read command; sanctioned fallback = managed `psql` at the manifest
+> `ports.pg` (G-284), DISCLOSED in the verdict. A static-only PASS is a FALSE PASS (G-033).
+>
+> **BUILD GATE (G-314, BINDING):** the engine MUST be BUILT from the vendored tree at the pinned
+> commit and LAUNCHED — a committed-but-unrun script OR a stub binary is a FALSE PASS (G-033/G-314).
+> Assert the REAL binary basename `restful-doom.exe`, a live `GET /api/state` 200 (or a live frame),
+> and ZERO orphans.
+>
+> **Bounded waits (G-263):** toolchain download ≤ `DOOM_TOOLCHAIN_DOWNLOAD_TIMEOUT_S` (900 s), build
+> ≤ `DOOM_BUILD_TIMEOUT_S` (900 s), overall ≤ `DOOM_PROVISION_TIMEOUT_S` (1800 s), cancel hard-kill
+> ≤ `DOOM_PROVISION_STOP_TIMEOUT_S` (5 s). Never run an unbounded binary.
+>
+> **Error-path levers (G-275/G-300/G-316), validated against the runtime's actual behaviour:**
+> `FREDO_DOOM_BUILD_OFFLINE=1` → `toolchainUnavailable` BEFORE any network; a toolchain root lacking
+> `usr/bin/bash.exe` → `toolchainUnavailable`; `FREDO_DOOM_TOOLCHAIN_ARCHIVE_URL/_SHA256/_BYTES`
+> wrong/short → `toolchainDownloadFailed`, body matching sha+bytes but not a valid `.tar.xz` →
+> `toolchainExtractFailed`; `FREDO_DOOM_SOURCE_DIR` missing → `sourceMissing`, broken → `buildFailed`;
+> UI `doom-provision-cancel` → `cancelled` within 5 s, no orphan.
+>
+> **Binding names VERBATIM (G-255/G-187):** commands `get_doom_provision_status` /
+> `provision_doom_engine(install_dir?)` / `cancel_doom_engine_provisioning`; event
+> `doom-provision-progress`; phases `idle|awaitingInstallDir|downloadingToolchain|building|ready|failed|cancelled`;
+> errors `installDirInvalid|toolchainUnavailable|toolchainDownloadFailed|toolchainExtractFailed|sourceMissing|buildFailed|timeout|cancelled`;
+> staged engine `<install_dir>/engine/restful-doom.exe` + marker `.restful-doom-commit`; managed
+> toolchain `<install_dir>/toolchain/msys2`; vendored `vendor/restful-doom/` @
+> `eded41b5597b7738ec1fa06d24f62b53db982c2c`; env seams `FREDO_DOOM_TOOLCHAIN_ROOT`,
+> `FREDO_DOOM_TOOLCHAIN_ARCHIVE_URL/_SHA256/_BYTES`, `FREDO_DOOM_SOURCE_DIR`,
+> `FREDO_DOOM_BUILD_OFFLINE` (existing); testids `doom-provision-dialog`, `doom-provision-install-dir`,
+> `doom-provision-confirm`, `doom-provision-cancel`, `doom-provision-progress`, `doom-provision-step`,
+> `doom-provision-error`, `doom-provision-license`, `doom-provision-source-offer`, `doom-provision-retry`.
+
+## Vendored source identity + repo hygiene (R-1.1 / R-1.2 / AC1)
+
+- [ ] F-75 (R-1.1, AC1) **Vendored tree identity + patch applies.** `git ls-files vendor/restful-doom`; read `vendor/restful-doom/VENDOR.md`; `git apply --check scripts/doom/patches/*.patch` against the tree.
+  - EXPECTED: the tree is present + tracked (working tree, no `.gitmodules`/gitlink); `VENDOR.md` records upstream `https://github.com/mkschreder/restful-doom.git` + commit `eded41b5597b7738ec1fa06d24f62b53db982c2c`; the in-repo MinGW patch(es) under `scripts/doom/patches/` apply to the tree (or reverse-apply cleanly if pre-applied).
+  - Edge: LF-normalized (`eol=lf`) so `git apply` succeeds; the submodule route is rejected (no `git submodule` allowlist).
+- [ ] F-76 (R-1.2, AC1) **No committed/bundled binary or WAD.** Scan `git ls-files` for `*.exe`/`*.wad`/`*.dll` under `vendor/restful-doom/**` and repo-wide for `restful-doom.exe`/`*.wad`; inspect `apps/tauri/src-tauri/tauri.conf.json` doom `resources`.
+  - EXPECTED: ZERO tracked compiled engine binary or WAD in `vendor/restful-doom/**` or anywhere tracked; the doom bundle `resources` contain source + scripts only (no `.exe`/`.wad`); `.gitattributes` marks `vendor/restful-doom/**` `linguist-vendored` + `text eol=lf`.
+  - Edge: the MinGW DLL closure is built at runtime into `<install_dir>`, never committed; staged engine/WAD/scratch are untracked (`.gitignore`).
+
+## First-use provisioning from source (R-2.1..R-2.4 / AC2)
+
+- [ ] F-77 (R-2.1, AC2) **First-activation install-dir request + persistence.** From the fresh pre-feature state (G-265: no staged engine, no `doom_install_dir`), type `iddqd`.
+  - EXPECTED: `doom-provision-dialog` opens; `get_doom_provision_status.phase == "awaitingInstallDir"`; `doom-provision-install-dir` defaulted to `installDirDefault` == `{app_data_dir}/doom`; confirming via `doom-provision-confirm` persists the dir to `doom_install_dir` (read back via `get_doom_provision_status.installDir`); NO download starts before confirm.
+  - Edge: cancel the dialog → no dir persisted, no download, mode not entered; a stored `doom_install_dir` → dialog skipped; an invalid path → `installDirInvalid`; `FREDO_DOOM_INSTALL_DIR` overrides.
+- [ ] F-78 (R-2.2, AC2) **Managed toolchain acquisition when no usable MSYS2.** `FREDO_DOOM_TOOLCHAIN_ROOT` = `.opencode/tmp/3012/empty-toolchain` (a dir lacking `usr/bin/bash.exe`); managed download enabled.
+  - EXPECTED: phase `downloadingToolchain`; `doom-provision-progress` carries advancing `downloaded`/`total`/`percent`; the on-disk archive byte count == the ST-1-recorded `DOOM_TOOLCHAIN_PIN.bytes` and SHA-256 == the ST-1-recorded pin; extraction yields `<install_dir>/toolchain/msys2/usr/bin/bash.exe`; the phase then progresses toward `building`; download wait ≤ 900 s.
+  - Edge (G-130): reproduce the REAL transfer class (the full pinned archive) or an override archive with a deliberately idle/slow stream + a partial at a realistic offset — never only a fast KB stub. G-320: assert against the pin the executed ST-1 fetch RECORDS, NOT a prose digest.
+- [ ] F-79 (R-2.3, AC2) **BUILD GATE — EXECUTED LIVE (G-314, REQUIRED).** Drive `provision_doom_engine` (or `scripts/doom/build-restful-doom.ps1 -SourceDir vendor/restful-doom` with the internally-probed toolchain, G-322), then launch and hit `/api/state`.
+  - EXPECTED: the REAL `restful-doom.exe` is built from `vendor/restful-doom/` at the pinned commit — `doom-provision-progress` steps `toolchain→deps→source→patch→autogen→configure→make→stage`; `<install_dir>/engine/restful-doom.exe` is a PE image whose basename == `restful-doom.exe` (NEVER a stub); `.restful-doom-commit` == `eded41b5597b7738ec1fa06d24f62b53db982c2c`; launch → `GET /api/state` 200 (or a live frame PNG); build wait ≤ 900 s; ZERO orphans after teardown.
+  - Edge: a committed-but-unrun script or a stub binary is a FALSE PASS (G-033/G-314); wrong source tree → `sourceMissing`/`buildFailed`; patch failure → `buildFailed`; toolchain root lacking bash → `toolchainUnavailable`.
+- [ ] F-80 (R-2.4, AC2) **Reaches `ready` → auto launch + autoplay, no manual step.** After F-79 (or a fresh install).
+  - EXPECTED: on `ready`, `enter_doom_mode` continues automatically — `doom` window opens; `DoomStatus.enginePath` basename `restful-doom.exe` + live PID; companion autoplay starts (or the scripted lever drives it); `DoomModePhase` transitions `provisioning`→`active`; `doom-provision-progress` phase `ready`; no further UI action needed.
+  - Edge: a mid-build failure → `provisionFailed`, mode stays inactive, no half-entered window; `ready` with an already-staged engine is the R-3.1 skip.
+
+## Skip when already staged (R-3.1 / AC3)
+
+- [ ] F-81 (R-3.1, AC3) **Staged engine + matching marker → skip provisioning.** Pre-stage engine + `.restful-doom-commit` (from F-79); re-enter Doom Mode.
+  - EXPECTED: NO `downloadingToolchain`/`building` phase fires; `get_doom_provision_status.phase == "idle"`; the staged engine launches directly; live PID; ready within bound.
+  - Edge: marker MISMATCH (wrong commit) → re-provision; marker missing → re-provision; a non-PE `.exe` → re-provision; same-commit re-entry is idempotent.
+
+## Cancel / failure / timeout / retry (R-4.1..R-4.4 / AC4)
+
+- [ ] F-82 (R-4.1, AC4) **Cancel → kill tree within 5 s, `cancelled`, no orphan.** Click `doom-provision-cancel` during `downloadingToolchain` and again during `building`.
+  - EXPECTED: `cancel_doom_engine_provisioning` returns; `doom-provision-progress` → phase `cancelled`, code `cancelled`; the child tree (`powershell → bash → make`) is GONE within `DOOM_PROVISION_STOP_TIMEOUT_S` (5 s); ZERO orphans; no partial/incorrect engine staged.
+  - Edge: cancel during download; cancel during build; cancel when idle → idempotent no-op; no half-written `restful-doom.exe`.
+- [ ] F-83 (R-4.2, AC4) **Typed failure, no crash, no orphan — every leg names its in-repo lever (G-275/G-300).**
+  - EXPECTED: each leg → phase `failed` with the matching typed code, `DoomProvisionResult.code == "provisionFailed"`, no panic, ZERO orphans, rest of Fredo normal.
+  - LEGS: (a) `FREDO_DOOM_BUILD_OFFLINE=1` + no usable root → `toolchainUnavailable` BEFORE any network; (b) `FREDO_DOOM_TOOLCHAIN_ARCHIVE_URL/_SHA256/_BYTES` wrong/short → `toolchainDownloadFailed`; (c) body matching sha+bytes but not a valid `.tar.xz` → `toolchainExtractFailed`; (d) toolchain root lacking `usr/bin/bash.exe` + offline → `toolchainUnavailable`; (e) `FREDO_DOOM_SOURCE_DIR` → `.opencode/tmp/3012/missing-source` → `sourceMissing`; (f) `FREDO_DOOM_SOURCE_DIR` → `.opencode/tmp/3012/broken-source` (fails configure/make) → `buildFailed`.
+  - Edge: unset the lever + retry recovers; failure never leaves a corrupt engine; no orphan.
+- [ ] F-84 (R-4.3, AC4) **Overall timeout → hard-kill + `timeout`.** Shorten the bound via the test-only timeout override seam + a deliberately slow/hung build (or hung download).
+  - EXPECTED: at the bound the build tree is HARD-KILLED (`kill_pid_tree`); phase `failed` code `timeout`; ZERO orphans; no crash.
+  - Edge: **REQUIRES a test-only timeout override seam** (`FREDO_DOOM_PROVISION_TIMEOUT_S` / `FREDO_DOOM_BUILD_TIMEOUT_S` / `FREDO_DOOM_TOOLCHAIN_DOWNLOAD_TIMEOUT_S`, inert when unset) — if absent the row is UNVERIFIED (G-275/G-300); the default 1800/900 s bounds are otherwise asserted by code pin + an elapsed-ms bound check, never by an unbounded run (G-263).
+- [ ] F-85 (R-4.4, AC4) **Retry after `failed`/`cancelled`.** Re-activate after F-82/F-83/F-84.
+  - EXPECTED: a NEW provisioning run starts (`awaitingInstallDir`/`downloadingToolchain`/`building`); the `failed`/`cancelled` phase does NOT latch; the success path reaches `ready`; no stale error; no orphan accumulation across retries.
+  - Edge: retry with the inducing lever still set stays failed; unset → recovers; repeated failed→retry cycles leave zero orphans.
+
+## License / source offer / WAD (R-5.1 / R-5.2 / AC5)
+
+- [ ] F-86 (R-5.1, AC5) **GPL-2.0 license name + corresponding-source offer when provisioning begins.**
+  - EXPECTED: `doom-provision-license` renders the GPL license name (`GNU GPL version 2` / GPL-2.0); `doom-provision-source-offer` renders the vendored path `vendor/restful-doom/`, the upstream URL `https://github.com/mkschreder/restful-doom.git`, and the pinned commit `eded41b5597b7738ec1fa06d24f62b53db982c2c`.
+  - Edge: the offer is present at `awaitingInstallDir` (before any download) AND during `downloadingToolchain`/`building`; readable (not hidden behind success); text from ONE source of truth (no drift).
+- [ ] F-87 (R-5.2, AC5) **No retail WAD staged/bundled; Freedoom IWAD stays a SHA-256-pinned download; no GPL engine binary committed/bundled.** `git ls-files` scan; bundle resources inspection; run provisioning and inspect the install dir.
+  - EXPECTED: `git ls-files` shows no tracked `*.wad`; bundle `resources` contain no `.wad`/`.exe`; provisioning stages NO WAD and NO committed engine binary; the Freedoom IWAD (when present) is acquired via the pinned `acquire_iwad` with its SHA-256 from the shipped constant (assert against the constant, G-320 — never prose).
+  - Edge: F-76 covers the committed-binary half; the engine is built at runtime into `<install_dir>` (app-data, outside the bundle); the WAD digest is the artifact's own pin, never the ZIP digest.
+
+## Live receipt + mandatory E2E
+
+- [ ] F-88 (live receipt) Query `telemetry_spans` at round start AND after the drive.
+  - EXPECTED: NON-ZERO count + recent `max(ingested_at)` BOTH times. **Doom emits NO span** — the query proves the LIVE PIPELINE, not the feature; disclose. Lever (G-307): the app-pool telemetry read command; sanctioned fallback = managed `psql` at the manifest `ports.pg` (G-284).
+  - Edge: app-pool saturated → name the fallback and DISCLOSE the substitution in the verdict (G-307); never the `fredo emit` CLI path (G-256).
+- [ ] F-89 (E2E, human directive — REQUIRED) **RUNNING app PG-only: Mission Monitor live sessions + FIRST-USE vendored-engine build + game runs.**
+  - EXPECTED: (a) `storage_engine_status` = PostgreSQL / PG supervisor ready; (b) Mission Monitor renders ≥1 live session via the CURRENT declared `sessions` rollup — `useDeliverySessions()` (`apps/ui/src/applications/mission-monitor/hooks/useSessionHistory.ts:126`; `MISSION_MONITOR_SESSIONS_REF:36`; `sessionRollupQualifies:46-54`; `useApplicationRead`/`useApplicationWatch:136-138`) consumed by `MissionMonitorPanel.tsx:872`; backend `session_rollup.rs:45`; **EXCLUDE the retired `useEventRows('Chat'|'ToolUse', {replay})` path**; assert the DECLARED `sessions` row for the seeded session has `visibleTurnCount ≥ 1` BEFORE the list; (c) FIRST-USE: a fresh install dir with no staged engine → provisioning runs → the REAL `restful-doom.exe` is built from `vendor/restful-doom/` at the pinned commit → the game runs (live frame / `/api/state` 200); (d) F-88 live receipt.
+  - Edge: SEED a rollup-qualifying OTLP fixture (G-285) — `bun .opencode/scripts/inject-otlp-fixture.ts --copilot --fixture .opencode/scripts/copilot-exchange.fixture.json` (stable `e2e-copilot2933`) → real OTLP/HTTP `:4318/v1/traces`; fresh install dir forces first-use; PG-only (no SQLite fallback); after Doom exit the rest of the app is unaffected; cite the CURRENT mechanism (G-299), never a stale hook.
+
+## Non-functional (N-1..N-6)
+
+- [ ] N-1: after EVERY leg (cancel/failure/timeout/success) — ZERO `restful-doom.exe` and ZERO `powershell`/`bash`/`make` orphans.
+- [ ] N-2: bounded waits — download ≤ 900 s, build ≤ 900 s, overall ≤ 1800 s, cancel ≤ 5 s; no unbounded wait anywhere (G-263).
+- [ ] N-3: no app regression — Mission Monitor, terminal, `llama-server`, PG supervisor exit hooks, and the existing Doom runtime/autoplay/secret/theme/save surfaces behave identically; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] N-4: toolchain resolves ONLY from the explicit `FREDO_DOOM_TOOLCHAIN_ROOT` seam or the managed `<install_dir>/toolchain` — no out-of-repo filesystem search (G-172).
+- [ ] N-5: `cargo check --locked` ZERO warnings; `pnpm --filter @fredo/ui build` green; console clean across every leg.
+- [ ] N-6: status emitted at most once per downstream tick; `get_doom_provision_status` poll fallback returns the live phase while an event is missed.
+
+**R-coverage (#3012):** R-1.1→F-75 · R-1.2→F-76 · R-2.1→F-77 · R-2.2→F-78 · R-2.3→F-79 · R-2.4→F-80 · R-3.1→F-81 · R-4.1→F-82 · R-4.2→F-83 · R-4.3→F-84 · R-4.4→F-85 · R-5.1→F-86 · R-5.2→F-87 · live receipt→F-88 · E2E→F-89 · N-1..N-6.
