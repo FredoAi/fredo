@@ -45,8 +45,9 @@ source and stages it at the resolver's candidate path
   SDL2.dll               SDL2_mixer.dll    SDL2_net.dll        zlib1.dll
   ```
 
-The script does **not** commit the built binary or the WAD and does **not**
-change the resolver order (`resolver.rs`: configured → PATH → staged candidate).
+The script does **not** commit the built binary or the WAD. Since Spec #3013
+the resolver is **managed-only**: the only engine it uses is the staged candidate
+(`resolver.rs`: `<install_dir>/engine/restful-doom.exe`).
 
 It emits machine-readable progress on stderr, one line per transition, for the
 runtime provisioner to parse:
@@ -155,7 +156,7 @@ Layout produced under `-FixtureDir`:
 |------|----------|
 | `engine/restful-doom.exe` | The real built engine (from `build-restful-doom.ps1`). |
 | `engine/*.dll` | The engine's MSYS2 runtime DLLs, copied beside it so the fixture is self-contained (ST-1 §6: without them the child exits immediately, indistinguishable from a failed launch). |
-| `engine/doom-engine.invalid.exe` | A deliberately non-PE file → `FREDO_DOOM_ENGINE_PATH` `spawnFailed` lever. |
+| `engine/doom-engine.invalid.exe` | A deliberately non-PE file, retained from the #2968 fixture layout; no longer wired to an env seam (the #3013 managed-only resolver never consults it). |
 | `freedoom/freedoom1.wad` | The pinned Freedoom 0.13.0 IWAD (verified by SHA-256). |
 | `freedoom/freedoom-0.13.0.zip` | The verified archive (only when downloaded by this script). |
 
@@ -201,22 +202,23 @@ powershell -File scripts/doom/stage-doom-fixture.ps1 -PlanOnly
 ### AC4 / R-1.4 induction levers
 
 The script prints these; inject one at a time via the dev-environment skill
-(`dev-env.ps1 -Action Up -Spec 2968 -EnvVar "NAME=value"`). Every seam is inert
+(`dev-env.ps1 -Action Up -Spec 3013 -EnvVar "NAME=value"`). Every lever is inert
 when unset.
 
 | Env | Induces |
 |-----|---------|
-| `FREDO_DOOM_ENGINE_PATH=<engine/doom-engine.invalid.exe>` | `spawnFailed` |
+| `FREDO_DOOM_INSTALL_DIR=<absent>` | absent managed engine → `provisionRequired` / `notConfigured` (no substitute, no download) |
+| `FREDO_DOOM_INSTALL_DIR=<fail-engine>` | a staged-but-non-runnable managed engine → a real `spawnFailed` |
+| `FREDO_DOOM_FAIL_ENGINE_SPAWN=1` | `spawnFailed` before the real spawn (test-only; inert when unset) |
 | `FREDO_DOOM_IWAD_PATH=<freedoom/missing.wad>` | `notConfigured` |
-| `FREDO_DOOM_ARCHIVE_URL` + `_SHA256` + `_BYTES` | `acquireFailed` |
-| `FREDO_DOOM_REQUIRE_REAL_ENGINE=1` + the built stub path | anti-stub refusal |
 | `FREDO_DOOM_BUILD_OFFLINE=1` | build-script failure (`build-restful-doom.ps1` exit 3) |
 | `FREDO_DOOM_STUB_FRAME_503=<count\|duration>` | `frameNotReady` (stub only; e.g. `10`, `250ms`, `2s`, `1m`) |
 
 ## Relationship to the runtime
 
 The runtime resolves the engine (`apps/tauri/src-tauri/src/applications/doom/resolver.rs`)
-in the order **configured → PATH → staged `<install_dir>/engine/restful-doom.exe`**.
-This script is the sanctioned producer of the staged candidate. The engine is
+**managed-only**: the single staged candidate `<install_dir>/engine/restful-doom.exe`
+(there is no configured override and no `PATH` lookup). This script is the
+sanctioned producer of the staged candidate. The engine is
 launched by the runtime as an arm's-length child process over loopback HTTP; the
 build itself never runs inside Fredo.

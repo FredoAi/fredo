@@ -95,10 +95,12 @@ pointing at the vendored tree. The provisioning path (Spec #3012 ST-2/ST-3):
 4. **Streams progress + is bounded/cancellable** — `doom-provision-progress` events; download ≤ 900 s,
    build ≤ 900 s, overall ≤ 1800 s, cancel hard-kill ≤ 5 s (typed failure, no orphan, retryable).
 
-The engine is resolved at launch by the **unchanged resolver order** — configured
-(`FREDO_DOOM_ENGINE_PATH`/`doom_engine_path`) → PATH → the staged candidate
-`<install_dir>/engine/restful-doom.exe` (`apps/tauri/src-tauri/src/applications/doom/resolver.rs`).
-Nothing resolves ⇒ `notConfigured`. When a staged engine + matching `.restful-doom-commit` marker
+The engine is resolved at launch **managed-only** — the single staged candidate
+`<install_dir>/engine/restful-doom.exe` (validated by `provision::staged_engine_path`;
+`apps/tauri/src-tauri/src/applications/doom/resolver.rs`). There is no configured override
+and no `PATH` lookup. When the managed engine is absent or unbuilt, the launch reports the
+provisioning/failure state (`provisionRequired` / `provisionFailed`) instead of substituting
+or downloading another engine. When a staged engine + matching `.restful-doom-commit` marker
 already exist, provisioning is **skipped** and the engine launches directly.
 
 **Pinned commit:** `eded41b5597b7738ec1fa06d24f62b53db982c2c`
@@ -113,9 +115,9 @@ machine/toolchain-derived from source).
 toolchain-archive overrides `FREDO_DOOM_TOOLCHAIN_ARCHIVE_URL` / `_SHA256` / `_BYTES`;
 `FREDO_DOOM_SOURCE_DIR` (missing tree ⇒ `sourceMissing`, broken tree ⇒ `buildFailed`);
 `FREDO_DOOM_TOOLCHAIN_ROOT`; the test-only timeouts `FREDO_DOOM_PROVISION_TIMEOUT_S` /
-`FREDO_DOOM_BUILD_TIMEOUT_S` / `FREDO_DOOM_TOOLCHAIN_DOWNLOAD_TIMEOUT_S`; and
-`FREDO_DOOM_REQUIRE_REAL_ENGINE=1` (refuse an engine whose basename is not `restful-doom.exe` — the
-anti-stub guard). `scripts/doom/stage-doom-fixture.ps1` stages the engine + IWAD into
+`FREDO_DOOM_BUILD_TIMEOUT_S` / `FREDO_DOOM_TOOLCHAIN_DOWNLOAD_TIMEOUT_S`; and the engine
+spawn-failure lever `FREDO_DOOM_FAIL_ENGINE_SPAWN=1` (test-only; inert when unset).
+`scripts/doom/stage-doom-fixture.ps1` stages the engine + IWAD into
 `.opencode/tmp/2968/fixtures/` and prints the exact exports for the QA levers.
 
 ### 2.4 Why not a third-party binary

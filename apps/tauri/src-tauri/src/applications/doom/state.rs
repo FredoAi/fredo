@@ -36,8 +36,6 @@ pub const DOOM_FRAME_POLL_MS: u64 = 66;
 
 // ── AppStore keys (AppStore remains the single source of truth) ───────────────
 
-/// Absolute path to the resolved Doom engine executable.
-pub const DOOM_ENGINE_PATH_KEY: &str = "doom_engine_path";
 /// Absolute path to the game data (IWAD) the engine launches with.
 pub const DOOM_IWAD_PATH_KEY: &str = "doom_iwad_path";
 /// Directory holding the Doom runtime's staged artifacts + log.
@@ -56,8 +54,6 @@ pub const DOOM_LAST_ERROR_CODE_KEY: &str = "doom_last_error_code";
 // Every seam is inert when unset, so the production path is unchanged and QA can
 // deterministically drive the error/lifecycle paths without a real engine.
 
-/// Override the engine executable path (`doom_engine_path`).
-pub const DOOM_ENGINE_PATH_ENV: &str = "FREDO_DOOM_ENGINE_PATH";
 /// Override the IWAD path (`doom_iwad_path`).
 pub const DOOM_IWAD_PATH_ENV: &str = "FREDO_DOOM_IWAD_PATH";
 /// Override the install/scratch directory (`doom_install_dir`).
@@ -66,10 +62,6 @@ pub const DOOM_INSTALL_DIR_ENV: &str = "FREDO_DOOM_INSTALL_DIR";
 pub const DOOM_READY_TIMEOUT_ENV: &str = "FREDO_DOOM_READY_TIMEOUT_S";
 /// Override the bounded graceful-stop timeout, in seconds.
 pub const DOOM_STOP_TIMEOUT_ENV: &str = "FREDO_DOOM_STOP_TIMEOUT_S";
-/// **G-275** anti-stub guard: when set to `1`, the launch path refuses an engine
-/// whose basename is not [`DOOM_IMAGE_DEFAULT`] (`restful-doom.exe`). Inert when
-/// unset, so the production path is unchanged.
-pub const DOOM_REQUIRE_REAL_ENGINE_ENV: &str = "FREDO_DOOM_REQUIRE_REAL_ENGINE";
 
 // ── Product defaults / identity ───────────────────────────────────────────────
 
@@ -363,20 +355,14 @@ mod tests {
 
     #[test]
     fn the_appstore_keys_and_seams_are_pinned() {
-        assert_eq!(DOOM_ENGINE_PATH_KEY, "doom_engine_path");
         assert_eq!(DOOM_IWAD_PATH_KEY, "doom_iwad_path");
         assert_eq!(DOOM_INSTALL_DIR_KEY, "doom_install_dir");
         assert_eq!(DOOM_PORT_KEY, "doom_port");
         assert_eq!(DOOM_LAST_ERROR_KEY, "doom_last_error");
-        assert_eq!(DOOM_ENGINE_PATH_ENV, "FREDO_DOOM_ENGINE_PATH");
         assert_eq!(DOOM_IWAD_PATH_ENV, "FREDO_DOOM_IWAD_PATH");
         assert_eq!(DOOM_INSTALL_DIR_ENV, "FREDO_DOOM_INSTALL_DIR");
         assert_eq!(DOOM_READY_TIMEOUT_ENV, "FREDO_DOOM_READY_TIMEOUT_S");
         assert_eq!(DOOM_STOP_TIMEOUT_ENV, "FREDO_DOOM_STOP_TIMEOUT_S");
-        assert_eq!(
-            DOOM_REQUIRE_REAL_ENGINE_ENV,
-            "FREDO_DOOM_REQUIRE_REAL_ENGINE"
-        );
         assert_eq!(DOOM_WINDOW_LABEL, "doom");
         assert_eq!(DOOM_STATUS_EVENT, "doom-status-changed");
     }

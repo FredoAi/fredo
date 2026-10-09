@@ -39,7 +39,7 @@ use super::state::{
     DOOM_LAST_ERROR_KEY, DOOM_PORT_KEY, DOOM_READY_TIMEOUT_ENV, DOOM_READY_TIMEOUT_S,
     DOOM_STATUS_EVENT, DOOM_STOP_TIMEOUT_ENV, DOOM_STOP_TIMEOUT_S, DOOM_WINDOW_LABEL,
 };
-use super::{acquisition, client, process, provision, resolver};
+use super::{acquisition, client, failure_seam, process, provision, resolver};
 
 /// Readiness poll cadence.
 const READY_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -276,37 +276,21 @@ pub async fn launch_doom_runtime(app: AppHandle) -> DoomLaunchResult {
         return success_result(port, pid, engine_path);
     }
 
-    // Engine: configured (verbatim → `spawnFailed` when bad) → PATH → staged →
-    // acquisition. Acquisition runs ONLY when nothing resolved: with no pinned
-    // engine archive configured it returns `Ok(None)` → `notConfigured`, so the
-    // shipped default (user-supplied engine) never attempts a network fetch.
+    // Engine: managed-only (#3013 AC1/AC2). The ONLY engine is the one Fredo
+    // built into the chosen install dir (`<install_dir>/engine/restful-doom.exe`).
+    // There is no PATH lookup, no configured override, and no runtime download: an
+    // absent or unbuilt managed engine reports the provisioning state and leaves
+    // the mode inactive — never a substitute.
     let engine = match resolver::resolve_engine(&app) {
         Some(path) => path,
-        None => match acquisition::acquire_engine(&app).await {
-            Ok(Some(path)) => path,
-            Ok(None) => {
-                return fail(
-                    &app,
-                    DoomErrorCode::NotConfigured,
-                    "no Doom engine is configured — set the engine path in Settings.".to_string(),
-                )
-            }
-            Err(detail) => return fail(&app, DoomErrorCode::AcquireFailed, detail),
-        },
+        None => {
+            return fail(
+                &app,
+                DoomErrorCode::ProvisionRequired,
+                "the managed Doom engine is not built — open Doom Mode to build it.".to_string(),
+            )
+        }
     };
-    // Anti-stub guard (G-033, ST-3/ST-4): when `FREDO_DOOM_REQUIRE_REAL_ENGINE=1`
-    // an engine whose basename is not `restful-doom.exe` is refused before spawn,
-    // so a stub can never masquerade as a real-engine PASS. Inert when unset.
-    if resolver::require_real_engine() && !resolver::is_real_engine_path(&engine) {
-        return fail(
-            &app,
-            DoomErrorCode::SpawnFailed,
-            format!(
-                "FREDO_DOOM_REQUIRE_REAL_ENGINE=1 refuses an engine that is not {}: {engine}",
-                acquisition::DOOM_ENGINE_EXE
-            ),
-        );
-    }
     // IWAD: a configured-but-missing path is `notConfigured` (F-11) and never
     // triggers a download; only an entirely unconfigured IWAD falls through to
     // the pinned Freedoom acquisition.
@@ -370,6 +354,17 @@ pub async fn launch_doom_runtime(app: AppHandle) -> DoomLaunchResult {
             if let Some(mut dead) = guard.take() {
                 process::kill_process_tree(&mut dead);
             }
+        }
+        // AC3 failure lever (test-only, inert when unset): fail BEFORE any real
+        // spawn so no engine process is ever created when the lever is set.
+        if failure_seam::fail_engine_spawn_requested() {
+            drop(guard);
+            return fail(
+                &app,
+                DoomErrorCode::SpawnFailed,
+                "the Doom engine spawn was refused by the test seam (FREDO_DOOM_FAIL_ENGINE_SPAWN=1)."
+                    .to_string(),
+            );
         }
         match process::spawn_doom(&engine, &args, &log_file, port) {
             Ok(managed) => {
@@ -1080,17 +1075,11 @@ fn clear_mode_teardown(app: &AppHandle) {
     }
 }
 
-/// Whether the runtime can launch WITHOUT provisioning: a configured engine
-/// (verbatim, so a bad configured path still surfaces `spawnFailed`), an engine
-/// on PATH, or a staged engine carrying the pinned commit marker. Only when none
-/// of these holds is first-use provisioning required (Spec #3012 ST-3, R-3.1).
-fn engine_available_without_provisioning(app: &AppHandle, install_dir: &Path) -> bool {
-    if resolver::configured_engine(app).is_some() {
-        return true;
-    }
-    if resolver::find_engine_on_path().is_some() {
-        return true;
-    }
+/// Whether the runtime can launch WITHOUT provisioning: a staged managed engine
+/// carrying the pinned commit marker. Managed-only resolution (#3013 ST-1) leaves
+/// no configured/PATH leg; only when the staged engine is absent is first-use
+/// provisioning required (Spec #3012 ST-3, R-3.1).
+fn engine_available_without_provisioning(install_dir: &Path) -> bool {
     provision::is_engine_staged(install_dir)
 }
 
@@ -1129,7 +1118,7 @@ pub async fn enter_doom_mode(app: AppHandle, origin: Option<String>) -> DoomMode
         Ok(dir) => dir,
         Err(detail) => return fail_enter(&app, detail, Some(DoomErrorCode::SpawnFailed)),
     };
-    if !engine_available_without_provisioning(&app, &install_dir) {
+    if !engine_available_without_provisioning(&install_dir) {
         match provision::configured_install_dir(&app) {
             // No stored dir → require the owner to choose one WITHOUT entering
             // the mode (the frontend opens the provisioning dialog).
@@ -1259,9 +1248,7 @@ pub fn get_doom_mode_status(app: AppHandle) -> DoomModeStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::applications::doom::state::{
-        DOOM_ENGINE_PATH_KEY, DOOM_INSTALL_DIR_KEY, DOOM_IWAD_PATH_KEY,
-    };
+    use crate::applications::doom::state::{DOOM_INSTALL_DIR_KEY, DOOM_IWAD_PATH_KEY};
     use crate::infrastructure::storage::engine::EngineHandle;
 
     fn open_store(dir: &Path) -> AppStore {
@@ -1298,7 +1285,6 @@ mod tests {
     fn resolve_helpers_prefer_env_over_the_configured_setting() {
         // Pure resolution is pinned in `process`; here we pin the setting key
         // contract used by the command-level resolvers.
-        assert_eq!(DOOM_ENGINE_PATH_KEY, "doom_engine_path");
         assert_eq!(DOOM_IWAD_PATH_KEY, "doom_iwad_path");
         assert_eq!(DOOM_INSTALL_DIR_KEY, "doom_install_dir");
         assert_eq!(DOOM_PORT_KEY, "doom_port");
