@@ -27,6 +27,18 @@
 > accessibility")`, `tauri_webview_execute_js`, `tauri_webview_screenshot`,
 > `tauri_read_logs(source="console")`, `upload-evidence`.
 
+> **#3009 supersedes (OBSOLETE — do NOT re-run on `spec/3009`).** The configurable-hotkeys
+> platform (#2946/#2958/#2959/#2960/#2961/#2962) is REMOVED and replaced by the always-on
+> element-declared model. Retained for history, these #2946 row groups are OBSOLETE:
+> config listing/rebind/reset/preset/persistence F-4/F-5/F-10..F-16/F-22; macro rows
+> F-19..F-21; the feature-local tier F-6 and typed-key model F-23; which-key/cheat-sheet
+> F-7/F-30/F-31; `g g` / leader sequences F-8/F-9; typing/modal rows F-17/F-18. The whole
+> `#2958` context section (F-33..F-43), `#2959` keyboard-mode/bar section (F-44..F-54),
+> `#2960` regime/discovery/intro section (F-55..F-71), `#2961` per-app action section
+> (F-72..F-87), and `#2962` nested-context section (F-88..F-94) are likewise OBSOLETE.
+> Their surviving invariants are restated in the Spec #3009 section below (F-95..F-110) and
+> in `regression.md` R-39..R-49. Do NOT delete these rows — they are the historical record.
+
 ## F-1 (QREQ-1 / AC1) — Cross-feature focus traversal
 
 - [ ] F-1: With ≥2 windows open (Launcher, Terminal, Mission Monitor, Diagram, Settings), drive ONLY by keyboard (Tab / arrows / the app's focus-next binding) across them. **Expected:** focus moves into each open feature/window in turn; every interactive control in the focused window is reachable by keyboard alone (no pointer event in the drive log); every focused element has a perceptible focus indicator (measured outline/box-shadow/ring, not colour-only). **Data:** `document.activeElement` + accessibility snapshot after each step; pointer-event counter. *(live receipt)*
@@ -234,7 +246,7 @@
 
 ---
 
-## Spec #2958 — named interaction contexts + Escape-back
+## Spec #2958 — named interaction contexts + Escape-back — **#3009 supersedes (OBSOLETE)**
 
 > Live-plan extension for issue #2958: the context model, parent/child link, navigation
 > stack, and Escape-back. Builds on the shipped hotkeys subsystem (#2946). Rows F-33..F-43
@@ -311,7 +323,7 @@
 
 ---
 
-## Spec #2959 — keyboard mode + persistent contextual key bar
+## Spec #2959 — keyboard mode + persistent contextual key bar — **#3009 supersedes (OBSOLETE)**
 
 > Live-plan extension for issue #2959 (S2 of the keyboard-first effort; builds on the merged
 > S1 context model #2958). Rows F-44..F-52 map 1:1 to the QA Plan in
@@ -623,7 +635,7 @@ Round-3 focus (F-5) is PASS — the REQ-5 regression is closed.
 
 ---
 
-## Spec #2960 — typing-vs-navigating signal + zero-knowledge discovery on-ramp
+## Spec #2960 — typing-vs-navigating signal + zero-knowledge discovery on-ramp — **#3009 supersedes (OBSOLETE)**
 
 > Live-plan extension for issue #2960 (S3 of the keyboard-first cluster; builds on the merged
 > #2946 suppression, #2958 context model, #2959 keyboard mode + bar). Rows F-55..F-71 map 1:1 to
@@ -817,7 +829,7 @@ Round-3 focus (F-5) is PASS — the REQ-5 regression is closed.
 
 ---
 
-## Spec #2961 — per-app contextual actions (S4 of the keyboard-first cluster)
+## Spec #2961 — per-app contextual actions (S4 of the keyboard-first cluster) — **#3009 supersedes (OBSOLETE)**
 
 > Live-plan extension for issue #2961 (S4 of 5; builds on the merged #2958 contexts,
 > #2959 keyboard mode + bar, #2960 typing-vs-navigating). Rows F-72..F-87 map 1:1 to the
@@ -1067,7 +1079,7 @@ artifact, `reactflow.js:3524`).
 
 ---
 
-## Spec #2962 — deep nested contexts + intentional key reuse (S5 of the keyboard-first cluster)
+## Spec #2962 — deep nested contexts + intentional key reuse (S5 of the keyboard-first cluster) — **#3009 supersedes (OBSOLETE)**
 
 > Live-plan extension for issue #2962 (S5 of 5; builds on the merged #2958 contexts, #2959
 > keyboard mode + bar, #2960 typing-vs-navigating, #2961 per-app actions). Rows F-88..F-94 map
@@ -1256,5 +1268,249 @@ the tester's synthetic `document`-dispatched Escape events (harness artifact).
 - [x] **F-94 PASS** — PG-default boot; MM renders the declared `sessions` rollup
       (`useDeliverySessions`; `feature_mission_monitor_sessions` 7 rows == 7 DOM rows);
       keyboard-only nested nav end-to-end; live receipt.
+
+---
+
+## Spec #3009 — always-on element-declared hotkeys (replaces the configurable platform)
+
+> Live-plan extension for issue #3009. The ENTIRE configurable-hotkeys platform
+> (#2946/#2958/#2959/#2960/#2961/#2962) is REMOVED and replaced by an always-on,
+> element-declared model. Rows **F-95..F-110** map 1:1 to the QA Plan in
+> `.opencode/tmp/3009/triage.md` `## QA Expert` (`R-1.1..R-5.4` ↔ AC1..AC5 + NFR rows +
+> the human-directive E2E row). Names bind to the Architect's BINDING NAMES BLOCK
+> (G-187/G-255): grammar `data-hotkey` (`[a-z0-9]` + optional `+[a-z0-9]`) /
+> `data-hotkey-label`; body hooks `data-fredo-hotkey-count` /
+> `data-fredo-hotkeys-disabled` / `data-fredo-hotkey-duplicate`; bar
+> `hotkeys-keybar` / `-list` / `-row` (+ `data-hotkey-key` / `-action` / `-availability`) /
+> `-pending`; `hotkeys-duplicate-error`; `hotkeyBarModel` (`rows` element-only, document
+> order, `empty` at 0). **Storage unit = raw `data-hotkey` + serialized binding; display
+> unit = Keycap label (`displayStroke`/`displaySequence`); disabled unit =
+> `data-fredo-hotkeys-disabled="true"` ↔ row `data-hotkey-availability="disabled"`**
+> (G-187 cross-check).
+>
+> **Verification policy: live** — every row carries the DOM/a11y/measured/screenshot
+> assertion PLUS a `telemetry_spans` receipt from a sanctioned span-producing lever in the
+> drive window (the hotkey layer itself emits no telemetry — R-4.1 / PO Q13). Receipt lever:
+> `.opencode/skills/telemetry-query/telemetry-query.ps1`; when the app boots on the
+> PostgreSQL-default path and the SQLite store is empty, read via the managed `psql` (db
+> `postgres`, URI from `pg_supervisor_status`) through `run-exitcode.ps1 -Command` (G-284).
+> **G-223:** the `## Tests Runs` draft ends with the literal footer `*Authored by Tester*`.
+> **G-104:** frames are named in prose without image extensions; `.png`/`.jpeg` tokens appear
+> only on lines that also carry an `https://` URL.
+> **Error/edge levers (G-275/G-300/G-316):** typing → `TEXTAREA[data-testid=
+> "launcher-command-input"]`; terminal → `spawn_terminal_session{cli:"shell"}` then focus;
+> duplicate → inject a second `data-hotkey="a"` via `tauri_webview_execute_js` (or the ST-1
+> `?hotkeyDupProbe=1`); zero-hotkey → a window with no `data-hotkey` element; invalid →
+> `data-hotkey="!"` / `"A"`.
+
+## F-95 (R-1.1 / AC1) — Bare key runs its element's action (no modifier)
+
+- [ ] F-95: Load the served app (`dev-env.ps1 -Up -Spec 3009`). Locate the Mission Monitor
+      session-search control carrying `data-hotkey="s"` (ST-5); give it a non-text focus
+      (resting desktop). Press bare `s` via `tauri_webview_keyboard`. **Expected:** the
+      element's action runs — the session-search control gains focus / the app's real
+      operation runs — with NO modifier; the `keydown` is consumed; the `s` key is listed in
+      the bar. **Data:** `document.activeElement` before/after; the action's DOM effect;
+      `data-hotkey` attribute; bar row for `s`. *(live receipt)*
+  - **Edge:** `default` vs `interactive` focus; uppercase `S` is inert (no match); repeat 2×
+    (exactly one action per press); blurred resting desktop.
+
+## F-96 (R-1.2 + R-2.1 + R-2.2 + R-2.5 / AC1+AC2) — Always-on bar aggregates app-wide
+
+- [ ] F-96: With ≥1 `data-hotkey` element mounted, read the bar. Then open a second window
+      that also mounts element hotkeys and re-read. Then open a window mounting ZERO
+      `data-hotkey` elements (or unmount the last one) and re-read. **Expected:** the bar
+      `hotkeys-keybar` renders app-wide with `role="region"` and `aria-label="Available
+      hotkeys"`; `hotkeys-keybar-row` = EVERY mounted element key in DOCUMENT order,
+      element-only (never a pinned global); `data-fredo-hotkey-count` = N; at 0 elements the
+      bar renders nothing (hidden) and the count is `0`. **Data:** bar presence/rect;
+      `hotkeys-keybar-row[data-hotkey-key]` list; `data-fredo-hotkey-count`. *(live receipt)*
+  - **Edge:** 1 vs many elements; aggregation across two windows; document-order stability
+    across a re-mount; a pinned global never appears as a row; a window with no elements
+    (Doom `?view=doom` is one such state).
+
+## F-97 (R-2.3 + R-2.4 / AC2) — Disabled bar in text-entry + terminal; no fire
+
+- [ ] F-97: Focus the typing lever `TEXTAREA[data-testid="launcher-command-input"]`; press an
+      element's bare key and read the bar. Then `spawn_terminal_session{cli:"shell"}` and focus
+      the session; press the same bare key and read the bar + the PTY buffer. **Expected:** the
+      bar stays VISIBLE; every row is `data-hotkey-availability="disabled"`; the body hook
+      `data-fredo-hotkeys-disabled="true"`; NO element hotkey fires; the typed character lands
+      VERBATIM in the field and reaches the PTY. **Data:** row availability; body hook; field
+      value / terminal buffer delta; `data-fredo-focus-context`. *(live receipt)*
+  - **Edge:** input / textarea / contenteditable / password; blur lifts suppression; a window
+    switch while suppressed; a modifier chord (`Ctrl+Space`) remains global in text-entry but is
+    suppressed in the terminal (adjudication A1).
+
+## F-98 (R-3.1 + R-3.2 / AC3) — Two-step `a+b` sequence + pending prefix
+
+- [ ] F-98: Mount a control with `data-hotkey="a+b"` (inject via `tauri_webview_execute_js` if
+      no shipped two-key control exists). Press `a`; sample. Press `b`. **Expected:** after `a`
+      the bar's pending chip `hotkeys-keybar-pending` shows the prefix and
+      `data-fredo-pending-sequence="a"`; after `b` the element's action runs exactly ONCE and
+      pending clears (`data-fredo-pending-sequence` null). **Data:** pending chip text; body
+      hook; action effect. *(live receipt)*
+  - **Edge:** slow valid continuation still within the timeout; a prefix that is itself a
+    complete binding; `Esc` during pending resets; focus change mid-sequence resets.
+
+## F-99 (R-3.3 / AC3) — Invalid / abandoned sequence resets without acting
+
+- [ ] F-99: Mount `data-hotkey="a+b"`. (i) Press `a`, then an invalid key `q`. (ii) Press `a`,
+      then wait past the timeout. (iii) Press `a`, then change focus. **Expected:** NO action in
+      ANY leg; the pending state resets visibly (`hotkeys-keybar-pending` clears;
+      `data-fredo-pending-sequence` clears); the app returns to its prior state.
+      **Data:** pending chip + body hook after each leg; action-effect counter. *(live receipt)*
+  - **Edge:** invalid second key; timeout; focus change / window switch; Escape during pending
+    resets and is consumed (does not act); a valid continuation after the timeout does not fire.
+
+## F-100 (R-3.4 / AC3) — Duplicate key: dev error + body hook
+
+- [ ] F-100: Inject a second `data-hotkey="a"` element via `tauri_webview_execute_js` (or the
+      ST-1 dev-only `?hotkeyDupProbe=1`). **Expected:** `document.body[data-fredo-hotkey-duplicate=
+      "true"]`; in DEV a `DuplicateHotkeyError` is thrown (console) and `hotkeys-duplicate-error`
+      renders; the duplicate is surfaced, never a silent pick. **Data:** body hook; the DEV error
+      banner + `tauri_read_logs(source="console", level="error")`; removed-duplicate recovery.
+      *(live receipt)*
+  - **Edge:** in PROD the error is logged once (no throw); two elements with the same `grammar.key`;
+    recovery when the duplicate is removed (`data-fredo-hotkey-duplicate` clears).
+
+## F-101 (R-1.3) — Invalid attribute excluded from dispatch + bar
+
+- [ ] F-101: Seed `data-hotkey="!"` and `data-hotkey="A"` (grammar miss) via
+      `tauri_webview_execute_js`. **Expected:** both are excluded from dispatch AND from the bar
+      (no row); a dev diagnostic (`console.error`) is surfaced; `data-fredo-hotkey-count` excludes
+      them. **Data:** bar rows; count; console. *(live receipt)*
+  - **Edge:** empty value; `a+b+c` (3 steps — invalid); whitespace; `a++b`; `data-hotkey-label`
+    present with no valid key; `a+b` (valid, for contrast).
+
+## F-102 (R-4.1 + R-4.2 + R-4.3 + R-4.4 / AC4) — Config + cluster removed; palette via `>`
+
+- [ ] F-102: Inspect the Settings surface and every window for a hotkey config affordance and
+      the top-left cluster. Open the launcher and type `>`. **Expected:** NO Settings→Hotkeys nav
+      item or surface; NO Vim preset / keymap editor / persistence / macros / contexts /
+      keyboard-mode toggle; NO top-left regime/discovery/Keys/intro cluster in EVERY window (the
+      Doom window is noted — #3007's scope); retired bindings (`Ctrl+Shift+P`, `?`, `g g`,
+      `ctrl+shift+f8`) are inert; typing `>` in the launcher command bar opens the action palette.
+      **Data:** Settings nav list + section DOM; per-window cluster testids
+      (`hotkeys-input-regime`/`hotkeys-keys-discovery`/`hotkeys-intro` absent); palette DOM after
+      `>`. *(live receipt)*
+  - **Edge:** each window incl. Doom; `Ctrl+Shift+P` / `?` / `g g` / `ctrl+shift+f8` inert;
+    palette reachable keyboard-only; a text field still accepts `>` as text.
+
+## F-103 (R-5.1 + R-5.2 + R-5.3 + R-5.4 / AC5) — Kept globals; digits free
+
+- [ ] F-103: Fire `Ctrl+Space` (resting desktop + text-entry + terminal), `Escape` (base + modal),
+      `Ctrl+Tab` / `Ctrl+Shift+Tab` (≥2 windows), and `Ctrl+1..9`. **Expected:** `Ctrl+Space`
+      opens+focuses the launcher (`TEXTAREA[data-testid="launcher-command-input"]`) and is
+      suppressed ONLY under terminal passthrough (adjudication A1); `Escape` keeps native
+      behaviour (base context is not consumed); `Ctrl+Tab`/`Ctrl+Shift+Tab` cycle window focus;
+      `Ctrl+1..9` do NOT switch windows (digits are free for element hotkeys). **Data:**
+      launcher presence/focus; `defaultPrevented`; `data-focused` window transitions; active
+      window per digit. *(live receipt)*
+  - **Edge:** `Ctrl+Space` in text-entry fires (modifier chord) vs terminal suppressed; modal
+    Escape; each digit 1..9 inert; rapid double-press = one toggle.
+
+## F-104 (Complex scenario / AC1+AC2+AC3) — Bare key + list + typing suppression together
+
+- [ ] F-104: Give a non-text focus to a control carrying `data-hotkey="s"`; press `s` and read
+      the bar. Then focus `TEXTAREA[data-testid="launcher-command-input"]` and press the SAME `s`.
+      **Expected:** outside text-entry the action runs and the `s` row is present/available; with
+      focus in the text field the character types verbatim, NO hotkey runs, and that row shows
+      `data-hotkey-availability="disabled"`. **Data:** action effect; field value; row
+      availability; body hooks. *(live receipt)*
+  - **Edge:** a second key; move focus back out and re-fire; repeat; the terminal variant
+    (`spawn_terminal_session{cli:"shell"}`).
+
+## F-105 (NFR / no-second-resolver — static pin) — Exactly ONE dispatch listener
+
+- [ ] F-105: Static audit of `apps/ui/src/shared/hotkeys/`: count `document.addEventListener('keydown'`
+      and any second `dispatch`/action-table export. **Expected:** exactly ONE dispatch listener
+      (the engine scope, `engine.ts:701`); the `traversal.ts:367` Tab listener is the only other,
+      non-dispatch (documented); the registry holds ONE action table; no module exports a second
+      `dispatch`. **Data:** grep output; the engine install-site citation. *(static pin — the one
+    non-live leg; declared, not a manufactured live row)*
+  - **Edge:** grep the whole `shared/hotkeys/` tree; the deleted `macros.ts` capture listener is
+    gone (its row is removed with the macro subsystem).
+
+## F-106 (NFR a11y) — Perceivable, non-focus-stealing, no aria-live chatter
+
+- [ ] F-106: Read the accessibility tree + tab order; attempt Tab into and a click at the bar;
+      sample the live regions across keypresses. **Expected:** the bar is a named
+      `role="region"`, `pointerEvents:none`, has ZERO focusable descendants, and
+      `document.activeElement` never changes because of the bar; the bar is NOT `aria-live`; the
+      ONE shipped `hotkeys-announcer` remains the only polite channel (no chatter on keypresses);
+      each row exposes `aria-label="<Key>: <title>"`. **Data:** a11y snapshot;
+      `document.activeElement`; `elementFromPoint(barRect centre)`; announcer textContent.
+      *(live receipt)*
+  - **Edge:** screen-reader names; Tab past the bar; rapid keypresses produce no live-region
+    spam; both shipped themes.
+
+## F-107 (NFR theming + reduced-motion) — Token hygiene + reduced motion
+
+- [ ] F-107: Static grep the new bar/model source files + a live light/dark/accent pass; set
+      `prefers-reduced-motion: reduce` and enter/leave. **Expected:** ZERO hex/rgba/hsla and ZERO
+      `var(--x)NN`; colours from theme tokens / CSS vars / `tint()`; the disabled pair reuses the
+      shipped `fg.muted`/`bg.muted` (G-235 two-tier); under reduce, the bar's fade is
+      instant/non-animated while fully functional. **Data:** grep output; light/dark/accent
+      computed colours; computed transition props. *(live receipt)*
+  - **Edge:** both shipped presets; accent change; reduced-motion on/off mid-transition; narrow/
+    zoomed viewport.
+
+## F-108 (NFR latency + loop + telemetry + CI) — Fast, loop-free, telemetry-free, green
+
+- [ ] F-108: Instrument keydown→effect timestamps and render counts; diff `telemetry_spans` /
+      `telemetry_metrics` names before vs after a hotkey drive; run the CI legs. **Expected:**
+      keydown→effect ≤100 ms; NO `Maximum update depth exceeded` (bar recompute keys off the
+      monotonic element-revision counter, never `.length`/fresh objects — AGENTS.md #523); NO
+      span/metric carries shortcut usage or binding identity; `pnpm --filter @fredo/ui build`
+      exit 0, `pnpm --filter @fredo/ui test:run` green, served `pnpm --filter @fredo/tauri
+      build:webview` exit 0. **Data:** timestamp deltas; render counts; console; span/metric name
+      diff; build/test output. *(live receipt for the latency/loop legs; CI output for the gate)*
+  - **Edge:** heavy agent streaming; rapid keypresses; theme switch; duplicate probe present
+    (still no loop).
+
+## F-109 (E2E — human MISSION-MONITOR DIRECTIVE, REQUIRED) — Running app on the PostgreSQL-default boot path
+
+- [ ] F-109: Boot the app on the PostgreSQL-default path (`dev-env Up -Spec 3009`); open Mission
+      Monitor; drive a live session; fire a bare-key element hotkey; read the always-on bar.
+      **Expected:** (a) the app boots on the PG-default path; (b) Mission Monitor still renders
+      LIVE sessions — sourced from the CURRENT declared `sessions` rollup (`useSessionHistory.ts`
+      → `useDeliverySessions`, backend `session_rollup.rs`, consumed by `MissionMonitorPanel.tsx`),
+      NOT the retired `useEventRows('Chat'|'ToolUse')` path (G-299); (c) the always-on bar + the
+      bare-key operation work end-to-end; the drive window carries a `telemetry_spans` receipt;
+      console clean. **Data:** `telemetry_spans` rows (via `telemetry-query.ps1`, or the managed
+      `psql`/`run-exitcode.ps1` fallback on the PG-default path); the MM live-session DOM; the
+      bar rows. *(live receipt — MANDATORY)*
+  - **Edge:** cold boot; G-280 orphan `postgres.exe`/stale socket → full dev-env Down→Up then
+    report (environment artifact, NOT a spec FAIL); zero-live-session initial state (G-265: start
+    from the pre-feature state and assert the trigger is reachable there). **Seed lever (G-285):**
+    the OTLP fixture MUST emit a rollup-QUALIFYING turn (a terminal chat span with a non-blank
+    agent reply) so a declared `sessions` row is created; the fixture's ungated guard asserts the
+    CONSUMER invariant (a `sessions` row renders), not merely the fixture's own shape.
+
+## F-110 (R-4.1 + R-4.2 + R-4.3 / AC4 — residual-sweep source pin, G-337) — No LIVE retired-symbol references survive in scope
+
+- [ ] F-110: STATIC residual grep over the architect's G-337 grep scope — `docs/**`,
+      `.opencode/skills/**`, `.opencode/tests/**`, `.opencode/scripts/**`, `apps/**`, `README*`,
+      `CONTRIBUTING*` — for any LIVE reference to a retired runtime symbol / attribute / config
+      mechanism: `VIM_PRESET` / `VIM_PRESET_SNAPSHOT_KEY`; keymap/persistence identifiers
+      (`loadKeymap` / `saveKeymap` / `KEYMAP_STORAGE_KEY`); macro-recorder symbols;
+      `resolveContextBindings` / `enterHotkeyContext` / `syncHotkeyContextFromFocus`;
+      `BODY_KEYBOARD_MODE_ATTR`; the regime/discovery/first-run cluster components
+      (`HotkeysCluster` / `InputRegimeIndicator` / `KeysDiscovery` / `KeyboardIntro`); which-key /
+      cheat-sheet overlay identifiers; reserved combos. **Expected (DENY property — what MUST be
+      flagged):** ZERO surviving non-comment LIVE import/usage of any retired symbol within scope;
+      a surviving non-comment live import/usage is a FAIL. The ONLY tolerated hits are the EXPLICIT
+      EXCLUSIONS — the `#3009 supersedes` / `#3009` annotations in `.opencode/tests/hotkeys/**`
+      (EXPECTED by design — the suite marks superseded rows rather than deleting them) and
+      issue-reference (`// #3009`) or historical/legacy comments that name the removal itself.
+      Prefer REWORDING a residual comment over allowlisting it (G-330): only the expected
+      supersede/issue-reference annotations are allowlisted. The **ST-6 (CU-3) sweep owns the
+      fix.** **Data:** grep output per scope path, with the EXCLUSIONS annotated. *(static pin —
+      declared non-live leg; NO live receipt)*
+  - **Edge:** comment-only vs live import/usage; a reworded residual vs an allowlisted one (G-330);
+    the excluded `#3009` supersede annotations in `.opencode/tests/hotkeys/**`; Doom-window
+    references (#3007 scope, not flagged); a retired name appearing inside an allowlist literal
+    (still flagged unless it names the removal itself).
 
 
