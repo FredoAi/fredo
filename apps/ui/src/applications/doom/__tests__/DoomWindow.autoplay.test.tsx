@@ -1,21 +1,22 @@
 /**
- * Spec #2969 ST-7 — the Doom-window autoplay control + live status ("watch").
+ * Spec #3007 ST-1 — the Doom window is the game and nothing else, and it plays
+ * itself.
  *
  * Drives the REAL `DoomWindow` against a mocked Tauri command surface
- * (`adapterBridge`) and a mocked `doom-status-changed` / `doom-autoplay-changed`
- * event channel, so the DOM contract is provable without a Tauri host.
+ * (`adapterBridge`) and mocked `doom-status-changed` / `doom-autoplay-changed` /
+ * `doom-mode-changed` channels.
  *
- * Covers the four owned hooks (`doom-autoplay-toggle`, `doom-autoplay-status`,
- * `doom-autoplay-stop`, the additive `doom-autoplay-error`), all five
- * `DoomAutoplayPhase` renderings, the `code -> human copy` mapping, and the
- * binding AC-UI-1..11 clauses.
+ * Covers: the game-only surface (DOM-absence of all 19 removed hooks, AC1/R-1.a),
+ * the minimal transient states (R-1.b), the entry auto-play guarantee against the
+ * SAME idempotent `start_doom_autoplay` with no `freshStart` (R-3.b/R-3.c), and
+ * the minimal `doom-autoplay-note` (AC5/R-5).
  */
 
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, screen, waitFor, within } from '@testing-library/react';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
 import type { DoomAutoplayStatus } from '../types';
@@ -23,16 +24,37 @@ import { DoomWindow } from '../DoomWindow';
 
 const listeners: Record<string, (payload: unknown) => void> = {};
 
+/** Every hook the game-only surface MUST NOT render (AC1 / R-1.a). */
+const REMOVED_HOOKS = [
+  'doom-window-title',
+  'doom-status',
+  'doom-exit-button',
+  'doom-engine-location',
+  'doom-engine-location-saved',
+  'doom-state-readout',
+  'doom-campaign-controls',
+  'doom-save-status',
+  'doom-progress-complete',
+  'doom-fresh-start-button',
+  'doom-fresh-start-confirm',
+  'doom-fresh-start-cancel',
+  'doom-autoplay-toggle',
+  'doom-autoplay-stop',
+  'doom-autoplay-status',
+  'doom-autoplay-elapsed',
+  'doom-autoplay-error',
+  'doom-step-button',
+  'doom-start-button',
+] as const;
+
 let launchResult: unknown;
+let modeSeed: unknown;
 let autoplaySnapshot: DoomAutoplayStatus | undefined;
 let startResult: unknown;
 let startCalls = 0;
-let stopCalls = 0;
 let frameCalls = 0;
-let deferStart = false;
-let resolveStart: ((value: unknown) => void) | null = null;
-let deferStop = false;
-let resolveStop: (() => void) | null = null;
+let frameShouldFail = false;
+let statusHydrations = 0;
 let deferStatus = false;
 let resolveStatus: ((value: unknown) => void) | null = null;
 
@@ -44,8 +66,11 @@ const invoke = vi.fn(async (command: string, _args?: Record<string, unknown>) =>
       return { raw: { tic: 1, outcome: 'alive' } };
     case 'doom_frame':
       frameCalls += 1;
-      return undefined;
+      return frameShouldFail ? undefined : { pngBase64: 'AAAA' };
+    case 'get_doom_mode_status':
+      return modeSeed;
     case 'get_doom_autoplay_status':
+      statusHydrations += 1;
       if (deferStatus) {
         return new Promise((res) => {
           resolveStatus = res;
@@ -54,20 +79,7 @@ const invoke = vi.fn(async (command: string, _args?: Record<string, unknown>) =>
       return autoplaySnapshot;
     case 'start_doom_autoplay':
       startCalls += 1;
-      if (deferStart) {
-        return new Promise((res) => {
-          resolveStart = res;
-        });
-      }
       return startResult;
-    case 'stop_doom_autoplay':
-      stopCalls += 1;
-      if (deferStop) {
-        return new Promise<void>((res) => {
-          resolveStop = () => res();
-        });
-      }
-      return undefined;
     default:
       return undefined;
   }
@@ -86,25 +98,46 @@ function autoplayStatus(overrides: Partial<DoomAutoplayStatus>): DoomAutoplaySta
     startedAt: null,
     lastError: null,
     code: null,
+    episode: null,
+    map: null,
+    completed: false,
     ...overrides,
   };
 }
 
-async function renderReady() {
-  renderWithChakra(<DoomWindow />);
-  await waitFor(() => expect(screen.getByTestId('doom-status')).toHaveTextContent('Ready'));
-  await waitFor(() =>
-    expect(listeners['doom-autoplay-changed']).toBeTypeOf('function'),
-  );
+function modeStatus(overrides: Record<string, unknown>) {
+  return {
+    phase: 'inactive',
+    active: false,
+    voiceSuppressed: false,
+    origin: null,
+    enteredAt: null,
+    lastError: null,
+    code: null,
+    ...overrides,
+  };
 }
 
-function emitAutoplay(next: DoomAutoplayStatus) {
+/** Render and wait until the runtime reached `ready` (the frame loop is live). */
+async function renderReady(): Promise<void> {
+  renderWithChakra(<DoomWindow />);
+  await waitFor(() => expect(frameCalls).toBeGreaterThan(0));
+  await waitFor(() => expect(listeners['doom-autoplay-changed']).toBeTypeOf('function'));
+}
+
+function emitAutoplay(next: DoomAutoplayStatus): void {
   act(() => {
     listeners['doom-autoplay-changed']?.(next);
   });
 }
 
-/** Strip block + line comments so doc prose cannot satisfy the AC-UI-11 pin. */
+function emitStatus(next: Record<string, unknown>): void {
+  act(() => {
+    listeners['doom-status-changed']?.(next);
+  });
+}
+
+/** Strip block + line comments so doc prose cannot satisfy a source pin. */
 function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 }
@@ -116,15 +149,13 @@ function readUiSource(relative: string): string {
 beforeEach(() => {
   for (const key of Object.keys(listeners)) delete listeners[key];
   launchResult = { success: true, phase: 'ready', port: 6666, pid: 42, enginePath: 'engine' };
+  modeSeed = modeStatus({});
   autoplaySnapshot = undefined;
   startResult = { success: true, phase: 'running', steps: 0, code: null, error: null };
   startCalls = 0;
-  stopCalls = 0;
   frameCalls = 0;
-  deferStart = false;
-  resolveStart = null;
-  deferStop = false;
-  resolveStop = null;
+  frameShouldFail = false;
+  statusHydrations = 0;
   deferStatus = false;
   resolveStatus = null;
   invoke.mockClear();
@@ -144,341 +175,173 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('Spec #2969 ST-7 — Doom window autoplay control + status', () => {
-  it('renders the four owned hooks in the idle state', async () => {
+describe('Spec #3007 ST-1 — Doom window: game-only surface', () => {
+  it('AC1/R-1.a: renders the game view and NONE of the removed instrumentation hooks', async () => {
     await renderReady();
 
-    expect(screen.getByTestId('doom-autoplay-toggle')).toHaveAttribute('aria-pressed', 'false');
-    expect(screen.getByTestId('doom-autoplay-status')).toHaveTextContent('Autoplay off');
-    expect(screen.queryByTestId('doom-autoplay-stop')).toBeNull();
-    expect(screen.queryByTestId('doom-autoplay-error')).toBeNull();
+    for (const hook of REMOVED_HOOKS) {
+      // DOM-absence, not display:none (G-170 reverse).
+      expect(screen.queryByTestId(hook), `${hook} must not render`).toBeNull();
+    }
+    // No in-window controls at all in the ready state (zero buttons).
+    expect(screen.queryAllByRole('button')).toHaveLength(0);
+
+    // The kept game view.
+    expect(screen.getByTestId('doom-root')).toBeInTheDocument();
+    const canvas = screen.getByTestId('doom-frame-canvas');
+    expect(canvas).toHaveAttribute('role', 'img');
+    expect(canvas).toHaveAttribute('aria-label', 'Doom game view');
+    expect(canvas).toHaveAttribute('aria-describedby', 'doom-frame-desc');
+    expect(screen.getByTestId('doom-frame-desc')).toBeInTheDocument();
   });
 
-  it('renders every DoomAutoplayPhase per the state table', async () => {
+  it('R-1.b: idle collapses into a polite Starting overlay — never a start control / black void', async () => {
+    renderWithChakra(<DoomWindow />);
+    // Before the async launch settles the honest visual is Starting, not a button.
+    const starting = screen.getByText('Starting…').closest('[role="status"]');
+    expect(starting).not.toBeNull();
+    expect(starting).toHaveAttribute('aria-live', 'polite');
+    expect(starting).toHaveAttribute('aria-atomic', 'true');
+    expect(screen.queryByTestId('doom-start-button')).toBeNull();
+    // Let the mount effects settle while the adapter is still registered.
+    await waitFor(() => expect(listeners['doom-status-changed']).toBeTypeOf('function'));
+  });
+
+  it('R-1.b: the stopping overlay and the reconnecting note are polite live regions', async () => {
     await renderReady();
-    const startedAt = new Date().toISOString();
+    emitStatus({ phase: 'stopping' });
+    const stopping = screen.getByText('Stopping…').closest('[role="status"]');
+    expect(stopping).not.toBeNull();
+    expect(stopping).toHaveAttribute('aria-live', 'polite');
+  });
 
-    // idle
-    expect(screen.getByTestId('doom-autoplay-status')).toHaveTextContent('Autoplay off');
-    expect(screen.getByTestId('doom-autoplay-toggle')).toHaveAttribute('aria-pressed', 'false');
+  it('R-1.b: a dropped frame shows the reconnecting note and keeps the canvas', async () => {
+    frameShouldFail = true;
+    await renderReady();
+    const note = await screen.findByTestId('doom-frame-reconnecting');
+    expect(note).toHaveAttribute('role', 'status');
+    expect(note).toHaveAttribute('aria-live', 'polite');
+    expect(screen.getByTestId('doom-frame-canvas')).toBeInTheDocument();
+  });
+});
 
-    // running
-    emitAutoplay(
-      autoplayStatus({
-        phase: 'running',
-        running: true,
-        steps: 42,
-        decisions: 42,
-        lastTic: 42,
-        outcome: 'alive',
-        startedAt,
-      }),
-    );
-    expect(screen.getByTestId('doom-autoplay-toggle')).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByTestId('doom-autoplay-status')).toHaveTextContent(
-      'Autoplay · step 42 · tic 42 · alive',
-    );
-    expect(screen.getByTestId('doom-autoplay-stop')).toBeInTheDocument();
-    expect(screen.getByTestId('doom-step-button')).toBeDisabled();
+describe('Spec #3007 ST-1 — entry auto-play guarantee', () => {
+  beforeEach(() => {
+    modeSeed = modeStatus({ phase: 'active', active: true, voiceSuppressed: true, origin: 'code' });
+  });
 
-    // stopping
-    emitAutoplay(
-      autoplayStatus({
-        phase: 'stopping',
-        running: true,
-        steps: 42,
-        lastTic: 42,
-        outcome: 'alive',
-        startedAt,
-      }),
-    );
-    expect(screen.getByTestId('doom-autoplay-status')).toHaveTextContent('Stopping autoplay…');
-    expect(screen.getByTestId('doom-autoplay-stop')).toBeInTheDocument();
-    expect(screen.getByTestId('doom-autoplay-toggle')).toBeDisabled();
+  it('R-3.b/R-3.c: on ready while engaged, invokes the SAME start_doom_autoplay with NO freshStart', async () => {
+    await renderReady();
+    await waitFor(() => expect(startCalls).toBe(1));
 
-    // completed
-    emitAutoplay(autoplayStatus({ phase: 'completed', steps: 42, outcome: 'exited' }));
-    expect(screen.getByTestId('doom-autoplay-status')).toHaveTextContent(
-      'Autoplay complete · 42 steps · exited',
-    );
-    expect(screen.queryByTestId('doom-autoplay-stop')).toBeNull();
-    expect(screen.getByTestId('doom-autoplay-toggle')).toHaveAttribute('aria-pressed', 'false');
+    const call = invoke.mock.calls.find(([command]) => command === 'start_doom_autoplay');
+    expect(call).toBeDefined();
+    // Resume-by-default: no `freshStart` argument leaks into the invoke.
+    expect(call?.[1]).toBeUndefined();
+    expect(JSON.stringify(call?.[1] ?? null)).not.toContain('freshStart');
+  });
 
-    // failed
+  it('R-3.b: never invokes a parallel command and starts at most once per ready episode', async () => {
+    await renderReady();
+    await waitFor(() => expect(startCalls).toBe(1));
+
+    // A later idle status must NOT re-trigger the repair (no loop).
+    emitAutoplay(autoplayStatus({ phase: 'idle' }));
+    emitAutoplay(autoplayStatus({ phase: 'idle' }));
+    expect(startCalls).toBe(1);
+    expect(
+      invoke.mock.calls.filter(([command]) => command === 'start_doom_autoplay'),
+    ).toHaveLength(1);
+  });
+
+  it('R-3.b: does not start when a run is already active/stopping', async () => {
+    autoplaySnapshot = autoplayStatus({
+      phase: 'running',
+      running: true,
+      startedAt: new Date().toISOString(),
+    });
+    await renderReady();
+    await waitFor(() => expect(statusHydrations).toBeGreaterThan(0));
+    await waitFor(() => expect(frameCalls).toBeGreaterThan(1));
+    expect(startCalls).toBe(0);
+  });
+
+  it('R-3.b: does not start when the run has already completed', async () => {
+    autoplaySnapshot = autoplayStatus({ phase: 'completed', steps: 9, outcome: 'exited' });
+    await renderReady();
+    await waitFor(() => expect(statusHydrations).toBeGreaterThan(0));
+    await waitFor(() => expect(frameCalls).toBeGreaterThan(1));
+    expect(startCalls).toBe(0);
+  });
+
+  it('R-3.b: a direct ?view=doom route (mode inactive) does not auto-start', async () => {
+    modeSeed = modeStatus({ phase: 'inactive' });
+    await renderReady();
+    await waitFor(() => expect(statusHydrations).toBeGreaterThan(0));
+    await waitFor(() => expect(frameCalls).toBeGreaterThan(1));
+    expect(startCalls).toBe(0);
+  });
+});
+
+describe('Spec #3007 ST-1 — minimal doom-autoplay-note (AC5/R-5)', () => {
+  beforeEach(() => {
+    modeSeed = modeStatus({ phase: 'active', active: true, voiceSuppressed: true, origin: 'code' });
+  });
+
+  it('maps the run failure to an unobtrusive role=status note (never role=alert / full panel)', async () => {
+    await renderReady();
+    await waitFor(() => expect(startCalls).toBe(1));
+
     emitAutoplay(
       autoplayStatus({
         phase: 'failed',
-        steps: 42,
+        steps: 3,
         code: 'decisionFailed',
-        lastError: 'boom',
+        lastError: 'the companion could not decide',
       }),
     );
-    expect(screen.getByTestId('doom-autoplay-status')).toHaveTextContent(
-      'Autoplay failed · 42 steps',
-    );
-    expect(screen.getByTestId('doom-autoplay-error')).toBeInTheDocument();
+
+    const note = screen.getByTestId('doom-autoplay-note');
+    expect(note).toHaveAttribute('role', 'status');
+    expect(note).toHaveAttribute('aria-live', 'polite');
+    expect(note).toHaveAttribute('aria-atomic', 'true');
+    expect(within(note).getByText('Companion stalled')).toBeInTheDocument();
+    expect(within(note).getByText('the companion could not decide')).toBeInTheDocument();
+    // The removed full-width alert panel must not exist.
+    expect(screen.queryByTestId('doom-autoplay-error')).toBeNull();
+    // And the canvas keeps rendering behind the note.
+    expect(screen.getByTestId('doom-frame-canvas')).toBeInTheDocument();
   });
 
-  it('maps every DoomAutoplayErrorCode to its human copy', async () => {
+  it('renders every DoomAutoplayErrorCode human copy, truncating the detail to <= 120 chars', async () => {
     await renderReady();
+    await waitFor(() => expect(startCalls).toBe(1));
+
     const cases: Array<[DoomAutoplayStatus['code'], string]> = [
       ['notReady', 'Engine not ready'],
       ['decisionFailed', 'Companion stalled'],
       ['engineRequestFailed', 'Lost contact'],
       ['budgetExhausted', 'Run finished'],
+      ['campaignComplete', 'Campaign complete'],
     ];
     for (const [code, title] of cases) {
-      emitAutoplay(
-        autoplayStatus({ phase: 'failed', steps: 1, code, lastError: 'detail' }),
-      );
-      const box = screen.getByTestId('doom-autoplay-error');
-      expect(within(box).getByText(title)).toBeInTheDocument();
+      const long = 'E'.repeat(300);
+      emitAutoplay(autoplayStatus({ phase: 'failed', steps: 1, code, lastError: long }));
+      const note = screen.getByTestId('doom-autoplay-note');
+      expect(within(note).getByText(title)).toBeInTheDocument();
+      const detail = within(note).getByText(/^E+…$/);
+      expect(detail.textContent?.length).toBeLessThanOrEqual(120);
+      expect(detail).toHaveAttribute('title', long);
     }
   });
+});
 
-  it('AC-UI-1: the status line is single-line, ellipsised, and carries the full title', async () => {
-    await renderReady();
-    emitAutoplay(
-      autoplayStatus({
-        phase: 'running',
-        running: true,
-        steps: 1,
-        lastTic: 1,
-        outcome: 'a-very-long-outcome-value-that-must-not-wrap-the-toolbar',
-        startedAt: new Date().toISOString(),
-      }),
+describe('Spec #3007 ST-1 — theme tokens', () => {
+  it('the ST-1 UI code contains no hardcoded hex or rgba()', () => {
+    const source = readUiSource('src/applications/doom/DoomWindow.tsx');
+    expect(source, 'DoomWindow.tsx must not hardcode a hex color').not.toMatch(
+      /#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b/,
     );
-    const line = screen.getByTestId('doom-autoplay-status');
-    const style = getComputedStyle(line);
-    expect(style.whiteSpace).toBe('nowrap');
-    expect(style.overflow).toBe('hidden');
-    expect(style.textOverflow).toBe('ellipsis');
-    expect(line.getAttribute('title')).toContain('Autoplay · step 1');
-  });
-
-  it('AC-UI-2: truncates lastError to <= 120 chars, title keeps the full text', async () => {
-    await renderReady();
-    const long = 'E'.repeat(300);
-    emitAutoplay(
-      autoplayStatus({
-        phase: 'failed',
-        steps: 3,
-        code: 'engineRequestFailed',
-        lastError: long,
-      }),
-    );
-    const box = screen.getByTestId('doom-autoplay-error');
-    const detail = within(box).getByText(/^E+…$/);
-    expect(detail.textContent?.length).toBeLessThanOrEqual(120);
-    expect(detail).toHaveAttribute('title', long);
-  });
-
-  it('AC-UI-3: status is a polite live region; failure is a separate assertive alert', async () => {
-    await renderReady();
-    const line = screen.getByTestId('doom-autoplay-status');
-    expect(line).toHaveAttribute('role', 'status');
-    expect(line).toHaveAttribute('aria-live', 'polite');
-    expect(line).toHaveAttribute('aria-atomic', 'true');
-    expect(screen.queryByTestId('doom-autoplay-error')).toBeNull();
-
-    emitAutoplay(
-      autoplayStatus({ phase: 'failed', steps: 1, code: 'decisionFailed', lastError: 'x' }),
-    );
-    const error = screen.getByTestId('doom-autoplay-error');
-    expect(error).toHaveAttribute('role', 'alert');
-    expect(error).not.toHaveAttribute('aria-live');
-  });
-
-  it('AC-UI-4: renders base-10 integers and an em dash for a null lastTic', async () => {
-    await renderReady();
-    emitAutoplay(
-      autoplayStatus({
-        phase: 'running',
-        running: true,
-        steps: 1000,
-        lastTic: null,
-        outcome: 'alive',
-        startedAt: new Date().toISOString(),
-      }),
-    );
-    const line = screen.getByTestId('doom-autoplay-status');
-    expect(line).toHaveTextContent('step 1000');
-    expect(line).toHaveTextContent('tic —');
-    expect(line.textContent ?? '').not.toMatch(/1,000|1 000|1000\.0/);
-  });
-
-  it('AC-UI-5: status is event-driven — one hydration invoke, never a poll', async () => {
-    await renderReady();
-    const hydrationCalls = () =>
-      invoke.mock.calls.filter(([command]) => command === 'get_doom_autoplay_status').length;
-    expect(hydrationCalls()).toBe(1);
-
-    emitAutoplay(
-      autoplayStatus({
-        phase: 'running',
-        running: true,
-        steps: 7,
-        lastTic: 7,
-        outcome: 'alive',
-        startedAt: new Date().toISOString(),
-      }),
-    );
-    emitAutoplay(autoplayStatus({ phase: 'completed', steps: 9, outcome: 'exited' }));
-
-    expect(screen.getByTestId('doom-autoplay-status')).toHaveTextContent(
-      'Autoplay complete · 9 steps · exited',
-    );
-    expect(hydrationCalls()).toBe(1);
-  });
-
-  it('AC-UI-6: the frame loop keeps polling while autoplay runs', async () => {
-    await renderReady();
-    expect(screen.getByTestId('doom-frame-canvas')).toHaveAttribute('role', 'img');
-
-    frameCalls = 0;
-    emitAutoplay(
-      autoplayStatus({
-        phase: 'running',
-        running: true,
-        steps: 1,
-        lastTic: 1,
-        outcome: 'alive',
-        startedAt: new Date().toISOString(),
-      }),
-    );
-    await waitFor(() => expect(frameCalls).toBeGreaterThan(0));
-  });
-
-  it('AC-UI-7: the elapsed m:ss ticker refreshes while running and clears otherwise', async () => {
-    await renderReady();
-    emitAutoplay(
-      autoplayStatus({
-        phase: 'running',
-        running: true,
-        steps: 1,
-        lastTic: 1,
-        outcome: 'alive',
-        startedAt: new Date(Date.now() - 5000).toISOString(),
-      }),
-    );
-    const elapsed = await screen.findByTestId('doom-autoplay-elapsed');
-    const initial = elapsed.textContent ?? '';
-    expect(initial).toMatch(/^\d+:\d{2}$/);
-    await waitFor(() => expect(elapsed.textContent).not.toBe(initial), { timeout: 4000 });
-
-    // Cleared on any non-running phase.
-    emitAutoplay(autoplayStatus({ phase: 'completed', steps: 1 }));
-    expect(screen.queryByTestId('doom-autoplay-elapsed')).toBeNull();
-
-    // An unparseable startedAt renders no ticker (never throws).
-    emitAutoplay(
-      autoplayStatus({ phase: 'running', running: true, startedAt: 'not-a-date' }),
-    );
-    expect(screen.queryByTestId('doom-autoplay-elapsed')).toBeNull();
-  });
-
-  it('AC-UI-8: the manual Step is disabled while autoplay runs or stops', async () => {
-    await renderReady();
-    expect(screen.getByTestId('doom-step-button')).toBeEnabled();
-
-    emitAutoplay(
-      autoplayStatus({ phase: 'running', running: true, startedAt: new Date().toISOString() }),
-    );
-    expect(screen.getByTestId('doom-step-button')).toBeDisabled();
-
-    emitAutoplay(
-      autoplayStatus({ phase: 'stopping', running: true, startedAt: new Date().toISOString() }),
-    );
-    expect(screen.getByTestId('doom-step-button')).toBeDisabled();
-
-    emitAutoplay(autoplayStatus({ phase: 'completed', steps: 1 }));
-    expect(screen.getByTestId('doom-step-button')).toBeEnabled();
-  });
-
-  it('AC-UI-9: a window opened mid-run hydrates from get_doom_autoplay_status', async () => {
-    autoplaySnapshot = autoplayStatus({
-      phase: 'running',
-      running: true,
-      steps: 42,
-      lastTic: 42,
-      outcome: 'alive',
-      startedAt: new Date().toISOString(),
-    });
-    await renderReady();
-
-    await waitFor(() =>
-      expect(screen.getByTestId('doom-autoplay-status')).toHaveTextContent('step 42'),
-    );
-    expect(screen.getByTestId('doom-autoplay-toggle')).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByTestId('doom-autoplay-stop')).toBeInTheDocument();
-  });
-
-  it('AC-UI-9: a concurrent event is not clobbered by the mount seed (first-wins)', async () => {
-    deferStatus = true;
-    await renderReady();
-
-    emitAutoplay(
-      autoplayStatus({
-        phase: 'running',
-        running: true,
-        steps: 7,
-        lastTic: 7,
-        outcome: 'alive',
-        startedAt: new Date().toISOString(),
-      }),
-    );
-    act(() => {
-      resolveStatus?.(
-        autoplayStatus({
-          phase: 'running',
-          running: true,
-          steps: 99,
-          lastTic: 99,
-          outcome: 'alive',
-          startedAt: new Date().toISOString(),
-        }),
-      );
-    });
-
-    await waitFor(() =>
-      expect(screen.getByTestId('doom-autoplay-status')).toHaveTextContent('step 7'),
-    );
-    expect(screen.getByTestId('doom-autoplay-status')).not.toHaveTextContent('step 99');
-  });
-
-  it('AC-UI-10: re-entry guards ignore a double start and a double stop', async () => {
-    await renderReady();
-
-    deferStart = true;
-    const toggle = screen.getByTestId('doom-autoplay-toggle');
-    fireEvent.click(toggle);
-    fireEvent.click(toggle);
-    expect(startCalls).toBe(1);
-    act(() => {
-      resolveStart?.({ success: true, phase: 'running', steps: 0, code: null, error: null });
-    });
-    await waitFor(() => expect(screen.getByTestId('doom-autoplay-toggle')).toBeEnabled());
-
-    emitAutoplay(
-      autoplayStatus({ phase: 'running', running: true, startedAt: new Date().toISOString() }),
-    );
-    deferStop = true;
-    fireEvent.click(screen.getByTestId('doom-autoplay-toggle'));
-    fireEvent.click(screen.getByTestId('doom-autoplay-toggle'));
-    expect(stopCalls).toBe(1);
-    act(() => resolveStop?.());
-  });
-
-  it('AC-UI-11: the ST-7 UI code contains no hardcoded hex or rgba()', () => {
-    for (const relative of [
-      'src/applications/doom/DoomWindow.tsx',
-      'src/applications/doom/types.ts',
-    ]) {
-      const source = readUiSource(relative);
-      expect(source, `${relative} must not hardcode a hex color`).not.toMatch(
-        /#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b/,
-      );
-      expect(source, `${relative} must not hardcode rgba()`).not.toMatch(/\brgba\(/);
-    }
+    expect(source, 'DoomWindow.tsx must not hardcode rgba()').not.toMatch(/\brgba\(/);
   });
 });

@@ -41,8 +41,10 @@
   not modified or blocked (no idle-frame motion introduced — G-316).
 - [x] R-12 (PASS 2026-10-04 #2969 r1 — `doom_read_state` tic30 → `doom_step` tic31; `doom_frame` PNG (`iVBORw0K`); status ready; same managed pid across the loop; window singleton + launch/teardown unchanged): **Existing Doom surface unchanged** — `doom_read_state`/`doom_step`/`doom_frame`,
   `doom-status-changed`, launch/teardown, and the window singleton behave identically; the
-  loop reuses the slice-1 supervised child and spawns NO new engine process; existing testids
-  (`doom-root`, `doom-frame-canvas`, `doom-state-readout`, `doom-step-button`, …) still render.
+  loop reuses the slice-1 supervised child and spawns NO new engine process; the KEPT testids
+  (`doom-root`, `doom-frame-canvas`, `doom-frame-desc`, `doom-error`, `doom-retry-button`,
+  `doom-frame-reconnecting`, `doom-autoplay-note`) render — the #3007-removed hooks
+  (`doom-state-readout`, `doom-step-button`, …) are DOM-absent (see R-45).
 
 ### Links added by this slice
 
@@ -62,7 +64,7 @@
 - [x] R-13 (PASS 2026-10-05 #2970 r1 — the `doom` window opened at `index.html?view=doom` and rendered `DoomWindow` (`doom-root`, `doom-window-title`="Doom"); the route is independent of the removed feature-registry entry): **`?view=doom` route unchanged** — `Router.tsx:16-18` still renders `DoomWindow` for `?view=doom`; the route is opened by the Rust `open_doom_window` singleton and is independent of the (removed) feature-registry entry. Doom Mode activation must not perturb it. (Links: `doom-mode/functional.md` F-33/F-38.)
 - [x] R-14 (PASS 2026-10-05 #2970 r1 — with the mode inactive (voice enabled) `stt_start` → `started:true`; `get_doom_mode_status.voiceSuppressed===false`; no residual gate): **Mode-off companion behaviour unchanged** — with the mode inactive, `stt_start` and the model-audio turn behave exactly as today; the existing disabled gate (`session.rs:316-321`) and the model-audio path (`commands.rs:814-821`) are unmodified on the mode-off path. `get_doom_mode_status.voiceSuppressed === false`. (Links: `voice-dictation/functional.md`.)
 - [x] R-15 (PASS 2026-10-05 #2970 r1 — app exit with the mode active left zero `restful-doom.exe`, zero `fredo.exe`, and zero embedded `postgres.exe` (the PG exit hook ran; `stop_doom_on_exit` is wired last in the `RunEvent::Exit` hook, lib.rs:1121-1132, so it never starves the llama/PG hooks)): **Exit hooks co-exist** — `stop_doom_on_exit` clears the mode AND stops the runtime; the llama-server (`stop_llama_server_on_exit`) and PG (`pg_supervisor::stop_on_exit`) exit hooks still run (no early-return starves one). (Links: `llama-setup/functional.md`, `postgres-lifecycle/`.)
-- [x] R-16 (PASS 2026-10-05 #2970 r1 — `doom_read_state`/`doom_step`/`doom_frame`, `get_doom_status`, autoplay status/toggle, and the window singleton behaved identically; existing testids (`doom-root`, `doom-window-title`, `doom-frame-canvas`, `doom-state-readout`, `doom-step-button`, `doom-autoplay-toggle`, …) still rendered; the new `doom-exit-button` is additive): **Existing Doom runtime/autoplay surface unchanged** — `launch_doom_runtime`, `stop_doom_runtime`, `doom_read_state`, `doom_step`, `doom_frame`, `start/stop_doom_autoplay`, `doom-status-changed`, and the window singleton behave identically; the existing testids (`doom-root`, `doom-window-title`, `doom-frame-canvas`, `doom-state-readout`, `doom-step-button`, `doom-autoplay-toggle`, …) still render; the new `doom-exit-button` is additive. (Links: `doom-mode/functional.md` slice 1/2.)
+- [x] R-16 (PASS 2026-10-05 #2970 r1 — `doom_read_state`/`doom_step`/`doom_frame`, `get_doom_status`, autoplay status/toggle, and the window singleton behaved identically; existing testids (`doom-root`, `doom-window-title`, `doom-frame-canvas`, `doom-state-readout`, `doom-step-button`, `doom-autoplay-toggle`, …) still rendered; the new `doom-exit-button` is additive): **Existing Doom runtime/autoplay surface unchanged** — INVERTED by #3007: the runtime, autoplay COMMANDS, and the window singleton behave identically, but the window surface is now game-only. The KEPT testids (`doom-root`, `doom-frame-canvas`, `doom-frame-desc`, `doom-error`, `doom-retry-button`, `doom-frame-reconnecting`, `doom-autoplay-note`) render; the 19 removed hooks (`doom-window-title`, `doom-status`, `doom-exit-button`, `doom-engine-location`, `doom-engine-location-saved`, `doom-state-readout`, `doom-campaign-controls`, `doom-save-status`, `doom-progress-complete`, `doom-fresh-start-button`, `doom-fresh-start-confirm`, `doom-fresh-start-cancel`, `doom-autoplay-toggle`, `doom-autoplay-stop`, `doom-autoplay-status`, `doom-autoplay-elapsed`, `doom-autoplay-error`, `doom-step-button`, `doom-start-button`) are DOM-absent (R-45). (Links: `doom-mode/functional.md` slice 1/2 + #3007 slice.)
 - [x] R-17 (PASS 2026-10-05 #2970 r1 — `with_app_control()` pins unchanged (ST-4 unit tests); `with_app_control_and_doom()` additive offer order `open_app, close_app, doom_mode`; the frontend filter ignored a non-doom skill (`weather`) with zero spurious action): **Companion skill registry pins unchanged** — `with_app_control()` and its tests are untouched; `with_app_control_and_doom()` is additive with offer order `open_app, close_app, doom_mode`. The `useAppOpenRequests` filter (`useAppOpenRequests.ts:168-174`) still ignores non-open/close skills (zero spurious opens). (Links: `companion/functional.md`.)
 - [x] R-18 (PASS 2026-10-05 #2970 r1 — after every activation/exit leg zero `restful-doom.exe` outlived its window/app; `tasklist` confirmed a single engine PID while active and none after exit; no SDL second OS window observed): **No process leak / no second OS window** — across every activation/exit leg zero `restful-doom.exe` outlives its window/app (N-8); no SDL second OS window; `-noblit` still serves `/api/frame`. (Links: `doom-mode/functional.md` F-39-42.)
 - [x] R-19 (PASS 2026-10-05 #2970 r1 — Mission Monitor rendered the seeded `e2e-copilot2933` session while the secret-activation slice was present; the F-50 E2E row is the gate): **Mission Monitor unaffected** — renders live sessions normally with the secret-activation slice present; the F-50 E2E row is the gate. (Links: `mission-monitor/functional.md`.)
@@ -102,7 +104,7 @@
 > disclosed app-pool fallback, G-307). Doom emits no span. A static-only PASS is a FALSE PASS.
 
 - [ ] R-26: **Autoplay resume-by-default unchanged for prior callers** — `enter_doom_mode` and the `doom` window autoplay toggle still pass no `freshStart`, so entering/toggling resumes by default (never silently fresh); the existing `start_doom_autoplay` idempotency (`commands.rs:754`) and readiness guard (`:766`) are unmodified. (Links: `doom-mode/functional.md` slices 2–3.)
-- [ ] R-27: **Existing Doom runtime/autoplay surface unchanged** — `launch_doom_runtime`, `stop_doom_runtime`, `doom_read_state`, `doom_step`, `doom_frame`, `start/stop_doom_autoplay`, `get_doom_autoplay_status`, `doom-status-changed`, `doom-autoplay-changed`, and the window singleton behave identically; existing testids (`doom-root`, `doom-window-title`, `doom-frame-canvas`, `doom-state-readout`, `doom-step-button`, `doom-autoplay-toggle`, `doom-autoplay-status`, `doom-exit-button`, …) still render; the new save/fresh-start testids are additive. (Links: `doom-mode/functional.md` slices 1–4.)
+- [ ] R-27: **Existing Doom runtime/autoplay surface unchanged (COMMANDS), window surface inverted** — `launch_doom_runtime`, `stop_doom_runtime`, `doom_read_state`, `doom_step`, `doom_frame`, `start/stop_doom_autoplay`, `get_doom_autoplay_status`, `doom-status-changed`, `doom-autoplay-changed`, and the window singleton behave identically. INVERTED by #3007: the KEPT testids (`doom-root`, `doom-frame-canvas`, `doom-frame-desc`, `doom-error`, `doom-retry-button`, `doom-frame-reconnecting`, `doom-autoplay-note`) render, and the 19 removed hooks (`doom-window-title`, `doom-status`, `doom-exit-button`, `doom-engine-location`, `doom-engine-location-saved`, `doom-state-readout`, `doom-campaign-controls`, `doom-save-status`, `doom-progress-complete`, `doom-fresh-start-button`, `doom-fresh-start-confirm`, `doom-fresh-start-cancel`, `doom-autoplay-toggle`, `doom-autoplay-stop`, `doom-autoplay-status`, `doom-autoplay-elapsed`, `doom-autoplay-error`, `doom-step-button`, `doom-start-button`) are DOM-absent (R-45). (Links: `doom-mode/functional.md` slices 1–4 + #3007 slice.)
 - [ ] R-28: **Mode-off theme/armor unchanged + no new settings entry** — the resume slice adds no settings surface and does not perturb the theme/armor layer; with the mode inactive the base/preset/override passes behave exactly as today. (Links: `theming/functional.md`, `settings/functional.md`.)
 - [ ] R-29: **Control plane carries NO Doom SAVE key** — the Doom save no longer writes `doom_save_v1` to the control plane (Spec #3011); `get_control_setting('doom_save_v1')` → null while the save lives in the `feature_doom_save` singleton row. The remaining control-plane keys (`doom_pid`, `doom_port`, `doom_last_error`, `doom_last_error_code`, theme keys) are unmodified; `control_set` remains one atomic upsert (`storage/mod.rs:113-121`). (Links: `doom-mode/functional.md` F-72 / Spec #3011 slice.)
 - [ ] R-30: **Mission Monitor unaffected + no process leak** — Mission Monitor renders live sessions normally with the resume slice present (the F-69 E2E row is the gate); across every resume/restart leg zero `restful-doom.exe` outlives its window/app; no second OS window. (Links: `mission-monitor/functional.md`, `doom-mode/functional.md` F-63.)
@@ -165,3 +167,47 @@
 - `.opencode/tests/mission-monitor/` — F-99 E2E regression gate (unchanged surface).
 - `.opencode/tests/settings/` — the `doom_install_dir` plane (unchanged).
 - `.opencode/tests/postgres-lifecycle/`, `.opencode/tests/llama-setup/` — exit-hook co-existence.
+
+---
+
+## Game-only window + auto-play slice (Spec #3007) — must-not-change baseline
+
+> **Verification policy: live** — the live-pipeline `telemetry_spans` reference (NON-ZERO count +
+> recent `max(ingested_at)`) is required; Doom emits no span — DISCLOSE. Every wait bounded (G-263);
+> a console `Error:`/`Uncaught`/`Maximum update depth exceeded` on any leg fails that leg.
+
+- [ ] R-45: **Game-only surface — KEPT set renders, 19 removed hooks DOM-absent** — the `doom` window
+  renders ONLY `doom-root`, `doom-frame-canvas`, `doom-frame-desc` (+ the minimal transient states and
+  `doom-autoplay-note`); `querySelectorAll` count is 0 for each of the 19 removed hooks
+  (`doom-window-title`, `doom-status`, `doom-exit-button`, `doom-engine-location`,
+  `doom-engine-location-saved`, `doom-state-readout`, `doom-campaign-controls`, `doom-save-status`,
+  `doom-progress-complete`, `doom-fresh-start-button`, `doom-fresh-start-confirm`,
+  `doom-fresh-start-cancel`, `doom-autoplay-toggle`, `doom-autoplay-stop`, `doom-autoplay-status`,
+  `doom-autoplay-elapsed`, `doom-autoplay-error`, `doom-step-button`, `doom-start-button`) — DOM-absence,
+  not `display:none` (G-170 reverse). (Links: `doom-mode/functional.md` F-101/F-110.)
+- [ ] R-46: **Auto-play on open, resume-by-default** — the `doom` window auto-starts the companion
+  through the SAME idempotent `start_doom_autoplay` (no toggle/step control exists); resume-by-default
+  (never a silent fresh run over a valid save); exactly ONE loop (`try_begin`). (Links:
+  `doom-mode/functional.md` F-105/F-106/F-107.)
+- [ ] R-47: **Close path stops the agent FIRST (bounded) + mode revert; no in-window exit control** —
+  `teardown_doom_on_window_close` reuses `DoomAutoplayState::request_stop`/`stop_doom_autoplay` BEFORE
+  the bounded engine stop; `doom-mode-changed {active:false}` is published; zero `restful-doom.exe`
+  within `DOOM_STOP_TIMEOUT_S`; `doom-exit-button` never renders. The exit-button/voice paths that
+  remain (`exit_doom_mode`) behave identically. (Links: `doom-mode/functional.md` F-108/F-109/F-110.)
+- [ ] R-48: **Hotkeys cluster suppression is exactly `view=doom`** — the shared resting cluster
+  (`hotkeys-input-regime` + `hotkeys-keys-discovery`) is absent ONLY in the doom webview; every other
+  window renders it byte-identically. (Links: `doom-mode/functional.md` F-104.)
+- [ ] R-49: **Auto-play/runtime commands unchanged for prior callers** — `enter_doom_mode`,
+  `exit_doom_mode`, `get_doom_mode_status`, `start/stop_doom_autoplay`, `get_doom_autoplay_status`,
+  `get/reset_doom_save`, `launch_doom_runtime`, `stop_doom_runtime`, `doom_read_state`/`doom_step`/
+  `doom_frame`, and the `doom-status-changed`/`doom-autoplay-changed`/`doom-mode-changed` events are
+  UNCHANGED; no new command/wire type/event is introduced. (Links: `doom-mode/functional.md` slices 1–7.)
+- [ ] R-50: **PG-default boot + Mission Monitor unaffected + no process leak** — `storage_engine_status`
+  = PostgreSQL / PG supervisor ready; Mission Monitor renders live sessions via the CURRENT declared
+  `sessions` rollup (the F-114 E2E row is the gate); across every leg zero `restful-doom.exe` outlives
+  its window/app; no second OS window. (Links: `mission-monitor/functional.md`, `doom-mode/functional.md` F-114.)
+
+### Links added by this slice
+
+- `.opencode/tests/mission-monitor/` — F-114 E2E regression gate (unchanged surface).
+- `.opencode/tests/hotkeys/` — the shared resting cluster the `view=doom` gate suppresses.

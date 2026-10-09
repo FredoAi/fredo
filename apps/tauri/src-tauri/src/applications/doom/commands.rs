@@ -926,16 +926,70 @@ pub fn stop_doom_on_window_close(app: &AppHandle) {
     tauri::async_runtime::block_on(stop_runtime(app, stop_timeout()));
 }
 
+/// The ordered stages of the `doom` window close-path teardown, in EXECUTION
+/// order. Pinned by a unit test so a future edit cannot silently reorder them:
+/// the playing agent is stopped (reused cooperative stop) BEFORE the bounded
+/// engine stop, and Doom Mode is cleared last (Spec #3007 R-4.a).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DoomCloseTeardownStage {
+    /// Stop the playing agent through the reused
+    /// `DoomAutoplayState::request_stop` primitive (one control path).
+    StopAgent,
+    /// Bounded engine stop with the hard-kill fallback (G-263).
+    StopRuntime,
+    /// Clear Doom Mode + suppression and publish `doom-mode-changed`.
+    ClearMode,
+}
+
+/// The close-path teardown order (agent → engine → mode clear), executed
+/// verbatim by [`teardown_doom_on_window_close`].
+pub(crate) const DOOM_CLOSE_TEARDOWN_ORDER: [DoomCloseTeardownStage; 3] = [
+    DoomCloseTeardownStage::StopAgent,
+    DoomCloseTeardownStage::StopRuntime,
+    DoomCloseTeardownStage::ClearMode,
+];
+
+/// Cooperative agent stop for the close path (Spec #3007 R-4.a): reuse the live
+/// run's `DoomAutoplayState::request_stop` primitive — the SAME stop control path
+/// as `stop_doom_autoplay` — returning the `Stopping` status to publish when a run
+/// was live (`None` when idle: idempotent).
+fn stop_agent_on_window_close(state: &DoomAutoplayState) -> Option<DoomAutoplayStatus> {
+    state.request_stop()
+}
+
+/// Synchronous teardown for the `doom` window close path (Spec #3007 R-4.a): stop
+/// the playing agent FIRST (reused cooperative stop), then the engine (bounded,
+/// hard-kill fallback, G-263), then clear Doom Mode and publish
+/// `doom-mode-changed`. Reuses the existing primitives — no new command or
+/// control path. Invoked by [`doom_close_handler`].
+pub fn teardown_doom_on_window_close(app: &AppHandle) {
+    for stage in DOOM_CLOSE_TEARDOWN_ORDER {
+        match stage {
+            DoomCloseTeardownStage::StopAgent => {
+                let state = app.state::<DoomAutoplayState>();
+                if let Some(status) = stop_agent_on_window_close(&state) {
+                    publish_autoplay(app, &status);
+                }
+            }
+            DoomCloseTeardownStage::StopRuntime => stop_doom_on_window_close(app),
+            DoomCloseTeardownStage::ClearMode => clear_mode_teardown(app),
+        }
+    }
+}
+
 /// The `doom` window `CloseRequested` handler (mirrors
 /// `terminal::commands::window_close_handler`). Wired by `open_doom_window` in
-/// CU-4; a close for ANY reason tears the engine down so no orphan survives AND
-/// clears Doom Mode (Spec #2970 R-3.b: closing the window is an exit path).
+/// CU-4; a close for ANY reason stops the playing agent + the engine so no orphan
+/// survives AND clears Doom Mode (Spec #2970 R-3.b / Spec #3007 R-4: closing the
+/// window is the only exit path).
 pub fn doom_close_handler(app: AppHandle) -> impl Fn(&tauri::WindowEvent) + Send + Sync + 'static {
     move |event| {
         if let tauri::WindowEvent::CloseRequested { .. } = event {
-            tracing::debug!(target: "fredo::doom", "CloseRequested: stopping the Doom engine");
-            stop_doom_on_window_close(&app);
-            clear_mode_teardown(&app);
+            tracing::debug!(
+                target: "fredo::doom",
+                "CloseRequested: stopping the Doom agent + engine and clearing the mode"
+            );
+            teardown_doom_on_window_close(&app);
         }
     }
 }
@@ -1481,5 +1535,40 @@ mod tests {
         if std::env::var(decision::DOOM_AGENT_MAX_FAILURES_ENV).is_err() {
             assert_eq!(autoplay_config(None).max_failures, base.max_failures);
         }
+    }
+
+    // ── Close-path teardown (Spec #3007 ST-3) ────────────────────────────────
+
+    #[test]
+    fn close_teardown_order_stops_the_agent_before_the_engine() {
+        // R-4.a — the playing agent is stopped BEFORE the bounded engine stop,
+        // and Doom Mode is cleared last. Pinned so a reorder cannot regress it.
+        assert_eq!(
+            DOOM_CLOSE_TEARDOWN_ORDER,
+            [
+                DoomCloseTeardownStage::StopAgent,
+                DoomCloseTeardownStage::StopRuntime,
+                DoomCloseTeardownStage::ClearMode,
+            ]
+        );
+    }
+
+    #[test]
+    fn close_path_stops_the_agent_through_the_reused_primitive() {
+        // Identity (one control path): the close path stops the agent via the
+        // SAME `DoomAutoplayState::request_stop` primitive as
+        // `stop_doom_autoplay` — no parallel stop implementation.
+        let state = DoomAutoplayState::default();
+        // Idle → no-op (idempotent); nothing to publish.
+        assert!(stop_agent_on_window_close(&state).is_none());
+
+        let stop = Arc::new(AtomicBool::new(false));
+        state
+            .try_begin(stop.clone(), &DoomCampaign::initial())
+            .expect("begin");
+        let status = stop_agent_on_window_close(&state).expect("a live run can be stopped");
+        assert_eq!(status.phase, DoomAutoplayPhase::Stopping);
+        assert!(status.running);
+        assert!(stop.load(Ordering::Relaxed), "the cooperative flag is set");
     }
 }
