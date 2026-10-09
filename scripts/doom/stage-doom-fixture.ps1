@@ -2,11 +2,11 @@
 <#
 .SYNOPSIS
     Stage the real RESTful-DOOM engine + the Freedoom IWAD into an in-repo fixture
-    directory and print the exact environment exports (Spec #2968, ST-6).
+    directory and print the exact environment exports (Spec #2968, ST-6; #3013, ST-4).
 
 .DESCRIPTION
     QA needs the real engine and the libre game data staged somewhere the runtime
-    can be pointed at, plus a deterministic way to induce every AC4 error path.
+    can be pointed at, plus a deterministic way to induce every error path.
     This script is that producer. It is idempotent: a re-run copies nothing it
     already has.
 
@@ -14,9 +14,19 @@
 
         engine/restful-doom.exe          the real built engine (ST-2 build script)
         engine/*.dll                     its MSYS2 runtime dependencies (self-contained)
-        engine/doom-engine.invalid.exe   a non-PE file -> FREDO_DOOM_ENGINE_PATH spawnFailed lever
+        engine/doom-engine.invalid.exe   a non-PE file, retained from the #2968 layout
         freedoom/freedoom1.wad           the pinned Freedoom 0.13.0 IWAD
         freedoom/freedoom-0.13.0.zip     the verified archive (when downloaded here)
+
+    #3013 ST-4 adds two failure-induction install dirs (driven through the retained
+    FREDO_DOOM_INSTALL_DIR):
+
+        absent/                          an empty install dir -> absent-engine negative
+        fail-engine/engine/restful-doom.exe        an MZ-header-only, non-runnable
+                                                   stub (a real spawn failure)
+        fail-engine/engine/.restful-doom-commit    contents == the pinned
+                                                   DOOM_VENDOR_COMMIT, so the
+                                                   staged predicate PASSES
 
     The built binary and the WAD are NEVER committed and NEVER bundled (G-172).
     .opencode/tmp/ is gitignored, so everything this script writes stays local.
@@ -103,6 +113,13 @@ $FreedoomWadBytes = 28795076
 # The AC4 / R-1.4 induction levers this fixture supports.
 $InvalidEngineName = 'doom-engine.invalid.exe'
 $MissingWadName    = 'missing.wad'
+
+# The vendored-engine commit pin + marker. MUST match provision.rs
+# DOOM_VENDOR_COMMIT (:71) / DOOM_ENGINE_COMMIT_MARKER (:73): the #3013
+# fail-engine fixture only induces a REAL spawn failure if the staged
+# predicate accepts it (marker == pin, MZ header present).
+$VendorCommit       = 'eded41b5597b7738ec1fa06d24f62b53db982c2c'
+$EngineCommitMarker = '.restful-doom-commit'
 
 function Write-Log([string]$Message) {
     [Console]::Error.WriteLine("[stage-doom-fixture] $Message")
@@ -235,11 +252,40 @@ if (-not $PlanOnly -and (Test-Path -LiteralPath $engineExe -PathType Leaf)) {
     }
 }
 
-# A deliberately invalid engine (exists, but is not a Windows PE) so
-# FREDO_DOOM_ENGINE_PATH surfaces spawnFailed without a filesystem hunt.
+# A deliberately invalid engine (exists, but is not a Windows PE), retained from
+# the #2968 fixture layout.
 if (-not $PlanOnly -and -not (Test-Path -LiteralPath $invalidExe -PathType Leaf)) {
     New-Item -ItemType Directory -Force -Path $engineDir | Out-Null
     Set-Content -LiteralPath $invalidExe -Value 'not a windows executable' -NoNewline
+}
+
+# -- Stage the #3013 failure-induction fixture trees --------------------------
+# Two install dirs under -FixtureDir, driven through the retained
+# FREDO_DOOM_INSTALL_DIR:
+#   absent/       an empty install dir (no engine/ staged) -> absent-engine negative
+#   fail-engine/  a staged-but-non-runnable engine -> a REAL spawn failure: the
+#                 staged predicate (provision::staged_engine_path) PASSES (MZ
+#                 header + commit marker == DOOM_VENDOR_COMMIT) yet the child
+#                 cannot execute. The stub is an MZ-header-only file, NEVER a
+#                 real or committed binary.
+$absentDir        = Join-Path $FixtureDir 'absent'
+$failEngineDir    = Join-Path $FixtureDir 'fail-engine'
+$failEngineExeDir = Join-Path $failEngineDir 'engine'
+$failEngineExe    = Join-Path $failEngineExeDir $EngineExeName
+$failEngineMarker = Join-Path $failEngineExeDir $EngineCommitMarker
+
+if (-not $PlanOnly) {
+    New-Item -ItemType Directory -Force -Path $absentDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $failEngineExeDir | Out-Null
+    if (-not (Test-Path -LiteralPath $failEngineExe -PathType Leaf)) {
+        # MZ-header-only stub: the staged predicate reads only the first 2 bytes
+        # ("MZ"); the trailing bytes keep it a few-byte, clearly non-PE file.
+        $mzStub = [byte[]](0x4D, 0x5A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)
+        [System.IO.File]::WriteAllBytes($failEngineExe, $mzStub)
+    }
+    if (-not (Test-Path -LiteralPath $failEngineMarker -PathType Leaf)) {
+        [System.IO.File]::WriteAllText($failEngineMarker, $VendorCommit)
+    }
 }
 
 # -- Stage the Freedoom IWAD --------------------------------------------------
@@ -299,24 +345,21 @@ if ($SkipIwad) {
 
 # -- Print the exact environment exports --------------------------------------
 # Machine-readable: one `NAME=value` per line. The happy path first, then the
-# AC4 / R-1.4 induction levers (set ONE at a time).
+# induction levers (set ONE at a time).
 $out = [Console]::Out
 $out.WriteLine("# stage-doom-fixture: $FixtureDir")
 $out.WriteLine("# Happy path (real engine + real IWAD):")
 $out.WriteLine("FREDO_DOOM_INSTALL_DIR=$FixtureDir")
-$out.WriteLine("FREDO_DOOM_ENGINE_PATH=$engineExe")
 $out.WriteLine("FREDO_DOOM_IWAD_PATH=$iwadPath")
-$out.WriteLine("# AC4 / R-1.4 induction levers (inject ONE at a time via dev-env.ps1 -EnvVar):")
-$out.WriteLine("# spawnFailed        FREDO_DOOM_ENGINE_PATH=$invalidExe")
+$out.WriteLine("# Failure-induction levers (inject ONE at a time via dev-env.ps1 -EnvVar):")
+$out.WriteLine("# absent engine      FREDO_DOOM_INSTALL_DIR=$absentDir")
+$out.WriteLine("# real spawn failure FREDO_DOOM_INSTALL_DIR=$failEngineDir")
+$out.WriteLine("# seam failure lever FREDO_DOOM_FAIL_ENGINE_SPAWN=1")
 $out.WriteLine("# notConfigured      FREDO_DOOM_IWAD_PATH=$missingWad")
-$out.WriteLine("# acquireFailed      FREDO_DOOM_ARCHIVE_URL=https://127.0.0.1:1/restful-doom.zip")
-$out.WriteLine("#                    FREDO_DOOM_ARCHIVE_SHA256=0000000000000000000000000000000000000000000000000000000000000000")
-$out.WriteLine("#                    FREDO_DOOM_ARCHIVE_BYTES=1")
-$out.WriteLine("# anti-stub refusal  FREDO_DOOM_REQUIRE_REAL_ENGINE=1  +  FREDO_DOOM_ENGINE_PATH=<the built stub path>")
 $out.WriteLine("# build failure      FREDO_DOOM_BUILD_OFFLINE=1  (run build-restful-doom.ps1)")
 $out.WriteLine("# frameNotReady      FREDO_DOOM_STUB_FRAME_503=10  (stub only; a count or 250ms/2s/1m)")
 $out.WriteLine("#")
-$out.WriteLine("# Example: powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec 2968 -EnvVar `"FREDO_DOOM_ENGINE_PATH=$engineExe`" -EnvVar `"FREDO_DOOM_IWAD_PATH=$iwadPath`"")
+$out.WriteLine("# Example: powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec 3013 -EnvVar `"FREDO_DOOM_INSTALL_DIR=$failEngineDir`" -EnvVar `"FREDO_DOOM_IWAD_PATH=$iwadPath`"")
 $out.WriteLine("stage-doom-fixture: OK")
 
 exit $ExitOk

@@ -68,6 +68,7 @@ pub mod autoplay;
 pub mod client;
 pub mod commands;
 pub mod decision;
+pub mod failure_seam;
 pub mod mode;
 pub mod process;
 pub mod progress;
