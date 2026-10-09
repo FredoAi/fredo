@@ -192,3 +192,27 @@ apps/browser-extension-svelte
 # evidence already on main / old spec branches.
 .opencode/tmp/
 .opencode/evidence/
+
+# --- Doom Mode engine provisioning (Spec #3012) -------------------------------
+# The RESTful-DOOM engine is built at RUNTIME on first activation from the
+# GPL-2.0 corresponding SOURCE vendored at vendor/restful-doom/ (pinned commit
+# eded41b5597b7738ec1fa06d24f62b53db982c2c). That source is tracked and ships
+# as a Tauri resource (`doom/source` in apps/tauri/src-tauri/tauri.conf.json);
+# the build script + patches ship as `doom/scripts`.
+#
+# Keep the vendored tree TRACKED even where a generic ignore above would match an
+# upstream path (e.g. build/, dist/, *.log). The trailing-slash rule re-enables
+# directory descent so the following file rule can re-include the contents.
+!vendor/restful-doom/
+!vendor/restful-doom/**/
+!vendor/restful-doom/**
+
+# Everything the provisioning path PRODUCES stays untracked: the staged engine
+# and its DLL closure land in <install_dir> (app-data, outside the repo by
+# default), the IWAD is a pinned download, and the build scratch/marker live
+# under <install_dir>. These guards catch any in-repo <install_dir> override
+# (e.g. a test dir). No compiled engine binary and no WAD is ever committed.
+restful-doom.exe
+*.wad
+.restful-doom-commit
+.restful-doom-runtime-dlls
