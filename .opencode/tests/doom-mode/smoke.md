@@ -72,3 +72,15 @@
 - [ ] S-25 (REAL engine) **PG save round-trip quick path** — drive a real level transition (production PG path); `application_store_query({applicationId:'doom',tableName:'save'})` returns exactly ONE `id='singleton'` row with the typed columns; `get_doom_save` matches. (A stub-only receipt is a FALSE PASS.)
 - [ ] S-26 **No control-plane save key** — `get_control_setting('doom_save_v1')` → null while the save exists in `feature_doom_save`; the IPC monitor shows the save/resume path touching only `doom`/`save`, never the control plane.
 - [ ] S-27 (F-MM3011 gate) **Full-restart survival** — after a durable save, fully quit + relaunch; re-enter Doom Mode; `get_doom_save` reports the saved coords BEFORE any step (row read from `feature_doom_save`).
+
+---
+
+## Engine-provisioning slice (Spec #3012) — smoke additions
+
+> **Verification policy: live** — the live-pipeline `telemetry_spans` reference (app-pool read,
+> G-307; fallback managed `psql` at the manifest `ports.pg`, G-284, DISCLOSED). Doom emits no span.
+> A static-only smoke cannot pass. **A stub engine is not a valid smoke engine (G-033/G-314).**
+
+- [ ] S-28 (REAL engine) **First-use provisioning quick path** — fresh install dir (no staged engine) + `FREDO_DOOM_TOOLCHAIN_ROOT` at a usable MSYS2 (the committed script probes internally, G-322); type `iddqd`. EXPECTED: `doom-provision-dialog` → confirm → `doom-provision-progress` reaches `ready`; the REAL `<install_dir>/engine/restful-doom.exe` is built from `vendor/restful-doom/` at the pinned commit and launches (`/api/state` 200); the game renders; ZERO orphans after.
+- [ ] S-29 **Cancel / error quick path** — start provisioning, click `doom-provision-cancel` → phase `cancelled`, zero orphans within 5 s; re-enter with `FREDO_DOOM_BUILD_OFFLINE=1` (no usable root) → `doom-provision-error` shows `toolchainUnavailable`, no crash. (Levers G-275/G-300.)
+- [ ] S-30 (F-89 gate) **PG-only boot + Mission Monitor** — `storage_engine_status` = PostgreSQL / PG supervisor ready; seed the rollup-qualifying `e2e-copilot2933` OTLP fixture; assert the DECLARED `sessions` row `visibleTurnCount ≥ 1` BEFORE the list; Mission Monitor renders ≥1 `.mm-session-row`; live receipt non-zero + recent `max(ingested_at)`.
