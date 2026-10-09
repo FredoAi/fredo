@@ -1,12 +1,15 @@
 # scripts/doom
 
-Development / QA-time producers for the Doom runtime's external artifacts.
+Development / QA-time and runtime-first-use producers for the Doom runtime's
+external artifacts.
 
-> **Nothing here runs at runtime and nothing here is bundled.** The Fredo
-> installer ships **no GPL engine binary and no WAD** (see
-> [`docs/doom-mode-acquisition.md`](../../docs/doom-mode-acquisition.md)). These
-> scripts exist so a developer or QA run can produce the real engine locally and
-> stage it where the runtime resolver already looks.
+> **Nothing here is bundled as a binary.** The Fredo installer ships **no GPL
+> engine binary and no WAD** (see
+> [`docs/doom-mode-acquisition.md`](../../docs/doom-mode-acquisition.md)). Since
+> Spec #3012 the engine source is vendored in-repo (`vendor/restful-doom/`) and the
+> runtime builds it on first use by invoking `build-restful-doom.ps1 -SourceDir
+> <vendor>` through the provisioning path; the corresponding **source**, not a
+> binary, is what ships. The scripts still run standalone for a developer or QA.
 
 ## `build-restful-doom.ps1`
 
@@ -17,9 +20,13 @@ source and stages it at the resolver's candidate path
 
 - Engine repo: `https://github.com/mkschreder/restful-doom.git` (fork of Chocolate Doom)
 - Pinned commit: `eded41b5597b7738ec1fa06d24f62b53db982c2c` (ST-1 pin; the `-EngineCommit` default)
-- Toolchain: **MSYS2 "MINGW64"** with `base-devel`, `git`, `mingw-w64-x86_64-toolchain`,
-  `mingw-w64-x86_64-SDL2`, `mingw-w64-x86_64-SDL2_mixer`, `mingw-w64-x86_64-SDL2_net`,
-  `mingw-w64-x86_64-libsamplerate`, `mingw-w64-x86_64-libpng`
+- Source tree: **vendored in-repo** at `vendor/restful-doom/` (Spec #3012) - the
+  `-SourceDir` default. The script copies it to the scratch dir before patching, so
+  the tracked tree is never mutated; an empty `-SourceDir` falls back to a clone of
+  `-RepoUrl`.
+- Toolchain: **MSYS2 "MINGW64"** with `base-devel`, `git`, `autoconf`, `automake`, `libtool`,
+  `mingw-w64-x86_64-toolchain`, `mingw-w64-x86_64-SDL2`, `mingw-w64-x86_64-SDL2_mixer`,
+  `mingw-w64-x86_64-SDL2_net`, `mingw-w64-x86_64-libsamplerate`, `mingw-w64-x86_64-libpng`
 - Staged output: `<InstallDir>/engine/restful-doom.exe` (default `InstallDir` is
   `{app_data_dir}/doom` = `%APPDATA%\com.fredo.app\doom`), plus a
   `.restful-doom-commit` marker used for idempotency
@@ -41,6 +48,13 @@ source and stages it at the resolver's candidate path
 The script does **not** commit the built binary or the WAD and does **not**
 change the resolver order (`resolver.rs`: configured → PATH → staged candidate).
 
+It emits machine-readable progress on stderr, one line per transition, for the
+runtime provisioner to parse:
+
+```text
+[build-restful-doom] STEP <toolchain|deps|source|patch|autogen|configure|make|stage>
+```
+
 ### Usage
 
 ```powershell
@@ -49,6 +63,9 @@ powershell -File scripts/doom/build-restful-doom.ps1
 
 # Explicit staging dir / commit.
 powershell -File scripts/doom/build-restful-doom.ps1 -InstallDir D:\doom -EngineCommit eded41b5
+
+# Build from an explicit source tree (the vendored default is used when omitted).
+powershell -File scripts/doom/build-restful-doom.ps1 -SourceDir vendor/restful-doom
 ```
 
 On success the script prints the staged engine path (one line) on stdout.
@@ -59,6 +76,7 @@ On success the script prints the staged engine path (one line) on stdout.
 |-----------|---------|---------|
 | `-InstallDir` | `%APPDATA%\com.fredo.app\doom` | Staging directory; the engine lands in `<InstallDir>\engine\restful-doom.exe`. |
 | `-EngineCommit` | `eded41b5597b7738ec1fa06d24f62b53db982c2c` | Pinned fork commit to build. |
+| `-SourceDir` | `<repo>\vendor\restful-doom` | Build from this source tree (copied to scratch; the tracked tree is never mutated). Empty = clone `-RepoUrl`. |
 | `-Msys2Root` | auto-probe | Explicit MSYS2 root (e.g. `C:\msys64`). |
 | `-RepoUrl` | upstream fork | Clone URL. |
 | `-ScratchDir` | `<InstallDir>\build\restful-doom` | Clone + object scratch (never committed). |
@@ -85,6 +103,44 @@ $env:FREDO_DOOM_BUILD_OFFLINE = '1'
 powershell -File scripts/doom/build-restful-doom.ps1   # exit 3, typed "offline" message
 Remove-Item Env:\FREDO_DOOM_BUILD_OFFLINE
 ```
+
+## Managed toolchain archive pin (`DOOM_TOOLCHAIN_PIN`)
+
+The runtime provisioner (Spec #3012, ST-2) downloads one pinned MSYS2 base archive
+and gates it on an exact byte count + SHA-256. These are the values ST-1 recorded
+from the enforcing fetch (`scripts/doom/record-toolchain-pin.ps1`, G-320); they fill
+the `DOOM_TOOLCHAIN_PIN` constant:
+
+```text
+url:              https://repo.msys2.org/distrib/x86_64/msys2-base-x86_64-20260927.tar.xz
+archive_filename: msys2-base-x86_64-20260927.tar.xz
+bytes:            42860696
+sha256:           ea2f31a0b6ade63914ce441ffb022f0f6aa96982bfefa2326460a26d5fb01322
+```
+
+Extracting this archive to `<install_dir>/toolchain/msys2` yields
+`<install_dir>/toolchain/msys2/usr/bin/bash.exe` - the managed usable root.
+
+## `record-toolchain-pin.ps1`
+
+The enforcing fetch that produces the `DOOM_TOOLCHAIN_PIN` values above (Spec
+#3012, ST-1). Downloads the pinned MSYS2 base archive once, prints
+`url` / `archive_filename` / `bytes` / `sha256`, and leaves the archive under
+`.opencode/tmp/3012/toolchain-archive/` for the QA pin assertion (F-78).
+Idempotent: an already-downloaded archive is reused unless `-Force` is passed.
+Nothing is committed.
+
+```powershell
+powershell -File scripts/doom/record-toolchain-pin.ps1
+powershell -File scripts/doom/record-toolchain-pin.ps1 -Force
+```
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `-Url` | the pinned `msys2-base-x86_64-20260927.tar.xz` | Archive URL. |
+| `-OutDir` | `<repo>\.opencode\tmp\3012\toolchain-archive` | Download directory (gitignored). |
+| `-Force` | off | Re-download even when present. |
+| `-TimeoutSec` | 900 | Bounded download wait (G-263). |
 
 ## `stage-doom-fixture.ps1`
 
@@ -159,7 +215,7 @@ when unset.
 
 ## Relationship to the runtime
 
-The runtime resolves the engine (`apps/tauri/src-tauri/src/features/doom/resolver.rs`)
+The runtime resolves the engine (`apps/tauri/src-tauri/src/applications/doom/resolver.rs`)
 in the order **configured → PATH → staged `<install_dir>/engine/restful-doom.exe`**.
 This script is the sanctioned producer of the staged candidate. The engine is
 launched by the runtime as an arm's-length child process over loopback HTTP; the

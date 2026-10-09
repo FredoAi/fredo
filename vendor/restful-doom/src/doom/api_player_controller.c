@@ -1,0 +1,507 @@
+#include <stdio.h>
+#include <string.h>
+
+#include "api.h"
+#include "api_cJSON.h"
+
+#include "d_player.h"
+#include "m_menu.h"
+#include "../d_event.h"
+#include "../doomkeys.h"
+#include "p_local.h"
+#include "../net_server.h"
+
+// externally-defined game variables
+extern player_t players[MAXPLAYERS];
+extern void P_FireWeapon (player_t* player);
+extern void P_KillMobj( mobj_t* source, mobj_t* target );
+
+extern int key_right;
+extern int key_left;
+extern int key_up;
+extern int key_down;
+extern int key_fire;
+extern int key_speed;
+extern int key_strafeleft;
+extern int key_straferight;
+extern int consoleplayer;
+extern int *weapon_keys[];
+extern char *player_names[];
+extern net_client_t *sv_players[];
+
+api_response_t API_PostMessage(cJSON *req)
+{
+    cJSON *message;
+
+    message = cJSON_GetObjectItem(req, "text");
+    if (message && cJSON_IsString(message))
+        API_SetHUDMessage(cJSON_GetObjectItem(req, "text")->valuestring);
+    else
+        return (api_response_t){ 400, NULL };
+    
+    return (api_response_t){ 201, NULL };
+}
+
+// e.g. to turn right to a target of 90 degrees {"type": "right", "target_angle": 90}
+api_response_t API_PostTurnDegrees(cJSON *req)
+{
+    cJSON *amount_obj;
+    int degrees;
+
+    amount_obj = cJSON_GetObjectItem(req, "target_angle");
+    if (!cJSON_IsNumber(amount_obj))
+    {
+        return API_CreateErrorResponse(400, "target_angle must be a number");
+    }
+    degrees = amount_obj->valueint;
+
+    if (degrees < 0 || degrees > 359)
+        return API_CreateErrorResponse(400, "target_angle must be between 0 and 359");
+
+    target_angle = degrees;
+    turnPlayer();
+
+    return (api_response_t) {201, NULL};
+}
+
+
+api_response_t API_PostPlayerAction(cJSON *req)
+{
+    int amount;
+    char *type;
+    cJSON *amount_obj;
+    cJSON *type_obj;
+    int *weapon_key;
+    event_t event;
+
+    type_obj = cJSON_GetObjectItem(req, "type");
+    if (type_obj == NULL || !cJSON_IsString(type_obj))
+        return API_CreateErrorResponse(400, "Action type not specified or specified incorrectly");
+    type = type_obj->valuestring;
+    amount_obj = cJSON_GetObjectItem(req, "amount");
+
+    // Optional amount field, default to 10 if not set or set incorrectly
+    if (amount_obj == NULL)
+    {
+        amount = 10;
+    }
+    else
+    {
+        if (!cJSON_IsNumber(amount_obj))
+        {
+            return API_CreateErrorResponse(400, "amount must be a number");
+        }
+        amount = amount_obj->valueint;
+        if (amount < 1)
+        {
+            return API_CreateErrorResponse(400, "amount must be positive and non-zero");
+        }
+    }
+    
+
+    if (strcmp(type, "forward") == 0)
+    {
+        keys_down[key_up] = amount;
+        event.type = ev_keydown;
+        event.data1 = key_up;
+        event.data2 = 0;
+        D_PostEvent(&event);
+    }
+    else if (strcmp(type, "backward") == 0)
+    {
+        keys_down[key_down] = amount;
+        event.type = ev_keydown;
+        event.data1 = key_down;
+        event.data2 = 0;
+        D_PostEvent(&event);
+    }
+    else if (strcmp(type, "turn-left") == 0) 
+    {
+        keys_down[key_left] = amount;
+        event.type = ev_keydown;
+        event.data1 = key_left;
+        event.data2 = 0;
+        D_PostEvent(&event);
+    }
+    else if (strcmp(type, "turn-right") == 0) 
+    {
+        keys_down[key_right] = amount;
+        event.type = ev_keydown;
+        event.data1 = key_right;
+        event.data2 = 0;
+        D_PostEvent(&event);
+    }
+    else if (strcmp(type, "strafe-left") == 0) 
+    {
+        keys_down[key_strafeleft] = amount;
+        event.type = ev_keydown;
+        event.data1 = key_strafeleft;
+        event.data2 = 0;
+        D_PostEvent(&event);
+    }
+    else if (strcmp(type, "strafe-right") == 0) 
+    {
+        keys_down[key_straferight] = amount;
+        event.type = ev_keydown;
+        event.data1 = key_straferight;
+        event.data2 = 0;
+        D_PostEvent(&event);
+    }
+    else if (strcmp(type, "run") == 0)
+    {
+        // DOOM's speed key. Held alongside a movement key it selects the
+        // second entry of forwardmove/sidemove - 0x32 against 0x19, twice the
+        // ground per tic - and it is how a player crosses a level and how
+        // they get out of the way of a projectile. Every human plays on it.
+        //
+        // A modifier rather than a movement of its own: it does nothing by
+        // itself, so it is sent in the same actions array as the forward or
+        // strafe it applies to.
+        keys_down[key_speed] = amount;
+        event.type = ev_keydown;
+        event.data1 = key_speed;
+        event.data2 = 0;
+        D_PostEvent(&event);
+    }
+    else if (strcmp(type, "switch-weapon") == 0) 
+    {
+	    if (amount < 1 || amount > 8)
+	        return API_CreateErrorResponse(400, "invalid weapon selected");
+        weapon_key = weapon_keys[amount - 1];
+        keys_down[*weapon_key] = 10;
+        event.type = ev_keydown;
+        event.data1 = *weapon_key;
+        event.data2 = 0;
+        D_PostEvent(&event);
+    }
+    else if (strcmp(type, "turn-to") == 0)
+    {
+        // Face an ABSOLUTE map angle. The servo in turnPlayer() closes the
+        // remaining angle over the following tics, so this is one action that
+        // spans a step rather than a single-tic key press - which is what
+        // makes "face the imp" expressible at all: the turn keys move the view
+        // by a fixed amount per tic and cannot name a direction.
+        cJSON *angle_obj = cJSON_GetObjectItem(req, "angle");
+
+        if (angle_obj == NULL || !cJSON_IsNumber(angle_obj))
+        {
+            return API_CreateErrorResponse(400, "turn-to needs an angle");
+        }
+        if (angle_obj->valueint < 0 || angle_obj->valueint > 359)
+        {
+            return API_CreateErrorResponse(400, "angle must be 0-359");
+        }
+        target_angle = angle_obj->valueint;
+        turnPlayer();
+    }
+    else if (strcmp(type, "use") == 0) 
+    {
+        // Resolved immediately, which means it uses whatever the player is
+        // facing WHEN THE REQUEST ARRIVES - before any turn in the same
+        // request has been applied. A caller that wants to face something and
+        // press it therefore needs two steps, and the action set here does
+        // exactly that: the turn lands in one decision and the press in the
+        // next, by which time the bearing has closed.
+        //
+        // Posting key_use instead was tried and does not work: P_PlayerThink
+        // latches BT_USE, so a held key fires once and then goes dead until
+        // released, and a one-tic tap posted this way never reached BT_USE at
+        // all.
+        P_UseLines(&players[consoleplayer]);
+    }
+    else if (strcmp(type, "shoot") == 0)
+    {
+        // Hold the FIRE KEY, exactly as every other action here holds its own
+        // key, rather than calling P_FireWeapon directly.
+        //
+        // Calling it directly restarted the weapon's attack state whenever it
+        // was asked, bypassing the whole control path: A_WeaponReady, which
+        // only fires when the weapon has actually returned to ready and which
+        // holds `attackdown` so the rocket launcher and the BFG do not
+        // auto-fire; and A_ReFire, which keeps the refire count that accuracy
+        // depends on. Asked every four tics, that could restart a rocket's
+        // eight-tic wind-up before the missile was ever spawned - a weapon
+        // firing nothing at all, while the agent believed it had attacked.
+        //
+        // Through the key, the state machine decides what a request to shoot
+        // means for the weapon in hand, which is what a player gets.
+        keys_down[key_fire] = amount;
+        event.type = ev_keydown;
+        event.data1 = key_fire;
+        event.data2 = 0;
+        D_PostEvent(&event);
+    }
+    else 
+    {
+        return API_CreateErrorResponse(400, "invalid action type");
+    }
+
+    return (api_response_t) {201, NULL};
+}
+
+cJSON* getPlayer(int playernum)
+{
+    player_t *player;
+    cJSON *root;
+    cJSON *key_cards;
+    cJSON *cheats;
+    cJSON *weapons;
+    cJSON *ammo;
+
+    player = &players[playernum];
+    root = DescribeMObj(player->mo);
+    cJSON_AddStringToObject(root, "colour", player_names[playernum]);
+    cJSON_AddNumberToObject(root, "armor", player->armorpoints);
+    cJSON_AddNumberToObject(root, "kills", player->killcount);
+    cJSON_AddNumberToObject(root, "items", player->itemcount);
+    cJSON_AddNumberToObject(root, "secrets", players->secretcount);
+    cJSON_AddNumberToObject(root, "weapon", player->readyweapon);
+
+    weapons = cJSON_CreateObject();
+    cJSON_AddBoolToObject(weapons, "Handgun", player->weaponowned[1]);
+    cJSON_AddBoolToObject(weapons, "Shotgun", player->weaponowned[2]);
+    cJSON_AddBoolToObject(weapons, "Chaingun", player->weaponowned[3]);
+    cJSON_AddBoolToObject(weapons, "Rocket Launcher", player->weaponowned[4]);
+    cJSON_AddBoolToObject(weapons, "Plasma Rifle", player->weaponowned[5]);
+    cJSON_AddBoolToObject(weapons, "BFG?", player->weaponowned[6]);
+    cJSON_AddBoolToObject(weapons, "Chainsaw", player->weaponowned[7]);
+    cJSON_AddItemToObject(root, "weapons", weapons);
+
+    ammo = cJSON_CreateObject();
+    cJSON_AddNumberToObject(ammo, "Bullets", player->ammo[0]);
+    cJSON_AddNumberToObject(ammo, "Shells", player->ammo[1]);
+    cJSON_AddNumberToObject(ammo, "Cells", player->ammo[2]);
+    cJSON_AddNumberToObject(ammo, "Rockets", player->ammo[3]);
+    cJSON_AddItemToObject(root, "ammo", ammo);
+
+    key_cards = cJSON_CreateObject();
+    cJSON_AddBoolToObject(key_cards, "blue", player->cards[it_bluecard]);
+    cJSON_AddBoolToObject(key_cards, "red", player->cards[it_redcard]);
+    cJSON_AddBoolToObject(key_cards, "yellow", player->cards[it_yellowcard]);
+    cJSON_AddItemToObject(root, "keyCards", key_cards);
+
+    cheats = cJSON_CreateObject();
+    if (player->cheats & CF_NOCLIP) cJSON_AddTrueToObject(cheats, "CF_NOCLIP");
+    if (player->cheats & CF_GODMODE) cJSON_AddTrueToObject(cheats, "CF_GODMODE");
+    cJSON_AddItemToObject(root, "cheatFlags", cheats);
+
+    return root;
+}
+
+api_response_t API_GetPlayer()
+{
+    cJSON *root = getPlayer(consoleplayer);
+    return (api_response_t) {200, root};
+}
+
+int getPlayerNumForId(int id)
+{
+    for (int playernum=0; playernum<=MAXPLAYERS; playernum++)
+    {
+        if (playernum == MAXPLAYERS)
+            return -1; 
+        if ((&players[playernum])->mo != 0x0 && (&players[playernum])->mo->id == id)
+            return playernum;
+    }
+    return -1;
+}
+
+api_response_t API_GetPlayerById(int id)
+{
+    int playernum;
+
+    if ((playernum = getPlayerNumForId(id)) == -1)
+        return API_CreateErrorResponse(400, "Unknown player ID");
+    else
+        return (api_response_t) {200, getPlayer(playernum)};
+}
+
+// Player stats specific to multiplayer
+api_response_t API_GetPlayers()
+{
+    cJSON *root;
+    cJSON *player;
+    player_t *player_obj;
+    mobj_t *attacker;
+
+    root = cJSON_CreateArray();
+    for (int i = 0; i < MAXPLAYERS; i++)
+    {
+        if ((&players[i])->mo != 0x0)
+        {
+            player_obj = &players[i];            
+            attacker = player_obj->attacker;
+
+            player = getPlayer(i);
+            cJSON_AddBoolToObject(player, "isConsolePlayer", i == consoleplayer);
+            if (M_CheckParm("-server") > 0 || M_CheckParm("-privateserver") > 0)
+                cJSON_AddStringToObject(player, "name", sv_players[i]->name);
+
+            if (attacker != NULL)
+                cJSON_AddNumberToObject(player, "last_attacked_by", attacker->id);
+            else
+                cJSON_AddNumberToObject(player, "last_attacked_by", 0);
+
+            cJSON_AddItemToArray(root, player);
+        }
+    }
+    return (api_response_t) {200, root};
+}
+
+api_response_t patchPlayer(cJSON *req, int playernum)
+{
+    player_t *player;
+    cJSON *val;
+    cJSON *amount;
+    cJSON *flags;
+    cJSON *root;
+
+    if (M_CheckParm("-connect") > 0)
+        return API_CreateErrorResponse(403, "clients may not patch the player");
+
+    player = &players[playernum];
+
+    val = cJSON_GetObjectItem(req, "weapon");
+    if (val)
+    {
+	    if (cJSON_IsNumber(val))
+            player->weaponowned[val->valueint - 1] = true;
+        else
+            return API_CreateErrorResponse(400, "Weapon value must be integer");
+    }
+
+    val = cJSON_GetObjectItem(req, "ammo");
+    if (val)
+    {
+        amount = cJSON_GetObjectItem(req, "amount");
+        if (amount && cJSON_IsNumber(amount))
+        {
+	        if (cJSON_IsNumber(val))
+                player->ammo[val->valueint] = amount->valueint;
+            else
+                return API_CreateErrorResponse(400, "Ammo value must be integer");
+        }
+        else
+        {
+            return API_CreateErrorResponse(400, "Must provide ammo amount (integer)");
+        }
+    }
+    
+    val = cJSON_GetObjectItem(req, "armor");
+    if (val)
+    {
+	    if (cJSON_IsNumber(val))
+            player->armorpoints = val->valueint;
+        else
+            return API_CreateErrorResponse(400, "Armor value must be integer");
+    }
+
+    val = cJSON_GetObjectItem(req, "health");
+    if (val)
+    {
+	    if (cJSON_IsNumber(val))
+        {
+            // we have to set both of these at the same time
+            player->health = val->valueint;
+            player->mo->health = val->valueint;
+        }
+        else
+        {
+            return API_CreateErrorResponse(400, "Health value must be integer");
+        }
+    }
+
+    /* Put the player somewhere. What the game itself does at a teleporter,
+     * so the sector, the blockmap and everything else that indexes on
+     * position stay consistent - assigning x and y directly leaves the thing
+     * linked into the subsector it used to be in.
+     *
+     * For standing a player somewhere to ask a question about that place:
+     * whether a route leads on from it, what is in sight from it. Whether the
+     * spot can be REACHED is a different question, and one that would
+     * otherwise have to be answered before this one could be asked. */
+    val = cJSON_GetObjectItem(req, "position");
+    if (val)
+    {
+        cJSON *px = cJSON_GetObjectItem(val, "x");
+        cJSON *py = cJSON_GetObjectItem(val, "y");
+
+        if (!cJSON_IsNumber(px) || !cJSON_IsNumber(py))
+        {
+            return API_CreateErrorResponse(400, "position needs a numeric x and y");
+        }
+        if (player->mo == NULL
+            || !P_TeleportMove(player->mo, API_FloatToFixed(px->valuedouble),
+                               API_FloatToFixed(py->valuedouble)))
+        {
+            return API_CreateErrorResponse(409, "nothing fits there");
+        }
+    }
+
+    flags = cJSON_GetObjectItem(req, "cheatFlags");
+    if (flags)
+    {
+        val = cJSON_GetObjectItem(flags, "CF_GODMODE");
+        if (val) 
+        {
+	        if (cJSON_IsNumber(val))
+                API_FlipFlag(&player->cheats, CF_GODMODE, val->valueint == 1);
+            else
+                return API_CreateErrorResponse(400, "GODMODE value must be integer");
+        }
+        val = cJSON_GetObjectItem(flags, "CF_NOCLIP");
+        if (val) 
+        {
+	        if (cJSON_IsNumber(val))
+                API_FlipFlag(&player->cheats, CF_NOCLIP, val->valueint == 1);
+            else
+                return API_CreateErrorResponse(400, "NOCLIP value must be integer");
+        }
+    }
+
+    root = getPlayer(playernum);
+    return (api_response_t) {200, root};
+}
+
+api_response_t API_PatchPlayer(cJSON *req)
+{
+    return patchPlayer(req, consoleplayer);
+}
+
+api_response_t API_PatchPlayerById(cJSON *req, int id)
+{
+    int playernum;
+
+    if ((playernum = getPlayerNumForId(id)) == -1)
+        return API_CreateErrorResponse(400, "Unknown player ID");
+    else
+        return patchPlayer(req, playernum);
+}
+
+api_response_t deletePlayer(int playernum)
+{
+    player_t *player;
+    cJSON *player_obj;
+
+    if (M_CheckParm("-connect") > 0)
+        return API_CreateErrorResponse(403, "Clients may not kill players");
+    player = &players[playernum];  
+    P_KillMobj(NULL, player->mo);
+    player_obj = getPlayer(playernum);
+    return (api_response_t) {200, player_obj};
+}
+
+api_response_t API_DeletePlayer() 
+{
+    return deletePlayer(consoleplayer);
+}
+
+api_response_t API_DeletePlayerById(int id)
+{
+    int playernum;
+
+    if ((playernum = getPlayerNumForId(id)) == -1)
+        return API_CreateErrorResponse(400, "Unknown player ID");
+    else
+        return deletePlayer(playernum);
+}

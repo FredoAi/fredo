@@ -25,7 +25,8 @@ import {
 } from 'react-icons/lu';
 import { adapterBridge } from '../../shared/utils/adapterBridge';
 import { tint } from '../../shared/utils/colorTint';
-import { useDoomMode } from '../../shared/doom-mode';
+import { useDoomMode, useDoomProvision } from '../../shared/doom-mode';
+import { DoomProvisionDialog } from './DoomProvisionDialog';
 import {
   DOOM_AUTOPLAY_EVENT,
   DOOM_AUTOPLAY_IDLE_STATUS,
@@ -134,6 +135,12 @@ export const DoomWindow: React.FC = () => {
   // disabled. Exiting with reason `window` is the exit-button path.
   const { status: doomModeStatus, exit: exitDoomMode } = useDoomMode();
   const doomPhase = doomModeStatus.phase;
+
+  // Spec #3012 ST-4 — the post-activation "Engine location" affordance. Rendered
+  // INSIDE the Doom window only (never Settings, never before activation), it
+  // persists `doom_install_dir` through the existing settings plane and rebuilds
+  // on the NEXT activation (R-4.4) — never in place while a session is active.
+  const relocate = useDoomProvision({ relocate: true });
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const lastFrameImageRef = useRef<HTMLImageElement | null>(null);
@@ -649,6 +656,32 @@ export const DoomWindow: React.FC = () => {
               mode is engaged. G-274: exempt child, never shrinks. */}
           {doomPhase !== 'inactive' && (
             <Button
+              data-testid="doom-engine-location"
+              flexShrink={0}
+              variant="ghost"
+              size="sm"
+              title="Change where the Doom engine is built"
+              onClick={relocate.openRelocate}
+            >
+              Engine location
+            </Button>
+          )}
+          {relocate.relocationSaved && (
+            <Text
+              data-testid="doom-engine-location-saved"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+              fontSize="xs"
+              color="status.success"
+              whiteSpace="nowrap"
+              flexShrink={0}
+            >
+              Saved — applies next launch
+            </Text>
+          )}
+          {doomPhase !== 'inactive' && (
+            <Button
               data-testid="doom-exit-button"
               flexShrink={0}
               variant="solid"
@@ -1100,6 +1133,8 @@ export const DoomWindow: React.FC = () => {
           </Box>
         )}
       </Flex>
+      {/* Spec #3012 ST-4 — the relocate dialog (rendered through a Portal). */}
+      <DoomProvisionDialog controller={relocate} />
     </Flex>
   );
 };

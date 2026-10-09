@@ -109,6 +109,68 @@ export function doomErrorMessage(code: DoomErrorCode | null | undefined): {
   return { title: 'Doom error', message: 'The Doom runtime hit an unexpected error. Retry to try again.' };
 }
 
+// ── Engine provisioning copy (Spec #3012, ST-4) ──────────────────────────────
+//
+// The human-facing copy per `DoomProvisionErrorCode` (UI/UX provisioning table).
+// The code + wire shape live in `shared/doom-mode/provision.ts`; this is the ONE
+// presentation mapping, kept next to the other Doom error copy.
+
+import type { DoomProvisionErrorCode } from '../../shared/doom-mode/provision';
+
+export const DOOM_PROVISION_ERROR_MESSAGES: Record<
+  DoomProvisionErrorCode,
+  { title: string; message: string }
+> = {
+  installDirInvalid: {
+    title: "That install location can't be used",
+    message: "The folder doesn't exist or isn't writable. Pick a different location.",
+  },
+  toolchainUnavailable: {
+    title: 'Build toolchain unavailable',
+    message:
+      "Fredo couldn't get its managed build toolchain. Check your connection (or turn off Offline mode) and try again.",
+  },
+  toolchainDownloadFailed: {
+    title: 'Toolchain download failed',
+    message: 'The download was interrupted. Check your connection and retry.',
+  },
+  toolchainExtractFailed: {
+    title: 'Toolchain setup failed',
+    message: "The downloaded archive couldn't be unpacked. Free up disk space and retry.",
+  },
+  sourceMissing: {
+    title: 'Engine source missing',
+    message: "The bundled RESTful DOOM source couldn't be found. Reinstall Fredo, then retry.",
+  },
+  buildFailed: {
+    title: 'Engine build failed',
+    message:
+      "Compiling the bundled engine didn't finish. See the line above; retry to start over.",
+  },
+  timeout: {
+    title: 'Setup timed out',
+    message: 'Setup took too long and was stopped. Retry to continue.',
+  },
+  cancelled: {
+    title: 'Setup cancelled',
+    message: 'Setup was cancelled — no engine was installed. You can retry anytime.',
+  },
+};
+
+/** Resolve the human copy for a provisioning code, defaulting to a generic typed failure. */
+export function doomProvisionErrorMessage(code: DoomProvisionErrorCode | null | undefined): {
+  title: string;
+  message: string;
+} {
+  if (code && code in DOOM_PROVISION_ERROR_MESSAGES) {
+    return DOOM_PROVISION_ERROR_MESSAGES[code];
+  }
+  return {
+    title: 'Engine setup failed',
+    message: 'The engine setup hit an unexpected error. Retry to try again.',
+  };
+}
+
 /** The phase label shown in `doom-status`. */
 export function doomPhaseLabel(phase: DoomRuntimePhase, port?: number | null): string {
   switch (phase) {

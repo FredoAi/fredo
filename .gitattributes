@@ -6,3 +6,12 @@ AGENTS.md text eol=lf
 # Build patches are applied with `git apply`, whose context lines must be LF;
 # autocrlf would rewrite them to CRLF on checkout and break the engine build.
 scripts/doom/patches/*.patch text eol=lf
+# Vendored RESTful-DOOM source (Spec #3012): keep the committed tree LF so the
+# in-repo MinGW patches apply cleanly, and exclude it from language stats.
+vendor/restful-doom/** text=auto eol=lf linguist-vendored
+# ...but never line-ending-normalize the vendored binaries: force the known
+# binary types so a misdetected .ico/.png is never LF-rewritten (the build gate
+# failed on a normalized icon - windres read 1128 bytes and got 1127). A later,
+# more specific rule wins.
+vendor/restful-doom/**/*.ico -text
+vendor/restful-doom/**/*.png -text

@@ -371,6 +371,12 @@ pub fn run() {
             // commands below own it. The mode is NEVER persisted.
             app.manage(applications::doom::mode::DoomModeState::default());
 
+            // -- Doom provisioning state (Spec #3012 ST-2) ---------------------
+            // The bounded, cancellable first-use engine provisioning run; the
+            // `get_doom_provision_status` / `provision_doom_engine` /
+            // `cancel_doom_engine_provisioning` commands below own it.
+            app.manage(applications::doom::provision::DoomProvisionState::default());
+
             // -- Companion performance-mode suppression (Spec #2970 ST-2) ------
             // The ONE provider-agnostic boolean that gates the companion
             // voice/audio pipeline while Doom Mode is active. Shared
@@ -1003,6 +1009,13 @@ pub fn run() {
             applications::doom::commands::enter_doom_mode,
             applications::doom::commands::exit_doom_mode,
             applications::doom::commands::get_doom_mode_status,
+            // Doom engine provisioning (Spec #3012 ST-2): the bounded,
+            // cancellable first-use build from the vendored source. The status
+            // command is the mount seed + poll fallback; the progress event
+            // `doom-provision-progress` is the source of truth.
+            applications::doom::provision::get_doom_provision_status,
+            applications::doom::provision::provision_doom_engine,
+            applications::doom::provision::cancel_doom_engine_provisioning,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Fredo application")

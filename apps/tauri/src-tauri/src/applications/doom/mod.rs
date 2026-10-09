@@ -71,6 +71,7 @@ pub mod decision;
 pub mod mode;
 pub mod process;
 pub mod progress;
+pub mod provision;
 pub mod resolver;
 pub mod save;
 pub mod state;
