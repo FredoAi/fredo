@@ -1,21 +1,17 @@
-//! Doom asset acquisition (Spec #2968, ST-4).
+//! Doom asset acquisition (Spec #2968, ST-4; engine leg removed by #3013 ST-3).
 //!
 //! Acquisition goes through Fredo's ONE SHA-256-pinned streaming engine
 //! ([`download_missing_files`] via [`crate::infrastructure::companion::download`])
-//! so the Doom path never forks a second downloader (NFR-6). Two artifacts:
+//! so the Doom path never forks a second downloader (NFR-6). The only artifact
+//! acquired here is the **Freedoom IWAD** — the libre game data, pinned by URL +
+//! SHA-256 (ST-1: `freedoom-0.13.0.zip`). Downloaded, then `freedoom1.wad` is
+//! extracted with the minimal in-module ZIP reader (the shared engine downloads a
+//! file; it is not an archive extractor, and no zip crate is a direct dependency).
 //!
-//! * **Freedoom IWAD** — the libre game data, pinned by URL + SHA-256 (ST-1:
-//!   `freedoom-0.13.0.zip`). Downloaded, then `freedoom1.wad` is extracted with
-//!   the minimal in-module ZIP reader (the shared engine downloads a file; it is
-//!   not an archive extractor, and no zip crate is a direct dependency).
-//! * **Engine** — ST-1 found **no trustworthy prebuilt** RESTful-DOOM archive, so
-//!   runtime-download is **deferred** and there is **no default URL**. The
-//!   `FREDO_DOOM_ARCHIVE_URL` / `_SHA256` / `_BYTES` env-override mechanism is
-//!   declared so a future pinned asset can be enabled; when no URL is configured
-//!   [`acquire_engine`] returns `Ok(None)` and the caller falls back to the
-//!   user-supplied `doom_engine_path` (never a bogus download, never a build
-//!   failure). When a URL *is* configured, an unverified/unsized download is
-//!   refused.
+//! The engine is NEVER downloaded: it is built into the managed install directory
+//! by provisioning (#3012) and resolved managed-only (#3013 ST-1). The shared
+//! local-file transport + [`acquire_archive_with`] are retained for the
+//! provisioner's managed-toolchain archive seam.
 //!
 //! Every failure is surfaced as a human-readable `Err`, which the launch command
 //! maps to [`DoomErrorCode::AcquireFailed`].
@@ -55,60 +51,15 @@ pub const FREEDOOM_SUBDIR: &str = "freedoom";
 /// The Phase-1 IWAD extracted from the archive (Ultimate-Doom-compatible).
 pub const DOOM_IWAD_FILENAME: &str = "freedoom1.wad";
 
-// ── Engine archive — deferred, env-configured only (ST-1) ────────────────────
+// ── Managed engine layout (the engine is built, never downloaded) ────────────
 
 /// Layout subdirectory under the install dir holding the staged engine.
 pub const DOOM_ENGINE_SUBDIR: &str = "engine";
 /// The engine executable basename inside the staged engine dir.
 pub const DOOM_ENGINE_EXE: &str = "restful-doom.exe";
-/// Staged engine archive filename inside [`DOOM_ENGINE_SUBDIR`].
-pub const DOOM_ENGINE_ARCHIVE_FILENAME: &str = "restful-doom.zip";
-/// **No default prebuilt engine archive URL** (ST-1: the fork is source-only).
-/// Runtime-download is deferred; the engine is user-supplied by default.
-pub const DOOM_ENGINE_ARCHIVE_URL_DEFAULT: &str = "";
-
-/// **G-275** induction seam: override the engine archive URL (point at an
-/// unreachable endpoint to drive the `acquireFailed` row). Inert when unset.
-pub const DOOM_ARCHIVE_URL_ENV: &str = "FREDO_DOOM_ARCHIVE_URL";
-/// **G-275** induction seam: override the pinned engine archive digest. Inert
-/// when unset. Required whenever [`DOOM_ARCHIVE_URL_ENV`] is set.
-pub const DOOM_ARCHIVE_SHA256_ENV: &str = "FREDO_DOOM_ARCHIVE_SHA256";
-/// Exact byte size of the configured engine archive. Required whenever
-/// [`DOOM_ARCHIVE_URL_ENV`] is set — the shared streaming engine gates on the
-/// exact on-disk size, so an unknown size cannot be verified.
-pub const DOOM_ARCHIVE_BYTES_ENV: &str = "FREDO_DOOM_ARCHIVE_BYTES";
 
 /// Finite total bound on one acquisition (G-263: no unbounded wait).
 pub const DOOM_ACQUIRE_TIMEOUT_S: u64 = 120;
-
-/// A non-blank environment value, trimmed; `None` when unset or blank.
-fn non_blank_env(name: &str) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
-/// The configured engine archive URL, or `None` when unconfigured (the shipped
-/// default — engine acquisition falls back to the user-supplied path).
-pub fn resolve_engine_archive_url() -> Option<String> {
-    non_blank_env(DOOM_ARCHIVE_URL_ENV)
-}
-
-/// The configured engine archive digest, or `None` when unconfigured.
-pub fn resolve_engine_archive_sha256() -> Option<String> {
-    non_blank_env(DOOM_ARCHIVE_SHA256_ENV)
-}
-
-/// The configured engine archive byte size, or `None` when unconfigured/invalid.
-pub fn resolve_engine_archive_bytes() -> Option<u64> {
-    non_blank_env(DOOM_ARCHIVE_BYTES_ENV).and_then(|value| value.parse().ok())
-}
-
-/// Whether an engine archive download is configured at all.
-pub fn engine_archive_configured() -> bool {
-    resolve_engine_archive_url().is_some()
-}
 
 /// The one-file Freedoom manifest handed to the shared streaming engine.
 pub fn freedoom_archive_manifest() -> ModelManifest {
@@ -121,21 +72,6 @@ pub fn freedoom_archive_manifest() -> ModelManifest {
             url: FREEDOOM_ARCHIVE_URL.to_string(),
             expected_bytes: FREEDOOM_ARCHIVE_BYTES,
             sha256: Some(FREEDOOM_ARCHIVE_SHA256.to_string()),
-        }],
-    }
-}
-
-/// The one-file engine manifest for a configured archive.
-pub fn engine_archive_manifest(url: &str, sha256: &str, expected_bytes: u64) -> ModelManifest {
-    ModelManifest {
-        revision: "engine".to_string(),
-        subdir: DOOM_ENGINE_SUBDIR.to_string(),
-        files: vec![ModelFileSpec {
-            id: "engine".to_string(),
-            path: DOOM_ENGINE_ARCHIVE_FILENAME.to_string(),
-            url: url.to_string(),
-            expected_bytes,
-            sha256: Some(sha256.to_string()),
         }],
     }
 }
@@ -216,44 +152,6 @@ pub async fn acquire_iwad(app: &AppHandle) -> Result<Option<String>, String> {
     };
     let iwad = extract_freedoom_iwad(&archive, &install_dir)?;
     Ok(Some(iwad))
-}
-
-/// Acquire + extract the engine archive when one is configured.
-///
-/// `Ok(None)` when no archive URL is configured (the shipped default: the engine
-/// is user-supplied). `Err` on any download/verify/extract failure.
-pub async fn acquire_engine(app: &AppHandle) -> Result<Option<String>, String> {
-    let Some(url) = resolve_engine_archive_url() else {
-        return Ok(None);
-    };
-    let sha = resolve_engine_archive_sha256().ok_or_else(|| {
-        format!(
-            "an engine archive URL is configured but {DOOM_ARCHIVE_SHA256_ENV} is not — refusing an unverified download"
-        )
-    })?;
-    let bytes = resolve_engine_archive_bytes().ok_or_else(|| {
-        format!(
-            "an engine archive URL is configured but {DOOM_ARCHIVE_BYTES_ENV} is not — the shared download engine requires the exact byte size"
-        )
-    })?;
-
-    let install_dir = super::process::resolve_install_dir(app)?;
-    let manifest = engine_archive_manifest(&url, &sha, bytes);
-    let archive = match tokio::time::timeout(
-        Duration::from_secs(DOOM_ACQUIRE_TIMEOUT_S),
-        acquire_archive(&install_dir, &manifest),
-    )
-    .await
-    {
-        Ok(result) => result?,
-        Err(_) => {
-            return Err(format!(
-                "the engine archive download did not finish within {DOOM_ACQUIRE_TIMEOUT_S}s"
-            ))
-        }
-    };
-    let exe = extract_engine_exe(&archive, &install_dir)?;
-    Ok(Some(exe))
 }
 
 // ── Local-file transport (Spec #3012 ST-2) ───────────────────────────────────
@@ -341,14 +239,6 @@ fn extract_freedoom_iwad(archive: &Path, install_dir: &Path) -> Result<String, S
         .map_err(|e| format!("could not read the Freedoom archive {}: {e}", archive.display()))?;
     let out_dir = install_dir.join(FREEDOOM_SUBDIR);
     let dest = extract_zip_entry(&bytes, DOOM_IWAD_FILENAME, &out_dir)?;
-    Ok(dest.to_string_lossy().into_owned())
-}
-
-fn extract_engine_exe(archive: &Path, install_dir: &Path) -> Result<String, String> {
-    let bytes = std::fs::read(archive)
-        .map_err(|e| format!("could not read the engine archive {}: {e}", archive.display()))?;
-    let out_dir = install_dir.join(DOOM_ENGINE_SUBDIR);
-    let dest = extract_zip_first_exe(&bytes, &out_dir)?;
     Ok(dest.to_string_lossy().into_owned())
 }
 
@@ -492,27 +382,6 @@ pub fn extract_zip_entry(
     Ok(dest)
 }
 
-/// Extract the first `.exe` entry to `dest_dir` (engine archive), returning its path.
-pub fn extract_zip_first_exe(bytes: &[u8], dest_dir: &Path) -> Result<PathBuf, String> {
-    let entries = zip_entries(bytes)?;
-    let entry = entries
-        .iter()
-        .find(|e| e.name.to_ascii_lowercase().ends_with(".exe"))
-        .ok_or_else(|| "no .exe entry found in the engine archive".to_string())?;
-    let data = extract_entry_data(bytes, entry)?;
-    let file_name = entry
-        .name
-        .rsplit(['/', '\\'])
-        .next()
-        .filter(|name| !name.is_empty())
-        .unwrap_or(DOOM_ENGINE_EXE);
-    std::fs::create_dir_all(dest_dir)
-        .map_err(|e| format!("could not create {}: {e}", dest_dir.display()))?;
-    let dest = dest_dir.join(file_name);
-    std::fs::write(&dest, &data).map_err(|e| format!("could not write {}: {e}", dest.display()))?;
-    Ok(dest)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -603,17 +472,6 @@ mod tests {
     }
 
     #[test]
-    fn there_is_no_default_engine_archive_url() {
-        // ST-1: no trustworthy prebuilt exists, so runtime-download is deferred.
-        assert!(DOOM_ENGINE_ARCHIVE_URL_DEFAULT.is_empty());
-        // The env seam is inert when unset (the shipped default).
-        if std::env::var(DOOM_ARCHIVE_URL_ENV).is_err() {
-            assert!(!engine_archive_configured());
-            assert_eq!(resolve_engine_archive_url(), None);
-        }
-    }
-
-    #[test]
     fn archive_paths_follow_the_manifest_layout() {
         let install = Path::new("C:/app/doom");
         assert_eq!(
@@ -655,19 +513,6 @@ mod tests {
         let archive = build_zip(&[("only.txt", b"x".as_slice(), false)]);
         let dir = tempfile::tempdir().expect("tempdir");
         assert!(extract_zip_entry(&archive, "missing.wad", dir.path()).is_err());
-        assert!(extract_zip_first_exe(&archive, dir.path()).is_err());
-    }
-
-    #[test]
-    fn zip_reader_extracts_the_first_exe_by_basename() {
-        let archive = build_zip(&[
-            ("docs/README.md", b"readme".as_slice(), false),
-            ("bin/restful-doom.exe", b"MZ fake exe".as_slice(), true),
-        ]);
-        let dir = tempfile::tempdir().expect("tempdir");
-        let dest = extract_zip_first_exe(&archive, dir.path()).expect("extract exe");
-        assert_eq!(dest.file_name().and_then(|n| n.to_str()), Some(DOOM_ENGINE_EXE));
-        assert_eq!(std::fs::read(dest).expect("read"), b"MZ fake exe");
     }
 
     // ── Local-file transport (Spec #3012 ST-2) ───────────────────────────────

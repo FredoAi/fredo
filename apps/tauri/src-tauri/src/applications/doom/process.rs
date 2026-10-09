@@ -29,9 +29,8 @@ use tauri::{AppHandle, Manager};
 use crate::infrastructure::storage::AppStore;
 
 use super::state::{
-    ManagedDoom, DOOM_ENGINE_PATH_ENV, DOOM_ENGINE_PATH_KEY, DOOM_IMAGE_DEFAULT,
-    DOOM_INSTALL_DIR_ENV, DOOM_INSTALL_DIR_KEY, DOOM_INSTALL_SUBDIR, DOOM_LAUNCH_PREFIX,
-    DOOM_LAUNCH_SUFFIX, DOOM_LOG_FILENAME, DOOM_PID_KEY,
+    ManagedDoom, DOOM_IMAGE_DEFAULT, DOOM_INSTALL_DIR_ENV, DOOM_INSTALL_DIR_KEY,
+    DOOM_INSTALL_SUBDIR, DOOM_LAUNCH_PREFIX, DOOM_LAUNCH_SUFFIX, DOOM_LOG_FILENAME, DOOM_PID_KEY,
 };
 
 /// Injectable kill primitive for the sweep test seam (mirrors
@@ -106,20 +105,12 @@ pub fn build_launch_args(iwad: &str, port: u16) -> Vec<String> {
     args
 }
 
-/// The expected engine image name for the PID-reuse guard: the basename of the
-/// configured/overridden engine path, else [`DOOM_IMAGE_DEFAULT`]. An OS-reused
-/// PID with any other image is never killed.
-pub fn expected_engine_image(store: &AppStore) -> String {
-    let env = std::env::var(DOOM_ENGINE_PATH_ENV).ok();
-    let configured = store.cached_get(DOOM_ENGINE_PATH_KEY).ok().flatten();
-    resolve_doom_path(env.as_deref(), configured.as_deref())
-        .and_then(|path| {
-            Path::new(&path)
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-        })
-        .filter(|name| !name.trim().is_empty())
-        .unwrap_or_else(|| DOOM_IMAGE_DEFAULT.to_string())
+/// The expected engine image name for the PID-reuse guard. Engine resolution is
+/// managed-only (#3013 ST-1), so the image is the fixed managed engine basename
+/// [`DOOM_IMAGE_DEFAULT`] (`restful-doom.exe`). An OS-reused PID with any other
+/// image is never killed.
+pub fn expected_engine_image() -> &'static str {
+    DOOM_IMAGE_DEFAULT
 }
 
 // ── PID marker + image guard ──────────────────────────────────────────────────
@@ -359,8 +350,8 @@ pub fn port_is_open(host: &str, port: u16) -> bool {
 pub fn sweep_orphan(app: &AppHandle) {
     let store = app.state::<Arc<AppStore>>();
     let store: &AppStore = store.inner();
-    let expected = expected_engine_image(store);
-    sweep_orphan_with(store, &expected, process_image_name, kill_pid_tree);
+    let expected = expected_engine_image();
+    sweep_orphan_with(store, expected, process_image_name, kill_pid_tree);
 }
 
 /// Test seam for [`sweep_orphan`]: the expected image, the image query, and the
@@ -486,21 +477,11 @@ mod tests {
     }
 
     #[test]
-    fn expected_image_prefers_the_engine_basename_and_falls_back() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let store = open_store(dir.path());
-        // No configured path => the upstream default.
-        assert_eq!(expected_engine_image(&store), DOOM_IMAGE_DEFAULT);
-
-        store
-            .cached_set(DOOM_ENGINE_PATH_KEY, r"C:\tools\doom-stub.exe")
-            .expect("seed engine path");
-        // NOTE: the env override wins when set in the process env; unset in CI.
-        let expected = expected_engine_image(&store);
-        assert!(
-            expected == "doom-stub.exe" || expected == DOOM_IMAGE_DEFAULT,
-            "unexpected image: {expected}"
-        );
+    fn expected_image_is_always_the_managed_engine_image() {
+        // #3013 ST-1: managed-only resolution fixes the expected image, so the
+        // startup orphan-sweep guard can never key off a configured override.
+        assert_eq!(expected_engine_image(), DOOM_IMAGE_DEFAULT);
+        assert_eq!(expected_engine_image(), "restful-doom.exe");
     }
 
     #[test]
@@ -618,10 +599,10 @@ mod tests {
     }
 
     #[test]
-    fn sweep_reclaims_the_qa_stub_engine_by_its_own_basename() {
-        // ST-8: the build-gated `doom-stub` binary is the offline test engine,
-        // so the startup sweep must recognise its basename (the QA harness points
-        // FREDO_DOOM_ENGINE_PATH at it) and reclaim a hard-killed stub orphan.
+    fn sweep_reclaims_an_orphan_by_its_own_basename() {
+        // The image guard accepts an explicitly-passed expected basename (the
+        // injectable seam), so a hard-killed orphan whose image matches is
+        // reclaimed and the marker is cleared.
         let _guard = KILL_LOCK.lock().expect("serialize recorder tests");
         clear_kills();
         let dir = tempfile::tempdir().expect("tempdir");
