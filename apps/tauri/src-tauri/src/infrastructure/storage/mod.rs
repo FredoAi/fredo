@@ -386,17 +386,21 @@ mod tests {
     #[tokio::test]
     async fn a_write_before_hydration_is_buffered_and_visible() {
         let (_dir, store) = make_store();
-        store.cached_set("doom_save_v1", "pre-hydration").unwrap();
+        store
+            .cached_set("test.buffered_key", "pre-hydration")
+            .unwrap();
         assert_eq!(
-            store.cached_get("doom_save_v1").unwrap(),
+            store.cached_get("test.buffered_key").unwrap(),
             Some("pre-hydration".to_string()),
             "a pre-hydration write is visible to a synchronous read"
         );
         // A write after a no-pool hydrate still succeeds (buffered).
         store.hydrate().await.unwrap();
-        store.cached_set("doom_save_v1", "post-hydration").unwrap();
+        store
+            .cached_set("test.buffered_key", "post-hydration")
+            .unwrap();
         assert_eq!(
-            store.cached_get("doom_save_v1").unwrap(),
+            store.cached_get("test.buffered_key").unwrap(),
             Some("post-hydration".to_string())
         );
     }

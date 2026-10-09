@@ -50,9 +50,6 @@ pub const DOOM_LAST_ERROR_KEY: &str = "doom_last_error";
 pub const DOOM_PID_KEY: &str = "doom_pid";
 /// Internal: the typed code paired with [`DOOM_LAST_ERROR_KEY`].
 pub const DOOM_LAST_ERROR_CODE_KEY: &str = "doom_last_error_code";
-/// Persisted Doom resume point — the bounded `DoomSave` JSON in the control
-/// plane (Spec #2972 ST-2). One fixed key; never an append log.
-pub const DOOM_SAVE_KEY: &str = "doom_save_v1";
 
 // ── G-275 env-override seams ──────────────────────────────────────────────────
 //

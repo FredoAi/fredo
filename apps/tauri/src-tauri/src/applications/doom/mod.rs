@@ -44,10 +44,15 @@
 //! Slice 5 (#2972) adds:
 //!
 //! * [`save`] — the persisted resume contract (`DoomSave` / `DoomSaveStatus` /
-//!   `DoomCampaign`, `parse`/`serialize`, the control-plane `load`/`store` seam,
-//!   and the pinned campaign constants). ST-2.
+//!   `DoomCampaign`, `parse`/`serialize`, the `load`/`store`/`clear` persistence
+//!   surface, and the pinned campaign constants). Since #3011 the save lives in
+//!   the dedicated typed PostgreSQL feature table `feature_doom_save`
+//!   (`doom` / `save`, one `singleton` row), with the test-only
+//!   `FREDO_DOOM_SAVE_STATE_DIR` / `FREDO_DOOM_SAVE_FORCE_FAIL` induction levers.
+//!   ST-2.
 //! * [`progress`] — the continuous-state owner ([`progress::DoomProgressWriter`])
-//!   that persists one `DoomSave` per level transition. ST-4.
+//!   that persists one `DoomSave` per level transition through the shared
+//!   [`crate::infrastructure::storage::application_store::ApplicationStore`]. ST-4.
 //!
 //! # G-263
 //!

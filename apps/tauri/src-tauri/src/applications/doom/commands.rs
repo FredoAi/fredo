@@ -20,6 +20,7 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use crate::infrastructure::comm::bus::EventBus;
 use crate::infrastructure::companion::doom_decision::DoomDecisionSourceState;
 use crate::infrastructure::companion::PerformanceModeState;
+use crate::infrastructure::storage::application_store::ApplicationStore;
 use crate::infrastructure::storage::AppStore;
 
 use super::agent::{run_autoplay_loop, AutoplayRun, DoomAutoplayConfig};
@@ -803,8 +804,9 @@ pub async fn start_doom_autoplay(
     // Resolve the campaign to play (Spec #2972 R-1/R-5): an explicit fresh start
     // → the campaign initial; otherwise a valid loaded save, else the initial.
     // A `completed:true` save is preserved and reported terminal at start
-    // (G-321) — never a silent fresh run.
-    let store = app.state::<Arc<AppStore>>().inner().clone();
+    // (G-321) — never a silent fresh run. The save lives in the dedicated
+    // `feature_doom_save` PostgreSQL feature table (Spec #3011).
+    let store = app.state::<Arc<ApplicationStore>>().inner().clone();
     let campaign = save::resolve_start_campaign(
         fresh_start,
         save::load(&store).map(|saved| saved.to_campaign()),
@@ -880,7 +882,7 @@ pub async fn start_doom_autoplay(
 /// corrupt, or unreadable save reports `hasSave:false` with every coordinate null.
 #[tauri::command]
 pub fn get_doom_save(app: AppHandle) -> DoomSaveStatus {
-    let store = app.state::<Arc<AppStore>>().inner().clone();
+    let store = app.state::<Arc<ApplicationStore>>().inner().clone();
     save::load(&store)
         .map(|saved| DoomSaveStatus::from_save(&saved))
         .unwrap_or_else(DoomSaveStatus::absent)
@@ -890,7 +892,7 @@ pub fn get_doom_save(app: AppHandle) -> DoomSaveStatus {
 /// reports `hasSave:false` afterwards. A clear failure is logged, never fatal.
 #[tauri::command]
 pub fn reset_doom_save(app: AppHandle) -> DoomSaveStatus {
-    let store = app.state::<Arc<AppStore>>().inner().clone();
+    let store = app.state::<Arc<ApplicationStore>>().inner().clone();
     if let Err(detail) = save::clear(&store) {
         tracing::warn!(
             target: "fredo::doom",

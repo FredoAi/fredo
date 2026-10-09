@@ -9,11 +9,11 @@
 //! Write failures are **best-effort**: a failed save is logged and ignored, and
 //! NEVER fails the autoplay run (NFR-3). The writer holds no `AppHandle` — the
 //! loop stays engine-agnostic; the composition root injects a writer built over
-//! the shared `AppStore`.
+//! the shared `ApplicationStore` (the dedicated `feature_doom_save` PG table).
 
 use std::sync::Arc;
 
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::application_store::ApplicationStore;
 
 use super::save::{self, DoomCampaign, DoomSave};
 
@@ -42,10 +42,10 @@ impl DoomProgressWriter {
         }
     }
 
-    /// Build a writer that persists through [`save::store`] — the control plane
-    /// (atomic upsert under [`super::state::DOOM_SAVE_KEY`]), or the
-    /// `FREDO_DOOM_SAVE_FILE` seam when set.
-    pub fn for_store(store: Arc<AppStore>) -> Self {
+    /// Build a writer that persists through [`save::store`] — the dedicated
+    /// `feature_doom_save` PostgreSQL table (atomic single-row upsert), or the
+    /// `FREDO_DOOM_SAVE_STATE_DIR` test-only seam when set.
+    pub fn for_store(store: Arc<ApplicationStore>) -> Self {
         DoomProgressWriter::new(move |save| save::store(&store, save))
     }
 
@@ -70,16 +70,9 @@ impl DoomProgressWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::applications::doom::save::load;
-    use crate::applications::doom::state::DOOM_SAVE_KEY;
     use crate::infrastructure::storage::engine::EngineHandle;
-    use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
-
-    fn open_store(dir: &Path) -> AppStore {
-        AppStore::open(EngineHandle::new_pending(), dir).expect("open app store")
-    }
 
     fn campaign(episode: i64, map: i64) -> DoomCampaign {
         DoomCampaign {
@@ -89,37 +82,38 @@ mod tests {
         }
     }
 
+    /// A recording sink so the writer's mapping can be asserted without a live PG.
+    fn recording() -> (DoomProgressWriter, Arc<Mutex<Vec<DoomSave>>>) {
+        let seen: Arc<Mutex<Vec<DoomSave>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink_store = seen.clone();
+        let writer = DoomProgressWriter::new(move |save| {
+            sink_store.lock().expect("lock").push(save.clone());
+            Ok(())
+        });
+        (writer, seen)
+    }
+
     #[test]
     fn record_persists_one_save_for_the_campaign_position() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let app_store = Arc::new(open_store(dir.path()));
-        let writer = DoomProgressWriter::for_store(app_store.clone());
+        let (writer, seen) = recording();
 
         writer.record(&campaign(1, 2));
 
-        let saved = load(&app_store).expect("save present");
+        let recorded = seen.lock().expect("lock");
+        assert_eq!(recorded.len(), 1);
+        let saved = &recorded[0];
         assert_eq!(saved.episode, 1);
         assert_eq!(saved.map, 2);
         assert_eq!(saved.skill, save::DOOM_DEFAULT_SKILL);
         assert_eq!(saved.seed, save::DOOM_DEFAULT_SEED);
         assert!(!saved.completed);
         assert_eq!(saved.version, save::DOOM_SAVE_VERSION);
-
-        // Only when the file seam is unset does the record live under the key.
-        if std::env::var(save::DOOM_SAVE_FILE_ENV).is_err() {
-            let raw = app_store
-                .cached_get(DOOM_SAVE_KEY)
-                .expect("control read")
-                .expect("present");
-            assert_eq!(DoomSave::parse(&raw), Some(saved));
-        }
+        assert!(!saved.updated_at.is_empty());
     }
 
     #[test]
-    fn each_transition_overwrites_the_single_slot() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let app_store = Arc::new(open_store(dir.path()));
-        let writer = DoomProgressWriter::for_store(app_store.clone());
+    fn each_transition_writes_the_latest_campaign_position() {
+        let (writer, seen) = recording();
 
         writer.record(&campaign(1, 2));
         writer.record(&campaign(1, 3));
@@ -129,18 +123,11 @@ mod tests {
         };
         writer.record(&completed);
 
-        let saved = load(&app_store).expect("save present");
-        assert_eq!((saved.episode, saved.map), (4, 9));
-        assert!(saved.completed);
-
-        // ONE fixed key — no append log.
-        if std::env::var(save::DOOM_SAVE_FILE_ENV).is_err() {
-            let raw = app_store
-                .cached_get(DOOM_SAVE_KEY)
-                .expect("control read")
-                .expect("present");
-            assert_eq!(DoomSave::parse(&raw), Some(saved));
-        }
+        let recorded = seen.lock().expect("lock");
+        assert_eq!(recorded.len(), 3);
+        let last = recorded.last().expect("last");
+        assert_eq!((last.episode, last.map), (4, 9));
+        assert!(last.completed);
     }
 
     #[test]
@@ -182,4 +169,15 @@ mod tests {
         writer.record(&campaign(1, 2));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
+
+    #[test]
+    fn for_store_builds_a_writer_over_the_application_store() {
+        let store = Arc::new(
+            ApplicationStore::open(EngineHandle::new_pending()).expect("application store"),
+        );
+        let writer = DoomProgressWriter::for_store(store);
+        // Cheap to clone so it can be moved into the autoplay loop.
+        let _clone = writer.clone();
+    }
 }
+
