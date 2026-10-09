@@ -8,9 +8,8 @@
  *   - renders the ONE shared polite announcer (`HotkeyAnnouncer`),
  *   - renders the always-on bottom `HotkeyBar` from the live element listing.
  *
- * The retired surfaces (keymap hydration, which-key overlay, cheat sheet,
- * context indicator, keyboard-mode bar, top-left regime/discovery/first-run
- * cluster) are gone.
+ * The retired keyboard surfaces (the configurable hotkey platform and its
+ * top-left chrome) are gone.
  */
 
 import React, { useEffect, useMemo, useSyncExternalStore } from 'react';

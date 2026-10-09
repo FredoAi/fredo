@@ -1317,17 +1317,24 @@ the tester's synthetic `document`-dispatched Escape events (harness artifact).
 
 ## F-96 (R-1.2 + R-2.1 + R-2.2 + R-2.5 / AC1+AC2) — Always-on bar aggregates app-wide
 
-- [ ] F-96: With ≥1 `data-hotkey` element mounted, read the bar. Then open a second window
-      that also mounts element hotkeys and re-read. Then open a window mounting ZERO
-      `data-hotkey` elements (or unmount the last one) and re-read. **Expected:** the bar
-      `hotkeys-keybar` renders app-wide with `role="region"` and `aria-label="Available
-      hotkeys"`; `hotkeys-keybar-row` = EVERY mounted element key in DOCUMENT order,
-      element-only (never a pinned global); `data-fredo-hotkey-count` = N; at 0 elements the
-      bar renders nothing (hidden) and the count is `0`. **Data:** bar presence/rect;
-      `hotkeys-keybar-row[data-hotkey-key]` list; `data-fredo-hotkey-count`. *(live receipt)*
-  - **Edge:** 1 vs many elements; aggregation across two windows; document-order stability
-    across a re-mount; a pinned global never appears as a row; a window with no elements
-    (Doom `?view=doom` is one such state).
+- [ ] F-96: With ≥1 `data-hotkey` element mounted, read the bar. Then open TWO DIFFERENT
+      feature windows whose controls declare DIFFERENT (globally-disjoint) keys — the binding
+      A7 set: Mission Monitor (`s` on `mm-session-search`) + Infrastructure Diagram (`d`) — and
+      re-read. Then open a window mounting ZERO `data-hotkey` elements (or unmount the last one)
+      and re-read. **Expected:** the bar `hotkeys-keybar` renders app-wide with `role="region"`
+      and `aria-label="Available hotkeys"`; `hotkeys-keybar-row` = EVERY mounted element key in
+      DOCUMENT order, element-only (never a pinned global); with the two feature windows open the
+      bar lists BOTH keys (`s` AND `d`) and `document.body[data-fredo-hotkey-duplicate]` is
+      ABSENT with NO DEV `DuplicateHotkeyError` (disjoint keys coexist); `data-fredo-hotkey-count`
+      = N; at 0 elements the bar renders nothing (hidden) and the count is `0`. **Data:** bar
+      presence/rect; `hotkeys-keybar-row[data-hotkey-key]` list; the duplicate hook;
+      `tauri_read_logs(source="console", level="error")`; `data-fredo-hotkey-count`. *(live receipt)*
+  - **Edge:** 1 vs many elements; the TWO-WINDOW cross-feature case uses the A7 GLOBALLY-DISJOINT
+    key set (14 controls / 14 distinct keys, each used by exactly one feature — Mission Monitor
+    `s`; Diagram `d`; My Work Items `r`/`a`/`z`/`j`; Optimizely `f`/`q`/`e`/`c`; Dev Mode
+    `i`/`x`/`b`/`v`; MM `n`/`p` and Diagram `f` DROPPED — no mounted control), so no two features
+    share a key; document-order stability across a re-mount; a pinned global never appears as a
+    row; a window with no elements (Doom `?view=doom` is one such state).
 
 ## F-97 (R-2.3 + R-2.4 / AC2) — Disabled bar in text-entry + terminal; no fire
 
@@ -1365,14 +1372,21 @@ the tester's synthetic `document`-dispatched Escape events (harness artifact).
 
 ## F-100 (R-3.4 / AC3) — Duplicate key: dev error + body hook
 
-- [ ] F-100: Inject a second `data-hotkey="a"` element via `tauri_webview_execute_js` (or the
-      ST-1 dev-only `?hotkeyDupProbe=1`). **Expected:** `document.body[data-fredo-hotkey-duplicate=
+- [ ] F-100 (leg A — disjoint keys coexist): Open TWO DIFFERENT feature windows whose controls
+      declare DIFFERENT (globally-disjoint) keys — the binding A7 set: Mission Monitor (`s` on
+      `mm-session-search`) + Infrastructure Diagram (`d`). **Expected:** both keys appear in the
+      bar AND `document.body[data-fredo-hotkey-duplicate]` is ABSENT with NO DEV
+      `DuplicateHotkeyError`. Then (leg B — injected failure path) inject a second element with an
+      EXISTING key (e.g. a second `data-hotkey="s"`) via `tauri_webview_execute_js` (or the ST-1
+      dev-only `?hotkeyDupProbe=1`). **Expected:** `document.body[data-fredo-hotkey-duplicate=
       "true"]`; in DEV a `DuplicateHotkeyError` is thrown (console) and `hotkeys-duplicate-error`
-      renders; the duplicate is surfaced, never a silent pick. **Data:** body hook; the DEV error
-      banner + `tauri_read_logs(source="console", level="error")`; removed-duplicate recovery.
+      renders; the duplicate is surfaced, never a silent pick. **Data:** bar rows; the duplicate
+      hook; `tauri_read_logs(source="console", level="error")`; removed-duplicate recovery.
       *(live receipt)*
-  - **Edge:** in PROD the error is logged once (no throw); two elements with the same `grammar.key`;
-    recovery when the duplicate is removed (`data-fredo-hotkey-duplicate` clears).
+  - **Edge:** leg A must NOT raise — a DEV `DuplicateHotkeyError` on two untouched feature windows
+    is a FAIL (the A7 keys are globally disjoint); in PROD the error is logged once (no throw);
+    two elements with the same `grammar.key`; recovery when the injected duplicate is removed
+    (`data-fredo-hotkey-duplicate` clears).
 
 ## F-101 (R-1.3) — Invalid attribute excluded from dispatch + bar
 
@@ -1425,7 +1439,7 @@ the tester's synthetic `document`-dispatched Escape events (harness artifact).
 
 - [ ] F-105: Static audit of `apps/ui/src/shared/hotkeys/`: count `document.addEventListener('keydown'`
       and any second `dispatch`/action-table export. **Expected:** exactly ONE dispatch listener
-      (the engine scope, `engine.ts:701`); the `traversal.ts:367` Tab listener is the only other,
+      (the engine scope, `engine.ts:440`); the `traversal.ts:354` Tab listener is the only other,
       non-dispatch (documented); the registry holds ONE action table; no module exports a second
       `dispatch`. **Data:** grep output; the engine install-site citation. *(static pin — the one
     non-live leg; declared, not a manufactured live row)*

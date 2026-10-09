@@ -1,9 +1,9 @@
 /**
  * Spec #2946 ST-3 — the shared `Keycap` primitive (plan UI/UX §"Shared primitive").
  *
- * ONE renderer for every hotkey display surface (which-key overlay, Hotkeys
- * settings list, cheat sheet, command palette, terminal passthrough pill), so a
- * binding never renders differently across surfaces.
+ * ONE renderer for every hotkey display surface (the always-on key bar, the
+ * command palette, the terminal passthrough pill), so a binding never renders
+ * differently across surfaces.
  *
  * Presentational only: no engine/registry import. A serialized `KeySequence`
  * renders as one `<kbd>` chip per chord step:

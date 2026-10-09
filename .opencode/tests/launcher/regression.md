@@ -846,14 +846,13 @@
   - **Edge:** a query that filters the grid to zero while the row still lists open windows; Enter on
     the bar (smart-Enter) unchanged.
 
-## R-73 — bottomStack retires the dock selector; base inset preserved
+## R-73 — (retired by #3009) bottom-inset selector
 
-- [ ] R-73: read `measureBottomOffsetPx()` (or its unit pin) and the persistent `KeyboardBar` /
-      which-key overlay bottom inset with the dock absent.
-  **Expected:** `BOTTOM_STACK_DOCK_SELECTOR`/`WHICHKEY_DOCK_SELECTOR` match nothing and
-      `measureBottomOffsetPx()` returns `BOTTOM_STACK_MIN_PX` (24) unconditionally; the keyboard bar
-      and overlay keep their base bottom inset (no layout change beyond the absent dock measurement);
-      `WhichKeyOverlay.test.tsx` re-pinned. Reference F-118/R-5.
+> **#3009 supersedes (OBSOLETE).** The bottom-inset measurement module and the keyboard-bar /
+> overlay surfaces this row referenced were removed by #3009; the always-on hotkey bar now pins
+> flush to `bottom:0` with a single constant. Retained as the historical record.
+
+- [ ] R-73: **RETIRED — do not run on `spec/3009`.** Reference F-118/R-5.
 
 ## R-74 — Window kernel read-only; token-native; no re-render loop; build gates
 

@@ -134,10 +134,10 @@ across ~300 files** — dominated by the frontend tree (3,299) and the Rust data
 ## Top files by occurrences (whole repo)
 
 `lib.rs` 216 · `docs/ARCHITECTURE.md` 186 · `docs/agentic-pipeline/playbooks/references.md` 179 ·
-`feature_data/commands.rs` 176 · `shared/hotkeys/contexts.ts` 130 · `features/home/components/Home.tsx` 124 ·
+`feature_data/commands.rs` 176 · `shared/hotkeys/<context module, removed by #3009>` 130 · `features/home/components/Home.tsx` 124 ·
 `docs/archive/.../FEATURE_CLASS_GUIDE.md` 119 · `feature_data/registry.rs` 116 ·
 `.opencode/scripts/pipeline-state.rs` 103 · `feature_data/declaration.rs` 102 ·
-`shared/feature-data/store.ts` 102 · `features/settings-app/.../HotkeysSettings.tsx` 92 ·
+`shared/feature-data/store.ts` 102 · `features/settings-app/.../<hotkey settings surface, removed by #3009>` 92 ·
 `shared/feature-data/client.ts` 83 · `shared/hotkeys/registry.ts` 77 ·
 `infrastructure/storage/feature_store.rs` 69 · `shared/hooks/useFeatureData.ts` 67.
 

@@ -5,7 +5,7 @@
  * always-on bottom bar renders, in document order (the listing is already
  * document-ordered), together with the pending-prefix and disabled state.
  *
- * PURE (mirrors `keys.ts` / `keyboardBarModel.ts`): no DOM, no React, no store,
+ * PURE (mirrors `keys.ts`): no DOM, no React, no store,
  * no engine runtime read — `FocusSnapshot` is a TYPE-ONLY import (erased at
  * compile time) so the model has no runtime dependency on the engine.
  *

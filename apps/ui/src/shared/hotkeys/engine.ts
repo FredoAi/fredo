@@ -13,7 +13,7 @@
  *
  * Exactly ONE `keydown` listener exists per webview (`installHotkeyEngine()` is
  * idempotent and adds the listener in the CAPTURE phase). The retired
- * keymap/macros/contexts/leader/keyboard-mode machinery is gone: there is NO
+ * configuration and context machinery is gone: there is NO
  * second resolver, NO second action table, NO second listener.
  *
  * Keydown path budget: zero IPC, zero persistence, zero React re-render.

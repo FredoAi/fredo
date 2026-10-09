@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 /** Strip block + line comments so doc prose (issue refs like `#2946`) cannot
@@ -103,5 +103,54 @@ describe('ST-3 source audit — one live region only', () => {
   it('the announcer carries the fixed help accessible name', () => {
     const source = readFileSync(resolve(process.cwd(), ANNOUNCER), 'utf8');
     expect(source).toContain("'Hotkey sequence help'");
+  });
+});
+
+// ── ST-6 (#3009) — ONE dispatch listener / ONE action table ──────────────────
+
+const HOTKEYS_DIR = 'src/shared/hotkeys';
+
+/** Every top-level source file in `shared/hotkeys/`, deterministically ordered. */
+function listHotkeySources(): string[] {
+  return readdirSync(resolve(process.cwd(), HOTKEYS_DIR))
+    .filter((name) => name.endsWith('.ts') || name.endsWith('.tsx'))
+    .sort();
+}
+
+describe('ST-6 source audit — exactly ONE dispatch listener', () => {
+  it('the only document keydown listeners are the engine dispatch + the traversal Tab boundary', () => {
+    const listeners = listHotkeySources()
+      .map((name) => ({
+        name,
+        count: [
+          ...stripComments(
+            readFileSync(resolve(process.cwd(), HOTKEYS_DIR, name), 'utf8'),
+          ).matchAll(/document\.addEventListener\(\s*['"]keydown['"]/g),
+        ].length,
+      }))
+      .filter((entry) => entry.count > 0);
+
+    // Exactly TWO `document` keydown listeners exist: the ONE engine dispatch
+    // listener (engine.ts) and the ONLY other, non-dispatch listener — the Tab
+    // window-boundary handler in traversal.ts (documented). No module adds a
+    // third, parallel listener.
+    expect(listeners).toEqual([
+      { name: 'engine.ts', count: 1 },
+      { name: 'traversal.ts', count: 1 },
+    ]);
+  });
+
+  it('no module exports a second dispatch entry or a second action table', () => {
+    for (const name of listHotkeySources()) {
+      const code = stripComments(readFileSync(resolve(process.cwd(), HOTKEYS_DIR, name), 'utf8'));
+      expect(code, `${name} must not export a second dispatch entry`).not.toMatch(
+        /export\s+(?:async\s+)?(?:function|const)\s+dispatch\b/,
+      );
+    }
+    // The registry is the single action table: exactly one run entry point.
+    const registry = stripComments(
+      readFileSync(resolve(process.cwd(), HOTKEYS_DIR, 'registry.ts'), 'utf8'),
+    );
+    expect([...registry.matchAll(/export\s+function\s+runHotkeyAction\b/g)]).toHaveLength(1);
   });
 });

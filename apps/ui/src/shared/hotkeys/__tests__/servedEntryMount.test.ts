@@ -5,7 +5,7 @@
  * → `/src/main.tsx` (Vite :5174) and imports the UI library via `@fredo/ui`, so it
  * NEVER executes `apps/ui/src/main.tsx` (the standalone UI dev-server entry). The
  * round-1 defect: `HotkeysProvider` was mounted only in the library entry, so the
- * shipped webview had no engine listener, announcer or which-key overlay. A served
+ * shipped webview had no engine listener or announcer. A served
  * build cannot see an unmounted provider (it compiles fine), hence this source pin.
  *
  * Mirrors `src/shared/utils/__tests__/adapterEntryRegistration.test.ts`. Comments

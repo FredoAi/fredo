@@ -2,7 +2,7 @@
  * Spec #2946 ST-3 — the ONE polite announcement channel (R-3.2).
  *
  * Every hotkey announcement (sequence help R-1.3, the one-time terminal
- * passthrough notice R-5.8 owned by ST-12, cheat-sheet open, macro record/replay)
+ * passthrough notice R-5.8 owned by ST-12, pending-sequence help)
  * goes through this single module-scoped `role="status" aria-live="polite"`
  * region. Visual surfaces MUST NOT declare per-item live regions — they mark
  * their visuals `aria-hidden` and call `announce(text)`.

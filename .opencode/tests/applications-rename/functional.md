@@ -37,13 +37,12 @@
   tile + open-apps row (`| OPEN APPS`) still render; the Optimizely tile still reads
   **"Feature Flags"** (retained).
 
-- [ ] **F-2 (R-1/AC1, LIVE) — hotkey / Settings / Dev Mode copy.**
-  Open the hotkey tier label (cheat sheet + discovery + which-key), Settings' auto-discovered
-  group header, and the Dev Mode data tab.
-  **Expected:** the app-scoped hotkey tier label reads **"Application"** (never "Feature"); the
-  Settings group reads **"Applications"**; the Dev Mode tab reads **"Application Data"**; the
-  `'Feature wins here'` string no longer occurs for the concept. Reference:
-  `CheatSheetOverlay.tsx`, `KeysDiscovery.tsx`, `WhichKeyOverlay.tsx`, `HotkeysSettings.tsx`,
+- [ ] **F-2 (R-1/AC1, LIVE) — Settings / Dev Mode copy.**
+  Open Settings' auto-discovered group header and the Dev Mode data tab. (The app-scoped hotkey
+  tier label this row formerly checked belonged to the keyboard chrome removed by #3009, so it is
+  no longer inspected.)
+  **Expected:** the Settings group reads **"Applications"**; the Dev Mode tab reads **"Application
+  Data"**; the `'Feature wins here'` string no longer occurs for the concept. Reference:
   `DevMode.tsx`.
   **Edge:** retained different-sense strings stay byte-identical (Optimizely `'Feature Flags'`;
   ADO work-item type `'Feature'`); a light/dark theme swap does not restore old copy.
