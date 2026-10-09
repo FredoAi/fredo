@@ -1,64 +1,46 @@
 /**
- * Spec #2946 ST-4 — the app-shell mount point (`HotkeysProvider`).
+ * Spec #3009 ST-3 — the app-shell mount point (`HotkeysProvider`).
  *
- * Mounting the provider must install the ONE engine (idempotently) and render
- * the ONE shared announcer; unmounting must remove both. The dispatch path is
- * exercised through the real registry so the provider is proven to wire the
- * engine, not merely render it.
+ * Mounting the provider must install the ONE engine + the ONE element discovery
+ * and render the ONE shared announcer + the always-on element bar; unmounting
+ * must remove the engine listener + discovery.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup } from '@testing-library/react';
+import { cleanup, fireEvent, waitFor } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
-import {
-  registerHotkeyHandler,
-  resetRegistryForTests,
-} from '@/shared/hotkeys/registry';
-import {
-  resetKeymapStoreForTests,
-} from '@/shared/hotkeys/store';
+import { registerHotkeyHandler, resetRegistryForTests } from '@/shared/hotkeys/registry';
+import { resetHotkeyStatusForTests } from '@/shared/hotkeys/store';
 import { resetWindowStoreForTests } from '@/shared/window-system/windowStore';
 import {
   LAUNCHER_TOGGLE_ACTION_ID,
   resetHotkeyEngineForTests,
 } from '@/shared/hotkeys/engine';
-import { registerHotkeyContext, resetContextRegistryForTests } from '@/shared/hotkeys/contexts';
-import { enterHotkeyContext, resetHotkeyContextForTests } from '@/shared/hotkeys/contextStack';
-import { ROOT_CONTEXT_ID } from '@/shared/hotkeys/types';
 import {
-  HOTKEY_CONTEXT_INDICATOR_LABEL_TESTID,
-  HOTKEY_CONTEXT_INDICATOR_TESTID,
-} from '@/shared/hotkeys/ContextIndicator';
+  resetHotkeyElementDiscoveryForTests,
+} from '@/shared/hotkeys/hotkeyElements';
+import {
+  HOTKEY_BAR_TESTID,
+} from '@/shared/hotkeys/HotkeyBar';
 import { HotkeysProvider } from '@/shared/hotkeys/HotkeysProvider';
-import { HOTKEYS_CLUSTER_TESTID } from '@/shared/hotkeys/HotkeysCluster';
-import { KEYS_DISCOVERY_TESTID } from '@/shared/hotkeys/KeysDiscovery';
-import { INPUT_REGIME_TESTID } from '@/shared/hotkeys/InputRegimeIndicator';
-import { KEYBOARD_BAR_TESTID } from '@/shared/hotkeys/KeyboardBar';
-import {
-  enterKeyboardMode,
-  exitKeyboardMode,
-  resetKeyboardModeForTests,
-} from '@/shared/hotkeys/keyboardMode';
 
 beforeEach(() => {
   localStorage.clear();
   resetRegistryForTests();
-  resetKeymapStoreForTests();
+  resetHotkeyStatusForTests();
   resetWindowStoreForTests();
   resetHotkeyEngineForTests();
-  resetContextRegistryForTests();
-  resetHotkeyContextForTests();
-  resetKeyboardModeForTests();
+  resetHotkeyElementDiscoveryForTests();
+  document.body.innerHTML = '';
 });
 
 afterEach(() => {
+  resetHotkeyElementDiscoveryForTests();
   resetHotkeyEngineForTests();
-  resetContextRegistryForTests();
-  resetHotkeyContextForTests();
-  resetKeyboardModeForTests();
   cleanup();
   vi.restoreAllMocks();
+  document.body.innerHTML = '';
 });
 
 describe('HotkeysProvider', () => {
@@ -76,24 +58,6 @@ describe('HotkeysProvider', () => {
 
     unmount();
     expect(document.documentElement.hasAttribute('data-fredo-hotkeys-engine')).toBe(false);
-  });
-
-  it('mounts the ONE S3 cluster exactly once, with the three surfaces and ONE live region', () => {
-    const { container, getByTestId } = renderWithChakra(
-      <HotkeysProvider>
-        <span data-testid="child" />
-      </HotkeysProvider>,
-    );
-
-    // Exactly ONE cluster container (the three S3 surfaces are mounted there).
-    expect(
-      container.querySelectorAll(`[data-testid="${HOTKEYS_CLUSTER_TESTID}"]`),
-    ).toHaveLength(1);
-    // The chip (default navigating) and the always-present discovery control.
-    expect(getByTestId(INPUT_REGIME_TESTID)).toBeInTheDocument();
-    expect(getByTestId(KEYS_DISCOVERY_TESTID)).toBeInTheDocument();
-    // The S3 surfaces introduce NO second live region — still exactly ONE.
-    expect(document.querySelectorAll('[aria-live]')).toHaveLength(1);
   });
 
   it('dispatches a registered action through the engine', () => {
@@ -118,56 +82,45 @@ describe('HotkeysProvider', () => {
     expect(event.defaultPrevented).toBe(true);
   });
 
-  it('mounts the ONE context indicator (null while idle, shown on a change)', () => {
-    registerHotkeyContext({
-      contextId: 'fredo.test.child',
-      parentId: ROOT_CONTEXT_ID,
-      title: 'Child',
-    });
-
-    const { container, getByTestId } = renderWithChakra(
+  it('renders the always-on bar once a data-hotkey element is mounted, hidden at zero', async () => {
+    const { container, queryByTestId, rerender } = renderWithChakra(
       <HotkeysProvider>
         <span />
       </HotkeysProvider>,
     );
 
-    // Mounted once (present in the tree) but idle ⇒ renders nothing.
-    expect(
-      container.querySelectorAll(`[data-testid="${HOTKEY_CONTEXT_INDICATOR_TESTID}"]`),
-    ).toHaveLength(0);
+    // Zero element hotkeys ⇒ the bar renders null.
+    expect(queryByTestId(HOTKEY_BAR_TESTID)).toBeNull();
 
-    act(() => {
-      enterHotkeyContext('fredo.test.child');
-    });
+    rerender(
+      <HotkeysProvider>
+        <button data-hotkey="a">Alpha</button>
+      </HotkeysProvider>,
+    );
 
+    await waitFor(() => expect(queryByTestId(HOTKEY_BAR_TESTID)).not.toBeNull());
     expect(
-      container.querySelectorAll(`[data-testid="${HOTKEY_CONTEXT_INDICATOR_TESTID}"]`),
-    ).toHaveLength(1);
-    expect(getByTestId(HOTKEY_CONTEXT_INDICATOR_LABEL_TESTID)).toHaveTextContent('Child');
-    // Still exactly ONE live region (the shared announcer) — the pill is visual.
-    expect(document.querySelectorAll('[aria-live]')).toHaveLength(1);
+      container.querySelectorAll(`[data-testid="hotkeys-keybar-row"]`).length,
+    ).toBeGreaterThan(0);
   });
 
-  it('mounts the keyboard bar ONCE (null while off, exactly one on mode)', () => {
-    const { container } = renderWithChakra(
+  it('does not fire an element hotkey while focus is in a text-entry control', () => {
+    const run = vi.fn();
+    registerHotkeyHandler(LAUNCHER_TOGGLE_ACTION_ID, run);
+
+    renderWithChakra(
       <HotkeysProvider>
-        <span />
+        <button data-hotkey="a">Alpha</button>
+        <input data-testid="field" />
       </HotkeysProvider>,
     );
 
-    // Mounted once (present in the tree) but OFF ⇒ renders nothing.
-    expect(container.querySelectorAll(`[data-testid="${KEYBOARD_BAR_TESTID}"]`)).toHaveLength(0);
+    const field = document.querySelector<HTMLInputElement>('[data-testid="field"]');
+    field?.focus();
+    fireEvent.keyDown(field as HTMLInputElement, { key: 'a' });
 
-    act(() => {
-      enterKeyboardMode();
-    });
-    expect(container.querySelectorAll(`[data-testid="${KEYBOARD_BAR_TESTID}"]`)).toHaveLength(1);
-
-    act(() => {
-      exitKeyboardMode();
-    });
-    expect(container.querySelectorAll(`[data-testid="${KEYBOARD_BAR_TESTID}"]`)).toHaveLength(0);
-    // No second live region was introduced by the bar.
-    expect(document.querySelectorAll('[aria-live]')).toHaveLength(1);
+    // Ctrl+Space remains global in text-entry.
+    fireEvent.keyDown(field as HTMLInputElement, { key: ' ', ctrlKey: true });
+    expect(run).toHaveBeenCalledTimes(1);
   });
 });

@@ -28,11 +28,11 @@ export { themes } from './app/types/theme';
 export { Provider } from './shared/components/ui/provider';
 export { Toaster } from './shared/components/ui/toaster';
 
-// ── Hotkeys: shared Keycap primitive + single announcement channel (Spec #2946 ST-3)
+// ── Hotkeys: shared Keycap primitive + single announcement channel ───────────
 export { Keycap } from './shared/components/hotkeys/Keycap';
 export type { KeycapProps } from './shared/components/hotkeys/Keycap';
 // Exported for the SERVED Tauri entry (`apps/tauri/src/main.tsx`), which mounts
-// the engine for BOTH webviews; the library entry imports it directly (ST-4 rework).
+// the engine for BOTH webviews; the library entry imports it directly.
 export { HotkeysProvider } from './shared/hotkeys/HotkeysProvider';
 export { describeBinding, describeSequence } from './shared/hotkeys/describe';
 export type { BindingDescription, DescribableBinding } from './shared/hotkeys/describe';
@@ -46,19 +46,47 @@ export {
   useHotkeyAnnouncer,
 } from './shared/hotkeys/announcer';
 
-// ── Hotkeys: terminal passthrough mode + indicator state (Spec #2946 ST-12) ───
+// ── Hotkeys: the data-hotkey element model (Spec #3009 ST-1) ──────────────────
+export {
+  DATA_HOTKEY_PATTERN,
+  parseDataHotkey,
+} from './shared/hotkeys/hotkeyGrammar';
+export type { HotkeyGrammar } from './shared/hotkeys/hotkeyGrammar';
+export {
+  DATA_HOTKEY_ATTR,
+  DATA_HOTKEY_LABEL_ATTR,
+  HOTKEY_ACTIVATE_EVENT,
+  BODY_HOTKEY_COUNT_ATTR,
+  BODY_HOTKEY_DUPLICATE_ATTR,
+  BODY_HOTKEYS_DISABLED_ATTR,
+  DuplicateHotkeyError,
+  activateHotkeyElement,
+  detectDuplicateHotkeys,
+  getElementHotkeyRevision,
+  installHotkeyElementDiscovery,
+  listElementHotkeys,
+  subscribeElementHotkeys,
+} from './shared/hotkeys/hotkeyElements';
+export type { HotkeyElementEntry, DuplicateHotkeyResult } from './shared/hotkeys/hotkeyElements';
+
+// ── Hotkeys: the always-on bar (Spec #3009 ST-2) ─────────────────────────────
+export { HotkeyBar } from './shared/hotkeys/HotkeyBar';
+export { buildHotkeyBarModel } from './shared/hotkeys/hotkeyBarModel';
+export type {
+  HotkeyBarAvailability,
+  HotkeyBarModel,
+  HotkeyBarRow,
+} from './shared/hotkeys/hotkeyBarModel';
+
+// ── Hotkeys: terminal passthrough (focus-derived) ────────────────────────────
 export {
   TERMINAL_ROOT_SELECTOR,
-  TERMINAL_RELEASE_TESTID,
   TERMINAL_PASSTHROUGH_TESTID,
   BODY_PASSTHROUGH_ATTR,
   PASSTHROUGH_ANNOUNCEMENT_PREFIX,
-  getTerminalExitChord,
   isTerminalFocused,
-  passthroughAnnouncementText,
-  getReleaseButton,
+  isPassthroughActive,
   syncTerminalPassthrough,
-  exitTerminalPassthrough,
   installTerminalPassthrough,
   uninstallTerminalPassthrough,
   isTerminalPassthroughInstalled,
@@ -127,7 +155,7 @@ export { API_BASE_URL, STEP_STATUSES } from './shared/constants';
 export { FredoApplicationClass } from './shared/classes/FredoApplicationClass';
 export type { GridItemConfig } from './shared/classes/types';
 
-// ── Hotkeys (Spec #2946 ST-2) ─────────────────────────────────────────────────
+// ── Hotkeys: the ONE registry (Spec #3009 ST-3) ──────────────────────────────
 export {
   registerFeatureHotkeys,
   registerFredoAction,
@@ -137,70 +165,47 @@ export {
   runHotkeyAction,
   resetRegistryForTests,
 } from './shared/hotkeys/registry';
-export type { HotkeyContributor } from './shared/hotkeys/registry';
 export {
+  getHotkeysDisabled,
+  setHotkeysDisabled,
+  subscribeHotkeyStatus,
   subscribeHotkeys,
-  subscribeHotkeyEvents,
   getHotkeyRevision,
   getKeymap,
-  getBinding,
-  getHotkeyCandidates,
-  getPendingSequence,
-  getMacroRecordingState,
-  isMacroRecording,
-  isPassthroughActive,
-  applyKeymap,
-  setBinding,
-  clearBinding,
-  resetBinding,
-  resetAllBindings,
-  setLeader,
-  setVimPresetEnabled,
-  setSequenceTimeoutMs,
-  setMacros,
-  setRawMacros,
-  setPendingSequence,
-  clearPendingSequence,
-  setMacroRecording,
-  setPassthrough,
-  hydrateKeymap,
-  resetKeymapStoreForTests,
   useHotkeyRevision,
-  useHotkeyCandidates,
-  useHotkeyBinding,
+  useHotkeysDisabled,
+  resetHotkeyStatusForTests,
 } from './shared/hotkeys/store';
-export type { MacroRecordingState } from './shared/hotkeys/store';
+export type { HotkeyKeymapView } from './shared/hotkeys/store';
 export {
-  KEYMAP_STORAGE_KEY,
-  RECORDING_LATCH_KEY,
-  CURRENT_SCHEMA_VERSION,
-} from './shared/hotkeys/types';
+  installHotkeyEngine,
+  uninstallHotkeyEngine,
+  isHotkeyEngineInstalled,
+  resolveActiveBindings,
+  handleHotkeyKeydown,
+  getFocusSnapshot,
+  subscribeFocusSnapshot,
+  useFocusSnapshot,
+  resetHotkeyEngineForTests,
+  LAUNCHER_TOGGLE_ACTION_ID,
+} from './shared/hotkeys/engine';
+export type { FocusSnapshot } from './shared/hotkeys/engine';
 export {
-  DEFAULT_KEYMAP,
-  DEFAULT_SEQUENCE_TIMEOUT_MS,
-  MIN_SEQUENCE_TIMEOUT_MS,
-  MAX_SEQUENCE_TIMEOUT_MS,
-  getDefaultBinding,
-  createDefaultBindingMap,
-  createDefaultKeymap,
-  migrateKeymap,
-  loadKeymap,
-  saveKeymap,
-  readRecordingLatch,
-  acquireRecordingLatch,
-  releaseRecordingLatch,
-} from './shared/hotkeys/persistence';
-export type { RecordingLatch } from './shared/hotkeys/persistence';
+  KEPT_GLOBAL_BINDINGS,
+  FOCUS_NEXT_ACTION_ID,
+  FOCUS_PREVIOUS_ACTION_ID,
+} from './shared/hotkeys/defaults';
+export type { KeptGlobalBinding } from './shared/hotkeys/defaults';
+export { ACTION_PALETTE_PREFIX } from './shared/hotkeys/types';
 export type {
   ApplicationHotkeyAction,
   HotkeyActionId,
-  HotkeyCandidate,
-  HotkeyEvent,
   HotkeyInvocationContext,
   HotkeyResetReason,
   HotkeyTier,
-  PersistedKeymap,
-  PersistedMacro,
-  PersistedRawMacro,
+  KeySequence,
+  KeyStroke,
+  Platform,
   RegisteredHotkeyAction,
 } from './shared/hotkeys/types';
+

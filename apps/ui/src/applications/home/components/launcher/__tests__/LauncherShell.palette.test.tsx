@@ -175,13 +175,16 @@ describe('LauncherShell — the `>` action palette (ST-9)', () => {
     expect(actionRun).not.toHaveBeenCalled();
   });
 
-  it('the shipped `primary+P` default opens the bar with `>` pre-filled', () => {
+  it('the retired `primary+P` chord is inert; typing `>` remains the palette path (R-4.4)', () => {
     renderShell();
 
     act(() => {
       fireEvent.keyDown(document, { key: 'P', ctrlKey: true });
     });
+    // The chord is unbound after #3009 — the bar is not opened by it.
+    expect(input().value).toBe('');
 
+    type('>');
     expect(input().value).toBe('>');
     expect(screen.getByTestId('launcher-action-list')).toBeInTheDocument();
   });

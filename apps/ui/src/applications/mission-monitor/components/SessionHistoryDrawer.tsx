@@ -294,6 +294,8 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
             <input
               type="text"
               ref={searchInputRef}
+              data-hotkey="s"
+              data-testid="mm-session-search"
               value={searchFilter}
               onChange={(e) => onSearchChange(e.target.value)}
               placeholder="Filter sessions..."

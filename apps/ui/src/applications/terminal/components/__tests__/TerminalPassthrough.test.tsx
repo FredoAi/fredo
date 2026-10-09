@@ -1,22 +1,13 @@
 /**
- * Spec #2946 ST-12 — terminal passthrough indicator + the terminal root anchor
- * (EARS R-5.7/R-5.8).
+ * Spec #3009 ST-4 — terminal passthrough indicator + the terminal root anchor.
  *
- * Pins:
- *  - `SessionTerminal`'s container carries `data-fredo-terminal-root="true"` —
- *    the anchor the ST-4 classifier and ST-12 detection both key on;
- *  - the persistent `hotkeys-terminal-passthrough` pill names the exit chord via
- *    the shared `Keycap`, carries a real `hotkeys-terminal-passthrough-exit`
- *    button, and swaps copy state (`Passthrough` ↔ `Hotkeys active`) by icon +
- *    text (never colour alone);
- *  - the REAL `TerminalWindow` mounts that pill for a live session, and focusing
- *    the terminal session flips `data-passthrough="true"` (and the body hook),
- *    while activating the release button leaves passthrough.
+ * The dedicated exit chord + release button are retired: the pill is
+ * informational only and passthrough is released by click-away / focus change.
  */
 
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, screen, waitFor } from '@testing-library/react';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
 import {
@@ -24,7 +15,7 @@ import {
   resetTerminalModeForTests,
   useTerminalPassthrough,
 } from '@/shared/hotkeys/terminalMode';
-import { resetKeymapStoreForTests } from '@/shared/hotkeys/store';
+import { resetHotkeyStatusForTests } from '@/shared/hotkeys/store';
 import { resetRegistryForTests } from '@/shared/hotkeys/registry';
 import type { PersistedTerminalSession, TerminalSessionInfo } from '../../sessionModel';
 
@@ -92,7 +83,7 @@ function session(overrides: Partial<TerminalSessionInfo>): TerminalSessionInfo {
 beforeEach(() => {
   localStorage.clear();
   resetRegistryForTests();
-  resetKeymapStoreForTests();
+  resetHotkeyStatusForTests();
   resetTerminalModeForTests();
   document.body.removeAttribute(BODY_PASSTHROUGH_ATTR);
   sessions = [];
@@ -111,7 +102,7 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
-describe('terminal root anchor (R-5.7)', () => {
+describe('terminal root anchor', () => {
   it('SessionTerminal carries data-fredo-terminal-root="true"', () => {
     renderWithChakra(<SessionTerminal sessionId="a" active />);
 
@@ -120,56 +111,31 @@ describe('terminal root anchor (R-5.7)', () => {
   });
 });
 
-describe('TerminalPassthroughIndicator (R-5.8)', () => {
-  it('names the exit chord and offers a real release button', () => {
-    renderWithChakra(
-      <TerminalPassthroughIndicator active exitChord="ctrl+shift+f10" />,
-    );
+describe('TerminalPassthroughIndicator', () => {
+  it('conveys the state by icon + text (never colour alone)', () => {
+    const { rerender } = renderWithChakra(<TerminalPassthroughIndicator active />);
 
     const pill = screen.getByTestId('hotkeys-terminal-passthrough');
     expect(pill).toHaveAttribute('data-passthrough', 'true');
     expect(pill).toHaveTextContent('Passthrough');
 
-    const keycaps = screen.getAllByTestId('hotkeys-keycap');
-    expect(keycaps).toHaveLength(1);
-    expect(keycaps[0]).toHaveAttribute('data-chord-token', 'ctrl+shift+f10');
-
-    const release = screen.getByTestId('hotkeys-terminal-passthrough-exit');
-    expect(release.tagName).toBe('BUTTON');
-    expect(release).toHaveTextContent('Release keyboard');
-  });
-
-  it('swaps state copy by icon + text (never colour alone)', () => {
-    const { rerender } = renderWithChakra(
-      <TerminalPassthroughIndicator active exitChord="ctrl+shift+f10" />,
-    );
-    expect(screen.getByTestId('hotkeys-terminal-passthrough')).toHaveTextContent('Passthrough');
-
-    rerender(<TerminalPassthroughIndicator active={false} exitChord="ctrl+shift+f10" />);
-    const pill = screen.getByTestId('hotkeys-terminal-passthrough');
-    expect(pill).toHaveAttribute('data-passthrough', 'false');
-    expect(pill).toHaveTextContent('Hotkeys active');
-    expect(pill).not.toHaveTextContent('Passthrough');
-  });
-
-  it('renders no keycap when the exit binding is unbound', () => {
-    renderWithChakra(<TerminalPassthroughIndicator active exitChord={null} />);
-    expect(screen.queryAllByTestId('hotkeys-keycap')).toHaveLength(0);
-    expect(screen.getByTestId('hotkeys-terminal-passthrough-exit')).toBeInTheDocument();
+    rerender(<TerminalPassthroughIndicator active={false} />);
+    const inactive = screen.getByTestId('hotkeys-terminal-passthrough');
+    expect(inactive).toHaveAttribute('data-passthrough', 'false');
+    expect(inactive).toHaveTextContent('Hotkeys active');
+    expect(inactive).not.toHaveTextContent('Passthrough');
   });
 });
 
-describe('TerminalWindow — persistent indicator + passthrough state (R-5.7/R-5.8)', () => {
+describe('TerminalWindow — persistent indicator + passthrough state', () => {
   it('mounts the pill for a live session and reflects focus in/out of the terminal', async () => {
     sessions = [session({ id: 'a', status: 'running' })];
     renderWithChakra(<TerminalWindow />);
 
-    // The session root anchor + the persistent indicator are both present.
     const host = await screen.findByTestId('terminal-canvas-host-a');
     expect(host).toHaveAttribute('data-fredo-terminal-root', 'true');
     const pill = await screen.findByTestId('hotkeys-terminal-passthrough');
     expect(pill).toHaveAttribute('data-passthrough', 'false');
-    expect(screen.getByTestId('hotkeys-terminal-passthrough-exit')).toBeInTheDocument();
 
     // Focusing the session enters passthrough (indicator + body hook flip).
     act(() => {
@@ -183,34 +149,17 @@ describe('TerminalWindow — persistent indicator + passthrough state (R-5.7/R-5
       ),
     );
     expect(document.body.getAttribute(BODY_PASSTHROUGH_ATTR)).toBe('true');
-
-    // Activating the real release button leaves passthrough (dispatch resumes).
-    act(() => {
-      fireEvent.click(screen.getByTestId('hotkeys-terminal-passthrough-exit'));
-    });
-    await waitFor(() =>
-      expect(screen.getByTestId('hotkeys-terminal-passthrough')).toHaveAttribute(
-        'data-passthrough',
-        'false',
-      ),
-    );
-    expect(document.body.hasAttribute(BODY_PASSTHROUGH_ATTR)).toBe(false);
   });
 });
 
 describe('terminalMode hook contract', () => {
-  it('useTerminalPassthrough reports the live state + exit chord', () => {
+  it('useTerminalPassthrough reports the live state', () => {
     function Probe() {
       const state = useTerminalPassthrough();
-      return (
-        <span data-testid="probe" data-active={String(state.active)}>
-          {state.exitChord}
-        </span>
-      );
+      return <span data-testid="probe" data-active={String(state.active)} />;
     }
     renderWithChakra(<Probe />);
     const probe = screen.getByTestId('probe');
     expect(probe).toHaveAttribute('data-active', 'false');
-    expect(probe).toHaveTextContent('ctrl+shift+f10');
   });
 });

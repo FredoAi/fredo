@@ -24,29 +24,26 @@ function readSource(relativePath: string): string {
 const KEYCAP = 'src/shared/components/hotkeys/Keycap.tsx';
 const DESCRIBE = 'src/shared/hotkeys/describe.ts';
 const ANNOUNCER = 'src/shared/hotkeys/announcer.tsx';
-// Spec #2959 ST-3 — the persistent key bar + its pure geometry + the shared
-// dock-derived inset all obey the SAME token/var hygiene and single-live-region
-// discipline as the shipped surfaces.
-const KEYBOARD_BAR = 'src/shared/hotkeys/KeyboardBar.tsx';
-const KEYBOARD_BAR_GEOMETRY = 'src/shared/hotkeys/keyboardBarGeometry.ts';
-const BOTTOM_STACK = 'src/shared/hotkeys/bottomStack.ts';
-// Spec #2960 ST-5 — the S3 cluster + its three integrated surfaces obey the SAME
+// Spec #3009 — the new element-model + always-on bar files obey the SAME
 // token/var hygiene and single-live-region discipline as the shipped surfaces.
-const HOTKEYS_CLUSTER = 'src/shared/hotkeys/HotkeysCluster.tsx';
-const INPUT_REGIME_INDICATOR = 'src/shared/hotkeys/InputRegimeIndicator.tsx';
-const KEYS_DISCOVERY = 'src/shared/hotkeys/KeysDiscovery.tsx';
-const KEYBOARD_INTRO = 'src/shared/hotkeys/KeyboardIntro.tsx';
+const HOTKEY_BAR = 'src/shared/hotkeys/HotkeyBar.tsx';
+const HOTKEY_BAR_MODEL = 'src/shared/hotkeys/hotkeyBarModel.ts';
+const HOTKEY_ELEMENTS = 'src/shared/hotkeys/hotkeyElements.ts';
+const HOTKEY_GRAMMAR = 'src/shared/hotkeys/hotkeyGrammar.ts';
+const HOTKEYS_PROVIDER = 'src/shared/hotkeys/HotkeysProvider.tsx';
+const ENGINE = 'src/shared/hotkeys/engine.ts';
+const REGISTRY = 'src/shared/hotkeys/registry.ts';
 const FILES = [
   KEYCAP,
   DESCRIBE,
   ANNOUNCER,
-  KEYBOARD_BAR,
-  KEYBOARD_BAR_GEOMETRY,
-  BOTTOM_STACK,
-  HOTKEYS_CLUSTER,
-  INPUT_REGIME_INDICATOR,
-  KEYS_DISCOVERY,
-  KEYBOARD_INTRO,
+  HOTKEY_BAR,
+  HOTKEY_BAR_MODEL,
+  HOTKEY_ELEMENTS,
+  HOTKEY_GRAMMAR,
+  HOTKEYS_PROVIDER,
+  ENGINE,
+  REGISTRY,
 ];
 
 describe('ST-3 source audit — token hygiene', () => {

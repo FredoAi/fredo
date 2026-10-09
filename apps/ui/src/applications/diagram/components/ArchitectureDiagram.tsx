@@ -23,11 +23,6 @@ import { useDiagram } from '../hooks/useDiagram';
 import { K8sNode, K8sNodeData } from './K8sNode';
 import { NodeContextMenu } from './NodeContextMenu';
 import { resolveCollisions } from '../utils/resolveCollisions';
-import {
-  DIAGRAM_FIT_VIEW_ACTION_ID,
-  DIAGRAM_SEARCH_ACTION_ID,
-  subscribeDiagramActions,
-} from '../lib/hotkeyBridge';
 
 interface ArchitectureDiagramProps {
   onFocusComplete?: () => void;
@@ -65,23 +60,6 @@ export const ArchitectureDiagram: React.FC<ArchitectureDiagramProps> = ({ onFocu
   // `diagram.search` local hotkey.
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
-  // ONE listener for the diagram's declared local hotkeys: focus the search
-  // input, or re-fit the whole graph. Removed on unmount; `run` is a no-op while
-  // the diagram is not mounted (engine only dispatches while it is focused).
-  useEffect(
-    () =>
-      subscribeDiagramActions((actionId) => {
-        if (actionId === DIAGRAM_SEARCH_ACTION_ID) {
-          searchInputRef.current?.focus();
-        } else if (actionId === DIAGRAM_FIT_VIEW_ACTION_ID) {
-          requestAnimationFrame(() => {
-            fitView({ duration: 400, padding: 0.1 });
-          });
-        }
-      }),
-    [fitView],
-  );
-  
   // Filter state
   const [showFilters, setShowFilters] = useState(false);
   const [resourceTypeFilters, setResourceTypeFilters] = useState<Set<string>>(new Set());
@@ -699,6 +677,7 @@ export const ArchitectureDiagram: React.FC<ArchitectureDiagramProps> = ({ onFocu
             <Input
               ref={searchInputRef}
               data-testid="diagram-search-input"
+              data-hotkey="s"
               placeholder="Search nodes..."
               value={searchQuery}
               onChange={(e) => handleSearch(e.target.value)}

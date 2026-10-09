@@ -1,11 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Flex, Icon, Text, VisuallyHidden } from '@chakra-ui/react';
+import { Flex, Icon, Text, VisuallyHidden } from '@chakra-ui/react';
 import { LuCircleCheck, LuKeyboard } from 'react-icons/lu';
-import { Keycap } from '../../../shared/components/hotkeys/Keycap';
 import {
   TERMINAL_PASSTHROUGH_TESTID,
-  TERMINAL_RELEASE_TESTID,
-  exitTerminalPassthrough,
   installTerminalPassthrough,
   useTerminalPassthrough,
 } from '../../../shared/hotkeys/terminalMode';
@@ -636,15 +633,11 @@ export const TerminalWindow: React.FC = () => {
         onDelete={handleDeleteRequest}
         onAdd={() => openDialog()}
       />
-      {/* Spec #2946 ST-12 — the PERSISTENT passthrough indicator (R-5.8). It is
-          terminal chrome (OUTSIDE the `data-fredo-terminal-root` session root),
-          so activating its real release button moves focus out of the terminal
-          session and resumes dispatch immediately. */}
+      {/* Spec #3009: the passthrough indicator is now informational only — the
+          release chord + release button are removed; the keyboard is released
+          by click-away / focus change (focus-derived passthrough). */}
       {selected && (
-        <TerminalPassthroughIndicator
-          active={passthrough.active}
-          exitChord={passthrough.exitChord}
-        />
+        <TerminalPassthroughIndicator active={passthrough.active} />
       )}
       <NewSessionDialog
         open={dialogOpen}
@@ -669,24 +662,17 @@ export const TerminalWindow: React.FC = () => {
 export interface TerminalPassthroughIndicatorProps {
   /** Passthrough is active — the terminal session owns the keyboard. */
   readonly active: boolean;
-  /** The effective exit binding (`ctrl+shift+f10` unless rebound). */
-  readonly exitChord: string | null;
 }
 
 /**
- * Spec #2946 ST-12 — the persistent, non-colour-only passthrough indicator
- * (R-5.8; UI/UX §6).
+ * Spec #3009 — the persistent, non-colour-only passthrough indicator.
  *
- * A terminal-chrome pill that names the exit chord with the shared `Keycap` and
- * carries a REAL `<button>` (`hotkeys-terminal-passthrough-exit`) so an AT user
- * can release the keyboard even mid-passthrough. The state is conveyed by an
- * icon + a text swap (`Passthrough` → `Hotkeys active`), never by colour alone.
- * It lives OUTSIDE the `data-fredo-terminal-root` session root so activating it
- * leaves passthrough; it is present in every passthrough state (never a toast).
+ * A terminal-chrome pill conveying the state by an icon + a text swap
+ * (`Passthrough` → `Hotkeys active`), never by colour alone. The dedicated
+ * exit chord + release button are removed; clicking away releases the keyboard.
  */
 export const TerminalPassthroughIndicator: React.FC<TerminalPassthroughIndicatorProps> = ({
   active,
-  exitChord,
 }) => {
   const StateIcon = active ? LuKeyboard : LuCircleCheck;
   const stateLabel = active ? 'Passthrough' : 'Hotkeys active';
@@ -719,17 +705,6 @@ export const TerminalPassthroughIndicator: React.FC<TerminalPassthroughIndicator
       <Text fontSize="xs" fontWeight="medium" color="fg.default" whiteSpace="nowrap">
         {stateLabel}
       </Text>
-      {exitChord && <Keycap sequence={exitChord} />}
-      <Button
-        type="button"
-        size="xs"
-        variant="solid"
-        colorPalette="accent"
-        data-testid={TERMINAL_RELEASE_TESTID}
-        onClick={exitTerminalPassthrough}
-      >
-        Release keyboard
-      </Button>
     </Flex>
   );
 };

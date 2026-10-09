@@ -23,29 +23,6 @@ import { useSessionActivityWatch } from '../hooks/useSessionActivityWatch';
 import { computeSessionMetrics } from '../lib/counters';
 import { computeSubagentTokenTotals, computeSubagentCostTotals } from '../lib/sessionMeta';
 import { SessionHistoryDrawer } from './SessionHistoryDrawer';
-// Spec #2946 ST-15: the declared feature hotkeys dispatch a namespaced window
-// event; this panel's ONE listener maps it onto the existing session ops.
-import {
-  MISSION_MONITOR_DETAIL_CONTEXT_ID,
-  MISSION_MONITOR_FOCUS_SESSION_SEARCH,
-  MISSION_MONITOR_GRAPH_CONTEXT_ID,
-  MISSION_MONITOR_NEXT_NODE,
-  MISSION_MONITOR_NEXT_SECTION,
-  MISSION_MONITOR_NEXT_SESSION,
-  MISSION_MONITOR_OPEN_DETAIL,
-  MISSION_MONITOR_PREVIOUS_NODE,
-  MISSION_MONITOR_PREVIOUS_SECTION,
-  MISSION_MONITOR_PREVIOUS_SESSION,
-  MISSION_MONITOR_TOGGLE_SECTION,
-  subscribeMissionMonitorActions,
-} from '../lib/hotkeyBridge';
-// Spec #2962 ST-3 — nested-flow wiring: the active interaction context drives
-// which surface is live; the ONE announcer names the action that ran; the
-// registry/context lookups resolve that action's level title.
-import { announce } from '../../../shared/hotkeys/announcer';
-import { getHotkeyContext } from '../../../shared/hotkeys/contexts';
-import { useActiveHotkeyContext } from '../../../shared/hotkeys/contextStack';
-import { getHotkeyAction } from '../../../shared/hotkeys/registry';
 import { SessionTokenBar } from './SessionTokenBar';
 import { NodeFocusProvider } from './NodeFocusContext';
 import { DetailPanel, detailSectionsForTarget, type DetailSectionMeta } from './DetailPanel';
@@ -1008,23 +985,7 @@ export const MissionMonitorPanel: React.FC = () => {
   // by double-clicking a ToolsNode accordion item). `null` = panel closed.
   const [focusTarget, setFocusTarget] = useState<DetailOpenTarget | null>(null);
 
-  // ── Spec #2962 ST-3: nested-flow wiring (descend / unwind) ────────────────
-  // The active interaction context is the single source of truth for which
-  // surface is live. Deriving `graphActive`/`detailActive` from it (rather than
-  // tracking a second flag) means the engine's capture-phase unwind restores
-  // the parent surface with no extra dispatch.
-  const { contextId: activeContextId } = useActiveHotkeyContext();
-  const graphActive =
-    activeContextId === MISSION_MONITOR_GRAPH_CONTEXT_ID ||
-    activeContextId === MISSION_MONITOR_DETAIL_CONTEXT_ID;
-  const detailActive = activeContextId === MISSION_MONITOR_DETAIL_CONTEXT_ID;
-
-  // The imperative graph-cursor API (the cursor itself lives in the canvas).
-  const canvasApiRef = useRef<MissionMonitorCanvasHandle | null>(null);
-
-  // L3 section navigation state — the panel owns the keyboard cursor and feeds
-  // it to the DetailPanel. Reset whenever the detail target changes.
-  const [activeSectionIndex, setActiveSectionIndex] = useState(0);
+  // ── Detail panel state (#2743 ST-6 / AC-7, AC-8) ─────────────────────────
   const [collapsedSectionIds, setCollapsedSectionIds] = useState<ReadonlySet<string>>(
     () => new Set<string>(),
   );
@@ -1032,38 +993,19 @@ export const MissionMonitorPanel: React.FC = () => {
     () => (focusTarget ? detailSectionsForTarget(focusTarget) : []),
     [focusTarget],
   );
-  // Refs so the ONE memoized listener always sees the current section list.
-  const detailSectionsRef = useRef(detailSections);
-  detailSectionsRef.current = detailSections;
-  const activeSectionIndexRef = useRef(activeSectionIndex);
-  activeSectionIndexRef.current = activeSectionIndex;
 
-  // A new detail target starts at its first section, fully expanded.
+  // A new detail target starts fully expanded.
   useEffect(() => {
-    setActiveSectionIndex(0);
     setCollapsedSectionIds(new Set<string>());
   }, [focusTarget]);
 
-  // Unwind L3→L2: a context-opened detail closes with the level (a detail the
-  // user opened by double-click is untouched — existing behavior preserved).
-  // After the unwind the panel is absent, so its Escape listeners unregister.
-  const [detailFromContext, setDetailFromContext] = useState(false);
-  useEffect(() => {
-    if (!detailActive && detailFromContext) {
-      setFocusTarget(null);
-      setDetailFromContext(false);
-    }
-  }, [detailActive, detailFromContext]);
-
   const handleFocusTarget = useCallback((target: DetailOpenTarget | null) => {
     setFocusTarget(target);
-    setDetailFromContext(false);
   }, []);
 
-  /** L2→L3 descent: open the cursor node's detail as a context-owned surface. */
+  /** L2→L3 descent: open the cursor node's detail. */
   const handleOpenDetailFromContext = useCallback((target: DetailOpenTarget) => {
     setFocusTarget(target);
-    setDetailFromContext(true);
   }, []);
 
   const handleToggleSection = useCallback((id: string) => {
@@ -1074,64 +1016,6 @@ export const MissionMonitorPanel: React.FC = () => {
       return next;
     });
   }, []);
-
-  // ONE window listener for the whole panel; removed on unmount. `run` is a
-  // no-op while the feature is unmounted (no subscriber), and the engine never
-  // dispatches these feature-tier actions unless Mission Monitor is focused.
-  useEffect(
-    () =>
-      subscribeMissionMonitorActions((actionId) => {
-        switch (actionId) {
-          case MISSION_MONITOR_FOCUS_SESSION_SEARCH:
-            setDrawerOpen(true);
-            setFocusSearchToken((token) => token + 1);
-            break;
-          case MISSION_MONITOR_NEXT_SESSION:
-            selectRelativeSession(1);
-            break;
-          case MISSION_MONITOR_PREVIOUS_SESSION:
-            selectRelativeSession(-1);
-            break;
-          // ── Spec #2962 ST-3 (L2): graph cursor (programmatic selection) ────
-          case MISSION_MONITOR_NEXT_NODE:
-            canvasApiRef.current?.moveCursor(1);
-            break;
-          case MISSION_MONITOR_PREVIOUS_NODE:
-            canvasApiRef.current?.moveCursor(-1);
-            break;
-          case MISSION_MONITOR_OPEN_DETAIL:
-            canvasApiRef.current?.openCursorDetail();
-            break;
-          // ── Spec #2962 ST-3 (L3): section navigation + progressive disclosure ─
-          case MISSION_MONITOR_NEXT_SECTION: {
-            const count = detailSectionsRef.current.length;
-            if (count > 0) setActiveSectionIndex((index) => (index + 1) % count);
-            break;
-          }
-          case MISSION_MONITOR_PREVIOUS_SECTION: {
-            const count = detailSectionsRef.current.length;
-            if (count > 0) setActiveSectionIndex((index) => (index - 1 + count) % count);
-            break;
-          }
-          case MISSION_MONITOR_TOGGLE_SECTION: {
-            const section = detailSectionsRef.current[activeSectionIndexRef.current];
-            if (section) handleToggleSection(section.id);
-            break;
-          }
-        }
-        // ── Spec #2962 ST-3 (R-2.2 / AC2): "the action that ran" ─────────────
-        // A nested-level action names itself and the level it belonged to
-        // through the ONE shared `announce()` channel (e.g. `Next section.
-        // Node detail.`). No new live region, no per-row live region. L1
-        // actions declare no context and therefore never announce here.
-        const action = getHotkeyAction(actionId);
-        if (action && action.contextId) {
-          const context = getHotkeyContext(action.contextId);
-          if (context) announce(`${action.title}. ${context.title}.`);
-        }
-      }),
-    [selectRelativeSession, handleToggleSection],
-  );
 
   // S6: a failed read/watch surfacing the verbatim backend error wins over the
   // plain disconnect hint; both are non-blocking (fail-open).
@@ -1236,9 +1120,8 @@ export const MissionMonitorPanel: React.FC = () => {
                 rows={rowSources}
                 onFocusTarget={handleFocusTarget}
                 onUnattributedCount={handleUnattributedCount}
-                graphActive={graphActive}
+                graphActive={false}
                 onOpenDetailFromContext={handleOpenDetailFromContext}
-                apiRef={canvasApiRef}
               />
             </ReactFlowProvider>
 
@@ -1248,9 +1131,8 @@ export const MissionMonitorPanel: React.FC = () => {
                 target={focusTarget}
                 onClose={() => {
                   setFocusTarget(null);
-                  setDetailFromContext(false);
                 }}
-                activeSectionId={detailSections[activeSectionIndex]?.id ?? null}
+                activeSectionId={detailSections[0]?.id ?? null}
                 collapsedSectionIds={collapsedSectionIds}
                 onToggleSection={handleToggleSection}
               />

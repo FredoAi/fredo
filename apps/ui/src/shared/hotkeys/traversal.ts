@@ -27,13 +27,12 @@
 
 import { focusWindow, getWindowSnapshot } from '../window-system/windowStore';
 import { registerHotkeyHandler } from './registry';
-import type { HotkeyActionId, KeySequence } from './types';
+import type { HotkeyActionId } from './types';
 
 // ── Traversal action ids (the engine declares these; traversal overrides their run) ──
 
 export const FOCUS_NEXT_ACTION_ID: HotkeyActionId = 'fredo.focus.nextWindow';
 export const FOCUS_PREVIOUS_ACTION_ID: HotkeyActionId = 'fredo.focus.prevWindow';
-export const CYCLE_NTH_ACTION_ID: HotkeyActionId = 'fredo.window.cycleNth';
 
 // ── DOM hook names (contract block 7 + UI/UX §5) ─────────────────────────────
 
@@ -230,18 +229,11 @@ export function focusPreviousWindow(): boolean {
   return focusRelative(-1);
 }
 
-/** Focus the Nth (1-based) open window and raise it (`primary+1..9`). */
+/** Focus the Nth (1-based) open window and raise it (feature action API). */
 export function focusWindowByIndex(index1Based: number): boolean {
   if (!Number.isInteger(index1Based) || index1Based < 1) return false;
   const target = getWindowIds()[index1Based - 1];
   return target ? focusWindowWithKeyboard(target) : false;
-}
-
-/** The last digit of a completed traversal sequence (`primary+2` → 2), or null. */
-function lastDigit(sequence: KeySequence): number | null {
-  const key = sequence[sequence.length - 1]?.key;
-  if (!key || key.length !== 1 || key < '1' || key > '9') return null;
-  return Number(key);
 }
 
 // ── Transient-surface return (R-1.4) ─────────────────────────────────────────
@@ -317,17 +309,13 @@ export function handleWindowBoundaryTab(event: KeyboardEvent): boolean {
 
 // ── Lifecycle ────────────────────────────────────────────────────────────────
 
-/** The override handler set traversal installs for the three traversal actions. */
+/** The override handler set traversal installs for the two kept focus actions. */
 function registerTraversalHandlers(): void {
   registerHotkeyHandler(FOCUS_NEXT_ACTION_ID, () => {
     focusNextWindow();
   });
   registerHotkeyHandler(FOCUS_PREVIOUS_ACTION_ID, () => {
     focusPreviousWindow();
-  });
-  registerHotkeyHandler(CYCLE_NTH_ACTION_ID, (ctx) => {
-    const nth = lastDigit(ctx.sequence);
-    if (nth !== null) focusWindowByIndex(nth);
   });
 }
 
@@ -339,7 +327,6 @@ function releaseTraversal(): void {
   }
   registerHotkeyHandler(FOCUS_NEXT_ACTION_ID, null);
   registerHotkeyHandler(FOCUS_PREVIOUS_ACTION_ID, null);
-  registerHotkeyHandler(CYCLE_NTH_ACTION_ID, null);
 }
 
 type KeydownFn = (event: KeyboardEvent) => void;
@@ -390,5 +377,4 @@ export function resetWindowTraversalForTests(): void {
   activeInstalls = 0;
   registerHotkeyHandler(FOCUS_NEXT_ACTION_ID, null);
   registerHotkeyHandler(FOCUS_PREVIOUS_ACTION_ID, null);
-  registerHotkeyHandler(CYCLE_NTH_ACTION_ID, null);
 }
