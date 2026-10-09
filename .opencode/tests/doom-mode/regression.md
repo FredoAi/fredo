@@ -121,4 +121,25 @@
 > NOT named — pool-saturated/unreachable) per leg. Doom emits no span. A static-only PASS is a FALSE PASS.
 
 - [ ] R-31: **Existing Doom runtime/autoplay surface unchanged** — `get_doom_save`/`reset_doom_save`/`start_doom_autoplay`, `doom-status-changed`, `doom-autoplay-changed`, the `doom` window + real runtime, and the autoplay loop behave identically; command signatures + the `DoomSaveStatus` wire shape are UNCHANGED (`DoomWindow.tsx:424`, `types.ts:374`); existing testids still render. (Links: `doom-mode/functional.md` slices 1–4.)
-- [ ] R-32: **Non-save Doom settings + app surfaces unchanged** — `doom_port`/`doom_last_error*`/`doom_pid` still use the `AppStore` control plane (ST-2 non-goals); Mission Monitor renders normally (F-MM3011 gate); zero `restful-doom.exe` after any leg; the terminal/PG supervisor exit hooks behave identically. (Links: `postgres-only-persistence/functional.md`, `mission-monitor/functional.md`.)
+- [ ] R-32: **Non-save Doom settings + app surfaces unchanged** — `doom_port`/`doom_last_error*`/`doom_pid` still use the `AppStore` control plane (ST-2 non-goals); Mission Monitor renders normally (F-MM3011 gate); zero `restful-doom.exe` after any leg; the terminal/PG supervisor exit hooks behave identically. (Links: `postgres-only-persistence/functional.md`, `mission-monitor/functional.md`).
+
+---
+
+## Engine-provisioning slice (Spec #3012) — must-not-change baseline
+
+> **Verification policy: live** — the live-pipeline `telemetry_spans` reference (app-pool read,
+> G-307; fallback managed `psql` at the manifest `ports.pg`, G-284, DISCLOSED) plus
+> DOM/screenshot/process receipts per leg. Doom emits no span. A static-only PASS is a FALSE PASS.
+
+- [ ] R-33: **Existing Doom runtime/autoplay/secret/theme/save surfaces unchanged** — `enter_doom_mode`/`exit_doom_mode`/`get_doom_mode_status`, `launch_doom_runtime`/`stop_doom_runtime`, `doom_read_state`/`doom_step`/`doom_frame`, `start/stop_doom_autoplay`, `get_doom_save`/`reset_doom_save`, `doom-status-changed`/`doom-autoplay-changed`/`doom-mode-changed`, and the `doom` window singleton behave identically; existing testids still render; the new provisioning testids are additive. (Links: `doom-mode/functional.md` slices 1–6.)
+- [ ] R-34: **Engine resolver order unchanged** — `resolver::resolve_engine` still resolves *configured → PATH → staged* (`resolver.rs:10-19,137-144`) and still performs NO out-of-repo filesystem search; provisioning changes only whether the staged candidate exists. (Links: `doom-mode/functional.md` F-11/F-48.)
+- [ ] R-35: **Process supervision unchanged** — the provisioning child reuses `kill_pid_tree` and the startup orphan sweep (`process.rs:199-215,255-272,359-389`); the existing engine child, `llama-server` teardown, and the PG `stop_on_exit` hook still run (no early-return starves one). (Links: `llama-setup/functional.md`, `postgres-lifecycle/`.)
+- [ ] R-36: **`doom_install_dir` plane unchanged** — the setting is still read via `resolve_install_dir`/`cached_get` (`process.rs:53-71`) and written via `cached_set` (atomic; no SQLite delete+insert); no new key is introduced; existing non-Doom settings behave identically. (Links: `settings/functional.md`.)
+- [ ] R-37: **PG-default boot + Mission Monitor unaffected** — `storage_engine_status` = PostgreSQL ready; Mission Monitor renders live sessions via the CURRENT declared `sessions` rollup (F-89 is the gate). (Links: `mission-monitor/functional.md`.)
+- [ ] R-38: **No process leak / no committed binary** — across every provisioning leg ZERO orphan processes; the repo/bundle still contain no committed `.exe`/`.wad` (F-76). (Links: `doom-mode/functional.md` F-76/F-82.)
+
+### Links added by this slice
+
+- `.opencode/tests/mission-monitor/` — F-89 E2E regression gate (unchanged surface).
+- `.opencode/tests/settings/` — the `doom_install_dir` read/write plane the provisioning result persists through.
+- `.opencode/tests/postgres-lifecycle/`, `.opencode/tests/llama-setup/` — exit-hook co-existence with the new provisioning child.
