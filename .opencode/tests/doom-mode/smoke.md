@@ -84,3 +84,17 @@
 - [ ] S-28 (REAL engine) **First-use provisioning quick path** — fresh install dir (no staged engine) + `FREDO_DOOM_TOOLCHAIN_ROOT` at a usable MSYS2 (the committed script probes internally, G-322); type `iddqd`. EXPECTED: `doom-provision-dialog` → confirm → `doom-provision-progress` reaches `ready`; the REAL `<install_dir>/engine/restful-doom.exe` is built from `vendor/restful-doom/` at the pinned commit and launches (`/api/state` 200); the game renders; ZERO orphans after.
 - [ ] S-29 **Cancel / error quick path** — start provisioning, click `doom-provision-cancel` → phase `cancelled`, zero orphans within 5 s; re-enter with `FREDO_DOOM_BUILD_OFFLINE=1` (no usable root) → `doom-provision-error` shows `toolchainUnavailable`, no crash. (Levers G-275/G-300.)
 - [ ] S-30 (F-89 gate) **PG-only boot + Mission Monitor** — `storage_engine_status` = PostgreSQL / PG supervisor ready; seed the rollup-qualifying `e2e-copilot2933` OTLP fixture; assert the DECLARED `sessions` row `visibleTurnCount ≥ 1` BEFORE the list; Mission Monitor renders ≥1 `.mm-session-row`; live receipt non-zero + recent `max(ingested_at)`.
+
+---
+
+## Managed-only engine resolution slice (Spec #3013) — smoke additions
+
+> **Verification policy: live** — the live-pipeline `telemetry_spans` reference (app-pool read, G-307;
+> fallback managed `psql` at the manifest `ports.pg`, G-284, DISCLOSED). Doom emits no span. A
+> static-only smoke cannot pass. **A stub engine is not a valid smoke engine (G-033/G-314).**
+
+- [ ] S-31 (REAL engine) **Managed-only quick path** — stage the REAL managed engine; `launch_doom_runtime`. EXPECTED: `DoomStatus.enginePath` == `<install_dir>/engine/restful-doom.exe`; exactly ONE `restful-doom.exe` PID; live frame / `/api/state` 200; no PATH spawn / no download.
+- [ ] S-32 **Absent-engine quick path** — `FREDO_DOOM_INSTALL_DIR=.opencode/tmp/3013/fixtures/absent`; type `iddqd`. EXPECTED: `provisionRequired`/`provisionFailed`/`notConfigured`; mode `inactive`; no window; zero engine PID; no download.
+- [ ] S-33 **Fail-engine quick path** — `FREDO_DOOM_FAIL_ENGINE_SPAWN=1` over a staged managed engine. EXPECTED: `SpawnFailed` before spawn; zero engine PID; no window. Then the `fail-engine` fixture (MZ-only) → the real spawn failure path → `SpawnFailed`, no substitute.
+- [ ] S-34 (F-99 gate) **PG-only boot + Mission Monitor** — `storage_engine_status` = PostgreSQL / PG supervisor ready; seed the rollup-qualifying `e2e-copilot2933` OTLP fixture; assert the DECLARED `sessions` row `visibleTurnCount ≥ 1` BEFORE the list; Mission Monitor renders ≥1 `.mm-session-row`; live receipt non-zero + recent `max(ingested_at)`.
+- [ ] S-35 (CI-parity) **Build hygiene** — `cargo check --locked` ZERO warnings; `cargo test --locked` green incl. the `failure_seam` parser unit test; `pnpm --filter @fredo/ui build` green.
