@@ -245,7 +245,10 @@ distributed.
 - The `doom` window's failure paths render in-window (typed codes) and never panic the app; a
   missing engine/WAD yields `notConfigured`, a failed download `acquireFailed`, a failed spawn
   `spawnFailed`, and a failed provision a typed `DoomProvisionErrorCode` surfaced as
-  `provisionFailed` (AC4).
+  `provisionFailed` (AC4). Since **Spec #3007** the window is **game-only** (no header/footer or
+  in-window controls): a runtime failure shows only the typed `doom-error` card + `doom-retry-button`,
+  and an autoplay **run** failure shows only the minimal `doom-autoplay-note` (`role="status"` pill) —
+  the engine/runtime failure paths are otherwise unchanged.
 - NFR-6 (shared acquisition engine): all downloads (toolchain archive, Freedoom) use the single
   shared `infrastructure/companion/download` façade — no forked downloader.
 

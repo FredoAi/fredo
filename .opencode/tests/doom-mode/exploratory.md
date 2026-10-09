@@ -165,3 +165,25 @@
 - [ ] E-56: Set `FREDO_DOOM_FAIL_ENGINE_SPAWN` to unknown/blank values (`""`, `"yes"`, `"2"`, `"01"`) — is the lever inert (launch proceeds) in every case, active ONLY for a trimmed `"1"`? (Lever: env override over a staged managed engine.)
 - [ ] E-57: Relocate/remove the managed install dir between two boots — does boot 2 report the provisioning/failure state with NO filesystem hunt outside the repo + managed dir (G-172)? (Lever: retained `FREDO_DOOM_INSTALL_DIR`.)
 - [ ] E-58: Invoke `launch_doom_runtime` twice in quick succession with a staged managed engine — exactly ONE managed engine PID, ONE `doom` window, idempotent (no second spawn, no re-download)? (Lever: managed fixture + `tasklist`.)
+
+---
+
+## Game-only window + auto-play slice (Spec #3007) — unscripted probes
+
+> **Verification policy: live** — probes run against the running artifact with the `telemetry_spans`
+> live-pipeline reference (NON-ZERO count + recent `max(ingested_at)`). Doom emits no span — the query
+> proves the pipeline, not the feature; DISCLOSE.
+>
+> **G-300:** every error/failure probe names an in-repo lever — `FREDO_DOOM_STUB_EXIT=1` (readyTimeout),
+> `FREDO_DOOM_STUB_HANG=1` (bounded stop/hard-kill ONLY), `FREDO_DOOM_STUB_FRAME_503=<count|duration>`
+> (transient reconnecting), `FREDO_DOOM_STUB_FAIL=state|step|frame` (hard-500 typed error),
+> `FREDO_DOOM_AGENT_DECISION_SOURCE=scripted` + `FREDO_DOOM_AGENT_SCRIPT`, `FREDO_DOOM_MODE_FAIL_ENTER=1`,
+> `FREDO_DOOM_FAIL_ENGINE_SPAWN=1` — or is marked a static/unit pin, non-AC. (G-316 semantics: `_HANG`
+> is NOT the readyTimeout lever.)
+
+- [ ] E-59: Reopen/remount the `doom` window while engaged — does the game-only surface rebuild WITHOUT flashing any removed chrome, and does autoplay continue as exactly ONE loop (no second `try_begin`, one engine PID)? (Lever: real engine; reopen + poll `get_doom_autoplay_status`/PIDs.)
+- [ ] E-60: Rapid close → re-enter (`iddqd`) cycles — is there any stale window, a leftover engine PID, or a second autoplay loop between cycles? (Lever: MCP close lever + `tasklist` + status.)
+- [ ] E-61: Drive an autoplay failure (`FREDO_DOOM_AGENT_SCRIPT={"malformed":true}`) AND a transient frame error (`FREDO_DOOM_STUB_FRAME_503=<count>`) at once — do the two top-right notes (`doom-autoplay-note` + `doom-frame-reconnecting`) stack without reflowing/shrinking the canvas? (Lever: scripted + 503; G-273.)
+- [ ] E-62: With the doom window open and the main window focused, cycle focus between them — does the shared hotkeys cluster stay ABSENT in the doom webview and UNCHANGED in the main window (no flicker/late mount)? (Lever: real engine + focus cycle.)
+- [ ] E-63: Close the `doom` window while it is still `starting` (no live agent) — is the teardown idempotent (the agent-stop is a no-op on idle), bounded, and panic-free, leaving no engine PID? (Lever: `FREDO_DOOM_READY_TIMEOUT_S=6` + `FREDO_DOOM_STUB_EXIT=1` then close; poll PIDs.)
+- [ ] E-64: Boot the app with no `doom` window ever opened — does any removed hook string leak into the main-window DOM (regression on the shared component tree)? (Lever: fresh boot + DOM snapshot; static/observation pin, non-AC.)

@@ -8,7 +8,7 @@
 >
 > **Test data (G-172):** REAL engine via the ST-2 build script (staged `restful-doom.exe`); Freedoom IWAD 0.13.0 (SHA-256 `3f9b264f3e3ce503b4fb7f6bdcb1f419d93c7b546f4df3e874dd878db9688f59`) via the pinned `acquire_iwad`; STUB = in-repo feature-gated `doom-stub`, built `cargo build --features doom-stub`, honoring `FREDO_DOOM_STUB_HANG` / `FREDO_DOOM_STUB_EXIT` / `FREDO_DOOM_STUB_FAIL`; fixtures staged by `scripts/doom/stage-doom-fixture.ps1` (ST-6) into `.opencode/tmp/2968/fixtures/`. ENV overrides injected only via the dev-environment skill (`dev-env.ps1 -Action Up -Spec 2968 -EnvVar "NAME=value"`). Scratch dir `.opencode/tmp/2968/doom-install`. PG reads use the managed `psql` (G-284; the `telemetry-query` skill is SQLite-only).
 >
-> Binding names adopted VERBATIM: engine `restful-doom.exe`; fields `DoomLaunchResult.enginePath` / `DoomStatus.enginePath` (camelCase); error code `frameNotReady` (`GET /api/frame` HTTP 503 = transient); env seams `FREDO_DOOM_BUILD_OFFLINE`, `FREDO_DOOM_IWAD_PATH`, `FREDO_DOOM_INSTALL_DIR`, `FREDO_DOOM_READY_TIMEOUT_S`, `FREDO_DOOM_STOP_TIMEOUT_S` (the #2968 engine-path / require-real-engine / engine-archive acquisition seams are REMOVED by #3013 — see the #3013 slice at the end of this file); window label `doom`, URL `index.html?view=doom`; commands `open_doom_window`, `launch_doom_runtime`, `stop_doom_runtime`, `get_doom_status`, `doom_read_state`, `doom_step`, `doom_frame`; testids `doom-root`, `doom-window-title`, `doom-status`, `doom-frame-canvas`, `doom-frame-desc`, `doom-start-button`, `doom-error`, `doom-retry-button`, `doom-state-readout`, `doom-step-button`, `doom-frame-reconnecting`, `doom-entry-button`; timeouts `DOOM_READY_TIMEOUT_S=30`, `DOOM_STOP_TIMEOUT_S=5`, `DOOM_EXIT_HOOK_BOUND=5`, `DOOM_REQUEST_TIMEOUT_S=10`, `DOOM_FRAME_POLL_MS=66`; event `doom-status-changed`; doc `docs/doom-mode-acquisition.md`; launch argv `restful-doom.exe -apilockstep -noblit -nosound -nomusic -iwad <freedoom1.wad> -warp 1 1 -skill 3 -apiport <port>`.
+> Binding names adopted VERBATIM: engine `restful-doom.exe`; fields `DoomLaunchResult.enginePath` / `DoomStatus.enginePath` (camelCase); error code `frameNotReady` (`GET /api/frame` HTTP 503 = transient); env seams `FREDO_DOOM_BUILD_OFFLINE`, `FREDO_DOOM_IWAD_PATH`, `FREDO_DOOM_INSTALL_DIR`, `FREDO_DOOM_READY_TIMEOUT_S`, `FREDO_DOOM_STOP_TIMEOUT_S` (the #2968 engine-path / require-real-engine / engine-archive acquisition seams are REMOVED by #3013 — see the #3013 slice at the end of this file); window label `doom`, URL `index.html?view=doom`; commands `open_doom_window`, `launch_doom_runtime`, `stop_doom_runtime`, `get_doom_status`, `doom_read_state`, `doom_step`, `doom_frame`; testids — KEPT `doom-root`, `doom-frame-canvas`, `doom-frame-desc`, `doom-error`, `doom-retry-button`, `doom-frame-reconnecting`, `doom-autoplay-note`; REMOVED by #3007 (game-only surface) `doom-window-title`, `doom-status`, `doom-start-button`, `doom-state-readout`, `doom-step-button` (and `doom-entry-button` was already removed by #2970); timeouts `DOOM_READY_TIMEOUT_S=30`, `DOOM_STOP_TIMEOUT_S=5`, `DOOM_EXIT_HOOK_BOUND=5`, `DOOM_REQUEST_TIMEOUT_S=10`, `DOOM_FRAME_POLL_MS=66`; event `doom-status-changed`; doc `docs/doom-mode-acquisition.md`; launch argv `restful-doom.exe -apilockstep -noblit -nosound -nomusic -iwad <freedoom1.wad> -warp 1 1 -skill 3 -apiport <port>`.
 
 ## Real engine — build, identity, live frame (R-1.1 / R-5.1)
 
@@ -69,7 +69,7 @@
 - [ ] F-12 (SUPERSEDED by #3013 — the anti-stub env seam is REMOVED; the managed engine is structurally `restful-doom.exe` with the pinned commit marker + MZ header, so a stub cannot masquerade. Kept for history; superseded by F-92/F-93.) (R-4.1 + ST-3, AC4 — historical) **Anti-stub refusal (historical).** Set the (now-removed) anti-stub env seam + the (now-removed) engine-path seam = the built stub.
   - EXPECTED: the runtime REFUSES an engine whose basename ≠ `restful-doom.exe` (typed error); the stub is never launched-as-real; a stub PASS can never masquerade (G-033).
   - Edge: env unset → inert; refusal does not crash; the real path still launches after refusal.
-- [ ] F-13 (R-4.3, AC4) `FREDO_DOOM_READY_TIMEOUT_S=2` + STUB that never answers `/api/state` (`FREDO_DOOM_STUB_HANG=1`).
+- [ ] F-13 (R-4.3, AC4) `FREDO_DOOM_READY_TIMEOUT_S=2` + STUB that exits before binding so `/api/state` never answers (`FREDO_DOOM_STUB_EXIT=1`) — G-316: `_HANG` still serves `/api/state` and would reach `ready`; it drives ONLY the bounded stop/hard-kill leg (F-8/`N-2`), never the readyTimeout leg.
   - EXPECTED: within the short bound, code `readyTimeout`; the spawned child is KILLED (PID gone, no orphan); the window shows the typed error; never a left-running "pending" engine.
   - Edge: the engine answers just before the timeout (race); timeout while the window is closing.
 - [ ] F-14 (R-4.4, AC4) Induce an engine HTTP failure AFTER ready via `FREDO_DOOM_STUB_FAIL=step` (STUB returns non-2xx).
@@ -135,9 +135,10 @@
 > audit `FREDO_DOOM_AGENT_LOG_DIR=.opencode/tmp/2969/agent-audit`; stub levers
 > `FREDO_DOOM_STUB_PROGRESS=1` / `FREDO_DOOM_STUB_DIE_AFTER=<n>` / `FREDO_DOOM_STUB_DONE_AFTER=<n>` /
 > `FREDO_DOOM_STUB_EPISODE_FAIL=1` (inert when unset; `doom-stub` feature-gated, never shipped);
-> budget overrides `FREDO_DOOM_AGENT_MAX_STEPS` / `_MAX_FAILURES` / `_STEP_TICS`; DOM hooks
-> `doom-autoplay-toggle`, `doom-autoplay-status`, `doom-autoplay-stop`; app-boot/PG lever = the
-> PG supervisor default path (`storage_engine_status` = PostgreSQL / PG supervisor ready).
+> budget overrides `FREDO_DOOM_AGENT_MAX_STEPS` / `_MAX_FAILURES` / `_STEP_TICS`; the in-window
+> autoplay DOM hooks `doom-autoplay-toggle` / `doom-autoplay-status` / `doom-autoplay-stop` are
+> REMOVED by #3007 (the game-only surface auto-plays on open — see the #3007 slice at the end);
+> app-boot/PG lever = the PG supervisor default path (`storage_engine_status` = PostgreSQL / PG supervisor ready).
 >
 > Binding names adopted VERBATIM: commands `start_doom_autoplay`/`stop_doom_autoplay`/
 > `get_doom_autoplay_status`; event `doom-autoplay-changed`; `DoomAutoplayPhase =
@@ -186,8 +187,8 @@
 
 ## Mission-Monitor end-to-end (REQUIRED, human directive)
 
-- [x] F-31 (PASS 2026-10-04 #2969 r1 — (a) storage_engine_status={engine:postgres,ready:true}; (b) declared sessions row e2e-copilot2933 visibleTurnCount=1 qualifies; MM lists it with a gpt-4o node; (c) doom-autoplay-toggle → status "Autoplay · step … · tic … · alive" advancing; (d) telemetry_get_stats spanCount 7493→7672; PG psql refused "too many clients" → app-pool fallback disclosed) (E2E, human directive) **RUNNING app: PG-default boot + Mission Monitor regression + autonomous play.** Boot the app on the PG-default path; seed one qualifying session; then open the Doom window and start autoplay (scripted lever).
-  - EXPECTED: (a) `storage_engine_status` = PostgreSQL / PG supervisor ready (app-boot/PG lever = the PG supervisor default path); (b) Mission Monitor renders ≥1 live session — SEED LEVER `bun .opencode/scripts/inject-otlp-fixture.ts --copilot --fixture .opencode/scripts/copilot-exchange.fixture.json` (stable `e2e-copilot2933`) through the real OTLP/HTTP receiver; assert the DECLARED `sessions` row qualifies (`visibleTurnCount ≥ 1`) BEFORE asserting the list, then `SessionHistoryDrawer` shows ≥1 row; (c) `doom-autoplay-toggle` starts autoplay → `doom-autoplay-status` shows `Running` and the game advances (`lastTic` increases step-driven); (d) live-pipeline receipt `telemetry_spans` non-zero + recent `max(ingested_at)`.
+- [x] F-31 (PASS 2026-10-04 #2969 r1 — (a) storage_engine_status={engine:postgres,ready:true}; (b) declared sessions row e2e-copilot2933 visibleTurnCount=1 qualifies; MM lists it with a gpt-4o node; (c) doom-autoplay-toggle → status "Autoplay · step … · tic … · alive" advancing; (d) telemetry_get_stats spanCount 7493→7672; PG psql refused "too many clients" → app-pool fallback disclosed) (E2E, human directive) **RUNNING app: PG-default boot + Mission Monitor regression + autonomous play.** Boot the app on the PG-default path; seed one qualifying session; then open the Doom window — it auto-plays (scripted lever), ZERO user input.
+  - EXPECTED: (a) `storage_engine_status` = PostgreSQL / PG supervisor ready (app-boot/PG lever = the PG supervisor default path); (b) Mission Monitor renders ≥1 live session — SEED LEVER `bun .opencode/scripts/inject-otlp-fixture.ts --copilot --fixture .opencode/scripts/copilot-exchange.fixture.json` (stable `e2e-copilot2933`) through the real OTLP/HTTP receiver; assert the DECLARED `sessions` row qualifies (`visibleTurnCount ≥ 1`) BEFORE asserting the list, then `SessionHistoryDrawer` shows ≥1 row; (c) [updated #3007 — the `doom-autoplay-toggle`/`doom-autoplay-status`/`doom-autoplay-stop` hooks are REMOVED; opening the `doom` window auto-starts autoplay with NO user input] `get_doom_autoplay_status.phase` is `Running` and the game advances (`lastTic` increases step-driven); (d) live-pipeline receipt `telemetry_spans` non-zero + recent `max(ingested_at)`.
   - Edge: PG leg needs the managed `psql` lever (G-284) — if unavailable, record a NAMED TOOLING GAP for the PG leg (never silently drop it, G-307); the seeded session is idempotent; the rest of the app is unaffected after autoplay stops.
 
 **`DoomAutoplayErrorCode` coverage:** `NotReady`→F-32(b) · `DecisionFailed`→F-27 · `EngineRequestFailed`→F-32(a) · `BudgetExhausted`→F-28.
@@ -245,12 +246,12 @@
 - [x] F-38 (PASS 2026-10-05 #2970 r1 — rendered main window: no "Doom"/"iddqd" text, no `doom-entry-button`, no doom testids; launcher search typed "doom" → no Doom result; hotkey listing Doom-free; Settings sidebar (Companion/Appearance/Fredo Setup/Telemetry/Apps/Ingest/Hotkeys/…) no Doom nav; Settings→Apps list (PostgreSQL/Mission Monitor/Query Viewer/Settings/Stepper Probe/Terminal) no Doom row. Scope = rendered surfaces only) (R-3.a, AC3) **Secrecy pre-activation over USER-VISIBLE surfaces.** Fresh boot, mode inactive. Enumerate the RENDERED user-visible surfaces: launcher/app grid (`Home.tsx:32` `SHOWABLE_FEATURES`), Settings→Apps presentation list (`AppPresentationSettings.tsx:223`), Settings sidebar (`SettingsSurface.tsx:120-125`), help/reference text, hotkey listing.
   - EXPECTED: NONE references "Doom"/"iddqd"/Doom Mode; `doom-entry-button` absent (deleted with `DoomEntry.tsx`); no Doom tile/settings row/nav item. Grep scope = RENDERED surfaces only — NOT source/test files (which legitimately contain "Doom").
   - Edge: the `?view=doom` route still exists (`Router.tsx:16-18`) — a route, not a discoverable control (regression invariant).
-- [x] F-39 (PASS 2026-10-05 #2970 r1 — clicked `doom-exit-button` ("Exit Doom Mode") → `doom-mode-changed {active:false,phase:"inactive"}`; voiceSuppressed false; runtime idle; engine PID gone; `doom` window closed; zero `restful-doom.exe`) (R-3.b) **Exit via `doom-exit-button`.** While active, click `doom-exit-button` (label "Exit Doom Mode") in the `doom` window header.
+- [x] F-39 (PASS 2026-10-05 #2970 r1 — clicked `doom-exit-button` ("Exit Doom Mode") → `doom-mode-changed {active:false,phase:"inactive"}`; voiceSuppressed false; runtime idle; engine PID gone; `doom` window closed; zero `restful-doom.exe`) (R-3.b — RETIRED by #3007: the in-window `doom-exit-button` no longer exists, so the native OS close is the only exit; re-verified as the native-close leg in F-40 / F-108 / F-110) **Exit via native `doom` window close.** While active, close the `doom` window natively (`doom_close_handler`); there is NO in-window exit control to click.
   - EXPECTED: `doom-mode-changed {active:false,phase:"inactive"}`; the agent is stopped; the runtime stops bounded (PID gone within `DOOM_STOP_TIMEOUT_S`); the `doom` window closes; `get_doom_mode_status.voiceSuppressed===false`; origin cleared.
-  - Edge: exit while `entering`.
-- [x] F-40 (PASS 2026-10-05 #2970 r1 — re-entered, then `plugin:window|close {label:"doom"}` (native close → `doom_close_handler`) → mode inactive, voiceSuppressed false, doom window closed, runtime idle, zero `restful-doom.exe`) (R-3.b) **Exit via `doom` window close.** While active, close the `doom` window natively (routes through `doom_close_handler`).
-  - EXPECTED: same clean exit as F-39; zero `restful-doom.exe` after.
-  - Edge: close while the agent is running.
+  - Edge: exit while `entering`; the retired `doom-exit-button` MUST NOT render (F-110).
+- [x] F-40 (PASS 2026-10-05 #2970 r1 — re-entered, then `plugin:window|close {label:"doom"}` (native close → `doom_close_handler`) → mode inactive, voiceSuppressed false, doom window closed, runtime idle, zero `restful-doom.exe`) (R-3.b / R-4.a — strengthened #3007) **Exit via `doom` window close stops the AGENT first, then the engine (bounded).** While the agent is running, close the `doom` window natively via the MCP lever `plugin:window|close {label:"doom"}` (routes through `doom_close_handler` → `teardown_doom_on_window_close`).
+  - EXPECTED: the close path calls `DoomAutoplayState::request_stop` (the SAME primitive as `stop_doom_autoplay`) BEFORE the bounded engine stop (order on the IPC monitor); post-close `get_doom_autoplay_status.phase` is NOT `Running`; `doom-mode-changed {active:false,phase:"inactive"}`; voiceSuppressed false; the `doom` window closes; **zero `restful-doom.exe` within `DOOM_STOP_TIMEOUT_S`** (hard-kill fallback; `tasklist` empty).
+  - Edge: close while the agent is running; close while `starting`; close mid-step; no orphan.
 - [x] F-41 (PASS 2026-10-05 #2970 r1 — injected `llm-skill-call {skill:"doom_mode",arguments:{action:"exit"}}` while active → mode inactive, voiceSuppressed false, origin cleared, `doom` window closed, runtime idle, zero engine. Companion "disengaged" reply not observable live (same reply-pusher caveat as F-36)) (R-3.b) **Spoken exit.** Say "fredo, stop Doom Mode" so the model selects `doom_mode {action:"exit"}`.
   - EXPECTED: `llm-skill-call {skill:"doom_mode",arguments:{action:"exit"}}`; then a clean exit as F-39; deterministic reply.
   - Edge: exit while already exiting.
@@ -412,12 +413,14 @@
 > `DOOM_CAMPAIGN_LAST_EPISODE=4`, `DOOM_CAMPAIGN_FIRST_MAP=1`, `DOOM_CAMPAIGN_LAST_MAP=9`,
 > `DOOM_DEFAULT_SKILL=3`, `DOOM_DEFAULT_SEED=0`; **REMOVED:** `DOOM_SAVE_KEY="doom_save_v1"`,
 > `DOOM_SAVE_FILE_ENV="FREDO_DOOM_SAVE_FILE"`, file primitives `seam_path`/`load_at_path`/`store_at_path`;
-> testids `doom-save-status`, `doom-fresh-start-button`, `doom-fresh-start-confirm`, `doom-progress-complete`.
+> testids `doom-save-status`, `doom-fresh-start-button`, `doom-fresh-start-confirm`, `doom-progress-complete`
+> — ALL FOUR REMOVED by #3007 (game-only surface): assert `get_doom_save`/coords at the data level and
+> the fresh path via `start_doom_autoplay({freshStart:true})` (see the #3007 slice at the end).
 
 ## Resume positioning + cross-restart durability (R-1 / R-2 — updated #3011)
 
 - [ ] F-62 (R-1, AC1) **REAL-ENGINE resume positioning via the test-only state-dir lever — REQUIRED.** Write `.opencode/tmp/3011/doom-save/doom-save.json` = `{"version":1,"episode":1,"map":2,"skill":3,"seed":0,"completed":false,"updatedAt":"<now>"}`; launch the app with `FREDO_DOOM_SAVE_STATE_DIR` = `.opencode/tmp/3011/doom-save`; re-stage the real engine (G-319; readiness gate `get_doom_status.phase="ready"` + `GET /api/state` 200); `enter_doom_mode` (resume default). Capture the engine request log / IPC monitor + `GET /api/state`.
-  - EXPECTED: exactly ONE `POST /api/episode {episode:1,map:2,skill:3,seed:0}` (`client.rs:364` `restart_with`) BEFORE the first `POST /api/step`; engine `/api/state` reports `level.episode=1`, `level.map=2`; the companion then steps forward (`steps`/`lastTic` strictly increase, STEP-DRIVEN, G-316); `get_doom_save` → `{hasSave:true, episode:1, map:2, skill:3, seed:0}`; `doom-save-status` renders the `E1M2` display unit.
+  - EXPECTED: exactly ONE `POST /api/episode {episode:1,map:2,skill:3,seed:0}` (`client.rs:364` `restart_with`) BEFORE the first `POST /api/step`; engine `/api/state` reports `level.episode=1`, `level.map=2`; the companion then steps forward (`steps`/`lastTic` strictly increase, STEP-DRIVEN, G-316); the resume point is asserted at the DATA level only — `get_doom_save` → `{hasSave:true, episode:1, map:2, skill:3, seed:0}` (the `doom-save-status` testid is REMOVED by #3007 — the game-only window renders NO save chrome; assert `get_doom_save`/coords, never a DOM hook).
   - Edge: resume via the mode/toggle default AND via `start_doom_autoplay({})` (absent `freshStart`); an E4M9 boundary save; `skill`/`seed` preserved verbatim; entering with no ready engine still resumes on the next start.
 - [ ] F-63 (R-2, AC2 — updated #3011) **REAL-ENGINE cross-restart durability via `feature_doom_save` — REQUIRED.** With `FREDO_DOOM_SAVE_STATE_DIR` UNSET (production path), continue F-62 until the campaign advances (a new `DoomSave` written to the PG feature table); confirm the engine PID is gone and fully close Fredo (`RunEvent::Exit`); relaunch; re-enter Doom Mode.
   - EXPECTED: the resume point is read from DURABLE PG storage — the `feature_doom_save` singleton row (`application_store_query({applicationId:'doom',tableName:'save'})` returns exactly ONE row, `id='singleton'`, TYPED columns), NOT process memory and NOT the control plane; after restart `get_doom_save` reports the SAVED coords BEFORE any step; the engine is positioned there by exactly one `POST /api/episode`; the companion keeps progressing; `get_control_setting('doom_save_v1')` → null.
@@ -434,9 +437,9 @@
 - [ ] F-65 (R-4, AC4 — updated #3011) **Absent/corrupt/out-of-contract save → clean run, no crash.** (a) `FREDO_DOOM_SAVE_STATE_DIR` → a dir with a MISSING `doom-save.json`; (b) → a dir whose `doom-save.json` contains `not json`; (c) `FREDO_DOOM_SAVE_FORCE_FAIL=read` on the PG path; (d) unit pins: `DoomSave::parse`/`from_row` rejects unknown `version`, `episode∉1..=4`, `map∉1..=9`, `skill∉0..=4` → `None`. Enter Doom Mode for (a)/(b)/(c).
   - EXPECTED: no crash/panic, no blocking; a clean run starts at E1M1 / `DOOM_DEFAULT_SKILL=3` / `DOOM_DEFAULT_SEED=0`; `get_doom_save` → `{hasSave:false, episode:null, map:null, skill:null, seed:null, completed:false, updatedAt:null}`; the mode enters and the companion progresses; console clean.
   - Edge: empty file; whitespace-only; valid JSON wrong shape; unknown `version`; a directory at the state-dir file path. Levers NAMED: missing file / `not json` file under `FREDO_DOOM_SAVE_STATE_DIR`, `FREDO_DOOM_SAVE_FORCE_FAIL=read`.
-- [ ] F-66 (R-5, AC5 — updated #3011) **Fresh start does not silently destroy a save; resume never silently starts fresh.** With a VALID save present (PG row OR state-dir fixture): (a) `start_doom_autoplay({freshStart:true})` starts E1M1 and does NOT persist the initial position until the run advances — abort before any level transition leaves the prior save intact; (b) `start_doom_autoplay({})` and `enter_doom_mode` resume at the saved coords; (c) `doom-fresh-start-button` → `doom-fresh-start-confirm` drives the explicit fresh path.
-  - EXPECTED: (a) fresh run begins at E1M1; before the first advance `get_doom_save` still reports the PRIOR save UNCHANGED (the `feature_doom_save` singleton row byte-equal via `application_store_query`, or the state-dir fixture byte-equal); after the fresh run advances the row is overwritten with the new coords; (b) absent `freshStart` ⇒ exactly one `POST /api/episode` at the saved coords, never E1M1; (c) the confirm is required before the fresh start proceeds.
-  - Edge: abort a fresh run immediately (window close) → prior save intact; confirm dismissed → no fresh start; fresh run from a `completed:true` save; `reset_doom_save` (contract, non-AC) DELETES the singleton row, returns `hasSave:false`, and a subsequent enter starts clean.
+- [ ] F-66 (R-5, AC5 — updated #3011) **Fresh start does not silently destroy a save; resume never silently starts fresh.** With a VALID save present (PG row OR state-dir fixture): (a) `start_doom_autoplay({freshStart:true})` starts E1M1 and does NOT persist the initial position until the run advances — abort before any level transition leaves the prior save intact; (b) `start_doom_autoplay({})` and `enter_doom_mode` resume at the saved coords; (c) the explicit fresh path is driven ONLY by `start_doom_autoplay({freshStart:true})` — the `doom-fresh-start-button`/`-confirm` testids are REMOVED by #3007, so NO in-window control can pass `freshStart`.
+  - EXPECTED: (a) fresh run begins at E1M1; before the first advance `get_doom_save` still reports the PRIOR save UNCHANGED (the `feature_doom_save` singleton row byte-equal via `application_store_query`, or the state-dir fixture byte-equal); after the fresh run advances the row is overwritten with the new coords; (b) absent `freshStart` ⇒ exactly one `POST /api/episode` at the saved coords, never E1M1; (c) the IPC monitor shows the fresh path is reachable ONLY through `start_doom_autoplay({freshStart:true})` — the removed footer exposes no fresh-start control (F-101/F-110 assert the hooks absent).
+  - Edge: abort a fresh run immediately (window close) → prior save intact; a removed fresh-start control cannot be dismissed (it does not exist); fresh run from a `completed:true` save; `reset_doom_save` (contract, non-AC) DELETES the singleton row, returns `hasSave:false`, and a subsequent enter starts clean.
 
 ## Continuous progress (G-123) + error paths (G-275/G-300 — updated #3011)
 
@@ -729,3 +732,99 @@
 - [ ] N-4: resolution search is bounded to the repo + the managed install dir only (G-172); the engine binds loopback only; the webview CSP is unchanged.
 
 **R-coverage (#3013):** R-1→F-90 · R-1.a→F-91 · R-2→F-92/F-93 · R-3→F-94/F-95 · R-4→F-96 · #3012 regression→F-97 · live receipt→F-98 · E2E→F-99 · CI-parity→F-100 · N-1..N-4.
+
+---
+
+# doom-mode — Game-only window + auto-play + close-teardown (Spec #3007)
+
+> **Verification policy: live** — Doom is a running-system UI: the ACs are proven by observing the
+> RUNNING app (DOM/screenshot over the real engine, process inventory, the `doom-mode-changed`
+> broadcast). A static-only PASS is a FALSE PASS and the audit fails closed. **Doom emits NO OTLP
+> span** — the live-policy Evidence MUST carry a `telemetry_spans` LIVE-PIPELINE receipt (NON-ZERO
+> count + recent `max(ingested_at)`) queried at round start AND after the drive; the query proves the
+> pipeline, not the feature — DISCLOSE it. The sanctioned span-producing lever is an OTLP-ingested app
+> action (`inject-otlp-fixture.ts` seed), never the `fredo emit` CLI path (G-256).
+>
+> **Real-engine scope (G-314/319/323):** the live legs run the REAL `restful-doom.exe` re-staged by
+> `scripts/doom/build-restful-doom.ps1` + `scripts/doom/stage-doom-fixture.ps1 -FixtureDir
+> .opencode/tmp/3007/fixtures`; readiness is gated by the runtime's OWN probe
+> (`get_doom_status.phase==="ready"` + `GET /api/state` 200). A stub-only demonstration of a live leg
+> is a FALSE PASS (G-033).
+>
+> **G-316 error-induction lever semantics (correct in every row below):**
+> `FREDO_DOOM_STUB_EXIT=1` drives the readyTimeout leg (exits before binding — NOT `_HANG`);
+> `FREDO_DOOM_STUB_HANG=1` drives ONLY the bounded stop/hard-kill fallback leg;
+> `FREDO_DOOM_STUB_FRAME_503=<count|duration>` is the transient reconnecting lever;
+> `FREDO_DOOM_FAIL_ENGINE_SPAWN=1` / `FREDO_DOOM_MODE_FAIL_ENTER=1` are the pre-window error levers.
+>
+> **Game-only surface (R-1.a).** The `doom` window renders only `doom-root`, `doom-frame-canvas`,
+> `doom-frame-desc` (+ the minimal transient states and the ADDED `doom-autoplay-note`). The 19 REMOVED
+> hooks (`doom-window-title`, `doom-status`, `doom-exit-button`, `doom-engine-location`,
+> `doom-engine-location-saved`, `doom-state-readout`, `doom-campaign-controls`, `doom-save-status`,
+> `doom-progress-complete`, `doom-fresh-start-button`, `doom-fresh-start-confirm`,
+> `doom-fresh-start-cancel`, `doom-autoplay-toggle`, `doom-autoplay-stop`, `doom-autoplay-status`,
+> `doom-autoplay-elapsed`, `doom-autoplay-error`, `doom-step-button`, `doom-start-button`) MUST be
+> DOM-absent (not merely hidden — G-170 reverse).
+>
+> **No new control path:** autoplay/close reuse the merged `start_doom_autoplay` /
+> `stop_doom_autoplay` / `get_doom_autoplay_status` / `DoomAutoplayState::request_stop` contract.
+> Bounded teardown (G-263): graceful stop ≤ `DOOM_STOP_TIMEOUT_S=5` + hard-kill fallback.
+
+## Game-only surface + hotkeys suppression (R-1 / R-2)
+
+- [ ] **F-101 (R-1.a, AC1) — game-only surface (LIVE, real engine).** Open the `doom` window to `ready`, mode engaged; enumerate the DOM + screenshot + canvas pixel read.
+  - EXPECTED: rendered testids == exactly {`doom-root`, `doom-frame-canvas`, `doom-frame-desc`}; `querySelectorAll` count is **0** for ALL 19 removed hooks; the canvas paints live pixels (dense frame diff, G-213). FAIL: any removed hook present; a hook hidden via `display:none` counts as NOT REMOVED (assert DOM-absence, G-170 reverse).
+  - Edge: continuous sample at t0 AND t+2 s (G-123); re-sample after autoplay advances; screenshot receipt `.opencode/tmp/3007/e2e/`.
+- [ ] **F-102 (R-1.b, AC1) — transient states, never a black void (LIVE).** Drive `starting` / `stopping` / a frame error.
+  - EXPECTED: `starting` → spinner + progress + "Starting…"; `stopping` → spinner + "Stopping…"; frame error while `ready` → `doom-frame-reconnecting` note; the frame region is NEVER blank/black during any transient.
+  - Edge (G-316): `FREDO_DOOM_READY_TIMEOUT_S=2` + `FREDO_DOOM_STUB_EXIT=1` for a long `starting`; close mid-run for `stopping` (`FREDO_DOOM_STUB_HANG=1` drives the bounded hard-kill fallback); `FREDO_DOOM_STUB_FRAME_503=<count>` for the transient reconnecting note (`_FAIL=frame` is a hard 500, not the transient note).
+- [ ] **F-104 (R-2, AC2) — hotkeys chrome suppressed in `doom` ONLY (LIVE).** Query `hotkeys-input-regime` + `hotkeys-keys-discovery` in the doom webview, the main window, and the `terminal` window.
+  - EXPECTED: doom webview count **0** for BOTH (cluster absent); every OTHER window renders both unchanged. FAIL: either present in `doom`, or absent in any other window.
+  - Edge: suppression is exactly `view=doom`; pure gate unit pin `hotkeysWindowGate.test.ts` (non-AC).
+
+## Auto-play on entry (R-3)
+
+- [ ] **F-105 (R-3.a / R-3, AC3) — autoplay on entry, ZERO user input, resume-by-default (LIVE, real engine).** From the fresh pre-feature state (G-265: no window, mode `inactive`), type `iddqd`; then make NO further input; poll `get_doom_autoplay_status` + the engine step cadence.
+  - EXPECTED: `enter_doom_mode` starts the playing agent once ready (R-3.a); phase `Running`; `steps`/`lastTic` strictly increase over ≥3 STEP-DRIVEN samples (G-316); `doom-autoplay-changed` observed; resume-by-default → exactly ONE `POST /api/episode` at the SAVED coords. FAIL: no run, or any advance requiring a click/keypress.
+  - Edge: no Autoplay/Step controls exist to click; a read alone does not advance; every wait bounded (G-263).
+- [ ] **F-106 (R-3.b, AC3) — window repair uses the SAME idempotent command; exactly ONE loop (LIVE).** Capture the IPC monitor across entry; drive a stale/absent-run repair (post-error Retry resume).
+  - EXPECTED: the window invokes the SAME `start_doom_autoplay` (never a new/parallel command); `DoomAutoplayState::try_begin` guarantees exactly ONE loop (no doubled step rate, one engine PID). FAIL: a second loop / doubled cadence / a second control path.
+- [ ] **F-107 (R-3.c, AC3) — resume-by-default; never silent fresh (LIVE).** Enter with a valid save present.
+  - EXPECTED: the start passes NO `freshStart`; the saved coords are resumed; `get_doom_save` is unchanged until a level advances. FAIL: a silent fresh start at E1M1 over an existing save.
+  - Edge: absent save → clean E1M1; no in-window control can pass `freshStart` (removed with the footer).
+
+## Close-to-stop + no exit control (R-4)
+
+- [ ] **F-108 (R-4, AC4) — close-to-stop bounded + mode revert (LIVE, real engine).** While autoplay runs, close natively via the MCP close lever `plugin:window|close {label:"doom"}`.
+  - EXPECTED: the agent stops, then a bounded engine stop; the engine PID is GONE within `DOOM_STOP_TIMEOUT_S=5` — ZERO `restful-doom.exe`; `doom-mode-changed {active:false,phase:"inactive"}` broadcast; theme/armor/voice byte-revert. FAIL: a PID after 5 s, a stale `Running` status, or any residue.
+  - Edge: close while `starting`; close mid-step; rapid close→re-enter (no re-entry race / no second loop).
+- [ ] **F-109 (R-4.a, AC4) — close stops the AGENT first (reused contract) (LIVE).** IPC-order + status across close.
+  - EXPECTED: the close path calls `DoomAutoplayState::request_stop`/`stop_doom_autoplay` BEFORE the bounded engine stop (order on the IPC monitor); post-close autoplay status is NOT `Running`. FAIL: engine stopped but the loop left `Running`/racing.
+  - Edge: folded into `teardown_doom_on_window_close` (ST-3); the retired exit-button/voice paths behave identically.
+- [ ] **F-110 (R-4.b, AC4) — no in-window exit control (LIVE).**
+  - EXPECTED: `doom-exit-button` DOM count **0** while engaged — also after a completed run and in the error state; no other in-window exit affordance. FAIL: any.
+  - Edge: complements F-101; close is the only exit (OS window).
+
+## Error states, render, E2E, real engine, receipt, CI (R-5 + QA)
+
+- [ ] **F-111 (R-5 run-fail, AC5) — autoplay run failure → minimal `doom-autoplay-note` (LIVE).** `FREDO_DOOM_AGENT_DECISION_SOURCE=scripted` + `FREDO_DOOM_AGENT_SCRIPT={"malformed":true}`; alternately `FREDO_DOOM_STUB_EPISODE_FAIL=1` while dead.
+  - EXPECTED: phase `Failed` (code `DecisionFailed`; `EngineRequestFailed` on the episode-500 leg) after `DOOM_AUTOPLAY_MAX_FAILURES=3`; the window shows ONLY `doom-autoplay-note` (`role="status"` `aria-live="polite"` `aria-atomic="true"`) with the code's human copy + detail ≤120 chars; NO full error panel; the canvas keeps the last frame; console clean; the mode stays engaged / close still reverts. FAIL: a full panel, a black void, a crash, or a stuck window.
+  - Edge: unset the lever + reopen → plays; note text is the typed copy, never a stack trace.
+- [ ] **F-112 (R-5 runtime-fail, AC5) — runtime failure → typed `doom-error`+`doom-retry-button` OR no window; never half-entered (LIVE).** (a) `FREDO_DOOM_MODE_FAIL_ENTER=1` / `FREDO_DOOM_FAIL_ENGINE_SPAWN=1`; (b) post-open `FREDO_DOOM_STUB_FAIL=step` (endpoint HTTP 500 → typed `requestFailed`/`doom-error` post-open).
+  - EXPECTED: (a) mode `inactive`, NO `doom` window, ZERO engine PID, suppression off — no half-entered state; (b) phase `error` → typed `doom-error` (`role="alert"`) + `doom-retry-button`, never a full panel/black void; Retry recovers once the lever is unset; the window is never stuck. FAIL: half-entered/stuck/untyped.
+  - Edge: Retry with the lever still set stays failed; no orphan. `FREDO_DOOM_STUB_HANG=1` is NOT used here (G-316).
+- [ ] **F-113 (Render, G-273 — AC1) — canvas fill / no-clip / note no-reflow (LIVE).** With header/footer removed, measure `doom-root`, the frame region, and the canvas; then render `doom-autoplay-note`.
+  - EXPECTED: `doom-root` is the ONLY flex child; the canvas rect ≈ the frame-region rect (100%×100%, `objectFit:contain`, `imageRendering:pixelated`, `overflow:hidden`); `doom-root` scrollHeight == clientHeight (no scrollbar/overflow); with the note shown the canvas rect is UNCHANGED and the note is absolutely positioned top-right (no reflow). FAIL: clip/scroll/overflow or canvas shrink.
+  - Edge: measure in BOTH the normal first-open state and the note-present state (G-253).
+- [ ] **F-114 (E2E, human directive — REQUIRED) — Mission Monitor end-to-end.** Boot the RUNNING app; seed one qualifying session; open Doom; then close it.
+  - EXPECTED: (a) PG-only boot — `storage_engine_status` = PostgreSQL / PG supervisor ready (not SQLite); (b) Mission Monitor still renders ≥1 live session via the CURRENT declared `sessions` rollup — seed `bun .opencode/scripts/inject-otlp-fixture.ts --copilot --fixture .opencode/scripts/copilot-exchange.fixture.json`; assert the DECLARED `sessions` row `e2e-copilot2933` has `visibleTurnCount ≥ 1` BEFORE asserting the list; (c) the `doom` window opens AUTOPLAYING the live game (real engine ready; autoplay `Running`; `lastTic` advances STEP-DRIVEN) with ZERO user input; (d) close via the MCP close lever → the agent + engine stop (0 `restful-doom.exe` within 5 s), mode/theme/armor/voice fully revert, rest of the app unaffected; (e) `telemetry_spans` receipt non-zero + recent `max(ingested_at)`.
+  - Edge: seeded session idempotent; PG leg via the app-pool (G-284/G-307) if `psql` is pool-saturated; after close the rest of the app is unaffected.
+- [ ] **F-115 (Real engine, G-314/319/323 — REQUIRED) — REAL-engine re-stage.** Run `powershell -File scripts/doom/build-restful-doom.ps1` + `powershell -File scripts/doom/stage-doom-fixture.ps1 -FixtureDir .opencode/tmp/3007/fixtures`; launch.
+  - EXPECTED: `<fixture>/engine/restful-doom.exe` is a PE image; the runtime's OWN readiness probe `get_doom_status.phase==="ready"` + `GET /api/state` 200 succeeds from the plan-named dir; the live legs F-101/F-105/F-108 run this binary. FAIL: a build/stage exit 0 alone is NOT the gate (G-323); a stub-only demonstration of a live leg is a FALSE PASS (G-033).
+  - Edge: toolchain absent → exit 2 = named TOOLING GAP → `block` (G-172); gitignored scratch is NOT durable; if the staged copy is not ready, drive the default install dir `%APPDATA%\com.fredo.app\doom\engine\restful-doom.exe` and DISCLOSE the substitution.
+- [ ] **F-116 (Live receipt, G-256) — `telemetry_spans` receipt.** Query at round start AND after the drive.
+  - EXPECTED: NON-ZERO count + recent `max(ingested_at)` BOTH times; **Doom emits NO span — the query proves the pipeline, not the feature; DISCLOSE it.**
+  - Edge: app-pool read preferred; managed `psql` fallback at the manifest `ports.pg` DISCLOSED (G-284/G-307); never the `fredo emit` CLI path (G-256).
+- [ ] **F-117 (CI-parity, NFR) — build hygiene + console.** `cargo check --locked` ZERO warnings (no `#[allow(...)]`); `cargo test --locked` green (incl. the ST-3 close-path ordering/identity unit test); `pnpm --filter @fredo/ui build` green; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded` across every leg. FAIL: any warning/error/loop.
+
+**R-coverage (#3007):** R-1.a→F-101 · R-1.b→F-102 · R-2→F-104 · R-3.a/R-3→F-105 · R-3.b→F-106 · R-3.c→F-107 · R-4→F-108 · R-4.a→F-109 · R-4.b→F-110 · R-5 run-fail→F-111 · R-5 runtime-fail→F-112 · G-273→F-113 · E2E→F-114 · G-314/319/323→F-115 · live receipt→F-116 · CI-parity→F-117.
