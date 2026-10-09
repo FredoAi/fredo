@@ -26,10 +26,13 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use anyhow::Context;
+use futures_util::StreamExt;
 use tauri::AppHandle;
 
 use crate::infrastructure::companion::download::{
-    download_missing_files, DownloadProgress, ProgressReporter, ReqwestTransport, SystemClock,
+    download_missing_files, BoxFuture, DownloadProgress, HttpRange, HttpResponse, HttpTransport,
+    ProgressReporter, ReqwestTransport, SystemClock,
 };
 use crate::infrastructure::companion::models::{file_path, ModelFileSpec, ModelManifest};
 
@@ -160,6 +163,26 @@ impl ProgressReporter for NoopReporter {
     fn report(&self, _progress: DownloadProgress) {}
 }
 
+/// Acquire + verify one archive through the shared streaming engine with an
+/// injected transport + progress sink (Spec #3012 ST-2 reuses this for the
+/// managed toolchain, streaming its download progress to the provisioner).
+/// Returns the on-disk archive path on success.
+pub async fn acquire_archive_with(
+    transport: &dyn HttpTransport,
+    install_dir: &Path,
+    manifest: &ModelManifest,
+    reporter: &dyn ProgressReporter,
+) -> Result<PathBuf, String> {
+    let outcome =
+        download_missing_files(transport, manifest, install_dir, reporter, &SystemClock).await;
+    if !outcome.success {
+        return Err(outcome
+            .error
+            .unwrap_or_else(|| format!("acquisition of {} failed", manifest.subdir)));
+    }
+    Ok(file_path(install_dir, manifest, &manifest.files[0]))
+}
+
 /// Acquire + verify one archive through the shared streaming engine. Returns the
 /// on-disk archive path on success.
 async fn acquire_archive(
@@ -168,15 +191,7 @@ async fn acquire_archive(
 ) -> Result<PathBuf, String> {
     let transport =
         ReqwestTransport::new().map_err(|e| format!("could not build the download client: {e}"))?;
-    let outcome =
-        download_missing_files(&transport, manifest, install_dir, &NoopReporter, &SystemClock)
-            .await;
-    if !outcome.success {
-        return Err(outcome
-            .error
-            .unwrap_or_else(|| format!("acquisition of {} failed", manifest.subdir)));
-    }
-    Ok(file_path(install_dir, manifest, &manifest.files[0]))
+    acquire_archive_with(&transport, install_dir, manifest, &NoopReporter).await
 }
 
 /// Acquire the pinned Freedoom archive and extract `freedoom1.wad`.
@@ -239,6 +254,84 @@ pub async fn acquire_engine(app: &AppHandle) -> Result<Option<String>, String> {
     };
     let exe = extract_engine_exe(&archive, &install_dir)?;
     Ok(Some(exe))
+}
+
+// ── Local-file transport (Spec #3012 ST-2) ───────────────────────────────────
+
+/// Whether `url` is a LOCAL source (`file://` URL or a plain filesystem path)
+/// rather than an `http(s)://` URL. The provisioning archive seam accepts both
+/// so a small in-repo craft archive can drive the error/extract legs.
+pub fn is_local_source(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    !(lower.starts_with("http://") || lower.starts_with("https://"))
+}
+
+/// Map a `file://` URL or a plain path to an OS filesystem path. Handles the
+/// Windows `file:///C:/…` drive form (the leading `/` before the drive letter is
+/// dropped).
+pub fn local_source_path(url: &str) -> PathBuf {
+    let trimmed = url.trim();
+    let rest = trimmed
+        .strip_prefix("file://")
+        .or_else(|| trimmed.strip_prefix("FILE://"))
+        .unwrap_or(trimmed);
+    let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+    let mut path = rest.to_string();
+    #[cfg(windows)]
+    {
+        let bytes = path.as_bytes();
+        if bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':'
+        {
+            path.remove(0);
+        }
+    }
+    PathBuf::from(path)
+}
+
+/// [`HttpTransport`] over the local filesystem — reqwest cannot serve a
+/// `file://` URL or a plain path, so the provisioning archive seam routes local
+/// sources here. The shared engine's exact-size + SHA-256 gating is unchanged;
+/// `Range` is honoured with a `206` so resume works exactly as over HTTP.
+pub struct LocalFileTransport;
+
+impl LocalFileTransport {
+    /// A stateless local transport.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for LocalFileTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HttpTransport for LocalFileTransport {
+    fn get<'a>(
+        &'a self,
+        url: &'a str,
+        range: Option<HttpRange>,
+    ) -> BoxFuture<'a, anyhow::Result<HttpResponse>> {
+        Box::pin(async move {
+            let path = local_source_path(url);
+            let mut file = tokio::fs::File::open(&path)
+                .await
+                .with_context(|| format!("could not open local archive {}", path.display()))?;
+            let len = file.metadata().await.map(|meta| meta.len()).unwrap_or(0);
+            let start = range.map(|r| r.start).unwrap_or(0).min(len);
+            if start > 0 {
+                use tokio::io::AsyncSeekExt;
+                file.seek(std::io::SeekFrom::Start(start))
+                    .await
+                    .with_context(|| format!("could not seek {}", path.display()))?;
+            }
+            let status = if range.is_some() { 206u16 } else { 200u16 };
+            let body: crate::infrastructure::companion::download::ByteStream =
+                Box::pin(tokio_util::io::ReaderStream::new(file).map(|res| res.map_err(anyhow::Error::from)));
+            Ok(HttpResponse { status, body })
+        })
+    }
 }
 
 // ── Extraction ────────────────────────────────────────────────────────────────
@@ -423,6 +516,7 @@ pub fn extract_zip_first_exe(bytes: &[u8], dest_dir: &Path) -> Result<PathBuf, S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure::companion::download::ByteStream;
     use std::io::Write;
 
     /// Build an in-memory ZIP with stored (`deflate=false`) or deflated entries.
@@ -574,5 +668,66 @@ mod tests {
         let dest = extract_zip_first_exe(&archive, dir.path()).expect("extract exe");
         assert_eq!(dest.file_name().and_then(|n| n.to_str()), Some(DOOM_ENGINE_EXE));
         assert_eq!(std::fs::read(dest).expect("read"), b"MZ fake exe");
+    }
+
+    // ── Local-file transport (Spec #3012 ST-2) ───────────────────────────────
+
+    #[test]
+    fn local_source_detection_and_path_mapping() {
+        assert!(is_local_source("file:///C:/tmp/a.tar.xz"));
+        assert!(is_local_source(r"C:\tmp\a.tar.xz"));
+        assert!(is_local_source(".opencode/tmp/3012/archive/a.tar.xz"));
+        assert!(!is_local_source("http://example.test/a.tar.xz"));
+        assert!(!is_local_source("HTTPS://example.test/a.tar.xz"));
+        assert!(!is_local_source("  https://example.test/a.tar.xz  "));
+
+        assert_eq!(
+            local_source_path("file:///C:/tmp/a.tar.xz"),
+            PathBuf::from("C:/tmp/a.tar.xz")
+        );
+        assert_eq!(
+            local_source_path("file://C:/tmp/a.tar.xz"),
+            PathBuf::from("C:/tmp/a.tar.xz")
+        );
+        assert_eq!(
+            local_source_path(r"C:\tmp\a.tar.xz"),
+            PathBuf::from(r"C:\tmp\a.tar.xz")
+        );
+    }
+
+    #[tokio::test]
+    async fn local_file_transport_serves_bytes_and_honours_range() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("archive.tar.xz");
+        let body: Vec<u8> = (0..64u8).collect();
+        std::fs::write(&path, &body).expect("write archive");
+        let url = format!("file:///{}", path.to_string_lossy().replace('\\', "/"));
+        let transport = LocalFileTransport::new();
+
+        let response = transport.get(&url, None).await.expect("full get");
+        assert_eq!(response.status, 200);
+        assert_eq!(collect_body(response.body).await, body);
+
+        let response = transport
+            .get(&url, Some(HttpRange { start: 10 }))
+            .await
+            .expect("range get");
+        assert_eq!(response.status, 206);
+        assert_eq!(collect_body(response.body).await, body[10..]);
+
+        // A missing local file is an error, never a false success.
+        assert!(transport
+            .get("file:///does/not/exist.tar.xz", None)
+            .await
+            .is_err());
+    }
+
+    /// Drain a `ByteStream` into a byte vector (test helper).
+    async fn collect_body(mut body: ByteStream) -> Vec<u8> {
+        let mut out = Vec::new();
+        while let Some(item) = body.next().await {
+            out.extend_from_slice(&item.expect("stream chunk"));
+        }
+        out
     }
 }

@@ -133,6 +133,14 @@ pub enum DoomErrorCode {
     /// returned HTTP 503). **Transient** — the frame loop keeps polling and the
     /// window never enters the `error` phase.
     FrameNotReady,
+    /// Spec #3012 ST-3: entering Doom Mode needs the engine built on first use
+    /// but no `doom_install_dir` is stored yet — the owner must choose one. The
+    /// mode does NOT change; the frontend opens the provisioning dialog.
+    ProvisionRequired,
+    /// Spec #3012 ST-3: runtime provisioning (download/build) failed or was
+    /// cancelled, so Doom Mode could not be entered. The typed
+    /// [`super::provision::DoomProvisionErrorCode`] carries the cause.
+    ProvisionFailed,
 }
 
 impl DoomErrorCode {
@@ -146,6 +154,8 @@ impl DoomErrorCode {
             DoomErrorCode::StopTimeout => "stopTimeout",
             DoomErrorCode::RequestFailed => "requestFailed",
             DoomErrorCode::FrameNotReady => "frameNotReady",
+            DoomErrorCode::ProvisionRequired => "provisionRequired",
+            DoomErrorCode::ProvisionFailed => "provisionFailed",
         }
     }
 
@@ -160,6 +170,8 @@ impl DoomErrorCode {
             "stopTimeout" => Some(DoomErrorCode::StopTimeout),
             "requestFailed" => Some(DoomErrorCode::RequestFailed),
             "frameNotReady" => Some(DoomErrorCode::FrameNotReady),
+            "provisionRequired" => Some(DoomErrorCode::ProvisionRequired),
+            "provisionFailed" => Some(DoomErrorCode::ProvisionFailed),
             _ => None,
         }
     }
@@ -279,6 +291,8 @@ mod tests {
             DoomErrorCode::StopTimeout,
             DoomErrorCode::RequestFailed,
             DoomErrorCode::FrameNotReady,
+            DoomErrorCode::ProvisionRequired,
+            DoomErrorCode::ProvisionFailed,
         ];
         for code in all {
             let wire = serde_json::to_string(&code).expect("serialize");

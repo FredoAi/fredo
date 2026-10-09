@@ -20,6 +20,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use serde::Serialize;
 
+use super::provision::DoomProvisionPhase;
 use super::state::DoomErrorCode;
 
 /// The global broadcast event carrying a [`DoomModeStatus`] to every window.
@@ -39,6 +40,9 @@ pub enum DoomModePhase {
     Inactive,
     /// An enter is in flight (runtime/window/agent coming up).
     Entering,
+    /// The mode is active but the engine is being provisioned on first use
+    /// (Spec #3012 ST-3); the launch completes once provisioning reaches `ready`.
+    Provisioning,
     /// The mode is fully entered (runtime + agent up, window open).
     Active,
     /// A bounded exit is in flight.
@@ -51,6 +55,7 @@ impl DoomModePhase {
         match self {
             DoomModePhase::Inactive => "inactive",
             DoomModePhase::Entering => "entering",
+            DoomModePhase::Provisioning => "provisioning",
             DoomModePhase::Active => "active",
             DoomModePhase::Exiting => "exiting",
         }
@@ -111,6 +116,11 @@ pub struct DoomModeStatus {
     pub last_error: Option<String>,
     /// The typed failure code paired with `last_error`, if any.
     pub code: Option<DoomErrorCode>,
+    /// Whether the engine is not staged and the mode needs provisioning
+    /// (Spec #3012 ST-3).
+    pub needs_provisioning: bool,
+    /// The live provisioning phase, when the mode is provisioning.
+    pub provision: Option<DoomProvisionPhase>,
 }
 
 /// Result of `enter_doom_mode` / `exit_doom_mode` — always returned, never a hang.
@@ -131,6 +141,9 @@ pub struct DoomModeResult {
     pub error: Option<String>,
     /// The typed failure code, when `success` is false.
     pub code: Option<DoomErrorCode>,
+    /// Whether the owner must choose an install dir before the engine can be
+    /// provisioned (Spec #3012 ST-3; code `provisionRequired`).
+    pub needs_install_dir: bool,
 }
 
 // ── Managed state + pure transitions ─────────────────────────────────────────
@@ -148,6 +161,8 @@ pub struct DoomModeInner {
     entered_at: Option<String>,
     last_error: Option<String>,
     code: Option<DoomErrorCode>,
+    needs_provisioning: bool,
+    provision: Option<DoomProvisionPhase>,
 }
 
 impl DoomModeState {
@@ -169,14 +184,20 @@ impl DoomModeState {
             entered_at: inner.entered_at.clone(),
             last_error: inner.last_error.clone(),
             code: inner.code,
+            needs_provisioning: inner.needs_provisioning,
+            provision: inner.provision,
         }
     }
 
-    /// Try to begin entering. `false` when already `entering`/`active` — a
-    /// no-op so a second trigger never spawns a second runtime/window (R-1.a).
+    /// Try to begin entering. `false` when already `entering`/`provisioning`/
+    /// `active` — a no-op so a second trigger never spawns a second runtime/window
+    /// (R-1.a).
     pub fn begin_enter(&self, origin: Option<DoomModeOrigin>) -> bool {
         let mut inner = self.lock();
-        if matches!(inner.phase, DoomModePhase::Entering | DoomModePhase::Active) {
+        if matches!(
+            inner.phase,
+            DoomModePhase::Entering | DoomModePhase::Provisioning | DoomModePhase::Active
+        ) {
             return false;
         }
         inner.phase = DoomModePhase::Entering;
@@ -184,7 +205,33 @@ impl DoomModeState {
         inner.entered_at = None;
         inner.last_error = None;
         inner.code = None;
+        inner.needs_provisioning = false;
+        inner.provision = None;
         true
+    }
+
+    /// Enter the `provisioning` phase with the live provisioning sub-phase
+    /// (Spec #3012 ST-3).
+    pub fn set_provisioning(&self, phase: DoomProvisionPhase) {
+        let mut inner = self.lock();
+        inner.phase = DoomModePhase::Provisioning;
+        inner.provision = Some(phase);
+        inner.needs_provisioning = true;
+    }
+
+    /// Leave the `provisioning` phase (successful launch continues from
+    /// `entering`; a failure rolls back via [`Self::mark_enter_failed`]).
+    pub fn clear_provisioning(&self) {
+        let mut inner = self.lock();
+        inner.provision = None;
+        if inner.phase == DoomModePhase::Provisioning {
+            inner.phase = DoomModePhase::Entering;
+        }
+    }
+
+    /// Record whether the engine is missing and must be provisioned.
+    pub fn set_needs_provisioning(&self, needs: bool) {
+        self.lock().needs_provisioning = needs;
     }
 
     /// Mark a successful enter: `active` with the current RFC3339 timestamp.
@@ -194,6 +241,8 @@ impl DoomModeState {
         inner.entered_at = Some(chrono::Utc::now().to_rfc3339());
         inner.last_error = None;
         inner.code = None;
+        inner.needs_provisioning = false;
+        inner.provision = None;
     }
 
     /// Mark a failed enter: back to `inactive` with a typed failure, so no
@@ -205,13 +254,18 @@ impl DoomModeState {
         inner.entered_at = None;
         inner.last_error = Some(message);
         inner.code = code;
+        inner.needs_provisioning = false;
+        inner.provision = None;
     }
 
     /// Try to begin exiting. `false` when `inactive` (no-op, R-3.c) or already
-    /// `exiting` (idempotent).
+    /// `exiting` (idempotent). A `provisioning` mode may exit (cancel the build).
     pub fn begin_exit(&self) -> bool {
         let mut inner = self.lock();
-        if !matches!(inner.phase, DoomModePhase::Entering | DoomModePhase::Active) {
+        if !matches!(
+            inner.phase,
+            DoomModePhase::Entering | DoomModePhase::Provisioning | DoomModePhase::Active
+        ) {
             return false;
         }
         inner.phase = DoomModePhase::Exiting;
@@ -228,6 +282,8 @@ impl DoomModeState {
         inner.entered_at = None;
         inner.last_error = None;
         inner.code = None;
+        inner.needs_provisioning = false;
+        inner.provision = None;
         changed
     }
 }
@@ -251,6 +307,7 @@ mod tests {
         let cases = [
             (DoomModePhase::Inactive, "\"inactive\""),
             (DoomModePhase::Entering, "\"entering\""),
+            (DoomModePhase::Provisioning, "\"provisioning\""),
             (DoomModePhase::Active, "\"active\""),
             (DoomModePhase::Exiting, "\"exiting\""),
         ];
@@ -287,6 +344,8 @@ mod tests {
             entered_at: Some("2026-10-04T00:00:00+00:00".to_string()),
             last_error: None,
             code: None,
+            needs_provisioning: false,
+            provision: None,
         };
         let value = serde_json::to_value(&status).expect("serialize");
         assert_eq!(value["phase"], "active");
@@ -296,6 +355,8 @@ mod tests {
         assert_eq!(value["enteredAt"], "2026-10-04T00:00:00+00:00");
         assert!(value["lastError"].is_null());
         assert!(value["code"].is_null());
+        assert_eq!(value["needsProvisioning"], false);
+        assert!(value["provision"].is_null());
     }
 
     #[test]
@@ -308,6 +369,7 @@ mod tests {
             origin: None,
             error: Some("boom".to_string()),
             code: Some(DoomErrorCode::SpawnFailed),
+            needs_install_dir: false,
         };
         let value = serde_json::to_value(&result).expect("serialize");
         assert_eq!(value["success"], false);
@@ -317,6 +379,7 @@ mod tests {
         assert!(value["origin"].is_null());
         assert_eq!(value["error"], "boom");
         assert_eq!(value["code"], "spawnFailed");
+        assert_eq!(value["needsInstallDir"], false);
     }
 
     #[test]
@@ -394,6 +457,38 @@ mod tests {
         assert!(!fail_enter_from(Some("0")));
         assert!(!fail_enter_from(Some("true")));
         assert!(!fail_enter_from(None));
+    }
+
+    #[test]
+    fn provisioning_phase_tracks_the_sub_phase_and_is_exit_able() {
+        let state = DoomModeState::default();
+        state.begin_enter(Some(DoomModeOrigin::Code));
+        state.set_provisioning(DoomProvisionPhase::DownloadingToolchain);
+        let status = state.status(false);
+        assert_eq!(status.phase, DoomModePhase::Provisioning);
+        assert!(status.needs_provisioning);
+        assert_eq!(status.provision, Some(DoomProvisionPhase::DownloadingToolchain));
+
+        // A re-trigger during provisioning is a no-op.
+        assert!(!state.begin_enter(Some(DoomModeOrigin::Voice)));
+
+        // Leaving provisioning returns to entering and the launch can complete.
+        state.clear_provisioning();
+        assert_eq!(state.status(false).phase, DoomModePhase::Entering);
+        assert!(state.status(false).provision.is_none());
+        state.mark_active();
+        assert_eq!(state.status(false).phase, DoomModePhase::Active);
+        assert!(!state.status(false).needs_provisioning);
+
+        // A provisioning mode can be exited (cancel path).
+        let other = DoomModeState::default();
+        other.begin_enter(Some(DoomModeOrigin::Code));
+        other.set_provisioning(DoomProvisionPhase::Building);
+        assert!(other.begin_exit());
+        assert_eq!(other.status(false).phase, DoomModePhase::Exiting);
+        assert!(other.clear());
+        assert_eq!(other.status(false).phase, DoomModePhase::Inactive);
+        assert!(!other.status(false).needs_provisioning);
     }
 
     #[test]
