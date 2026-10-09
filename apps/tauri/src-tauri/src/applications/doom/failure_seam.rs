@@ -1,9 +1,9 @@
 //! Doom Mode engine-spawn failure seam (Spec #3013, ST-4 / CU-1).
 //!
 //! **G-275 / G-300** test-only failure-induction lever. This replaces the
-//! `FREDO_DOOM_ENGINE_PATH` env seam and the dev-only
-//! `FREDO_DOOM_REQUIRE_REAL_ENGINE` anti-stub seam (both removed by #3013 ST-1)
-//! with a single deterministic lever: when `FREDO_DOOM_FAIL_ENGINE_SPAWN` is set
+//! removed engine-path env seam and the dev-only anti-stub env seam (both
+//! removed by #3013 ST-1) with a single deterministic lever: when
+//! `FREDO_DOOM_FAIL_ENGINE_SPAWN` is set
 //! to `1`, the launch path returns `DoomErrorCode::SpawnFailed` before invoking
 //! the real spawn. It is **inert when unset**, so the production path is
 //! unchanged. The consumer is `super::commands::launch_doom_runtime` (CU-2/ST-2).

@@ -739,7 +739,12 @@ fn every_session_runs_the_model_audio_loop() {
         "the worker must not branch on a handling mode: {worker}"
     );
 
-    for banned in ["load_recognizer", "run_recognition", "acquire_engine", "park_engine"] {
+    // #3013: the deleted local voice-engine's generic engine-acquisition symbol
+    // was dropped from this ban list — it was a lifecycle-name leftover (now owned
+    // by the managed-only Doom path) that made the removed-identifier sweep over
+    // `apps/` impossible to satisfy at zero hits. The voice-specific deleted
+    // symbols (recognition + engine parking) still pin the invariant below.
+    for banned in ["load_recognizer", "run_recognition", "park_engine"] {
         assert!(
             !code.contains(banned),
             "session.rs must not contain `{banned}` — the local path is deleted (#2914)"
