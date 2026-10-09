@@ -9,3 +9,8 @@ scripts/doom/patches/*.patch text eol=lf
 # Vendored RESTful-DOOM source (Spec #3012): keep the committed tree LF so the
 # in-repo MinGW patches apply cleanly, and exclude it from language stats.
 vendor/restful-doom/** text eol=lf linguist-vendored
+# ...but never line-ending-normalize the vendored binaries: the `text eol=lf` rule
+# above corrupts .ico/.png (the build gate failed on a normalized icon - windres
+# tried to read 1128 bytes and got 1127). A later, more specific rule wins.
+vendor/restful-doom/**/*.ico -text
+vendor/restful-doom/**/*.png -text

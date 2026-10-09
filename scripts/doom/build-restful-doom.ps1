@@ -324,6 +324,15 @@ if ($SourceDir) {
     New-Item -ItemType Directory -Force -Path $scratchParent | Out-Null
     New-Item -ItemType Directory -Force -Path $ScratchDir | Out-Null
     Get-ChildItem -LiteralPath $SourceDir -Force | Copy-Item -Destination $ScratchDir -Recurse -Force
+    # Make the scratch its own git repository root. Otherwise `git apply` below
+    # discovers the ENCLOSING repository (the scratch lives inside the Fredo
+    # worktree when -InstallDir is under the repo) and resolves the patch paths
+    # against that root, silently skipping the engine patches. A clone carries
+    # its own `.git`; the vendored copy must match that.
+    $init = Invoke-Msys2Bash $root "git -C '$scratchPosix' init -q"
+    if ($init -ne 0) {
+        Stop-With $ExitBuild "git init in $ScratchDir failed (exit $init)."
+    }
 }
 else {
     if (Test-Path -LiteralPath (Join-Path $ScratchDir '.git')) {
