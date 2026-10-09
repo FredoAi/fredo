@@ -8,6 +8,12 @@
 > live-run receipt for its drive window plus the DOM/screenshot assertion. A static-only
 > PASS fails closed.
 
+> **#3009 supersedes (OBSOLETE — do NOT re-run on `spec/3009`).** The configurable-hotkeys
+> platform is REMOVED. The `#2958` quick paths (S-10..S-12), `#2959` quick paths
+> (S-13..S-16), `#2960` quick paths (S-17..S-20), `#2961` quick paths (S-21..S-22), and
+> `#2962` quick paths (S-23..S-25) are OBSOLETE. Their surviving invariants are restated in
+> the Spec #3009 quick paths below (S-26..S-30). Do NOT delete the superseded rows.
+
 - [ ] S-1: App window renders — `tauri_webview_dom_snapshot(type="structure")` returns a non-empty `<body>`
 - [ ] S-2: No console errors — `tauri_read_logs(source="console", lines=50)` shows no `Error:`/`Uncaught`/`Maximum update depth exceeded`
 - [ ] S-3: Hotkeys surface reachable — open Settings (launcher tile `[role="button"][aria-label="Settings"]`), select the Hotkeys section, and confirm the single binding listing renders (both tiers or, with no feature focused, the global tier)
@@ -21,13 +27,13 @@
 - [ ] S-8: **A text field suppresses bare shortcuts.** Focus a text-entry field (e.g. `[data-testid="launcher-command-input"]`) and type a bare key bound to a feature shortcut. **Expected:** the character lands verbatim in the field and NO action fires; screenshot succeeds; console clean.
 - [ ] S-9: **CI-parity gate.** Run `pnpm --filter @fredo/ui build` (expect exit 0, zero TypeScript errors), `pnpm --filter @fredo/ui test:run` (expect green), and the repo lint/typecheck leg. **Expected:** all pass with no weakened/disabled assertion.
 
-## Spec #2958 quick paths (named interaction contexts)
+## Spec #2958 quick paths (named interaction contexts) — **#3009 supersedes (OBSOLETE)**
 
 - [ ] S-10: **A root context exists at boot.** On the resting desktop read the active context via `getHotkeyContextSnapshot()` (or the `hotkeys-context-indicator` testid after a change). **Expected:** the platform root context is the default (`contextId 'fredo.root'`, label `'Fredo'`, `depth 1` — path length, base only); a context change renders the indicator text label (`hotkeys-context-indicator-label`, not colour-only); console clean. *(live receipt)*
 - [ ] S-11: **Descend + Escape quick path.** Focus a feature with a deeper context, descend (keyboard only), observe the context change, then press Escape once. **Expected:** `hotkeys-context-indicator-label`/`-depth` change on descent and return to the previous value on one Escape; the indicator + announcer both update; console clean. *(live receipt)*
 - [ ] S-12: **Context change is announced.** Sample `[data-testid="hotkeys-announcer"]` before and after a descent. **Expected:** the announcement text changes on the context change (polite live region, non-empty); screenshot succeeds. *(live receipt)*
 
-## Spec #2959 quick paths (keyboard mode + persistent key bar)
+## Spec #2959 quick paths (keyboard mode + persistent key bar) — **#3009 supersedes (OBSOLETE)**
 
 - [ ] S-13: **Entry/exit chord round-trips.** On the resting desktop fire the mode entry chord, then the exit chord. **Expected:** the mode indication appears (non-colour-only label/icon) and the bar renders; on exit the bar hides and focus is where it was; console clean. *(live receipt)*
 - [ ] S-14: **Bar persists with no pending sequence.** Enter mode and wait past the sequence timeout with `data-fredo-pending-sequence` null. **Expected:** the bar is STILL present listing the current context's actions + keys (not only a mid-sequence hint); screenshot succeeds. *(live receipt)*
@@ -197,7 +203,7 @@ Run on the served app (dev-env UP `-Spec 2959`, driver `com.fredo.app`, main win
 **Smoke verdict for #2959 round 3: PASS (all live quick paths); the feature verdict is PASS on
 REQ-1..5 + NFR-1/3/4 (REQ-5 fixed), with NFR-2 carried as a named pin-only blocker.**
 
-## Spec #2960 quick paths (typing-vs-navigating signal + zero-knowledge discovery)
+## Spec #2960 quick paths (typing-vs-navigating signal + zero-knowledge discovery) — **#3009 supersedes (OBSOLETE)**
 
 > Live-plan quick paths for issue #2960 (S3). **Verification policy: live** — each carries the
 > DOM/a11y assertion plus a `telemetry_spans` receipt read via the managed `psql` lever (G-284; the
@@ -225,7 +231,7 @@ REQ-1..5 + NFR-1/3/4 (REQ-5 fixed), with NFR-2 carried as a named pin-only block
   - **Edge:** G-280 orphan `postgres.exe`/stale sockets block boot → full dev-env Down → Up, then
     report (environment artifact, not a spec FAIL).
 
-## Spec #2961 quick paths (per-app contextual actions)
+## Spec #2961 quick paths (per-app contextual actions) — **#3009 supersedes (OBSOLETE)**
 
 > Live-plan quick paths for issue #2961 (S4). **Verification policy: live** — each carries the
 > DOM/a11y assertion plus a `telemetry_spans` receipt read via the managed `psql` lever (G-284).
@@ -260,7 +266,7 @@ errors.
   `feature_mission_monitor_sessions` rollup rows; MM bar shows `S Focus session search`;
   live `telemetry_spans` receipt via the managed `psql` lever.
 
-## Spec #2962 quick paths (deep nested contexts + key reuse)
+## Spec #2962 quick paths (deep nested contexts + key reuse) — **#3009 supersedes (OBSOLETE)**
 
 > Live-plan quick paths for issue #2962 (S5). **Verification policy: live** — each carries the
 > DOM/a11y assertion plus a `telemetry_spans` receipt read via the managed `psql` lever (G-284).
@@ -287,5 +293,38 @@ errors.
 - [x] **S-24 PASS** — depth `1→2→3→2→1→1`, one level per Escape; bar rows follow each level.
 - [x] **S-25 PASS** — L2 `n`=nextNode (cursor moves), L3 `n`=nextSection (active section
       moves); no L1 `nextSession`; action named for its level.
+
+## Spec #3009 quick paths (always-on element-declared hotkeys)
+
+> Live-plan quick paths for issue #3009. **Verification policy: live** — each carries the
+> DOM/a11y assertion plus a `telemetry_spans` receipt via `telemetry-query.ps1` (or the
+> managed `psql`/`run-exitcode.ps1` fallback on the PG-default path, G-284). Names bind to
+> the Architect's FINAL BINDING names block (see `functional.md` #3009 header):
+> `data-hotkey`, `data-fredo-hotkey-count`, `data-fredo-hotkeys-disabled`,
+> `data-fredo-hotkey-duplicate`, `hotkeys-keybar*`, `hotkeys-duplicate-error`.
+
+- [ ] S-26: **App boots + engine mounts + bar state is coherent.** Load the served app
+      (`dev-env.ps1 -Up -Spec 3009`, `apps/tauri` entry) and read the engine + count hooks.
+      **Expected:** `#root` mounts, `document.documentElement[data-fredo-hotkeys-engine="1"]`,
+      `data-fredo-hotkey-count` = the number of mounted valid `data-hotkey` elements, and the
+      bar (`hotkeys-keybar`) presence matches (`count ≥ 1` ⇒ present, `count === 0` ⇒ absent);
+      no `vite-error-overlay`; console clean. *(live receipt)*
+- [ ] S-27: **Bare-key element hotkey quick path.** Give a non-text focus to a control carrying
+      `data-hotkey` (e.g. Mission Monitor session search `s`) and press the bare key.
+      **Expected:** the element's action runs (the app's real operation), exactly once, with no
+      modifier; the key is listed in the bar; console clean. *(live receipt)*
+- [ ] S-28: **Always-on bar: aggregation + zero state.** With ≥1 element hotkey mounted, read the
+      bar; then open a window mounting zero `data-hotkey` elements and re-read. **Expected:** with
+      ≥1 the bar renders app-wide listing every element key in document order (element-only); at
+      0 the bar is hidden and `data-fredo-hotkey-count="0"`. *(live receipt)*
+- [ ] S-29: **Text-entry suppression quick path.** Focus `TEXTAREA[data-testid=
+      "launcher-command-input"]` and press a bare element key. **Expected:** the character lands
+      verbatim in the field and NO hotkey fires; every bar row is
+      `data-hotkey-availability="disabled"`; `data-fredo-hotkeys-disabled="true"`; console clean.
+      *(live receipt)*
+- [ ] S-30: **CI-parity gate.** Run `pnpm --filter @fredo/ui build` (expect exit 0, zero TS
+      errors), `pnpm --filter @fredo/ui test:run` (green), and the served
+      `pnpm --filter @fredo/tauri build:webview` leg. **Expected:** all pass with no
+      weakened/disabled assertion. Cross-ref `regression.md` R-47.
 
 
