@@ -6,6 +6,16 @@
 > **Verification policy: live** — the tester's Evidence MUST reference `telemetry_spans`
 > (a live-query result) for live verdicts; a static-only PASS fails closed.
 
+> **#3009 supersedes (OBSOLETE — do NOT re-run on `spec/3009`).** The configurable-hotkeys
+> platform is REMOVED. Retained for history, these groups are OBSOLETE: the `#2958` context
+> additions (R-12..R-15), the `#2959` mode/bar additions (R-16..R-20), the `#2960` regime/
+> discovery additions (R-21..R-27), the `#2961` per-app additions (R-28..R-34), and the
+> `#2962` nested-context additions (R-35..R-38). Also superseded in meaning: R-5's
+> Settings→Hotkeys contract (the section is removed; sibling sections survive — restated as
+> R-48 below) and R-11's mount (the provider now mounts engine + announcer + HotkeyBar —
+> restated as R-47). R-1..R-4 and R-6..R-10 SURVIVE and are re-affirmed as R-39..R-47.
+> Do NOT delete the superseded rows — they are the historical record.
+
 ## Invariants (must NOT change)
 
 - [ ] **R-1 (existing Ctrl+Space launcher shortcut):** Ctrl+Space still opens + focuses the launcher searchbox from any non-text focus, toggles exactly once per press, re-raises above the window stack, and is suppressed while a text field is focused. Anchors: `LauncherShell.tsx:1384-1489` (global `document` keydown), `LauncherCommandBar.tsx:1565` (`aria-keyshortcuts="Control+Space"`). Cross-ref `.opencode/tests/launcher/` F-16..F-20, `.opencode/tests/launcher/` F-34.
@@ -20,7 +30,7 @@
 - [ ] **R-10 (no OS-wide hotkeys):** no Tauri global-shortcut plugin / OS-level registration is introduced (PO out-of-scope: no OS-wide/unfocused hotkeys). The global layer remains a webview `document`/`window` listener.
 - [x] **R-11 (served app boots + engine mounts — promoted round 1):** the SERVED entry `apps/tauri/src/main.tsx` must resolve every import in the `@fredo/ui` graph (no `@/...` alias assumed from `apps/ui`; the served alias is `@` → `apps/tauri/src`) AND must mount `HotkeysProvider` (engine + announcer + which-key overlay) the way `apps/ui/src/main.tsx` does. **Actual round 2 (PASS):** on `spec/2946 @ 4ad4f802` `#root` has children, `data-fredo-hotkeys-engine="1"`, no       `vite-error-overlay`; `ui-validate` now builds the served webview. (Round 1 was FAIL — blank served webview.)
 
-## Spec #2958 additions (named interaction contexts)
+## Spec #2958 additions (named interaction contexts) — **#3009 supersedes (OBSOLETE)**
 
 - [ ] **R-12 (pending-multi-key Esc cancel unchanged):** at the TOP-LEVEL context, the shipped
       pending-sequence Escape cancel still works — arm a multi-key sequence (e.g. `g`), press
@@ -42,7 +52,7 @@
       (AGENTS.md #523 pattern); the context hook must not be consumed via a per-render changing
       dependency. Cross-ref R-7.
 
-## Spec #2959 additions (persistent contextual key bar)
+## Spec #2959 additions (persistent contextual key bar) — **#3009 supersedes (OBSOLETE)**
 
 - [ ] **R-16 (S1 context model unchanged):** the merged #2958 behaviour must not change — the
       focus-derived base (`fredo.root`, `depth 1`), `primary+K` descent to `fredo.root.reference`
@@ -188,7 +198,7 @@ Run on the served app (dev-env UP `-Spec 2959`, driver `com.fredo.app`, main win
   CI `ui-validate` check for PR #2973 reports FAILURE (unresolved; job log not retrievable in the
   tester sandbox — see the `## Tests Runs` caveats), which does not reproduce locally.
 
-## Spec #2960 additions (typing-vs-navigating signal + zero-knowledge discovery)
+## Spec #2960 additions (typing-vs-navigating signal + zero-knowledge discovery) — **#3009 supersedes (OBSOLETE)**
 
 > The S3 slice is ADDITIVE signalling + a discovery on-ramp. It must not re-spec or change the
 > shipped suppression (#2946), the context model (#2958), or the keyboard mode + bar (#2959).
@@ -224,7 +234,7 @@ Run on the served app (dev-env UP `-Spec 2959`, driver `com.fredo.app`, main win
       keymap, the Vim preset, macros, the context stack, or unrelated AppStore keys. Cross-ref R-5
       and the settings/token suites.
 
-## Spec #2961 additions (per-app contextual actions)
+## Spec #2961 additions (per-app contextual actions) — **#3009 supersedes (OBSOLETE)**
 
 > The S4 slice ADDS content (new feature declarations + per-feature bridge modules). It must not
 > re-spec or change the shipped suppression (#2946), the context model (#2958), the keyboard mode +
@@ -291,7 +301,7 @@ disclosed).
   Q13); #2961-added lines introduce zero colour literals; `pnpm --filter @fredo/ui build`
   exit 0; `test:run` 212 files / 2906 tests green.
 
-## Spec #2962 additions (multi-level nesting + intentional key reuse)
+## Spec #2962 additions (multi-level nesting + intentional key reuse) — **#3009 supersedes (OBSOLETE)**
 
 > The S5 slice ADDS the Mission Monitor 3-level context chain and the per-level actions with
 > intentional `n`/`p`/`o` reuse. It must not re-spec or change the shipped suppression (#2946),
@@ -344,5 +354,63 @@ disclosed).
   colour literals / `var(--x)NN`; `pnpm --filter @fredo/ui build` exit 0 (2673 modules, 0 TS errors);
   no `Maximum update depth exceeded`. One third-party ReactFlow `Uncaught` is a tester synthetic-event
   artifact (document-dispatched Escape), disclosed — see the round's `## Tests Runs`.
+
+## Spec #3009 additions (always-on element-declared hotkeys)
+
+> The #3009 change REMOVES the configurable-hotkeys subsystem and rewires the SAME single
+> keydown engine to an element-declared binding source. These invariants are the surviving
+> core of R-1..R-11 restated for the reduced base. **Verification policy: live** — receipts via
+> `telemetry-query.ps1` (or the managed `psql`/`run-exitcode.ps1` fallback on the PG-default
+> path, G-284). Baseline recipe for carry-forward rows: dev-env UP on `main`, record; repeat on
+> `spec/3009`.
+
+- [ ] **R-39 (one engine / one matcher / one action table — NO second resolver):** exactly ONE
+      `document` keydown dispatch listener remains (engine scope, `engine.ts:701`); element
+      `data-hotkey` bindings are merged at `resolveActiveBindings` (`engine.ts:335`) and dispatched
+      by `runHotkeyAction` (`registry.ts:230`); the `traversal.ts:367` Tab listener is the only
+      other, non-dispatch listener (documented); no parallel resolver, second `document` keydown
+      listener, or second action table is introduced. A second resolver is a FAIL. Anchors:
+      F-105; the deleted `macros.ts`/`contexts.ts`/`store.ts` listeners are gone.
+- [ ] **R-40 (Ctrl+Space launcher unchanged — carry R-1):** `Ctrl+Space` still opens + focuses
+      `TEXTAREA[data-testid="launcher-command-input"]` from any non-terminal focus, toggles exactly
+      once per press, and is suppressed ONLY under terminal passthrough (adjudication A1). Cross-ref
+      `.opencode/tests/launcher/` F-16..F-20/F-34, F-103.
+- [ ] **R-41 (launcher key contract unchanged — carry R-2):** the launcher's ESC/notch/grid/space
+      behaviour is unchanged — ESC closes the overlay and restores the pre-open focus origin; hold-
+      Space dictation and the Space-does-not-open-a-tile guard still work. Anchors:
+      `LauncherShell.tsx:1177-1195,123`. Cross-ref `.opencode/tests/launcher/` F-17/F-18/F-19/S-17.
+- [ ] **R-42 (existing keydown listeners unchanged — carry R-3):** `AppDock.tsx`, Mission Monitor
+      `DetailPanel.tsx:202,223` (ESC), and the Konami-code sequence listener are not double-fired or
+      swallowed by the rewired layer. A chord firing twice, or a keystroke swallowed, is a FAIL.
+- [ ] **R-43 (terminal input passthrough unchanged — carry R-4):** with a terminal focused, the
+      layer must not steal any key (keys reach the PTY); the focus-derived
+      `syncTerminalPassthrough` stays. **Adjudication A5:** the dedicated `Ctrl+Shift+F10` release
+      chord and the release button are REMOVED (the keyboard is released by click-away/focus
+      change); `TerminalWindow` drops the exit-chord UI. Cross-ref `.opencode/tests/terminal/` R-2.x,
+      F-97.
+- [ ] **R-44 (token contract + no re-render loop / console clean — carry R-6/R-7):** the new bar/
+      model files introduce no hardcoded hex/rgba/hsla and no `var(--x)NN` alpha-append; no
+      `Maximum update depth exceeded`/`Uncaught`/`Error:` across mount/unmount, focus switching,
+      pending sequences, typing, and theme switching (AGENTS.md #523). Cross-ref F-107/F-108.
+- [ ] **R-45 (no shortcut-usage telemetry — carry R-9):** the new layer emits NO span/event/metric
+      carrying shortcut usage or binding identity (PO Q13). Diff `telemetry_spans`/`telemetry_metrics`
+      names before vs after an element-hotkey drive. Cross-ref F-108.
+- [ ] **R-46 (no OS-wide hotkeys — carry R-10):** no Tauri global-shortcut plugin / OS-level
+      registration is introduced; the layer remains a webview `document`/`window` listener.
+- [ ] **R-47 (CI parity + served app boots — carry R-8/R-11):** `pnpm --filter @fredo/ui build`
+      exit 0 (zero TS errors); `pnpm --filter @fredo/ui test:run` green; the served
+      `apps/tauri` `build:webview` leg passes (H-11/G-251 class); the served webview mounts
+      (engine + announcer + `HotkeyBar` via `HotkeysProvider`, `apps/tauri/src/main.tsx`) with no
+      `vite-error-overlay`. No existing assertion weakened/disabled/deleted. Cross-ref F-108.
+- [ ] **R-48 (Settings shell + sibling sections unchanged; Hotkeys section removed):** the Hotkeys
+      nav item + `HotkeysSettings`/`HotkeyConflictDialog`/`MacroEditor` sections are REMOVED from
+      `SettingsSurface.tsx`; the sibling sections (Companion, Appearance, Fredo Setup, Telemetry +
+      discovered feature sections) are functionally unchanged; the SaveFooter contract and the
+      section-switch remount (`SettingsSaveProvider key={activeSection}`) are intact. Cross-ref
+      `.opencode/tests/settings/` R-11/R-12/R-14/R-15, F-102.
+- [ ] **R-49 (bar does not steal focus / no second live region):** the bar is `pointerEvents:none`
+      with zero focusable descendants, `document.activeElement` is never changed by the bar, and
+      the ONE shipped `hotkeys-announcer` remains the only `aria-live` channel (the bar is NOT
+      `aria-live`). Cross-ref F-106.
 
 
