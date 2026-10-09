@@ -237,6 +237,15 @@ pub fn run() {
             storage_state.register_pg_schema_init(Arc::new(|pool: &sqlx::PgPool| {
                 applications::terminal::persistence::ensure_table_on_pg(pool)
             }));
+            // Spec #3011 ST-3 / CU-2: materialize the Doom save feature table
+            // (`feature_doom_save`) on the CANDIDATE pool BEFORE it is installed
+            // (fail-closed — a failed init installs nothing), so a Doom resume
+            // read/write resolves the table without an ad-hoc create. Mirrors the
+            // Terminal precedent above; `ensure_table_on_pg` delegates to the ONE
+            // `ApplicationStore` DDL builder.
+            storage_state.register_pg_schema_init(Arc::new(|pool: &sqlx::PgPool| {
+                applications::doom::save::ensure_table_on_pg(pool)
+            }));
             // Spec #2976 ST-7: the six slice-3 canonical tables (three `*_rows`
             // for RtdbStore + three telemetry tables) exist on the candidate
             // pool BEFORE it is installed (fail-closed: a failed init installs
