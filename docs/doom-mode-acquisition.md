@@ -267,7 +267,7 @@ recipe; this section records it so a reviewer can reproduce it by hand.
   `pacman -S --needed`):
 
 ```bash
-pacman -S --needed base-devel git \
+pacman -S --needed base-devel git autoconf automake libtool \
   mingw-w64-x86_64-toolchain \
   mingw-w64-x86_64-SDL2 \
   mingw-w64-x86_64-SDL2_mixer \
@@ -277,11 +277,14 @@ pacman -S --needed base-devel git \
 ```
 
 - **Verified versions (ST-1):** gcc 16.2.0, SDL2 2.32.10, SDL2_mixer 2.8.2, SDL2_net 2.4.0,
-  libsamplerate 0.2.2, libpng 1.6.59, autoconf 2.73, automake + libtool present, make 4.4.1.
+  libsamplerate 0.2.2, libpng 1.6.59, autoconf 2.73, automake + libtool, make 4.4.1.
 - **Dependencies** (declared in the fork's `configure.ac`): **SDL2 ≥ 2.0.2** (required),
   **SDL2_mixer** (required), **SDL2_net** (required), libsamplerate (optional), libpng/zlib
   (optional), `libm`, `windres` (MinGW resource compiler), autoconf/automake/pkg-config. Python is
-  optional.
+  optional. The autotools (**`autoconf`**, **`automake`**, **`libtool`**) are installed explicitly:
+  the pinned MSYS2 base archive's `base-devel` package does not depend on them, and the build's
+  `./autogen.sh` runs `autoreconf` (which needs `autoconf` + `automake`; `libtool` matches the
+  fork's own `autotools` group).
 
 ### 6.2 Build from the vendored source
 

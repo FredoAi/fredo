@@ -24,9 +24,9 @@ source and stages it at the resolver's candidate path
   `-SourceDir` default. The script copies it to the scratch dir before patching, so
   the tracked tree is never mutated; an empty `-SourceDir` falls back to a clone of
   `-RepoUrl`.
-- Toolchain: **MSYS2 "MINGW64"** with `base-devel`, `git`, `mingw-w64-x86_64-toolchain`,
-  `mingw-w64-x86_64-SDL2`, `mingw-w64-x86_64-SDL2_mixer`, `mingw-w64-x86_64-SDL2_net`,
-  `mingw-w64-x86_64-libsamplerate`, `mingw-w64-x86_64-libpng`
+- Toolchain: **MSYS2 "MINGW64"** with `base-devel`, `git`, `autoconf`, `automake`, `libtool`,
+  `mingw-w64-x86_64-toolchain`, `mingw-w64-x86_64-SDL2`, `mingw-w64-x86_64-SDL2_mixer`,
+  `mingw-w64-x86_64-SDL2_net`, `mingw-w64-x86_64-libsamplerate`, `mingw-w64-x86_64-libpng`
 - Staged output: `<InstallDir>/engine/restful-doom.exe` (default `InstallDir` is
   `{app_data_dir}/doom` = `%APPDATA%\com.fredo.app\doom`), plus a
   `.restful-doom-commit` marker used for idempotency

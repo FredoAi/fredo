@@ -24,6 +24,7 @@ patches:    scripts/doom/patches/*.patch applied at build time (never to the tra
 - The in-repo MinGW portability patches under `scripts/doom/patches/` are applied
   at build time to a **scratch copy** (`build-restful-doom.ps1 -SourceDir`), so this
   tracked tree stays byte-identical to the upstream commit. Line endings are
-  normalized to LF via `.gitattributes` (`vendor/restful-doom/** text eol=lf`), which
-  is required for `git apply` to succeed and is also marked `linguist-vendored`.
+  normalized to LF via `.gitattributes` (`vendor/restful-doom/** text=auto eol=lf
+  linguist-vendored`), which is required for `git apply` to succeed; vendored
+  binaries (`*.ico`/`*.png`) are marked `-text` so they are never normalized.
 - Build recipe and toolchain: [`../../scripts/doom/README.md`](../../scripts/doom/README.md).

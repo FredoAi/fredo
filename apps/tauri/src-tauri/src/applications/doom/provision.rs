@@ -34,6 +34,7 @@
 //! Nothing here changes the engine resolver order or the mode lifecycle — it
 //! only makes the staged candidate exist (ST-3 wires first activation).
 
+use std::collections::VecDeque;
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -116,6 +117,8 @@ pub const DOOM_PROVISION_OFFLINE_ENV: &str = "FREDO_DOOM_BUILD_OFFLINE";
 
 /// The build script's machine-readable step marker prefix (stderr).
 const BUILD_STEP_MARKER: &str = "[build-restful-doom] STEP ";
+/// How many trailing non-`STEP` stderr lines a build failure carries (ST-11).
+const BUILD_STDERR_TAIL_LINES: usize = 8;
 
 // ── Managed toolchain pin (transcribed from scripts/doom/README.md, G-320) ────
 
@@ -973,6 +976,55 @@ async fn extract_archive(
     })
 }
 
+/// Retains the last few non-`STEP` stderr lines from the build child, so a bare
+/// exit code can be explained by the child's own diagnostics instead of being
+/// reported without context (ST-11, second symptom).
+#[derive(Debug, Default)]
+struct BuildStderrTail {
+    capacity: usize,
+    lines: VecDeque<String>,
+}
+
+impl BuildStderrTail {
+    /// A tail that keeps at most `capacity` non-`STEP` lines.
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            lines: VecDeque::with_capacity(capacity),
+        }
+    }
+
+    /// Record one stderr line. The machine-readable `STEP` markers and blank
+    /// lines are ignored; only the last `capacity` remaining lines are kept.
+    fn push(&mut self, line: &str) {
+        if self.capacity == 0 || line.contains(BUILD_STEP_MARKER) {
+            return;
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        if self.lines.len() == self.capacity {
+            self.lines.pop_front();
+        }
+        self.lines.push_back(trimmed.to_string());
+    }
+
+    /// Render the retained lines as a `: a; b; c` suffix (empty when none).
+    fn render_suffix(&self) -> String {
+        if self.lines.is_empty() {
+            return String::new();
+        }
+        let joined = self
+            .lines
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join("; ");
+        format!(": {joined}")
+    }
+}
+
 /// Update + emit the build step parsed from one stderr line.
 fn handle_step_line(run: &ProvisionRun<'_>, line: &str) {
     let Some(index) = line.find(BUILD_STEP_MARKER) else {
@@ -1069,6 +1121,7 @@ async fn build_engine(
     let mut rx_open = true;
     let mut failure: Option<ProvisionFailure> = None;
     let mut wait_failed = false;
+    let mut stderr_tail = BuildStderrTail::new(BUILD_STDERR_TAIL_LINES);
 
     loop {
         tokio::select! {
@@ -1086,7 +1139,10 @@ async fn build_engine(
             }
             maybe = rx.recv(), if rx_open => {
                 match maybe {
-                    Some(line) => handle_step_line(run, &line),
+                    Some(line) => {
+                        stderr_tail.push(&line);
+                        handle_step_line(run, &line);
+                    }
                     None => rx_open = false,
                 }
             }
@@ -1126,7 +1182,11 @@ async fn build_engine(
     if !status.success() {
         return Err(ProvisionFailure::Code(
             DoomProvisionErrorCode::BuildFailed,
-            format!("the engine build failed (exit code {:?})", status.code()),
+            format!(
+                "the engine build failed (exit code {:?}){}",
+                status.code(),
+                stderr_tail.render_suffix()
+            ),
         ));
     }
     Ok(())
@@ -1622,6 +1682,32 @@ mod tests {
             display_phase(DoomProvisionPhase::Idle, false, false, true),
             DoomProvisionPhase::AwaitingInstallDir
         );
+    }
+
+    #[test]
+    fn build_stderr_tail_keeps_the_last_non_step_lines() {
+        // ST-11: the tail ignores STEP markers + blank lines, keeps insertion
+        // order, and retains only the last N non-STEP lines.
+        let mut tail = BuildStderrTail::new(3);
+        tail.push("[build-restful-doom] STEP toolchain");
+        tail.push("");
+        tail.push("line one");
+        tail.push("   ");
+        tail.push("line two");
+        tail.push("[build-restful-doom] STEP source");
+        tail.push("line three");
+        tail.push("line four");
+        assert_eq!(
+            tail.render_suffix(),
+            ": line two; line three; line four"
+        );
+
+        // An accumulator that saw only STEP/blank lines renders no suffix.
+        let mut quiet = BuildStderrTail::new(8);
+        quiet.push("[build-restful-doom] STEP deps");
+        quiet.push("  ");
+        assert_eq!(quiet.render_suffix(), "");
+        assert_eq!(BuildStderrTail::new(0).render_suffix(), "");
     }
 
     #[test]
