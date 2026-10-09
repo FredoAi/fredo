@@ -17,6 +17,11 @@
  * zero-knowledge discovery control, and the first-run card, mounted exactly once
  * as in-flow children). It holds no key state and subscribes to nothing, so it
  * never re-renders the feature tree.
+ *
+ * Spec #3007 ST-2 — the resting S3 cluster is WINDOW-gated: it is suppressed in
+ * the `doom` webview (`index.html?view=doom`, `isHotkeysClusterSuppressed()`) and
+ * renders unchanged in every other window. The overlay surfaces and the terminal
+ * focus-context suppression are untouched.
  */
 
 import React, { useEffect } from 'react';
@@ -26,6 +31,7 @@ import { CheatSheetOverlay } from './CheatSheetOverlay';
 import { ContextIndicator } from './ContextIndicator';
 import { installHotkeyEngine } from './engine';
 import { HotkeysCluster } from './HotkeysCluster';
+import { isHotkeysClusterSuppressed } from './hotkeysWindowGate';
 import { KeyboardBar } from './KeyboardBar';
 import { hydrateKeymap } from './store';
 import { WhichKeyOverlay } from './WhichKeyOverlay';
@@ -52,7 +58,7 @@ export function HotkeysProvider({ children }: HotkeysProviderProps) {
       <CheatSheetOverlay />
       <ContextIndicator />
       <KeyboardBar />
-      <HotkeysCluster />
+      {!isHotkeysClusterSuppressed() && <HotkeysCluster />}
     </>
   );
 }
