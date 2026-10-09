@@ -94,8 +94,14 @@ $ExitClone     = 3
 $ExitBuild     = 4
 
 # The pinned pacman dependency set (docs/doom-mode-acquisition.md section 6.1).
+# `base-devel` supplies make/bison/flex/patch but is a PACKAGE (not a group) and
+# does NOT pull autotools; `autogen.sh` runs `autoreconf -fi`, so `autoconf`,
+# `automake`, and `libtool` are explicit dependencies (ST-10).
 $Dependencies = @(
     'base-devel',
+    'autoconf',
+    'automake',
+    'libtool',
     'git',
     'mingw-w64-x86_64-toolchain',
     'mingw-w64-x86_64-SDL2',
@@ -302,7 +308,43 @@ if ($install -ne 0) {
     Stop-With $ExitToolchain "pacman failed to install the MSYS2 dependency set (exit $install). This is a TOOLING GAP."
 }
 
+# -- 4b. Post-install tool guard (typed TOOLING GAP) --------------------------
+# The pinned dependency transaction must actually provide the tools the build
+# steps invoke. Assert them NOW so a missing tool surfaces as a typed TOOLING
+# GAP (exit 2) naming the tool, never later as an opaque autogen/build failure.
+#
+# MSYS2's autotools ship as POSIX wrapper SHELL SCRIPTS under `usr\bin` with no
+# `.exe` suffix (`autoconf`/`automake`/`libtool` packages install `/usr/bin/autoreconf`,
+# `/usr/bin/automake`, `/usr/bin/libtool`); `autogen.sh` invokes them through the
+# MSYS2 bash login shell, which resolves the extensionless script. `git`, `make`
+# and `gcc` are native PE binaries that DO carry `.exe`. Each entry therefore
+# accepts the shipped candidate name(s).
+$requiredTools = @(
+    @{ Name = 'autoreconf'; Paths = @('usr\bin\autoreconf', 'usr\bin\autoreconf.exe') },
+    @{ Name = 'automake';   Paths = @('usr\bin\automake',   'usr\bin\automake.exe') },
+    @{ Name = 'git';        Paths = @('usr\bin\git.exe',    'usr\bin\git') },
+    @{ Name = 'make';       Paths = @('usr\bin\make.exe',   'usr\bin\make') },
+    @{ Name = 'gcc';        Paths = @('mingw64\bin\gcc.exe') }
+)
+$missingTools = @()
+foreach ($tool in $requiredTools) {
+    $found = $false
+    foreach ($relativePath in $tool.Paths) {
+        if (Test-Path -LiteralPath (Join-Path $root $relativePath)) { $found = $true; break }
+    }
+    if (-not $found) { $missingTools += $tool.Name }
+}
+if ($missingTools.Count -gt 0) {
+    Stop-With $ExitToolchain ("the MSYS2 dependency install did not provide the required build tool(s): {0}. This is a TOOLING GAP." -f ($missingTools -join ', '))
+}
+
 # -- 5. Acquire the build source (vendored copy; clone when -SourceDir is empty)
+# Wrapped in a try/catch so any unexpected terminating error maps to a typed
+# ExitBuild naming the failing step -- the script can never exit outside its
+# 0/2/3/4 contract. The typed `Stop-With` exits inside remain effective: `exit`
+# is not catchable by try/catch.
+$buildStep = 'source'
+try {
 Write-Step 'source'
 if (-not $ScratchDir) {
     $ScratchDir = Join-Path $InstallDir 'build\restful-doom'
@@ -364,6 +406,7 @@ else {
 # tree keeps its upstream identity (F-75 reverse-applies them against it).
 $patchDir = Join-Path $PSScriptRoot 'patches'
 if (Test-Path -LiteralPath $patchDir) {
+    $buildStep = 'patch'
     Write-Step 'patch'
     $patchDirPosix = ConvertTo-MsysPath $patchDir
     $patchFiles = @(Get-ChildItem -LiteralPath $patchDir -Filter '*.patch' | Sort-Object Name)
@@ -375,6 +418,10 @@ if (Test-Path -LiteralPath $patchDir) {
             Stop-With $ExitBuild "failed to apply patch $($patchFile.Name) (exit $apply)."
         }
     }
+}
+}
+catch {
+    Stop-With $ExitBuild "$buildStep failed: $($_.Exception.Message)"
 }
 
 # -- 6. Build (autogen -> configure -> make) ----------------------------------
