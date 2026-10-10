@@ -50,9 +50,9 @@
 
 - [ ] E-9: Probe typing a non-matching query (`zzzz`) while engaged — does the grid show the empty state (`role="status"`) with NO keyboard hints; are arrows/Enter no-ops; does clearing restore the grid + hints without a crash?
 
-## E-10 — First-launch / Setup-wizard interplay
+## E-10 — First-launch / Setup-wizard interplay (reconciled #3010)
 
-- [ ] E-10: Probe a first launch where the Setup wizard auto-opens (`Home.tsx:67-74`) while the idle chrome (notch + avatar + bar + ticks + dot-grid + rounded frame) is rendered beneath. Does the idle chrome render correctly under the wizard, and does dismissing it return to a correct idle (not a blank surface)?
+- [ ] E-10: Probe a first launch on a fresh store — the Setup wizard NO LONGER auto-opens (the `Home.tsx` auto-open effect is deleted; #3010). Does the idle chrome (notch + avatar + bar + ticks + dot-grid + rounded frame) render correctly with NO wizard on boot and stay correct past the old ~1.2 s timer? Then open Fredo Setup via the launcher tile and via Settings → Fredo Setup — does each render the same wizard, and does closing return to a correct idle (not a blank surface)? Any auto-open on boot is a REGRESSION.
 
 ## E-11 — `—` minimize control + bare-chrome state
 
@@ -88,8 +88,8 @@
 > search bar). A confirmed finding PROMOTES to `functional.md` as a new `F-` row (keep the origin
 > note). Live policy.
 
-- [ ] E-15: **Placement with the Setup wizard / a maximized feature window over the shell.** With
-      the Setup wizard auto-open (or a feature window covering the resting surface), send a message
+- [ ] E-15: **Placement with a user-opened Setup wizard / a maximized feature window over the shell.** With
+      the Setup wizard opened via the launcher tile or Settings → Fredo Setup (or a feature window covering the resting surface), send a message
       and observe where the surface anchors. Does it stay clear of Fredo AND of the covering overlay,
       or does it land underneath / clipped? Any hidden, clipped, overlapping or unreachable message
       placement is a finding (promotes to F-19).
