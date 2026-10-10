@@ -30,6 +30,7 @@ use anyhow::{anyhow, Context, Result};
 use postgresql_embedded::{PostgreSQL, Settings};
 use sqlx::Connection as _;
 
+use super::config::PgSupervisorConfig;
 use super::{
     PG_CONNECT_TIMEOUT, PG_CONTROL_TIMEOUT, PG_READY_BOUND, PG_SETUP_BOUND, PG_START_BOUND,
 };
@@ -166,6 +167,36 @@ pub fn read_postmaster_pid(data_dir: &Path) -> Option<u32> {
     contents.lines().next()?.trim().parse::<u32>().ok()
 }
 
+/// The query PostgreSQL evaluates to produce the ESCAPED `ALTER USER … PASSWORD`
+/// statement literal (Spec #3022 round-2). A utility statement cannot take a bind
+/// parameter (`ALTER USER … PASSWORD $1` is a syntax error), so the literal must
+/// be built into the statement text first. `%L` applies PostgreSQL's canonical
+/// literal quoting, so a password containing `'` or `\` is safe. The password is
+/// bound here (never interpolated) and is NEVER logged.
+pub const ALTER_PASSWORD_STATEMENT_SQL: &str =
+    "SELECT format('ALTER USER postgres PASSWORD %L', $1)";
+
+/// Run `ALTER USER postgres PASSWORD <literal>` over an existing connection. The
+/// literal is produced by the SERVER (`format('%L', $1)`) so `'`/`\` are escaped
+/// correctly; the resulting statement carries no bind placeholder. Shared by
+/// [`PgRuntime::change_password`] and the Spec #3022 ST-4 R-1.3 compensating
+/// revert. Bounded by the caller.
+pub(crate) async fn alter_password_on_connection(
+    connection: &mut sqlx::PgConnection,
+    new_password: &str,
+) -> Result<()> {
+    let statement: String = sqlx::query_scalar(ALTER_PASSWORD_STATEMENT_SQL)
+        .bind(new_password)
+        .fetch_one(&mut *connection)
+        .await
+        .context("building the ALTER USER postgres PASSWORD statement")?;
+    sqlx::query(&statement)
+        .execute(&mut *connection)
+        .await
+        .context("running ALTER USER postgres PASSWORD")?;
+    Ok(())
+}
+
 /// Owns the embedded server. Constructed before `setup`, dropped last.
 pub struct PgRuntime {
     pg: PostgreSQL,
@@ -216,6 +247,34 @@ impl PgRuntime {
         )
     }
 
+    /// Build a runtime honouring the persisted supervisor config (Spec #3022,
+    /// ST-2).
+    ///
+    /// `settings.port` becomes the pinned port from the config (`None` ⇒ `0`,
+    /// ephemeral OS-assigned — e.g. a headless cluster or a default install), and
+    /// the config's log verbosity is applied as the PostgreSQL `log_min_messages`
+    /// server value alongside the Q-17 log-collector configuration. Every other
+    /// setting — the finite control timeout, the loopback host, the log
+    /// destination, and the FS-3 stop-hang seam — is identical to
+    /// [`Self::with_paths`], so an unset config keeps the default path
+    /// byte-identical.
+    pub fn with_config(
+        data_dir: &Path,
+        install_dir: &Path,
+        password: String,
+        config: &PgSupervisorConfig,
+    ) -> Self {
+        Self::assemble(
+            data_dir,
+            install_dir,
+            password,
+            kill_pid_tree,
+            pg_stop_with_env_hook,
+            config.port.unwrap_or(0),
+            Some(config.log_verbosity.pg_value()),
+        )
+    }
+
     /// Full constructor with explicit data/install dirs and BOTH injectable seams
     /// (**FS-1**/**FS-2**). Private: [`Self::new`]/[`Self::with_kill`] are the
     /// production and retained seams; the unit tests reach it as a child module.
@@ -226,13 +285,31 @@ impl PgRuntime {
         kill: KillTreeFn,
         stop: StopFn,
     ) -> Self {
+        Self::assemble(data_dir, install_dir, password, kill, stop, 0, None)
+    }
+
+    /// Assemble a runtime from explicit dirs, seams, bind `port`, and an optional
+    /// `log_min_messages` override. [`Self::with_dirs`] passes the default
+    /// ephemeral `port = 0` and no verbosity override, so its settings are
+    /// byte-identical to the pre-ST-2 path; [`Self::with_config`] passes the
+    /// persisted config's port + verbosity.
+    fn assemble(
+        data_dir: &Path,
+        install_dir: &Path,
+        password: String,
+        kill: KillTreeFn,
+        stop: StopFn,
+        port: u16,
+        log_min_messages: Option<&str>,
+    ) -> Self {
         let data_dir = data_dir.to_path_buf();
         let mut settings = Settings::new();
         settings.data_dir = data_dir.clone();
         settings.installation_dir = install_dir.to_path_buf();
-        // Ephemeral loopback: `port = 0` requests an OS-assigned port, so no
-        // fixed-port collision is possible with OTLP 4317/4318 or the MCP 9223.
-        settings.port = 0;
+        // Ephemeral loopback by default: `port = 0` requests an OS-assigned port,
+        // so no fixed-port collision is possible with OTLP 4317/4318 or the MCP
+        // 9223. A pinned port (ST-2 `with_config`) overrides this.
+        settings.port = port;
         settings.temporary = false;
         settings.password = password;
         // G-263: a finite bound on EVERY `pg_ctl` control command. Leaving this
@@ -245,6 +322,21 @@ impl PgRuntime {
             settings
                 .configuration
                 .insert(key.to_string(), value.to_string());
+        }
+        // ST-2 hardening (Spec #3022 round-2): force English/ASCII server
+        // messages with the `C` locale, so a server message always decodes as
+        // UTF-8 — the drift readiness error otherwise surfaced a non-UTF-8
+        // placeholder. Applied to the assembled settings for every path.
+        settings
+            .configuration
+            .insert("lc_messages".to_string(), "C".to_string());
+        // ST-2 (#3022, R-3.2/R-4): the config-selected log verbosity is the
+        // PostgreSQL `log_min_messages` server value, applied alongside the
+        // collector configuration so the restart honours it.
+        if let Some(log_min_messages) = log_min_messages {
+            settings
+                .configuration
+                .insert("log_min_messages".to_string(), log_min_messages.to_string());
         }
         // Q-17: surface the documented console-flash deviation on the live boot
         // path (the crate exposes no creation-flag hook), so it is recorded in
@@ -344,6 +436,15 @@ impl PgRuntime {
 
     /// Bounded `start()`; returns the postmaster PID once it has been written.
     pub async fn start(&mut self) -> Result<u32> {
+        // ST-2 (#3022) injectable fault seam: a forced failure returns BEFORE
+        // spawning a server, so the config-apply restart's fail-closed branch
+        // (pinned-port collision → prior config retained) is drivable in-repo
+        // without a real cluster. Inert when the lever is unset.
+        if super::force_start_fail() {
+            return Err(anyhow!(
+                "FREDO_PG_FORCE_START_FAIL is set: forced start failure (test seam)"
+            ));
+        }
         let pg = &mut self.pg;
         run_bounded(PG_START_BOUND, "pg.start", async move {
             pg.start().await?;
@@ -388,6 +489,32 @@ impl PgRuntime {
                 }
             },
         )
+        .await
+    }
+
+    /// Change the `postgres` superuser password IN PLACE (Spec #3022, ST-2,
+    /// R-1.1).
+    ///
+    /// Connects with the CURRENT credential — the URL this runtime was built with,
+    /// i.e. the process's stored password — and runs
+    /// `ALTER USER postgres PASSWORD <literal>`. The literal is produced by the
+    /// SERVER via [`ALTER_PASSWORD_STATEMENT_SQL`] (`format('%L', $1)`), because a
+    /// utility statement cannot take a bind parameter (`PASSWORD $1` is a syntax
+    /// error). `%L` applies PostgreSQL's canonical quoting, so a password
+    /// containing `'` or `\` is safe. The password is NEVER logged. No re-init and
+    /// no data loss: the data dir is untouched.
+    ///
+    /// Bounded by [`PG_CONTROL_TIMEOUT`] (G-263) so a wedged server cannot hang
+    /// the caller.
+    pub async fn change_password(&self, new_password: &str) -> Result<()> {
+        let url = self.connection_url();
+        run_bounded(PG_CONTROL_TIMEOUT, "pg.change_password", async move {
+            let mut connection = sqlx::PgConnection::connect(&url)
+                .await
+                .context("connecting to change the postgres password")?;
+            alter_password_on_connection(&mut connection, new_password).await?;
+            Ok::<(), anyhow::Error>(())
+        })
         .await
     }
 
@@ -464,8 +591,10 @@ impl Drop for PgRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::applications::pg_supervisor::config::{PgLogVerbosity, PgSupervisorConfig};
     use crate::applications::pg_supervisor::{
-        skip_server_knobs, PG_DATA_SUBDIR, PG_SERVER_KNOBS, PG_SKIP_SERVER_KNOBS_ENV,
+        force_start_fail, skip_server_knobs, PG_DATA_SUBDIR, PG_FORCE_START_FAIL_ENV,
+        PG_SERVER_KNOBS, PG_SKIP_SERVER_KNOBS_ENV,
     };
     use std::sync::Mutex;
 
@@ -475,6 +604,19 @@ mod tests {
     /// process-global) against the tests that call `apply_server_knobs`, so the
     /// overlay assertions are deterministic under any suite order (G-222).
     static KNOB_ENV_LOCK: Mutex<()> = Mutex::new(());
+    /// Serializes the test that sets the **ST-2** forced-start-failure env var (a
+    /// process-global), so the `start()` seam is deterministic (G-222).
+    static START_FAIL_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Restores the ST-2 forced-start-failure lever to unset on drop (even on a
+    /// panic).
+    struct StartFailEnvGuard;
+
+    impl Drop for StartFailEnvGuard {
+        fn drop(&mut self) {
+            std::env::remove_var(PG_FORCE_START_FAIL_ENV);
+        }
+    }
 
     /// Restores the FS-5 lever to unset on drop (even on a panic).
     struct KnobEnvGuard;
@@ -851,5 +993,207 @@ mod tests {
                 "missing knob {name} = {value} in:\n{tuned}"
             );
         }
+    }
+
+    /// ST-2 (#3022, R-3.1/R-3.2/R-4): `with_config` applies the pinned port and
+    /// the log verbosity as the PostgreSQL `log_min_messages` server value, while
+    /// every other setting (timeout, host, Q-17 collector config) is unchanged.
+    #[test]
+    fn with_config_pins_the_port_and_applies_the_log_verbosity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata-cfg");
+        let install_dir = dir.path().join("pginstall");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+
+        let config = PgSupervisorConfig {
+            port: Some(5433),
+            log_verbosity: PgLogVerbosity::Debug,
+        };
+        let runtime = PgRuntime::with_config(
+            &data_dir,
+            &install_dir,
+            "test-password".to_string(),
+            &config,
+        );
+        let settings = runtime.pg.settings();
+        assert_eq!(settings.port, 5433, "the pinned port must be applied");
+        assert_eq!(
+            settings
+                .configuration
+                .get("log_min_messages")
+                .map(String::as_str),
+            Some("debug1"),
+            "the verbosity must be applied as the PG log_min_messages value"
+        );
+        assert_eq!(
+            settings.timeout,
+            Some(PG_CONTROL_TIMEOUT),
+            "Settings::timeout must stay bounded (the #2948 stop hang)"
+        );
+        // The Q-17 collector config still applies alongside the verbosity.
+        for &(key, value) in PG_LOG_COLLECTOR_CONFIG {
+            assert_eq!(
+                settings.configuration.get(key).map(String::as_str),
+                Some(value),
+                "the Q-17 collector config must be preserved for {key}"
+            );
+        }
+
+        // The host is unchanged relative to the default (unset-config) path — the
+        // config NEVER moves the bind off loopback (R-5.3).
+        let default_runtime = PgRuntime::with_dirs(
+            &data_dir,
+            &install_dir,
+            "test-password".to_string(),
+            record_kill,
+            noop_stop,
+        );
+        assert_eq!(
+            settings.host,
+            default_runtime.pg.settings().host,
+            "with_config must not change the bind host"
+        );
+    }
+
+    /// ST-2 non-goal: `with_config` with the default (unset) config is ephemeral
+    /// and the retained `with_dirs`/`with_paths` path injects NO verbosity
+    /// override, so the headless + test defaults stay byte-identical.
+    #[test]
+    fn with_config_defaults_to_ephemeral_and_the_unset_path_stays_verbosity_free() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata-ephemeral");
+        let install_dir = dir.path().join("pginstall");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+
+        let runtime = PgRuntime::with_config(
+            &data_dir,
+            &install_dir,
+            "test-password".to_string(),
+            &PgSupervisorConfig::default(),
+        );
+        assert_eq!(
+            runtime.pg.settings().port,
+            0,
+            "an absent pinned port must remain ephemeral (port 0)"
+        );
+        assert_eq!(
+            runtime
+                .pg
+                .settings()
+                .configuration
+                .get("log_min_messages")
+                .map(String::as_str),
+            Some("info"),
+            "the default verbosity must apply as the PG 'info' value"
+        );
+
+        // The retained constructors must NOT inject a verbosity override.
+        let default_runtime = PgRuntime::with_dirs(
+            &data_dir,
+            &install_dir,
+            "test-password".to_string(),
+            record_kill,
+            noop_stop,
+        );
+        assert_eq!(
+            default_runtime
+                .pg
+                .settings()
+                .configuration
+                .get("log_min_messages"),
+            None,
+            "the unset-config path must carry no log_min_messages override"
+        );
+        assert_eq!(default_runtime.pg.settings().port, 0);
+    }
+
+    /// ST-2 (#3022, AC3-negative): a set `FREDO_PG_FORCE_START_FAIL` makes
+    /// `start()` fail closed WITHOUT spawning a server; the lever is inert when
+    /// unset.
+    #[tokio::test]
+    async fn start_fails_closed_when_the_force_start_fail_lever_is_set() {
+        let _guard = START_FAIL_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::remove_var(PG_FORCE_START_FAIL_ENV);
+        assert!(!force_start_fail(), "an unset lever must be inert");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata-forced-fail");
+        let install_dir = dir.path().join("pginstall");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        let mut runtime = PgRuntime::with_dirs(
+            &data_dir,
+            &install_dir,
+            "test-password".to_string(),
+            record_kill,
+            noop_stop,
+        );
+
+        std::env::set_var(PG_FORCE_START_FAIL_ENV, "1");
+        let _env = StartFailEnvGuard;
+        assert!(force_start_fail(), "the lever must read as set");
+
+        let result = runtime.start().await;
+        assert!(
+            result.is_err(),
+            "a set FREDO_PG_FORCE_START_FAIL must force start() to fail closed"
+        );
+    }
+
+    // ── ST-2 round-2 (#3022): escaped-literal password statement ─────────────
+
+    /// The `ALTER USER … PASSWORD` statement is built by the SERVER with `%L`
+    /// (PostgreSQL's canonical literal quoting) — NOT executed with a bind
+    /// parameter, because a utility statement rejects `PASSWORD $1` (the
+    /// pre-round-2 syntax error). The builder template must keep the `%L` form.
+    #[test]
+    fn alter_password_statement_builder_uses_the_percent_l_literal_form() {
+        assert!(
+            ALTER_PASSWORD_STATEMENT_SQL.contains("format('ALTER USER postgres PASSWORD %L'"),
+            "the builder must delegate literal quoting to format('%L'): {ALTER_PASSWORD_STATEMENT_SQL}"
+        );
+        assert!(
+            ALTER_PASSWORD_STATEMENT_SQL.contains("$1"),
+            "the new password is BOUND, never interpolated: {ALTER_PASSWORD_STATEMENT_SQL}"
+        );
+        // The broken round-1 form (`ALTER … PASSWORD $1` run as-is) must be gone.
+        assert!(
+            !ALTER_PASSWORD_STATEMENT_SQL.contains("PASSWORD $1"),
+            "the utility statement must not carry a bind placeholder"
+        );
+    }
+
+    /// Reference mirror of PostgreSQL's `format('%L', …)` literal quoting under
+    /// `standard_conforming_strings = on` (the managed server default): double
+    /// every `'`, leave `\` literal, wrap in single quotes. The production path
+    /// delegates this to the SERVER; this pure mirror lets the escaping CONTRACT
+    /// be unit-pinned without a live server (G-222).
+    fn reference_sql_literal(value: &str) -> String {
+        format!("'{}'", value.replace('\'', "''"))
+    }
+
+    /// A password containing `'` and `\` round-trips through the literal quoting:
+    /// escaping then decoding recovers the EXACT password, so the produced
+    /// statement is parseable and the credential is preserved (Spec #3022
+    /// round-2). Covers both `change_password` and the R-1.3 compensating revert
+    /// (they share [`alter_password_on_connection`]).
+    #[test]
+    fn escaped_password_literal_round_trips_quotes_and_backslashes() {
+        for password in ["a'b\\c", "''''", "\\\\", "plain", "quote'only", "back\\slash"] {
+            let literal = reference_sql_literal(password);
+            assert!(
+                literal.starts_with('\'') && literal.ends_with('\''),
+                "the literal must be a single-quoted SQL string: {literal:?}"
+            );
+            // Decode the literal back: strip the quotes and collapse doubled `'`.
+            let inner = &literal[1..literal.len() - 1];
+            let decoded = inner.replace("''", "'");
+            assert_eq!(decoded, password, "round-trip failed for {password:?}");
+        }
+        // The canonical form for a quote+backslash password: only `'` is doubled.
+        assert_eq!(reference_sql_literal("a'b\\c"), "'a''b\\c'");
+        // A `'` in the password is doubled so it cannot terminate the literal.
+        assert_eq!(reference_sql_literal("O'Brien"), "'O''Brien'");
     }
 }
