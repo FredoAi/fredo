@@ -1,17 +1,25 @@
-//! Doom Mode engine-spawn failure seam (Spec #3013, ST-4 / CU-1).
+//! Doom Mode engine-spawn failure seam (Spec #3013, ST-4 / CU-1; retargeted by
+//! Spec #3023 ST-9).
 //!
 //! **G-275 / G-300** test-only failure-induction lever. This replaces the
 //! removed engine-path env seam and the dev-only anti-stub env seam (both
 //! removed by #3013 ST-1) with a single deterministic lever: when
 //! `FREDO_DOOM_FAIL_ENGINE_SPAWN` is set
-//! to `1`, the launch path returns `DoomErrorCode::SpawnFailed` before invoking
-//! the real spawn. It is **inert when unset**, so the production path is
-//! unchanged. The consumer is `super::commands::launch_doom_runtime` (CU-2/ST-2).
+//! to `1`, the launch path returns a typed failure BEFORE any engine session
+//! becomes ready. It is **inert when unset**, so the production path is
+//! unchanged.
+//!
+//! Spec #3023 retargeted the consumer onto the native in-process engine: the
+//! lever is now read by [`super::engine::DoomEngineState::launch`], which refuses
+//! construction and surfaces [`super::engine::DoomEngineErrorCode::EngineStartFailed`]
+//! (`engineStartFailed` on the wire) before constructing any session — no engine,
+//! no session, no orphan. The public interface here is unchanged (the env-name
+//! const and the two pure parsers), so nothing else needs to change.
 //!
 //! This module performs no I/O beyond reading the process environment.
 
 /// The `FREDO_DOOM_FAIL_ENGINE_SPAWN` lever (G-275): when set to `1`, the launch
-/// path fails before any engine process is created. Inert when unset, so the
+/// path fails before any engine session is created. Inert when unset, so the
 /// production path is unchanged.
 pub const DOOM_FAIL_ENGINE_SPAWN_ENV: &str = "FREDO_DOOM_FAIL_ENGINE_SPAWN";
 

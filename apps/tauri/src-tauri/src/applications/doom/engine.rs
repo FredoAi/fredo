@@ -35,6 +35,8 @@ use base64::Engine as _;
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use crate::infrastructure::companion::doom_decision::DoomDecisionSource;
+
 use neurodoom::game_data::{MobjFlag, SPRNAMES};
 use neurodoom::map::{point_to_angle, MapData, SectorId};
 use neurodoom::math::{Angle, Fixed, FRACBITS};
@@ -50,12 +52,28 @@ use super::actions::{
     DOOM_ACTION_TURN_RIGHT, DOOM_ACTION_TURN_TO, DOOM_ACTION_USE, DOOM_ACTION_WEAPON_SLOT_MAX,
     DOOM_ACTION_WEAPON_SLOT_MIN, DOOM_STEP_TICS_MAX,
 };
+use super::autoplay::{DOOM_AUTOPLAY_MAX_FAILURES, DOOM_AUTOPLAY_MAX_STEPS};
 
 // ── G-275 WAD seam ────────────────────────────────────────────────────────────
 
 /// Test-only WAD path override (G-275). Inert when unset: the shipped path
 /// returns the embedded `DOOM1.WAD` by default. QA points this at a
 /// tester-written absent/corrupt copy under `.opencode/tmp/3023/wad/`.
+///
+/// # QA test-data convention (Spec #3023 ST-9)
+///
+/// The tester writes throwaway fixtures under the gitignored scratch root
+/// `.opencode/tmp/3023/` — the shipped `apps/tauri/src-tauri/doom/DOOM1.WAD` is
+/// **never** mutated:
+///
+/// * `.opencode/tmp/3023/wad/absent.wad` — an absent path (or any path that does
+///   not exist) resolves to [`DoomEngineErrorCode::WadMissing`];
+/// * `.opencode/tmp/3023/wad/corrupt.wad` — a truncated/garbage file resolves to
+///   [`DoomEngineErrorCode::WadCorrupt`];
+/// * `.opencode/tmp/3023/doom-save/` — the `FREDO_DOOM_SAVE_STATE_DIR` target
+///   for the save/persistence rows.
+///
+/// Both WAD seams are inert when unset, so the production path is unchanged.
 pub const DOOM_WAD_PATH_ENV: &str = "FREDO_DOOM_WAD_PATH";
 
 /// The bundled shareware `DOOM1.WAD`, embedded at compile time.
@@ -166,7 +184,9 @@ pub fn load_wad() -> Result<Vec<u8>, DoomEngineError> {
 /// Pure WAD loader (unit-testable without env mutation).
 ///
 /// A named-but-absent file is [`DoomEngineErrorCode::WadMissing`]; a file that
-/// exists but cannot be read is [`DoomEngineErrorCode::WadCorrupt`].
+/// exists but is unreadable or whose WAD header is invalid/truncated is
+/// [`DoomEngineErrorCode::WadCorrupt`]. The embedded default WAD is validated the
+/// same way, so a broken bundle surfaces the same typed error.
 fn load_wad_from(override_path: Option<&str>) -> Result<Vec<u8>, DoomEngineError> {
     match override_path.map(str::trim).filter(|path| !path.is_empty()) {
         Some(path) => {
@@ -176,15 +196,51 @@ fn load_wad_from(override_path: Option<&str>) -> Result<Vec<u8>, DoomEngineError
                     format!("no WAD file at {path}"),
                 ));
             }
-            std::fs::read(path).map_err(|error| {
+            let bytes = std::fs::read(path).map_err(|error| {
                 DoomEngineError::new(
                     DoomEngineErrorCode::WadCorrupt,
                     format!("could not read the WAD at {path}: {error}"),
                 )
-            })
+            })?;
+            validate_wad_header(&bytes, path)?;
+            Ok(bytes)
         }
-        None => Ok(EMBEDDED_WAD.to_vec()),
+        None => {
+            validate_wad_header(EMBEDDED_WAD, "embedded DOOM1.WAD")?;
+            Ok(EMBEDDED_WAD.to_vec())
+        }
     }
+}
+
+/// Validate the 12-byte IWAD/PWAD header and the lump-directory bounds.
+///
+/// This is the deterministic `wadCorrupt` classifier (Spec #3023 ST-9): a file
+/// that is too short, lacks the `IWAD`/`PWAD` magic, carries a negative lump
+/// count / directory offset, or whose lump directory extends past end of file
+/// (a truncated copy) is [`DoomEngineErrorCode::WadCorrupt`]. Deeper parse
+/// failures (a valid header over damaged lump data) are still mapped by
+/// [`construct_engine`]'s [`DoomError::WadError`] arm.
+fn validate_wad_header(bytes: &[u8], source: &str) -> Result<(), DoomEngineError> {
+    let corrupt = |detail: &str| {
+        DoomEngineError::new(DoomEngineErrorCode::WadCorrupt, format!("{source}: {detail}"))
+    };
+    if bytes.len() < 12 {
+        return Err(corrupt("file is shorter than a WAD header"));
+    }
+    let magic = &bytes[0..4];
+    if magic != b"IWAD" && magic != b"PWAD" {
+        return Err(corrupt("missing IWAD/PWAD magic"));
+    }
+    let numlumps = i32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+    let infotableofs = i32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
+    if numlumps < 0 || infotableofs < 0 {
+        return Err(corrupt("negative lump count or directory offset"));
+    }
+    let directory_end = (infotableofs as usize).saturating_add((numlumps as usize).saturating_mul(16));
+    if directory_end > bytes.len() {
+        return Err(corrupt("lump directory extends past end of file (truncated)"));
+    }
+    Ok(())
 }
 
 /// Construct the classic engine at `map_name` from `wad`, mapping the crate's
@@ -281,8 +337,27 @@ impl DoomEngineState {
     ///
     /// Fails with [`DoomEngineErrorCode::WadMissing`] / `WadCorrupt` for a WAD
     /// problem, and `EngineStartFailed` when the engine cannot start (including
-    /// the `FREDO_DOOM_FAIL_ENGINE_SPAWN` induction lever).
+    /// the `FREDO_DOOM_FAIL_ENGINE_SPAWN` induction lever). Both the WAD override
+    /// ([`DOOM_WAD_PATH_ENV`]) and the failure lever are read here; each is inert
+    /// when unset, so the production path is unchanged. The deterministic form
+    /// ([`Self::launch_with`]) carries them as injectable inputs.
     pub fn launch(&self, map: i64, skill: i64) -> Result<DoomSessionInfo, DoomEngineError> {
+        let wad_override = std::env::var(DOOM_WAD_PATH_ENV).ok();
+        let fail_spawn = super::failure_seam::fail_engine_spawn_requested();
+        self.launch_with(map, skill, wad_override.as_deref(), fail_spawn)
+    }
+
+    /// Deterministic construction (Spec #3023 ST-9): the WAD override and the
+    /// failure lever are injected, so the FULL launch path — including the
+    /// typed-error ordering (the failure lever short-circuits before the WAD is
+    /// read) — is unit-testable without mutating process-global env (G-222).
+    fn launch_with(
+        &self,
+        map: i64,
+        skill: i64,
+        wad_override: Option<&str>,
+        fail_spawn: bool,
+    ) -> Result<DoomSessionInfo, DoomEngineError> {
         let mut guard = self.lock();
         if let Some(session) = guard.as_ref() {
             return Ok(session_info(session));
@@ -290,7 +365,7 @@ impl DoomEngineState {
 
         // G-275 failure lever (inert when unset): refuse construction before any
         // session exists, so the typed error surfaces with no engine and no orphan.
-        if super::failure_seam::fail_engine_spawn_requested() {
+        if fail_spawn {
             return Err(DoomEngineError::new(
                 DoomEngineErrorCode::EngineStartFailed,
                 "engine start refused by FREDO_DOOM_FAIL_ENGINE_SPAWN",
@@ -303,7 +378,7 @@ impl DoomEngineState {
                 format!("invalid level coordinates E1M{map}"),
             )
         })?;
-        let wad = load_wad()?;
+        let wad = load_wad_from(wad_override)?;
         let engine = construct_engine(&wad, &map_name)?;
         *guard = Some(DoomSession {
             engine,
@@ -396,6 +471,208 @@ fn session_info(session: &DoomSession) -> DoomSessionInfo {
         episode: session.episode,
         map: session.map,
         skill: session.skill,
+    }
+}
+
+// ── Deterministic engine-native driver (Spec #3023 ST-9 / QA harness) ────────
+
+/// The bounded configuration of [`run_bounded_driver`].
+///
+/// Defaults to the shared [`super::autoplay`] budgets and [`super::save`]'s
+/// default skill; [`Self::from_env`] resolves the budget overrides from the
+/// existing `FREDO_DOOM_AGENT_*` seams (inert when unset), so the driver and the
+/// production loop share one seam (G-275).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DoomDriverConfig {
+    /// The campaign map to construct at (shareware `DOOM1.WAD` is episode 1).
+    pub map: i64,
+    /// The requested skill (carried; the crate exposes no skill knob).
+    pub skill: i64,
+    /// Maximum engine-advancing steps before the run stops cleanly.
+    pub max_steps: u32,
+    /// Maximum consecutive unusable decisions before the run stops.
+    pub max_failures: u32,
+}
+
+impl Default for DoomDriverConfig {
+    fn default() -> Self {
+        Self {
+            map: 1,
+            skill: super::save::DOOM_DEFAULT_SKILL,
+            max_steps: DOOM_AUTOPLAY_MAX_STEPS,
+            max_failures: DOOM_AUTOPLAY_MAX_FAILURES,
+        }
+    }
+}
+
+impl DoomDriverConfig {
+    /// Resolve the bounded budgets from the existing `FREDO_DOOM_AGENT_*` env
+    /// seams ([`super::decision::DOOM_AGENT_MAX_STEPS_ENV`] /
+    /// [`super::decision::DOOM_AGENT_MAX_FAILURES_ENV`]); unset/blank/invalid
+    /// values fall back to the binding defaults (inert when unset).
+    pub fn from_env() -> Self {
+        let default = Self::default();
+        Self {
+            max_steps: super::decision::max_steps_from_env().unwrap_or(default.max_steps),
+            max_failures: super::decision::max_failures_from_env().unwrap_or(default.max_failures),
+            ..default
+        }
+    }
+}
+
+/// The deterministic outcome of [`run_bounded_driver`] — the start/end
+/// observation plus the run counters.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DoomDriverReport {
+    /// The campaign episode the session played (always 1 for `DOOM1.WAD`).
+    pub episode: i64,
+    /// The campaign map the session played.
+    pub map: i64,
+    /// The requested skill.
+    pub skill: i64,
+    /// Engine-advancing steps completed.
+    pub steps: u32,
+    /// Decisions obtained from the source.
+    pub decisions: u32,
+    /// Unusable (malformed/failed) decisions seen.
+    pub failures: u32,
+    /// The starting engine tic.
+    pub start_tic: u64,
+    /// The last observed engine tic.
+    pub last_tic: u64,
+    /// The starting player map-unit x.
+    pub start_x: i64,
+    /// The starting player map-unit y.
+    pub start_y: i64,
+    /// The last observed player map-unit x.
+    pub last_x: i64,
+    /// The last observed player map-unit y.
+    pub last_y: i64,
+    /// The terminal kind reached (`"dead"` / `"exited"`), or `None` when the
+    /// step/failure budget ended the run first.
+    pub terminal: Option<&'static str>,
+}
+
+impl DoomDriverReport {
+    /// Whether the engine's tic counter advanced across the run.
+    pub fn advanced(&self) -> bool {
+        self.last_tic > self.start_tic
+    }
+
+    /// Whether the player's integer position changed across the run.
+    pub fn moved(&self) -> bool {
+        self.last_x != self.start_x || self.last_y != self.start_y
+    }
+}
+
+/// The deterministic, engine-native autoplay driver (Spec #3023 ST-9).
+///
+/// Constructs the session at `(episode=1, config.map, config.skill)` then runs
+/// the production loop's **read → decide → validate → step** shape directly over
+/// the in-process adapter (no HTTP, no model, no network). The decision source is
+/// injected, so the existing scripted lever
+/// ([`super::decision::ScriptedDecisionSource`] +
+/// `FREDO_DOOM_AGENT_DECISION_SOURCE=scripted` + `FREDO_DOOM_AGENT_SCRIPT`)
+/// reproduces a run deterministically; the step/failure budgets come from
+/// [`DoomDriverConfig`]/[`DoomDriverConfig::from_env`].
+///
+/// Terminates on the step budget, the consecutive-failure budget, or a terminal
+/// observation (death / level exit). Decision validation reuses the production
+/// [`super::agent::validate_decision`] and terminal classification reuses
+/// [`super::agent::terminal_kind`], so the driver can never drift from the loop.
+pub async fn run_bounded_driver(
+    state: &DoomEngineState,
+    source: &dyn DoomDecisionSource,
+    config: DoomDriverConfig,
+) -> Result<DoomDriverReport, DoomEngineError> {
+    let info = state.launch(config.map, config.skill)?;
+    let mut observation = state.read_state()?;
+    let start_tic = observation_tic(&observation);
+    let (start_x, start_y) = observation_position(&observation);
+    let mut last_tic = start_tic;
+    let (mut last_x, mut last_y) = (start_x, start_y);
+    let mut terminal = super::agent::terminal_kind(&observation).map(terminal_label);
+
+    // The failure cap is clamped to at least 1, so a misconfigured `0` can never
+    // spin the loop forever without advancing the step budget (G-263).
+    let failure_cap = config.max_failures.max(1);
+    let mut steps = 0u32;
+    let mut decisions = 0u32;
+    let mut failures = 0u32;
+    let mut consecutive_failures = 0u32;
+
+    while steps < config.max_steps && terminal.is_none() {
+        match source.decide(&observation).await {
+            Ok(decision) => {
+                decisions += 1;
+                if super::agent::validate_decision(&decision).is_err() {
+                    failures += 1;
+                    consecutive_failures += 1;
+                    if consecutive_failures >= failure_cap {
+                        break;
+                    }
+                    continue;
+                }
+                let actions = Value::Array(decision.actions.clone());
+                observation = state.step(decision.tics, &actions)?;
+                steps += 1;
+                consecutive_failures = 0;
+                last_tic = observation_tic(&observation);
+                let (x, y) = observation_position(&observation);
+                last_x = x;
+                last_y = y;
+                terminal = super::agent::terminal_kind(&observation).map(terminal_label);
+            }
+            Err(_) => {
+                failures += 1;
+                consecutive_failures += 1;
+                if consecutive_failures >= failure_cap {
+                    break;
+                }
+            }
+        }
+    }
+
+    Ok(DoomDriverReport {
+        episode: info.episode,
+        map: info.map,
+        skill: info.skill,
+        steps,
+        decisions,
+        failures,
+        start_tic,
+        last_tic,
+        start_x,
+        start_y,
+        last_x,
+        last_y,
+        terminal,
+    })
+}
+
+/// The engine tic of an observation, or `0` when absent.
+fn observation_tic(observation: &Value) -> u64 {
+    observation.get("tic").and_then(Value::as_u64).unwrap_or(0)
+}
+
+/// The player's integer map-unit `(x, y)` from an observation, or `(0, 0)`.
+fn observation_position(observation: &Value) -> (i64, i64) {
+    let x = observation
+        .pointer("/player/x")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let y = observation
+        .pointer("/player/y")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    (x, y)
+}
+
+/// The stable label for a terminal observation (`"dead"` / `"exited"`).
+fn terminal_label(kind: super::agent::TerminalKind) -> &'static str {
+    match kind {
+        super::agent::TerminalKind::Death => "dead",
+        super::agent::TerminalKind::Exit => "exited",
     }
 }
 
@@ -922,6 +1199,7 @@ fn friendly_kind(sprite: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::applications::doom::decision::ScriptedDecisionSource;
     use neurodoom::math::FRACUNIT;
 
     fn temp_wad_dir() -> tempfile::TempDir {
@@ -1081,10 +1359,10 @@ mod tests {
         let path = dir.path().join("corrupt.wad");
         std::fs::write(&path, b"this is definitely not a Doom IWAD")
             .expect("write corrupt wad");
-        let bytes = load_wad_from(Some(path.to_str().expect("utf-8 path"))).expect("read");
-        let error = construct_engine(&bytes, "E1M1")
-            .err()
-            .expect("garbage does not build");
+        // ST-9 extended the loader to reject an invalid header up front, so the
+        // garbage file is classified `wadCorrupt` BEFORE engine construction.
+        let error = load_wad_from(Some(path.to_str().expect("utf-8 path")))
+            .expect_err("garbage is rejected at load time");
         assert_eq!(error.code, DoomEngineErrorCode::WadCorrupt);
         assert_eq!(error.code.as_str(), "wadCorrupt");
     }
@@ -1227,5 +1505,326 @@ mod tests {
         assert_eq!(friendly_kind("STIM"), Some("stimpack"));
         assert_eq!(friendly_kind("SHOT"), Some("shotgun"));
         assert_eq!(friendly_kind("NOPE"), None);
+    }
+
+    // ── Spec #3023 ST-9: WAD-path seam (REQ-5.2) ─────────────────────────────
+
+    #[test]
+    fn the_seam_env_names_are_pinned() {
+        assert_eq!(DOOM_WAD_PATH_ENV, "FREDO_DOOM_WAD_PATH");
+        assert_eq!(
+            crate::applications::doom::failure_seam::DOOM_FAIL_ENGINE_SPAWN_ENV,
+            "FREDO_DOOM_FAIL_ENGINE_SPAWN"
+        );
+    }
+
+    #[test]
+    fn an_absent_override_makes_launch_wad_missing() {
+        let state = DoomEngineState::default();
+        let error = state
+            .launch_with(1, 3, Some("no/such/absent.wad"), false)
+            .expect_err("absent wad");
+        assert_eq!(error.code, DoomEngineErrorCode::WadMissing);
+        assert_eq!(error.code.as_str(), "wadMissing");
+        assert!(!state.is_running(), "no session is created on a WAD failure");
+    }
+
+    #[test]
+    fn a_garbage_override_makes_launch_wad_corrupt() {
+        let dir = temp_wad_dir();
+        let path = dir.path().join("corrupt.wad");
+        std::fs::write(&path, b"this is definitely not a Doom IWAD").expect("write");
+        let state = DoomEngineState::default();
+        let error = state
+            .launch_with(1, 3, path.to_str(), false)
+            .expect_err("garbage wad");
+        assert_eq!(error.code, DoomEngineErrorCode::WadCorrupt);
+        assert_eq!(error.code.as_str(), "wadCorrupt");
+        assert!(!state.is_running());
+    }
+
+    #[test]
+    fn a_truncated_override_makes_launch_wad_corrupt() {
+        let dir = temp_wad_dir();
+        let path = dir.path().join("truncated.wad");
+        // A truncated copy of the REAL WAD: valid magic, directory past EOF.
+        std::fs::write(&path, &EMBEDDED_WAD[..2048]).expect("write truncated");
+        let state = DoomEngineState::default();
+        let error = state
+            .launch_with(1, 3, path.to_str(), false)
+            .expect_err("truncated wad");
+        assert_eq!(error.code, DoomEngineErrorCode::WadCorrupt);
+        assert_eq!(error.code.as_str(), "wadCorrupt");
+    }
+
+    #[test]
+    fn the_embedded_wad_passes_header_validation() {
+        assert!(validate_wad_header(EMBEDDED_WAD, "embedded DOOM1.WAD").is_ok());
+        // Blank/whitespace is treated as unset (inert) — the embedded WAD loads.
+        assert!(load_wad_from(Some("")).is_ok());
+        assert!(load_wad_from(Some("   ")).is_ok());
+        assert!(load_wad_from(None).is_ok());
+    }
+
+    #[test]
+    fn wad_header_validation_rejects_short_and_garbage() {
+        assert_eq!(
+            validate_wad_header(b"short", "x").expect_err("short").code,
+            DoomEngineErrorCode::WadCorrupt
+        );
+        assert_eq!(
+            validate_wad_header(b"NOPE\x00\x00\x00\x00\x00\x00\x00\x00", "x")
+                .expect_err("magic")
+                .code,
+            DoomEngineErrorCode::WadCorrupt
+        );
+    }
+
+    // ── Spec #3023 ST-9: engine-start-failure seam (REQ-5.2) ─────────────────
+
+    #[test]
+    fn the_engine_failure_lever_refuses_before_any_session() {
+        let state = DoomEngineState::default();
+        let error = state.launch_with(1, 3, None, true).expect_err("lever");
+        assert_eq!(error.code, DoomEngineErrorCode::EngineStartFailed);
+        assert_eq!(error.code.as_str(), "engineStartFailed");
+        assert!(
+            !state.is_running(),
+            "the lever creates no session, so no orphan is possible"
+        );
+    }
+
+    #[test]
+    fn the_lever_short_circuits_before_the_wad_is_read() {
+        // With the lever set, an ABSENT WAD still yields engineStartFailed (the
+        // lever wins) — the failure surfaces before any engine construction.
+        let state = DoomEngineState::default();
+        let error = state
+            .launch_with(1, 3, Some("no/such/absent.wad"), true)
+            .expect_err("lever");
+        assert_eq!(error.code, DoomEngineErrorCode::EngineStartFailed);
+    }
+
+    #[test]
+    fn the_engine_failure_lever_is_inert_when_false() {
+        let state = DoomEngineState::default();
+        assert!(state.launch_with(1, 3, None, false).is_ok());
+        assert!(state.is_running());
+    }
+
+    // ── Spec #3023 ST-9: deterministic driver (REQ-3.1) ──────────────────────
+
+    fn scripted(entries: Value, repeat: bool) -> ScriptedDecisionSource {
+        let script = json!({ "decisions": entries, "repeat": repeat });
+        ScriptedDecisionSource::from_script_json(&script.to_string()).expect("script")
+    }
+
+    #[test]
+    fn driver_config_defaults_to_the_shared_budgets_and_env_is_inert_when_unset() {
+        let default = DoomDriverConfig::default();
+        assert_eq!(default.map, 1);
+        assert_eq!(default.skill, crate::applications::doom::save::DOOM_DEFAULT_SKILL);
+        assert_eq!(default.max_steps, DOOM_AUTOPLAY_MAX_STEPS);
+        assert_eq!(default.max_failures, DOOM_AUTOPLAY_MAX_FAILURES);
+
+        if crate::applications::doom::decision::max_steps_from_env().is_none() {
+            assert_eq!(DoomDriverConfig::from_env().max_steps, default.max_steps);
+        }
+        if crate::applications::doom::decision::max_failures_from_env().is_none() {
+            assert_eq!(
+                DoomDriverConfig::from_env().max_failures,
+                default.max_failures
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_scripted_driver_reproduces_a_bounded_run() {
+        let state = DoomEngineState::default();
+        let source = scripted(
+            json!([
+                { "tics": 4, "actions": [{ "type": "forward" }] },
+                { "tics": 4, "actions": [{ "type": "forward" }] },
+            ]),
+            true,
+        );
+        let report = run_bounded_driver(
+            &state,
+            &source,
+            DoomDriverConfig {
+                map: 1,
+                skill: 3,
+                max_steps: 8,
+                max_failures: 3,
+            },
+        )
+        .await
+        .expect("driven run");
+
+        assert_eq!(report.episode, 1);
+        assert_eq!(report.map, 1);
+        assert_eq!(report.skill, 3);
+        assert_eq!(report.steps, 8, "the run advances the full bounded budget");
+        assert_eq!(report.decisions, 8);
+        assert_eq!(report.failures, 0);
+        assert!(report.advanced(), "the engine tic advanced");
+        assert!(report.moved(), "the scripted forwards moved the player");
+        assert!(report.terminal.is_none(), "the budget ended the run");
+    }
+
+    #[tokio::test]
+    async fn the_scripted_driver_is_deterministic_across_fresh_sessions() {
+        async fn run(steps: u32) -> DoomDriverReport {
+            let state = DoomEngineState::default();
+            let source = scripted(
+                json!([{ "tics": 3, "actions": [{ "type": "forward" }] }]),
+                true,
+            );
+            run_bounded_driver(
+                &state,
+                &source,
+                DoomDriverConfig {
+                    map: 1,
+                    skill: 3,
+                    max_steps: steps,
+                    max_failures: 3,
+                },
+            )
+            .await
+            .expect("driven run")
+        }
+        let first = run(6).await;
+        let second = run(6).await;
+        assert_eq!(first.last_tic, second.last_tic);
+        assert_eq!((first.last_x, first.last_y), (second.last_x, second.last_y));
+        assert_eq!(first.steps, second.steps);
+    }
+
+    #[tokio::test]
+    async fn the_driver_stops_at_the_step_budget() {
+        let state = DoomEngineState::default();
+        let source = scripted(json!([{ "tics": 1, "actions": [] }]), true);
+        let report = run_bounded_driver(
+            &state,
+            &source,
+            DoomDriverConfig {
+                map: 1,
+                skill: 3,
+                max_steps: 4,
+                max_failures: 3,
+            },
+        )
+        .await
+        .expect("driven run");
+        assert_eq!(report.steps, 4);
+        assert!(report.advanced());
+    }
+
+    #[tokio::test]
+    async fn the_driver_stops_at_the_failure_budget_without_stepping() {
+        let state = DoomEngineState::default();
+        let source = scripted(json!([{ "malformed": true }]), true);
+        let report = run_bounded_driver(
+            &state,
+            &source,
+            DoomDriverConfig {
+                map: 1,
+                skill: 3,
+                max_steps: 600,
+                max_failures: 3,
+            },
+        )
+        .await
+        .expect("driven run");
+        assert_eq!(report.steps, 0, "an unusable decision issues no step");
+        assert_eq!(report.failures, 3, "bounded by the failure budget");
+        assert!(!report.advanced());
+        assert!(!report.moved());
+    }
+
+    #[test]
+    fn terminal_labels_map_the_production_classifier() {
+        use crate::applications::doom::agent::{terminal_kind, TerminalKind};
+        assert_eq!(terminal_label(TerminalKind::Death), "dead");
+        assert_eq!(terminal_label(TerminalKind::Exit), "exited");
+        let dead = json!({ "tic": 1, "outcome": "dead", "done": false });
+        assert_eq!(terminal_kind(&dead).map(terminal_label), Some("dead"));
+        let exited = json!({ "tic": 1, "outcome": "exited", "done": true });
+        assert_eq!(terminal_kind(&exited).map(terminal_label), Some("exited"));
+    }
+
+    // ── Spec #3023 ST-9: teardown (G-263 / REQ-5.3) ──────────────────────────
+
+    #[test]
+    fn teardown_is_take_and_drop_and_recovers() {
+        let state = DoomEngineState::default();
+        state.launch(1, 3).expect("launch");
+        assert!(state.is_running());
+
+        state.stop();
+        assert!(!state.is_running(), "the session is dropped");
+        assert_eq!(
+            state.read_state().expect_err("dropped").code,
+            DoomEngineErrorCode::EngineStartFailed
+        );
+
+        // Idempotent: a second close/app-exit path is a no-op.
+        state.stop();
+        assert!(!state.is_running());
+
+        // The Retry path recovers with a clean session.
+        assert!(state.launch(1, 3).is_ok());
+        assert!(state.is_running());
+    }
+
+    #[test]
+    fn window_close_and_app_exit_share_one_session() {
+        // Both teardown entry points (`stop_doom_on_window_close` /
+        // `stop_doom_on_exit`) delegate to this engine seam through a cloned
+        // handle; dropping through EITHER drops the shared session for both.
+        let window_close_handle = DoomEngineState::default();
+        let app_exit_handle = window_close_handle.clone();
+        window_close_handle.launch(1, 3).expect("launch");
+        assert!(app_exit_handle.is_running());
+
+        app_exit_handle.stop(); // the app-exit path
+        assert!(
+            !window_close_handle.is_running(),
+            "the drop is shared (one session, take-and-drop)"
+        );
+    }
+
+    #[test]
+    fn repeated_close_paths_leave_no_session_accumulating() {
+        // Models rapid open/close cycles: each cycle ends with the session
+        // dropped and no thread/process left behind (take-and-drop; no orphan).
+        let state = DoomEngineState::default();
+        for _ in 0..16 {
+            state.launch(1, 3).expect("launch");
+            assert!(state.is_running());
+            state.stop();
+            assert!(!state.is_running());
+        }
+    }
+
+    #[tokio::test]
+    async fn the_driver_session_is_take_and_drop_after_a_run() {
+        let state = DoomEngineState::default();
+        let source = scripted(json!([{ "tics": 1, "actions": [] }]), true);
+        let _ = run_bounded_driver(
+            &state,
+            &source,
+            DoomDriverConfig {
+                map: 1,
+                skill: 3,
+                max_steps: 2,
+                max_failures: 3,
+            },
+        )
+        .await
+        .expect("driven run");
+        assert!(state.is_running());
+        state.stop();
+        assert!(!state.is_running(), "the driver leaves no orphan session");
     }
 }
