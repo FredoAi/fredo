@@ -33,18 +33,19 @@ import {
   HOTKEY_BAR_TESTID,
   HOTKEY_BAR_TITLE_MIN_WIDTH_PX,
   HOTKEY_BAR_Z_INDEX,
+  HOTKEY_DUPLICATE_ERROR_TESTID,
   HotkeyBar,
 } from '../HotkeyBar';
 import { BODY_HOTKEYS_DISABLED_ATTR } from '../hotkeyElements';
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
-function entry(key: string, title: string): HotkeyElementEntry {
+function entry(key: string, title: string, id = 'fixture'): HotkeyElementEntry {
   const grammar = parseDataHotkey(key);
   if (grammar === null) throw new Error(`bad fixture key ${key}`);
   return {
     element: document.createElement('button'),
-    actionId: `fredo.element.${key}#fixture`,
+    actionId: `fredo.element.${key}#${id}`,
     grammar,
     title,
     source: 'element',
@@ -69,6 +70,10 @@ function root(container: HTMLElement): HTMLElement | null {
 
 function rows(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>(`[data-testid="${HOTKEY_BAR_ROW_TESTID}"]`));
+}
+
+function duplicateBanner(container: HTMLElement): HTMLElement | null {
+  return container.querySelector<HTMLElement>(`[data-testid="${HOTKEY_DUPLICATE_ERROR_TESTID}"]`);
 }
 
 beforeEach(() => {
@@ -98,6 +103,7 @@ describe('HotkeyBar — binding constants', () => {
     expect(HOTKEY_BAR_ROW_TESTID).toBe('hotkeys-keybar-row');
     expect(HOTKEY_BAR_PENDING_TESTID).toBe('hotkeys-keybar-pending');
     expect(HOTKEY_BAR_ARIA_LABEL).toBe('Available hotkeys');
+    expect(HOTKEY_DUPLICATE_ERROR_TESTID).toBe('hotkeys-duplicate-error');
   });
 });
 
@@ -109,6 +115,66 @@ describe('HotkeyBar — zero-state reach-back (R-2.2 / G-265)', () => {
     expect(root(container)).toBeNull();
     expect(rows(container)).toHaveLength(0);
     expect(document.body.hasAttribute(BODY_HOTKEYS_DISABLED_ATTR)).toBe(false);
+  });
+});
+
+// ── Duplicate-key DEV error surface (ST-2R / R-3.4) ──────────────────────────
+
+describe('HotkeyBar — DEV duplicate-key error surface (R-3.4)', () => {
+  it('renders the DEV banner when two entries declare the same key', () => {
+    const { container } = renderWithChakra(
+      <HotkeyBar
+        model={modelFor([entry('s', 'First', 'dup-a'), entry('s', 'Second', 'dup-b')])}
+        reducedMotion
+      />,
+    );
+    expect(duplicateBanner(container)).not.toBeNull();
+  });
+
+  it('renders no banner for a single entry', () => {
+    const { container } = renderWithChakra(
+      <HotkeyBar model={modelFor([entry('s', 'Only')])} reducedMotion />,
+    );
+    expect(duplicateBanner(container)).toBeNull();
+  });
+
+  it('renders no banner for disjoint keys', () => {
+    const { container } = renderWithChakra(
+      <HotkeyBar model={modelFor([entry('s', 'Find'), entry('d', 'Diagram')])} reducedMotion />,
+    );
+    expect(duplicateBanner(container)).toBeNull();
+  });
+
+  it('unmounts the banner when the duplicate is removed (recovery, no cached flag)', () => {
+    const { container, rerender } = renderWithChakra(
+      <HotkeyBar
+        model={modelFor([entry('s', 'First', 'dup-a'), entry('s', 'Second', 'dup-b')])}
+        reducedMotion
+      />,
+    );
+    expect(duplicateBanner(container)).not.toBeNull();
+
+    rerender(<HotkeyBar model={modelFor([entry('s', 'First', 'dup-a')])} reducedMotion />);
+    expect(duplicateBanner(container)).toBeNull();
+  });
+
+  it('keeps the banner a non-live, non-focusable sibling of the bar', () => {
+    const { container } = renderWithChakra(
+      <HotkeyBar
+        model={modelFor([entry('s', 'First', 'dup-a'), entry('s', 'Second', 'dup-b')])}
+        reducedMotion
+      />,
+    );
+    const banner = duplicateBanner(container);
+    expect(banner).not.toBeNull();
+    expect(banner).not.toHaveAttribute('aria-live');
+    expect(banner?.getAttribute('role')).not.toBe('status');
+    expect(banner?.getAttribute('role')).not.toBe('alert');
+    expect(banner?.querySelectorAll('button, [tabindex], [href]')).toHaveLength(0);
+    // Sibling of the bar container, not a descendant (the bar cannot clip it).
+    expect(banner?.closest(`[data-testid="${HOTKEY_BAR_TESTID}"]`)).toBeNull();
+    // The banner adds no live region (the announcer stays the sole channel).
+    expect(container.querySelectorAll('[aria-live], [role="status"]')).toHaveLength(0);
   });
 });
 

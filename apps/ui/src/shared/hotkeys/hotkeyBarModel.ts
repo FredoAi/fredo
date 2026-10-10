@@ -13,8 +13,14 @@
  * renders `null`); the disabled pair covers a text-entry control OR a terminal
  * session (R-2.3/R-2.4), and the model mirrors the shipped focus classification
  * exactly (`context`/`textEntry`).
+ *
+ * R-3.4 (ST-2R): the model carries a duplicate channel (`duplicate` +
+ * `duplicateKey`) derived by calling ST-1's EXISTING pure
+ * `detectDuplicateHotkeys(entries)` over the same listing — the detector is
+ * DOM-free, so the model stays PURE (no re-implementation of detection here).
  */
 
+import { detectDuplicateHotkeys } from './hotkeyElements';
 import type { FocusSnapshot } from './engine';
 import type { HotkeyElementEntry } from './hotkeyElements';
 
@@ -42,6 +48,10 @@ export interface HotkeyBarModel {
   readonly disabled: boolean;
   /** `rows.length === 0` — the caller renders `null` (R-2.2 / G-265). */
   readonly empty: boolean;
+  /** `true` when two mounted elements declare the same key (R-3.4). */
+  readonly duplicate: boolean;
+  /** The shared key, or `null` when there is no duplicate (R-3.4). */
+  readonly duplicateKey: string | null;
 }
 
 /** The model's input — the ST-1 listing + the pending prefix + focus snapshot. */
@@ -79,10 +89,14 @@ export function buildHotkeyBarModel(input: HotkeyBarModelInput): HotkeyBarModel 
     title: entry.title,
     availability,
   }));
+  // R-3.4 — reuse ST-1's pure detector (do NOT re-implement it here).
+  const duplicateResult = detectDuplicateHotkeys(entries);
   return {
     rows,
     pendingPrefix: pending,
     disabled,
     empty: rows.length === 0,
+    duplicate: duplicateResult.duplicate,
+    duplicateKey: duplicateResult.key,
   };
 }

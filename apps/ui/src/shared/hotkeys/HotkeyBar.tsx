@@ -24,7 +24,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { Box, Icon, Text } from '@chakra-ui/react';
-import { LuChevronRight, LuCircleSlash } from 'react-icons/lu';
+import { LuChevronRight, LuCircleSlash, LuTriangleAlert } from 'react-icons/lu';
 
 import { Keycap } from '../components/hotkeys/Keycap';
 import { tint } from '../utils/colorTint';
@@ -58,6 +58,8 @@ export const HOTKEY_BAR_ROW_TESTID = 'hotkeys-keybar-row';
 export const HOTKEY_BAR_PENDING_TESTID = 'hotkeys-keybar-pending';
 export const HOTKEY_BAR_ARIA_LABEL = 'Available hotkeys';
 export const HOTKEY_BAR_PENDING_LABEL = 'waiting…';
+/** R-3.4 — the DEV-only duplicate-key error surface (plan BINDING NAMES BLOCK). */
+export const HOTKEY_DUPLICATE_ERROR_TESTID = 'hotkeys-duplicate-error';
 
 // ── Motion + scrollbar styles ────────────────────────────────────────────────
 
@@ -86,6 +88,18 @@ const LIST_SCROLLBAR_CSS = {
 } as const;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/** DEV-only guard (mirrors ST-1's `isDev()` in `hotkeyElements.ts`). */
+function isDev(): boolean {
+  return import.meta.env?.DEV === true;
+}
+
+/** R-3.4 banner copy; the shared key is named when known (text is non-binding). */
+function duplicateMessage(key: string | null): string {
+  return key === null
+    ? 'Duplicate hotkey detected — two mounted elements declare the same key.'
+    : `Duplicate hotkey "${key}" — two mounted elements declare the same key.`;
+}
 
 /** Resolve `prefers-reduced-motion` without adding a dependency. */
 function usePrefersReducedMotion(): boolean {
@@ -168,7 +182,11 @@ export interface HotkeyBarProps {
 
 /**
  * The always-on bottom hotkey bar. Renders `null` when `model.empty`; otherwise
- * a named, non-focusable `role="region"` strip.
+ * a named, non-focusable `role="region"` strip. In DEV, when `model.duplicate`
+ * (R-3.4), it also renders a sibling error strip (`HOTKEY_DUPLICATE_ERROR_TESTID`)
+ * ABOVE the bar so the bar's `overflow:hidden` / 34 px box cannot clip it. The
+ * banner is a plain, non-live surface — `hotkeys-announcer` remains the ONLY
+ * live/status channel.
  */
 export function HotkeyBar({
   model,
@@ -187,85 +205,124 @@ export function HotkeyBar({
 
   if (model.empty) return null;
 
-  return (
-    <Box
-      data-testid={HOTKEY_BAR_TESTID}
-      role="region"
-      aria-label={HOTKEY_BAR_ARIA_LABEL}
-      css={FADE_KEYFRAMES}
-      style={{
-        position: 'fixed',
-        left: 0,
-        right: 0,
-        bottom: `${HOTKEY_BAR_BOTTOM_INSET_PX}px`,
-        pointerEvents: 'none',
-        ...(reduceMotion ? NO_MOTION_STYLE : MOTION_STYLE),
-      }}
-      zIndex={HOTKEY_BAR_Z_INDEX}
-      display="flex"
-      alignItems="center"
-      gap="3"
-      height={`${HOTKEY_BAR_HEIGHT_PX}px`}
-      paddingX="3"
-      bg="bg.surface"
-      borderTopWidth="1px"
-      borderColor="border.default"
-      boxShadow="var(--shadow-dialog)"
-      overflow="hidden"
-    >
-      {/* The single horizontal scroll region — rows in document order. */}
-      <Box position="relative" display="flex" alignItems="center" flex="1" minWidth="0">
-        <Box
-          data-testid={HOTKEY_BAR_LIST_TESTID}
-          role="list"
-          display="flex"
-          alignItems="center"
-          gap={HOTKEY_BAR_ROW_GAP}
-          flex="1"
-          minWidth="0"
-          overflowX="auto"
-          overflowY="hidden"
-          css={LIST_SCROLLBAR_CSS}
+  const duplicateBanner =
+    model.duplicate && isDev() ? (
+      <Box
+        data-testid={HOTKEY_DUPLICATE_ERROR_TESTID}
+        style={{
+          position: 'fixed',
+          left: 0,
+          right: 0,
+          bottom: `${HOTKEY_BAR_HEIGHT_PX + HOTKEY_BAR_BOTTOM_INSET_PX}px`,
+          pointerEvents: 'none',
+        }}
+        zIndex={HOTKEY_BAR_Z_INDEX}
+        display="flex"
+        alignItems="center"
+        gap="2"
+        paddingX="3"
+        paddingY="1"
+        bg="bg.surface"
+        borderTopWidth="1px"
+        borderBottomWidth="1px"
+        borderColor="status.error"
+        boxShadow="var(--shadow-dialog)"
+      >
+        <Icon as={LuTriangleAlert} boxSize="3.5" color="status.error" aria-hidden="true" flexShrink={0} />
+        <Text
+          fontSize="xs"
+          color="status.error"
+          whiteSpace="nowrap"
+          overflow="hidden"
+          textOverflow="ellipsis"
         >
-          {model.rows.map((row) => (
-            <HotkeyBarRowView key={row.actionId} row={row} platform={platform} />
-          ))}
-        </Box>
-        {/* Trailing edge fade: a non-interactive affordance over the clip edge. */}
-        <Box
-          aria-hidden="true"
-          position="absolute"
-          right="0"
-          top="0"
-          bottom="0"
-          width="24px"
-          pointerEvents="none"
-          bg="linear-gradient(to right, transparent, var(--card-bg))"
-        />
+          {duplicateMessage(model.duplicateKey)}
+        </Text>
       </Box>
+    ) : null;
 
-      {/* The pending-prefix chip — pinned OUTSIDE the scroll region. */}
-      {model.pendingPrefix !== null ? (
-        <Box
-          data-testid={HOTKEY_BAR_PENDING_TESTID}
-          flexShrink={0}
-          display="flex"
-          alignItems="center"
-          gap="1.5"
-          paddingX="2"
-          paddingY="0.5"
-          borderRadius="sm"
-          bg={tint('var(--accent-primary)', 14)}
-          borderWidth="1px"
-          borderColor="accent.border"
-        >
-          <Keycap sequence={model.pendingPrefix} platform={platform} />
-          <Icon as={LuChevronRight} boxSize="3.5" color="accent.default" aria-hidden="true" />
-          <Text fontSize="xs" color="fg.default" whiteSpace="nowrap">
-            {HOTKEY_BAR_PENDING_LABEL}
-          </Text>
+  return (
+    <>
+      {duplicateBanner}
+      <Box
+        data-testid={HOTKEY_BAR_TESTID}
+        role="region"
+        aria-label={HOTKEY_BAR_ARIA_LABEL}
+        css={FADE_KEYFRAMES}
+        style={{
+          position: 'fixed',
+          left: 0,
+          right: 0,
+          bottom: `${HOTKEY_BAR_BOTTOM_INSET_PX}px`,
+          pointerEvents: 'none',
+          ...(reduceMotion ? NO_MOTION_STYLE : MOTION_STYLE),
+        }}
+        zIndex={HOTKEY_BAR_Z_INDEX}
+        display="flex"
+        alignItems="center"
+        gap="3"
+        height={`${HOTKEY_BAR_HEIGHT_PX}px`}
+        paddingX="3"
+        bg="bg.surface"
+        borderTopWidth="1px"
+        borderColor="border.default"
+        boxShadow="var(--shadow-dialog)"
+        overflow="hidden"
+      >
+        {/* The single horizontal scroll region — rows in document order. */}
+        <Box position="relative" display="flex" alignItems="center" flex="1" minWidth="0">
+          <Box
+            data-testid={HOTKEY_BAR_LIST_TESTID}
+            role="list"
+            display="flex"
+            alignItems="center"
+            gap={HOTKEY_BAR_ROW_GAP}
+            flex="1"
+            minWidth="0"
+            overflowX="auto"
+            overflowY="hidden"
+            css={LIST_SCROLLBAR_CSS}
+          >
+            {model.rows.map((row) => (
+              <HotkeyBarRowView key={row.actionId} row={row} platform={platform} />
+            ))}
+          </Box>
+          {/* Trailing edge fade: a non-interactive affordance over the clip edge. */}
+          <Box
+            aria-hidden="true"
+            position="absolute"
+            right="0"
+            top="0"
+            bottom="0"
+            width="24px"
+            pointerEvents="none"
+            bg="linear-gradient(to right, transparent, var(--card-bg))"
+          />
         </Box>
-      ) : null}
-    </Box>
+
+        {/* The pending-prefix chip — pinned OUTSIDE the scroll region. */}
+        {model.pendingPrefix !== null ? (
+          <Box
+            data-testid={HOTKEY_BAR_PENDING_TESTID}
+            flexShrink={0}
+            display="flex"
+            alignItems="center"
+            gap="1.5"
+            paddingX="2"
+            paddingY="0.5"
+            borderRadius="sm"
+            bg={tint('var(--accent-primary)', 14)}
+            borderWidth="1px"
+            borderColor="accent.border"
+          >
+            <Keycap sequence={model.pendingPrefix} platform={platform} />
+            <Icon as={LuChevronRight} boxSize="3.5" color="accent.default" aria-hidden="true" />
+            <Text fontSize="xs" color="fg.default" whiteSpace="nowrap">
+              {HOTKEY_BAR_PENDING_LABEL}
+            </Text>
+          </Box>
+        ) : null}
+      </Box>
+    </>
   );
 }

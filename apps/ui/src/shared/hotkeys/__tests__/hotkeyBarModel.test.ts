@@ -110,3 +110,41 @@ describe('buildHotkeyBarModel — disabled + pending', () => {
     expect(model.pendingPrefix).toBe('a');
   });
 });
+
+// ── Duplicate channel (ST-2R / R-3.4) ────────────────────────────────────────
+
+describe('buildHotkeyBarModel — duplicate channel (R-3.4)', () => {
+  it('flags the duplicate and names the shared key when two entries share a key', () => {
+    const model = buildHotkeyBarModel({
+      entries: [entry('s', 'Find session'), entry('s', 'Find session again')],
+      pending: null,
+      focus: focus('default'),
+    });
+    expect(model.duplicate).toBe(true);
+    expect(model.duplicateKey).toBe('s');
+  });
+
+  it('is not duplicate for disjoint keys', () => {
+    const model = buildHotkeyBarModel({
+      entries: [entry('s', 'Find session'), entry('d', 'Diagram')],
+      pending: null,
+      focus: focus('default'),
+    });
+    expect(model.duplicate).toBe(false);
+    expect(model.duplicateKey).toBeNull();
+  });
+
+  it('is not duplicate for a single entry (or none) and resolves the state from the passed listing', () => {
+    const single = buildHotkeyBarModel({
+      entries: [entry('a', 'Alpha')],
+      pending: null,
+      focus: focus('default'),
+    });
+    expect(single.duplicate).toBe(false);
+    expect(single.duplicateKey).toBeNull();
+
+    const none = buildHotkeyBarModel({ entries: [], pending: null, focus: focus('default') });
+    expect(none.duplicate).toBe(false);
+    expect(none.duplicateKey).toBeNull();
+  });
+});

@@ -19,9 +19,12 @@ import {
 } from '@/shared/hotkeys/engine';
 import {
   resetHotkeyElementDiscoveryForTests,
+  BODY_HOTKEY_DUPLICATE_ATTR,
+  DuplicateHotkeyError,
 } from '@/shared/hotkeys/hotkeyElements';
 import {
   HOTKEY_BAR_TESTID,
+  HOTKEY_DUPLICATE_ERROR_TESTID,
 } from '@/shared/hotkeys/HotkeyBar';
 import { HotkeysProvider } from '@/shared/hotkeys/HotkeysProvider';
 
@@ -122,5 +125,66 @@ describe('HotkeysProvider', () => {
     // Ctrl+Space remains global in text-entry.
     fireEvent.keyDown(field as HTMLInputElement, { key: ' ', ctrlKey: true });
     expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders the DEV duplicate banner for two mounted same-key elements', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // ST-1's duplicate path re-throws its DuplicateHotkeyError from a microtask
+    // BY DESIGN (the developer sees it). Contain that specific re-throw for the
+    // duration of this test so it does not surface as an unhandled error; every
+    // other microtask runs unchanged and any non-duplicate error still escapes.
+    const realQueueMicrotask = globalThis.queueMicrotask;
+    const contained: unknown[] = [];
+    globalThis.queueMicrotask = ((callback: () => void) => {
+      realQueueMicrotask(() => {
+        try {
+          callback();
+        } catch (error) {
+          if (error instanceof DuplicateHotkeyError) {
+            contained.push(error);
+            return;
+          }
+          throw error;
+        }
+      });
+    }) as typeof globalThis.queueMicrotask;
+
+    try {
+      const { queryByTestId, rerender } = renderWithChakra(
+        <HotkeysProvider>
+          <span />
+        </HotkeysProvider>,
+      );
+
+      // No duplicate yet ⇒ no banner.
+      expect(queryByTestId(HOTKEY_DUPLICATE_ERROR_TESTID)).toBeNull();
+
+      rerender(
+        <HotkeysProvider>
+          <button data-hotkey="a">Alpha</button>
+          <button data-hotkey="a">Alpha again</button>
+        </HotkeysProvider>,
+      );
+
+      await waitFor(() =>
+        expect(queryByTestId(HOTKEY_DUPLICATE_ERROR_TESTID)).not.toBeNull(),
+      );
+      expect(document.body.getAttribute(BODY_HOTKEY_DUPLICATE_ATTR)).toBe('true');
+      expect(consoleError).toHaveBeenCalled();
+
+      // Recovery: removing the duplicate unmounts the banner + clears the hook.
+      rerender(
+        <HotkeysProvider>
+          <button data-hotkey="a">Alpha</button>
+        </HotkeysProvider>,
+      );
+      await waitFor(() =>
+        expect(queryByTestId(HOTKEY_DUPLICATE_ERROR_TESTID)).toBeNull(),
+      );
+      expect(document.body.hasAttribute(BODY_HOTKEY_DUPLICATE_ATTR)).toBe(false);
+      expect(contained.length).toBeGreaterThan(0);
+    } finally {
+      globalThis.queueMicrotask = realQueueMicrotask;
+    }
   });
 });
