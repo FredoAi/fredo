@@ -941,6 +941,12 @@ pub fn run() {
             // Windows distribution quality (Spec #2978 S4): the bounded,
             // read-only postmaster log tail (`<data_dir>/log/postgres.log`).
             applications::pg_supervisor::state::pg_server_log_tail,
+            // Spec #3022 ST-4/ST-5: the Settings → Database config surface —
+            // read the effective config + apply (restart) / reset the embedded
+            // cluster. All three are awaited commands; no new events.
+            applications::pg_supervisor::state::pg_config_get,
+            applications::pg_supervisor::state::pg_config_apply,
+            applications::pg_supervisor::state::pg_database_reset,
             // Built-in PostgreSQL client (Spec #2950 ST-1): all nine `db_*`
             // commands registered once. ADDITIVE — the wrappers are typed; the
             // connect/schema/query bodies land in ST-2/ST-3/ST-4.
