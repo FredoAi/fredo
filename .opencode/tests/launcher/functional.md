@@ -431,14 +431,19 @@
 > Settings and the gear is gone. Historical PASS records above are preserved. Live policy.
 > **Feature tests:** settings (this extension's cross-suite rows F-21/F-39 own the details).
 
-## F-48 (AC-1 / #2868) — The grid tile set includes Settings; no install/onboarding step
+## F-48 (AC-1 / #2868, extended #3010) — The grid tile set includes Settings and Fredo Setup; no install/onboarding step
+
+> **#3010:** `setup.showable` flipped `false`→`true`, so the grid gains a `Fredo Setup` tile (set
+> 6→7). The live expected list below is updated; the historical #2868 round-1 PASS (5 tiles) is
+> preserved. The binding tile hook is `#fredo-launcher-grid [role="button"][aria-label="Fredo Setup"]`.
 
 - [ ] F-48: Reveal the engaged grid (`input[role="searchbox"]` focus / Ctrl+Space) and
       `tauri_webview_dom_snapshot(type="structure")` it. Compare the tile `aria-label` set against
-      `SHOWABLE_FEATURES.map(f => f.name)` for the `spec/2868` tip.
-  **Expected:** the rendered tiles include `"Settings"` in addition to the prior showable features
-      (`["Mission Monitor","Query Viewer","Run CLI","Stepper Probe","Settings"]` on the tested tip);
-      the Settings tile is present with NO install/uninstall or onboarding step; non-showable
+      `SHOWABLE_FEATURES.map(f => f.name)` for the `spec/3010` tip.
+  **Expected:** the rendered tiles include `"Settings"` and (post-#3010) `"Fredo Setup"` in addition
+      to the prior showable features
+      (`["Mission Monitor","Query Viewer","Terminal","PostgreSQL","Stepper Probe","Settings","Fredo Setup"]` on the
+      `spec/3010` tip); neither tile carries an install/uninstall or onboarding step; non-showable
       features remain absent; no duplicate tile (`dedupeByFeatureId`).
   - **Edge:** present after app reload and with an empty/fresh store; the query filter matches
     "settings"; deleted/closed Settings re-opens from the tile.
