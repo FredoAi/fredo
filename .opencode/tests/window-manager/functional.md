@@ -338,7 +338,7 @@
 > cascade fingerprint = `r.left===48+16*stackIndex` (its presence is a REQ-1 FAIL);
 > flush content ⟺ content region (`WindowFrame.tsx:247-257`) computed `padding:0px` and its `left/right/bottom` == surface's.
 
-- [ ] F-38 (T-R1a / REQ-1): Open a feature window from EACH entry point: launcher grid tile / APPS search; app-dock restore; companion/CLI app-open request (`fredo open-app <identity>`, `useAppOpenRequests`); Settings launcher tile; Setup-wizard auto-open; Dev Mode auto-open; feature `openSelf()`.
+- [ ] F-38 (T-R1a / REQ-1): Open a feature window from EACH entry point: launcher grid tile / APPS search; app-dock restore; companion/CLI app-open request (`fredo open-app <identity>`, `useAppOpenRequests`); Settings launcher tile; Setup launcher tile (#3010 — the wizard NO LONGER auto-opens); Settings → Fredo Setup (#3010); Dev Mode auto-open; feature `openSelf()`.
   - EXPECTED: EVERY entry point yields the SAME full-bleed geometry (all four edges flush ±1px, radius 0, boxShadow none, 0 grips, "Restore <title>" + `aria-expanded="true"`); no desktop gutter; no cascade fingerprint; every feature window TYPE (Mission Monitor ≡ "Sessions", Query Viewer, Stepper Probe, Dev Mode, Settings, Setup wizard) measures identically.
 
 - [ ] F-39 (T-R1b / REQ-1 edge): Open A, open B, then re-invoke A's entry point (tile, dock restore, or app-open request).
@@ -406,11 +406,11 @@
   ZERO gutter anywhere in the chain. ZERO cascade fingerprint (`r.left` observed 0 / 720 / 210,
   never `48 + 16·stackIndex`). Narrow viewport (OS-window resize to 900×600): surface
   `0,0,900,600` full-bleed.
-  - **NOT DRIVEN (named blockers, G-053):** (a) *Setup-wizard auto-open* — `Home.tsx:79-86`
-    auto-opens only when `settingsService.get('plugin_installed','')` is falsy; the dev instance
-    has the plugin installed, and the Setup feature is `showable=false` (no grid tile, no
-    `resolveAppIdentity` identity for `fredo open-app`), so the trigger is unreachable without
-    wiping app state (attempted the only in-repo routes; neither exists). (b) *feature
+  - **NOT DRIVEN (named blockers, G-053):** (a) *Setup entry* — RECONCILED by #3010: the auto-open route is DELETED (the wizard
+    no longer auto-opens on boot); the Setup surface is now reachable via the launcher tile
+    (`showable` flipped `false`→`true`) or Settings → Fredo Setup. Drive those two user-initiated
+    entries instead of the retired auto-open (see `.opencode/tests/setup/` F-2/F-3/F-4).
+    (b) *feature
     `openSelf()`* — `FredoFeatureClass.openSelf()`
     (`FredoFeatureClass.ts:175`) has no in-repo caller (`git grep openSelf apps/ui/src` = the
     definition + a comment only); the callback it dispatches is the SAME
