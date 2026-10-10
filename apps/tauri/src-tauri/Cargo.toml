@@ -107,6 +107,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 base64 = "0.22"
 tokio-util = { version = "0.7", features = ["io"] }
 tauri-plugin-mcp-bridge = "0.12"
+# Native in-process Doom engine (Spec #3023, ST-1). Pure-Rust, BSD-3-Clause,
+# `#![no_std]` + `alloc` (std feature on by default) — a cargo dependency, NOT
+# vendored source — so Doom Mode needs no GPL engine build, no MSVC/`cc`
+# toolchain, and no separate process. See `applications/doom/engine.rs`.
+neurodoom = "0.6.7"
 # Voice input — local, on-device capture (see infrastructure/voice). The
 # captured clip is handed to the managed multimodal model over IPC; there is no
 # native speech engine dependency.

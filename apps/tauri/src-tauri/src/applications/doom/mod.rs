@@ -68,6 +68,9 @@ pub mod autoplay;
 pub mod client;
 pub mod commands;
 pub mod decision;
+// Native in-process engine adapter (Spec #3023, ST-1) — replaces `client.rs` +
+// `process.rs`. The single source of the observation/control surface.
+pub mod engine;
 pub mod failure_seam;
 pub mod mode;
 pub mod process;
