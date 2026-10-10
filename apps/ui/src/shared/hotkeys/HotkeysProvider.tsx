@@ -1,64 +1,71 @@
 /**
- * Spec #2946 ST-4 — the app-shell mount point for the ONE hotkey engine.
+ * Spec #3009 ST-3 — the app-shell mount point for the ONE hotkey engine.
  *
- * Mounted once in `apps/ui/src/main.tsx` INSIDE the shared provider stack, so
- * both Tauri webviews (the main window and `index.html?view=terminal`) run the
- * same dispatcher (the terminal route renders `TerminalWindow` instead of
- * `Home`, so a `Home`-scoped mount would never reach it).
+ * Mounted once in the served Tauri entry INSIDE the shared provider stack, so
+ * both webviews run the same dispatcher. It:
+ *   - installs the ONE `document` keydown listener (idempotent),
+ *   - installs the ONE `data-hotkey` element discovery (MutationObserver),
+ *   - renders the ONE shared polite announcer (`HotkeyAnnouncer`),
+ *   - renders the always-on bottom `HotkeyBar` from the live element listing.
  *
- * It installs the single `document` keydown listener (idempotent — React
- * StrictMode's double effect cannot double-fire a chord), hydrates the keymap
- * document from the backend KV, and renders the ONE shared polite announcer
- * (`HotkeyAnnouncer`, ST-3), the which-key pending-sequence overlay
- * (`WhichKeyOverlay`, ST-5), the app-wide cheat-sheet overlay
- * (`CheatSheetOverlay`, ST-14), the ONE transient context-change indicator
- * (`ContextIndicator`, Spec #2958 ST-4), the S2 keyboard bar and the ONE S3
- * top-left cluster (`HotkeysCluster`, Spec #2960 ST-5 — the regime chip, the
- * zero-knowledge discovery control, and the first-run card, mounted exactly once
- * as in-flow children). It holds no key state and subscribes to nothing, so it
- * never re-renders the feature tree.
- *
- * Spec #3007 ST-2 — the resting S3 cluster is WINDOW-gated: it is suppressed in
- * the `doom` webview (`index.html?view=doom`, `isHotkeysClusterSuppressed()`) and
- * renders unchanged in every other window. The overlay surfaces and the terminal
- * focus-context suppression are untouched.
+ * The retired keyboard surfaces (the configurable hotkey platform and its
+ * top-left chrome) are gone.
  */
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useMemo, useSyncExternalStore } from 'react';
 
 import { HotkeyAnnouncer } from './announcer';
-import { CheatSheetOverlay } from './CheatSheetOverlay';
-import { ContextIndicator } from './ContextIndicator';
-import { installHotkeyEngine } from './engine';
-import { HotkeysCluster } from './HotkeysCluster';
-import { isHotkeysClusterSuppressed } from './hotkeysWindowGate';
-import { KeyboardBar } from './KeyboardBar';
-import { hydrateKeymap } from './store';
-import { WhichKeyOverlay } from './WhichKeyOverlay';
+import { installHotkeyEngine, useFocusSnapshot, usePendingPrefix } from './engine';
+import { HotkeyBar } from './HotkeyBar';
+import { buildHotkeyBarModel } from './hotkeyBarModel';
+import {
+  getElementHotkeyRevision,
+  installHotkeyElementDiscovery,
+  listElementHotkeys,
+  subscribeElementHotkeys,
+} from './hotkeyElements';
 
 export interface HotkeysProviderProps {
   readonly children?: React.ReactNode;
 }
 
-/** Mounts the dispatch engine + the single announcement region. */
+/**
+ * The live element listing, re-rendering only when the discovery revision
+ * advances (the listing array identity is stable between real diffs).
+ */
+function useElementHotkeys() {
+  const revision = useSyncExternalStore(
+    subscribeElementHotkeys,
+    getElementHotkeyRevision,
+    getElementHotkeyRevision,
+  );
+  return useMemo(() => listElementHotkeys(), [revision]);
+}
+
+/** Mounts the dispatch engine + element discovery + the single announcer + bar. */
 export function HotkeysProvider({ children }: HotkeysProviderProps) {
   useEffect(() => {
-    const uninstall = installHotkeyEngine();
-    // Read the persisted keymap once; the store is dirty-guarded and a read
-    // failure degrades to the shipped defaults (never throws).
-    void hydrateKeymap();
-    return uninstall;
+    const uninstallEngine = installHotkeyEngine();
+    const uninstallDiscovery = installHotkeyElementDiscovery();
+    return () => {
+      uninstallDiscovery();
+      uninstallEngine();
+    };
   }, []);
+
+  const entries = useElementHotkeys();
+  const pending = usePendingPrefix();
+  const focus = useFocusSnapshot();
+  const model = useMemo(
+    () => buildHotkeyBarModel({ entries, pending, focus }),
+    [entries, pending, focus],
+  );
 
   return (
     <>
       {children}
       <HotkeyAnnouncer />
-      <WhichKeyOverlay />
-      <CheatSheetOverlay />
-      <ContextIndicator />
-      <KeyboardBar />
-      {!isHotkeysClusterSuppressed() && <HotkeysCluster />}
+      <HotkeyBar model={model} />
     </>
   );
 }

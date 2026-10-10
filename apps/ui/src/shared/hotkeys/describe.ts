@@ -1,8 +1,7 @@
 /**
  * Spec #2946 ST-3 — the ONE binding → display + accessible-name formatter
- * shared by every hotkey display surface (plan: "one renderer"): the which-key
- * overlay, the Hotkeys settings list, the cheat sheet, the command palette and
- * the terminal passthrough pill.
+ * shared by every hotkey display surface (plan: "one renderer"): the always-on
+ * key bar, the command palette and the terminal passthrough pill.
  *
  * PRESENTATIONAL ONLY: it composes ST-1's canonical parse/format helpers
  * (`parseSequence`, `serializeSequence`, `displaySequence`, `accessibleSequence`)
@@ -20,7 +19,7 @@ import {
 } from './keys';
 import type { KeySequence, Platform } from './types';
 
-/** A registry/persistence binding as consumed by the display layer. */
+/** A registry binding as consumed by the display layer. */
 export interface DescribableBinding {
   /** The parsed canonical sequence. */
   readonly sequence: KeySequence;

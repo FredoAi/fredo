@@ -1,13 +1,13 @@
 /**
- * Spec #2946 ST-2 — registry + contribution API tests (R-2.1/R-2.2/R-2.3).
+ * Spec #3009 — registry + contribution API tests.
+ *
+ * The registry is the ONE action table for dispatch AND the launcher palette.
+ * The retired feature-instance discovery (`FredoApplicationClass.hotkeys`) and
+ * every interaction-context field are gone.
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import type { ReactElement } from 'react';
-import type { IconType } from 'react-icons';
 
-import { FredoApplicationClass } from '../../classes/FredoApplicationClass';
-import { registerApplication } from '../../../applications/applicationRegistry';
 import {
   getHotkeyAction,
   listHotkeyActions,
@@ -33,7 +33,7 @@ beforeEach(() => {
   resetRegistryForTests();
 });
 
-describe('registry merge (R-2.1/R-2.2)', () => {
+describe('registry merge', () => {
   it('includes Fredo and feature actions in one listing with the right tier', () => {
     registerFredoAction(action('fredo.test.open'));
     registerFeatureHotkeys('terminal', [action('terminal.newSession')]);
@@ -59,7 +59,7 @@ describe('registry merge (R-2.1/R-2.2)', () => {
     expect(rows).toHaveLength(0);
   });
 
-  it('exposes multi-segment camelCase Fredo action ids (adjudicated grammar)', () => {
+  it('exposes multi-segment camelCase Fredo action ids', () => {
     registerFredoAction(action('fredo.window.cycleNth'));
     registerFredoAction(action('fredo.terminal.exitPassthrough'));
     expect(getHotkeyAction('fredo.window.cycleNth')).not.toBeNull();
@@ -67,7 +67,7 @@ describe('registry merge (R-2.1/R-2.2)', () => {
   });
 });
 
-describe('invalid registrations are listed but not dispatchable (R-2.3)', () => {
+describe('invalid registrations are listed but not dispatchable', () => {
   it('flags a malformed action id', () => {
     const run = vi.fn();
     registerFeatureHotkeys('terminal', [action('Bad Id', { run })]);
@@ -157,97 +157,5 @@ describe('dispatch', () => {
     registerHotkeyHandler('fredo.test.bound', null);
     runHotkeyAction('fredo.test.bound', 'palette');
     expect(declared).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('context scope propagation (Spec #2958)', () => {
-  it('carries contextId/opensContextId onto the listing', () => {
-    registerFeatureHotkeys('demo', [
-      action('demo.canvas.zoom', { contextId: 'demo.canvas', opensContextId: 'demo.canvas.grid' }),
-    ]);
-    const entry = listHotkeyActions().find((row) => row.actionId === 'demo.canvas.zoom');
-    expect(entry?.contextId).toBe('demo.canvas');
-    expect(entry?.opensContextId).toBe('demo.canvas.grid');
-  });
-
-  it('leaves the context fields undefined when undeclared (#2946 shape)', () => {
-    registerFredoAction(action('fredo.test.plain'));
-    const entry = listHotkeyActions().find((row) => row.actionId === 'fredo.test.plain');
-    expect(entry?.contextId).toBeUndefined();
-    expect(entry?.opensContextId).toBeUndefined();
-  });
-
-  it('populates the invocation contextId (declared context, else base)', () => {
-    const scopedRun = vi.fn();
-    registerFeatureHotkeys('demo', [
-      action('demo.act', { run: scopedRun, contextId: 'demo.canvas' }),
-    ]);
-    runHotkeyAction('demo.act', 'binding', [], 'demo');
-    expect(scopedRun).toHaveBeenCalledWith(expect.objectContaining({ contextId: 'demo.canvas' }));
-
-    const baseRun = vi.fn();
-    registerFredoAction(action('fredo.test.ctx', { run: baseRun }));
-    runHotkeyAction('fredo.test.ctx', 'binding', [], 'demo');
-    expect(baseRun).toHaveBeenCalledWith(expect.objectContaining({ contextId: 'demo' }));
-
-    const rootRun = vi.fn();
-    registerFredoAction(action('fredo.test.rootctx', { run: rootRun }));
-    runHotkeyAction('fredo.test.rootctx', 'binding');
-    expect(rootRun).toHaveBeenCalledWith(expect.objectContaining({ contextId: 'fredo.root' }));
-  });
-});
-
-describe('additive unavailableReason contract (Spec #2959 ST-2)', () => {
-  it('carries an optional unavailableReason through the listing', () => {
-    registerFredoAction(action('fredo.test.needsDoc', { unavailableReason: 'Needs an open document' }));
-    const entry = listHotkeyActions().find((row) => row.actionId === 'fredo.test.needsDoc');
-    expect(entry?.unavailableReason).toBe('Needs an open document');
-  });
-
-  it('leaves unavailableReason undefined when undeclared (additive only)', () => {
-    registerFredoAction(action('fredo.test.noReason'));
-    const entry = listHotkeyActions().find((row) => row.actionId === 'fredo.test.noReason');
-    expect(entry).toBeDefined();
-    expect(entry?.unavailableReason).toBeUndefined();
-  });
-});
-
-describe('feature-instance discovery (R-2.1)', () => {
-  it('inherits an empty frozen default contribution', () => {
-    class BareFeature extends FredoApplicationClass {
-      readonly id = 'bare-widget';
-      readonly name = 'Bare';
-      readonly icon = (() => null) as unknown as IconType;
-      render(): ReactElement {
-        return null as unknown as ReactElement;
-      }
-    }
-    const bare = new BareFeature();
-    expect(bare.hotkeys).toHaveLength(0);
-    expect(Object.isFrozen(bare.hotkeys)).toBe(true);
-    expect(bare.hotkeysContexts).toHaveLength(0);
-    expect(Object.isFrozen(bare.hotkeysContexts)).toBe(true);
-  });
-
-  it('auto-discovers hotkeys declared on a registered feature instance', () => {
-    class DemoFeature extends FredoApplicationClass {
-      readonly id = 'demo-widget';
-      readonly name = 'Demo';
-      readonly icon = (() => null) as unknown as IconType;
-      override readonly hotkeys: readonly ApplicationHotkeyAction[] = [
-        action('demo-widget.focus', { defaultSequence: 'g g' }),
-      ];
-      render(): ReactElement {
-        return null as unknown as ReactElement;
-      }
-    }
-
-    registerApplication(new DemoFeature());
-
-    const entry = listHotkeyActions().find((row) => row.actionId === 'demo-widget.focus');
-    expect(entry).toBeDefined();
-    expect(entry?.featureId).toBe('demo-widget');
-    expect(entry?.tier).toBe('feature');
-    expect(entry?.defaultSequence).toBe('g g');
   });
 });

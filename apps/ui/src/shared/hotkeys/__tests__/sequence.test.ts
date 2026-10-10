@@ -33,8 +33,6 @@ function input(overrides: Partial<DispatchInput> & { stroke: KeyStroke }): Dispa
     context: 'default',
     pending: null,
     bindings: [],
-    leader: null,
-    macroRecording: false,
     nativeConsumes: false,
     platform: 'win32',
     ...overrides,
@@ -148,63 +146,25 @@ describe('decideDispatch — single + sequence outcomes', () => {
   });
 });
 
-describe('decideDispatch — leader arming', () => {
-  it('arms a @leader sequence when the leader stroke is pressed', () => {
-    const decision = decideDispatch(
-      input({
-        stroke: stroke({ key: 'space' }),
-        leader: stroke({ key: 'space' }),
-        bindings: [binding('fredo.help.cheatsheet', '@leader ?')],
-      }),
-    );
-    expect(decision.outcome).toBe('arm-sequence');
-    expect(decision.reason).toBe('leader-armed');
-  });
-
-  it('does not arm when no @leader binding exists', () => {
-    const decision = decideDispatch(
-      input({
-        stroke: stroke({ key: 'space' }),
-        leader: stroke({ key: 'space' }),
-        bindings: [binding('fredo.a', 'g g')],
-      }),
-    );
-    expect(decision.outcome).toBe('passthrough');
-  });
-});
-
 describe('decideDispatch — focus contexts', () => {
-  const exitBinding = binding('fredo.terminal.exitPassthrough', 'ctrl+shift+f10');
   const toggleBinding = binding('fredo.launcher.toggle', 'primary+space');
 
-  it('passes every terminal keystroke through except the exit chord', () => {
+  it('passes every terminal keystroke through (no exit chord any more)', () => {
     const native = decideDispatch(
-      input({ stroke: stroke({ key: 'a' }), context: 'terminal', bindings: [exitBinding] }),
+      input({ stroke: stroke({ key: 'a' }), context: 'terminal', bindings: [toggleBinding] }),
     );
     expect(native.outcome).toBe('passthrough');
     expect(native.consumed).toBe(false);
+    expect(native.reason).toBe('terminal-passthrough');
 
-    const exit = decideDispatch(
+    const chord = decideDispatch(
       input({
-        stroke: stroke({ key: 'f10', primary: true, shift: true }),
+        stroke: stroke({ key: 'space', primary: true }),
         context: 'terminal',
-        bindings: [exitBinding],
+        bindings: [toggleBinding],
       }),
     );
-    expect(exit.outcome).toBe('match');
-    expect(exit.action?.actionId).toBe('fredo.terminal.exitPassthrough');
-    expect(exit.consumed).toBe(true);
-  });
-
-  it('matches an explicit ctrl stroke against the exit chord on win32 (platform fold)', () => {
-    const exit = decideDispatch(
-      input({
-        stroke: stroke({ key: 'f10', ctrl: true, shift: true }),
-        context: 'terminal',
-        bindings: [exitBinding],
-      }),
-    );
-    expect(exit.outcome).toBe('match');
+    expect(chord.outcome).toBe('passthrough');
   });
 
   it('passes typed characters through in text-entry and keeps modifier chords global', () => {
@@ -273,125 +233,11 @@ describe('decideDispatch — focus contexts', () => {
     expect(decision.outcome).toBe('passthrough');
     expect(decision.reason).toBe('sequence-focus-change');
   });
-});
 
-describe('decideDispatch — explicit context unwind (Spec #2958)', () => {
-  it('consumes a fresh Escape as context-back while a descent is active', () => {
-    for (const context of ['default', 'interactive'] as const) {
-      const decision = decideDispatch(
-        input({ stroke: stroke({ key: 'escape' }), context, canUnwindContext: true }),
-      );
-      expect(decision.outcome, context).toBe('context-back');
-      expect(decision.consumed).toBe(true);
-      expect(decision.reason).toBe('context-back');
-    }
-  });
-
-  it('does NOT consume Escape at the base context (R-3.2)', () => {
-    const omitted = decideDispatch(input({ stroke: stroke({ key: 'escape' }) }));
-    expect(omitted.outcome).toBe('passthrough');
-    expect(omitted.reason).toBe('unbound');
-    expect(omitted.consumed).toBe(false);
-
-    const armedFalse = decideDispatch(
-      input({ stroke: stroke({ key: 'escape' }), canUnwindContext: false }),
-    );
-    expect(armedFalse.outcome).toBe('passthrough');
-    expect(armedFalse.consumed).toBe(false);
-  });
-
-  it('a bound Escape still matches when no descent is active', () => {
-    const decision = decideDispatch(
-      input({
-        stroke: stroke({ key: 'escape' }),
-        bindings: [binding('fredo.test.escape', 'escape')],
-      }),
-    );
-    expect(decision.outcome).toBe('match');
-    expect(decision.action?.actionId).toBe('fredo.test.escape');
-  });
-
-  it('the pending-sequence cancel WINS over the unwind (provably disjoint, R-3.3)', () => {
-    const decision = decideDispatch(
-      input({
-        stroke: stroke({ key: 'escape' }),
-        pending: parseSequence('g'),
-        canUnwindContext: true,
-        bindings: [binding('fredo.a', 'g g')],
-      }),
-    );
-    expect(decision.outcome).toBe('suppress');
-    expect(decision.reason).toBe('sequence-escape');
-    expect(decision.consumed).toBe(true);
-  });
-
-  it('terminal / modal / text-entry keep their Escape owners (R-3.4)', () => {
-    const terminal = decideDispatch(
-      input({ stroke: stroke({ key: 'escape' }), context: 'terminal', canUnwindContext: true }),
-    );
-    expect(terminal.outcome).toBe('passthrough');
-    expect(terminal.reason).toBe('terminal-passthrough');
-
-    const modal = decideDispatch(
-      input({ stroke: stroke({ key: 'escape' }), context: 'modal', canUnwindContext: true }),
-    );
-    expect(modal.outcome).toBe('passthrough');
-    expect(modal.reason).toBe('modal-escape');
-
-    const textEntry = decideDispatch(
-      input({ stroke: stroke({ key: 'escape' }), context: 'text-entry', canUnwindContext: true }),
-    );
-    expect(textEntry.outcome).toBe('passthrough');
-    expect(textEntry.reason).toBe('text-entry-passthrough');
-  });
-
-  it('leaves every non-Escape key to its existing outcome while armed', () => {
-    const unbound = decideDispatch(
-      input({ stroke: stroke({ key: 'z' }), canUnwindContext: true }),
-    );
-    expect(unbound.outcome).toBe('passthrough');
-    expect(unbound.reason).toBe('unbound');
-
-    const matched = decideDispatch(
-      input({
-        stroke: stroke({ key: 'g' }),
-        canUnwindContext: true,
-        bindings: [binding('fredo.a', 'g')],
-      }),
-    );
-    expect(matched.outcome).toBe('match');
-    expect(matched.action?.actionId).toBe('fredo.a');
-  });
-});
-
-describe('decideDispatch — raw macro recording gate', () => {
-  it('suspends unbound keys while recording and keeps Escape as the cancel', () => {
-    const suspended = decideDispatch(
-      input({
-        stroke: stroke({ key: 'g' }),
-        macroRecording: true,
-        bindings: [binding('fredo.a', 'g')],
-      }),
-    );
-    expect(suspended.outcome).toBe('suppress');
-    expect(suspended.reason).toBe('macro-recording');
-
-    const escape = decideDispatch(
-      input({ stroke: stroke({ key: 'escape' }), macroRecording: true }),
-    );
-    expect(escape.outcome).toBe('suppress');
-    expect(escape.reason).toBe('macro-recording-escape');
-  });
-
-  it('lets the recording-stop binding through', () => {
-    const decision = decideDispatch(
-      input({
-        stroke: stroke({ key: 'r', primary: true, shift: true, alt: true }),
-        macroRecording: true,
-        bindings: [binding('fredo.macro.recordToggle', 'primary+shift+alt+r')],
-      }),
-    );
-    expect(decision.outcome).toBe('match');
-    expect(decision.action?.actionId).toBe('fredo.macro.recordToggle');
+  it('leaves a fresh Escape native at the base context', () => {
+    const decision = decideDispatch(input({ stroke: stroke({ key: 'escape' }) }));
+    expect(decision.outcome).toBe('passthrough');
+    expect(decision.reason).toBe('unbound');
+    expect(decision.consumed).toBe(false);
   });
 });

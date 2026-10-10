@@ -57,7 +57,6 @@ describe('#2992 ST-7 — Ingest static section wiring', () => {
     expect(screen.getByText('Companion')).toBeInTheDocument();
     expect(screen.getByText('Appearance')).toBeInTheDocument();
     expect(screen.getByText('Fredo Setup')).toBeInTheDocument();
-    expect(screen.getByText('Hotkeys')).toBeInTheDocument();
 
     fireEvent.click(nav);
 

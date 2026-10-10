@@ -12,14 +12,6 @@ import type { DevModeStreamEvent, DevModeEventState } from '../hooks/useDevModeS
 import type { ApplicationNotificationLogEntry } from '../../../shared/application-data/store';
 import { tint } from '../../../shared/utils/colorTint';
 import { SpatiotemporalManifold } from './SpatiotemporalManifold';
-import {
-  DEV_MODE_CLEAR_EVENTS_ACTION_ID,
-  DEV_MODE_FOCUS_FILTER_ACTION_ID,
-  DEV_MODE_SHOW_ALL_STATES_ACTION_ID,
-  DEV_MODE_TOGGLE_VIEW_ACTION_ID,
-  setDevModeActionAvailable,
-  subscribeDevModeActions,
-} from '../lib/hotkeyBridge';
 
 // ── State badge colours ───────────────────────────────────────────────────────
 
@@ -569,43 +561,6 @@ export const DevMode: React.FC = () => {
 
   const allStatesActive = activeStates.size === ALL_STATES.length;
 
-  // Spec #2961 ST-3 (AC2): map the declared local hotkeys onto the panel's
-  // existing operations. ONE window listener for the whole panel, removed on
-  // unmount; `run` is a no-op while the application is unmounted (no subscriber),
-  // and the engine never dispatches these application-tier actions unless Dev Mode
-  // is the focused window.
-  useEffect(
-    () =>
-      subscribeDevModeActions((actionId) => {
-        switch (actionId) {
-          case DEV_MODE_FOCUS_FILTER_ACTION_ID:
-            // The filter input lives in the rows view — surface it, then focus.
-            setView('rows');
-            requestAnimationFrame(() => filterInputRef.current?.focus());
-            break;
-          case DEV_MODE_CLEAR_EVENTS_ACTION_ID:
-            clearEvents();
-            break;
-          case DEV_MODE_SHOW_ALL_STATES_ACTION_ID:
-            setActiveStates(new Set(ALL_STATES));
-            break;
-          case DEV_MODE_TOGGLE_VIEW_ACTION_ID:
-            setView((prev) => (prev === 'rows' ? 'application-data' : 'rows'));
-            break;
-        }
-      }),
-    [clearEvents],
-  );
-
-  // Spec #2961 ST-3 (AC5): publish the gated actions' availability to the
-  // MODULE-SCOPED bridge (survives mount/unmount — never a React ref) so the
-  // declared `enabled()` probes read the latest panel state. Module writes only
-  // — no React state here, so the `.length` dependency cannot loop (#523).
-  useEffect(() => {
-    setDevModeActionAvailable(DEV_MODE_CLEAR_EVENTS_ACTION_ID, events.length > 0);
-    setDevModeActionAvailable(DEV_MODE_SHOW_ALL_STATES_ACTION_ID, !allStatesActive);
-  }, [events.length, allStatesActive]);
-
   return (
     <Box width="100%" height="100%" display="flex" flexDirection="column" background="var(--body-bg)" overflow="hidden">
       {/* Header */}
@@ -631,7 +586,7 @@ export const DevMode: React.FC = () => {
             )}
           </HStack>
           {events.length > 0 && (
-            <Button data-testid="dev-mode-clear-events" size="xs" variant="ghost" color="var(--text-secondary)" _hover={{ color: '#ef4444', background: '#ef444415' }} onClick={clearEvents} aria-label="Clear events" px={2} height="24px">
+            <Button data-testid="dev-mode-clear-events" data-hotkey="x" size="xs" variant="ghost" color="var(--text-secondary)" _hover={{ color: '#ef4444', background: '#ef444415' }} onClick={clearEvents} aria-label="Clear events" px={2} height="24px">
               <HStack gap={1}>
                 <LuTrash2 size={11} />
                 <Text fontSize="10px">Clear</Text>
@@ -650,6 +605,7 @@ export const DevMode: React.FC = () => {
               <Box
                 key={entry.id}
                 as="button"
+                data-hotkey={entry.id === 'application-data' ? 'v' : undefined}
                 onClick={() => setView(entry.id)}
                 px="7px"
                 py="2px"
@@ -686,6 +642,7 @@ export const DevMode: React.FC = () => {
             <Input
               ref={filterInputRef}
               data-testid="dev-mode-filter-input"
+              data-hotkey="i"
               value={query}
               onChange={(e) => setQuery(e.currentTarget.value)}
               placeholder="Filter by event type or payload…"
@@ -753,6 +710,7 @@ export const DevMode: React.FC = () => {
             <Box
               as="button"
               data-testid="dev-mode-show-all-states"
+              data-hotkey="b"
               onClick={() => setActiveStates(new Set(ALL_STATES))}
               px="7px"
               py="2px"

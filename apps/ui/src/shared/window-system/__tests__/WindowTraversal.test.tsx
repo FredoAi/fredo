@@ -126,7 +126,7 @@ describe('traversal — keyboard raise via the engine chord (R-1.1/R-1.2)', () =
     expect(document.activeElement).not.toBe(document.body);
   });
 
-  it('ctrl+1..9 focuses the Nth window through the real binding', () => {
+  it('ctrl+1..9 no longer switches windows (digits freed for element hotkeys)', () => {
     installHotkeyEngine();
     openFeature('a');
     openFeature('b');
@@ -134,8 +134,8 @@ describe('traversal — keyboard raise via the engine chord (R-1.1/R-1.2)', () =
 
     fireEvent.keyDown(document, { key: '1', ctrlKey: true });
 
-    expect(screen.getByTestId('window-frame-a')).toHaveAttribute('data-focused', 'true');
-    expect(document.activeElement).toBe(screen.getByTestId('content-a'));
+    // 'b' stays focused — the retired Ctrl+1..9 binding must not move focus.
+    expect(screen.getByTestId('window-frame-b')).toHaveAttribute('data-focused', 'true');
   });
 });
 

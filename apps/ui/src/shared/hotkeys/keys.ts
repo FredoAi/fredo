@@ -211,7 +211,7 @@ export function parseStrokeToken(token: string): KeyStroke | null {
 
 /**
  * Parse a serialized sequence. TOTAL: never throws; an unrepresentable input
- * yields `[]` (the invalid sentinel, checked by the conflict classifier).
+ * yields `[]` (the invalid sentinel — an unparseable sequence is ignored).
  */
 export function parseSequence(s: string): KeySequence {
   if (typeof s !== 'string') return [];
@@ -375,7 +375,7 @@ function modifierSignature(stroke: KeyStroke, primaryMod: 'ctrl' | 'meta'): stri
 /**
  * The ONE semantic stroke comparison. On a Ctrl-primary platform an explicit
  * `ctrl` and the `primary` flag denote the same physical chord; on darwin they
- * are distinct keys. Used by the matcher, the reserved lookup and conflicts.
+ * are distinct keys. Used by the matcher and the element-binding resolver.
  */
 export function keyStrokeEquals(a: KeyStroke, b: KeyStroke, platform?: Platform): boolean {
   if (!a || !b) return false;

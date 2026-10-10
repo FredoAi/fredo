@@ -47,12 +47,6 @@
 import type { ReactElement } from 'react';
 import type { IconType } from 'react-icons';
 import type { GridItemConfig } from './types';
-import {
-  EMPTY_HOTKEYS,
-  EMPTY_HOTKEY_CONTEXTS,
-  type ApplicationHotkeyAction,
-  type ApplicationHotkeyContext,
-} from '../hotkeys/types';
 
 export abstract class FredoApplicationClass<TProps = {}> {
   // === REQUIRED IMPLEMENTATIONS ===
@@ -123,29 +117,6 @@ export abstract class FredoApplicationClass<TProps = {}> {
    */
   renderSettings?(): ReactElement;
 
-  /**
-   * Hotkey actions this feature declares (Spec #2946, AC2 contract block 3).
-   *
-   * The platform discovers, lists, rebinds and persists these with NO
-   * listing/rendering code supplied by the feature. A feature that declares none
-   * simply inherits the empty frozen default — it contributes zero rows.
-   * Overriding this is additive: it does not affect `showable`/`hasSettings`/
-   * `renderSettings`/`registerOpenCallback`.
-   */
-  readonly hotkeys: readonly ApplicationHotkeyAction[] = EMPTY_HOTKEYS;
-
-  /**
-   * Named interaction contexts this feature declares (Spec #2958, R-1/R-2).
-   *
-   * A feature's BASE context is synthesized automatically (its context id is
-   * this feature's `id` and its parent is the platform ROOT), so a feature only
-   * declares DEEPER contexts here — each `contextId` must be `<featureId>.`-
-   * prefixed and its `parentId` must name the base or another declared context.
-   * A feature that declares none inherits the empty frozen default. Overriding
-   * this is additive and does not affect `hotkeys`.
-   */
-  readonly hotkeysContexts: readonly ApplicationHotkeyContext[] = EMPTY_HOTKEY_CONTEXTS;
-  
   // === INTERNAL CALLBACKS (managed by Home.tsx) ===
   
   /**

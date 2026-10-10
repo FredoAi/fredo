@@ -1,45 +1,35 @@
 /**
- * Spec #2946 ST-2 — the action registry + declared-action contribution API
- * (contract block 3, R-2.1/R-2.2/R-2.3).
+ * Spec #3009 — the ONE action registry.
  *
- * A feature declares hotkey actions ONCE (`FredoApplicationClass.hotkeys`); the
- * platform discovers every registered feature (`applicationRegistry.getApplications()`),
- * merges its declarations with explicitly-registered feature actions and the
- * Fredo-tier actions, and exposes ONE listing. No feature supplies listing code.
+ * After #3009 the registry is the single action table for dispatch AND the
+ * launcher action palette. Contributions come from:
+ *   - `registerFredoAction` — the kept platform globals (declared by the engine),
+ *   - `registerFeatureHotkeys` — explicit programmatic registrations,
+ *   - element hotkeys, which are synthesized per resolution by the engine (they
+ *     are NOT registry declarations — the registry stays a fixed table).
  *
- * Registration is deliberately PERMISSIVE, validation is at LIST time: a
- * malformed, duplicate or foreign-prefixed `actionId` still appears in the
- * listing (with an explicit `invalid` diagnostic) but is NEVER resolvable for
- * dispatch (`getHotkeyAction` returns `null`, `runHotkeyAction` is a no-op).
+ * Registration is PERMISSIVE, validation is at LIST time: a malformed, duplicate
+ * or foreign-prefixed `actionId` still appears in the listing (with an explicit
+ * `invalid` diagnostic) but is NEVER resolvable for dispatch.
  *
- * The listing is cached and returns a STABLE reference until a registry mutation
- * or a newly-registered feature occurs, so React consumers do not re-render on
- * an unchanged listing.
+ * The retired feature-instance discovery (`FredoApplicationClass.hotkeys`) and
+ * every interaction-context field are gone — the class carries no hotkey surface.
+ *
+ * The listing is cached and returns a STABLE reference until a registry mutation,
+ * so React consumers do not re-render on an unchanged listing.
  */
 
-import { getApplications } from '../../applications/applicationRegistry';
 import { parseSequence } from './keys';
-import { resolveBaseContextId } from './contexts';
 import {
   isValidHotkeyActionId,
   tierForActionId,
   type ApplicationHotkeyAction,
-  type ApplicationHotkeyContext,
   type HotkeyActionId,
-  type HotkeyContextId,
   type HotkeyInvocationContext,
   type HotkeyTier,
   type KeySequence,
   type RegisteredHotkeyAction,
 } from './types';
-
-/** The structural shape the registry discovers on a registered feature. */
-export interface HotkeyContributor {
-  readonly id: string;
-  readonly hotkeys?: readonly ApplicationHotkeyAction[];
-  /** Spec #2958 — the feature's declared interaction contexts. */
-  readonly hotkeysContexts?: readonly ApplicationHotkeyContext[];
-}
 
 type HotkeyRun = (ctx: HotkeyInvocationContext) => void | Promise<void>;
 
@@ -72,10 +62,8 @@ export function registerFredoAction(action: ApplicationHotkeyAction): void {
 }
 
 /**
- * Register actions for a feature that does not declare them through
- * `FredoApplicationClass.hotkeys` (e.g. a non-class contributor). Declarations for a
- * feature already discovered via `registerApplication()` are ignored, so the same
- * feature can never be listed twice.
+ * Register actions for a feature that does not declare them through a class.
+ * Declarations are kept per feature id in registration order.
  */
 export function registerFeatureHotkeys(
   featureId: string,
@@ -90,7 +78,7 @@ export function registerFeatureHotkeys(
 
 /**
  * Attach (or clear, with `null`) the executable handler for an action id. Used
- * for React-bound Fredo actions (launcher toggle, window cycling) whose `run`
+ * for React-bound Fredo actions (launcher toggle, palette open) whose `run`
  * lives in a component; it overrides any declared `run` at resolution time.
  */
 export function registerHotkeyHandler(
@@ -142,25 +130,7 @@ function validateDeclaration(action: ApplicationHotkeyAction, featureId?: string
 /** Collect every declaration in deterministic order: Fredo first, then features. */
 function collectDeclarations(): Declaration[] {
   const out: Declaration[] = [...fredoDeclarations];
-  let features: readonly HotkeyContributor[] = [];
-  try {
-    features = getApplications();
-  } catch {
-    features = [];
-  }
-
-  const discovered = new Set<string>();
-  for (const feature of features) {
-    if (!feature || typeof feature.id !== 'string') continue;
-    discovered.add(feature.id);
-    const declared = feature.hotkeys;
-    if (!Array.isArray(declared)) continue;
-    for (const action of declared) out.push({ action, featureId: feature.id });
-  }
-
-  // Explicit registrations only for features the discovery pass did not cover.
-  for (const [featureId, declarations] of featureDeclarations) {
-    if (discovered.has(featureId)) continue;
+  for (const declarations of featureDeclarations.values()) {
     for (const declaration of declarations) out.push(declaration);
   }
   return out;
@@ -187,27 +157,17 @@ function buildList(): readonly RegisteredHotkeyAction[] {
       title: action.title,
       description: action.description,
       defaultSequence: action.defaultSequence,
-      contextId: action.contextId,
-      opensContextId: action.opensContextId,
       run: handlers.get(action.actionId) ?? action.run,
       enabled: action.enabled,
-      // Spec #2959 ST-2 — additive contract: carry the optional reason through.
-      unavailableReason: action.unavailableReason,
       invalid,
     });
   }
   return list;
 }
 
-/** The single merged listing (R-2.1). Stable reference until the registry changes. */
+/** The single merged listing. Stable reference until the registry changes. */
 export function listHotkeyActions(): readonly RegisteredHotkeyAction[] {
-  let featureCount = 0;
-  try {
-    featureCount = getApplications().length;
-  } catch {
-    featureCount = 0;
-  }
-  const key = `${registryRevision}:${featureCount}`;
+  const key = String(registryRevision);
   if (cachedList !== null && cachedKey === key) return cachedList;
   cachedList = buildList();
   cachedKey = key;
@@ -223,30 +183,24 @@ export function getHotkeyAction(id: HotkeyActionId): RegisteredHotkeyAction | nu
 }
 
 /**
- * Run a registered action exactly once. Never throws and never awaits — the
- * keydown path must not block on an async handler. Disabled or invalid actions
- * are silently skipped, matching the engine's availability contract.
+ * Run a resolved action exactly once. Never throws and never awaits — the
+ * keydown path must not block on an async handler. Disabled actions are
+ * silently skipped.
  */
-export function runHotkeyAction(
-  id: HotkeyActionId,
+export function runResolvedAction(
+  action: RegisteredHotkeyAction,
   source: HotkeyInvocationContext['source'],
   sequence: KeySequence = [],
   focusedFeatureId: string | null = null,
-  contextId?: HotkeyContextId,
 ): void {
-  const action = getHotkeyAction(id);
-  if (!action) return;
   if (action.enabled && !action.enabled()) return;
 
   const ctx: HotkeyInvocationContext = {
-    actionId: id,
+    actionId: action.actionId,
     tier: action.tier,
     sequence,
     source,
     focusedFeatureId,
-    // The active context when supplied by the engine (ST-3); else the action's
-    // declared context, else the focused feature's base context.
-    contextId: contextId ?? action.contextId ?? resolveBaseContextId(focusedFeatureId),
     at: Date.now(),
   };
 
@@ -254,12 +208,24 @@ export function runHotkeyAction(
     const result = action.run(ctx);
     if (result && typeof (result as Promise<void>).then === 'function') {
       (result as Promise<void>).catch((error) => {
-        console.error(`[hotkeys] action "${id}" failed`, error);
+        console.error(`[hotkeys] action "${action.actionId}" failed`, error);
       });
     }
   } catch (error) {
-    console.error(`[hotkeys] action "${id}" failed`, error);
+    console.error(`[hotkeys] action "${action.actionId}" failed`, error);
   }
+}
+
+/** Run a registered action by id exactly once (palette + registry consumers). */
+export function runHotkeyAction(
+  id: HotkeyActionId,
+  source: HotkeyInvocationContext['source'],
+  sequence: KeySequence = [],
+  focusedFeatureId: string | null = null,
+): void {
+  const action = getHotkeyAction(id);
+  if (!action) return;
+  runResolvedAction(action, source, sequence, focusedFeatureId);
 }
 
 /** Test-only: clear every registration so tests start from a clean registry. */

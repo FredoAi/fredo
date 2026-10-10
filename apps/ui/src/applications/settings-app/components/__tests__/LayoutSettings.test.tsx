@@ -340,7 +340,6 @@ describe('Settings surface wiring', () => {
     const nav = screen.getByTestId('settings-nav-layout');
     expect(nav).toHaveTextContent('Layout');
     // Existing static sections are untouched.
-    expect(screen.getByText('Hotkeys')).toBeInTheDocument();
     expect(screen.getByText('Companion')).toBeInTheDocument();
 
     fireEvent.click(nav);

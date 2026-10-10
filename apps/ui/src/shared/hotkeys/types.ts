@@ -1,21 +1,22 @@
 /**
- * Spec #2946 ST-1 — the SINGLE declaration site for the keyboard-first hotkey
- * model (plan contract blocks 2/3/4/5/6/9/10/11).
+ * Spec #3009 — the shared hotkey type model.
  *
- * Every later capsule (registry, store, engine, settings, macros) consumes the
- * types below; no capsule re-derives a key rule. This module is PURE: types +
- * a handful of constant/id helpers only — no DOM/Tauri/React/clock imports
- * (mirrors the `launcherSpaceHold.ts` purity contract).
+ * After #3009 the platform has exactly ONE keydown engine, ONE action registry
+ * and ONE matcher. Bindings come from two sources only:
+ *   - the KEPT platform globals (`primary+space`, `primary+tab`,
+ *     `primary+shift+tab`), declared by the engine, and
+ *   - mounted ELEMENTS carrying `data-hotkey`, discovered by `hotkeyElements.ts`.
  *
- * The binding storage model is the TYPED-CHARACTER model (PO#6): a chord step's
- * `key` is the layout-resolved `KeyboardEvent.key` — a typed character for
- * printable keys, a lowercase named token (`space`, `escape`, `f10`, …) for
- * non-printable keys. It is NEVER `KeyboardEvent.code` (no physical-key token).
+ * The retired configuration model (keymap, leader, macros, contexts, keyboard
+ * mode, reserved combos, conflicts) is gone — this module no longer declares it.
  *
- * The ONE serialization/matching implementation lives in `keys.ts`; the ONE
- * reserved-combo list in `reserved.ts`; the ONE focus classifier in
- * `focusContext.ts`; the ONE sequence matcher in `sequence.ts`; the ONE
- * conflict classifier in `conflicts.ts`; the shipped tables in `defaults.ts`.
+ * PURE: types + a handful of constant/id helpers only — no DOM/Tauri/React/clock
+ * imports.
+ *
+ * The binding storage model is the TYPED-CHARACTER model: a chord step's `key`
+ * is the layout-resolved `KeyboardEvent.key` — a typed character for printable
+ * keys, a lowercase named token (`space`, `escape`, `f10`, …) for non-printable
+ * keys. It is NEVER `KeyboardEvent.code`.
  */
 
 /** A platform we make primary-modifier decisions for. */
@@ -55,18 +56,11 @@ export type HotkeyTier = 'fredo' | 'feature';
  * `fredo.` for the platform tier; `<featureId>.` for a feature tier. Dot-separated
  * segments: the first segment is lowercase kebab (`fredo` or a feature id); every
  * following segment starts with a lowercase letter and may be camelCase. This
- * admits the shipped multi-segment ids the plan itself declares, e.g.
- * `fredo.launcher.toggle`, `fredo.window.cycleNth`, `fredo.terminal.exitPassthrough`.
+ * admits `fredo.launcher.toggle` and the element ids `fredo.element.<key>#<n>`.
  */
 export type HotkeyActionId = string;
 
-/**
- * The action-id grammar (contract block 3, corrected per the ST-2 adjudication).
- *
- * The literal contract regex admitted exactly ONE dot and would reject the plan's
- * own multi-segment camelCase ids; the corrected grammar allows one or more
- * dot-separated segments after the leading namespace.
- */
+/** The action-id grammar. */
 export const HOTKEY_ACTION_ID_PATTERN =
   /^(fredo|[a-z0-9][a-z0-9-]*)\.[a-z][a-zA-Z0-9-]*(\.[a-z][a-zA-Z0-9-]*)*$/;
 
@@ -80,98 +74,33 @@ export function tierForActionId(id: HotkeyActionId): HotkeyTier {
   return id.startsWith('fredo.') ? 'fredo' : 'feature';
 }
 
-/**
- * A named interaction-context id (Spec #2958 ST-1). Same grammar as
- * `HotkeyActionId`: `fredo.*` for platform contexts, `<featureId>.*` for a
- * feature's declared contexts. A feature's BASE context carries the feature id
- * as its context id (no dot) — it is SYNTHESIZED by the context registry, not
- * declared, so `isValidHotkeyContextId` is not applied to it.
- */
-export type HotkeyContextId = string;
-
-/**
- * The platform ROOT context (Spec #2958). It is always registered with
- * `{ contextId: ROOT_CONTEXT_ID, parentId: ROOT_CONTEXT_ID, title: 'Fredo' }`
- * (a self-parent sentinel), so `getHotkeyContext(ROOT_CONTEXT_ID)` always
- * resolves and the indicator/announcer always have a label.
- */
-export const ROOT_CONTEXT_ID: HotkeyContextId = 'fredo.root';
-
 /** The ambient context in which an action was invoked. */
 export interface HotkeyInvocationContext {
   readonly actionId: HotkeyActionId;
   readonly tier: HotkeyTier;
   readonly sequence: KeySequence;
-  readonly source: 'binding' | 'macro' | 'palette' | 'cheatsheet';
+  readonly source: 'binding' | 'palette';
   readonly focusedFeatureId: string | null;
-  /** The active interaction context when the action ran (Spec #2958). */
-  readonly contextId: HotkeyContextId;
   readonly at: number;
 }
 
 /**
- * What a feature declares (contract block 3). `defaultSequence: null` = declared
- * but unbound. `run` may be async; the engine NEVER awaits it on the keydown
- * path. `enabled()` is an availability probe — a false result skips the action
- * AND shows it as unavailable-with-reason.
+ * What a declared action is. `defaultSequence: null` = declared but unbound.
+ * `run` may be async; the engine NEVER awaits it on the keydown path. `enabled()`
+ * is an availability probe — a false result skips the action.
  */
 export interface ApplicationHotkeyAction {
   readonly actionId: HotkeyActionId;
   readonly title: string;
   readonly description?: string;
   readonly defaultSequence: string | null;
-  /**
-   * The interaction context this action belongs to (Spec #2958). Omitted ⇒ the
-   * declaring feature's BASE context (`<featureId>`), so #2946's focused-feature
-   * scoping is preserved exactly (R-1.2).
-   */
-  readonly contextId?: HotkeyContextId;
-  /**
-   * The interaction context this action descends into when it matches
-   * (Spec #2958, executed on the `match` outcome by ST-3).
-   */
-  readonly opensContextId?: HotkeyContextId;
   readonly run: (ctx: HotkeyInvocationContext) => void | Promise<void>;
   readonly enabled?: () => boolean;
-  /**
-   * Spec #2959 (ST-2) — human-readable copy the key bar shows when `enabled()`
-   * returns false. ADDITIVE/optional: absent ⇒ the engine-derived copy from
-   * `unavailableReasonFor` (i.e. `'Not available right now'`) is used. Never
-   * required, so every existing declaration is unaffected.
-   */
-  readonly unavailableReason?: string;
 }
 
 /**
- * The empty context contribution a feature with no declared contexts inherits
- * (Spec #2958 ST-1). Frozen so every feature instance points at the SAME object.
- */
-export const EMPTY_HOTKEY_CONTEXTS: readonly ApplicationHotkeyContext[] = Object.freeze([]);
-
-/**
- * A named interaction context a feature (or the platform) declares (Spec #2958).
- * `contextId` is `'fredo.*'` for a platform context or `'<featureId>.*'` for a
- * feature context; `parentId` is `ROOT_CONTEXT_ID`, another `'fredo.*'`, or the
- * same feature's `<featureId>.*`. The per-feature BASE context is synthesized by
- * the context registry and does not need declaring.
- */
-export interface ApplicationHotkeyContext {
-  readonly contextId: HotkeyContextId;
-  readonly parentId: HotkeyContextId;
-  readonly title: string;
-}
-
-/**
- * The empty contribution a feature with no hotkeys inherits (ST-2). A frozen
- * singleton so every feature instance points at the SAME object — no per-instance
- * allocation and no accidental mutation of the default declaration.
- */
-export const EMPTY_HOTKEYS: readonly ApplicationHotkeyAction[] = Object.freeze([]);
-
-/**
- * A registered action as listed by the registry (ST-2 fills this). `invalid`
- * carries a registration-time diagnostic (e.g. a bad id/sequence) so Settings
- * can show an unavailable-with-reason row.
+ * A registered action as listed by the registry. `invalid` carries a
+ * registration-time diagnostic (e.g. a bad id/sequence).
  */
 export interface RegisteredHotkeyAction {
   readonly actionId: HotkeyActionId;
@@ -180,14 +109,8 @@ export interface RegisteredHotkeyAction {
   readonly title: string;
   readonly description?: string;
   readonly defaultSequence: string | null;
-  /** The declared context scope (Spec #2958); omitted ⇒ the feature base / ROOT. */
-  readonly contextId?: HotkeyContextId;
-  /** The declared descent target (Spec #2958). */
-  readonly opensContextId?: HotkeyContextId;
   readonly run: (ctx: HotkeyInvocationContext) => void | Promise<void>;
   readonly enabled?: () => boolean;
-  /** Spec #2959 (ST-2) — carried through from the declaration (additive only). */
-  readonly unavailableReason?: string;
   readonly invalid?: string;
 }
 
@@ -201,7 +124,7 @@ export interface ResolvedBinding {
 }
 
 /**
- * The focus classification of `document.activeElement` (contract block 4).
+ * The focus classification of `document.activeElement`.
  *
  * - `text-entry`  — INPUT / TEXTAREA / SELECT / contenteditable / role=textbox
  * - `terminal`    — inside `[data-fredo-terminal-root="true"]`
@@ -212,46 +135,23 @@ export interface ResolvedBinding {
 export type FocusContext = 'text-entry' | 'terminal' | 'modal' | 'interactive' | 'default';
 
 /**
- * A pure dispatch decision (contract block 4).
+ * A pure dispatch decision.
  *
  * `consumed: true` ⇒ the engine calls `preventDefault()` + `stopPropagation()`.
  *  - `match`        — a binding fired (`action` is set)
  *  - `arm-sequence` — the stroke starts a multi-key sequence
  *  - `pending`      — a pending sequence accepted the stroke and is still incomplete
- *  - `suppress`     — no action, but the key is consumed (invalid sequence, macro gate)
+ *  - `suppress`     — no action, but the key is consumed (invalid sequence)
  *  - `passthrough`  — no action and the key is left native
  */
 export interface DispatchDecision {
-  readonly outcome: 'match' | 'arm-sequence' | 'pending' | 'suppress' | 'passthrough' | 'context-back';
+  readonly outcome: 'match' | 'arm-sequence' | 'pending' | 'suppress' | 'passthrough';
   readonly action?: RegisteredHotkeyAction;
   readonly consumed: boolean;
   readonly reason: string;
 }
 
-/** Why the active interaction context last changed (Spec #2958). */
-export type HotkeyContextChangeReason = 'enter' | 'back' | 'focus';
-
-/**
- * The path length of an interaction context along the active path (Spec #2962):
- * base only = 1, each explicit descent adds 1 (see DEPTH semantics in
- * `contexts.ts`). A named alias so precedence/depth call sites read as intent.
- */
-export type HotkeyContextDepth = number;
-
-/**
- * The stable snapshot of the active interaction context (Spec #2958). Identity
- * stable (a module-cached frozen object) so `useSyncExternalStore` never sees a
- * fresh object; it deliberately does NOT carry the label — resolve the label
- * from the registry via `getHotkeyContext(snapshot.contextId)?.title`.
- */
-export interface HotkeyContextSnapshot {
-  readonly contextId: HotkeyContextId;
-  /** Path length; `1` = base only (see DEPTH semantics in `contexts.ts`). */
-  readonly depth: HotkeyContextDepth;
-  readonly reason: HotkeyContextChangeReason;
-}
-
-/** Why a pending sequence was reset (matches the `HotkeyEvent` reset reasons). */
+/** Why a pending sequence was reset. */
 export type HotkeyResetReason =
   | 'invalid'
   | 'timeout'
@@ -259,95 +159,5 @@ export type HotkeyResetReason =
   | 'focus-change'
   | 'native-consumes';
 
-/** One candidate for the which-key pending overlay (contract block 6). */
-export interface HotkeyCandidate {
-  readonly strokeToken: string;
-  readonly display: string;
-  readonly actionId: HotkeyActionId;
-  readonly title: string;
-  readonly tier: HotkeyTier;
-}
-
-/** In-process keymap events (contract block 6) — NOT Tauri IPC. */
-export type HotkeyEvent =
-  | { type: 'keymap:changed'; revision: number }
-  | { type: 'sequence:pending'; prefix: string; candidates: readonly HotkeyCandidate[] }
-  | { type: 'sequence:reset'; reason: HotkeyResetReason }
-  | { type: 'macro:recording'; recording: boolean; macroId: string | null; startedAt: number | null }
-  | { type: 'passthrough:changed'; active: boolean }
-  | {
-      type: 'context:changed';
-      contextId: HotkeyContextId;
-      depth: number;
-      reason: HotkeyContextChangeReason;
-    };
-
-/** The one settingsService key that owns the keymap document. */
-export const KEYMAP_STORAGE_KEY = 'fredo.hotkeys.keymap';
-/** The cross-webview latch that enforces exactly one raw recording at a time. */
-export const RECORDING_LATCH_KEY = 'fredo.hotkeys.recording';
-/** The current keymap document schema version (the migration field). */
-export const CURRENT_SCHEMA_VERSION = 1;
 /** Typing this prefix in the launcher command bar switches results to actions. */
 export const ACTION_PALETTE_PREFIX = '>';
-/** The action id whose invocation toggles raw macro recording. */
-export const MACRO_RECORD_TOGGLE_ACTION_ID: HotkeyActionId = 'fredo.macro.recordToggle';
-/** The single terminal exit-passthrough action id (R-5.7). */
-export const TERMINAL_EXIT_ACTION_ID: HotkeyActionId = 'fredo.terminal.exitPassthrough';
-
-/** A named action macro (contract block 5). */
-export interface PersistedMacro {
-  id: string;
-  name: string;
-  steps: HotkeyActionId[];
-  trigger: string | null;
-  onStepError: 'abort' | 'continue';
-}
-
-/** A recorded raw keystroke macro (contract block 5). `strokes` are serialized single strokes. */
-export interface PersistedRawMacro {
-  id: string;
-  name: string;
-  strokes: string[];
-  trigger: string | null;
-}
-
-/**
- * The persisted keymap document (contract block 5). `bindings` maps an action id
- * to its ordered serialized sequences (`[]` = unbound).
- */
-export interface PersistedKeymap {
-  schemaVersion: number;
-  leader: string | null;
-  vimPresetEnabled: boolean;
-  sequenceTimeoutMs: number;
-  bindings: Record<HotkeyActionId, string[]>;
-  macros: PersistedMacro[];
-  rawMacros: PersistedRawMacro[];
-}
-
-/** One fixed platform-reserved combination (contract block 9). */
-export interface ReservedCombo {
-  readonly serialized: string;
-  readonly reason: string;
-}
-
-/** The conflict classification of a candidate binding (contract block 11). */
-export type ConflictKind = 'none' | 'same-tier' | 'cross-tier' | 'reserved' | 'invalid';
-
-/** One other binding that collides with a candidate. */
-export interface ConflictCollision {
-  readonly actionId: HotkeyActionId;
-  readonly tier: HotkeyTier;
-  readonly sequence: string;
-}
-
-/**
- * `same-tier` blocks a save; `cross-tier` is labelled, never blocking;
- * `reserved`/`invalid` always carry a `reason`.
- */
-export interface ConflictReport {
-  readonly kind: ConflictKind;
-  readonly colliding: ReadonlyArray<ConflictCollision>;
-  readonly reason?: string;
-}

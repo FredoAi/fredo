@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { Box, Button, HStack, Icon, Text, VStack } from '@chakra-ui/react';
-import { LuPalette, LuBot, LuSave, LuSettings2, LuActivity, LuKeyboard, LuDatabase, LuAppWindow, LuLayoutGrid } from 'react-icons/lu';
+import { LuPalette, LuBot, LuSave, LuSettings2, LuActivity, LuDatabase, LuAppWindow, LuLayoutGrid } from 'react-icons/lu';
 import { CompanionSettingsPanel } from '../../../shared/components/companion/CompanionSettingsPanel';
 import { SettingsSaveProvider, useSettingsSaveContext } from '../../settings/SettingsSaveContext';
 import { ThemingSettings } from '../../theming';
@@ -9,7 +9,6 @@ import { TelemetrySettings, BackgroundSettings } from '../../home';
 import { IngestAutostartSettings } from '../../ingest/IngestAutostartSettings';
 import { getApplications, dedupeByApplicationId } from '../../applicationRegistry';
 import { tint } from '../../../shared/utils/colorTint';
-import { HotkeysSettings, HOTKEYS_NAV_ID } from './HotkeysSettings';
 import { AppPresentationSettings } from './AppPresentationSettings';
 import { LayoutSettings, LAYOUT_NAV_ID } from './LayoutSettings';
 
@@ -179,9 +178,6 @@ export const SettingsSurface: React.FC = () => {
         {/* Static: Ingest (Spec #2992 ST-7 — login auto-start for the headless daemon) */}
         <NavItem id="ingest" label="Ingest" icon={LuDatabase} activeSection={activeSection} onClick={setActiveSection} testId="settings-nav-ingest" />
 
-        {/* Static: Hotkeys (Spec #2946 ST-6 — platform-level, immediate write-through) */}
-        <NavItem id={HOTKEYS_NAV_ID} label="Hotkeys" icon={LuKeyboard} activeSection={activeSection} onClick={setActiveSection} />
-
         {/* Static: Layout (Spec #2980 ST-2 — platform-level, immediate write-through) */}
         <NavItem id={LAYOUT_NAV_ID} label="Layout" icon={LuLayoutGrid} activeSection={activeSection} onClick={setActiveSection} testId="settings-nav-layout" />
 
@@ -236,9 +232,6 @@ export const SettingsSurface: React.FC = () => {
             )}
             {activeSection === 'ingest' && (
               <Box p={5} minH="100%"><IngestAutostartSettings /></Box>
-            )}
-            {activeSection === HOTKEYS_NAV_ID && (
-              <Box p={0} minH="100%"><HotkeysSettings /></Box>
             )}
             {activeSection === LAYOUT_NAV_ID && (
               <Box p={0} minH="100%"><LayoutSettings /></Box>

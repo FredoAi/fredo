@@ -778,9 +778,9 @@
 - [ ] **F-102 (R-1.b, AC1) — transient states, never a black void (LIVE).** Drive `starting` / `stopping` / a frame error.
   - EXPECTED: `starting` → spinner + progress + "Starting…"; `stopping` → spinner + "Stopping…"; frame error while `ready` → `doom-frame-reconnecting` note; the frame region is NEVER blank/black during any transient.
   - Edge (G-316): `FREDO_DOOM_READY_TIMEOUT_S=2` + `FREDO_DOOM_STUB_EXIT=1` for a long `starting`; close mid-run for `stopping` (`FREDO_DOOM_STUB_HANG=1` drives the bounded hard-kill fallback); `FREDO_DOOM_STUB_FRAME_503=<count>` for the transient reconnecting note (`_FAIL=frame` is a hard 500, not the transient note).
-- [ ] **F-104 (R-2, AC2) — hotkeys chrome suppressed in `doom` ONLY (LIVE).** Query `hotkeys-input-regime` + `hotkeys-keys-discovery` in the doom webview, the main window, and the `terminal` window.
-  - EXPECTED: doom webview count **0** for BOTH (cluster absent); every OTHER window renders both unchanged. FAIL: either present in `doom`, or absent in any other window.
-  - Edge: suppression is exactly `view=doom`; pure gate unit pin `hotkeysWindowGate.test.ts` (non-AC).
+- [ ] **F-104 (R-2, AC2) — keyboard chrome absent (LIVE).** #3009 removed the top-left keyboard-status cluster app-wide, so it is absent in the doom webview AND every other window (the Doom window is #3007's scope). Query the (now-absent) cluster testids in the doom webview, the main window, and the `terminal` window.
+  - EXPECTED: count **0** in EVERY window. FAIL: present anywhere.
+  - Edge: the removal is app-wide (#3009); no separate Doom suppression remains.
 
 ## Auto-play on entry (R-3)
 
