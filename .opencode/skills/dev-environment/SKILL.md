@@ -123,6 +123,11 @@ Notes:
 - Pass the WHOLE command as the single `-Command` string; the inner sequence runs INSIDE the script file, so the caller's no-chaining rule does not apply.
 - Use it for `fredo open-terminal` exit-code rows (`opened`/`started`=0, `invalid-*`=1, app-not-running=2). The numeric mapping is also statically pinned by `cargo test` (`exit_code_for_response`), so a wrapper failure never re-FAILs a round on its own.
 - Read-only wrapper: it adds no behaviour to the command it runs.
+- **Quoting caveat (G-342):** the inner command runs with PowerShell expression
+  semantics, so a **double-quoted SQL identifier** (`SELECT "sessionId" …`) is mis-parsed
+  (`NamedParameterNotFound`/`PositionalParameterNotFound`). Keep SQL inside a helper that
+  receives the query as a parameter (a scratch `pg-query.ps1 -Query`), or use single quotes /
+  `SELECT *` when the wrapper is unavoidable.
 
 ## Process hygiene (orphaned opencode/node cleanup)
 

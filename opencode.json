@@ -434,7 +434,8 @@
                     "*restful-doom*": "allow",
                     "tasklist*": "allow",
                     "taskkill*": "allow",
-                    "powershell -File .opencode/scripts/check-sqlite-retired.ps1*": "allow"
+                    "powershell -File .opencode/scripts/check-sqlite-retired.ps1*": "allow",
+                    "powershell -File .opencode/tmp/*": "allow"
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny",
