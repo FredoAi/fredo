@@ -45,7 +45,11 @@ use crate::infrastructure::storage::application_store::{ApplicationStore, Column
 
 /// The persisted save schema version. A save carrying any other version is
 /// rejected by [`DoomSave::parse`] (treated as absent → clean run).
-pub const DOOM_SAVE_VERSION: u32 = 1;
+///
+/// Bumped to `2` in Spec #3023: the campaign was rescoped from the Freedoom
+/// four-episode surface to the bundled shareware `DOOM1.WAD` single-episode set
+/// (E1M1–E1M9), so a legacy `1` save must parse to "no save" (a clean run).
+pub const DOOM_SAVE_VERSION: u32 = 2;
 /// The [`ApplicationStore`] namespace application id (`feature_doom_save`).
 pub const DOOM_SAVE_FEATURE_ID: &str = "doom";
 /// The [`ApplicationStore`] table name within the `doom` namespace.
@@ -66,8 +70,10 @@ pub const DOOM_SAVE_FORCE_FAIL_ENV: &str = "FREDO_DOOM_SAVE_FORCE_FAIL";
 const DOOM_SAVE_FILE_NAME: &str = "doom-save.json";
 /// The first campaign episode (`E1`).
 pub const DOOM_CAMPAIGN_FIRST_EPISODE: i64 = 1;
-/// The last campaign episode (`E4` — Freedoom Phase 1 / Ultimate-Doom surface).
-pub const DOOM_CAMPAIGN_LAST_EPISODE: i64 = 4;
+/// The last campaign episode (`E1`). The bundled shareware `DOOM1.WAD` is
+/// **single-episode** (E1M1–E1M9), so the campaign never wraps into E2 — the
+/// [`DoomCampaign::advance`] walk terminates at E1M9 (completion).
+pub const DOOM_CAMPAIGN_LAST_EPISODE: i64 = 1;
 /// The first campaign map (`M1`).
 pub const DOOM_CAMPAIGN_FIRST_MAP: i64 = 1;
 /// The last campaign map (`M9`).
@@ -87,12 +93,13 @@ const DOOM_SKILL_MAX: i64 = 4;
 /// The Doom campaign coordinates + terminal flag the autoplay loop tracks
 /// (binding name, G-255).
 ///
-/// Storage unit: integer `episode`/`map`/`skill`/`seed` (G-187). The bounds are
-/// `episode 1..=4 × map 1..=9`; [`DoomCampaign::advance`] walks them and returns
-/// `None` at the final level (completion).
+/// Storage unit: integer `episode`/`map`/`skill`/`seed` (G-187). The campaign is
+/// the single shareware episode `episode == E1 (1)` with `map 1..=9`;
+/// [`DoomCampaign::advance`] walks the maps and returns `None` at E1M9
+/// (completion — no episode wrap).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DoomCampaign {
-    /// Current episode (`1..=4`).
+    /// Current episode (always `E1 (1)`).
     pub episode: i64,
     /// Current map (`1..=9`).
     pub map: i64,
@@ -123,13 +130,13 @@ impl DoomCampaign {
         }
     }
 
-    /// Whether the campaign is at the final level (`E4M9`).
+    /// Whether the campaign is at the final level (`E1M9`).
     pub fn at_final_level(&self) -> bool {
         self.episode == DOOM_CAMPAIGN_LAST_EPISODE && self.map == DOOM_CAMPAIGN_LAST_MAP
     }
 
-    /// Advance one level: `map + 1`, or `episode + 1` / `map = 1` when the map
-    /// wraps, or `None` at `E4M9` (the completion signal).
+    /// Advance one level within the single shareware episode: `map + 1`, or
+    /// `None` at `E1M9` (the completion signal — there is no episode wrap).
     ///
     /// A campaign already marked `completed` never advances (idempotent).
     pub fn advance(&self) -> Option<DoomCampaign> {
@@ -139,12 +146,6 @@ impl DoomCampaign {
         if self.map < DOOM_CAMPAIGN_LAST_MAP {
             Some(DoomCampaign {
                 map: self.map + 1,
-                ..*self
-            })
-        } else if self.episode < DOOM_CAMPAIGN_LAST_EPISODE {
-            Some(DoomCampaign {
-                episode: self.episode + 1,
-                map: DOOM_CAMPAIGN_FIRST_MAP,
                 ..*self
             })
         } else {
@@ -243,15 +244,14 @@ impl DoomSave {
     }
 
     /// Parse a persisted save, rejecting anything outside the pinned contract:
-    /// an unknown `version`, an `episode`/`map` outside the campaign bounds
-    /// (`1..=4` / `1..=9`), or a `skill` outside `0..=4` yields `None`. Never
-    /// panics — malformed JSON is simply "no save".
+    /// a version other than [`DOOM_SAVE_VERSION`] (notably a legacy `1` save), an
+    /// `episode` outside the single shareware episode `E1`, a `map` outside
+    /// `1..=9`, or a `skill` outside `0..=4` yields `None`. Never panics —
+    /// malformed JSON is simply "no save".
     ///
-    /// The campaign **upper** bound is enforced here (not only the non-positive
-    /// lower bound): CU-1's live spike (`spikes/2972-doom-resume/campaign-surface.md`
-    /// §4) shows the engine does **not** reject an out-of-range episode — `episode 5`
-    /// is a **fatal** path that kills the API daemon — so this parse gate must
-    /// reject it before ST-5 ever builds a `POST /api/episode` (NFR-3/AC4).
+    /// The campaign bounds are enforced here so an out-of-set coordinate (E2/E4 or
+    /// a map past `E1M9`) is rejected as "no save" (a clean E1 run) rather than
+    /// ever being persisted or resumed — the bundled `DOOM1.WAD` has no E2/E4.
     pub fn parse(text: &str) -> Option<DoomSave> {
         let save: DoomSave = serde_json::from_str(text).ok()?;
         save.validate()?;
@@ -595,7 +595,7 @@ mod tests {
 
     #[test]
     fn the_binding_constants_are_pinned() {
-        assert_eq!(DOOM_SAVE_VERSION, 1);
+        assert_eq!(DOOM_SAVE_VERSION, 2);
         assert_eq!(DOOM_SAVE_FEATURE_ID, "doom");
         assert_eq!(DOOM_SAVE_TABLE_NAME, "save");
         assert_eq!(DOOM_SAVE_ROW_ID, "singleton");
@@ -603,7 +603,7 @@ mod tests {
         assert_eq!(DOOM_SAVE_FORCE_FAIL_ENV, "FREDO_DOOM_SAVE_FORCE_FAIL");
         assert_eq!(DEFAULT_DOOM_SAVE_STATE_DIR, ".opencode/tmp/3011/doom-save");
         assert_eq!(DOOM_CAMPAIGN_FIRST_EPISODE, 1);
-        assert_eq!(DOOM_CAMPAIGN_LAST_EPISODE, 4);
+        assert_eq!(DOOM_CAMPAIGN_LAST_EPISODE, 1);
         assert_eq!(DOOM_CAMPAIGN_FIRST_MAP, 1);
         assert_eq!(DOOM_CAMPAIGN_LAST_MAP, 9);
         assert_eq!(DOOM_DEFAULT_SKILL, 3);
@@ -693,13 +693,26 @@ mod tests {
         );
 
         // Out-of-contract rows route through `validate` and yield `None`.
+        // A legacy v1 save (Freedoom-era four-episode schema) is "no save".
+        let mut legacy_v1 = save.to_row();
+        legacy_v1.insert("version".to_string(), json!(1));
+        assert_eq!(
+            DoomSave::from_row(&legacy_v1),
+            None,
+            "a v1 save must parse to no save (clean run)"
+        );
+
         let mut unknown_version = save.to_row();
-        unknown_version.insert("version".to_string(), json!(2));
+        unknown_version.insert("version".to_string(), json!(3));
         assert_eq!(DoomSave::from_row(&unknown_version), None);
 
-        let mut episode_five = save.to_row();
-        episode_five.insert("episode".to_string(), json!(5));
-        assert_eq!(DoomSave::from_row(&episode_five), None);
+        // Any episode other than E1 is out of the single shareware set.
+        let mut episode_two = save.to_row();
+        episode_two.insert("episode".to_string(), json!(2));
+        assert_eq!(DoomSave::from_row(&episode_two), None);
+        let mut episode_four = save.to_row();
+        episode_four.insert("episode".to_string(), json!(4));
+        assert_eq!(DoomSave::from_row(&episode_four), None);
 
         let mut map_ten = save.to_row();
         map_ten.insert("map".to_string(), json!(10));
@@ -720,9 +733,15 @@ mod tests {
         // Valid.
         assert_eq!(DoomSave::parse(&sample().serialize()), Some(sample()));
 
-        // Unknown version.
+        // A legacy v1 save (Freedoom-era four-episode schema) parses to "no save"
+        // — the version bump is the migration: a v1 E4 save must NOT resume.
+        let mut legacy_v1 = sample();
+        legacy_v1.version = 1;
+        assert_eq!(DoomSave::parse(&legacy_v1.serialize()), None);
+
+        // Unknown / future version.
         let mut unknown_version = sample();
-        unknown_version.version = 2;
+        unknown_version.version = 3;
         assert_eq!(DoomSave::parse(&unknown_version.serialize()), None);
 
         // Non-positive episode / map.
@@ -739,8 +758,14 @@ mod tests {
         negative_map.map = -9;
         assert_eq!(DoomSave::parse(&negative_map.serialize()), None);
 
-        // Out-of-campaign episode / map. `episode 5` is a FATAL engine path
-        // (CU-1 spike §4: it kills the API daemon), so it must never parse.
+        // Out-of-campaign episode / map. The bundled shareware WAD is
+        // single-episode, so an E2 or E4 coordinate must never parse.
+        let mut episode_two = sample();
+        episode_two.episode = 2;
+        assert_eq!(DoomSave::parse(&episode_two.serialize()), None);
+        let mut episode_four = sample();
+        episode_four.episode = 4;
+        assert_eq!(DoomSave::parse(&episode_four.serialize()), None);
         let mut episode_five = sample();
         episode_five.episode = 5;
         assert_eq!(DoomSave::parse(&episode_five.serialize()), None);
@@ -748,10 +773,11 @@ mod tests {
         map_ten.map = 10;
         assert_eq!(DoomSave::parse(&map_ten.serialize()), None);
 
-        // The campaign's final coordinate is accepted verbatim.
+        // The single-episode campaign's final coordinate is accepted verbatim.
         let mut final_level = sample();
         final_level.episode = DOOM_CAMPAIGN_LAST_EPISODE;
         final_level.map = DOOM_CAMPAIGN_LAST_MAP;
+        assert_eq!(final_level.episode, 1);
         assert_eq!(DoomSave::parse(&final_level.serialize()), Some(final_level));
 
         // Skill outside 0..=4.
@@ -799,60 +825,60 @@ mod tests {
     }
 
     #[test]
-    fn campaign_advance_walks_maps_then_wraps_episodes_and_completes_at_e4m9() {
+    fn campaign_advance_walks_the_maps_to_e1m9_and_completes() {
         let start = DoomCampaign::initial();
-        // Map + 1.
+        // Map + 1 within the single shareware episode.
         assert_eq!(start.advance().map(|c| (c.episode, c.map)), Some((1, 2)));
 
-        // Wrap at the end of an episode: E1M9 → E2M1.
-        let wrap = DoomCampaign {
+        // An explicit mid-episode advance: E1M5 → E1M6.
+        let e1m5 = DoomCampaign {
+            episode: 1,
+            map: 5,
+            ..start
+        };
+        let e1m6 = e1m5.advance().expect("E1M5 advances to E1M6");
+        assert_eq!((e1m6.episode, e1m6.map), (1, 6));
+        assert!(!e1m6.at_final_level());
+
+        // Completion at E1M9 — no episode wrap (never E2M1).
+        let e1m9 = DoomCampaign {
             episode: 1,
             map: DOOM_CAMPAIGN_LAST_MAP,
             ..start
         };
-        assert_eq!(wrap.advance().map(|c| (c.episode, c.map)), Some((2, 1)));
-
-        // Wrap again: E3M9 → E4M1.
-        let wrap3 = DoomCampaign {
-            episode: 3,
-            map: DOOM_CAMPAIGN_LAST_MAP,
-            ..start
-        };
-        assert_eq!(wrap3.advance().map(|c| (c.episode, c.map)), Some((4, 1)));
-
-        // Final level → completion (None).
-        let final_level = DoomCampaign {
-            episode: DOOM_CAMPAIGN_LAST_EPISODE,
-            map: DOOM_CAMPAIGN_LAST_MAP,
-            ..start
-        };
-        assert!(final_level.at_final_level());
-        assert_eq!(final_level.advance(), None);
+        assert!(e1m9.at_final_level());
+        assert_eq!(
+            e1m9.advance(),
+            None,
+            "E1M9 completes; the campaign never wraps into E2"
+        );
 
         // A completed campaign never advances.
         let completed = DoomCampaign {
             completed: true,
-            ..start
+            ..e1m9
         };
         assert_eq!(completed.advance(), None);
 
-        // A full walk terminates at E4M9 and preserves skill/seed throughout.
+        // A full walk terminates at E1M9 (9 maps, single episode) and preserves
+        // skill/seed throughout.
         let mut campaign = DoomCampaign::initial();
         let mut visited = 1;
         while let Some(next) = campaign.advance() {
+            assert_eq!(next.episode, 1, "every visited coordinate stays in E1");
             assert_eq!(next.skill, DOOM_DEFAULT_SKILL);
             assert_eq!(next.seed, DOOM_DEFAULT_SEED);
             campaign = next;
             visited += 1;
         }
-        assert_eq!((campaign.episode, campaign.map), (4, 9));
-        assert_eq!(visited, 36); // 4 episodes × 9 maps.
+        assert_eq!((campaign.episode, campaign.map), (1, 9));
+        assert_eq!(visited, 9, "single episode × 9 maps");
     }
 
     #[test]
     fn campaign_save_round_trips() {
         let campaign = DoomCampaign {
-            episode: 2,
+            episode: 1,
             map: 3,
             skill: 4,
             seed: 7,
@@ -960,7 +986,7 @@ mod tests {
     #[test]
     fn resolve_start_campaign_prefers_fresh_then_loaded_then_initial() {
         let loaded = DoomCampaign {
-            episode: 2,
+            episode: 1,
             map: 5,
             skill: 1,
             seed: 7,

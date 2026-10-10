@@ -119,14 +119,14 @@ mod tests {
         writer.record(&campaign(1, 3));
         let completed = DoomCampaign {
             completed: true,
-            ..campaign(4, 9)
+            ..campaign(1, 9)
         };
         writer.record(&completed);
 
         let recorded = seen.lock().expect("lock");
         assert_eq!(recorded.len(), 3);
         let last = recorded.last().expect("last");
-        assert_eq!((last.episode, last.map), (4, 9));
+        assert_eq!((last.episode, last.map), (1, 9));
         assert!(last.completed);
     }
 

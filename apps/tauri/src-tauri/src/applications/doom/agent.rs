@@ -990,7 +990,7 @@ mod tests {
             &source,
             &config(4, 3),
             AutoplayRun {
-                campaign: campaign(2, 3),
+                campaign: campaign(1, 3),
                 progress,
             },
             &stop,
@@ -999,7 +999,7 @@ mod tests {
         .await;
 
         // Exactly ONE resume positioning, with the resolved coords.
-        assert_eq!(engine.episode_calls(), vec![(2, 3)]);
+        assert_eq!(engine.episode_calls(), vec![(1, 3)]);
         let calls = engine.calls();
         let first_episode = calls
             .iter()
@@ -1201,37 +1201,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_level_exit_wraps_to_the_next_episode() {
-        let engine = FakeEngine::default();
-        engine.queue_get(state_at(5, true, false, 1, 9));
-        let source = FakeSource::repeating(Ok(decision(1)));
-        let stop = AtomicBool::new(false);
-        let (progress, seen) = recording_progress();
-
-        let _ = run_autoplay_loop(
-            &engine,
-            6666,
-            &source,
-            &config(4, 3),
-            AutoplayRun {
-                campaign: campaign(1, 9),
-                progress,
-            },
-            &stop,
-            |_| {},
-        )
-        .await;
-
-        assert_eq!(engine.episode_calls(), vec![(1, 9), (2, 1)]);
-        let recorded = seen.lock().unwrap().clone();
-        assert_eq!((recorded[0].episode, recorded[0].map), (2, 1));
-        assert!(!recorded[0].completed);
-    }
-
-    #[tokio::test]
     async fn a_death_restarts_the_same_level_without_advancing_or_persisting() {
         let engine = FakeEngine::default();
-        engine.queue_get(state_at(7, false, true, 2, 5));
+        engine.queue_get(state_at(7, false, true, 1, 5));
         let source = FakeSource::repeating(Ok(decision(1)));
         let stop = AtomicBool::new(false);
         let (progress, seen) = recording_progress();
@@ -1242,7 +1214,7 @@ mod tests {
             &source,
             &config(4, 3),
             AutoplayRun {
-                campaign: campaign(2, 5),
+                campaign: campaign(1, 5),
                 progress,
             },
             &stop,
@@ -1251,7 +1223,7 @@ mod tests {
         .await;
 
         // The death restart re-issues the SAME level coords — never an advance.
-        assert_eq!(engine.episode_calls(), vec![(2, 5), (2, 5)]);
+        assert_eq!(engine.episode_calls(), vec![(1, 5), (1, 5)]);
         assert!(
             seen.lock().unwrap().is_empty(),
             "death never advances and never persists a new point"
@@ -1330,8 +1302,9 @@ mod tests {
     #[tokio::test]
     async fn completion_at_the_final_level_persists_completed_and_stops() {
         let engine = FakeEngine::default();
-        // A level exit at the final campaign level (E4M9).
-        engine.queue_get(state_at(9, true, false, 4, 9));
+        // A level exit at the final campaign level (E1M9 — the single shareware
+        // episode; there is no E2/E4).
+        engine.queue_get(state_at(9, true, false, 1, 9));
         let source = FakeSource::repeating(Ok(decision(1)));
         let stop = AtomicBool::new(false);
         let (progress, seen) = recording_progress();
@@ -1343,7 +1316,7 @@ mod tests {
             &source,
             &config(10, 3),
             AutoplayRun {
-                campaign: campaign(4, 9),
+                campaign: campaign(1, 9),
                 progress,
             },
             &stop,
@@ -1356,11 +1329,12 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.phase, DoomAutoplayPhase::Completed);
         assert_eq!(result.code, Some(DoomAutoplayErrorCode::CampaignComplete));
-        // Positioning only — the final level is not re-entered.
-        assert_eq!(engine.episode_calls(), vec![(4, 9)]);
+        // Positioning only — the final level is not re-entered, and the campaign
+        // never wraps into a second episode.
+        assert_eq!(engine.episode_calls(), vec![(1, 9)]);
         let recorded = seen.lock().unwrap().clone();
         assert_eq!(recorded.len(), 1);
-        assert_eq!((recorded[0].episode, recorded[0].map), (4, 9));
+        assert_eq!((recorded[0].episode, recorded[0].map), (1, 9));
         assert!(recorded[0].completed, "completion persists completed=true");
         let last = statuses.last().unwrap();
         assert_eq!(last.phase, DoomAutoplayPhase::Completed);
@@ -1375,7 +1349,7 @@ mod tests {
         let stop = AtomicBool::new(false);
         let completed = DoomCampaign {
             completed: true,
-            ..campaign(4, 9)
+            ..campaign(1, 9)
         };
         let mut statuses: Vec<DoomAutoplayStatus> = Vec::new();
 
@@ -1410,7 +1384,7 @@ mod tests {
         let last = statuses.last().unwrap();
         assert_eq!(last.phase, DoomAutoplayPhase::Completed);
         assert!(last.completed);
-        assert_eq!((last.episode, last.map), (Some(4), Some(9)));
+        assert_eq!((last.episode, last.map), (Some(1), Some(9)));
     }
 
     #[tokio::test]
