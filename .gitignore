@@ -207,12 +207,17 @@ apps/browser-extension-svelte
 !vendor/restful-doom/**/
 !vendor/restful-doom/**
 
-# Everything the provisioning path PRODUCES stays untracked: the staged engine
-# and its DLL closure land in <install_dir> (app-data, outside the repo by
-# default), the IWAD is a pinned download, and the build scratch/marker live
-# under <install_dir>. These guards catch any in-repo <install_dir> override
-# (e.g. a test dir). No compiled engine binary and no WAD is ever committed.
+# The native engine (Spec #3023) is an in-process cargo dependency (`neurodoom`);
+# nothing is produced at runtime and no engine binary is committed. These guards
+# remain so any stale in-repo <install_dir> override from the retired RESTful-DOOM
+# provisioning path stays untracked, and stray/unmanaged WADs (downloads, test
+# fixtures) stay ignored.
 restful-doom.exe
 *.wad
+# ... EXCEPT the bundled shareware `DOOM1.WAD`, which IS the game data the native
+# engine embeds at build time (`include_bytes!`) and MUST be tracked so every
+# clone/CI checkout has it (Spec #3023). The negation below re-includes it after
+# the `*.wad` rule above; all other WADs remain ignored.
+!apps/tauri/src-tauri/doom/DOOM1.WAD
 .restful-doom-commit
 .restful-doom-runtime-dlls
