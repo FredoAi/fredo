@@ -164,7 +164,7 @@ Precedence is **CLI flag > environment variable > default**. The daemon never ov
 - **Owns the cluster.** Starts the embedded PostgreSQL cluster via the existing supervisor and holds the exclusive data-dir lock; a second `fredo ingest` (or the GUI's own cluster start) fails fast with a clear message instead of starting a second postmaster.
 - **GUI attach.** When a headless daemon owns the cluster, launching the GUI **attaches** to that same cluster/data dir/credential (status `attached`) rather than starting its own; it never starts or later stops a postmaster.
 - **Bounded shutdown (G-263).** On SIGINT, the shutdown file, or `--run-ms`, the daemon drains and flushes the write-behind queue, closes the pool, stops the cluster within a finite bound (hard-kill fallback on expiry), releases the lock, and clears its descriptor — no orphan postmaster.
-- **Loopback only.** PostgreSQL binds an ephemeral `127.0.0.1` port; the OTLP receivers bind `127.0.0.1:4317`/`:4318`, exactly like the GUI.
+- **Loopback only.** PostgreSQL binds an ephemeral `127.0.0.1` port by default — or the port pinned in the shared Settings → **Database** configuration (Spec #3022), along with its log verbosity; the OTLP receivers bind `127.0.0.1:4317`/`:4318`, exactly like the GUI.
 - **Markers untouched.** The daemon never reads or writes the one-shot `rtdb.backfill.*` markers and never writes `telemetry_spans` from the backfill path.
 
 > **Login auto-start.** Settings → **Ingest** installs a per-user login entry that runs `fredo ingest` at sign-in; disabling it removes the entry. OS-level service installation (Windows Service / systemd / launchd daemon) and elevation are out of scope.
