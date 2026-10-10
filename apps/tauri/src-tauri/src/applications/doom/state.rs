@@ -1,20 +1,27 @@
 //! Doom runtime lifecycle state + shared contract (Spec #2968, ST-2).
 //!
 //! This module is the SINGLE producer of the Doom runtime contract every other
-//! Doom sub-task compiles against: the managed-child handle, the Tauri-managed
-//! state, the phase/error vocabularies, the launch/status wire models, the
-//! bounded-timeout constants, and the AppStore/env keys.
+//! Doom sub-task compiles against: the phase/error vocabularies, the
+//! launch/status wire models, the bounded-timeout constants, and the AppStore/env
+//! keys.
 //!
-//! Nothing here performs I/O, spawns a process, or speaks HTTP — the lifecycle
-//! ([`super::process`]) and the command surface ([`super::commands`]) consume
-//! this shape. The engine is GPL and runs as an arm's-length separate process
-//! over loopback; this module never links it.
+//! Spec #3023 ST-2 moved the runtime onto the native in-process engine adapter
+//! ([`super::engine`]); the `port` / `pid` / `enginePath` wire fields are dropped
+//! and the native engine's typed failures are bridged onto [`DoomErrorCode`]
+//! (see the `From<DoomEngineErrorCode>` impl).
+//!
+//! The out-of-process surface ([`ManagedDoom`] / [`DoomRuntimeState`]) is
+//! retained ONLY as a compile shim for the not-yet-removed loopback HTTP client
+//! ([`super::client`], slated for ST-6) consumed by the not-yet-rewired autoplay
+//! loop ([`super::agent`], ST-3). It is never populated by the command surface.
 
 use std::path::PathBuf;
 use std::process::Child;
 use std::sync::Mutex;
 
 use serde::Serialize;
+
+use super::engine::DoomEngineErrorCode;
 
 // ── Bounded-timeout constants (G-263: every wait is finite) ───────────────────
 //
@@ -133,6 +140,15 @@ pub enum DoomErrorCode {
     /// cancelled, so Doom Mode could not be entered. The typed
     /// [`super::provision::DoomProvisionErrorCode`] carries the cause.
     ProvisionFailed,
+    /// Spec #3023 ST-2: the bundled game data (`DOOM1.WAD`) was not found at the
+    /// resolved path. Mirrors [`DoomEngineErrorCode::WadMissing`] on the wire.
+    WadMissing,
+    /// Spec #3023 ST-2: the bundled game data exists but could not be read or
+    /// parsed as a valid IWAD. Mirrors [`DoomEngineErrorCode::WadCorrupt`].
+    WadCorrupt,
+    /// Spec #3023 ST-2: the native in-process engine failed to start or a level
+    /// could not be loaded. Mirrors [`DoomEngineErrorCode::EngineStartFailed`].
+    EngineStartFailed,
 }
 
 impl DoomErrorCode {
@@ -148,6 +164,9 @@ impl DoomErrorCode {
             DoomErrorCode::FrameNotReady => "frameNotReady",
             DoomErrorCode::ProvisionRequired => "provisionRequired",
             DoomErrorCode::ProvisionFailed => "provisionFailed",
+            DoomErrorCode::WadMissing => "wadMissing",
+            DoomErrorCode::WadCorrupt => "wadCorrupt",
+            DoomErrorCode::EngineStartFailed => "engineStartFailed",
         }
     }
 
@@ -164,7 +183,26 @@ impl DoomErrorCode {
             "frameNotReady" => Some(DoomErrorCode::FrameNotReady),
             "provisionRequired" => Some(DoomErrorCode::ProvisionRequired),
             "provisionFailed" => Some(DoomErrorCode::ProvisionFailed),
+            "wadMissing" => Some(DoomErrorCode::WadMissing),
+            "wadCorrupt" => Some(DoomErrorCode::WadCorrupt),
+            "engineStartFailed" => Some(DoomErrorCode::EngineStartFailed),
             _ => None,
+        }
+    }
+}
+
+/// Bridge the native engine adapter's typed failure vocabulary
+/// ([`DoomEngineErrorCode`]) onto the shared wire vocabulary ([`DoomErrorCode`]).
+///
+/// The three native classes are the UI/UX-bound error surface
+/// (`wadMissing` / `wadCorrupt` / `engineStartFailed`); this `From` impl is the
+/// single mapping so the command layer never re-derives the code strings.
+impl From<DoomEngineErrorCode> for DoomErrorCode {
+    fn from(code: DoomEngineErrorCode) -> Self {
+        match code {
+            DoomEngineErrorCode::WadMissing => DoomErrorCode::WadMissing,
+            DoomEngineErrorCode::WadCorrupt => DoomErrorCode::WadCorrupt,
+            DoomEngineErrorCode::EngineStartFailed => DoomErrorCode::EngineStartFailed,
         }
     }
 }
@@ -209,6 +247,10 @@ pub struct DoomRuntimeState(pub Mutex<Option<ManagedDoom>>);
 // ── Wire models (camelCase, IPC) ──────────────────────────────────────────────
 
 /// Result of `launch_doom_runtime` — always returned, never a hang.
+///
+/// Spec #3023 ST-2: the out-of-process surface is gone, so the process-only
+/// fields (`port` / `pid` / `enginePath`) are DROPPED — the native engine runs
+/// in-process with no child and no loopback port.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DoomLaunchResult {
@@ -216,12 +258,6 @@ pub struct DoomLaunchResult {
     pub success: bool,
     /// The phase after the launch attempt.
     pub phase: DoomRuntimePhase,
-    /// The bound loopback port, once ready.
-    pub port: Option<u16>,
-    /// The managed engine PID, once ready.
-    pub pid: Option<u32>,
-    /// The resolved **absolute** engine executable path, once resolved.
-    pub engine_path: Option<String>,
     /// Human-readable failure detail, when `success` is false.
     pub error: Option<String>,
     /// The typed failure code, when `success` is false.
@@ -229,19 +265,15 @@ pub struct DoomLaunchResult {
 }
 
 /// Read-only status snapshot (`get_doom_status` / `doom-status-changed`).
+///
+/// Spec #3023 ST-2: `port` / `pid` / `enginePath` are dropped (in-process engine).
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DoomStatus {
     /// The current lifecycle phase.
     pub phase: DoomRuntimePhase,
-    /// Whether a live managed child exists.
+    /// Whether a live session exists.
     pub running: bool,
-    /// The bound loopback port, when running.
-    pub port: Option<u16>,
-    /// The managed engine PID, when running.
-    pub pid: Option<u32>,
-    /// The resolved **absolute** engine executable path, when running.
-    pub engine_path: Option<String>,
     /// The last recorded error message, if any.
     pub last_error: Option<String>,
     /// The typed code paired with `last_error`, if any.
@@ -285,6 +317,9 @@ mod tests {
             DoomErrorCode::FrameNotReady,
             DoomErrorCode::ProvisionRequired,
             DoomErrorCode::ProvisionFailed,
+            DoomErrorCode::WadMissing,
+            DoomErrorCode::WadCorrupt,
+            DoomErrorCode::EngineStartFailed,
         ];
         for code in all {
             let wire = serde_json::to_string(&code).expect("serialize");
@@ -309,39 +344,52 @@ mod tests {
         let result = DoomLaunchResult {
             success: false,
             phase: DoomRuntimePhase::Error,
-            port: None,
-            pid: None,
-            engine_path: None,
             error: Some("boom".to_string()),
-            code: Some(DoomErrorCode::ReadyTimeout),
+            code: Some(DoomErrorCode::EngineStartFailed),
         };
         let value = serde_json::to_value(&result).expect("serialize");
         assert_eq!(value["success"], false);
         assert_eq!(value["phase"], "error");
-        assert_eq!(value["code"], "readyTimeout");
-        assert!(value["port"].is_null());
-        assert!(value["enginePath"].is_null());
+        assert_eq!(value["code"], "engineStartFailed");
+        // The process-only fields are dropped (no child, no port).
+        assert!(value.get("port").is_none());
+        assert!(value.get("pid").is_none());
+        assert!(value.get("enginePath").is_none());
 
         let status = DoomStatus {
             phase: DoomRuntimePhase::Ready,
             running: true,
-            port: Some(6666),
-            pid: Some(4242),
-            engine_path: Some(r"C:\app\doom\engine\restful-doom.exe".to_string()),
             last_error: None,
             code: None,
         };
         let value = serde_json::to_value(&status).expect("serialize");
         assert_eq!(value["phase"], "ready");
         assert_eq!(value["running"], true);
-        assert_eq!(value["port"], 6666);
-        assert_eq!(value["pid"], 4242);
-        assert_eq!(
-            value["enginePath"],
-            r"C:\app\doom\engine\restful-doom.exe"
-        );
         assert!(value["lastError"].is_null());
         assert!(value["code"].is_null());
+        assert!(value.get("port").is_none());
+        assert!(value.get("pid").is_none());
+        assert!(value.get("enginePath").is_none());
+    }
+
+    #[test]
+    fn native_engine_error_codes_bridge_onto_the_wire_vocabulary() {
+        assert_eq!(
+            DoomErrorCode::from(DoomEngineErrorCode::WadMissing),
+            DoomErrorCode::WadMissing
+        );
+        assert_eq!(
+            DoomErrorCode::from(DoomEngineErrorCode::WadCorrupt),
+            DoomErrorCode::WadCorrupt
+        );
+        assert_eq!(
+            DoomErrorCode::from(DoomEngineErrorCode::EngineStartFailed),
+            DoomErrorCode::EngineStartFailed
+        );
+        // The wire strings are the camelCase codes the UI/UX + QA classes bind to.
+        assert_eq!(DoomErrorCode::WadMissing.as_str(), "wadMissing");
+        assert_eq!(DoomErrorCode::WadCorrupt.as_str(), "wadCorrupt");
+        assert_eq!(DoomErrorCode::EngineStartFailed.as_str(), "engineStartFailed");
     }
 
     #[test]

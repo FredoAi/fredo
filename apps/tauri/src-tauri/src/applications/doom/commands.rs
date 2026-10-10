@@ -1,19 +1,22 @@
-//! Doom runtime lifecycle commands (Spec #2968, ST-3/ST-3b/ST-3c; G-263 bounded).
+//! Doom runtime lifecycle commands (Spec #2968 ST-3; Spec #3023 ST-2).
 //!
-//! Owns the out-of-process engine end to end: `launch_doom_runtime` (idempotent
-//! exactly-one spawn + bounded readiness), `stop_doom_runtime` (bounded graceful
-//! stop with a hard-kill fallback), `get_doom_status`, and the synchronous
-//! teardown entry points wired to the window `CloseRequested` handler and the
-//! `RunEvent::Exit` hook.
+//! Owns the **in-process native engine** end to end: `launch_doom_runtime`
+//! (idempotent exactly-one session), `stop_doom_runtime` (take-and-drop),
+//! `get_doom_status`, the parity control surface (`doom_read_state` / `doom_step`
+//! / `doom_frame`), and the synchronous teardown entry points wired to the window
+//! `CloseRequested` handler and the `RunEvent::Exit` hook.
 //!
-//! NO acquisition, NO HTTP client, NO window UI: resolution here is the
-//! configured/overridden path only (ST-4 extends it), and readiness is a bounded
-//! loopback TCP probe (ST-5 refines it to `/api/state`).
+//! Spec #3023 ST-2 replaced the out-of-process GPL engine + loopback HTTP bridge
+//! (`client.rs` / `process.rs` / `resolver.rs` / `acquisition.rs`) with the native
+//! in-process adapter ([`super::engine`]). There is **no child process, no PID, no
+//! port, no readiness poll**: the command surface routes every call through the
+//! Tauri-managed [`DoomEngineState`] via `spawn_blocking`, and teardown is
+//! take-and-drop — so no orphan is constructible (G-263).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::infrastructure::comm::bus::EventBus;
@@ -27,6 +30,7 @@ use super::autoplay::{
     DoomAutoplayErrorCode, DoomAutoplayPhase, DoomAutoplayResult, DoomAutoplayStatus,
 };
 use super::decision;
+use super::engine::{DoomEngineError, DoomEngineErrorCode, DoomEngineState};
 use super::progress::DoomProgressWriter;
 use super::save::{self, DoomCampaign, DoomSaveStatus};
 use super::mode::{
@@ -34,55 +38,103 @@ use super::mode::{
     DOOM_MODE_EVENT,
 };
 use super::state::{
-    derive_phase, DoomErrorCode, DoomLaunchResult, DoomRuntimePhase, DoomRuntimeState, DoomStatus,
-    DEFAULT_DOOM_PORT, DOOM_EXIT_HOOK_BOUND, DOOM_INSTALL_DIR_KEY, DOOM_LAST_ERROR_CODE_KEY,
-    DOOM_LAST_ERROR_KEY, DOOM_PORT_KEY, DOOM_READY_TIMEOUT_ENV, DOOM_READY_TIMEOUT_S,
-    DOOM_STATUS_EVENT, DOOM_STOP_TIMEOUT_ENV, DOOM_STOP_TIMEOUT_S, DOOM_WINDOW_LABEL,
+    derive_phase, DoomErrorCode, DoomLaunchResult, DoomRuntimePhase, DoomStatus,
+    DOOM_INSTALL_DIR_KEY, DOOM_LAST_ERROR_CODE_KEY, DOOM_LAST_ERROR_KEY, DOOM_STATUS_EVENT,
+    DOOM_WINDOW_LABEL,
 };
-use super::{acquisition, client, failure_seam, process, provision, resolver};
+use super::{client, process, provision};
 
-/// Readiness poll cadence.
-const READY_POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// The default campaign map the native engine constructs at (E1M1).
+const DOOM_DEFAULT_MAP: i64 = 1;
+/// The default skill (matches the retired launch argv `-skill 3`).
+const DOOM_DEFAULT_SKILL: i64 = 3;
+
+// ── Command wire models (Spec #3023 ST-2) ─────────────────────────────────────
+//
+// The response shapes the `doom` window consumes. Moved here from the retired
+// HTTP client (`client.rs`) so the command surface no longer depends on it; the
+// camelCase wire shapes are unchanged (`{raw}` / `{state}` / `{pngBase64}`).
+
+/// `doom_read_state` result — the engine observation, verbatim.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DoomStateView {
+    /// The engine's observation JSON, unmodified.
+    pub raw: serde_json::Value,
+}
+
+/// `doom_step` result — the post-step observation, verbatim.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DoomStepResult {
+    /// The engine's post-step observation JSON, unmodified.
+    pub state: serde_json::Value,
+}
+
+/// `doom_frame` result — a renderable base64 PNG (no data-URI prefix).
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DoomFrame {
+    /// Base64-encoded PNG bytes (no data-URI prefix).
+    pub png_base64: String,
+}
+
+/// The typed command error surface (`{ code, message }`, camelCase over IPC).
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DoomCommandError {
+    /// The typed failure code (the UI/UX error vocabulary).
+    pub code: DoomErrorCode,
+    /// Human-readable detail (safe to log/show).
+    pub message: String,
+}
+
+impl DoomCommandError {
+    /// A typed command error.
+    pub fn new(code: DoomErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    /// The typed error for a control call with no live session.
+    pub fn not_running() -> Self {
+        Self::new(DoomErrorCode::RequestFailed, "the Doom engine is not running")
+    }
+}
+
+impl From<DoomEngineError> for DoomCommandError {
+    fn from(error: DoomEngineError) -> Self {
+        Self {
+            code: DoomErrorCode::from(error.code),
+            message: error.message,
+        }
+    }
+}
+
+/// Run one synchronous engine call on the blocking pool.
+///
+/// The native engine is CPU-bound and synchronous; the async command awaits it
+/// off the async runtime thread. A task panic maps to a typed
+/// [`DoomEngineErrorCode::EngineStartFailed`] instead of wedging the caller.
+async fn run_engine<T>(
+    task: impl FnOnce() -> Result<T, DoomEngineError> + Send + 'static,
+) -> Result<T, DoomEngineError>
+where
+    T: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .unwrap_or_else(|join_error| {
+            Err(DoomEngineError::new(
+                DoomEngineErrorCode::EngineStartFailed,
+                format!("the Doom engine task failed: {join_error}"),
+            ))
+        })
+}
 
 // ── State helpers ─────────────────────────────────────────────────────────────
-
-/// A poisoned lock must never take down the app — recover the guard.
-fn lock_state(state: &DoomRuntimeState) -> MutexGuard<'_, Option<super::state::ManagedDoom>> {
-    state
-        .0
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-/// `Some((port, pid, engine_path))` iff a live managed child exists. A child that
-/// has exited is reaped out of the state and its PID marker cleared.
-fn running_snapshot(app: &AppHandle) -> Option<(u16, u32, String)> {
-    let state = app.state::<DoomRuntimeState>();
-    let mut guard = lock_state(&state);
-    let had_child = guard.is_some();
-    let alive = match guard.as_mut() {
-        Some(managed) => matches!(managed.child.try_wait(), Ok(None)),
-        None => false,
-    };
-    if !alive {
-        *guard = None;
-        drop(guard);
-        if had_child {
-            persist_managed_pid(app, None);
-        }
-        return None;
-    }
-    guard
-        .as_ref()
-        .map(|managed| (managed.port, managed.pid, managed.engine_path.clone()))
-}
-
-/// Persist (or clear) the `doom_pid` marker through the SINGLE implementation in
-/// [`process::persist_pid`], so the launch WRITE and the stop CLEAR cannot drift.
-fn persist_managed_pid(app: &AppHandle, pid: Option<u32>) {
-    let store = app.state::<Arc<AppStore>>();
-    process::persist_pid(store.inner(), pid);
-}
 
 fn set_last_error(app: &AppHandle, message: &str, code: DoomErrorCode) {
     let store = app.state::<Arc<AppStore>>();
@@ -112,38 +164,6 @@ fn read_last_error(app: &AppHandle) -> (Option<String>, Option<DoomErrorCode>) {
     (message, code)
 }
 
-// ── Settings / env resolution (ST-4 extends acquisition) ─────────────────────
-
-fn env_u64(key: &str) -> Option<u64> {
-    std::env::var(key)
-        .ok()
-        .and_then(|value| value.trim().parse().ok())
-}
-
-fn setting(app: &AppHandle, key: &str) -> Option<String> {
-    app.state::<Arc<AppStore>>()
-        .cached_get(key)
-        .ok()
-        .flatten()
-}
-
-fn configured_port(app: &AppHandle) -> u16 {
-    setting(app, DOOM_PORT_KEY)
-        .and_then(|value| value.trim().parse().ok())
-        .unwrap_or(DEFAULT_DOOM_PORT)
-}
-
-/// The bounded readiness timeout, honouring the `FREDO_DOOM_READY_TIMEOUT_S` seam.
-fn ready_timeout() -> Duration {
-    Duration::from_secs(env_u64(DOOM_READY_TIMEOUT_ENV).unwrap_or(DOOM_READY_TIMEOUT_S))
-}
-
-/// The bounded graceful-stop timeout, honouring the `FREDO_DOOM_STOP_TIMEOUT_S`
-/// seam.
-fn stop_timeout() -> Duration {
-    Duration::from_secs(env_u64(DOOM_STOP_TIMEOUT_ENV).unwrap_or(DOOM_STOP_TIMEOUT_S))
-}
-
 // ── Status emission ───────────────────────────────────────────────────────────
 
 /// Emit a `doom-status-changed` transition to the `doom` window. A missing window
@@ -151,18 +171,12 @@ fn stop_timeout() -> Duration {
 fn emit_status(
     app: &AppHandle,
     phase: DoomRuntimePhase,
-    port: Option<u16>,
-    pid: Option<u32>,
-    engine_path: Option<String>,
     last_error: Option<String>,
     code: Option<DoomErrorCode>,
 ) {
     let status = DoomStatus {
         phase,
         running: phase == DoomRuntimePhase::Ready,
-        port,
-        pid,
-        engine_path,
         last_error,
         code,
     };
@@ -176,13 +190,11 @@ fn emit_status(
     }
 }
 
-fn success_result(port: u16, pid: u32, engine_path: String) -> DoomLaunchResult {
+/// A successful launch result.
+fn ready_result() -> DoomLaunchResult {
     DoomLaunchResult {
         success: true,
         phase: DoomRuntimePhase::Ready,
-        port: Some(port),
-        pid: Some(pid),
-        engine_path: Some(engine_path),
         error: None,
         code: None,
     }
@@ -192,349 +204,137 @@ fn success_result(port: u16, pid: u32, engine_path: String) -> DoomLaunchResult 
 /// structured result.
 fn fail(app: &AppHandle, code: DoomErrorCode, detail: String) -> DoomLaunchResult {
     set_last_error(app, &detail, code);
-    emit_status(
-        app,
-        DoomRuntimePhase::Error,
-        None,
-        None,
-        None,
-        Some(detail.clone()),
-        Some(code),
-    );
+    emit_status(app, DoomRuntimePhase::Error, Some(detail.clone()), Some(code));
     DoomLaunchResult {
         success: false,
         phase: DoomRuntimePhase::Error,
-        port: None,
-        pid: None,
-        engine_path: None,
         error: Some(detail),
         code: Some(code),
     }
 }
 
-/// Bounded readiness wait that ALSO fails fast when the child exits.
-///
-/// Readiness means "the engine can SERVE", not "the TCP port is open" (ST-4):
-/// once the loopback port accepts a connection, this polls `GET /api/state` until
-/// it answers **200**. `true` when the engine serves state; `false` when the child
-/// is gone or `bound` elapses (the caller then kills the child — G-263).
-async fn wait_ready_or_exit(
-    app: &AppHandle,
-    port: u16,
-    bound: Duration,
-    transport: &dyn client::DoomHttpTransport,
-) -> bool {
-    let deadline = Instant::now() + bound;
-    loop {
-        // The child may have exited immediately (e.g. a stub `EXIT` lever).
-        let exited = {
-            let state = app.state::<DoomRuntimeState>();
-            let mut guard = lock_state(&state);
-            match guard.as_mut() {
-                Some(managed) => matches!(managed.child.try_wait(), Ok(Some(_))),
-                None => true,
-            }
-        };
-        if exited {
-            return false;
-        }
-        // The port must accept a connection before /api/state can answer; once it
-        // does, a 200 from /api/state is the real readiness signal.
-        if process::port_is_open("127.0.0.1", port) {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return false;
-            }
-            if let Ok(Ok(_)) =
-                tokio::time::timeout(remaining, client::read_state_with(transport, port)).await
-            {
-                return true;
-            }
-        }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return false;
-        }
-        tokio::time::sleep(READY_POLL_INTERVAL.min(remaining)).await;
-    }
-}
-
 // ── Commands ──────────────────────────────────────────────────────────────────
 
-/// Launch the Doom engine (idempotent exactly-one spawn) and confirm readiness
-/// within a bounded poll.
+/// Launch the native in-process engine (idempotent exactly-one session) at the
+/// default E1M1 / skill 3.
 ///
-/// A live managed child is a healthy early return — a second launch NEVER spawns
-/// a second child (ST-3b, R-1.3). On a readiness timeout the spawned child is
-/// killed before returning `readyTimeout` (G-263) — never a left-running
-/// "pending" engine.
+/// A live session is a healthy early return — a second engine instance is NEVER
+/// constructed (REQ-1.3). Construction failures surface as typed errors
+/// (`wadMissing` / `wadCorrupt` / `engineStartFailed`) with no process and no
+/// orphan (G-263 / REQ-5.2).
 #[tauri::command]
 pub async fn launch_doom_runtime(app: AppHandle) -> DoomLaunchResult {
-    // Idempotency — an already-live engine wins immediately (R-1.3).
-    if let Some((port, pid, engine_path)) = running_snapshot(&app) {
+    let state = app.state::<DoomEngineState>().inner().clone();
+
+    // Idempotency — an already-live session wins immediately (REQ-1.3).
+    if state.is_running() {
         clear_last_error(&app);
-        return success_result(port, pid, engine_path);
+        emit_status(&app, DoomRuntimePhase::Ready, None, None);
+        return ready_result();
     }
 
-    // Engine: managed-only (#3013 AC1/AC2). The ONLY engine is the one Fredo
-    // built into the chosen install dir (`<install_dir>/engine/restful-doom.exe`).
-    // There is no PATH lookup, no configured override, and no runtime download: an
-    // absent or unbuilt managed engine reports the provisioning state and leaves
-    // the mode inactive — never a substitute.
-    let engine = match resolver::resolve_engine(&app) {
-        Some(path) => path,
-        None => {
-            return fail(
-                &app,
-                DoomErrorCode::ProvisionRequired,
-                "the managed Doom engine is not built — open Doom Mode to build it.".to_string(),
-            )
-        }
-    };
-    // IWAD: a configured-but-missing path is `notConfigured` (F-11) and never
-    // triggers a download; only an entirely unconfigured IWAD falls through to
-    // the pinned Freedoom acquisition.
-    let iwad = match resolver::resolve_iwad(&app) {
-        Some(path) if Path::new(&path).is_file() => path,
-        Some(path) => {
-            return fail(
-                &app,
-                DoomErrorCode::NotConfigured,
-                format!("the configured Doom game data (IWAD) is missing: {path}"),
-            )
-        }
-        None => match acquisition::acquire_iwad(&app).await {
-            Ok(Some(path)) => path,
-            Ok(None) => {
-                return fail(
-                    &app,
-                    DoomErrorCode::NotConfigured,
-                    "no Doom game data (IWAD) is configured — set the WAD path in Settings."
-                        .to_string(),
-                )
-            }
-            Err(detail) => return fail(&app, DoomErrorCode::AcquireFailed, detail),
-        },
-    };
-    let install_dir = match process::resolve_install_dir(&app) {
-        Ok(dir) => dir,
-        Err(detail) => return fail(&app, DoomErrorCode::SpawnFailed, detail),
-    };
-    let log_file = process::log_path(&install_dir);
+    emit_status(&app, DoomRuntimePhase::Starting, None, None);
 
-    emit_status(&app, DoomRuntimePhase::Starting, None, None, None, None, None);
-
-    let configured = configured_port(&app);
-    let port = match process::select_active_port("127.0.0.1", configured) {
-        Ok(port) => port,
-        Err(error) => {
-            return fail(
-                &app,
-                DoomErrorCode::SpawnFailed,
-                format!("port {configured} is in use and no fallback could be selected: {error}"),
-            )
+    let handle = state.clone();
+    let launched = run_engine(move || handle.launch(DOOM_DEFAULT_MAP, DOOM_DEFAULT_SKILL)).await;
+    match launched {
+        Ok(_session) => {
+            clear_last_error(&app);
+            emit_status(&app, DoomRuntimePhase::Ready, None, None);
+            ready_result()
         }
-    };
-    let args = process::build_launch_args(&iwad, port);
-
-    // The check→spawn→store decision runs under ONE synchronous lock so two
-    // concurrent launches cannot both spawn (ST-3b exactly-one). The lock is
-    // released before any `.await`.
-    let spawn: Result<(u32, u16), String> = {
-        let state = app.state::<DoomRuntimeState>();
-        let mut guard = lock_state(&state);
-        if let Some(managed) = guard.as_mut() {
-            if matches!(managed.child.try_wait(), Ok(None)) {
-                let (port, pid, engine_path) =
-                    (managed.port, managed.pid, managed.engine_path.clone());
-                drop(guard);
-                clear_last_error(&app);
-                return success_result(port, pid, engine_path);
-            }
-            if let Some(mut dead) = guard.take() {
-                process::kill_process_tree(&mut dead);
-            }
-        }
-        // AC3 failure lever (test-only, inert when unset): fail BEFORE any real
-        // spawn so no engine process is ever created when the lever is set.
-        if failure_seam::fail_engine_spawn_requested() {
-            drop(guard);
-            return fail(
-                &app,
-                DoomErrorCode::SpawnFailed,
-                "the Doom engine spawn was refused by the test seam (FREDO_DOOM_FAIL_ENGINE_SPAWN=1)."
-                    .to_string(),
-            );
-        }
-        match process::spawn_doom(&engine, &args, &log_file, port) {
-            Ok(managed) => {
-                let pid = managed.pid;
-                *guard = Some(managed);
-                Ok((pid, port))
-            }
-            Err(error) => Err(format!("failed to start {engine}: {error}")),
-        }
-    };
-    let (pid, port) = match spawn {
-        Ok(spawned) => spawned,
-        Err(detail) => return fail(&app, DoomErrorCode::SpawnFailed, detail),
-    };
-    persist_managed_pid(&app, Some(pid));
-
-    // Bounded readiness poll — readiness now means the engine can SERVE (a
-    // `GET /api/state` 200), not merely that the TCP port opened (ST-4). The
-    // child is killed before returning on timeout (G-263).
-    let timeout = ready_timeout();
-    let transport = match client::ReqwestDoomTransport::new() {
-        Ok(transport) => transport,
-        Err(detail) => {
-            let managed = {
-                let state = app.state::<DoomRuntimeState>();
-                let taken = lock_state(&state).take();
-                taken
-            };
-            if let Some(mut managed) = managed {
-                process::kill_process_tree(&mut managed);
-            }
-            persist_managed_pid(&app, None);
-            return fail(&app, DoomErrorCode::SpawnFailed, detail);
-        }
-    };
-    if !wait_ready_or_exit(&app, port, timeout, &transport).await {
-        let managed = {
-            let state = app.state::<DoomRuntimeState>();
-            let taken = lock_state(&state).take();
-            taken
-        };
-        if let Some(mut managed) = managed {
-            process::kill_process_tree(&mut managed);
-        }
-        persist_managed_pid(&app, None);
-        let detail = format!(
-            "the Doom engine did not become ready within {}s and was stopped.",
-            timeout.as_secs()
-        );
-        return fail(&app, DoomErrorCode::ReadyTimeout, detail);
+        Err(error) => fail(&app, DoomErrorCode::from(error.code), error.message),
     }
-
-    clear_last_error(&app);
-    emit_status(
-        &app,
-        DoomRuntimePhase::Ready,
-        Some(port),
-        Some(pid),
-        Some(engine.clone()),
-        None,
-        None,
-    );
-    success_result(port, pid, engine)
 }
 
-/// Stop the managed engine within a bounded graceful window, hard-killing the
-/// tree if it survives (G-263). Idempotent — a no-op when nothing is running.
+/// Drop the native engine session (take-and-drop). Idempotent — a no-op when no
+/// session is live. Bounded by construction (no thread, no process to join).
 #[tauri::command]
 pub async fn stop_doom_runtime(app: AppHandle) -> Result<(), String> {
-    stop_runtime(&app, stop_timeout()).await;
+    stop_runtime(&app);
     Ok(())
 }
 
-/// The ONE bounded teardown: take the child, stop it under `bound`, clear the
-/// marker + error, and publish `stopping` → `idle`.
-async fn stop_runtime(app: &AppHandle, bound: Duration) {
-    let managed = {
-        let state = app.state::<DoomRuntimeState>();
-        let taken = lock_state(&state).take();
-        taken
-    };
-    let Some(mut managed) = managed else {
+/// The ONE take-and-drop teardown: drop the session, clear the last error, and
+/// publish `stopping` → `idle`. Bounded — the session drop owns no thread and no
+/// process, so no orphan is constructible (G-263).
+fn stop_runtime(app: &AppHandle) {
+    let state = app.state::<DoomEngineState>();
+    if !state.is_running() {
         return;
-    };
-    emit_status(
-        app,
-        DoomRuntimePhase::Stopping,
-        Some(managed.port),
-        Some(managed.pid),
-        Some(managed.engine_path.clone()),
-        None,
-        None,
-    );
-    let outcome = process::stop_bounded(&mut managed, bound).await;
-    persist_managed_pid(app, None);
+    }
+    emit_status(app, DoomRuntimePhase::Stopping, None, None);
+    state.stop();
     clear_last_error(app);
-    emit_status(app, DoomRuntimePhase::Idle, None, None, None, None, None);
-    tracing::info!(
-        target: "fredo::doom",
-        pid = managed.pid,
-        ?outcome,
-        "Doom engine stopped"
-    );
+    emit_status(app, DoomRuntimePhase::Idle, None, None);
+    tracing::info!(target: "fredo::doom", "Doom engine session dropped");
 }
 
-/// Read-only status snapshot. Reaps a child that has already exited.
+/// Read-only status snapshot.
 #[tauri::command]
 pub fn get_doom_status(app: AppHandle) -> DoomStatus {
-    let (running, port, pid, engine_path) = match running_snapshot(&app) {
-        Some((port, pid, engine_path)) => (true, Some(port), Some(pid), Some(engine_path)),
-        None => (false, None, None, None),
-    };
+    let running = app.state::<DoomEngineState>().is_running();
     let (last_error, code) = read_last_error(&app);
     let phase = derive_phase(running, last_error.is_some());
     DoomStatus {
         phase,
         running,
-        port,
-        pid,
-        engine_path,
         last_error,
         code,
     }
 }
 
-// ── HTTP control surface (ST-5) ──────────────────────────────────────────────
+// ── In-process control surface (Spec #3023 ST-2) ─────────────────────────────
 
-/// One `GET /api/state` against the live engine. Never polls — the caller drives
-/// the cadence. A not-running engine is a typed `requestFailed` with no request.
+/// One parity observation read from the live native engine via the adapter.
+///
+/// Never polls — the caller drives the cadence. A not-running engine is a typed
+/// `requestFailed` with no engine call.
 #[tauri::command]
-pub async fn doom_read_state(
-    app: AppHandle,
-) -> Result<client::DoomStateView, client::DoomRequestError> {
-    let port = client::active_port(&app).ok_or_else(|| {
-        client::DoomRequestError::request_failed("the Doom engine is not running")
-    })?;
-    let transport =
-        client::ReqwestDoomTransport::new().map_err(client::DoomRequestError::request_failed)?;
-    client::read_state_with(&transport, port).await
+pub async fn doom_read_state(app: AppHandle) -> Result<DoomStateView, DoomCommandError> {
+    let state = app.state::<DoomEngineState>().inner().clone();
+    if !state.is_running() {
+        return Err(DoomCommandError::not_running());
+    }
+    run_engine(move || state.read_state())
+        .await
+        .map(|raw| DoomStateView { raw })
+        .map_err(DoomCommandError::from)
 }
 
-/// One `POST /api/step` with the corrected `{tics, actions}` body. `tics`
-/// defaults to 1 and `actions` to an empty list; `actions` is passed through
-/// verbatim (the engine takes action objects).
+/// Advance the native engine by `tics` with `actions` held, answering the
+/// post-step observation. `tics` defaults to 1 and `actions` to an empty list;
+/// the existing action vocabulary is passed through verbatim.
 #[tauri::command]
 pub async fn doom_step(
     app: AppHandle,
     tics: Option<i64>,
     actions: Option<serde_json::Value>,
-) -> Result<client::DoomStepResult, client::DoomRequestError> {
-    let port = client::active_port(&app).ok_or_else(|| {
-        client::DoomRequestError::request_failed("the Doom engine is not running")
-    })?;
-    let transport =
-        client::ReqwestDoomTransport::new().map_err(client::DoomRequestError::request_failed)?;
+) -> Result<DoomStepResult, DoomCommandError> {
+    let state = app.state::<DoomEngineState>().inner().clone();
+    if !state.is_running() {
+        return Err(DoomCommandError::not_running());
+    }
     let tics = tics.unwrap_or(1);
     let actions = actions.unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
-    client::step_with(&transport, port, tics, &actions).await
+    run_engine(move || state.step(tics, &actions))
+        .await
+        .map(|state| DoomStepResult { state })
+        .map_err(DoomCommandError::from)
 }
 
-/// One `GET /api/frame`, converted from the engine's indexed8+palette JSON to a
-/// base64 PNG for the CU-4 canvas.
+/// The current frame as a base64 PNG (the native 320×200 RGBA framebuffer,
+/// encoded in-process — no HTTP, no indexed8 decode).
 #[tauri::command]
-pub async fn doom_frame(app: AppHandle) -> Result<client::DoomFrame, client::DoomRequestError> {
-    let port = client::active_port(&app).ok_or_else(|| {
-        client::DoomRequestError::request_failed("the Doom engine is not running")
-    })?;
-    let transport =
-        client::ReqwestDoomTransport::new().map_err(client::DoomRequestError::request_failed)?;
-    client::frame_with(&transport, port).await
+pub async fn doom_frame(app: AppHandle) -> Result<DoomFrame, DoomCommandError> {
+    let state = app.state::<DoomEngineState>().inner().clone();
+    if !state.is_running() {
+        return Err(DoomCommandError::not_running());
+    }
+    run_engine(move || state.frame_png())
+        .await
+        .map(|png_base64| DoomFrame { png_base64 })
+        .map_err(DoomCommandError::from)
 }
 
 // ── Autoplay commands + state (Spec #2969, ST-5) ─────────────────────────────
@@ -919,11 +719,12 @@ pub fn get_doom_autoplay_status(app: AppHandle) -> DoomAutoplayStatus {
 
 // ── Teardown entry points (window close + app exit) ──────────────────────────
 
-/// Synchronous teardown for the `doom` window's `CloseRequested` handler: bounded
-/// by `DOOM_STOP_TIMEOUT_S` with the hard-kill fallback (G-263). Wired by the
-/// window builder in CU-4 (`open_doom_window`).
+/// Synchronous teardown for the `doom` window's `CloseRequested` handler:
+/// take-and-drop of the native session — bounded by construction (no thread, no
+/// process to join, so no orphan can survive; G-263). Wired by the window builder
+/// in `open_doom_window`.
 pub fn stop_doom_on_window_close(app: &AppHandle) {
-    tauri::async_runtime::block_on(stop_runtime(app, stop_timeout()));
+    stop_runtime(app);
 }
 
 /// The ordered stages of the `doom` window close-path teardown, in EXECUTION
@@ -935,7 +736,7 @@ pub(crate) enum DoomCloseTeardownStage {
     /// Stop the playing agent through the reused
     /// `DoomAutoplayState::request_stop` primitive (one control path).
     StopAgent,
-    /// Bounded engine stop with the hard-kill fallback (G-263).
+    /// Take-and-drop the native engine session (bounded; G-263).
     StopRuntime,
     /// Clear Doom Mode + suppression and publish `doom-mode-changed`.
     ClearMode,
@@ -1033,16 +834,14 @@ pub async fn open_doom_window(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// `RunEvent::Exit` hook (SYNCHRONOUS entry): bounded teardown under
-/// `DOOM_EXIT_HOOK_BOUND`, then the marker sweep as a backstop. Quit can never
-/// block on a hung engine — the total is the bound plus a single `taskkill`.
+/// `RunEvent::Exit` hook (SYNCHRONOUS entry): take-and-drop the native session
+/// then clear Doom Mode. Quit can never block on a hung engine — the drop owns no
+/// thread and no process (there is no child to sweep; G-263).
 ///
 /// Spec #2970 R-3.b: an app exit is an exit path, so it also clears Doom Mode
 /// (and its suppression) without starving the llama-server/PG exit hooks.
 pub fn stop_doom_on_exit(app: &AppHandle) {
-    tauri::async_runtime::block_on(stop_runtime(app, Duration::from_secs(DOOM_EXIT_HOOK_BOUND)));
-    // Backstop — also covers a hard-killed / mid-boot engine.
-    process::sweep_orphan(app);
+    stop_runtime(app);
     clear_mode_teardown(app);
 }
 
@@ -1302,7 +1101,6 @@ pub fn get_doom_mode_status(app: AppHandle) -> DoomModeStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::applications::doom::state::{DOOM_INSTALL_DIR_KEY, DOOM_IWAD_PATH_KEY};
     use crate::infrastructure::storage::engine::EngineHandle;
 
     fn open_store(dir: &Path) -> AppStore {
@@ -1310,53 +1108,66 @@ mod tests {
     }
 
     #[test]
-    fn success_and_failure_results_carry_the_typed_contract() {
-        let ok = success_result(6666, 4242, r"C:\app\doom\engine\restful-doom.exe".to_string());
+    fn ready_and_failure_results_carry_the_typed_contract() {
+        // Spec #3023 ST-2: the process-only fields are dropped — the result is
+        // success/phase/error/code only.
+        let ok = ready_result();
         assert!(ok.success);
         assert_eq!(ok.phase, DoomRuntimePhase::Ready);
-        assert_eq!(ok.port, Some(6666));
-        assert_eq!(ok.pid, Some(4242));
-        assert_eq!(
-            ok.engine_path.as_deref(),
-            Some(r"C:\app\doom\engine\restful-doom.exe")
-        );
+        assert!(ok.error.is_none());
         assert!(ok.code.is_none());
 
         let failed = DoomLaunchResult {
             success: false,
             phase: DoomRuntimePhase::Error,
-            port: None,
-            pid: None,
-            engine_path: None,
             error: Some("nope".to_string()),
-            code: Some(DoomErrorCode::SpawnFailed),
+            code: Some(DoomErrorCode::EngineStartFailed),
         };
-        assert_eq!(failed.code, Some(DoomErrorCode::SpawnFailed));
-        assert!(failed.engine_path.is_none());
+        assert_eq!(failed.code, Some(DoomErrorCode::EngineStartFailed));
+
+        let value = serde_json::to_value(&ok).expect("serialize");
+        assert!(value.get("port").is_none());
+        assert!(value.get("pid").is_none());
+        assert!(value.get("enginePath").is_none());
     }
 
     #[test]
-    fn resolve_helpers_prefer_env_over_the_configured_setting() {
-        // Pure resolution is pinned in `process`; here we pin the setting key
-        // contract used by the command-level resolvers.
-        assert_eq!(DOOM_IWAD_PATH_KEY, "doom_iwad_path");
-        assert_eq!(DOOM_INSTALL_DIR_KEY, "doom_install_dir");
-        assert_eq!(DOOM_PORT_KEY, "doom_port");
+    fn command_wire_models_serialize_camel_case() {
+        let view = DoomStateView {
+            raw: serde_json::json!({ "tic": 1 }),
+        };
+        assert_eq!(serde_json::to_value(&view).unwrap()["raw"]["tic"], 1);
+
+        let step = DoomStepResult {
+            state: serde_json::json!({ "tic": 2 }),
+        };
+        assert_eq!(serde_json::to_value(&step).unwrap()["state"]["tic"], 2);
+
+        let frame = DoomFrame {
+            png_base64: "AA==".to_string(),
+        };
+        assert_eq!(serde_json::to_value(&frame).unwrap()["pngBase64"], "AA==");
+
+        let error = DoomCommandError::not_running();
+        let value = serde_json::to_value(&error).unwrap();
+        assert_eq!(value["code"], "requestFailed");
+        assert_eq!(value["message"], "the Doom engine is not running");
     }
 
     #[test]
-    fn configured_port_defaults_and_parses() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let store = open_store(dir.path());
-        assert_eq!(
-            store
-                .cached_get(DOOM_PORT_KEY)
-                .ok()
-                .flatten()
-                .and_then(|v| v.trim().parse::<u16>().ok())
-                .unwrap_or(DEFAULT_DOOM_PORT),
-            DEFAULT_DOOM_PORT
-        );
+    fn engine_errors_bridge_onto_the_command_error_surface() {
+        let error = DoomCommandError::from(DoomEngineError::new(
+            DoomEngineErrorCode::WadMissing,
+            "no WAD file",
+        ));
+        assert_eq!(error.code, DoomErrorCode::WadMissing);
+        assert_eq!(error.message, "no WAD file");
+
+        let corrupt = DoomCommandError::from(DoomEngineError::new(
+            DoomEngineErrorCode::WadCorrupt,
+            "bad lump",
+        ));
+        assert_eq!(corrupt.code, DoomErrorCode::WadCorrupt);
     }
 
     #[test]
@@ -1365,7 +1176,7 @@ mod tests {
         let store = open_store(dir.path());
         store.cached_set(DOOM_LAST_ERROR_KEY, "boom").expect("set");
         store
-            .cached_set(DOOM_LAST_ERROR_CODE_KEY, "readyTimeout")
+            .cached_set(DOOM_LAST_ERROR_CODE_KEY, "wadMissing")
             .expect("set code");
         assert_eq!(
             store.cached_get(DOOM_LAST_ERROR_KEY).ok().flatten().as_deref(),
@@ -1377,22 +1188,8 @@ mod tests {
                 .ok()
                 .flatten()
                 .and_then(|v| DoomErrorCode::parse(&v)),
-            Some(DoomErrorCode::ReadyTimeout)
+            Some(DoomErrorCode::WadMissing)
         );
-    }
-
-    #[test]
-    fn ready_and_stop_timeouts_honour_the_env_seam_contract() {
-        // The constants are the unset default; the seam names are pinned in
-        // `state`. This asserts the derivation helper's default path.
-        assert_eq!(DOOM_READY_TIMEOUT_ENV, "FREDO_DOOM_READY_TIMEOUT_S");
-        assert_eq!(DOOM_STOP_TIMEOUT_ENV, "FREDO_DOOM_STOP_TIMEOUT_S");
-        if std::env::var(DOOM_READY_TIMEOUT_ENV).is_err() {
-            assert_eq!(ready_timeout(), Duration::from_secs(DOOM_READY_TIMEOUT_S));
-        }
-        if std::env::var(DOOM_STOP_TIMEOUT_ENV).is_err() {
-            assert_eq!(stop_timeout(), Duration::from_secs(DOOM_STOP_TIMEOUT_S));
-        }
     }
 
     // ── Autoplay state machine (ST-5) ────────────────────────────────────────

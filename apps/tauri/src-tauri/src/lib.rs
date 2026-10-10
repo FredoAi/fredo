@@ -347,17 +347,21 @@ pub fn run() {
             // process (R-3.3).
             applications::llm_server::process::sweep_orphan(app.handle());
 
-            // -- Doom runtime state (Spec #2968 CU-2) --------------------------
-            // The single managed Doom engine child lives in this state and is
-            // spawned/killed via the `applications::doom` commands registered below.
-            app.manage(applications::doom::state::DoomRuntimeState::default());
+            // -- Doom native engine state (Spec #3023 ST-2) --------------------
+            // The native in-process Doom engine session (exactly-one) lives in
+            // this state and is driven via the `applications::doom` commands
+            // registered below. There is NO child process and no loopback port:
+            // teardown is take-and-drop, so no orphan is constructible (G-263).
+            app.manage(applications::doom::engine::DoomEngineState::default());
 
-            // -- Doom startup orphan sweep (Spec #2968 ST-3c) ------------------
-            // A hard-kill (Task Manager) never runs the `RunEvent::Exit` hook, so
-            // reclaim a persisted Doom engine PID on the next launch. The sweep is
-            // PID-reuse guarded (engine image name) and can never kill an
-            // unrelated process (R-3.3).
-            applications::doom::process::sweep_orphan(app.handle());
+            // -- Doom runtime state (Spec #2968 CU-2) — transitional shim -------
+            // The out-of-process runtime state is no longer populated by the
+            // command surface (Spec #3023 ST-2 moved launch/stop onto the native
+            // engine). It is retained as the graceful-degradation source for the
+            // not-yet-rewired autoplay transport path (`client::active_port`,
+            // ST-3) until `client.rs` is removed by ST-6; unmanaging it would make
+            // that read panic.
+            app.manage(applications::doom::state::DoomRuntimeState::default());
 
             // -- Doom autoplay state (Spec #2969 ST-5) -------------------------
             // The ONE autoplay run's stop flag + last status; the
@@ -1009,13 +1013,10 @@ pub fn run() {
             applications::doom::commands::enter_doom_mode,
             applications::doom::commands::exit_doom_mode,
             applications::doom::commands::get_doom_mode_status,
-            // Doom engine provisioning (Spec #3012 ST-2): the bounded,
-            // cancellable first-use build from the vendored source. The status
-            // command is the mount seed + poll fallback; the progress event
-            // `doom-provision-progress` is the source of truth.
-            applications::doom::provision::get_doom_provision_status,
-            applications::doom::provision::provision_doom_engine,
-            applications::doom::provision::cancel_doom_engine_provisioning,
+            // Spec #3023 ST-2: the from-source provisioning command surface
+            // (Spec #3012) is removed — the native engine needs no build. The
+            // `provision` module is retained only until ST-5 de-provisions the
+            // Doom Mode lifecycle.
         ])
         .build(tauri::generate_context!())
         .expect("error while building Fredo application")
@@ -1038,10 +1039,9 @@ pub fn run() {
                 // with a `taskkill /T /F` hard-kill fallback, then a marker sweep
                 // backstop — quit never blocks on a hung server (R-2.1/G-263).
                 applications::pg_supervisor::stop_on_exit(app);
-                // Spec #2968 CU-2/ST-3: bounded Doom engine teardown. The graceful
-                // stop is wall-clock capped by DOOM_EXIT_HOOK_BOUND (5 s) with a
-                // `taskkill /T /F` hard-kill fallback, then a marker sweep
-                // backstop — quit never blocks on a hung engine (G-263).
+                // Spec #3023 ST-2: Doom engine teardown is take-and-drop of the
+                // native in-process session — bounded by construction (no child,
+                // no thread to join, no orphan possible; G-263). No sweep needed.
                 applications::doom::commands::stop_doom_on_exit(app);
             }
         });
