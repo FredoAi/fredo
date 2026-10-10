@@ -257,6 +257,11 @@ pub const PG_STOP_BOUND: Duration = Duration::from_secs(30);
 pub const PG_EXIT_HOOK_BOUND: Duration = Duration::from_secs(5);
 /// Upper bound on how long to wait for a killed PID tree to disappear.
 pub const PG_DEATH_WAIT_BOUND: Duration = Duration::from_secs(20);
+/// **ST-4** (Spec #3022): the OUTER wall-clock cap on ONE config apply / database
+/// reset. The whole `stop → setup → knobs → start → readiness → pool rebuild →
+/// swap` restart leg is wrapped in this bound (over the existing inner bounds), so
+/// an apply can never hang the caller (G-263). 300 s.
+pub const PG_APPLY_BOUND: Duration = Duration::from_secs(300);
 
 pub mod acquisition; // S1/S2/S3 (#2978): acquisition mode + pinned archive
 pub mod config; // ST-1 (#3022): typed port + verbosity config (pre-PostgreSQL)
