@@ -167,6 +167,36 @@ pub fn read_postmaster_pid(data_dir: &Path) -> Option<u32> {
     contents.lines().next()?.trim().parse::<u32>().ok()
 }
 
+/// The query PostgreSQL evaluates to produce the ESCAPED `ALTER USER … PASSWORD`
+/// statement literal (Spec #3022 round-2). A utility statement cannot take a bind
+/// parameter (`ALTER USER … PASSWORD $1` is a syntax error), so the literal must
+/// be built into the statement text first. `%L` applies PostgreSQL's canonical
+/// literal quoting, so a password containing `'` or `\` is safe. The password is
+/// bound here (never interpolated) and is NEVER logged.
+pub const ALTER_PASSWORD_STATEMENT_SQL: &str =
+    "SELECT format('ALTER USER postgres PASSWORD %L', $1)";
+
+/// Run `ALTER USER postgres PASSWORD <literal>` over an existing connection. The
+/// literal is produced by the SERVER (`format('%L', $1)`) so `'`/`\` are escaped
+/// correctly; the resulting statement carries no bind placeholder. Shared by
+/// [`PgRuntime::change_password`] and the Spec #3022 ST-4 R-1.3 compensating
+/// revert. Bounded by the caller.
+pub(crate) async fn alter_password_on_connection(
+    connection: &mut sqlx::PgConnection,
+    new_password: &str,
+) -> Result<()> {
+    let statement: String = sqlx::query_scalar(ALTER_PASSWORD_STATEMENT_SQL)
+        .bind(new_password)
+        .fetch_one(&mut *connection)
+        .await
+        .context("building the ALTER USER postgres PASSWORD statement")?;
+    sqlx::query(&statement)
+        .execute(&mut *connection)
+        .await
+        .context("running ALTER USER postgres PASSWORD")?;
+    Ok(())
+}
+
 /// Owns the embedded server. Constructed before `setup`, dropped last.
 pub struct PgRuntime {
     pg: PostgreSQL,
@@ -293,6 +323,13 @@ impl PgRuntime {
                 .configuration
                 .insert(key.to_string(), value.to_string());
         }
+        // ST-2 hardening (Spec #3022 round-2): force English/ASCII server
+        // messages with the `C` locale, so a server message always decodes as
+        // UTF-8 — the drift readiness error otherwise surfaced a non-UTF-8
+        // placeholder. Applied to the assembled settings for every path.
+        settings
+            .configuration
+            .insert("lc_messages".to_string(), "C".to_string());
         // ST-2 (#3022, R-3.2/R-4): the config-selected log verbosity is the
         // PostgreSQL `log_min_messages` server value, applied alongside the
         // collector configuration so the restart honours it.
@@ -460,10 +497,12 @@ impl PgRuntime {
     ///
     /// Connects with the CURRENT credential — the URL this runtime was built with,
     /// i.e. the process's stored password — and runs
-    /// `ALTER USER postgres PASSWORD $1`. The new value is BOUND (never
-    /// interpolated), so a password containing quotes/backslashes applies
-    /// correctly without breaking the statement. No re-init and no data loss: the
-    /// data dir is untouched.
+    /// `ALTER USER postgres PASSWORD <literal>`. The literal is produced by the
+    /// SERVER via [`ALTER_PASSWORD_STATEMENT_SQL`] (`format('%L', $1)`), because a
+    /// utility statement cannot take a bind parameter (`PASSWORD $1` is a syntax
+    /// error). `%L` applies PostgreSQL's canonical quoting, so a password
+    /// containing `'` or `\` is safe. The password is NEVER logged. No re-init and
+    /// no data loss: the data dir is untouched.
     ///
     /// Bounded by [`PG_CONTROL_TIMEOUT`] (G-263) so a wedged server cannot hang
     /// the caller.
@@ -473,11 +512,7 @@ impl PgRuntime {
             let mut connection = sqlx::PgConnection::connect(&url)
                 .await
                 .context("connecting to change the postgres password")?;
-            sqlx::query("ALTER USER postgres PASSWORD $1")
-                .bind(new_password)
-                .execute(&mut connection)
-                .await
-                .context("running ALTER USER postgres PASSWORD")?;
+            alter_password_on_connection(&mut connection, new_password).await?;
             Ok::<(), anyhow::Error>(())
         })
         .await
@@ -1104,5 +1139,61 @@ mod tests {
             result.is_err(),
             "a set FREDO_PG_FORCE_START_FAIL must force start() to fail closed"
         );
+    }
+
+    // ── ST-2 round-2 (#3022): escaped-literal password statement ─────────────
+
+    /// The `ALTER USER … PASSWORD` statement is built by the SERVER with `%L`
+    /// (PostgreSQL's canonical literal quoting) — NOT executed with a bind
+    /// parameter, because a utility statement rejects `PASSWORD $1` (the
+    /// pre-round-2 syntax error). The builder template must keep the `%L` form.
+    #[test]
+    fn alter_password_statement_builder_uses_the_percent_l_literal_form() {
+        assert!(
+            ALTER_PASSWORD_STATEMENT_SQL.contains("format('ALTER USER postgres PASSWORD %L'"),
+            "the builder must delegate literal quoting to format('%L'): {ALTER_PASSWORD_STATEMENT_SQL}"
+        );
+        assert!(
+            ALTER_PASSWORD_STATEMENT_SQL.contains("$1"),
+            "the new password is BOUND, never interpolated: {ALTER_PASSWORD_STATEMENT_SQL}"
+        );
+        // The broken round-1 form (`ALTER … PASSWORD $1` run as-is) must be gone.
+        assert!(
+            !ALTER_PASSWORD_STATEMENT_SQL.contains("PASSWORD $1"),
+            "the utility statement must not carry a bind placeholder"
+        );
+    }
+
+    /// Reference mirror of PostgreSQL's `format('%L', …)` literal quoting under
+    /// `standard_conforming_strings = on` (the managed server default): double
+    /// every `'`, leave `\` literal, wrap in single quotes. The production path
+    /// delegates this to the SERVER; this pure mirror lets the escaping CONTRACT
+    /// be unit-pinned without a live server (G-222).
+    fn reference_sql_literal(value: &str) -> String {
+        format!("'{}'", value.replace('\'', "''"))
+    }
+
+    /// A password containing `'` and `\` round-trips through the literal quoting:
+    /// escaping then decoding recovers the EXACT password, so the produced
+    /// statement is parseable and the credential is preserved (Spec #3022
+    /// round-2). Covers both `change_password` and the R-1.3 compensating revert
+    /// (they share [`alter_password_on_connection`]).
+    #[test]
+    fn escaped_password_literal_round_trips_quotes_and_backslashes() {
+        for password in ["a'b\\c", "''''", "\\\\", "plain", "quote'only", "back\\slash"] {
+            let literal = reference_sql_literal(password);
+            assert!(
+                literal.starts_with('\'') && literal.ends_with('\''),
+                "the literal must be a single-quoted SQL string: {literal:?}"
+            );
+            // Decode the literal back: strip the quotes and collapse doubled `'`.
+            let inner = &literal[1..literal.len() - 1];
+            let decoded = inner.replace("''", "'");
+            assert_eq!(decoded, password, "round-trip failed for {password:?}");
+        }
+        // The canonical form for a quote+backslash password: only `'` is doubled.
+        assert_eq!(reference_sql_literal("a'b\\c"), "'a''b\\c'");
+        // A `'` in the password is doubled so it cannot terminate the literal.
+        assert_eq!(reference_sql_literal("O'Brien"), "'O''Brien'");
     }
 }

@@ -158,12 +158,34 @@ impl PgStatusView {
 
 /// Classify a failed boot/restart outcome into the additive [`PgFailureKind`]
 /// (Spec #3022 ST-4, R-3.3). A credential rejection on the boot/readiness leg
-/// (SQLSTATE `28P01`/`28000`, `password authentication failed`) maps to
-/// [`PgFailureKind::AuthMismatch`]; a `start`-stage bind failure maps to
-/// [`PgFailureKind::PortInUse`]; everything else is [`PgFailureKind::Unknown`].
-/// Pure over the formatted error chain, so the mapping is unit-testable.
+/// maps to [`PgFailureKind::AuthMismatch`] — detected from the SQLSTATE
+/// (`28P01`/`28000`) via the error chain, which is decode-independent (the server
+/// may emit a non-UTF-8 placeholder message), with the text rule as a fallback. A
+/// `start`-stage bind failure maps to [`PgFailureKind::PortInUse`]; everything
+/// else is [`PgFailureKind::Unknown`]. Pure over the error chain, so the mapping
+/// is unit-testable.
 pub fn classify_failure(stage: &str, error: &anyhow::Error) -> PgFailureKind {
+    // 1. Decode-independent SQLSTATE check (the readiness error message may be a
+    //    non-UTF-8 placeholder, so the text rule alone would fall to Unknown).
+    if let Some(code) = sqlstate_from_error(error) {
+        if code == "28P01" || code == "28000" {
+            return PgFailureKind::AuthMismatch;
+        }
+    }
+    // 2. Text fallback (localized/placeholder messages still carrying a marker).
     classify_failure_text(stage, &format!("{error:#}"))
+}
+
+/// Walk an anyhow error chain for a `sqlx::Error::Database` and return its
+/// SQLSTATE code (e.g. `28P01`). Decode-independent: uses the protocol-level
+/// error code, NEVER the (possibly non-UTF-8) message text.
+fn sqlstate_from_error(error: &anyhow::Error) -> Option<String> {
+    for cause in error.chain() {
+        if let Some(sqlx::Error::Database(db)) = cause.downcast_ref::<sqlx::Error>() {
+            return db.code().map(|code| code.into_owned());
+        }
+    }
+    None
 }
 
 /// The pure classification rule (unit-testable without a live server, G-222).
@@ -828,23 +850,21 @@ fn url_with_password(url: &str, from: &str, to: &str) -> String {
     url.replacen(from, to, 1)
 }
 
-/// Run `ALTER USER postgres PASSWORD $1` on an explicit connection URL, bounded
-/// by [`super::PG_CONTROL_TIMEOUT`] (G-263). Backs the R-1.3 compensating revert,
-/// which must connect with the JUST-SET password (the runtime's own URL carries
-/// the old one).
+/// Run `ALTER USER postgres PASSWORD <literal>` on an explicit connection URL,
+/// bounded by [`super::PG_CONTROL_TIMEOUT`] (G-263). Backs the R-1.3
+/// compensating revert, which must connect with the JUST-SET password (the
+/// runtime's own URL carries the old one). Shares the SERVER-side `%L` literal
+/// builder with [`PgRuntime::change_password`] (a utility statement cannot take a
+/// bind parameter).
 async fn alter_password_on_url(url: &str, new_password: &str) -> Result<()> {
     use sqlx::Connection as _;
     let url = url.to_string();
-    let password = new_password.to_string();
+    let new_password = new_password.to_string();
     super::runtime::run_bounded(super::PG_CONTROL_TIMEOUT, "pg.alter", async move {
         let mut connection = sqlx::PgConnection::connect(&url)
             .await
             .context("connecting to change the postgres password")?;
-        sqlx::query("ALTER USER postgres PASSWORD $1")
-            .bind(password)
-            .execute(&mut connection)
-            .await
-            .context("running ALTER USER postgres PASSWORD")?;
+        super::runtime::alter_password_on_connection(&mut connection, &new_password).await?;
         Ok::<(), anyhow::Error>(())
     })
     .await
@@ -931,6 +951,31 @@ async fn restart_cluster(
     }
 }
 
+/// Deterministically probe whether a pinned `port` is already bound on loopback
+/// (IPv4 OR IPv6). On [`std::io::ErrorKind::AddrInUse`] returns a `start`-stage
+/// error message that NAMES the port and contains "address already in use", so
+/// [`classify_failure`] yields [`PgFailureKind::PortInUse`] and the Settings pane
+/// names the port at the field (Spec #3022 round-2). The probe listeners are
+/// dropped immediately so the port is not held.
+fn port_in_use_error(port: u16) -> Option<String> {
+    let is_addr_in_use = |result: &std::io::Result<std::net::TcpListener>| {
+        matches!(result, Err(error) if error.kind() == std::io::ErrorKind::AddrInUse)
+    };
+    let v4 = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port));
+    let v6 = std::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, port));
+    let in_use = is_addr_in_use(&v4) || is_addr_in_use(&v6);
+    // Release any probe listener that DID bind before returning.
+    drop(v4);
+    drop(v6);
+    if in_use {
+        Some(format!(
+            "the pinned port {port} is already in use on loopback (address already in use)"
+        ))
+    } else {
+        None
+    }
+}
+
 async fn restart_cluster_inner(
     app: &AppHandle,
     config: &PgSupervisorConfig,
@@ -961,6 +1006,25 @@ async fn restart_cluster_inner(
         .await;
         if let Some(store) = store.as_ref() {
             persist_pid(store, None);
+        }
+    }
+
+    // 1b. Deterministic pinned-port collision pre-check (Spec #3022 round-2):
+    //     detect an in-use pinned port BEFORE spawning the server, naming the port
+    //     so `classify_failure` publishes `PortInUse` and the UI names the field.
+    if let Some(pinned) = config.port {
+        if let Some(reason) = port_in_use_error(pinned) {
+            let error = anyhow::anyhow!("{reason}");
+            if let Some(engine) = engine.as_ref() {
+                engine.set_fallback_reason(structured_error("start", &error));
+            }
+            state.fail("start", &error);
+            tracing::error!(
+                target: "fredo::pg_supervisor",
+                port = pinned,
+                "pinned port is already in use; restart fails closed (prior config retained)"
+            );
+            return Err(error);
         }
     }
 
@@ -2044,5 +2108,127 @@ mod tests {
         );
         // A blank source password cannot be compensated — the URL is unchanged.
         assert_eq!(url_with_password(url, "", "newpw"), url);
+    }
+
+    // ── ST-4 round-2 (#3022): SQLSTATE-based auth classification ──────────────
+
+    /// A synthetic `sqlx::error::DatabaseError` carrying a SQLSTATE code and a
+    /// garbage (non-UTF-8-looking placeholder) message, so the test proves the
+    /// classification uses the CODE, not the message text.
+    #[derive(Debug)]
+    struct FakeSqlStateError {
+        code: Option<String>,
+        message: String,
+    }
+
+    impl std::fmt::Display for FakeSqlStateError {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(&self.message)
+        }
+    }
+
+    impl std::error::Error for FakeSqlStateError {}
+
+    impl sqlx::error::DatabaseError for FakeSqlStateError {
+        fn kind(&self) -> sqlx::error::ErrorKind {
+            sqlx::error::ErrorKind::Other
+        }
+
+        fn code(&self) -> Option<std::borrow::Cow<'_, str>> {
+            self.code
+                .as_deref()
+                .map(std::borrow::Cow::Borrowed)
+        }
+
+        fn message(&self) -> &str {
+            &self.message
+        }
+
+        fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+
+        fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+
+        fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+            self
+        }
+    }
+
+    fn fake_database_error(code: &str, message: &str) -> anyhow::Error {
+        anyhow::Error::from(sqlx::Error::Database(Box::new(FakeSqlStateError {
+            code: Some(code.to_string()),
+            message: message.to_string(),
+        })))
+    }
+
+    /// ST-4 round-2 / R-3.3: the auth classification reads the SQLSTATE from the
+    /// error chain, so a garbage/non-UTF-8 message still yields `AuthMismatch`.
+    #[test]
+    fn classify_failure_reads_the_sqlstate_from_a_garbled_message() {
+        // 28P01 (invalid_password) with a message that carries NO textual marker.
+        let garbled = "\u{FFFD}\u{FFFD} garbled non-utf8 server message \u{FFFD}";
+        let error = fake_database_error("28P01", garbled);
+        assert_eq!(
+            classify_failure("readiness", &error),
+            PgFailureKind::AuthMismatch,
+            "the SQLSTATE must classify even when the message text does not"
+        );
+
+        // 28000 (invalid_authorization_specification), wrapped with context so the
+        // chain walk is exercised.
+        let wrapped = fake_database_error("28000", garbled).context("readiness probe failed");
+        assert_eq!(
+            classify_failure("readiness", &wrapped),
+            PgFailureKind::AuthMismatch
+        );
+
+        // The sqlstate extractor sees the code directly.
+        assert_eq!(sqlstate_from_error(&error).as_deref(), Some("28P01"));
+
+        // A non-auth SQLSTATE does NOT classify as AuthMismatch.
+        let other = fake_database_error("42P01", garbled);
+        assert_eq!(classify_failure("readiness", &other), PgFailureKind::Unknown);
+
+        // The text fallback still works for a plain (non-sqlx) auth error.
+        let textual = anyhow::anyhow!("password authentication failed for user \"postgres\"");
+        assert_eq!(
+            classify_failure("readiness", &textual),
+            PgFailureKind::AuthMismatch
+        );
+    }
+
+    /// ST-4 round-2 / AC3-negative: a pinned port already bound on loopback is
+    /// detected BEFORE `start()`, the surfaced message NAMES the port, and it
+    /// classifies as `PortInUse` (so the UI names the port at the field).
+    #[test]
+    fn pinned_port_collision_is_detected_and_classified_as_port_in_use() {
+        // Hold a loopback IPv4 port the probe must find in use.
+        let held = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .expect("bind an ephemeral port");
+        let port = held.local_addr().expect("local addr").port();
+
+        let reason = port_in_use_error(port).expect("a held port must be reported in use");
+        assert!(
+            reason.contains(&port.to_string()),
+            "the message must NAME the port: {reason}"
+        );
+        assert!(
+            reason.contains("address already in use"),
+            "the message must carry the bind marker: {reason}"
+        );
+
+        // A `start`-stage error carrying that message classifies as PortInUse.
+        let error = anyhow::anyhow!("{reason}");
+        assert_eq!(classify_failure("start", &error), PgFailureKind::PortInUse);
+        // The bind marker only classifies at the `start` stage.
+        assert_eq!(classify_failure("setup", &error), PgFailureKind::Unknown);
+
+        drop(held);
+
+        // Port 0 (ephemeral) is never reported in use.
+        assert!(port_in_use_error(0).is_none());
     }
 }
