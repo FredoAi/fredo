@@ -3114,6 +3114,16 @@ const TRIAGE_A2A_HEADER: &str = "\
 /// never posted twice. Runs as a transition side-effect and via the `post-comments`
 /// action. **Best-effort:** a failed comment post is logged, never fatal — a comment
 /// failure must not undo an already-applied phase transition or issue close.
+/// True when a `## Fix Plan (round N)` comment for the CURRENT rework round already
+/// exists on the issue. Makes the retry-compaction idempotent so a manual
+/// `post-comments` flush (or any repeated flush) never posts a SECOND fallback
+/// Fix Plan for a round whose Fix Plan was already authored + posted (G-344).
+fn fix_plan_round_posted(issue: u32) -> bool {
+    let round = prior_phase_entries(issue, "implementation") + 1;
+    let needle = format!("## Fix Plan (round {})", round);
+    get_issue_comments(issue).iter().any(|b| b.trim_start().starts_with(&needle))
+}
+
 fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str>) -> anyhow::Result<()> {
     const TIMELINE: &[(&str, &str)] = &[
         ("triage-plan.md", "Triage Plan"),
@@ -3215,11 +3225,15 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
             }
             (format!("Fix Plan (round {})", prior_phase_entries(issue, "implementation") + 1), body)
         } else if *fname == "triage-plan.md" {
-            if is_rework_reentry && authored_fix_plan {
+            if is_rework_reentry && (authored_fix_plan || fix_plan_round_posted(issue)) {
                 // The Architect-authored Fix Plan replaces the derived compaction —
-                // consume the plan draft so it is never double-posted later.
+                // consume the plan draft so it is never double-posted later. This is
+                // ALSO idempotent against a round whose Fix Plan was ALREADY posted (e.g.
+                // the authored draft was consumed by a manual `post-comments` flush):
+                // re-drafting the triage plan on the rework re-entry must not emit a
+                // SECOND fallback Fix Plan for the same round (G-344).
                 let _ = std::fs::remove_file(&p);
-                println!("SKIPPED: triage-plan.md compaction replaced by the Architect-authored fix-plan.md");
+                println!("SKIPPED: triage-plan.md compaction — a Fix Plan for this round is already authored/posted");
                 continue;
             }
             let prior_impl = prior_phase_entries(issue, "implementation");
@@ -3698,6 +3712,17 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 && to == Phase::Implementation
                 && a.human_authorized
                 && a.reason.as_deref().map(|r| !r.trim().is_empty()).unwrap_or(false);
+            // The Testing exit guard requires a POSTED tester verdict comment (a FAIL
+            // routes to rework, a PASS to audit). The tester leaves that verdict as a
+            // `tests-runs.md` draft and the transition's own flush runs AFTER the guard,
+            // so post pending timeline drafts BEFORE evaluating the guard for any leg
+            // leaving Testing. Idempotent (a no-op when nothing is pending); the normal
+            // end-of-transition flush then finds them consumed. This removes the manual
+            // `post-comments` step — and its duplicate-Fix-Plan hazard — from the
+            // retry/PASS workflow (G-344).
+            if phase == Phase::Testing {
+                let _ = post_pending_comments(issue, &a.actor, phase.as_str(), Some(phase.as_str()));
+            }
             let (ok, reason) = if (phase == Phase::Implementation && to == Phase::Planning)
                 || human_authorized_rework
             {
