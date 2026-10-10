@@ -575,6 +575,25 @@
             }
         }
     },
+    "provider": {
+        "commandcode": {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": "Command Code",
+            "options": {
+                "baseURL": "https://api.commandcode.ai/provider/v1",
+                "apiKey": "{env:CMD_API_KEY}"
+            },
+            "models": {
+                "deepseek/deepseek-v4.1-flash": {
+                    "name": "DeepSeek V4.1 Flash",
+                    "reasoning": true,
+                    "options": {
+                        "reasoningEffort": "high"
+                    }
+                }
+            }
+        }
+    },
     "mcp": {
         "chakra-ui": {
             "type": "local",
