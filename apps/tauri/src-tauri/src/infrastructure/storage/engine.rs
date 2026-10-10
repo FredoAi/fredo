@@ -189,6 +189,19 @@ impl EngineHandle {
         }
     }
 
+    /// Re-point the active engine (config-apply restart path ONLY). Unconditional
+    /// replace; unlike `install` (first-wins), later callers see the new Arc.
+    ///
+    /// Spec #3022 ST-3: a pinned `config.port` or a changed password moves the
+    /// pool URL, so the running storage engine must be re-pointed at the rebuilt
+    /// pool. The swap-once [`Self::install`] would silently no-op here, leaving
+    /// the app serving a dead pool. A reader that captured the previous `Arc`
+    /// still completes on that engine — the swap never invalidates an in-flight
+    /// read (same guarantee as `install`).
+    pub fn swap(&self, engine: StoreEngine) {
+        *lock_write(&self.inner) = Some(Arc::new(engine));
+    }
+
     /// The active engine, or a structured fail-closed error when the PostgreSQL
     /// pool is not installed yet (R-3.2: a data-plane op never serves from
     /// SQLite).
@@ -739,6 +752,40 @@ mod tests {
         handle.install(StoreEngine::Postgres(Arc::new(make_pg_engine(second_url))));
         let StoreEngine::Postgres(pg) = handle.engine().expect("installed").as_ref().clone();
         assert_eq!(pg.url, first_url, "install must run at most once");
+    }
+
+    #[tokio::test]
+    async fn engine_handle_swap_unconditionally_replaces_the_active_engine() {
+        let handle = EngineHandle::new_pending();
+
+        // A reader captures the pre-swap engine before the replace.
+        let first_url = "postgres://postgres:secret@127.0.0.1:5432/fredo_first";
+        handle.install(StoreEngine::Postgres(Arc::new(make_pg_engine(first_url))));
+        let captured = handle.engine().expect("installed");
+        let StoreEngine::Postgres(pg) = captured.as_ref();
+        assert_eq!(pg.url, first_url);
+
+        // (b) `swap` replaces unconditionally: a subsequent per-op resolve returns
+        // the NEW engine, unlike `install` (first-wins).
+        let second_url = "postgres://postgres:secret@127.0.0.1:5432/fredo_second";
+        handle.swap(StoreEngine::Postgres(Arc::new(make_pg_engine(second_url))));
+        let StoreEngine::Postgres(pg) = handle.engine().expect("re-pointed").as_ref().clone();
+        assert_eq!(pg.url, second_url, "swap must replace the active engine");
+
+        // (a) `install` stays first-wins: the slot is already Some after the swap,
+        // so a later install is a no-op and the swapped engine survives.
+        let third_url = "postgres://postgres:secret@127.0.0.1:5432/fredo_third";
+        handle.install(StoreEngine::Postgres(Arc::new(make_pg_engine(third_url))));
+        let StoreEngine::Postgres(pg) = handle.engine().expect("installed").as_ref().clone();
+        assert_eq!(
+            pg.url, second_url,
+            "install remains first-wins; it must not replace the swapped engine"
+        );
+
+        // The captured pre-swap reader still completes on its original engine
+        // (no in-flight invalidation).
+        let StoreEngine::Postgres(pg) = captured.as_ref();
+        assert_eq!(pg.url, first_url, "a captured Arc keeps its engine");
     }
 
     // -- Read-only canonical seam (Spec #3005 ST-6 re-home) -------------------
