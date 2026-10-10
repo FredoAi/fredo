@@ -12,11 +12,9 @@ import { DesktopBackdrop } from './background/DesktopBackdrop';
 import { myWorkItemsFeature } from '../../my-workitems';
 import { createWorkItemFeature } from '../../my-workitems';
 import { devModeFeature } from '../../dev-mode';
-import { setupFeature } from '../../setup';
 import '../../allApplications';
 import { declareAllRegisteredApplicationData } from '../../../shared/application-data/registry';
 import { getApplications, dedupeByApplicationId } from '../../applicationRegistry';
-import { settingsService } from '../../settings';
 import { useCompanion } from '../../../shared/contexts/CompanionContext';
 import { useKonamiCode } from '../../../shared/hooks/useKonamiCode';
 import { useSecretCode } from '../../../shared/hooks/useSecretCode';
@@ -104,16 +102,6 @@ const HomeDesktop: React.FC<HomeDesktopProps> = ({ registerOpenFeature }) => {
       showMessage("Hi! I'm Fredo, your guide! 👋", 5000);
     }, 800);
     return () => clearTimeout(greetTimer);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Auto-open Setup wizard on first launch (if plugin not yet installed)
-  useEffect(() => {
-    settingsService.get('plugin_installed', '').then((installed) => {
-      if (!installed) {
-        setTimeout(() => openFeatureWindowRef.current(setupFeature.id, setupFeature), 1200);
-      }
-    });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

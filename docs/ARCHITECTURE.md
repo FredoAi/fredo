@@ -587,7 +587,7 @@ Shipped defaults: `Ctrl+Space` (launcher) and `Ctrl+Tab` / `Ctrl+Shift+Tab` (win
 | query-viewer | ✓ | (dynamic) | SQL query result display (multi-instance) |
 | my-workitems | ✓ | — | Azure DevOps work items |
 | settings | ✓ | — | Settings app — Companion, Appearance, Fredo Setup, Telemetry + auto-discovered application settings (unified Save) |
-| setup | ✗ | — | OTel configuration, CLI detection |
+| setup | ✓ | — | OTel configuration, CLI detection — a user-initiated launcher tile / Settings → Fredo Setup entry; never auto-opened |
 | mission-monitor | ✓ | RTDB Chat/ToolUse rows | Row-driven agent activity graph (ReactFlow; height-aware chat chain, recursive per-subagent delegation tree with per-subagent tool ownership) |
 | dev-mode | ✗ | RTDB row-mutation log | Dev tools + live row-mutation inspector |
 | browser-preview | ✓ | — | Web page preview panel |

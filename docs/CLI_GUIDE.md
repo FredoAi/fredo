@@ -173,7 +173,7 @@ Precedence is **CLI flag > environment variable > default**. The daemon never ov
 
 ## Setup (via UI)
 
-OTel configuration and CLI tool detection are handled through the **Setup** application in the Fredo UI, not via CLI subcommands. Available Tauri commands:
+OTel configuration and CLI tool detection are handled through the **Fredo Setup** wizard in the Fredo UI — reachable from the **Fredo Setup** launcher tile or **Settings → Fredo Setup** — not via CLI subcommands. Available Tauri commands:
 
 | Command | Description |
 |---------|-------------|

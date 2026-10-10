@@ -8,7 +8,7 @@ export class SetupFeature extends FredoApplicationClass {
   readonly id = 'setup';
   readonly name = 'Fredo Setup';
   readonly icon: IconType = LuSettings2;
-  readonly showable = false;
+  readonly showable = true;
   readonly hasSettings = false;
 
   render() {

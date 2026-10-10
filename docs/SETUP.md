@@ -107,7 +107,12 @@ export OPENCODE_OTLP_PROTOCOL=grpc
 
 ### Using the Setup Wizard
 
-Open Fredo → Setup application → the wizard automatically detects OpenCode and configures OTLP.
+Fredo no longer opens the wizard automatically on startup. Reach it through either explicit entry:
+
+- **Launcher tile** — from the desktop/launcher, select the **Fredo Setup** tile.
+- **Settings** — open **Settings → Fredo Setup**.
+
+Either entry opens the same wizard, which detects OpenCode and configures OTLP.
 
 ## Development
 
