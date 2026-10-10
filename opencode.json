@@ -586,6 +586,16 @@
             "models": {
                 "deepseek/deepseek-v4.1-flash": {
                     "name": "DeepSeek V4.1 Flash",
+                    "attachment": true,
+                    "modalities": {
+                        "input": [
+                            "text",
+                            "image"
+                        ],
+                        "output": [
+                            "text"
+                        ]
+                    },
                     "reasoning": true,
                     "options": {
                         "reasoningEffort": "high"

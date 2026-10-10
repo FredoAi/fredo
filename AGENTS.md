@@ -22,7 +22,7 @@ ask for it. When in doubt about which mode I mean, ask.
 ## Exploring & debugging
 
 - Read/grep the repo freely — `apps/tauri/src-tauri/src/` (Rust), `apps/ui/src/` (React), `apps/opencode-plugin/` (OTLP emission).
-- **Telemetry:** query the live database with the `telemetry-query` skill (`telemetry_spans` / `telemetry_metrics` / `telemetry_logs` in `fredo.db`).
+- **Telemetry:** query the live database with the `telemetry-query` skill (`telemetry_spans` / `telemetry_metrics` / `telemetry_logs` in the embedded PostgreSQL cluster — PostgreSQL is the only persistence system; there is no `fredo.db`).
 - **Runtime/dev instance:** the `dev-environment` skill covers launch, plugin install, and DB reset.
 - **Dev commands:** `pnpm dev:tauri` (desktop app, hot reload), `pnpm dev:ui` (browser only, no Rust), `pnpm --filter @fredo/ui build` (typecheck + build), `cargo build` (from `apps/tauri/src-tauri/`).
 - Verify claims against real code, spans, or build output — not assumptions.
