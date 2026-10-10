@@ -89,6 +89,9 @@ export const DoomWindow: React.FC = () => {
   const lastFrameImageRef = useRef<HTMLImageElement | null>(null);
   const rafRef = useRef<number | null>(null);
   const frameTimerRef = useRef<number | null>(null);
+  // The error-phase Retry affordance — focused the moment the window enters
+  // `error` so keyboard/AT users are never stranded on the game surface (AC5).
+  const retryRef = useRef<HTMLButtonElement | null>(null);
   // Within-mount guards: `autoplayEventSeenRef` is the first-wins hydration guard
   // (an event already seen must not be clobbered by the mount seed);
   // `autoplayRepairAttemptedRef` makes the R-3 repair fire at most ONCE per
@@ -145,9 +148,9 @@ export const DoomWindow: React.FC = () => {
       drawFrame(frame.pngBase64);
     } catch {
       // Never blank the canvas — degrade to the last frame + reconnecting note.
-      // A `frameNotReady` (HTTP 503 "graphics not up yet") is deliberately treated
-      // here as transient: the 66 ms interval keeps polling and the window never
-      // enters the `error` phase (R-1.4).
+      // A `frameNotReady` (the engine not yet producing a frame) is deliberately
+      // treated here as transient: the 66 ms interval keeps polling and the window
+      // never enters the `error` phase (R-1.4).
       setFrameError(true);
     }
   }, [drawFrame]);
@@ -178,7 +181,7 @@ export const DoomWindow: React.FC = () => {
         void refreshState();
       } else {
         setPhase('error');
-        setErrorCode(result?.code ?? 'spawnFailed');
+        setErrorCode(result?.code ?? 'engineStartFailed');
         setLastError(result?.error ?? null);
       }
     } catch (err) {
@@ -302,6 +305,16 @@ export const DoomWindow: React.FC = () => {
     return () => window.clearInterval(id);
   }, [phase]);
 
+  // ── Focus Retry on entering `error` (AC5) ───────────────────────────────────
+  // The `error` panel is the action-required, persistent state; moving focus to
+  // its single recovery affordance keeps keyboard/AT users off the inert game
+  // surface. The panel already announces itself via `role="alert"`.
+  useEffect(() => {
+    if (phase === 'error') {
+      retryRef.current?.focus();
+    }
+  }, [phase]);
+
   // ── Auto-play guarantee (Spec #3007 R-3.b/R-3.c) ────────────────────────────
   // Once `ready` while the mode is engaged and the run is neither active nor
   // `completed`, invoke the SAME idempotent `start_doom_autoplay` with NO
@@ -406,6 +419,7 @@ export const DoomWindow: React.FC = () => {
           <Center>
             <Box
               data-testid="doom-error"
+              data-doom-error-code={errorCode ?? undefined}
               role="alert"
               maxW="420px"
               mx={4}
@@ -444,6 +458,7 @@ export const DoomWindow: React.FC = () => {
                     </Text>
                   )}
                   <Button
+                    ref={retryRef}
                     data-testid="doom-retry-button"
                     mt={3}
                     size="sm"

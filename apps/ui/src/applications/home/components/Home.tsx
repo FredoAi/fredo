@@ -18,8 +18,7 @@ import { getApplications, dedupeByApplicationId } from '../../applicationRegistr
 import { useCompanion } from '../../../shared/contexts/CompanionContext';
 import { useKonamiCode } from '../../../shared/hooks/useKonamiCode';
 import { useSecretCode } from '../../../shared/hooks/useSecretCode';
-import { DOOM_SECRET_CODE, useDoomMode, useDoomModeSkill, useDoomProvision } from '../../../shared/doom-mode';
-import { DoomProvisionDialog } from '../../doom/DoomProvisionDialog';
+import { DOOM_SECRET_CODE, useDoomMode, useDoomModeSkill } from '../../../shared/doom-mode';
 import { useAppOpenRequests } from '../hooks/useAppOpenRequests';
 import type { FredoApplicationClass } from '../../../shared/classes/FredoApplicationClass';
 
@@ -81,19 +80,14 @@ const HomeDesktop: React.FC<HomeDesktopProps> = ({ registerOpenFeature }) => {
   // The hook renders NOTHING — the opened `doom` window is the sole feedback, so
   // the secret leaves no discoverable trace before activation (AC3/R-5).
   //
-  // Spec #3012 ST-4 — the trigger is routed through `useDoomProvision()`: it
-  // seeds the provisioning status, opens the install-dir dialog on first use,
-  // streams `doom-provision-progress`, and only calls the EXISTING
-  // `enterDoomMode('code')` once the engine is staged/ready (R-2.1/R-2.4/R-3.1).
+  // Spec #3023 ST-7 — activation is DIRECT. The from-source engine provisioning
+  // slice (`useDoomProvision` + the install-dir dialog) was removed with the
+  // native in-process engine: there is no first-use build, so completing `iddqd`
+  // enters Doom Mode immediately.
   const { enter: enterDoomMode } = useDoomMode();
-  const handleDoomReady = useCallback(() => {
+  const handleDoomCode = useCallback(() => {
     void enterDoomMode('code');
   }, [enterDoomMode]);
-  const provision = useDoomProvision({ onReady: handleDoomReady });
-  const activateDoomProvision = provision.activate;
-  const handleDoomCode = useCallback(() => {
-    activateDoomProvision();
-  }, [activateDoomProvision]);
   useSecretCode(DOOM_SECRET_CODE, handleDoomCode);
 
   // Greet the user once on mount
@@ -258,9 +252,8 @@ const HomeDesktop: React.FC<HomeDesktopProps> = ({ registerOpenFeature }) => {
   // The decorative full-screen animated background (#2817) is gone — the clean
   // shell chrome (FREDO notch, avatar, search bar, side ticks, clock) is rendered
   // by the sibling LauncherShell. HomeDesktop keeps only its orchestration hooks
-  // (feature registration + konami) and the Spec #3012 ST-4 provisioning dialog
-  // host (a Portal, so it is never clipped by the shell).
-  return <DoomProvisionDialog controller={provision} />;
+  // (feature registration + konami + the Doom secret trigger) and renders nothing.
+  return null;
 };
 
 // ── Top-level Home component ──────────────────────────────────────────────────
