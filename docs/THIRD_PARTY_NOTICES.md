@@ -101,19 +101,19 @@ The previous Doom Mode engine was **RESTful-DOOM**, a fork of Chocolate Doom dis
 **corresponding source** in-repo and shipping it as a Tauri bundle resource (Spec #3012;
 `doom/source` / `doom/scripts`).
 
-Spec #3023 replaces that engine with the BSD-3-Clause `neurodoom` adapter, so the GPL
-corresponding-source obligation **no longer applies** and its resources are **dropped**. The
-removal (owned by **ST-6**) must delete:
+Spec #3023 replaced that engine with the BSD-3-Clause `neurodoom` adapter. The GPL
+corresponding-source obligation therefore **no longer applies**, and Spec #3023 (ST-6) has removed
+the resources it required:
 
-- `vendor/restful-doom/**` — the vendored GPL-2.0 corresponding source.
-- `scripts/doom/**` — the from-source build scripts and patches.
+- `vendor/restful-doom/**` — the vendored GPL-2.0 corresponding source. **Removed.**
+- `scripts/doom/**` — the from-source build scripts and patches. **Removed.**
 - `apps/tauri/src-tauri/tauri.conf.json` → the `bundle.resources` entries
   (`"../../../vendor/restful-doom/": "doom/source/"` and `"../../../scripts/doom/": "doom/scripts/"`)
-  — the GPL corresponding-source bundle resources. *(ST-6 owns `tauri.conf.json`; ST-8 does not edit it.)*
-- `docs/doom-mode-acquisition.md` — the superseded GPL/provisioning decision record.
+  — the GPL corresponding-source bundle resources. **Removed.**
+- `docs/doom-mode-acquisition.md` — the superseded GPL/provisioning decision record. **Removed.**
 
-After removal, the bundle ships **no engine source, no engine binary, and no toolchain**; the only
-Doom Mode artifact with a distribution obligation is the shareware `DOOM1.WAD` recorded in §2.
+The bundle now ships **no engine source, no engine binary, and no toolchain**; the only Doom Mode
+artifact with a distribution obligation is the shareware `DOOM1.WAD` recorded in §2.
 
 ---
 

@@ -10,14 +10,10 @@
 //! and the native engine's typed failures are bridged onto [`DoomErrorCode`]
 //! (see the `From<DoomEngineErrorCode>` impl).
 //!
-//! The out-of-process surface ([`ManagedDoom`] / [`DoomRuntimeState`]) is
-//! retained ONLY as a compile shim for the not-yet-removed loopback HTTP client
-//! ([`super::client`], slated for ST-6) consumed by the not-yet-rewired autoplay
-//! loop ([`super::agent`], ST-3). It is never populated by the command surface.
-
-use std::path::PathBuf;
-use std::process::Child;
-use std::sync::Mutex;
+//! Spec #3023 ST-6 removed the out-of-process surface (`ManagedDoom` /
+//! `DoomRuntimeState`) together with the loopback HTTP client, the supervised
+//! child process, and the from-source provisioning. The native engine runs
+//! in-process; teardown is take-and-drop.
 
 use serde::Serialize;
 
@@ -25,74 +21,33 @@ use super::engine::DoomEngineErrorCode;
 
 // ── Bounded-timeout constants (G-263: every wait is finite) ───────────────────
 //
-// Every start/stop/request wait in the Doom runtime is bounded by one of these.
-// There is NO unbounded wait: a readiness timeout kills the child before
-// returning, and a stop that outlives its bound is hard-killed.
+// The Doom runtime's waits are bounded; there is no unbounded wait.
 
-/// Bounded readiness poll after spawn: the engine must answer before this many
-/// seconds elapse, else the child is killed and `readyTimeout` is returned.
+/// Bounded readiness poll: the engine must become ready before this many
+/// seconds elapse, else `readyTimeout` is returned.
 pub const DOOM_READY_TIMEOUT_S: u64 = 30;
-/// Bound on the graceful stop before the hard-kill fallback fires.
+/// Bound on a bounded stop before the teardown fallback fires.
 pub const DOOM_STOP_TIMEOUT_S: u64 = 5;
-/// Bound the synchronous `RunEvent::Exit` teardown may spend before hard-kill.
+/// Bound the synchronous `RunEvent::Exit` teardown may spend.
 pub const DOOM_EXIT_HOOK_BOUND: u64 = 5;
-/// Bound on a single engine HTTP request (ST-5 client).
+/// Bound on a single engine request.
 pub const DOOM_REQUEST_TIMEOUT_S: u64 = 10;
-/// Frame polling cadence for the `doom` window (~15 fps, ST-6).
+/// Frame polling cadence for the `doom` window (~15 fps).
 pub const DOOM_FRAME_POLL_MS: u64 = 66;
 
 // ── AppStore keys (AppStore remains the single source of truth) ───────────────
 
-/// Absolute path to the game data (IWAD) the engine launches with.
-pub const DOOM_IWAD_PATH_KEY: &str = "doom_iwad_path";
-/// Directory holding the Doom runtime's staged artifacts + log.
-pub const DOOM_INSTALL_DIR_KEY: &str = "doom_install_dir";
-/// Configured (preferred) loopback port for the engine API.
-pub const DOOM_PORT_KEY: &str = "doom_port";
 /// Last runtime error message, surfaced by `get_doom_status`.
 pub const DOOM_LAST_ERROR_KEY: &str = "doom_last_error";
-/// Internal: PID of the managed engine process (orphan-sweep marker).
-pub const DOOM_PID_KEY: &str = "doom_pid";
 /// Internal: the typed code paired with [`DOOM_LAST_ERROR_KEY`].
 pub const DOOM_LAST_ERROR_CODE_KEY: &str = "doom_last_error_code";
 
-// ── G-275 env-override seams ──────────────────────────────────────────────────
-//
-// Every seam is inert when unset, so the production path is unchanged and QA can
-// deterministically drive the error/lifecycle paths without a real engine.
-
-/// Override the IWAD path (`doom_iwad_path`).
-pub const DOOM_IWAD_PATH_ENV: &str = "FREDO_DOOM_IWAD_PATH";
-/// Override the install/scratch directory (`doom_install_dir`).
-pub const DOOM_INSTALL_DIR_ENV: &str = "FREDO_DOOM_INSTALL_DIR";
-/// Override the bounded readiness timeout, in seconds.
-pub const DOOM_READY_TIMEOUT_ENV: &str = "FREDO_DOOM_READY_TIMEOUT_S";
-/// Override the bounded graceful-stop timeout, in seconds.
-pub const DOOM_STOP_TIMEOUT_ENV: &str = "FREDO_DOOM_STOP_TIMEOUT_S";
-
 // ── Product defaults / identity ───────────────────────────────────────────────
 
-/// Default subdirectory under the app data dir that holds Doom artifacts.
-pub const DOOM_INSTALL_SUBDIR: &str = "doom";
-/// The engine stdout/stderr log filename inside the install dir.
-pub const DOOM_LOG_FILENAME: &str = "doom.log";
-/// Default preferred port for the RESTful-DOOM API (OS-assigned fallback on use).
-pub const DEFAULT_DOOM_PORT: u16 = 6666;
-/// The window label hosting the Doom view (binding name, ST-6).
+/// The window label hosting the Doom view (binding name).
 pub const DOOM_WINDOW_LABEL: &str = "doom";
 /// The status-transition event the `doom` window subscribes to.
 pub const DOOM_STATUS_EVENT: &str = "doom-status-changed";
-/// Fallback expected image name for the PID-reuse guard when no engine path is
-/// configured (the upstream RESTful-DOOM Windows binary).
-pub const DOOM_IMAGE_DEFAULT: &str = "restful-doom.exe";
-
-/// The engine launch argv prefix: deterministic lockstep API mode, no blit, no
-/// audio. Followed by `-iwad <path>`, [`DOOM_LAUNCH_SUFFIX`], then
-/// `-apiport <port>`.
-pub const DOOM_LAUNCH_PREFIX: &[&str] = &["-apilockstep", "-noblit", "-nosound", "-nomusic"];
-/// The engine launch argv suffix after the IWAD: a fixed Doom-1 warp
-/// (`<episode> <map>`) and skill (ST-1 spike: `freedoom1.wad` is Phase 1).
-pub const DOOM_LAUNCH_SUFFIX: &[&str] = &["-warp", "1", "1", "-skill", "3"];
 
 // ── Lifecycle phase vocabulary ────────────────────────────────────────────────
 
@@ -208,30 +163,6 @@ pub fn derive_phase(running: bool, has_error: bool) -> DoomRuntimePhase {
     }
 }
 
-// ── Managed process + Tauri state ─────────────────────────────────────────────
-
-/// A live Doom engine child managed by the runtime (at most ONE exists).
-pub struct ManagedDoom {
-    /// The spawned child; stdout/stderr are redirected to `log_path`.
-    pub child: Child,
-    /// OS process id, kept for the persisted PID marker + `taskkill`.
-    pub pid: u32,
-    /// The loopback port the engine was launched to bind.
-    pub port: u16,
-    /// Absolute path to the engine executable that was spawned (identity, G-033).
-    pub engine_path: String,
-    /// Absolute path to the engine's stdout/stderr log.
-    pub log_path: PathBuf,
-}
-
-/// Tauri-managed wrapper around the single optional managed engine.
-///
-/// The `Mutex` only ever guards a short synchronous critical section (the
-/// check→spawn→store launch decision / a state read) — it is NEVER held across
-/// an `.await`.
-#[derive(Default)]
-pub struct DoomRuntimeState(pub Mutex<Option<ManagedDoom>>);
-
 // ── Wire models (camelCase, IPC) ──────────────────────────────────────────────
 
 /// Result of `launch_doom_runtime` — always returned, never a hang.
@@ -271,13 +202,6 @@ pub struct DoomStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn default_state_holds_no_engine() {
-        let state = DoomRuntimeState::default();
-        let guard = state.0.lock().expect("state lock is not poisoned");
-        assert!(guard.is_none());
-    }
 
     #[test]
     fn phases_serialize_camel_case() {
@@ -388,15 +312,9 @@ mod tests {
     }
 
     #[test]
-    fn the_appstore_keys_and_seams_are_pinned() {
-        assert_eq!(DOOM_IWAD_PATH_KEY, "doom_iwad_path");
-        assert_eq!(DOOM_INSTALL_DIR_KEY, "doom_install_dir");
-        assert_eq!(DOOM_PORT_KEY, "doom_port");
+    fn the_appstore_keys_and_identity_are_pinned() {
         assert_eq!(DOOM_LAST_ERROR_KEY, "doom_last_error");
-        assert_eq!(DOOM_IWAD_PATH_ENV, "FREDO_DOOM_IWAD_PATH");
-        assert_eq!(DOOM_INSTALL_DIR_ENV, "FREDO_DOOM_INSTALL_DIR");
-        assert_eq!(DOOM_READY_TIMEOUT_ENV, "FREDO_DOOM_READY_TIMEOUT_S");
-        assert_eq!(DOOM_STOP_TIMEOUT_ENV, "FREDO_DOOM_STOP_TIMEOUT_S");
+        assert_eq!(DOOM_LAST_ERROR_CODE_KEY, "doom_last_error_code");
         assert_eq!(DOOM_WINDOW_LABEL, "doom");
         assert_eq!(DOOM_STATUS_EVENT, "doom-status-changed");
     }

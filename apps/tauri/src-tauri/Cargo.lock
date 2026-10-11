@@ -1844,14 +1844,12 @@ dependencies = [
  "clap",
  "cpal",
  "encoding_rs",
- "flate2",
  "futures-util",
  "image",
  "interprocess",
  "k8s-openapi",
  "keyring",
  "kube",
- "lzma-rs",
  "neurodoom",
  "opentelemetry-proto",
  "portable-pty",
@@ -1865,7 +1863,6 @@ dependencies = [
  "sha2 0.10.9",
  "sqlparser",
  "sqlx 0.8.6",
- "tar",
  "tauri",
  "tauri-build",
  "tauri-plugin-mcp-bridge",
@@ -3419,16 +3416,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fae87c125b03c1d2c0150c90365d7d6bcc53fb73a9acaef207d2d065860f062"
 dependencies = [
  "imgref",
-]
-
-[[package]]
-name = "lzma-rs"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "297e814c836ae64db86b36cf2a557ba54368d03f6afcd7d947c266692f71115e"
-dependencies = [
- "byteorder",
- "crc",
 ]
 
 [[package]]
