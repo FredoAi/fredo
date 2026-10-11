@@ -2683,6 +2683,25 @@ fn count_verdict_comments_in_round(issue: u32, round: u32) -> usize {
 /// it must not count as live-telemetry evidence, which would let a static plan's
 /// evidence be misread as live and defeat the fail-closed live policy.
 fn line_is_telemetry_negation(line_lower: &str) -> bool {
+    // A line that ALSO carries a positive live-query signal is NOT a static-only
+    // sentence, even when it contains a disclosure such as "the feature emits no
+    // `telemetry_spans` row". That disclosure is REQUIRED for a native-loop feature
+    // whose telemetry surface differs from the derived-span pipeline, and combining
+    // it with the genuine live count on one (markdown table) line must not be read
+    // as static-only evidence (Spec #3026 hardening). The false positive blocked a
+    // genuinely live verdict, and the timeline's per-round verdict dedup (G-020)
+    // forbids a corrected re-post — so the guard MUST accept the combined line.
+    // Only a negation line WITHOUT a positive signal counts as static-only.
+    const POSITIVE_SIGNALS: [&str; 5] = [
+        "spancount",
+        "span_count",
+        "ingested_at",
+        "rows=",
+        "rows =",
+    ];
+    if POSITIVE_SIGNALS.iter().any(|s| line_lower.contains(s)) {
+        return false;
+    }
     const NEGATION_MARKERS: [&str; 9] = [
         "no `telemetry_spans`",
         "no telemetry_spans",

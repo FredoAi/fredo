@@ -945,6 +945,42 @@ Test-Script "testing->audit merges a clean spec PR (merge-gate happy path)" {
   }
 }
 
+# Spec #3026 hardening: a live-policy PASS whose `telemetry_spans` reference shares a
+# line with the REQUIRED "no `telemetry_spans` row" disclosure (a native-loop feature
+# whose telemetry surface differs) must STILL count as live evidence — the negation
+# matcher must not flag a line that also carries a positive live-query signal
+# (`spanCount` / `rows=` / `ingested_at`). The timeline's per-round verdict dedup
+# (G-020) forbids a corrected re-post, so a formatting false positive here deadlocks
+# the round.
+Test-Script "live evidence accepts a combined telemetry-count + no-span disclosure line" {
+  $url = Mock-IssueCreate "temp: combined telemetry line" "combined telemetry scratch" "testing"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $draftDir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
+    # One line carrying BOTH a genuine live count AND a "no <telemetry_spans> row"
+    # disclosure (the natural phrasing a tester uses for a native-loop feature).
+    $combined = "Verdict: PASS`nLIVE: telemetry_spans spanCount=537 (app-pool read) - the feature emits no telemetry_spans row; DISCLOSED.`n`n*Authored by Tester*"
+    [System.IO.File]::WriteAllText("$draftDir/tests-runs.md", $combined, [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
+    $null = & rust-script $ps --action mock-gh --ghargs "pr create --base main --head spec/$issueNum --title t --body b" 2>&1
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase audit 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($outStr -match "static-only") { throw "combined live-evidence line wrongly blocked as static-only: $outStr" }
+    if ($outStr -notmatch "TRANSITIONED") { throw "combined live-evidence line should clear the guard: $outStr" }
+    return "combined telemetry-count + no-span disclosure line accepted as live evidence (#$issueNum)"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # Merge-guard negative + exemption paths: a real (>10s) CI failure blocks the
 # transition; the <10s runner-provisioning env failure is exempted and UNSTABLE
 # still merges.
