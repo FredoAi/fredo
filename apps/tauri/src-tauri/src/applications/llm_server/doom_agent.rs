@@ -70,11 +70,15 @@ pub const DOOM_AGENT_AUDIT_MAX_RECORDS: usize = 64;
 
 /// Maximum `max_tokens` for a single Doom decision reply (lever D, #3026 ST-5).
 ///
-/// The `doom_action` reply is a tiny `{tics, actions}` object, so the Doom
-/// request is bounded to the fewest generated tokens. This bound is applied to
-/// the Doom request body ONLY — the shared default (`chat::MAX_TOKENS`) and every
-/// other caller of `chat::build_response_format_request_body` are untouched.
-pub const DOOM_AGENT_MAX_TOKENS: u32 = 256;
+/// Collapsed to the shared [`chat::MAX_TOKENS`] default. The earlier
+/// "256 is ample for a tiny `{tics, actions}` object" premise was falsified by the
+/// shipped managed config: the server runs reasoning **on** (`--reasoning on`) and
+/// its reasoning prefix is not surfaced to this path yet still consumes the token
+/// budget, so a 256-token cap could starve the reply to empty. The Doom request is
+/// therefore bounded to the SAME value as the shared builder — the override remains
+/// Doom-path-only, and `chat::build_response_format_request_body`'s own default and
+/// every other caller are untouched.
+pub const DOOM_AGENT_MAX_TOKENS: u32 = chat::MAX_TOKENS;
 
 /// File name of the bounded request-audit JSONL inside the log directory.
 pub const DOOM_AGENT_AUDIT_FILE: &str = "doom-agent-requests.jsonl";
@@ -127,10 +131,11 @@ pub fn build_doom_agent_request_body(observation: &Value, vocabulary: &Value) ->
         DOOM_ACTION_SCHEMA_NAME,
         &doom_action_schema(),
     );
-    // Lever D (#3026 ST-5): bound generation on the Doom path ONLY. The
-    // schema-constrained reply is a tiny `{tics, actions}` object, so 256
-    // generated tokens is ample. The shared builder's own default
-    // (`chat::MAX_TOKENS`) is deliberately NOT changed.
+    // Lever D (#3026 ST-5): bound generation on the Doom path ONLY, at the
+    // shared `chat::MAX_TOKENS` default (the reasoning-enabled server's invisible
+    // reasoning prefix consumes the budget, so a smaller cap can starve the
+    // reply). `chat::build_response_format_request_body`'s own default is
+    // deliberately NOT changed.
     body["max_tokens"] = json!(DOOM_AGENT_MAX_TOKENS);
     body
 }
@@ -215,16 +220,39 @@ pub fn parse_doom_decision(content: &str) -> Result<DoomDecision, DoomDecisionEr
     Ok(DoomDecision { tics, actions })
 }
 
+/// Classify the accumulated streaming reply into a [`DoomDecision`].
+///
+/// An **empty/whitespace** reply is an availability condition, NOT a malformed
+/// decision: the reasoning-enabled server may return nothing on the `content`
+/// channel (its reasoning prefix is not surfaced here and can consume the whole
+/// budget), and a transport/compaction hiccup yields the same shape. It therefore
+/// maps to [`DoomDecisionError::ModelUnavailable`], which the continuous loop routes
+/// to its NON-fatal degrade branch (R-4/AC4, #3026 ST-2 rework) — the run keeps
+/// advancing with the last intent instead of taking the fatal malformed stop.
+///
+/// A **non-empty** reply is parsed as before: any invalid JSON stays
+/// [`DoomDecisionError::Malformed`], so the bounded failure-stop semantics for
+/// genuinely malformed decisions are unchanged.
+pub fn classify_doom_reply(content: &str) -> Result<DoomDecision, DoomDecisionError> {
+    if content.trim().is_empty() {
+        return Err(DoomDecisionError::ModelUnavailable(
+            "model returned an empty reply".to_string(),
+        ));
+    }
+    parse_doom_decision(content)
+}
+
 // ── Model-backed decision source ──────────────────────────────────────────────
 
 /// A [`DoomDecisionSource`] backed by the managed companion model.
 ///
 /// Built over the existing `chat::run_stream` shell: it renders
 /// [`build_doom_agent_request_body`], accumulates the structured `delta.content`
-/// within [`DOOM_AUTOPLAY_DECISION_TIMEOUT_S`], and parses a [`DoomDecision`]
-/// (`Malformed` on parse failure, `ModelUnavailable` on a stream/transport error,
-/// `TimedOut` on the per-decision bound). Each request appends one audit record
-/// (best-effort) when [`DOOM_AGENT_LOG_DIR_ENV`] names a directory.
+/// within [`DOOM_AUTOPLAY_DECISION_TIMEOUT_S`], and classifies the reply via
+/// [`classify_doom_reply`] (`Malformed` on invalid non-empty JSON,
+/// `ModelUnavailable` on an empty reply or a stream/transport error, `TimedOut` on
+/// the per-decision bound). Each request appends one audit record (best-effort)
+/// when [`DOOM_AGENT_LOG_DIR_ENV`] names a directory.
 pub struct ModelDoomDecisionSource {
     app: AppHandle,
     vocabulary: Value,
@@ -272,7 +300,10 @@ impl DoomDecisionSource for ModelDoomDecisionSource {
         match stream_result {
             Err(_elapsed) => Err(DoomDecisionError::TimedOut),
             Ok(Err(detail)) => Err(DoomDecisionError::ModelUnavailable(detail)),
-            Ok(Ok(())) => parse_doom_decision(&content),
+            // An empty reply is a source-availability condition (R-4), not a
+            // malformed decision — `classify_doom_reply` maps it to
+            // `ModelUnavailable` so the loop degrades and keeps advancing.
+            Ok(Ok(())) => classify_doom_reply(&content),
         }
     }
 }
@@ -362,20 +393,23 @@ mod tests {
         assert!(DOOM_AGENT_SYSTEM_PROMPT.contains("actions"));
         assert!(DOOM_AGENT_SYSTEM_PROMPT.contains("pixels"));
         assert!(DOOM_AGENT_SYSTEM_PROMPT.contains("audio"));
-        assert_eq!(DOOM_AGENT_MAX_TOKENS, 256);
+        // ST-5 rework: the Doom bound is collapsed to the shared default.
+        assert_eq!(DOOM_AGENT_MAX_TOKENS, chat::MAX_TOKENS);
+        assert_eq!(DOOM_AGENT_MAX_TOKENS, 1024);
     }
 
-    /// **ST-5 (lever D, R-1).** The Doom body is bounded to
-    /// [`DOOM_AGENT_MAX_TOKENS`] while the SHARED
-    /// `chat::build_response_format_request_body` default is left unchanged
-    /// (the bound is Doom-path-only — no other feature inherits it).
+    /// **ST-5 (lever D, R-1; rework round 2).** The Doom body is bounded to
+    /// [`DOOM_AGENT_MAX_TOKENS`], which is now the shared `chat::MAX_TOKENS`
+    /// default, while `chat::build_response_format_request_body`'s OWN default is
+    /// left byte-for-byte unchanged (the override stays Doom-path-only).
     #[test]
-    fn st5_bounds_the_doom_body_without_touching_the_shared_default() {
+    fn st5_doom_body_uses_the_shared_token_budget_and_leaves_the_shared_builder_untouched() {
         let body = build_doom_agent_request_body(&json!({ "tic": 1 }), &json!([]));
-        assert_eq!(body["max_tokens"], 256);
+        assert_eq!(body["max_tokens"], chat::MAX_TOKENS);
         assert_eq!(body["max_tokens"], DOOM_AGENT_MAX_TOKENS);
+        assert_eq!(body["max_tokens"], 1024);
 
-        // The shared builder still renders chat::MAX_TOKENS.
+        // The shared builder still renders its own (unchanged) default.
         let shared = chat::build_response_format_request_body(
             &[LlmMessage {
                 role: "user".to_string(),
@@ -385,7 +419,39 @@ mod tests {
             &doom_action_schema(),
         );
         assert_eq!(shared["max_tokens"], chat::MAX_TOKENS);
-        assert_ne!(shared["max_tokens"], DOOM_AGENT_MAX_TOKENS);
+        assert_eq!(shared["max_tokens"], DOOM_AGENT_MAX_TOKENS);
+    }
+
+    /// **ST-2 rework (R-4/AC4).** An EMPTY/whitespace accumulated reply is a
+    /// source-availability condition → [`DoomDecisionError::ModelUnavailable`]
+    /// (the loop's NON-fatal degrade branch), NOT the fatal `Malformed`; a
+    /// NON-empty invalid reply stays `Malformed`.
+    #[test]
+    fn an_empty_reply_is_model_unavailable_not_malformed() {
+        assert!(matches!(
+            classify_doom_reply(""),
+            Err(DoomDecisionError::ModelUnavailable(_))
+        ));
+        assert!(matches!(
+            classify_doom_reply("   \n\t "),
+            Err(DoomDecisionError::ModelUnavailable(_))
+        ));
+
+        // Non-empty invalid JSON keeps the fatal `Malformed` classification.
+        assert!(matches!(
+            classify_doom_reply("not json"),
+            Err(DoomDecisionError::Malformed(_))
+        ));
+        assert!(matches!(
+            classify_doom_reply("[1, 2]"),
+            Err(DoomDecisionError::Malformed(_))
+        ));
+
+        // A valid reply still parses.
+        let decision =
+            classify_doom_reply(r#"{ "tics": 3, "actions": [] }"#).expect("valid reply parses");
+        assert_eq!(decision.tics, 3);
+        assert!(decision.actions.is_empty());
     }
 
     #[test]
