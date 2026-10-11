@@ -927,6 +927,22 @@ pub async fn enter_doom_mode(app: AppHandle, origin: Option<String>) -> DoomMode
     // 1. Runtime (idempotent exactly-one launch + bounded readiness).
     let launch = launch_doom_runtime(app.clone()).await;
     if !launch.success {
+        // Round-2 fix (F-11 / F-12, AC5): the `doom` window is the ONLY typed
+        // error surface, so open it BEFORE rolling the mode back. Its own mount
+        // re-runs `launch_doom_runtime` through the SAME failure lever and
+        // renders `engineStartFailed` / `wadMissing` / `wadCorrupt` in-window
+        // (`DoomWindow.tsx`). Singleton (focus-if-exists); a window opened here
+        // still tears down bounded via its `CloseRequested` handler (REQ-5.3).
+        // Best-effort — never mask the original launch error. The mode rollback
+        // in `fail_enter` (→ inactive, suppression off, `doom-mode-changed`) is
+        // unchanged.
+        if let Err(detail) = open_doom_window(app.clone()).await {
+            tracing::warn!(
+                target: "fredo::doom",
+                detail,
+                "could not open the doom window on the engine-launch failure branch"
+            );
+        }
         return fail_enter(
             &app,
             launch
