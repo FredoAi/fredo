@@ -68,6 +68,14 @@ pub const DOOM_AUTOPLAY_DECISION_TIMEOUT_S: u64 = 30;
 /// Maximum number of audit records retained in the JSONL (the last-N bound).
 pub const DOOM_AGENT_AUDIT_MAX_RECORDS: usize = 64;
 
+/// Maximum `max_tokens` for a single Doom decision reply (lever D, #3026 ST-5).
+///
+/// The `doom_action` reply is a tiny `{tics, actions}` object, so the Doom
+/// request is bounded to the fewest generated tokens. This bound is applied to
+/// the Doom request body ONLY — the shared default (`chat::MAX_TOKENS`) and every
+/// other caller of `chat::build_response_format_request_body` are untouched.
+pub const DOOM_AGENT_MAX_TOKENS: u32 = 256;
+
 /// File name of the bounded request-audit JSONL inside the log directory.
 pub const DOOM_AGENT_AUDIT_FILE: &str = "doom-agent-requests.jsonl";
 
@@ -94,6 +102,10 @@ pub fn doom_action_schema() -> Value {
 /// (which uses `chat::render_messages(..., None, None)`), so no `image_url`/
 /// `input_audio` part and no image/audio field can appear (R-2).
 ///
+/// The shared builder's `max_tokens` default is left untouched; the returned
+/// Doom body is then bounded to [`DOOM_AGENT_MAX_TOKENS`] (lever D, #3026 ST-5) —
+/// a Doom-path-only override, so no other feature inherits this token bound.
+///
 /// `vocabulary` is a PARAMETER — this module never imports `applications/doom`.
 pub fn build_doom_agent_request_body(observation: &Value, vocabulary: &Value) -> Value {
     let user_payload = json!({
@@ -110,11 +122,17 @@ pub fn build_doom_agent_request_body(observation: &Value, vocabulary: &Value) ->
             content: user_payload.to_string(),
         },
     ];
-    chat::build_response_format_request_body(
+    let mut body = chat::build_response_format_request_body(
         &messages,
         DOOM_ACTION_SCHEMA_NAME,
         &doom_action_schema(),
-    )
+    );
+    // Lever D (#3026 ST-5): bound generation on the Doom path ONLY. The
+    // schema-constrained reply is a tiny `{tics, actions}` object, so 256
+    // generated tokens is ample. The shared builder's own default
+    // (`chat::MAX_TOKENS`) is deliberately NOT changed.
+    body["max_tokens"] = json!(DOOM_AGENT_MAX_TOKENS);
+    body
 }
 
 // ── Bounded request audit ─────────────────────────────────────────────────────
@@ -299,7 +317,8 @@ mod tests {
 
         // The response_format is the schema-constrained `doom_action`.
         assert_eq!(body["stream"], true);
-        assert_eq!(body["max_tokens"], 1024);
+        // Lever D (ST-5): the Doom body is bounded to DOOM_AGENT_MAX_TOKENS.
+        assert_eq!(body["max_tokens"], DOOM_AGENT_MAX_TOKENS);
         assert_eq!(body["response_format"]["type"], "json_schema");
         assert_eq!(
             body["response_format"]["json_schema"]["name"],
@@ -343,6 +362,30 @@ mod tests {
         assert!(DOOM_AGENT_SYSTEM_PROMPT.contains("actions"));
         assert!(DOOM_AGENT_SYSTEM_PROMPT.contains("pixels"));
         assert!(DOOM_AGENT_SYSTEM_PROMPT.contains("audio"));
+        assert_eq!(DOOM_AGENT_MAX_TOKENS, 256);
+    }
+
+    /// **ST-5 (lever D, R-1).** The Doom body is bounded to
+    /// [`DOOM_AGENT_MAX_TOKENS`] while the SHARED
+    /// `chat::build_response_format_request_body` default is left unchanged
+    /// (the bound is Doom-path-only — no other feature inherits it).
+    #[test]
+    fn st5_bounds_the_doom_body_without_touching_the_shared_default() {
+        let body = build_doom_agent_request_body(&json!({ "tic": 1 }), &json!([]));
+        assert_eq!(body["max_tokens"], 256);
+        assert_eq!(body["max_tokens"], DOOM_AGENT_MAX_TOKENS);
+
+        // The shared builder still renders chat::MAX_TOKENS.
+        let shared = chat::build_response_format_request_body(
+            &[LlmMessage {
+                role: "user".to_string(),
+                content: "hello".to_string(),
+            }],
+            "fredo_reply",
+            &doom_action_schema(),
+        );
+        assert_eq!(shared["max_tokens"], chat::MAX_TOKENS);
+        assert_ne!(shared["max_tokens"], DOOM_AGENT_MAX_TOKENS);
     }
 
     #[test]
