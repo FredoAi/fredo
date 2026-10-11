@@ -1339,7 +1339,7 @@ fn friendly_kind(sprite: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::applications::doom::clock::FixedTickClock;
+    use crate::applications::doom::clock::{FixedTickClock, DOOM_MIN_SMOOTH_FPS};
     use crate::applications::doom::decision::ScriptedDecisionSource;
     use neurodoom::math::FRACUNIT;
 
@@ -1837,6 +1837,65 @@ mod tests {
         assert!(report.distinct_frames >= 1, "the frames changed across the run");
         assert!(report.distinct_frames <= report.ticks);
         assert!(report.fps_estimate > 0.0, "a positive fps estimate");
+    }
+
+    #[tokio::test]
+    async fn the_driver_sustains_the_ac2_distinct_frame_floor_over_five_simulated_seconds() {
+        // AC2 floor (R-2): >= DOOM_MIN_SMOOTH_FPS (30) DISTINCT world-reflecting
+        // frames per SIMULATED second over a 5-simulated-second window, asserted
+        // through the deterministic ST-9 driver (FixedTickClock + scripted source),
+        // never a wall clock (G-316 / AC5).
+        let state = DoomEngineState::default();
+        // A VARIED-motion script (forward + run + periodic turns + a shot) keeps
+        // the rendered view changing every tick; a single held `forward` can run
+        // into a wall and stall the framebuffer (no distinct frame).
+        let source = scripted(
+            json!([
+                { "tics": 1, "actions": [{ "type": "forward" }, { "type": "run" }, { "type": "turn-left" }] },
+                { "tics": 1, "actions": [{ "type": "forward" }, { "type": "turn-to", "angle": 90 }] },
+                { "tics": 1, "actions": [{ "type": "strafe-right" }, { "type": "turn-right" }, { "type": "shoot" }] },
+                { "tics": 1, "actions": [{ "type": "forward" }, { "type": "turn-to", "angle": 270 }] },
+            ]),
+            true,
+        );
+        let clock = driver_clock();
+
+        // 5 simulated seconds at the continuous rate.
+        let window_ticks = DOOM_CONTINUOUS_RATE_HZ * 5;
+        let report = run_bounded_driver(
+            &state,
+            &source,
+            DoomDriverConfig {
+                map: 1,
+                skill: 3,
+                // One budget tick is the resume positioning; the rest are engine ticks.
+                max_steps: window_ticks + 1,
+                max_failures: 3,
+            },
+            &clock,
+        )
+        .await
+        .expect("driven run");
+
+        assert_eq!(
+            report.ticks, window_ticks,
+            "the run advances exactly the 5-simulated-second window"
+        );
+        assert_eq!(report.steps, report.ticks);
+        assert!(report.terminal.is_none(), "the tick budget ended the run");
+
+        let floor = DOOM_MIN_SMOOTH_FPS * 5;
+        assert!(
+            report.distinct_frames >= floor,
+            "AC2: expected >= {floor} distinct frames over {window_ticks} ticks, got {}",
+            report.distinct_frames
+        );
+        assert!(
+            report.fps_estimate >= f64::from(DOOM_MIN_SMOOTH_FPS),
+            "AC2: expected fps_estimate >= {0}, got {1}",
+            DOOM_MIN_SMOOTH_FPS,
+            report.fps_estimate
+        );
     }
 
     #[tokio::test]
