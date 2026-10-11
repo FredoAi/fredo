@@ -2,8 +2,8 @@
 //!
 //! Owns the **in-process native engine** end to end: `launch_doom_runtime`
 //! (idempotent exactly-one session), `stop_doom_runtime` (take-and-drop),
-//! `get_doom_status`, the parity control surface (`doom_read_state` / `doom_step`
-//! / `doom_frame`), and the synchronous teardown entry points wired to the window
+//! `get_doom_status`, the parity control surface (`doom_read_state` / `doom_step`),
+//! and the synchronous teardown entry points wired to the window
 //! `CloseRequested` handler and the `RunEvent::Exit` hook.
 //!
 //! Spec #3023 ST-2 replaced the out-of-process GPL engine + loopback HTTP bridge
@@ -49,7 +49,7 @@ const DOOM_DEFAULT_SKILL: i64 = 3;
 //
 // The response shapes the `doom` window consumes. Moved here from the retired
 // HTTP client (`client.rs`) so the command surface no longer depends on it; the
-// camelCase wire shapes are unchanged (`{raw}` / `{state}` / `{pngBase64}`).
+// camelCase wire shapes are unchanged (`{raw}` / `{state}`).
 
 /// `doom_read_state` result — the engine observation, verbatim.
 #[derive(Clone, Debug, serde::Serialize)]
@@ -65,14 +65,6 @@ pub struct DoomStateView {
 pub struct DoomStepResult {
     /// The engine's post-step observation JSON, unmodified.
     pub state: serde_json::Value,
-}
-
-/// `doom_frame` result — a renderable base64 PNG (no data-URI prefix).
-#[derive(Clone, Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DoomFrame {
-    /// Base64-encoded PNG bytes (no data-URI prefix).
-    pub png_base64: String,
 }
 
 /// The typed command error surface (`{ code, message }`, camelCase over IPC).
@@ -316,20 +308,6 @@ pub async fn doom_step(
     run_engine(move || state.step(tics, &actions))
         .await
         .map(|state| DoomStepResult { state })
-        .map_err(DoomCommandError::from)
-}
-
-/// The current frame as a base64 PNG (the native 320×200 RGBA framebuffer,
-/// encoded in-process — no HTTP, no indexed8 decode).
-#[tauri::command]
-pub async fn doom_frame(app: AppHandle) -> Result<DoomFrame, DoomCommandError> {
-    let state = app.state::<DoomEngineState>().inner().clone();
-    if !state.is_running() {
-        return Err(DoomCommandError::not_running());
-    }
-    run_engine(move || state.frame_png())
-        .await
-        .map(|png_base64| DoomFrame { png_base64 })
         .map_err(DoomCommandError::from)
 }
 
@@ -1068,11 +1046,6 @@ mod tests {
             state: serde_json::json!({ "tic": 2 }),
         };
         assert_eq!(serde_json::to_value(&step).unwrap()["state"]["tic"], 2);
-
-        let frame = DoomFrame {
-            png_base64: "AA==".to_string(),
-        };
-        assert_eq!(serde_json::to_value(&frame).unwrap()["pngBase64"], "AA==");
 
         let error = DoomCommandError::not_running();
         let value = serde_json::to_value(&error).unwrap();

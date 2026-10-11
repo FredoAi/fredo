@@ -973,7 +973,7 @@ pub fn run() {
             // Doom runtime lifecycle (Spec #2968 CU-2/ST-3; native engine
             // Spec #3023): the idempotent engine launch + stop and the status
             // snapshot. The observation/control surface (`doom_read_state` /
-            // `doom_step` / `doom_frame`, all Rust-side) is registered here too.
+            // `doom_step`, all Rust-side) is registered here too.
             // `open_doom_window` (CU-4/ST-6) is the singleton window opener the
             // main-window entry host invokes.
             applications::doom::commands::open_doom_window,
@@ -982,7 +982,6 @@ pub fn run() {
             applications::doom::commands::get_doom_status,
             applications::doom::commands::doom_read_state,
             applications::doom::commands::doom_step,
-            applications::doom::commands::doom_frame,
             // Doom autoplay trigger host (Spec #2969 ST-5): the bounded
             // start/stop/status commands over the ST-3 loop. `start` chooses
             // nothing — the decision source was installed at startup above.
