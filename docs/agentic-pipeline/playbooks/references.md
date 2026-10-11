@@ -63,6 +63,30 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 ---
 ## Known Failure Modes
+### G-350: ac_numeric_floor_assertion_surface_ships_without_a_pinning_test
+- **activation_date:** 2026-10-11
+- **observed:** #3026 round 1 — the plan named a deterministic engine driver as the assertion surface for a numeric acceptance floor (a minimum distinct-frame rate over a bounded run), but the shipped driver tests asserted only that the measurement counters existed (a minimum of one frame, a positive estimate) and never the floor, so the AC's headline guarantee had no deterministic in-repo pin; the rework round added a test that asserts the floor (and it held deterministically). Root-cause class: `technique` (implementation under-delivery).
+- **target_failure:** a plan designates a test harness as the assertion surface for a numeric-threshold AC, but the owning sub-task ships the measurement counters without a test asserting the AC's actual threshold — so the guarantee is pinned only by an ad-hoc live reading, and a live blocker leaves it unverified.
+- **guardrail:** At implementation review (or convergence), when a plan names a harness as the assertion surface for a numeric-threshold AC, require the owning sub-task to ship a test that asserts that threshold — not merely that the counters exist. At audit, a PASS whose numeric-AC row rests only on counter presence is a coverage gap. Extends G-033.
+- **home:** playbooks/software-architect.md (assertion-surface design) + playbooks/developer.md + playbooks/qa-expert.md (row) + references.md (this record)
+- **effectiveness:** Applied (2026-10-11, #3026 round 2) — the added floor test asserted the threshold deterministically and became the AC's in-repo pin.
+
+### G-349: legacy_mcp_port_socket_hold_forces_a_bridge_port_scan_that_wedges_the_webview
+- **activation_date:** 2026-10-11
+- **observed:** #3026 testing rounds 1–2 — after a `Down → Up` the MCP bridge auto-scanned to the next port when an orphaned OS-level socket still held the default bridge port, and every webview tool (which targets the default port) timed out with `about:blank`, reading as a blank-WebView2 wedge. The recovery that worked: `Down` → confirm the default bridge port has no listener → `Up`, then confirm the app process owns the default port before driving. A restart performed without that check re-wedged the round. Root-cause class: `environment`.
+- **target_failure:** an orphaned OS socket holds the default MCP bridge port across a restart, so the bridge binds a scanned port while the webview MCP tools keep targeting the default one — every webview call times out and the round reads as a wedged/blank webview.
+- **guardrail:** Before driving a live webview round after any `Down`/`Up`, confirm the app process owns the DEFAULT MCP bridge port; when it does not (the bridge scanned away), do NOT drive — free the port (Down, confirm no listener, Up) and re-verify. Treat the blank-webview + all-webview-timeout signature as a port-target mismatch first, not a product defect. A durable dev-env guard (fail-closed/retry when the default bridge port is not bound) is the open follow-up.
+- **home:** .opencode/skills/dev-environment/SKILL.md + playbooks/self-improver.md (dispatch) + playbooks/tester.md + references.md (this record)
+- **effectiveness:** Applied (2026-10-11, #3026) — the recovery recipe (Down → confirm the default port free → Up → confirm ownership) restored a working webview and the round completed live.
+
+### G-348: on_the_go_improvement
+- **activation_date:** 2026-10-11
+- **observed:** #3026 round 2
+- **target_failure:** (on-the-go pipeline improvement)
+- **guardrail:** Live-evidence guard false positive on issue 3026. A tester verdict line combined a genuine telemetry count with the required disclosure that the feature emits no telemetry_spans row (a native-loop feature whose telemetry surface differs), and the negation matcher flagged the whole line as static-only, blocking testing to audit. The per-round verdict dedup forbids a corrected re-post, so the round could not recover by reformatting. Fix applied in pipeline-state.rs: the negation matcher now treats a line that also carries a positive live-query signal (a span count or a row count) as genuine live evidence, so only a pure negation line counts as static-only. Added a regression case to test-scripts.ps1 and validated the full harness at 119 of 119 passing.
+- **home:** references.md (G-348)
+- **effectiveness:** Pending
+
 
 ### G-347: ac_error_state_unreachable_on_the_activation_path
 - **activation_date:** 2026-10-10
@@ -142,7 +166,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** a live round drives its error/transient legs LAST, so when the recurring webview/bridge wedge sets in after the heavy legs those rows stay UNVERIFIED and an identical re-issue reproduces the same gap.
 - **guardrail:** When a live round is blocked by a recurring webview/bridge wedge, change the EVIDENCE STRATEGY — bring up a fresh clean env slot, clear process orphans, run the driver stop/start ladder between native-window interactions, and drive the fragile error/transient stub-lever rows FIRST (before the heavy open/autoplay/close legs); re-issue only with the reordered brief, never the identical one.
 - **home:** .opencode/skills/dev-environment/SKILL.md + playbooks/tester.md + playbooks/self-improver.md (dispatch) + references.md (this record)
-- **effectiveness:** Pending (first application 2026-10-09, #3007 — the reordered resume completed every outstanding row and PASSed; confirm on the next wedge recurrence)
+- **effectiveness:** Partial (2026-10-11, #3026 round 2) — the evidence-order change helped (the AC/error rows were driven before the remaining legs and completed), but the recurring wedge's ROOT CAUSE this run was a default-port socket hold forcing a bridge port scan (see G-349); the port-ownership recipe, not the reordering alone, is what restored the webview. Earlier: first application 2026-10-09, #3007 (reordered resume completed every outstanding row and PASSed).
 
 ### G-337: removal_sweep_file_list_omits_non_code_reference_sites
 - **activation_date:** 2026-10-09
@@ -158,7 +182,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** an isolated-env port pair is permanently wedged by a dead PID's OS socket that `Down` cannot reclaim; a round that needs that slot either fails to boot or silently runs on the legacy/shared instance.
 - **guardrail:** When an isolated env slot's ports are bound by a dead PID's socket, do NOT loop `Down`/`Up` on that slot — run the round on the SAME env id at a CLEAN slot and disclose the slot in the verdict (the env stays isolated by its manifest). A sanctioned env-scoped force-port-clear is the durable fix (a `dev-env.ps1` addition, routed to the SI). Never fall back to the legacy shared instance to escape a wedged slot.
 - **home:** .opencode/skills/dev-environment/SKILL.md + .opencode/scripts/dev-env.ps1 (candidate force-port-clear) + references.md (this record)
-- **effectiveness:** Confirmed (2026-10-09, #3007) — the dead-PID sockets on the legacy `:9223`/`:4318` and on successive slot ports were never reclaimed by `Down`; the round ran on clean slots (slot 2→8) with `Hygiene -Kill` clearing the per-attempt process orphans, and every slot switch booted. The durable force-port-clear remains the open follow-up.
+- **effectiveness:** Confirmed (2026-10-09, #3007) — the dead-PID sockets on the legacy `:9223`/`:4318` and on successive slot ports were never reclaimed by `Down`; the round ran on clean slots (slot 2→8) with `Hygiene -Kill` clearing the per-attempt process orphans, and every slot switch booted. The durable force-port-clear remains the open follow-up. Re-confirmed (2026-10-11, #3026) — every `Down` left the dead PID's OS socket on `:9223`/`:4318` unreclaimed; recovery used the port-ownership recipe (see G-349), not a loop on the wedged port.
 
 ### G-335: app_spawns_a_non_rust_child_with_windows_verbatim_paths
 - **activation_date:** 2026-10-09
@@ -240,6 +264,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** playbooks/self-improver.md (audit/convergence + tester dispatch) + playbooks/tester.md + references.md (this record)
 - **effectiveness:** Applied (2026-10-08, #2956) — the `about:blank` wedge recurred on the first tip-switch `Up` in testing rounds 1 and 3; the tester recovered with an explicit `Down` → `Up` on the same env id and re-drove the affected rows — no partial PASS was cleared and no under-verified round merged. Re-validated (2026-10-09, #3012) — the wedge recurred (orphaned slot-1 socket + recurring MCP `execute_js` timeouts); each round recovered via `Down`/`Up` on the same env id+slot plus a driver-session stop/start ladder, no partial PASS was cleared, and the final PASS round carried only live-verified rows.
 - **re-validated:** 2026-10-09, #3007 — the wedge recurred TWICE across the testing entry (each time after the heavy Doom-window open/autoplay/close legs), leaving F-102/F-112 UNVERIFIED twice; the SI recovered the env and resumed the tester, and the completion re-drive — with the fragile stub-lever rows ordered FIRST on a fresh clean slot + the driver stop/start ladder — completed every row for a legitimate PASS. No partial PASS was cleared; the first two documents were correctly FAIL. (The ORDER change is recorded as G-338.)
+- **re-validated (2):** 2026-10-11, #3026 — the tester's round-1 verdict correctly stayed FAIL with named blockers for the webview-blocked live rows (never a partial PASS); the SI recovered the env and RESUME-RE-DROVE the round, which completed every AC on a working instance. No under-verified round merged.
 
 ### G-325: resumed_run_reuses_or_destroys_a_leftover_worktree_from_the_aborted_run
 - **activation_date:** 2026-10-07
@@ -325,7 +350,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** a stale app process from a wedged previous dev instance survives teardown, locks the build artifact, and makes the next cold start fail to relink — while the readiness probe accepts the stale process as proof of a healthy launch, so the wedge is misread as a healthy environment.
 - **guardrail:** A cold start MUST verify the app binary is replaceable (or reap stale app processes) before declaring readiness; the readiness probe must never accept an unrelated surviving app process as proof of a healthy launch. Until the dev-env tooling reaps stale app instances, recovery requires a process-kill verb available to the recovering role — route the reap to a role whose sandbox has it rather than looping Down/Up.
 - **home:** .opencode/skills/dev-environment/SKILL.md + .opencode/scripts/dev-env.ps1 (bounded, image-guarded stale-app reap) + playbooks/self-improver.md + references.md (this record)
-- **effectiveness:** Partial (2026-10-04, #2955 round 2) — the tester recovered via an allowlisted kill wrapper and the round passed, but the dev-env tooling still lacks a sanctioned stale-app reap (open follow-up).
+- **effectiveness:** Partial (2026-10-04, #2955 round 2) — the tester recovered via an allowlisted kill wrapper and the round passed, but the dev-env tooling still lacks a sanctioned stale-app reap (open follow-up). Re-observed (2026-10-11, #3026) — the running dev instance held the debug app binary, so a shared-target `cargo test --locked` failed to relink; the Rust developer worked around it with an isolated target dir. The stale-app reap remains the open follow-up.
 
 ### G-314: build_from_source_ac_gate_scripted_but_never_executed
 - **activation_date:** 2026-10-04
