@@ -19,7 +19,15 @@ use serde::Serialize;
 
 // ── Bounded budgets (G-263: every wait/budget is finite) ─────────────────────
 
+/// The classic Doom continuous simulation rate (ticks/s) the continuous loop
+/// targets (Spec #3026 lever A). The nominal tick period is
+/// [`super::clock::DOOM_CONTINUOUS_TICK_PERIOD_MS`].
+pub const DOOM_CONTINUOUS_RATE_HZ: u32 = 35;
+
 /// Maximum number of advance steps a single autoplay run may issue.
+///
+/// Retained for the legacy decision-gated loop; the continuous loop bounds
+/// itself on [`super::clock::DOOM_CONTINUOUS_MAX_TICKS`] instead.
 pub const DOOM_AUTOPLAY_MAX_STEPS: u32 = 600;
 /// Maximum consecutive decision failures before the run stops with a typed error.
 pub const DOOM_AUTOPLAY_MAX_FAILURES: u32 = 3;
@@ -95,6 +103,9 @@ pub struct DoomAutoplayStatus {
     pub map: Option<i64>,
     /// Whether the campaign reached its final level and completed (R-3).
     pub completed: bool,
+    /// Whether the continuous loop has degraded its pacing because the decision
+    /// source is unavailable or slower than the tick loop (Spec #3026 R-4).
+    pub degraded: bool,
     /// RFC3339 start timestamp of the run, when started.
     pub started_at: Option<String>,
     /// Human-readable failure detail, when the run failed.
@@ -164,6 +175,8 @@ mod tests {
         assert_eq!(DOOM_AUTOPLAY_DECISION_TIMEOUT_S, 30);
         assert_eq!(DOOM_AUTOPLAY_STEP_TICS, 1);
         assert_eq!(DOOM_AUTOPLAY_FAILURE_BACKOFF_MS, 250);
+        // Spec #3026 lever A — the continuous sim rate.
+        assert_eq!(DOOM_CONTINUOUS_RATE_HZ, 35);
     }
 
     #[test]
@@ -180,6 +193,7 @@ mod tests {
             episode: Some(2),
             map: Some(3),
             completed: false,
+            degraded: true,
             started_at: Some("2026-01-01T00:00:00Z".to_string()),
             last_error: Some("boom".to_string()),
             code: Some(DoomAutoplayErrorCode::DecisionFailed),
@@ -196,6 +210,7 @@ mod tests {
         assert_eq!(value["episode"], 2);
         assert_eq!(value["map"], 3);
         assert_eq!(value["completed"], false);
+        assert_eq!(value["degraded"], true);
         assert_eq!(value["startedAt"], "2026-01-01T00:00:00Z");
         assert_eq!(value["lastError"], "boom");
         assert_eq!(value["code"], "decisionFailed");

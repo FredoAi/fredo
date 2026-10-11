@@ -39,6 +39,10 @@
 pub mod actions;
 pub mod agent;
 pub mod autoplay;
+// Injectable tick clock — the AC5 determinism boundary (Spec #3026 ST-1). The
+// continuous loop's ONLY wall-clock dependency; production `TokioTickClock`,
+// deterministic `FixedTickClock`.
+pub mod clock;
 pub mod commands;
 pub mod decision;
 // Native in-process engine adapter (Spec #3023, ST-1) — the single source of the
