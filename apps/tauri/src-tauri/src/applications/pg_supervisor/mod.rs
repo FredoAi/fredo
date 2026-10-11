@@ -51,6 +51,11 @@ pub const PG_DATA_SUBDIR: &str = "postgres";
 pub const PG_INSTALL_SUBDIR: &str = "postgres-install";
 /// Exclusive data-dir lock filename under the lock dir.
 pub const PG_LOCK_FILENAME: &str = "postgres.lock";
+/// Supervisor-config JSON filename under the app-data dir (Spec #3022, ST-1):
+/// `<app_data_dir>/postgres-supervisor.json`. Declared here alongside the other
+/// path constants; [`config`] re-exports it as [`config::PG_CONFIG_FILENAME`] and
+/// owns the typed load/save.
+pub const PG_CONFIG_FILENAME: &str = "postgres-supervisor.json";
 /// **G-275/G-296** lock-directory override (Spec #2992 CU-1): when set
 /// (non-blank) the exclusive data-dir lock lives under this directory instead of
 /// `<app_data_dir>`. A caller-supplied value always WINS; the default applies
@@ -119,6 +124,33 @@ pub const PG_POOL_FORCE_FAIL_ENV: &str = "FREDO_PG_POOL_FORCE_FAIL";
 /// already-knobbed data dir is NOT un-knobbed. A FRESH `FREDO_PG_DATA_DIR`
 /// (initdb defaults) is required for the "before" measurement.
 pub const PG_SKIP_SERVER_KNOBS_ENV: &str = "FREDO_PG_SKIP_SERVER_KNOBS";
+/// **ST-2** injectable fault seam (Spec #3022): when set to a non-blank value
+/// other than `0`/`false`, [`runtime::PgRuntime::start`] fails closed WITHOUT
+/// spawning a server, so the config-apply restart-failure branch (pinned-port
+/// collision / prior-config retention, AC3-negative) is drivable in-repo without
+/// corrupting a real cluster (G-275). Inert when unset — the default start path
+/// is byte-identical.
+pub const PG_FORCE_START_FAIL_ENV: &str = "FREDO_PG_FORCE_START_FAIL";
+
+/// Resolve the **ST-2** forced-start-failure lever (mirrors [`skip_server_knobs`]):
+/// `true` when [`PG_FORCE_START_FAIL_ENV`] is set to a non-blank value other than
+/// `0`/`false`, else `false`. One shared rule so the restart orchestrator and
+/// [`runtime::PgRuntime::start`] agree; inert by default.
+pub fn force_start_fail() -> bool {
+    force_start_fail_with(std::env::var(PG_FORCE_START_FAIL_ENV).ok().as_deref())
+}
+
+/// The pure forced-start-failure rule, split out so the lever contract is
+/// unit-testable without mutating process-global environment state (G-222).
+fn force_start_fail_with(value: Option<&str>) -> bool {
+    match value {
+        Some(value) => {
+            let raw = value.trim();
+            !raw.is_empty() && !raw.eq_ignore_ascii_case("0") && !raw.eq_ignore_ascii_case("false")
+        }
+        None => false,
+    }
+}
 
 /// Resolve the **FS-5** untuned-baseline lever (mirrors [`stop_hang_duration`]):
 /// `true` when [`PG_SKIP_SERVER_KNOBS_ENV`] is set to a non-blank value other
@@ -225,8 +257,14 @@ pub const PG_STOP_BOUND: Duration = Duration::from_secs(30);
 pub const PG_EXIT_HOOK_BOUND: Duration = Duration::from_secs(5);
 /// Upper bound on how long to wait for a killed PID tree to disappear.
 pub const PG_DEATH_WAIT_BOUND: Duration = Duration::from_secs(20);
+/// **ST-4** (Spec #3022): the OUTER wall-clock cap on ONE config apply / database
+/// reset. The whole `stop → setup → knobs → start → readiness → pool rebuild →
+/// swap` restart leg is wrapped in this bound (over the existing inner bounds), so
+/// an apply can never hang the caller (G-263). 300 s.
+pub const PG_APPLY_BOUND: Duration = Duration::from_secs(300);
 
 pub mod acquisition; // S1/S2/S3 (#2978): acquisition mode + pinned archive
+pub mod config; // ST-1 (#3022): typed port + verbosity config (pre-PostgreSQL)
 pub mod credentials; // ST-7 (#3005): OS-keychain loopback password
 pub mod descriptor; // CU-1/ST-1 (#2992): headless daemon descriptor
 pub mod headless; // ST-5 (#2992): the `fredo ingest` daemon
@@ -277,5 +315,29 @@ mod tests {
             PathBuf::from("C:/custom/lock"),
             "the caller value is trimmed"
         );
+    }
+
+    /// ST-1 (#3022): the config filename constant is the binding value, and the
+    /// seam env name matches the QA-facing contract.
+    #[test]
+    fn config_filename_and_seam_constants_match_the_contract() {
+        assert_eq!(PG_CONFIG_FILENAME, "postgres-supervisor.json");
+        assert_eq!(PG_FORCE_START_FAIL_ENV, "FREDO_PG_FORCE_START_FAIL");
+    }
+
+    /// ST-2 (#3022): the forced-start-failure lever is inert unless explicitly
+    /// set, and a `0`/`false` value leaves it off. The pure rule is tested so the
+    /// contract is pinned without mutating process-global env (G-222).
+    #[test]
+    fn force_start_fail_rule_is_inert_by_default_and_reads_the_lever() {
+        assert!(!force_start_fail_with(None), "unset is inert");
+        assert!(!force_start_fail_with(Some("")), "blank is inert");
+        assert!(!force_start_fail_with(Some("   ")), "blank is inert");
+        assert!(!force_start_fail_with(Some("0")), "0 is inert");
+        assert!(!force_start_fail_with(Some("false")), "false is inert");
+        assert!(!force_start_fail_with(Some("FALSE")), "false is case-insensitive");
+        assert!(force_start_fail_with(Some("1")));
+        assert!(force_start_fail_with(Some("true")));
+        assert!(force_start_fail_with(Some("yes")));
     }
 }

@@ -216,6 +216,7 @@ Fredo persists everything in an **embedded PostgreSQL** cluster — the only sto
 - **Store:** settings, canonical RTDB rows (`chat_rows` / `tool_use_rows` / `agent_session_rows`), and telemetry (`telemetry_spans` / `telemetry_metrics` / `telemetry_logs`) live in the cluster database `postgres`. No `.db` file is created or read under the app-data dir.
 - **Settings:** a synchronous, volatile cache in `AppStore` is hydrated once from the PostgreSQL `settings` table and write-throughs on every change.
 - **Password:** the generated loopback password lives in the **OS keychain** (service `fredo.postgres`, account `loopback:password`) — never in a file, log, or telemetry. A fixed loopback-only fallback is used only when the keychain is unavailable.
+- **Configuration (Spec #3022):** Settings → **Database** lets the owner change the password in place (no re-init, no data loss), recover a drifted credential via the warned **Reset database** action, choose the port (Automatic/OS-assigned, or a pinned fixed port that fails closed on a collision and keeps the prior config), and set log verbosity. Port + verbosity persist in `<app-data>/postgres-supervisor.json` (non-secret); the password stays keychain-only. A fresh install still auto-installs and auto-loads with no configuration.
 
 ### Legacy data
 

@@ -59,6 +59,7 @@ use crate::infrastructure::storage::boot_config::resolve_app_data_dir;
 use crate::infrastructure::storage::span_store::SpanStore;
 use crate::infrastructure::storage::AppStore;
 
+use super::config::PgSupervisorConfig;
 use super::credentials::PgCredential;
 use super::descriptor::{self, HeadlessDescriptor};
 use super::lock::PgDataDirLock;
@@ -201,7 +202,14 @@ pub async fn run_ingest_daemon(args: IngestDaemonArgs) -> Result<()> {
         None => super::resolve_data_dir(&app_data_dir),
     };
     let install_dir = super::resolve_install_dir(&app_data_dir);
-    let mut runtime = PgRuntime::with_paths(&pg_data_dir, &install_dir, password);
+    // ST-6 (#3022, R-3.2/R-4/R-5.3): the daemon owns the SAME cluster as the GUI,
+    // so it honors the SAME `<app_data_dir>/postgres-supervisor.json` — the pinned
+    // port + log verbosity — by building the runtime from the shared config.
+    // `PgSupervisorConfig::load` defaults on a missing/empty/unparseable file and
+    // never returns an error, so a config problem can NEVER fail the daemon boot;
+    // the CLI>env>default precedence for every other option is unchanged.
+    let pg_config = PgSupervisorConfig::load(&app_data_dir);
+    let mut runtime = PgRuntime::with_config(&pg_data_dir, &install_dir, password, &pg_config);
 
     runtime
         .setup()
@@ -501,6 +509,7 @@ async fn await_shutdown(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::applications::pg_supervisor::config::PgLogVerbosity;
 
     #[cfg(target_os = "windows")]
     use std::path::Path;
@@ -591,5 +600,55 @@ mod tests {
     #[test]
     fn stop_bound_max_is_the_documented_ceiling() {
         assert_eq!(STOP_BOUND_MAX_MS, 120_000);
+    }
+
+    /// ST-6 (#3022, R-3.2/R-4): the daemon builds its runtime from the SHARED
+    /// supervisor config — a pinned port is honoured, and a missing/unparseable
+    /// config loads as defaults (ephemeral) and never errors the boot. This
+    /// exercises the exact daemon wiring (`load` → `with_config`) via the public
+    /// `port()` accessor.
+    #[test]
+    fn daemon_runtime_honours_the_shared_supervisor_config() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_data_dir = dir.path().join("appdata");
+        let pg_data_dir = dir.path().join("pgdata");
+        let install_dir = dir.path().join("pginstall");
+        std::fs::create_dir_all(&pg_data_dir).expect("create pgdata");
+
+        // Absent config ⇒ defaults ⇒ ephemeral port; the boot never fails.
+        let absent = PgSupervisorConfig::load(&app_data_dir);
+        assert_eq!(absent.port, None, "an absent config must load as ephemeral");
+        let ephemeral =
+            PgRuntime::with_config(&pg_data_dir, &install_dir, "pw".to_string(), &absent);
+        assert_eq!(
+            ephemeral.port(),
+            0,
+            "the default daemon runtime requests an OS-assigned port"
+        );
+
+        // Persisted config ⇒ the daemon binds the pinned port.
+        let config = PgSupervisorConfig {
+            port: Some(5544),
+            log_verbosity: PgLogVerbosity::Debug,
+        };
+        PgSupervisorConfig::save(&app_data_dir, &config).expect("save config");
+        let loaded = PgSupervisorConfig::load(&app_data_dir);
+        let pinned =
+            PgRuntime::with_config(&pg_data_dir, &install_dir, "pw".to_string(), &loaded);
+        assert_eq!(
+            pinned.port(),
+            5544,
+            "the daemon must bind the configured pinned port"
+        );
+
+        // A malformed config also loads as defaults and never fails the boot.
+        std::fs::write(PgSupervisorConfig::path(&app_data_dir), b"not json")
+            .expect("write garbage");
+        let malformed = PgSupervisorConfig::load(&app_data_dir);
+        assert_eq!(
+            malformed,
+            PgSupervisorConfig::default(),
+            "a malformed config must load as defaults"
+        );
     }
 }

@@ -64,6 +64,30 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 ---
 ## Known Failure Modes
 
+### G-346: cargo_build_regenerates_tracked_tauri_schemas_dirtying_the_worktree
+- **activation_date:** 2026-10-10
+- **observed:** #3022 — every `cargo` verification run regenerates the tracked Tauri schema files under `apps/tauri/src-tauri/gen/schemas/`, marking a developer's detached worktree dirty; this blocked `git rebase` and the worktree removal for all three developers, each of whom worked around it with the allowlisted restore verb. Root-cause class: `environment` (tooling).
+- **target_failure:** a Rust sub-task's verification regenerates tracked generated files in the worktree, so the tree reads dirty and blocks a rebase/push/removal the developer needs to finish the round.
+- **guardrail:** A developer whose `cargo` verification regenerates tracked generated files MUST restore them (the allowlisted checkout of the path) before rebasing, committing, or removing the worktree, and MUST NOT commit them — the diff is expected build churn, not an edit. If the churn blocks a rebase, restore first, then rebase.
+- **home:** playbooks/developer.md (build-hygiene) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-345: env_mode_live_otlp_receipt_shadowed_by_a_persistent_user_level_endpoint
+- **activation_date:** 2026-10-10
+- **observed:** #3022 testing rounds 1–2 — an isolated env (slot 2, OTLP gRPC receiver on the env's own port) had env mode set the opencode OTLP endpoint to that receiver port correctly (the fixed 4317 write is in an unreachable legacy branch), yet a Terminal-spawned opencode resolved `http://localhost:4317`: the persistent OS **User-level** endpoint written by the app's setup shadows the env value, so `telemetry_spans` stayed empty and the mandatory live receipt could not be won by a genuine session; the tester substituted a real-channel OTLP fixture (disclosed). Root-cause class: `environment` (tooling).
+- **target_failure:** in an isolated dev env, the app/session inherits a persistent OS User-level OTLP endpoint that shadows the env's own receiver port, so a live opencode session emits OTLP to the wrong port and the mandatory `telemetry_spans` receipt is empty.
+- **guardrail:** Before a live-policy round, compare the OTLP endpoint the plugin/session actually uses against the env's OTLP receiver port; when a stale User-level endpoint shadows the env receiver, do NOT burn the round — obtain the receipt on the env's REAL receiver (a disclosed real-channel fixture injected into the env's OTLP gRPC port) and record the shadowing as an environment caveat. The durable fix (make env mode authoritative over a stale User-level endpoint) is a dev-env follow-up.
+- **home:** .opencode/skills/dev-environment/SKILL.md + references.md (this record)
+- **effectiveness:** Pending
+
+### G-344: retry_leg_guard_requires_a_pre_posted_verdict_chicken_and_egg
+- **activation_date:** 2026-10-10
+- **observed:** #3022 — `testing → implementation` blocked with "no tester Evidence / Tests Runs comment" because the Testing exit guard requires a POSTED verdict while the pending `tests-runs.md` draft is auto-flushed only AFTER the guard; the SI's mandated manual flush consumed the authored fix plan, and the transition then re-drafted the plan and posted a SECOND `## Fix Plan (round 2)` (duplicate) on the timeline. Fixed this run, machine-side. Root-cause class: `defect` (machine).
+- **target_failure:** the Testing exit guard demands a posted tester verdict, but the verdict (and the authored Fix Plan) are pending drafts the transition flushes only after the guard — forcing a manual flush that consumes the authored Fix Plan and lets a duplicate fallback Fix Plan post for the same round.
+- **guardrail:** The transition flushes pending timeline drafts BEFORE evaluating the Testing exit guard, and the retry-compaction never posts a second Fix Plan for a round whose Fix Plan was already posted — so no manual flush is needed for the retry or PASS leg. Machine-side; validated by the pipeline harness.
+- **home:** .opencode/scripts/pipeline-state.rs + .opencode/skills/pipeline-state/SKILL.md + references.md (this record)
+- **effectiveness:** Applied (2026-10-10, #3022) — the fix (pre-guard draft flush + idempotent retry-compaction) was validated by the pipeline harness (118/118); erect from this run's diagnosis, confirm on the next retry leg.
+
 ### G-340: binding_names_hook_has_no_owning_acceptance_clause
 - **activation_date:** 2026-10-09
 - **observed:** #3009 round 1 (F-100 leg B FAIL) — the plan's BINDING NAMES BLOCK declared the DEV banner hook `hotkeys-duplicate-error` and the G-266 ownership table assigned it to ST-2, but ST-2's acceptance capsule enumerated only R-2.1..R-2.6 + R-3.2 (R-3.4 absent) and its contracted model carried no duplicate channel; the sub-task that OWNS the detection (ST-1) is contractually component-free ("no React, no store"). The hook had a name and an owner but no executable path, so the banner shipped unrendered and FAILed only live; the architect classified the round `scope` and prescribed the missing clause plus a model channel. Root-cause class: `scope`.
@@ -86,7 +110,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** a dispatch brief directs a subagent at in-repo helper levers in a path the subagent's bash allowlist does not cover, so the agent must wrap every call in a generic runner (or fails) — and a generic runner's own quoting rules can then corrupt argument/SQL values.
 - **guardrail:** When a brief names an in-repo helper lever for a subagent, confirm the subagent's permission allowlist covers invoking it (grant it in the same pass via set-permission, or place the levers under an already-allowlisted path). Prefer the plan-named app-pool read lever over an external `psql` for PG reads, and note that a generic run-wrapper's expression handling can corrupt double-quoted SQL identifiers.
 - **home:** opencode.json agent permission (tester) + .opencode/skills/dev-environment/SKILL.md + references.md (this record)
-- **effectiveness:** Applied (2026-10-09, #3009) — the tester permission was granted `powershell -File .opencode/tmp/*` so in-repo scratch levers are directly invocable; confirm on the next spec whose tester brief names a scratch lever.
+- **effectiveness:** Confirmed (2026-10-10, #3022) — the tester invoked in-repo scratch helpers under `.opencode/tmp/3022/` directly with no allowlist gap this round (after the #3009 grant); the fix held.
 
 ### G-343: mandatory_live_session_row_unprovable_in_the_plugin_absent_profile
 - **activation_date:** 2026-10-10
@@ -102,7 +126,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** the manual `post-comments` flush posts a pending `fix-plan.md` as a `## Fix Plan (round N)` whenever a prior implementation entry exists, so a diagnostic/environment-class fix plan — not a real rework — lands on the timeline and mis-stamps a round.
 - **guardrail:** Before a manual `post-comments` flush, HOLD ASIDE (rename) any pending `fix-plan.md` that is not an actual pending rework, so only the intended draft (e.g. the Tests Runs verdict) posts; the transition-driven flush owns the Fix Plan channel. The durable fix is machine-side: the manual flush should skip `fix-plan.md` unless a rework re-entry is actually in flight.
 - **home:** playbooks/self-improver.md (draft-flush discipline) + references.md (this record). Open follow-up: a machine-side manual-flush guard in `pipeline-state.rs` (skip a stray `fix-plan.md` unless a rework re-entry is in flight).
-- **effectiveness:** Pending
+- **effectiveness:** Partial (2026-10-10, #3022) — the manual flush was still mandated on the retry leg (the guard ran before the draft flush) and its consumption of the authored Fix Plan let a duplicate fallback Fix Plan post; G-344 now removes the manual flush from the retry/PASS critical path entirely, structurally retiring this hazard.
 
 ### G-338: recurring_webview_bridge_wedge_needs_an_evidence_order_change
 - **activation_date:** 2026-10-09
