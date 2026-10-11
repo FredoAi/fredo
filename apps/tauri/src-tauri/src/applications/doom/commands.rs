@@ -13,10 +13,8 @@
 //! Tauri-managed [`DoomEngineState`] via `spawn_blocking`, and teardown is
 //! take-and-drop — so no orphan is constructible (G-263).
 
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::infrastructure::comm::bus::EventBus;
@@ -39,10 +37,9 @@ use super::mode::{
 };
 use super::state::{
     derive_phase, DoomErrorCode, DoomLaunchResult, DoomRuntimePhase, DoomStatus,
-    DOOM_INSTALL_DIR_KEY, DOOM_LAST_ERROR_CODE_KEY, DOOM_LAST_ERROR_KEY, DOOM_STATUS_EVENT,
-    DOOM_WINDOW_LABEL,
+    DOOM_LAST_ERROR_CODE_KEY, DOOM_LAST_ERROR_KEY, DOOM_STATUS_EVENT, DOOM_WINDOW_LABEL,
 };
-use super::{client, process, provision};
+use super::client;
 
 /// The default campaign map the native engine constructs at (E1M1).
 const DOOM_DEFAULT_MAP: i64 = 1;
@@ -883,18 +880,6 @@ fn mode_result(
     error: Option<String>,
     code: Option<DoomErrorCode>,
 ) -> DoomModeResult {
-    mode_result_with_needs(status, success, error, code, false)
-}
-
-/// As [`mode_result`], also flagging the first-use install-dir requirement
-/// (`code: provisionRequired`, Spec #3012 ST-3).
-fn mode_result_with_needs(
-    status: &DoomModeStatus,
-    success: bool,
-    error: Option<String>,
-    code: Option<DoomErrorCode>,
-    needs_install_dir: bool,
-) -> DoomModeResult {
     DoomModeResult {
         success,
         phase: status.phase,
@@ -903,7 +888,6 @@ fn mode_result_with_needs(
         origin: status.origin,
         error,
         code,
-        needs_install_dir,
     }
 }
 
@@ -926,14 +910,6 @@ fn clear_mode_teardown(app: &AppHandle) {
         let status = current_mode_status(app);
         publish_mode(app, &status);
     }
-}
-
-/// Whether the runtime can launch WITHOUT provisioning: a staged managed engine
-/// carrying the pinned commit marker. Managed-only resolution (#3013 ST-1) leaves
-/// no configured/PATH leg; only when the staged engine is absent is first-use
-/// provisioning required (Spec #3012 ST-3, R-3.1).
-fn engine_available_without_provisioning(install_dir: &Path) -> bool {
-    provision::is_engine_staged(install_dir)
 }
 
 /// Enter Doom Mode: idempotently launch the runtime, start the playing agent,
@@ -961,59 +937,6 @@ pub async fn enter_doom_mode(app: AppHandle, origin: Option<String>) -> DoomMode
             "Doom Mode enter failed (FREDO_DOOM_MODE_FAIL_ENTER=1).".to_string(),
             Some(DoomErrorCode::SpawnFailed),
         );
-    }
-
-    // First-use provisioning guard (Spec #3012 ST-3). An engine that already
-    // resolves — configured/overridden, on PATH, or a staged+marker build —
-    // skips provisioning entirely (R-3.1); only an engine that is absent
-    // everywhere is built before the runtime can launch.
-    let install_dir = match process::resolve_install_dir(&app) {
-        Ok(dir) => dir,
-        Err(detail) => return fail_enter(&app, detail, Some(DoomErrorCode::SpawnFailed)),
-    };
-    if !engine_available_without_provisioning(&install_dir) {
-        match provision::configured_install_dir(&app) {
-            // No stored dir → require the owner to choose one WITHOUT entering
-            // the mode (the frontend opens the provisioning dialog).
-            None => {
-                let message =
-                    "Choose an install location before Doom Mode can build its engine.".to_string();
-                app.state::<DoomModeState>()
-                    .mark_enter_failed(message.clone(), Some(DoomErrorCode::ProvisionRequired));
-                app.state::<DoomModeState>().set_needs_provisioning(true);
-                set_suppression(&app, false);
-                let status = current_mode_status(&app);
-                publish_mode(&app, &status);
-                return mode_result_with_needs(
-                    &status,
-                    false,
-                    Some(message),
-                    Some(DoomErrorCode::ProvisionRequired),
-                    true,
-                );
-            }
-            // A stored dir → provision (idempotent), reflecting `provisioning`
-            // in the mode, then continue to launch once the engine is ready.
-            Some(stored) => {
-                let _ = app
-                    .state::<Arc<AppStore>>()
-                    .cached_set(DOOM_INSTALL_DIR_KEY, &stored);
-                app.state::<DoomModeState>()
-                    .set_provisioning(provision::DoomProvisionPhase::DownloadingToolchain);
-                let provisioning = current_mode_status(&app);
-                publish_mode(&app, &provisioning);
-
-                provision::start_provisioning(app.clone(), PathBuf::from(&stored));
-                let bound = provision::overall_timeout() + Duration::from_secs(30);
-                if let Err((_code, message)) =
-                    provision::await_provision_outcome(&app, bound).await
-                {
-                    app.state::<DoomModeState>().clear_provisioning();
-                    return fail_enter(&app, message, Some(DoomErrorCode::ProvisionFailed));
-                }
-                app.state::<DoomModeState>().clear_provisioning();
-            }
-        }
     }
 
     // 1. Runtime (idempotent exactly-one launch + bounded readiness).
@@ -1103,7 +1026,7 @@ mod tests {
     use super::*;
     use crate::infrastructure::storage::engine::EngineHandle;
 
-    fn open_store(dir: &Path) -> AppStore {
+    fn open_store(dir: &std::path::Path) -> AppStore {
         AppStore::open(EngineHandle::new_pending(), dir).expect("open app store")
     }
 

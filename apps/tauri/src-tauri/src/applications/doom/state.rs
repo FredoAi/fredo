@@ -132,14 +132,6 @@ pub enum DoomErrorCode {
     /// returned HTTP 503). **Transient** — the frame loop keeps polling and the
     /// window never enters the `error` phase.
     FrameNotReady,
-    /// Spec #3012 ST-3: entering Doom Mode needs the engine built on first use
-    /// but no `doom_install_dir` is stored yet — the owner must choose one. The
-    /// mode does NOT change; the frontend opens the provisioning dialog.
-    ProvisionRequired,
-    /// Spec #3012 ST-3: runtime provisioning (download/build) failed or was
-    /// cancelled, so Doom Mode could not be entered. The typed
-    /// [`super::provision::DoomProvisionErrorCode`] carries the cause.
-    ProvisionFailed,
     /// Spec #3023 ST-2: the bundled game data (`DOOM1.WAD`) was not found at the
     /// resolved path. Mirrors [`DoomEngineErrorCode::WadMissing`] on the wire.
     WadMissing,
@@ -162,8 +154,6 @@ impl DoomErrorCode {
             DoomErrorCode::StopTimeout => "stopTimeout",
             DoomErrorCode::RequestFailed => "requestFailed",
             DoomErrorCode::FrameNotReady => "frameNotReady",
-            DoomErrorCode::ProvisionRequired => "provisionRequired",
-            DoomErrorCode::ProvisionFailed => "provisionFailed",
             DoomErrorCode::WadMissing => "wadMissing",
             DoomErrorCode::WadCorrupt => "wadCorrupt",
             DoomErrorCode::EngineStartFailed => "engineStartFailed",
@@ -181,8 +171,6 @@ impl DoomErrorCode {
             "stopTimeout" => Some(DoomErrorCode::StopTimeout),
             "requestFailed" => Some(DoomErrorCode::RequestFailed),
             "frameNotReady" => Some(DoomErrorCode::FrameNotReady),
-            "provisionRequired" => Some(DoomErrorCode::ProvisionRequired),
-            "provisionFailed" => Some(DoomErrorCode::ProvisionFailed),
             "wadMissing" => Some(DoomErrorCode::WadMissing),
             "wadCorrupt" => Some(DoomErrorCode::WadCorrupt),
             "engineStartFailed" => Some(DoomErrorCode::EngineStartFailed),
@@ -315,8 +303,6 @@ mod tests {
             DoomErrorCode::StopTimeout,
             DoomErrorCode::RequestFailed,
             DoomErrorCode::FrameNotReady,
-            DoomErrorCode::ProvisionRequired,
-            DoomErrorCode::ProvisionFailed,
             DoomErrorCode::WadMissing,
             DoomErrorCode::WadCorrupt,
             DoomErrorCode::EngineStartFailed,
