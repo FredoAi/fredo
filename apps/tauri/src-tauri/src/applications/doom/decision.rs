@@ -17,6 +17,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -40,6 +41,15 @@ pub const DOOM_AGENT_MAX_STEPS_ENV: &str = "FREDO_DOOM_AGENT_MAX_STEPS";
 pub const DOOM_AGENT_MAX_FAILURES_ENV: &str = "FREDO_DOOM_AGENT_MAX_FAILURES";
 /// Override the per-step tic count ([`super::autoplay::DOOM_AUTOPLAY_STEP_TICS`]).
 pub const DOOM_AGENT_STEP_TICS_ENV: &str = "FREDO_DOOM_AGENT_STEP_TICS";
+
+/// Script-entry key: `{"delayMs": N}` awaits `N` ms before answering — the
+/// REQ-1 "decision in flight" / REQ-4 "slower than the tick loop" induction
+/// (Spec #3026 ST-7). Uses `tokio::time::sleep`, so pair it with a paused clock
+/// in unit tests.
+pub const SCRIPT_ENTRY_DELAY_MS: &str = "delayMs";
+/// Script-entry key: `{"stall": true}` never answers — the REQ-4 "model
+/// unavailable" induction (Spec #3026 ST-7). The `decide` future stays pending.
+pub const SCRIPT_ENTRY_STALL: &str = "stall";
 
 /// The model decision-source selector value.
 pub const DOOM_AGENT_SOURCE_MODEL: &str = "model";
@@ -117,7 +127,9 @@ pub fn log_dir_from_env() -> Option<PathBuf> {
 ///   "decisions": [
 ///     { "tics": 1, "actions": [{ "type": "turn-to", "angle": 90 }] },
 ///     { "malformed": true },
-///     { "error": "model unavailable" }
+///     { "error": "model unavailable" },
+///     { "delayMs": 250 },
+///     { "stall": true }
 ///   ],
 ///   "repeat": true
 /// }
@@ -129,6 +141,18 @@ pub fn log_dir_from_env() -> Option<PathBuf> {
 /// `{"error": "..."}` entry yields [`DoomDecisionError::ModelUnavailable`]. With
 /// `repeat: true` the script wraps after the last entry; otherwise it fails
 /// closed with [`DoomDecisionError::Malformed`] once exhausted.
+///
+/// Two induction entries (Spec #3026 ST-7) let a test drive the "decision in
+/// flight" and "model unavailable" legs without a live model:
+///
+/// * `{"delayMs": N}` awaits `N` ms via [`tokio::time::sleep`] before answering.
+///   The entry may also carry a `{tics, actions}` payload to answer with; a
+///   delay-only entry answers a neutral one-tick hold (the DELAY is the
+///   observable, not the payload).
+/// * `{"stall": true}` never answers — its [`DoomDecisionSource::decide`] future
+///   stays pending, so the consumer's own per-decision timeout fires.
+///
+/// Both are inert unless the entry is selected.
 pub struct ScriptedDecisionSource {
     entries: Vec<Value>,
     repeat: bool,
@@ -215,12 +239,33 @@ impl ScriptedDecisionSource {
     }
 }
 
-/// Interpret one script entry.
+/// Whether an entry is a never-answering stall (`{"stall": true}`).
+fn entry_is_stall(entry: &Value) -> bool {
+    entry.get(SCRIPT_ENTRY_STALL).and_then(Value::as_bool) == Some(true)
+}
+
+/// The `delayMs` of an entry, if present.
+///
+/// `Ok(None)` when the key is absent; `Ok(Some(ms))` for a non-negative integer;
+/// `Err(Malformed)` when the key is present but not a non-negative integer.
+fn entry_delay_ms(entry: &Value) -> Result<Option<u64>, DoomDecisionError> {
+    match entry.get(SCRIPT_ENTRY_DELAY_MS) {
+        None => Ok(None),
+        Some(value) => value.as_u64().map(Some).ok_or_else(|| {
+            DoomDecisionError::Malformed(format!(
+                "`{SCRIPT_ENTRY_DELAY_MS}` must be a non-negative integer"
+            ))
+        }),
+    }
+}
+
+/// Interpret one script entry (after any entry delay has elapsed).
 ///
 /// `{"error": "..."}` → [`DoomDecisionError::ModelUnavailable`];
-/// `{"malformed": true}` → [`DoomDecisionError::Malformed`]; otherwise a
-/// `{tics, actions}` decision. The `tics` range is NOT checked here — the loop
-/// validates it, so an out-of-range value exercises that path.
+/// `{"malformed": true}` → [`DoomDecisionError::Malformed`]; a delay-only entry
+/// → a neutral one-tick hold; otherwise a `{tics, actions}` decision. The `tics`
+/// range is NOT checked here — the loop validates it, so an out-of-range value
+/// exercises that path.
 fn parse_script_entry(entry: &Value) -> Result<DoomDecision, DoomDecisionError> {
     let object = entry.as_object().ok_or_else(|| {
         DoomDecisionError::Malformed("script entry is not a JSON object".to_string())
@@ -241,6 +286,20 @@ fn parse_script_entry(entry: &Value) -> Result<DoomDecision, DoomDecisionError> 
         ));
     }
 
+    // A `{"delayMs": N}`-only entry has no decision payload: answer a neutral
+    // one-tick hold, so the entry is self-contained (the DELAY is the
+    // observable). An entry that ALSO carries `tics`/`actions` falls through and
+    // is interpreted as that decision.
+    if object.contains_key(SCRIPT_ENTRY_DELAY_MS)
+        && !object.contains_key("tics")
+        && !object.contains_key("actions")
+    {
+        return Ok(DoomDecision {
+            tics: 1,
+            actions: Vec::new(),
+        });
+    }
+
     let tics = object.get("tics").and_then(Value::as_i64).ok_or_else(|| {
         DoomDecisionError::Malformed("decision entry is missing an integer `tics`".to_string())
     })?;
@@ -258,7 +317,22 @@ fn parse_script_entry(entry: &Value) -> Result<DoomDecision, DoomDecisionError> 
 #[async_trait]
 impl DoomDecisionSource for ScriptedDecisionSource {
     async fn decide(&self, _observation: &Value) -> Result<DoomDecision, DoomDecisionError> {
-        parse_script_entry(&self.next_entry()?)
+        let entry = self.next_entry()?;
+
+        // `{"stall": true}` — never answers (the REQ-4 "model unavailable" leg):
+        // the returned future stays pending, so the consumer's per-decision
+        // timeout (or its own clock) is what eventually fires.
+        if entry_is_stall(&entry) {
+            return std::future::pending::<Result<DoomDecision, DoomDecisionError>>().await;
+        }
+
+        // `{"delayMs": N}` — await N ms before answering (the REQ-1 "decision in
+        // flight" / REQ-4 "slower than the tick loop" leg).
+        if let Some(ms) = entry_delay_ms(&entry)? {
+            tokio::time::sleep(Duration::from_millis(ms)).await;
+        }
+
+        parse_script_entry(&entry)
     }
 }
 
@@ -339,6 +413,93 @@ mod tests {
     async fn without_repeat_the_script_fails_closed_once_exhausted() {
         let scripted = source(vec![json!({ "tics": 1, "actions": [] })], false);
         assert!(scripted.decide(&json!({})).await.is_ok());
+        assert!(matches!(
+            scripted.decide(&json!({})).await,
+            Err(DoomDecisionError::Malformed(_))
+        ));
+    }
+
+    // ── ST-7: stall / delay induction entries ─────────────────────────────
+
+    #[test]
+    fn delay_ms_and_stall_entry_helpers_parse() {
+        assert!(entry_is_stall(&json!({ "stall": true })));
+        assert!(!entry_is_stall(&json!({ "stall": false })));
+        assert!(!entry_is_stall(&json!({})));
+
+        assert_eq!(
+            entry_delay_ms(&json!({ "delayMs": 250 })).expect("valid delay"),
+            Some(250)
+        );
+        assert_eq!(
+            entry_delay_ms(&json!({ "delayMs": 0 })).expect("zero delay"),
+            Some(0)
+        );
+        assert_eq!(entry_delay_ms(&json!({})).expect("absent delay"), None);
+        assert!(matches!(
+            entry_delay_ms(&json!({ "delayMs": -1 })),
+            Err(DoomDecisionError::Malformed(_))
+        ));
+        assert!(matches!(
+            entry_delay_ms(&json!({ "delayMs": 1.5 })),
+            Err(DoomDecisionError::Malformed(_))
+        ));
+        assert!(matches!(
+            entry_delay_ms(&json!({ "delayMs": "soon" })),
+            Err(DoomDecisionError::Malformed(_))
+        ));
+    }
+
+    /// The `stall` entry NEVER answers: the `decide` future stays pending, so a
+    /// bounded timeout ALWAYS elapses (no code path can resolve within any
+    /// deadline — deterministic, independent of wall-clock).
+    #[tokio::test]
+    async fn a_stall_entry_never_answers() {
+        let scripted = source(vec![json!({ "stall": true })], true);
+        let timed =
+            tokio::time::timeout(Duration::from_millis(20), scripted.decide(&json!({}))).await;
+        assert!(
+            timed.is_err(),
+            "a `{{\"stall\": true}}` entry must never answer"
+        );
+    }
+
+    /// The delay-only entry awaits its delay and then answers a neutral one-tick
+    /// hold (the DELAY is the observable, not the payload). The elapsed check is a
+    /// lower bound — `tokio::time::sleep` never wakes early — so it is not
+    /// order/flake sensitive.
+    #[tokio::test]
+    async fn a_delay_only_entry_awaits_then_answers_a_hold() {
+        let scripted = source(vec![json!({ "delayMs": 30 })], false);
+        let start = std::time::Instant::now();
+        let decision = scripted
+            .decide(&json!({}))
+            .await
+            .expect("the delay entry answers a hold");
+        assert!(
+            start.elapsed() >= Duration::from_millis(30),
+            "the delay entry must have awaited its delay before answering"
+        );
+        assert_eq!(decision.tics, 1);
+        assert!(decision.actions.is_empty());
+    }
+
+    /// A `delayMs` entry that ALSO carries `{tics, actions}` answers that decision
+    /// (after the delay), preserving the `tics`-unvalidated passthrough.
+    #[tokio::test]
+    async fn a_delay_ms_entry_answers_its_own_decision_after_the_delay() {
+        let scripted = source(
+            vec![json!({ "delayMs": 1, "tics": 7, "actions": [{ "type": "shoot" }] })],
+            false,
+        );
+        let decision = scripted.decide(&json!({})).await.expect("delayed decision");
+        assert_eq!(decision.tics, 7);
+        assert_eq!(decision.actions, vec![json!({ "type": "shoot" })]);
+    }
+
+    #[tokio::test]
+    async fn an_invalid_delay_ms_yields_malformed() {
+        let scripted = source(vec![json!({ "delayMs": "soon" })], false);
         assert!(matches!(
             scripted.decide(&json!({})).await,
             Err(DoomDecisionError::Malformed(_))
@@ -438,5 +599,9 @@ mod tests {
         assert_eq!(DOOM_AGENT_MAX_STEPS_ENV, "FREDO_DOOM_AGENT_MAX_STEPS");
         assert_eq!(DOOM_AGENT_MAX_FAILURES_ENV, "FREDO_DOOM_AGENT_MAX_FAILURES");
         assert_eq!(DOOM_AGENT_STEP_TICS_ENV, "FREDO_DOOM_AGENT_STEP_TICS");
+
+        // ST-7 induction-entry keys (G-255 binding names).
+        assert_eq!(SCRIPT_ENTRY_DELAY_MS, "delayMs");
+        assert_eq!(SCRIPT_ENTRY_STALL, "stall");
     }
 }
