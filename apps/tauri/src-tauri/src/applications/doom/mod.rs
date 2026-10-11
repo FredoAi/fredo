@@ -10,7 +10,7 @@
 //!   over `neurodoom::ClassicEngine`, loading the bundled `DOOM1.WAD` with the
 //!   typed `wadMissing` / `wadCorrupt` / `engineStartFailed` failure surface.
 //! * [`commands`] — the Tauri command surface (`launch_doom_runtime`,
-//!   `doom_read_state` / `doom_step` / `doom_frame`, `stop_doom_runtime`) plus the
+//!   `doom_read_state` / `doom_step` / `doom_frame_raw`, `stop_doom_runtime`) plus the
 //!   window-close / app-exit teardown entry points.
 //! * [`actions`] — the engine action vocabulary (`DOOM_ACTION_*` consts plus the
 //!   structured list the persona and scripted lever consume).

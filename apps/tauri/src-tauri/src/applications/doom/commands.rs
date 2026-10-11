@@ -2,8 +2,8 @@
 //!
 //! Owns the **in-process native engine** end to end: `launch_doom_runtime`
 //! (idempotent exactly-one session), `stop_doom_runtime` (take-and-drop),
-//! `get_doom_status`, the parity control surface (`doom_read_state` / `doom_step`),
-//! and the synchronous teardown entry points wired to the window
+//! `get_doom_status`, the parity control surface (`doom_read_state` / `doom_step`
+//! / `doom_frame_raw`), and the synchronous teardown entry points wired to the window
 //! `CloseRequested` handler and the `RunEvent::Exit` hook.
 //!
 //! Spec #3023 ST-2 replaced the out-of-process GPL engine + loopback HTTP bridge
@@ -23,10 +23,11 @@ use crate::infrastructure::companion::PerformanceModeState;
 use crate::infrastructure::storage::application_store::ApplicationStore;
 use crate::infrastructure::storage::AppStore;
 
-use super::agent::{run_autoplay_loop, AutoplayRun, DoomAutoplayConfig};
+use super::agent::{run_continuous_loop, AutoplayRun, DoomAutoplayConfig};
 use super::autoplay::{
     DoomAutoplayErrorCode, DoomAutoplayPhase, DoomAutoplayResult, DoomAutoplayStatus,
 };
+use super::clock::TokioTickClock;
 use super::decision;
 use super::engine::{DoomEngineError, DoomEngineErrorCode, DoomEngineState};
 use super::progress::DoomProgressWriter;
@@ -311,6 +312,22 @@ pub async fn doom_step(
         .map_err(DoomCommandError::from)
 }
 
+/// The current frame as raw RGBA bytes (`320 * 200 * 4 = 256_000`), row-major,
+/// byte order R, G, B, A — NO PNG and NO base64 (Spec #3026 ST-4). The webview
+/// receives the bytes as an `ArrayBuffer`, wraps them in an `ImageData`, and
+/// draws with `putImageData` on a ≥30 fps cadence.
+#[tauri::command]
+pub async fn doom_frame_raw(app: AppHandle) -> Result<tauri::ipc::Response, DoomCommandError> {
+    let state = app.state::<DoomEngineState>().inner().clone();
+    if !state.is_running() {
+        return Err(DoomCommandError::not_running());
+    }
+    run_engine(move || state.frame_rgba())
+        .await
+        .map(tauri::ipc::Response::new)
+        .map_err(DoomCommandError::from)
+}
+
 // ── Autoplay commands + state (Spec #2969, ST-5) ─────────────────────────────
 //
 // The reachable trigger host (G-265): the Tauri command surface over the ST-3
@@ -488,15 +505,18 @@ fn running_status(campaign: &DoomCampaign) -> DoomAutoplayStatus {
     }
 }
 
-/// The bounded autoplay config: the `maxSteps` argument wins, then the
-/// `FREDO_DOOM_AGENT_MAX_STEPS` seam, then the binding default. The remaining
-/// budgets honour their env seams over the defaults.
+/// The bounded autoplay config for the continuous loop: the `maxSteps` argument
+/// (then the `FREDO_DOOM_AGENT_MAX_STEPS` seam, kept for compat) maps onto the
+/// continuous TICK budget; unset falls back to the binding default. The
+/// remaining budgets honour their env seams over the defaults.
 fn autoplay_config(max_steps: Option<u32>) -> DoomAutoplayConfig {
     let base = DoomAutoplayConfig::default();
+    let ticks = max_steps
+        .or_else(decision::max_steps_from_env)
+        .unwrap_or(base.max_ticks);
     DoomAutoplayConfig {
-        max_steps: max_steps
-            .or_else(decision::max_steps_from_env)
-            .unwrap_or(base.max_steps),
+        max_steps: ticks,
+        max_ticks: ticks,
         max_failures: decision::max_failures_from_env().unwrap_or(base.max_failures),
         ..base
     }
@@ -522,7 +542,12 @@ fn publish_autoplay(app: &AppHandle, status: &DoomAutoplayStatus) {
     bus.emit_to_window(DOOM_WINDOW_LABEL, DOOM_AUTOPLAY_EVENT, status);
 }
 
-/// Start the bounded Doom autoplay loop (Spec #2969 ST-5; native engine #3023 ST-3).
+/// Start the bounded Doom autoplay **continuous** loop (Spec #2969 ST-5;
+/// Spec #3026 ST-4 wires the production clock).
+///
+/// Runs `run_continuous_loop` paced by the production `TokioTickClock`: the world
+/// advances every tick independent of the model decision, so motion never stops
+/// while a decision is in flight (R-1).
 ///
 /// Idempotent: a live run wins immediately and a second loop is never spawned.
 /// When the native engine has no live session or the composition root installed
@@ -586,18 +611,22 @@ pub async fn start_doom_autoplay(
         };
     }
 
-    // Spawn the bounded loop over the native in-process engine. Every status
-    // transition is folded into the state and published; the terminal
-    // observation clears the live-run marker.
+    // Spawn the bounded continuous loop over the native in-process engine,
+    // paced by the production `TokioTickClock`. Every status transition is folded
+    // into the state and published; the terminal observation clears the
+    // live-run marker. Teardown stays bounded: the loop checks the shared stop
+    // flag every tick (G-263).
     let loop_app = app.clone();
     let observe_app = app.clone();
     tauri::async_runtime::spawn(async move {
         let source_ref: &dyn crate::infrastructure::companion::doom_decision::DoomDecisionSource =
             source.as_ref();
-        run_autoplay_loop(
+        let clock = TokioTickClock::new(config.tick_period);
+        run_continuous_loop(
             &engine,
             source_ref,
             &config,
+            &clock,
             AutoplayRun { campaign, progress },
             &stop,
             move |observed| {
@@ -1221,12 +1250,13 @@ mod tests {
     #[test]
     fn autoplay_config_prefers_the_argument_then_env_then_default() {
         let base = DoomAutoplayConfig::default();
-        // The `maxSteps` argument always wins.
+        // The `maxSteps` argument maps onto the continuous tick budget and wins.
+        assert_eq!(autoplay_config(Some(7)).max_ticks, 7);
         assert_eq!(autoplay_config(Some(7)).max_steps, 7);
 
         // With no argument and no env seam, the binding defaults are used.
         if std::env::var(decision::DOOM_AGENT_MAX_STEPS_ENV).is_err() {
-            assert_eq!(autoplay_config(None).max_steps, base.max_steps);
+            assert_eq!(autoplay_config(None).max_ticks, base.max_ticks);
         }
         if std::env::var(decision::DOOM_AGENT_MAX_FAILURES_ENV).is_err() {
             assert_eq!(autoplay_config(None).max_failures, base.max_failures);
