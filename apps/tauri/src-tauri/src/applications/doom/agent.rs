@@ -49,21 +49,33 @@
 //! `exit.distance` is fair-play gated (absent until the exit wall is mapped) and is
 //! therefore OPTIONAL — never required.
 
+use std::future::Future;
+use std::path::Path;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::infrastructure::companion::doom_decision::{
     DoomDecision, DoomDecisionError, DoomDecisionSource,
 };
 
-use super::actions::{DOOM_STEP_TICS_MAX, DOOM_STEP_TICS_MIN};
+use super::actions::{
+    DOOM_ACTION_BACKWARD, DOOM_ACTION_FORWARD, DOOM_ACTION_SHOOT, DOOM_STEP_TICS_MAX,
+    DOOM_STEP_TICS_MIN,
+};
 use super::autoplay::{
     DoomAutoplayErrorCode, DoomAutoplayPhase, DoomAutoplayResult, DoomAutoplayStatus,
     DOOM_AUTOPLAY_DECISION_TIMEOUT_S, DOOM_AUTOPLAY_FAILURE_BACKOFF_MS, DOOM_AUTOPLAY_MAX_FAILURES,
     DOOM_AUTOPLAY_MAX_STEPS,
+};
+use super::clock::{
+    DoomTickClock, DOOM_CONTINUOUS_MAX_TICKS, DOOM_CONTINUOUS_TICS_PER_TICK,
+    DOOM_CONTINUOUS_TICK_PERIOD_MS, DOOM_DEGRADED_AFTER_FAILURES, DOOM_DEGRADED_TICK_PERIOD_MS,
+    DOOM_STATUS_EMIT_MS,
 };
 use super::engine::{DoomEngineError, DoomEngineErrorCode, DoomEngineState};
 use super::progress::DoomProgressWriter;
@@ -92,6 +104,23 @@ pub const DOOM_AGENT_ENGINE_STEP_CEILING_STEPS_PER_S: u32 = 80;
 /// [`DOOM_AGENT_ENGINE_STEP_CEILING_STEPS_PER_S`]).
 pub const DOOM_AUTOPLAY_RATE_TARGET_STEPS_PER_S: u32 = 40;
 
+// ── Safety-reflex constants (Spec #3026 R-3 / lever B) ───────────────────────
+
+/// Consecutive ticks `forward` may be commanded without the player moving before
+/// the reflex drops it and issues the bounded step-back (R-3a).
+pub const DOOM_REFLEX_BLOCKED_TICKS: u32 = 4;
+
+/// The bounded step-back length (held tics) the reflex issues when it drops a
+/// wall-running `forward` (R-3a).
+pub const DOOM_REFLEX_STEP_BACK_TICKS: i64 = 2;
+
+/// File name of the bounded issued-action / reflex audit JSONL inside
+/// [`super::decision::DOOM_AGENT_LOG_DIR_ENV`].
+pub const DOOM_AGENT_ACTION_AUDIT_FILE: &str = "doom-agent-actions.jsonl";
+
+/// Maximum records retained in the issued-action audit JSONL (the last-N bound).
+pub const DOOM_AGENT_ACTION_AUDIT_MAX_RECORDS: usize = 256;
+
 // ── Configuration ────────────────────────────────────────────────────────────
 
 /// The bounded budgets and pacing of one autoplay run.
@@ -103,24 +132,56 @@ pub const DOOM_AUTOPLAY_RATE_TARGET_STEPS_PER_S: u32 = 40;
 #[derive(Clone, Copy, Debug)]
 pub struct DoomAutoplayConfig {
     /// Total engine-advancing operations (steps + episode restarts/advances,
-    /// including the initial resume positioning) allowed.
+    /// including the initial resume positioning) allowed by the LEGACY
+    /// decision-gated loop.
     pub max_steps: u32,
+    /// Total engine-advancing TICKS allowed by the continuous loop
+    /// ([`run_continuous_loop`]) — bounds every exit path (R-4/G-263). The
+    /// `FREDO_DOOM_AGENT_MAX_STEPS` env seam maps onto this (compat, see
+    /// [`DoomAutoplayConfig::from_env`]).
+    pub max_ticks: u32,
     /// Consecutive unusable decisions allowed before the run fails.
     pub max_failures: u32,
     /// Bound on a single decision.
     pub decision_timeout: Duration,
     /// Backoff between a failed decision and its retry.
     pub failure_backoff: Duration,
+    /// The nominal continuous tick period (R-1).
+    pub tick_period: Duration,
+    /// The degraded continuous tick period (R-4) — the fallback cadence used
+    /// while the decision source is unavailable or slower than the tick loop.
+    pub degraded_tick_period: Duration,
 }
 
 impl Default for DoomAutoplayConfig {
     fn default() -> Self {
         Self {
             max_steps: DOOM_AUTOPLAY_MAX_STEPS,
+            max_ticks: DOOM_CONTINUOUS_MAX_TICKS,
             max_failures: DOOM_AUTOPLAY_MAX_FAILURES,
             decision_timeout: Duration::from_secs(DOOM_AUTOPLAY_DECISION_TIMEOUT_S),
             failure_backoff: Duration::from_millis(DOOM_AUTOPLAY_FAILURE_BACKOFF_MS),
+            tick_period: Duration::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS),
+            degraded_tick_period: Duration::from_millis(DOOM_DEGRADED_TICK_PERIOD_MS),
         }
+    }
+}
+
+impl DoomAutoplayConfig {
+    /// The binding default with the `FREDO_DOOM_AGENT_*` env seams applied
+    /// (inert when unset, so the cloud/production default is unchanged).
+    ///
+    /// The legacy `FREDO_DOOM_AGENT_MAX_STEPS` seam maps onto `max_ticks` (the
+    /// continuous tick budget) — one seam, kept for compatibility (Spec #3026).
+    pub fn from_env() -> Self {
+        let mut config = Self::default();
+        if let Some(max_ticks) = super::decision::max_steps_from_env() {
+            config.max_ticks = max_ticks;
+        }
+        if let Some(max_failures) = super::decision::max_failures_from_env() {
+            config.max_failures = max_failures;
+        }
+        config
     }
 }
 
@@ -333,6 +394,7 @@ fn running_status(campaign: &DoomCampaign) -> DoomAutoplayStatus {
         episode: Some(campaign.episode),
         map: Some(campaign.map),
         completed: false,
+        degraded: false,
         started_at: Some(chrono::Utc::now().to_rfc3339()),
         last_error: None,
         code: None,
@@ -354,6 +416,7 @@ fn completed_status(campaign: &DoomCampaign) -> DoomAutoplayStatus {
         episode: Some(campaign.episode),
         map: Some(campaign.map),
         completed: true,
+        degraded: false,
         started_at: Some(chrono::Utc::now().to_rfc3339()),
         last_error: None,
         code: Some(DoomAutoplayErrorCode::CampaignComplete),
@@ -682,6 +745,488 @@ pub async fn run_autoplay_loop(
     }
 }
 
+// ── Continuous loop: pure helpers (Spec #3026 ST-2) ───────────────────────────
+
+/// The player's integer map-unit `(x, y)` from an observation, or `None` when
+/// either coordinate is absent.
+fn player_position(observation: &Value) -> Option<(i64, i64)> {
+    let x = observation.pointer("/player/x").and_then(Value::as_i64)?;
+    let y = observation.pointer("/player/y").and_then(Value::as_i64)?;
+    Some((x, y))
+}
+
+/// Whether an action array commands `forward`.
+fn intent_has_forward(intent: &[Value]) -> bool {
+    intent
+        .iter()
+        .any(|action| action.get("type").and_then(Value::as_str) == Some(DOOM_ACTION_FORWARD))
+}
+
+/// Whether the observation's `enemies` list reports at least one `front` target.
+fn has_front_enemy(observation: &Value) -> bool {
+    observation
+        .get("enemies")
+        .and_then(Value::as_array)
+        .map(|enemies| {
+            enemies
+                .iter()
+                .any(|enemy| enemy.get("direction").and_then(Value::as_str) == Some("front"))
+        })
+        .unwrap_or(false)
+}
+
+/// The safety reflex (Spec #3026 R-3, lever B): given the current observation,
+/// the persisted intent, and the running count of consecutive blocked-forward
+/// ticks, return the possibly-overridden action array.
+///
+/// Pure — no I/O, no clock, no state. Two overrides:
+/// * (a) `forward` commanded while the player has not moved for
+///   [`DOOM_REFLEX_BLOCKED_TICKS`] consecutive ticks → drop `forward` and issue a
+///   bounded [`DOOM_ACTION_BACKWARD`] step-back of [`DOOM_REFLEX_STEP_BACK_TICKS`];
+/// * (b) `shoot` commanded while `enemies` reports no `front` target → drop
+///   `shoot`.
+pub fn safety_reflex(
+    observation: &Value,
+    intent: &[Value],
+    blocked_forward_ticks: u32,
+) -> Vec<Value> {
+    let blocked = blocked_forward_ticks >= DOOM_REFLEX_BLOCKED_TICKS;
+    let release_fire = !has_front_enemy(observation);
+    let mut out: Vec<Value> = Vec::with_capacity(intent.len() + 1);
+    for action in intent {
+        let kind = action.get("type").and_then(Value::as_str);
+        if blocked && kind == Some(DOOM_ACTION_FORWARD) {
+            continue;
+        }
+        if release_fire && kind == Some(DOOM_ACTION_SHOOT) {
+            continue;
+        }
+        out.push(action.clone());
+    }
+    if blocked && intent_has_forward(intent) {
+        // (a) bounded un-stick nudge, replacing the dropped forward.
+        out.push(json!({
+            "type": DOOM_ACTION_BACKWARD,
+            "amount": DOOM_REFLEX_STEP_BACK_TICKS,
+        }));
+    }
+    out
+}
+
+/// `ceil(duration / unit)`, at least 1 — the number of `unit`-length waits that
+/// cover `duration`. A zero `unit` (an immediate deterministic clock) is 1.
+fn pacing_ticks(duration: Duration, unit: Duration) -> u32 {
+    if unit.is_zero() {
+        return 1;
+    }
+    let unit_nanos = unit.as_nanos();
+    let duration_nanos = duration.as_nanos();
+    let mut ticks = duration_nanos / unit_nanos;
+    if !duration_nanos.is_multiple_of(unit_nanos) {
+        ticks += 1;
+    }
+    ticks.clamp(1, u128::from(u32::MAX)) as u32
+}
+
+/// Await the injected clock until `period` of pacing has elapsed, expressed as a
+/// whole number of the clock's own period. This is the loop's ONLY wall-clock
+/// dependency (R-5): no `Instant::now`, no bare `tokio::time::sleep`.
+async fn pace(clock: &dyn DoomTickClock, period: Duration) {
+    let count = pacing_ticks(period, clock.period());
+    for _ in 0..count {
+        clock.tick().await;
+    }
+}
+
+/// One compact issued-action / reflex audit record (Spec #3026 R-3 / G-273).
+pub fn build_action_audit_record(
+    tic: Option<u64>,
+    actions: &[Value],
+    reflex: bool,
+    degraded: bool,
+) -> Value {
+    json!({
+        "at": chrono::Utc::now().to_rfc3339(),
+        "tic": tic,
+        "actions": actions,
+        "reflex": reflex,
+        "degraded": degraded,
+    })
+}
+
+/// Append one record to the bounded issued-action JSONL under `dir`, retaining
+/// the last [`DOOM_AGENT_ACTION_AUDIT_MAX_RECORDS`] lines. Best-effort: a caller
+/// treats a failure as non-fatal (an audit write never fails the run).
+pub fn append_action_audit(dir: &Path, record: &Value) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join(DOOM_AGENT_ACTION_AUDIT_FILE);
+    let mut lines: Vec<String> = std::fs::read_to_string(&path)
+        .map(|text| {
+            text.lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    lines.push(record.to_string());
+    if lines.len() > DOOM_AGENT_ACTION_AUDIT_MAX_RECORDS {
+        let excess = lines.len() - DOOM_AGENT_ACTION_AUDIT_MAX_RECORDS;
+        lines.drain(..excess);
+    }
+    let mut content = lines.join("\n");
+    content.push('\n');
+    std::fs::write(&path, content)
+}
+
+/// The non-blocking pending-decision future the continuous loop polls once per
+/// tick. It OWNS a clone of the observation, so it is self-contained apart from
+/// the borrowed decision source.
+type PendingDecision<'s> =
+    Pin<Box<dyn Future<Output = Result<DoomDecision, DoomDecisionError>> + Send + 's>>;
+
+/// Run the continuous autoplay loop (Spec #3026 ST-2) until the tick budget is
+/// exhausted, a stop is requested, a terminal campaign completes, or an engine
+/// call fails (R-1/R-3/R-4). NEVER hangs and NEVER freezes while a decision is in
+/// flight: the loop advances one tick every `clock` period regardless of the
+/// decision source, polling the in-flight decision once per tick through a noop
+/// waker (no thread, no timer, no wall clock — R-5).
+///
+/// The persisted last intent is reissued between decisions, guarded by
+/// [`safety_reflex`]. An unavailable or timed-out decision degrades the pacing
+/// (R-4) but never stops the run; a malformed decision retains the bounded
+/// consecutive-failure stop. `observe` is invoked on the seeded/terminal
+/// transitions and throttled to ~[`DOOM_STATUS_EMIT_MS`] elsewhere.
+pub async fn run_continuous_loop(
+    engine: &dyn DoomAutoplayEngine,
+    source: &dyn DoomDecisionSource,
+    config: &DoomAutoplayConfig,
+    clock: &dyn DoomTickClock,
+    run: AutoplayRun,
+    stop: &AtomicBool,
+    mut observe: impl FnMut(&DoomAutoplayStatus) + Send,
+) -> DoomAutoplayResult {
+    let AutoplayRun { campaign, progress } = run;
+
+    // Completed-save terminality (G-321, BINDING): a resolved `completed:true`
+    // campaign is terminal AT START — report completion immediately, issue NO
+    // engine request.
+    if campaign.completed {
+        let status = completed_status(&campaign);
+        observe(&status);
+        return campaign_complete_result(status.steps);
+    }
+
+    let mut status = running_status(&campaign);
+    observe(&status);
+
+    if stop.load(Ordering::Relaxed) {
+        status.phase = DoomAutoplayPhase::Idle;
+        status.running = false;
+        observe(&status);
+        return DoomAutoplayResult {
+            success: true,
+            phase: DoomAutoplayPhase::Idle,
+            steps: status.steps,
+            code: None,
+            error: None,
+        };
+    }
+
+    // Pacing / emission / timeout thresholds derived ONCE from the injected
+    // clock's declared period — never from the wall clock (R-5).
+    let unit = clock.period();
+    let emit_interval = pacing_ticks(Duration::from_millis(DOOM_STATUS_EMIT_MS), unit);
+    let timeout_ticks = pacing_ticks(config.decision_timeout, unit);
+    let backoff_ticks = pacing_ticks(config.failure_backoff, unit);
+    let audit_dir = super::decision::log_dir_from_env();
+
+    let mut campaign = campaign;
+    let mut budget_used: u32 = 0;
+    let mut pending_terminal: Option<TerminalKind> = None;
+
+    // The persisted last intent (R-3) plus the blocked-forward window.
+    let mut last_intent: Vec<Value> = Vec::new();
+    let mut previous_position: Option<(i64, i64)> = None;
+    let mut blocked_forward_ticks: u32 = 0;
+
+    // The non-blocking pending decision and its pacing bookkeeping.
+    let mut pending: Option<PendingDecision<'_>> = None;
+    let mut pending_ticks: u32 = 0;
+    let mut cooldown_ticks: u32 = 0;
+    let mut degraded_consecutive: u32 = 0;
+    // The last degraded value the caller observed — a degrade/recover transition
+    // is always emitted regardless of the throttle (R-4 observability).
+    let mut observed_degraded = false;
+
+    // R-1 resume positioning: exactly ONE native `reset` before the first tick.
+    let mut observation = match engine
+        .reset(campaign.episode, campaign.map, campaign.skill)
+        .await
+    {
+        Ok(observation) => {
+            budget_used += 1;
+            apply_observation(&mut status, &observation);
+            observe(&status);
+            observation
+        }
+        Err(error) => {
+            let result = engine_failure(&mut status, error.message);
+            observe(&status);
+            return result;
+        }
+    };
+    if let Some(kind) = terminal_kind(&observation) {
+        pending_terminal = Some(kind);
+    }
+
+    while budget_used < config.max_ticks {
+        if stop.load(Ordering::Relaxed) {
+            status.phase = DoomAutoplayPhase::Idle;
+            status.running = false;
+            observe(&status);
+            return DoomAutoplayResult {
+                success: true,
+                phase: DoomAutoplayPhase::Idle,
+                steps: status.steps,
+                code: None,
+                error: None,
+            };
+        }
+
+        // React to a terminal observation with exactly ONE bounded action (R-3).
+        if let Some(kind) = pending_terminal.take() {
+            match kind {
+                TerminalKind::Death => {
+                    match engine
+                        .reset(campaign.episode, campaign.map, campaign.skill)
+                        .await
+                    {
+                        Ok(next) => {
+                            budget_used += 1;
+                            apply_observation(&mut status, &next);
+                            observation = next;
+                            previous_position = None;
+                            blocked_forward_ticks = 0;
+                            last_intent.clear();
+                            observe(&status);
+                            continue;
+                        }
+                        Err(error) => {
+                            let result = engine_failure(&mut status, error.message);
+                            observe(&status);
+                            return result;
+                        }
+                    }
+                }
+                TerminalKind::Exit => {
+                    if campaign.at_final_level() {
+                        campaign.completed = true;
+                        progress.record(&campaign);
+                        status.phase = DoomAutoplayPhase::Completed;
+                        status.running = false;
+                        status.completed = true;
+                        status.code = Some(DoomAutoplayErrorCode::CampaignComplete);
+                        status.episode = Some(campaign.episode);
+                        status.map = Some(campaign.map);
+                        observe(&status);
+                        return campaign_complete_result(status.steps);
+                    }
+                    if let Some(next) = campaign.advance() {
+                        campaign = next;
+                    }
+                    progress.record(&campaign);
+                    status.episode = Some(campaign.episode);
+                    status.map = Some(campaign.map);
+                    match engine
+                        .reset(campaign.episode, campaign.map, campaign.skill)
+                        .await
+                    {
+                        Ok(next) => {
+                            budget_used += 1;
+                            apply_observation(&mut status, &next);
+                            observation = next;
+                            previous_position = None;
+                            blocked_forward_ticks = 0;
+                            last_intent.clear();
+                            observe(&status);
+                            continue;
+                        }
+                        Err(error) => {
+                            let result = engine_failure(&mut status, error.message);
+                            observe(&status);
+                            return result;
+                        }
+                    }
+                }
+            }
+        }
+
+        // The intent that produced the PREVIOUS step (for the blocked-forward
+        // window), captured before a new decision may replace it.
+        let stepped_forward = intent_has_forward(&last_intent);
+
+        // 1. Start a decision if none is in flight and the backoff has elapsed.
+        if pending.is_none() && cooldown_ticks == 0 {
+            let obs = observation.clone();
+            pending = Some(Box::pin(async move { source.decide(&obs).await }));
+            pending_ticks = 0;
+        }
+
+        // 2. Poll the pending decision once — NON-blocking (noop waker).
+        let polled = if let Some(future) = pending.as_mut() {
+            let waker = std::task::Waker::noop();
+            let mut context = Context::from_waker(waker);
+            Some(future.as_mut().poll(&mut context))
+        } else {
+            None
+        };
+
+        let mut adopted = false;
+        match polled {
+            Some(Poll::Ready(result)) => {
+                pending = None;
+                pending_ticks = 0;
+                match result {
+                    Ok(decision) => {
+                        status.decisions += 1;
+                        if let Err(detail) = validate_decision(&decision) {
+                            // A malformed decision retains the bounded stop.
+                            if let Some(result) =
+                                record_decision_failure(&mut status, config, detail)
+                            {
+                                observe(&status);
+                                return result;
+                            }
+                            cooldown_ticks = backoff_ticks;
+                        } else {
+                            last_intent = decision.actions;
+                            status.consecutive_failures = 0;
+                            degraded_consecutive = 0;
+                            status.degraded = false;
+                            adopted = true;
+                        }
+                    }
+                    Err(DoomDecisionError::Malformed(detail)) => {
+                        if let Some(result) = record_decision_failure(&mut status, config, detail) {
+                            observe(&status);
+                            return result;
+                        }
+                        cooldown_ticks = backoff_ticks;
+                    }
+                    Err(DoomDecisionError::ModelUnavailable(_))
+                    | Err(DoomDecisionError::TimedOut) => {
+                        // Non-fatal (R-4): count it, maybe degrade, keep motion.
+                        status.failures += 1;
+                        degraded_consecutive += 1;
+                        if degraded_consecutive >= DOOM_DEGRADED_AFTER_FAILURES {
+                            status.degraded = true;
+                        }
+                        cooldown_ticks = backoff_ticks;
+                    }
+                }
+            }
+            Some(Poll::Pending) => {
+                pending_ticks = pending_ticks.saturating_add(1);
+                if pending_ticks >= timeout_ticks {
+                    // Slower than the tick loop → abandon + degrade (R-4).
+                    pending = None;
+                    pending_ticks = 0;
+                    status.failures += 1;
+                    degraded_consecutive += 1;
+                    if degraded_consecutive >= DOOM_DEGRADED_AFTER_FAILURES {
+                        status.degraded = true;
+                    }
+                    cooldown_ticks = backoff_ticks;
+                }
+            }
+            None => {
+                cooldown_ticks = cooldown_ticks.saturating_sub(1);
+            }
+        }
+
+        // 3. Safety reflex over the persisted intent (R-3).
+        let current_position = player_position(&observation);
+        let moved = match (previous_position, current_position) {
+            (Some(previous), Some(current)) => previous != current,
+            _ => true,
+        };
+        if stepped_forward && !moved {
+            blocked_forward_ticks = blocked_forward_ticks.saturating_add(1);
+        } else {
+            blocked_forward_ticks = 0;
+        }
+        let effective = safety_reflex(&observation, &last_intent, blocked_forward_ticks);
+        let reflex_fired = effective != last_intent;
+
+        // 4. Advance one tick with the persisted (reflex-guarded) intent (R-1).
+        let actions = Value::Array(effective.clone());
+        match engine.step(DOOM_CONTINUOUS_TICS_PER_TICK, &actions).await {
+            Ok(next) => {
+                budget_used += 1;
+                status.steps += 1;
+                previous_position = current_position;
+                apply_observation(&mut status, &next);
+                if let Some(kind) = terminal_kind(&next) {
+                    pending_terminal = Some(kind);
+                }
+                observation = next;
+            }
+            Err(error) => {
+                let result = engine_failure(&mut status, error.message);
+                observe(&status);
+                return result;
+            }
+        }
+
+        // 5. Issued-action / reflex audit on adoption or override (G-273).
+        if adopted || reflex_fired {
+            if let Some(dir) = &audit_dir {
+                let record = build_action_audit_record(
+                    status.last_tic,
+                    &effective,
+                    reflex_fired,
+                    status.degraded,
+                );
+                if let Err(error) = append_action_audit(dir, &record) {
+                    tracing::warn!(
+                        target: "fredo::doom",
+                        error = %error,
+                        "could not append the Doom action audit record"
+                    );
+                }
+            }
+        }
+
+        // 6. Throttled status emission (terminal transitions emit above); a
+        // degrade/recover transition always emits.
+        if status.degraded != observed_degraded || budget_used.is_multiple_of(emit_interval) {
+            observe(&status);
+            observed_degraded = status.degraded;
+        }
+
+        // 7. Pace the next tick through the injected clock (R-5).
+        let period = if status.degraded {
+            config.degraded_tick_period
+        } else {
+            config.tick_period
+        };
+        pace(clock, period).await;
+    }
+
+    // The tick budget was reached cleanly — a bounded exit on every path (R-4).
+    status.phase = DoomAutoplayPhase::Completed;
+    status.running = false;
+    status.code = Some(DoomAutoplayErrorCode::BudgetExhausted);
+    observe(&status);
+    DoomAutoplayResult {
+        success: true,
+        phase: DoomAutoplayPhase::Completed,
+        steps: status.steps,
+        code: Some(DoomAutoplayErrorCode::BudgetExhausted),
+        error: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -691,6 +1236,8 @@ mod tests {
 
     use async_trait::async_trait;
     use serde_json::json;
+
+    use crate::applications::doom::clock::FixedTickClock;
 
     /// A typed native-engine failure for the fakes.
     fn engine_error(message: &str) -> DoomEngineError {
@@ -904,6 +1451,17 @@ mod tests {
         }
     }
 
+    /// A source whose decision NEVER resolves — induces R-1 "decision in flight"
+    /// and R-4 "slower than the tick loop" deterministically (no live model).
+    struct PendingSource;
+
+    #[async_trait]
+    impl DoomDecisionSource for PendingSource {
+        async fn decide(&self, _observation: &Value) -> Result<DoomDecision, DoomDecisionError> {
+            std::future::pending::<Result<DoomDecision, DoomDecisionError>>().await
+        }
+    }
+
     fn decision(tics: i64) -> DoomDecision {
         DoomDecision {
             tics,
@@ -914,9 +1472,25 @@ mod tests {
     fn config(max_steps: u32, max_failures: u32) -> DoomAutoplayConfig {
         DoomAutoplayConfig {
             max_steps,
+            max_ticks: DOOM_CONTINUOUS_MAX_TICKS,
             max_failures,
             decision_timeout: Duration::from_secs(1),
             failure_backoff: Duration::ZERO,
+            tick_period: Duration::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS),
+            degraded_tick_period: Duration::from_millis(DOOM_DEGRADED_TICK_PERIOD_MS),
+        }
+    }
+
+    /// A continuous-loop config with an explicit tick budget and decision timeout.
+    fn continuous_config(max_ticks: u32, max_failures: u32, timeout: Duration) -> DoomAutoplayConfig {
+        DoomAutoplayConfig {
+            max_steps: DOOM_AUTOPLAY_MAX_STEPS,
+            max_ticks,
+            max_failures,
+            decision_timeout: timeout,
+            failure_backoff: Duration::ZERO,
+            tick_period: Duration::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS),
+            degraded_tick_period: Duration::from_millis(DOOM_DEGRADED_TICK_PERIOD_MS),
         }
     }
 
@@ -1507,9 +2081,12 @@ mod tests {
         let stop = AtomicBool::new(false);
         let short_timeout = DoomAutoplayConfig {
             max_steps: 600,
+            max_ticks: DOOM_CONTINUOUS_MAX_TICKS,
             max_failures: 1,
             decision_timeout: Duration::from_millis(5),
             failure_backoff: Duration::ZERO,
+            tick_period: Duration::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS),
+            degraded_tick_period: Duration::from_millis(DOOM_DEGRADED_TICK_PERIOD_MS),
         };
 
         let result = run_autoplay_loop(
@@ -1612,6 +2189,286 @@ mod tests {
         assert!(
             tics.last().copied().unwrap_or(0) >= 4,
             "four native steps advanced the tic"
+        );
+    }
+
+    // ── Safety reflex (pure, R-3) ────────────────────────────────────────────
+
+    #[test]
+    fn safety_reflex_drops_blind_forward_and_releases_fire_without_a_target() {
+        let forward = vec![json!({ "type": "forward" })];
+        // Below the blocked threshold → unchanged.
+        assert_eq!(
+            safety_reflex(&json!({}), &forward, DOOM_REFLEX_BLOCKED_TICKS - 1),
+            forward
+        );
+        // Blocked → forward dropped, bounded step-back added.
+        assert_eq!(
+            safety_reflex(&json!({}), &forward, DOOM_REFLEX_BLOCKED_TICKS),
+            vec![json!({ "type": "backward", "amount": DOOM_REFLEX_STEP_BACK_TICKS })]
+        );
+
+        let shoot = vec![json!({ "type": "shoot" })];
+        // No front target → fire released.
+        assert!(safety_reflex(&json!({ "enemies": [] }), &shoot, 0).is_empty());
+        assert!(safety_reflex(
+            &json!({ "enemies": [{ "direction": "back" }] }),
+            &shoot,
+            0
+        )
+        .is_empty());
+        // A front target → fire kept.
+        let front = json!({ "enemies": [{ "direction": "front" }] });
+        assert_eq!(safety_reflex(&front, &shoot, 0), shoot);
+
+        // Both edges at once: drop the blind forward, keep fire on a valid target.
+        let both = vec![json!({ "type": "forward" }), json!({ "type": "shoot" })];
+        assert_eq!(
+            safety_reflex(&front, &both, DOOM_REFLEX_BLOCKED_TICKS),
+            vec![
+                json!({ "type": "shoot" }),
+                json!({ "type": "backward", "amount": DOOM_REFLEX_STEP_BACK_TICKS }),
+            ]
+        );
+
+        // An empty intent stays empty.
+        assert!(safety_reflex(&front, &[], DOOM_REFLEX_BLOCKED_TICKS).is_empty());
+    }
+
+    #[test]
+    fn pacing_ticks_rounds_up_from_the_injected_unit() {
+        let unit = Duration::from_millis(28);
+        assert_eq!(pacing_ticks(Duration::from_millis(28), unit), 1);
+        assert_eq!(pacing_ticks(Duration::from_millis(50), unit), 2);
+        assert_eq!(pacing_ticks(Duration::ZERO, unit), 1);
+        // A zero unit (immediate deterministic clock) is always one wait.
+        assert_eq!(pacing_ticks(Duration::from_millis(50), Duration::ZERO), 1);
+    }
+
+    #[test]
+    fn action_audit_record_is_compact_and_the_jsonl_is_bounded() {
+        let record = build_action_audit_record(
+            Some(17),
+            &[json!({ "type": "backward", "amount": 2 })],
+            true,
+            true,
+        );
+        assert_eq!(record["tic"], 17);
+        assert_eq!(record["reflex"], true);
+        assert_eq!(record["degraded"], true);
+        assert_eq!(record["actions"][0]["type"], "backward");
+        assert!(record["at"].as_str().map(|at| !at.is_empty()).unwrap_or(false));
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let total = DOOM_AGENT_ACTION_AUDIT_MAX_RECORDS + 5;
+        for tic in 0..total {
+            let record = build_action_audit_record(Some(tic as u64), &[], false, false);
+            append_action_audit(dir.path(), &record).expect("append");
+        }
+        let text = std::fs::read_to_string(dir.path().join(DOOM_AGENT_ACTION_AUDIT_FILE))
+            .expect("read audit");
+        let lines: Vec<&str> = text.lines().filter(|line| !line.trim().is_empty()).collect();
+        assert_eq!(lines.len(), DOOM_AGENT_ACTION_AUDIT_MAX_RECORDS);
+        let last: Value = serde_json::from_str(lines[lines.len() - 1]).expect("last line JSON");
+        assert_eq!(last["tic"], (total - 1) as u64);
+    }
+
+    #[test]
+    fn autoplay_config_defaults_and_env_are_pinned_and_inert_when_unset() {
+        let default = DoomAutoplayConfig::default();
+        assert_eq!(default.max_ticks, DOOM_CONTINUOUS_MAX_TICKS);
+        assert_eq!(
+            default.tick_period,
+            Duration::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS)
+        );
+        assert_eq!(
+            default.degraded_tick_period,
+            Duration::from_millis(DOOM_DEGRADED_TICK_PERIOD_MS)
+        );
+
+        if crate::applications::doom::decision::max_steps_from_env().is_none()
+            && crate::applications::doom::decision::max_failures_from_env().is_none()
+        {
+            let resolved = DoomAutoplayConfig::from_env();
+            assert_eq!(resolved.max_ticks, default.max_ticks);
+            assert_eq!(resolved.max_failures, default.max_failures);
+        }
+    }
+
+    // ── The continuous loop (Spec #3026 R-1/R-3/R-4) ─────────────────────────
+
+    #[tokio::test]
+    async fn continuous_loop_advances_every_tick_while_a_decision_is_in_flight() {
+        let engine = FakeEngine::default();
+        let source = PendingSource;
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(false);
+        let mut statuses: Vec<DoomAutoplayStatus> = Vec::new();
+        // timeout_ticks = ceil(50 / 28) = 2 -> the stalled source times out and
+        // the loop degrades WHILE keeping motion.
+        let cfg = continuous_config(12, 3, Duration::from_millis(50));
+
+        let result = run_continuous_loop(
+            &engine,
+            &source,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |status| statuses.push(status.clone()),
+        )
+        .await;
+
+        // Positioning + 11 steps = the 12-tick budget.
+        assert_eq!(result.steps, 11);
+        assert_eq!(engine.count("step"), 11, "motion never waits for a decision");
+        assert_eq!(engine.count("reset"), 1, "exactly one resume positioning");
+        assert_eq!(result.phase, DoomAutoplayPhase::Completed);
+        assert_eq!(result.code, Some(DoomAutoplayErrorCode::BudgetExhausted));
+        assert!(
+            statuses.last().unwrap().degraded,
+            "a stalled source degrades the pacing (R-4)"
+        );
+        let tics: Vec<u64> = statuses.iter().filter_map(|status| status.last_tic).collect();
+        assert!(tics.last().copied().unwrap_or(0) >= 4, "the world advanced");
+    }
+
+    #[tokio::test]
+    async fn continuous_loop_completes_at_the_tick_budget_with_a_live_decision() {
+        let engine = FakeEngine::default();
+        let source = FakeSource::repeating(Ok(decision(1)));
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(false);
+        let mut statuses: Vec<DoomAutoplayStatus> = Vec::new();
+        let cfg = continuous_config(6, 3, Duration::from_secs(1));
+
+        let result = run_continuous_loop(
+            &engine,
+            &source,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |status| statuses.push(status.clone()),
+        )
+        .await;
+
+        assert!(result.success);
+        assert_eq!(result.phase, DoomAutoplayPhase::Completed);
+        assert_eq!(result.code, Some(DoomAutoplayErrorCode::BudgetExhausted));
+        // Budget 6 = positioning + 5 ticks.
+        assert_eq!(result.steps, 5);
+        assert_eq!(engine.count("step"), 5);
+        assert_eq!(source.decide_calls(), 5, "one decision per tick");
+        assert!(
+            !statuses.last().unwrap().degraded,
+            "a live source never degrades"
+        );
+    }
+
+    #[tokio::test]
+    async fn continuous_loop_a_stop_request_exits_without_positioning() {
+        let engine = FakeEngine::default();
+        let source = FakeSource::repeating(Ok(decision(1)));
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(true);
+        let cfg = continuous_config(10, 3, Duration::from_secs(1));
+
+        let result = run_continuous_loop(
+            &engine,
+            &source,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
+
+        assert!(result.success);
+        assert_eq!(result.phase, DoomAutoplayPhase::Idle);
+        assert_eq!(engine.count("reset"), 0, "a stop before start positions nothing");
+        assert_eq!(engine.count("step"), 0);
+        assert_eq!(source.decide_calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn continuous_loop_a_malformed_decision_retains_the_bounded_failure_stop() {
+        let engine = FakeEngine::default();
+        let source = FakeSource::repeating(Err(DoomDecisionError::Malformed("bad".to_string())));
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(false);
+        let cfg = continuous_config(100, 2, Duration::from_secs(1));
+
+        let result = run_continuous_loop(
+            &engine,
+            &source,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
+
+        assert!(!result.success);
+        assert_eq!(result.phase, DoomAutoplayPhase::Failed);
+        assert_eq!(result.code, Some(DoomAutoplayErrorCode::DecisionFailed));
+        // Motion continued between the malformed decisions (never froze).
+        assert!(engine.count("step") > 0, "the world kept advancing");
+    }
+
+    #[tokio::test]
+    async fn continuous_loop_recovers_from_degrade_on_a_valid_decision() {
+        // A source that is unavailable twice, then valid: the loop degrades (R-4)
+        // then recovers to nominal on the good decision.
+        let engine = FakeEngine::default();
+        let unavailable = || Err(DoomDecisionError::ModelUnavailable("down".to_string()));
+        let source = FakeSource::sequence(
+            vec![unavailable(), unavailable(), Ok(decision(1))],
+            Ok(decision(1)),
+        );
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(false);
+        let mut statuses: Vec<DoomAutoplayStatus> = Vec::new();
+        // Big tick budget so the run is bounded by the source, not the clock.
+        let cfg = continuous_config(6, 5, Duration::from_secs(1));
+
+        let result = run_continuous_loop(
+            &engine,
+            &source,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |status| statuses.push(status.clone()),
+        )
+        .await;
+
+        assert!(result.success);
+        assert_eq!(result.steps, 5);
+        assert!(
+            statuses.iter().any(|status| status.degraded),
+            "two unavailable decisions degrade the pacing"
+        );
+        assert!(
+            !statuses.last().unwrap().degraded,
+            "a valid decision recovers to nominal pacing"
         );
     }
 }

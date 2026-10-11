@@ -28,10 +28,11 @@
 //! autoplay loop invokes these through `tauri::async_runtime::spawn_blocking`).
 //! A **dedicated engine thread is never spawned** — no orphan is constructible.
 
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine as _;
+use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -52,7 +53,14 @@ use super::actions::{
     DOOM_ACTION_TURN_RIGHT, DOOM_ACTION_TURN_TO, DOOM_ACTION_USE, DOOM_ACTION_WEAPON_SLOT_MAX,
     DOOM_ACTION_WEAPON_SLOT_MIN, DOOM_STEP_TICS_MAX,
 };
-use super::autoplay::{DOOM_AUTOPLAY_MAX_FAILURES, DOOM_AUTOPLAY_MAX_STEPS};
+use super::autoplay::{
+    DoomAutoplayStatus, DOOM_AUTOPLAY_MAX_FAILURES, DOOM_AUTOPLAY_MAX_STEPS,
+    DOOM_CONTINUOUS_RATE_HZ,
+};
+use super::agent::{run_continuous_loop, AutoplayRun, DoomAutoplayConfig, DoomAutoplayEngine};
+use super::clock::{DoomTickClock, DOOM_CONTINUOUS_TICK_PERIOD_MS, DOOM_DEGRADED_TICK_PERIOD_MS};
+use super::progress::DoomProgressWriter;
+use super::save::DoomCampaign;
 
 // ── G-275 WAD seam ────────────────────────────────────────────────────────────
 
@@ -451,17 +459,30 @@ impl DoomEngineState {
         Ok(observation(session))
     }
 
-    /// The current frame as a base64-encoded PNG (RGBA 320×200).
+    /// The current frame as raw RGBA bytes (`320 * 200 * 4 = 256_000` bytes),
+    /// row-major with byte order R, G, B, A — NO PNG, NO base64 (Spec #3026
+    /// ST-3). This is the AC2 frame transport: the webview wraps it in an
+    /// `ImageData` and draws with `putImageData`.
     ///
     /// Renders from the local player's POV when the framebuffer is not yet
     /// populated (a freshly constructed session has no frame until it renders).
-    pub fn frame_png(&self) -> Result<String, DoomEngineError> {
+    pub fn frame_rgba(&self) -> Result<Vec<u8>, DoomEngineError> {
         let mut guard = self.lock();
         let session = guard.as_mut().ok_or_else(DoomEngineError::no_session)?;
         if session.engine.framebuffer().len() != FRAME_BYTES {
             session.engine.render_for(LOCAL_PEER);
         }
-        encode_frame_png(session.engine.framebuffer())
+        let framebuffer = session.engine.framebuffer();
+        if framebuffer.len() != FRAME_BYTES {
+            return Err(DoomEngineError::new(
+                DoomEngineErrorCode::EngineStartFailed,
+                format!(
+                    "framebuffer is {} bytes, expected {FRAME_BYTES}",
+                    framebuffer.len()
+                ),
+            ));
+        }
+        Ok(framebuffer.to_vec())
     }
 }
 
@@ -522,7 +543,9 @@ impl DoomDriverConfig {
 
 /// The deterministic outcome of [`run_bounded_driver`] — the start/end
 /// observation plus the run counters.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// `Eq` is intentionally not derived: [`Self::fps_estimate`] is an `f64`.
+#[derive(Clone, Debug, PartialEq)]
 pub struct DoomDriverReport {
     /// The campaign episode the session played (always 1 for `DOOM1.WAD`).
     pub episode: i64,
@@ -530,8 +553,19 @@ pub struct DoomDriverReport {
     pub map: i64,
     /// The requested skill.
     pub skill: i64,
-    /// Engine-advancing steps completed.
+    /// Engine-advancing ticks completed (the continuous loop's tick count).
     pub steps: u32,
+    /// The engine ticks advanced (equals [`Self::steps`] for the current
+    /// one-tic-per-iteration loop; kept as the explicit AC2 quantity).
+    pub ticks: u32,
+    /// Consecutive DISTINCT (world-reflecting) frames produced — the AC2
+    /// observable. A frame is distinct iff its framebuffer bytes differ from
+    /// the immediately preceding frame's.
+    pub distinct_frames: u32,
+    /// Distinct frames per SIMULATED second
+    /// (`distinct_frames / (ticks / DOOM_CONTINUOUS_RATE_HZ)`), or `0.0` for an
+    /// empty run — wall-clock-free (AC5).
+    pub fps_estimate: f64,
     /// Decisions obtained from the source.
     pub decisions: u32,
     /// Unusable (malformed/failed) decisions seen.
@@ -565,79 +599,101 @@ impl DoomDriverReport {
     }
 }
 
-/// The deterministic, engine-native autoplay driver (Spec #3023 ST-9).
+/// The deterministic, engine-native autoplay driver (Spec #3023 ST-9; Spec
+/// #3026 ST-3 extends it with the AC5 clock seam and the AC2 frame counters).
 ///
 /// Constructs the session at `(episode=1, config.map, config.skill)` then runs
-/// the production loop's **read → decide → validate → step** shape directly over
-/// the in-process adapter (no HTTP, no model, no network). The decision source is
-/// injected, so the existing scripted lever
+/// the SAME continuous loop the production host runs
+/// ([`super::agent::run_continuous_loop`]) over the in-process adapter (no HTTP,
+/// no model, no network), paced by the injected [`DoomTickClock`]. The decision
+/// source is injected, so the existing scripted lever
 /// ([`super::decision::ScriptedDecisionSource`] +
 /// `FREDO_DOOM_AGENT_DECISION_SOURCE=scripted` + `FREDO_DOOM_AGENT_SCRIPT`)
-/// reproduces a run deterministically; the step/failure budgets come from
-/// [`DoomDriverConfig`]/[`DoomDriverConfig::from_env`].
+/// reproduces a run deterministically; a [`super::clock::FixedTickClock`] makes
+/// the replay a pure function of the iteration count (AC5 — no wall clock).
 ///
-/// Terminates on the step budget, the consecutive-failure budget, or a terminal
-/// observation (death / level exit). Decision validation reuses the production
-/// [`super::agent::validate_decision`] and terminal classification reuses
-/// [`super::agent::terminal_kind`], so the driver can never drift from the loop.
+/// The framebuffer is fingerprinted after every step to count consecutive
+/// DISTINCT (world-reflecting) frames — the AC2 assertion surface. Terminates on
+/// the tick budget, the consecutive-failure budget, or a terminal observation
+/// (death / level exit). Validation and terminal classification reuse the
+/// production [`super::agent::validate_decision`] / [`super::agent::terminal_kind`],
+/// so the driver can never drift from the loop.
 pub async fn run_bounded_driver(
     state: &DoomEngineState,
     source: &dyn DoomDecisionSource,
     config: DoomDriverConfig,
+    clock: &dyn DoomTickClock,
 ) -> Result<DoomDriverReport, DoomEngineError> {
     let info = state.launch(config.map, config.skill)?;
-    let mut observation = state.read_state()?;
-    let start_tic = observation_tic(&observation);
-    let (start_x, start_y) = observation_position(&observation);
-    let mut last_tic = start_tic;
-    let (mut last_x, mut last_y) = (start_x, start_y);
-    let mut terminal = super::agent::terminal_kind(&observation).map(terminal_label);
 
-    // The failure cap is clamped to at least 1, so a misconfigured `0` can never
-    // spin the loop forever without advancing the step budget (G-263).
-    let failure_cap = config.max_failures.max(1);
-    let mut steps = 0u32;
-    let mut decisions = 0u32;
-    let mut failures = 0u32;
-    let mut consecutive_failures = 0u32;
+    // Play the resolved campaign coordinates; the driver never persists save
+    // state (a no-op progress writer).
+    let campaign = DoomCampaign {
+        episode: 1,
+        map: config.map,
+        skill: config.skill,
+        ..DoomCampaign::initial()
+    };
+    let run = AutoplayRun {
+        campaign,
+        progress: DoomProgressWriter::new(|_| Ok(())),
+    };
 
-    while steps < config.max_steps && terminal.is_none() {
-        match source.decide(&observation).await {
-            Ok(decision) => {
-                decisions += 1;
-                if super::agent::validate_decision(&decision).is_err() {
-                    failures += 1;
-                    consecutive_failures += 1;
-                    if consecutive_failures >= failure_cap {
-                        break;
-                    }
-                    continue;
-                }
-                let actions = Value::Array(decision.actions.clone());
-                observation = state.step(decision.tics, &actions)?;
-                steps += 1;
-                consecutive_failures = 0;
-                last_tic = observation_tic(&observation);
-                let (x, y) = observation_position(&observation);
-                last_x = x;
-                last_y = y;
-                terminal = super::agent::terminal_kind(&observation).map(terminal_label);
-            }
-            Err(_) => {
-                failures += 1;
-                consecutive_failures += 1;
-                if consecutive_failures >= failure_cap {
-                    break;
-                }
-            }
-        }
-    }
+    // The driver's `max_steps` bounds the continuous TICK budget: a step IS one
+    // tick in the continuous loop, so the config seam keeps one meaning.
+    let loop_config = DoomAutoplayConfig {
+        max_steps: config.max_steps,
+        max_ticks: config.max_steps,
+        max_failures: config.max_failures,
+        tick_period: Duration::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS),
+        degraded_tick_period: Duration::from_millis(DOOM_DEGRADED_TICK_PERIOD_MS),
+        ..DoomAutoplayConfig::default()
+    };
+
+    let engine = FrameCountingEngine::new(state.clone());
+    let stop = AtomicBool::new(false);
+    let mut last_status: Option<DoomAutoplayStatus> = None;
+
+    let result = run_continuous_loop(
+        &engine,
+        source,
+        &loop_config,
+        clock,
+        run,
+        &stop,
+        |status| {
+            last_status = Some(status.clone());
+        },
+    )
+    .await;
+
+    let (decisions, failures) = last_status
+        .as_ref()
+        .map_or((0, 0), |status| (status.decisions, status.failures));
+    let counters = engine.lock();
+    let first = counters.first.as_ref();
+    let last = counters.last.as_ref();
+    let start_tic = first.map_or(0, observation_tic);
+    let (start_x, start_y) = first.map_or((0, 0), observation_position);
+    let last_tic = last.map_or(start_tic, observation_tic);
+    let (last_x, last_y) = last.map_or((start_x, start_y), observation_position);
+    let terminal = last.and_then(super::agent::terminal_kind).map(terminal_label);
+    let ticks = result.steps;
+    let distinct_frames = counters.distinct_frames;
+    let fps_estimate = if ticks == 0 {
+        0.0
+    } else {
+        f64::from(distinct_frames) * f64::from(DOOM_CONTINUOUS_RATE_HZ) / f64::from(ticks)
+    };
 
     Ok(DoomDriverReport {
         episode: info.episode,
         map: info.map,
         skill: info.skill,
-        steps,
+        steps: ticks,
+        ticks,
+        distinct_frames,
+        fps_estimate,
         decisions,
         failures,
         start_tic,
@@ -648,6 +704,123 @@ pub async fn run_bounded_driver(
         last_y,
         terminal,
     })
+}
+
+/// The driver's frame-counting engine seam: it forwards every engine call to the
+/// native adapter and, after each step, fingerprints the framebuffer to count
+/// consecutive DISTINCT (world-reflecting) frames (AC2).
+struct FrameCountingEngine {
+    state: DoomEngineState,
+    counters: Mutex<FrameCounters>,
+}
+
+/// The driver's accumulated counters + start/end observations.
+#[derive(Default)]
+struct FrameCounters {
+    /// The previous step's framebuffer fingerprint (the first frame is NOT
+    /// counted — distinctness is a consecutive-pair property).
+    previous_fingerprint: Option<u64>,
+    /// The number of consecutive DISTINCT frames seen so far.
+    distinct_frames: u32,
+    /// The first observation produced (post-positioning) — the run's start.
+    first: Option<Value>,
+    /// The most recent observation produced.
+    last: Option<Value>,
+}
+
+impl FrameCountingEngine {
+    fn new(state: DoomEngineState) -> Self {
+        Self {
+            state,
+            counters: Mutex::new(FrameCounters::default()),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, FrameCounters> {
+        self.counters
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn record_observation(&self, observation: &Value) {
+        let mut counters = self.lock();
+        if counters.first.is_none() {
+            counters.first = Some(observation.clone());
+        }
+        counters.last = Some(observation.clone());
+    }
+
+    fn record_frame(&self, observation: &Value, frame: &[u8]) {
+        let fingerprint = frame_fingerprint(frame);
+        let mut counters = self.lock();
+        if counters
+            .previous_fingerprint
+            .is_some_and(|previous| previous != fingerprint)
+        {
+            counters.distinct_frames = counters.distinct_frames.saturating_add(1);
+        }
+        counters.previous_fingerprint = Some(fingerprint);
+        if counters.first.is_none() {
+            counters.first = Some(observation.clone());
+        }
+        counters.last = Some(observation.clone());
+    }
+}
+
+#[async_trait]
+impl DoomAutoplayEngine for FrameCountingEngine {
+    async fn read_state(&self) -> Result<Value, DoomEngineError> {
+        let state = self.state.clone();
+        let observation = run_engine_task(move || state.read_state()).await?;
+        self.record_observation(&observation);
+        Ok(observation)
+    }
+
+    async fn step(&self, tics: i64, actions: &Value) -> Result<Value, DoomEngineError> {
+        let state = self.state.clone();
+        let actions = actions.clone();
+        let observation = run_engine_task(move || state.step(tics, &actions)).await?;
+        let frame_state = self.state.clone();
+        let frame = run_engine_task(move || frame_state.frame_rgba()).await?;
+        self.record_frame(&observation, &frame);
+        Ok(observation)
+    }
+
+    async fn reset(&self, episode: i64, map: i64, skill: i64) -> Result<Value, DoomEngineError> {
+        let state = self.state.clone();
+        let observation = run_engine_task(move || state.reset(episode, map, skill)).await?;
+        self.record_observation(&observation);
+        Ok(observation)
+    }
+}
+
+/// A stable 64-bit FNV-1a fingerprint of a framebuffer (AC2 distinctness).
+/// Deterministic across runs and processes (never a randomly-seeded hasher).
+fn frame_fingerprint(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// Run one synchronous native engine call on the blocking pool (the driver's
+/// copy of the loop's blocking seam).
+async fn run_engine_task<T>(
+    task: impl FnOnce() -> Result<T, DoomEngineError> + Send + 'static,
+) -> Result<T, DoomEngineError>
+where
+    T: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .unwrap_or_else(|join_error| {
+            Err(DoomEngineError::new(
+                DoomEngineErrorCode::EngineStartFailed,
+                format!("the Doom engine task failed: {join_error}"),
+            ))
+        })
 }
 
 /// The engine tic of an observation, or `0` when absent.
@@ -674,39 +847,6 @@ fn terminal_label(kind: super::agent::TerminalKind) -> &'static str {
         super::agent::TerminalKind::Death => "dead",
         super::agent::TerminalKind::Exit => "exited",
     }
-}
-
-/// Encode a 320×200 RGBA framebuffer as a base64 PNG (the binding
-/// `DoomFrame { pngBase64 }` shape the webview canvas draws).
-fn encode_frame_png(framebuffer: &[u8]) -> Result<String, DoomEngineError> {
-    let width = SCREENWIDTH as u32;
-    let height = SCREENHEIGHT as u32;
-    let buffer = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(
-        width,
-        height,
-        framebuffer.to_vec(),
-    )
-    .ok_or_else(|| {
-        DoomEngineError::new(
-            DoomEngineErrorCode::EngineStartFailed,
-            format!(
-                "framebuffer is {} bytes, expected {}",
-                framebuffer.len(),
-                FRAME_BYTES
-            ),
-        )
-    })?;
-    let dynamic = image::DynamicImage::ImageRgba8(buffer);
-    let mut png = std::io::Cursor::new(Vec::new());
-    dynamic
-        .write_to(&mut png, image::ImageFormat::Png)
-        .map_err(|error| {
-            DoomEngineError::new(
-                DoomEngineErrorCode::EngineStartFailed,
-                format!("frame PNG encode failed: {error}"),
-            )
-        })?;
-    Ok(STANDARD.encode(png.into_inner()))
 }
 
 // ── Action translation (existing vocabulary → PlayerAction) ───────────────────
@@ -1199,6 +1339,7 @@ fn friendly_kind(sprite: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::applications::doom::clock::{FixedTickClock, DOOM_MIN_SMOOTH_FPS};
     use crate::applications::doom::decision::ScriptedDecisionSource;
     use neurodoom::math::FRACUNIT;
 
@@ -1283,11 +1424,24 @@ mod tests {
         assert!(observation["items"].is_array());
         assert!(observation["doors"].is_array());
 
-        let png = state.frame_png().expect("frame_png");
-        let bytes = STANDARD.decode(png).expect("base64");
-        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "PNG magic");
-        let decoded = image::load_from_memory(&bytes).expect("decode png");
-        assert_eq!((decoded.width(), decoded.height()), (320, 200));
+        let frame = state.frame_rgba().expect("frame_rgba");
+        assert_eq!(frame.len(), 320 * 200 * 4, "raw RGBA 320x200x4");
+        assert!(
+            !frame.starts_with(b"\x89PNG\r\n\x1a\n"),
+            "the frame is raw RGBA, never PNG"
+        );
+        // After a step the framebuffer is rendered (real WAD pixels) and differs
+        // from the pre-render buffer.
+        state
+            .step(1, &json!([{ "type": "forward" }]))
+            .expect("step");
+        let rendered = state.frame_rgba().expect("frame_rgba");
+        assert_eq!(rendered.len(), 320 * 200 * 4);
+        assert!(
+            rendered.iter().any(|byte| *byte != 0),
+            "the rendered frame is not all-zero (real WAD pixels)"
+        );
+        assert_ne!(rendered, frame, "the framebuffer changed after a step");
     }
 
     #[test]
@@ -1339,7 +1493,7 @@ mod tests {
             DoomEngineErrorCode::EngineStartFailed
         );
         assert_eq!(
-            state.frame_png().expect_err("no session").code,
+            state.frame_rgba().expect_err("no session").code,
             DoomEngineErrorCode::EngineStartFailed
         );
     }
@@ -1619,6 +1773,11 @@ mod tests {
         ScriptedDecisionSource::from_script_json(&script.to_string()).expect("script")
     }
 
+    /// The deterministic clock the driver tests inject (AC5 — no wall clock).
+    fn driver_clock() -> FixedTickClock {
+        FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS)
+    }
+
     #[test]
     fn driver_config_defaults_to_the_shared_budgets_and_env_is_inert_when_unset() {
         let default = DoomDriverConfig::default();
@@ -1648,6 +1807,7 @@ mod tests {
             ]),
             true,
         );
+        let clock = driver_clock();
         let report = run_bounded_driver(
             &state,
             &source,
@@ -1657,6 +1817,7 @@ mod tests {
                 max_steps: 8,
                 max_failures: 3,
             },
+            &clock,
         )
         .await
         .expect("driven run");
@@ -1664,12 +1825,110 @@ mod tests {
         assert_eq!(report.episode, 1);
         assert_eq!(report.map, 1);
         assert_eq!(report.skill, 3);
-        assert_eq!(report.steps, 8, "the run advances the full bounded budget");
-        assert_eq!(report.decisions, 8);
+        // The tick budget (8) includes the one-tick resume positioning.
+        assert_eq!(report.steps, 7, "the run advances the bounded tick budget");
+        assert_eq!(report.ticks, report.steps);
+        assert_eq!(report.decisions, 7, "one decision per tick");
         assert_eq!(report.failures, 0);
         assert!(report.advanced(), "the engine tic advanced");
         assert!(report.moved(), "the scripted forwards moved the player");
         assert!(report.terminal.is_none(), "the budget ended the run");
+        // AC2: distinct world-reflecting frames were produced over the run.
+        assert!(report.distinct_frames >= 1, "the frames changed across the run");
+        assert!(report.distinct_frames <= report.ticks);
+        assert!(report.fps_estimate > 0.0, "a positive fps estimate");
+    }
+
+    #[tokio::test]
+    async fn the_driver_sustains_the_ac2_distinct_frame_floor_over_five_simulated_seconds() {
+        // AC2 floor (R-2): >= DOOM_MIN_SMOOTH_FPS (30) DISTINCT world-reflecting
+        // frames per SIMULATED second over a 5-simulated-second window, asserted
+        // through the deterministic ST-9 driver (FixedTickClock + scripted source),
+        // never a wall clock (G-316 / AC5).
+        let state = DoomEngineState::default();
+        // A VARIED-motion script (forward + run + periodic turns + a shot) keeps
+        // the rendered view changing every tick; a single held `forward` can run
+        // into a wall and stall the framebuffer (no distinct frame).
+        let source = scripted(
+            json!([
+                { "tics": 1, "actions": [{ "type": "forward" }, { "type": "run" }, { "type": "turn-left" }] },
+                { "tics": 1, "actions": [{ "type": "forward" }, { "type": "turn-to", "angle": 90 }] },
+                { "tics": 1, "actions": [{ "type": "strafe-right" }, { "type": "turn-right" }, { "type": "shoot" }] },
+                { "tics": 1, "actions": [{ "type": "forward" }, { "type": "turn-to", "angle": 270 }] },
+            ]),
+            true,
+        );
+        let clock = driver_clock();
+
+        // 5 simulated seconds at the continuous rate.
+        let window_ticks = DOOM_CONTINUOUS_RATE_HZ * 5;
+        let report = run_bounded_driver(
+            &state,
+            &source,
+            DoomDriverConfig {
+                map: 1,
+                skill: 3,
+                // One budget tick is the resume positioning; the rest are engine ticks.
+                max_steps: window_ticks + 1,
+                max_failures: 3,
+            },
+            &clock,
+        )
+        .await
+        .expect("driven run");
+
+        assert_eq!(
+            report.ticks, window_ticks,
+            "the run advances exactly the 5-simulated-second window"
+        );
+        assert_eq!(report.steps, report.ticks);
+        assert!(report.terminal.is_none(), "the tick budget ended the run");
+
+        let floor = DOOM_MIN_SMOOTH_FPS * 5;
+        assert!(
+            report.distinct_frames >= floor,
+            "AC2: expected >= {floor} distinct frames over {window_ticks} ticks, got {}",
+            report.distinct_frames
+        );
+        assert!(
+            report.fps_estimate >= f64::from(DOOM_MIN_SMOOTH_FPS),
+            "AC2: expected fps_estimate >= {0}, got {1}",
+            DOOM_MIN_SMOOTH_FPS,
+            report.fps_estimate
+        );
+    }
+
+    #[tokio::test]
+    async fn the_driver_report_is_deterministic_and_exposes_the_ac2_ac5_surface() {
+        // The SAME scripted decisions + the SAME FixedTickClock schedule produce
+        // field-for-field identical reports (AC5) — no wall clock leaks in.
+        async fn run() -> DoomDriverReport {
+            let state = DoomEngineState::default();
+            let source = scripted(
+                json!([{ "tics": 1, "actions": [{ "type": "forward" }] }]),
+                true,
+            );
+            let clock = driver_clock();
+            run_bounded_driver(
+                &state,
+                &source,
+                DoomDriverConfig {
+                    map: 1,
+                    skill: 3,
+                    max_steps: 40,
+                    max_failures: 3,
+                },
+                &clock,
+            )
+            .await
+            .expect("driven run")
+        }
+        let first = run().await;
+        let second = run().await;
+        assert_eq!(first, second, "the injected-clock replay is deterministic");
+        assert!(first.ticks > 0);
+        assert!(first.distinct_frames > 0, "advancing frames are distinct");
+        assert!(first.fps_estimate > 0.0);
     }
 
     #[tokio::test]
@@ -1680,6 +1939,7 @@ mod tests {
                 json!([{ "tics": 3, "actions": [{ "type": "forward" }] }]),
                 true,
             );
+            let clock = driver_clock();
             run_bounded_driver(
                 &state,
                 &source,
@@ -1689,6 +1949,7 @@ mod tests {
                     max_steps: steps,
                     max_failures: 3,
                 },
+                &clock,
             )
             .await
             .expect("driven run")
@@ -1698,12 +1959,16 @@ mod tests {
         assert_eq!(first.last_tic, second.last_tic);
         assert_eq!((first.last_x, first.last_y), (second.last_x, second.last_y));
         assert_eq!(first.steps, second.steps);
+        assert_eq!(first.ticks, second.ticks);
+        assert_eq!(first.distinct_frames, second.distinct_frames);
+        assert_eq!(first.fps_estimate, second.fps_estimate);
     }
 
     #[tokio::test]
-    async fn the_driver_stops_at_the_step_budget() {
+    async fn the_driver_stops_at_the_tick_budget() {
         let state = DoomEngineState::default();
         let source = scripted(json!([{ "tics": 1, "actions": [] }]), true);
+        let clock = driver_clock();
         let report = run_bounded_driver(
             &state,
             &source,
@@ -1713,17 +1978,20 @@ mod tests {
                 max_steps: 4,
                 max_failures: 3,
             },
+            &clock,
         )
         .await
         .expect("driven run");
-        assert_eq!(report.steps, 4);
+        // Tick budget 4 = positioning + 3 ticks.
+        assert_eq!(report.steps, 3);
         assert!(report.advanced());
     }
 
     #[tokio::test]
-    async fn the_driver_stops_at_the_failure_budget_without_stepping() {
+    async fn the_driver_stops_at_the_failure_budget_while_keeping_motion() {
         let state = DoomEngineState::default();
         let source = scripted(json!([{ "malformed": true }]), true);
+        let clock = driver_clock();
         let report = run_bounded_driver(
             &state,
             &source,
@@ -1733,13 +2001,15 @@ mod tests {
                 max_steps: 600,
                 max_failures: 3,
             },
+            &clock,
         )
         .await
         .expect("driven run");
-        assert_eq!(report.steps, 0, "an unusable decision issues no step");
         assert_eq!(report.failures, 3, "bounded by the failure budget");
-        assert!(!report.advanced());
-        assert!(!report.moved());
+        assert_eq!(report.decisions, 0, "a malformed reply is never a decision");
+        // The continuous loop keeps the world advancing between malformed
+        // decisions (R-1); the failure budget — not the tick budget — ends it.
+        assert!(report.steps > 0, "the world kept advancing");
     }
 
     #[test]
@@ -1811,6 +2081,7 @@ mod tests {
     async fn the_driver_session_is_take_and_drop_after_a_run() {
         let state = DoomEngineState::default();
         let source = scripted(json!([{ "tics": 1, "actions": [] }]), true);
+        let clock = driver_clock();
         let _ = run_bounded_driver(
             &state,
             &source,
@@ -1820,6 +2091,7 @@ mod tests {
                 max_steps: 2,
                 max_failures: 3,
             },
+            &clock,
         )
         .await
         .expect("driven run");

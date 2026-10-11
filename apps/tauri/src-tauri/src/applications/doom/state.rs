@@ -32,8 +32,6 @@ pub const DOOM_STOP_TIMEOUT_S: u64 = 5;
 pub const DOOM_EXIT_HOOK_BOUND: u64 = 5;
 /// Bound on a single engine request.
 pub const DOOM_REQUEST_TIMEOUT_S: u64 = 10;
-/// Frame polling cadence for the `doom` window (~15 fps).
-pub const DOOM_FRAME_POLL_MS: u64 = 66;
 
 // ── AppStore keys (AppStore remains the single source of truth) ───────────────
 
@@ -308,7 +306,6 @@ mod tests {
         assert_eq!(DOOM_STOP_TIMEOUT_S, 5);
         assert_eq!(DOOM_EXIT_HOOK_BOUND, 5);
         assert_eq!(DOOM_REQUEST_TIMEOUT_S, 10);
-        assert_eq!(DOOM_FRAME_POLL_MS, 66);
     }
 
     #[test]

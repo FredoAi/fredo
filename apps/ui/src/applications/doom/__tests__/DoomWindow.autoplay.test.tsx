@@ -10,6 +10,9 @@
  * the minimal transient states (R-1.b), the entry auto-play guarantee against the
  * SAME idempotent `start_doom_autoplay` with no `freshStart` (R-3.b/R-3.c), and
  * the minimal `doom-autoplay-note` (AC5/R-5).
+ *
+ * Spec #3026 ST-6 updates the frame path to the raw-RGBA `doom_frame_raw` →
+ * `putImageData` draw (PNG-over-poll retired) and pins the cadence constant.
  */
 
 import React from 'react';
@@ -19,8 +22,28 @@ import { resolve } from 'node:path';
 import { act, cleanup, screen, waitFor, within } from '@testing-library/react';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
+import * as doomTypes from '../types';
 import type { DoomAutoplayStatus } from '../types';
 import { DoomWindow } from '../DoomWindow';
+
+const { DOOM_FRAME_DRAW_MS, DOOM_FRAME_HEIGHT, DOOM_FRAME_WIDTH } = doomTypes;
+
+/**
+ * jsdom (24) has no `ImageData`; the WebView2 does. This minimal constructor
+ * lets the raw-RGBA draw path execute in tests.
+ */
+class TestImageData {
+  readonly data: Uint8ClampedArray;
+  readonly width: number;
+  readonly height: number;
+  constructor(data: Uint8ClampedArray, width: number, height: number) {
+    this.data = data;
+    this.width = width;
+    this.height = height;
+  }
+}
+
+let putImageData: ReturnType<typeof vi.fn>;
 
 const listeners: Record<string, (payload: unknown) => void> = {};
 
@@ -64,9 +87,9 @@ const invoke = vi.fn(async (command: string, _args?: Record<string, unknown>) =>
       return launchResult;
     case 'doom_read_state':
       return { raw: { tic: 1, outcome: 'alive' } };
-    case 'doom_frame':
+    case 'doom_frame_raw':
       frameCalls += 1;
-      return frameShouldFail ? undefined : { pngBase64: 'AAAA' };
+      return frameShouldFail ? undefined : new ArrayBuffer(DOOM_FRAME_WIDTH * DOOM_FRAME_HEIGHT * 4);
     case 'get_doom_mode_status':
       return modeSeed;
     case 'get_doom_autoplay_status':
@@ -159,6 +182,13 @@ beforeEach(() => {
   deferStatus = false;
   resolveStatus = null;
   invoke.mockClear();
+  // The raw-RGBA draw path: jsdom has no `ImageData` and no real 2D context, so
+  // stub both to drive the component's putImageData call.
+  putImageData = vi.fn();
+  vi.stubGlobal('ImageData', TestImageData);
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(
+    () => ({ putImageData } as unknown as CanvasRenderingContext2D),
+  );
   adapterBridge.setInvoke(invoke as never);
   adapterBridge.setListen((async (event: string, handler: (payload: unknown) => void) => {
     listeners[event] = handler;
@@ -173,6 +203,8 @@ afterEach(() => {
   adapterBridge.setInvoke(undefined as never);
   adapterBridge.setListen(undefined as never);
   vi.clearAllMocks();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe('Spec #3007 ST-1 — Doom window: game-only surface', () => {
@@ -343,5 +375,38 @@ describe('Spec #3007 ST-1 — theme tokens', () => {
       /#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b/,
     );
     expect(source, 'DoomWindow.tsx must not hardcode rgba()').not.toMatch(/\brgba\(/);
+  });
+});
+
+describe('Spec #3026 ST-6 — raw-RGBA draw path', () => {
+  it('draws each frame with putImageData at the 320×200 backing store', async () => {
+    await renderReady();
+    await waitFor(() => expect(putImageData).toHaveBeenCalled());
+
+    const canvas = screen.getByTestId('doom-frame-canvas') as HTMLCanvasElement;
+    expect(canvas.width).toBe(DOOM_FRAME_WIDTH);
+    expect(canvas.height).toBe(DOOM_FRAME_HEIGHT);
+
+    const image = putImageData.mock.calls[0][0] as {
+      width: number;
+      height: number;
+      data: Uint8ClampedArray;
+    };
+    expect(image.width).toBe(DOOM_FRAME_WIDTH);
+    expect(image.height).toBe(DOOM_FRAME_HEIGHT);
+    expect(image.data.length).toBe(DOOM_FRAME_WIDTH * DOOM_FRAME_HEIGHT * 4);
+  });
+
+  it('drives doom_frame_raw and never the retired PNG-over-poll doom_frame', async () => {
+    await renderReady();
+    await waitFor(() => expect(frameCalls).toBeGreaterThan(0));
+    const commands = invoke.mock.calls.map(([command]) => command);
+    expect(commands).toContain('doom_frame_raw');
+    expect(commands).not.toContain('doom_frame');
+  });
+
+  it('retires DOOM_FRAME_POLL_MS and pins DOOM_FRAME_DRAW_MS (~30 fps)', () => {
+    expect(DOOM_FRAME_DRAW_MS).toBe(33);
+    expect('DOOM_FRAME_POLL_MS' in doomTypes).toBe(false);
   });
 });

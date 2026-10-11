@@ -31,8 +31,16 @@ export type DoomErrorCode =
 
 /** Bounded readiness wait: the `starting` Progress bar is scaled to this. */
 export const DOOM_READY_TIMEOUT_S = 30;
-/** Frame polling cadence (~15 fps). */
-export const DOOM_FRAME_POLL_MS = 66;
+/**
+ * Raw-RGBA draw cadence (~30 fps) — Spec #3026 ST-6. The `doom_frame_raw`
+ * command returns a `320*200` RGBA framebuffer that the webview draws with
+ * `putImageData` on this interval; the PNG-over-poll cadence (`DOOM_FRAME_POLL_MS`)
+ * is RETIRED (the backend removed `doom_frame` in ST-4).
+ */
+export const DOOM_FRAME_DRAW_MS = 33;
+/** The native framebuffer dimensions (`320 * 200 * 4 = 256_000` RGBA bytes). */
+export const DOOM_FRAME_WIDTH = 320;
+export const DOOM_FRAME_HEIGHT = 200;
 
 /**
  * `doom-status-changed` payload (emitted to the `doom` window only).
@@ -66,10 +74,11 @@ export interface DoomStepResult {
   state: unknown;
 }
 
-/** `doom_frame` result — a renderable base64 PNG (no data-URI prefix). */
-export interface DoomFrame {
-  pngBase64: string;
-}
+// `doom_frame` / `DoomFrame { pngBase64 }` — RETIRED (Spec #3026 ST-6). The
+// `doom_frame_raw` command returns a raw RGBA `ArrayBuffer` of
+// `DOOM_FRAME_WIDTH * DOOM_FRAME_HEIGHT * 4` bytes (no PNG, no base64, no
+// wrapper type): the webview builds an `ImageData` from it and
+// `putImageData`s directly.
 
 /**
  * The human-facing error copy per `DoomErrorCode` (UI/UX error table).
