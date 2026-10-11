@@ -17,7 +17,9 @@ import { isDoomModeEngaged, useDoomMode } from '../../shared/doom-mode';
 import {
   DOOM_AUTOPLAY_EVENT,
   DOOM_AUTOPLAY_IDLE_STATUS,
-  DOOM_FRAME_POLL_MS,
+  DOOM_FRAME_DRAW_MS,
+  DOOM_FRAME_HEIGHT,
+  DOOM_FRAME_WIDTH,
   DOOM_READY_TIMEOUT_S,
   describeDoomFrame,
   doomAutoplayErrorMessage,
@@ -26,7 +28,6 @@ import {
   type DoomAutoplayResult,
   type DoomAutoplayStatus,
   type DoomErrorCode,
-  type DoomFrame,
   type DoomLaunchResult,
   type DoomRuntimePhase,
   type DoomStateView,
@@ -41,8 +42,9 @@ import {
  * `open_doom_window` singleton. It is the ONLY place the runtime is started: on
  * mount it registers the `doom-status-changed` listener and the autoplay
  * listener BEFORE the first call, then invokes `launch_doom_runtime`
- * (idempotent). On success it starts the 66 ms `doom_frame` loop and reads the
- * state; on failure it renders the typed `DoomErrorCode` message.
+ * (idempotent). On success it starts the `DOOM_FRAME_DRAW_MS` (~30 fps)
+ * `doom_frame_raw` loop and reads the state; on failure it renders the typed
+ * `DoomErrorCode` message.
  *
  * THE SURFACE IS THE GAME AND NOTHING ELSE (Spec #3007 AC1): the header, the
  * footer/data panel, and every in-window control are deleted. Only the frame
@@ -86,8 +88,6 @@ export const DoomWindow: React.FC = () => {
   const doomPhase = doomModeStatus.phase;
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const lastFrameImageRef = useRef<HTMLImageElement | null>(null);
-  const rafRef = useRef<number | null>(null);
   const frameTimerRef = useRef<number | null>(null);
   // The error-phase Retry affordance — focused the moment the window enters
   // `error` so keyboard/AT users are never stranded on the game surface (AC5).
@@ -100,57 +100,47 @@ export const DoomWindow: React.FC = () => {
   const autoplayEventSeenRef = useRef(false);
   const autoplayRepairAttemptedRef = useRef(false);
 
-  // ── Frame drawing (canvas, letterboxed, pixelated) ─────────────────────────
-  const paint = useCallback(() => {
+  // ── Frame drawing (raw RGBA framebuffer → putImageData) ─────────────────────
+  // Spec #3026 ST-6: `doom_frame_raw` returns a 320×200 RGBA `ArrayBuffer` (no
+  // PNG, no base64, no data-URI). `putImageData` ignores CSS scaling /
+  // device-pixel-ratio, so the backing store is pinned to the framebuffer size
+  // while the CSS keeps sizing the element to the container exactly as the PNG
+  // path did (unchanged width/height/objectFit/imageRendering).
+  const drawFrame = useCallback((buffer: ArrayBuffer) => {
     const canvas = canvasRef.current;
-    const image = lastFrameImageRef.current;
-    if (!canvas || !image || !image.naturalWidth || !image.naturalHeight) return;
-    if (canvas.width !== image.naturalWidth || canvas.height !== image.naturalHeight) {
-      canvas.width = image.naturalWidth;
-      canvas.height = image.naturalHeight;
+    if (!canvas) return;
+    if (buffer.byteLength !== DOOM_FRAME_WIDTH * DOOM_FRAME_HEIGHT * 4) {
+      setFrameError(true);
+      return;
     }
+    if (canvas.width !== DOOM_FRAME_WIDTH) canvas.width = DOOM_FRAME_WIDTH;
+    if (canvas.height !== DOOM_FRAME_HEIGHT) canvas.height = DOOM_FRAME_HEIGHT;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    ctx.imageSmoothingEnabled = false;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+    try {
+      const rgba = new Uint8ClampedArray(buffer);
+      ctx.putImageData(new ImageData(rgba, DOOM_FRAME_WIDTH, DOOM_FRAME_HEIGHT), 0, 0);
+      setFrameError(false);
+    } catch {
+      // A malformed framebuffer must never blank the canvas — keep the last
+      // frame and flag the transient reconnecting note.
+      setFrameError(true);
+    }
   }, []);
 
-  const schedulePaint = useCallback(() => {
-    if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
-    rafRef.current = requestAnimationFrame(paint);
-  }, [paint]);
-
-  const drawFrame = useCallback(
-    (pngBase64: string) => {
-      const image = new Image();
-      image.onload = () => {
-        lastFrameImageRef.current = image;
-        setFrameError(false);
-        schedulePaint();
-      };
-      image.onerror = () => {
-        // Dropped frame: keep the LAST drawn frame and flag a transient note.
-        setFrameError(true);
-      };
-      image.src = `data:image/png;base64,${pngBase64}`;
-    },
-    [schedulePaint],
-  );
-
-  const pollFrame = useCallback(async () => {
+  const fetchFrame = useCallback(async () => {
     try {
-      const frame = await adapterBridge.invoke<DoomFrame>('doom_frame');
-      if (!frame || typeof frame.pngBase64 !== 'string' || frame.pngBase64.length === 0) {
+      const buffer = await adapterBridge.invoke<ArrayBuffer>('doom_frame_raw');
+      if (!(buffer instanceof ArrayBuffer) || buffer.byteLength === 0) {
         setFrameError(true);
         return;
       }
-      drawFrame(frame.pngBase64);
+      drawFrame(buffer);
     } catch {
       // Never blank the canvas — degrade to the last frame + reconnecting note.
       // A `frameNotReady` (the engine not yet producing a frame) is deliberately
-      // treated here as transient: the 66 ms interval keeps polling and the window
-      // never enters the `error` phase (R-1.4).
+      // treated here as transient: the `DOOM_FRAME_DRAW_MS` interval keeps
+      // polling and the window never enters the `error` phase (R-1.4).
       setFrameError(true);
     }
   }, [drawFrame]);
@@ -271,26 +261,24 @@ export const DoomWindow: React.FC = () => {
         window.clearInterval(frameTimerRef.current);
         frameTimerRef.current = null;
       }
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
     };
   }, [applyStatus, launch]);
 
   // ── Frame loop: only while `ready`; torn down on any phase change/unmount ───
+  // Spec #3026 ST-6 — a raw-RGBA `doom_frame_raw` fetch every `DOOM_FRAME_DRAW_MS`
+  // (~30 fps), drawn with `putImageData`; the PNG-over-poll path is retired.
   useEffect(() => {
     if (phase !== 'ready') return;
-    void pollFrame();
+    void fetchFrame();
     const id = window.setInterval(() => {
-      void pollFrame();
-    }, DOOM_FRAME_POLL_MS);
+      void fetchFrame();
+    }, DOOM_FRAME_DRAW_MS);
     frameTimerRef.current = id;
     return () => {
       window.clearInterval(id);
       if (frameTimerRef.current === id) frameTimerRef.current = null;
     };
-  }, [phase, pollFrame]);
+  }, [phase, fetchFrame]);
 
   // ── Determinate `starting` progress, bounded by DOOM_READY_TIMEOUT_S ────────
   useEffect(() => {
