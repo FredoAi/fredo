@@ -2,11 +2,8 @@
 name = "fredo"
 version = "0.1.0"
 edition = "2021"
-# Selects the app binary for bare `cargo run` invocations. The second `[[bin]]`
-# (`doom_stub`, `required-features`-gated) still participates in `cargo run`'s
-# binary disambiguation even when its feature is off, so without this key
-# `tauri dev` -> `cargo run --no-default-features` errors with "could not
-# determine which binary to run". Never point this at `doom_stub`.
+# Selects the app binary for bare `cargo run` invocations (`tauri dev` ->
+# `cargo run`). The crate has a single binary, `fredo`.
 default-run = "fredo"
 
 [lib]
@@ -16,14 +13,6 @@ crate-type = ["lib", "cdylib", "staticlib"]
 [[bin]]
 name = "fredo"
 path = "src/main.rs"
-
-# In-repo Doom stub engine (Spec #2968 ST-8). `required-features` keeps it OUT of
-# every default build and out of the Tauri bundle: it is compiled ONLY with
-# `cargo build --features doom-stub`, so no stub/engine binary is ever shipped.
-[[bin]]
-name = "doom_stub"
-path = "src/bin/doom_stub.rs"
-required-features = ["doom-stub"]
 
 # Acquisition-mode build-time switch (Spec #2978 S1). The shipped default is the
 # crate `runtime-download` mode (`default = []`, no `bundled`), so the installer
@@ -38,10 +27,6 @@ required-features = ["doom-stub"]
 [features]
 default = []
 bundled = ["postgresql_embedded/bundled"]
-# Enables the in-repo Doom stub engine binary (ST-8). NEVER enabled in a shipped
-# build; used only for deterministic offline QA of the runtime lifecycle + HTTP
-# round trip + error paths.
-doom-stub = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -77,20 +62,6 @@ prost = "0.13"
 bytes = "1"
 # Streaming SHA-256 verification for model-file acquisition (Spec #2856)
 sha2 = "0.10"
-# Raw-deflate decompression for the Doom acquisition's minimal ZIP reader
-# (Spec #2968 ST-4): the pinned Freedoom IWAD is distributed inside a `.zip`
-# and the shared download engine is a file downloader, not an archive
-# extractor. `flate2` is already in the resolved dependency graph (via
-# `postgresql_embedded`/`tar`), so this adds no new supply-chain surface.
-flate2 = "1"
-# In-process `.tar.xz` extraction for Doom toolchain provisioning (Spec #3012
-# ST-6, F-78). The managed first-use path MUST NOT depend on a host PATH `tar`
-# (stock Windows `bsdtar 3.5.2` lacks liblzma/xz and exits 1 on the pinned
-# archive): `lzma-rs` decodes the xz in pure Rust and the `tar` crate unpacks
-# the result. `tar` is already in the resolved graph (via `postgresql_embedded`);
-# `lzma-rs` adds no host-native dependency.
-tar = "0.4"
-lzma-rs = "0.3"
 schemars = "1"
 # PostgreSQL (for observability tools)
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "json", "chrono"] }
@@ -107,6 +78,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 base64 = "0.22"
 tokio-util = { version = "0.7", features = ["io"] }
 tauri-plugin-mcp-bridge = "0.12"
+# Native in-process Doom engine (Spec #3023, ST-1). Pure-Rust, BSD-3-Clause,
+# `#![no_std]` + `alloc` (std feature on by default) — a cargo dependency, NOT
+# vendored source — so Doom Mode needs no GPL engine build, no MSVC/`cc`
+# toolchain, and no separate process. See `applications/doom/engine.rs`.
+neurodoom = "0.6.7"
 # Voice input — local, on-device capture (see infrastructure/voice). The
 # captured clip is handed to the managed multimodal model over IPC; there is no
 # native speech engine dependency.

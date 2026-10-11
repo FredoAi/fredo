@@ -37,12 +37,11 @@ pub use applications::db_client;
 #[doc(hidden)]
 pub use applications::pg_supervisor::descriptor;
 
-// Spec #2968 CU-2 — the Doom runtime lifecycle contract (`doom::{state, process,
-// commands}`): the shared types + bounded process supervision. The CU-3 HTTP
-// client / acquisition and the CU-4 window consume this surface, so it is
-// re-exported to keep it reachable (and avoid dead-code on the not-yet-wired
-// window-close entry points) while those consumers are pending. `#[doc(hidden)]`:
-// not part of the app surface.
+// Spec #3023 — the Doom runtime lifecycle contract (`doom::{state, engine,
+// commands, ...}`): the shared types + the native in-process engine adapter. The
+// commands and the `doom` window consume this surface, so it is re-exported to
+// keep it reachable (and avoid dead-code on the window-close entry points).
+// `#[doc(hidden)]`: not part of the app surface.
 #[doc(hidden)]
 pub use applications::doom;
 
@@ -347,17 +346,12 @@ pub fn run() {
             // process (R-3.3).
             applications::llm_server::process::sweep_orphan(app.handle());
 
-            // -- Doom runtime state (Spec #2968 CU-2) --------------------------
-            // The single managed Doom engine child lives in this state and is
-            // spawned/killed via the `applications::doom` commands registered below.
-            app.manage(applications::doom::state::DoomRuntimeState::default());
-
-            // -- Doom startup orphan sweep (Spec #2968 ST-3c) ------------------
-            // A hard-kill (Task Manager) never runs the `RunEvent::Exit` hook, so
-            // reclaim a persisted Doom engine PID on the next launch. The sweep is
-            // PID-reuse guarded (engine image name) and can never kill an
-            // unrelated process (R-3.3).
-            applications::doom::process::sweep_orphan(app.handle());
+            // -- Doom native engine state (Spec #3023 ST-2) --------------------
+            // The native in-process Doom engine session (exactly-one) lives in
+            // this state and is driven via the `applications::doom` commands
+            // registered below. There is NO child process and no loopback port:
+            // teardown is take-and-drop, so no orphan is constructible (G-263).
+            app.manage(applications::doom::engine::DoomEngineState::default());
 
             // -- Doom autoplay state (Spec #2969 ST-5) -------------------------
             // The ONE autoplay run's stop flag + last status; the
@@ -370,12 +364,6 @@ pub fn run() {
             // `enter_doom_mode` / `exit_doom_mode` / `get_doom_mode_status`
             // commands below own it. The mode is NEVER persisted.
             app.manage(applications::doom::mode::DoomModeState::default());
-
-            // -- Doom provisioning state (Spec #3012 ST-2) ---------------------
-            // The bounded, cancellable first-use engine provisioning run; the
-            // `get_doom_provision_status` / `provision_doom_engine` /
-            // `cancel_doom_engine_provisioning` commands below own it.
-            app.manage(applications::doom::provision::DoomProvisionState::default());
 
             // -- Companion performance-mode suppression (Spec #2970 ST-2) ------
             // The ONE provider-agnostic boolean that gates the companion
@@ -982,12 +970,12 @@ pub fn run() {
             // spawn/bound/parse seam.
             infrastructure::app_open::confirm_app_open_request,
             infrastructure::app_open::run_open_app_cli,
-            // Doom runtime lifecycle (Spec #2968 CU-2/ST-3): the bounded,
-            // idempotent engine spawn + stop and the status snapshot. The HTTP
-            // control surface (CU-3/ST-5: `doom_read_state`/`doom_step`/
-            // `doom_frame`, all Rust-side because the webview CSP forbids the
-            // engine) is registered here too. `open_doom_window` (CU-4/ST-6) is
-            // the singleton window opener the main-window entry host invokes.
+            // Doom runtime lifecycle (Spec #2968 CU-2/ST-3; native engine
+            // Spec #3023): the idempotent engine launch + stop and the status
+            // snapshot. The observation/control surface (`doom_read_state` /
+            // `doom_step` / `doom_frame`, all Rust-side) is registered here too.
+            // `open_doom_window` (CU-4/ST-6) is the singleton window opener the
+            // main-window entry host invokes.
             applications::doom::commands::open_doom_window,
             applications::doom::commands::launch_doom_runtime,
             applications::doom::commands::stop_doom_runtime,
@@ -1015,13 +1003,9 @@ pub fn run() {
             applications::doom::commands::enter_doom_mode,
             applications::doom::commands::exit_doom_mode,
             applications::doom::commands::get_doom_mode_status,
-            // Doom engine provisioning (Spec #3012 ST-2): the bounded,
-            // cancellable first-use build from the vendored source. The status
-            // command is the mount seed + poll fallback; the progress event
-            // `doom-provision-progress` is the source of truth.
-            applications::doom::provision::get_doom_provision_status,
-            applications::doom::provision::provision_doom_engine,
-            applications::doom::provision::cancel_doom_engine_provisioning,
+            // Spec #3023 ST-2/ST-5/ST-6: the from-source provisioning command
+            // surface (Spec #3012) and its module are removed — the native
+            // in-process engine needs no build and no download.
         ])
         .build(tauri::generate_context!())
         .expect("error while building Fredo application")
@@ -1044,10 +1028,9 @@ pub fn run() {
                 // with a `taskkill /T /F` hard-kill fallback, then a marker sweep
                 // backstop — quit never blocks on a hung server (R-2.1/G-263).
                 applications::pg_supervisor::stop_on_exit(app);
-                // Spec #2968 CU-2/ST-3: bounded Doom engine teardown. The graceful
-                // stop is wall-clock capped by DOOM_EXIT_HOOK_BOUND (5 s) with a
-                // `taskkill /T /F` hard-kill fallback, then a marker sweep
-                // backstop — quit never blocks on a hung engine (G-263).
+                // Spec #3023 ST-2: Doom engine teardown is take-and-drop of the
+                // native in-process session — bounded by construction (no child,
+                // no thread to join, no orphan possible; G-263). No sweep needed.
                 applications::doom::commands::stop_doom_on_exit(app);
             }
         });

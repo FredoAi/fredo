@@ -38,7 +38,6 @@ const spies = vi.hoisted(() => ({
   openApp: vi.fn(),
   showMessage: vi.fn(),
   enterDoomMode: vi.fn(),
-  activateProvision: vi.fn(),
 }));
 
 // ── Window-system seams ───────────────────────────────────────────────────────
@@ -80,9 +79,6 @@ vi.mock('@/applications/home/components/launcher/LauncherShell', () => ({
 vi.mock('@/applications/home/components/background/DesktopBackdrop', () => ({
   DesktopBackdrop: () => null,
 }));
-vi.mock('@/applications/doom/DoomProvisionDialog', () => ({
-  DoomProvisionDialog: () => null,
-}));
 vi.mock('@/applications/home/hooks/useAppOpenRequests', () => ({
   useAppOpenRequests: vi.fn(),
 }));
@@ -119,7 +115,6 @@ vi.mock('@/shared/doom-mode', () => ({
   DOOM_SECRET_CODE: 'iddqd',
   useDoomMode: () => ({ enter: spies.enterDoomMode }),
   useDoomModeSkill: vi.fn(),
-  useDoomProvision: () => ({ activate: spies.activateProvision }),
 }));
 
 // Import AFTER the mocks are registered (vi.mock is hoisted regardless) — the

@@ -2,7 +2,7 @@
  * Doom Mode shared wire contract + pure UI helpers (Spec #2968 CU-4: ST-6/ST-7).
  *
  * These mirror the Rust contract in
- * `apps/tauri/src-tauri/src/applications/doom/{state,client}.rs` (serde camelCase)
+ * `apps/tauri/src-tauri/src/applications/doom/state.rs` (serde camelCase)
  * verbatim — the binding names adopted by the plan. No I/O happens here: the
  * types describe what the Tauri commands/events deliver, and the helpers format
  * them for the `DoomWindow` surface.
@@ -11,11 +11,19 @@
 /** The runtime lifecycle phase (binding enum, camelCase over IPC). */
 export type DoomRuntimePhase = 'idle' | 'starting' | 'ready' | 'stopping' | 'error';
 
-/** The typed failure vocabulary (binding enum, camelCase over IPC). */
+/**
+ * The typed failure vocabulary (binding enum, camelCase over IPC).
+ *
+ * Spec #3023 ST-7: the from-source provisioning codes (`notConfigured`,
+ * `acquireFailed`) are retired with the removed provisioning path, and
+ * `spawnFailed` is re-mapped to `engineStartFailed` (no child process to spawn).
+ * The three native engine classes (`engineStartFailed`/`wadMissing`/`wadCorrupt`)
+ * are the typed surface for the in-process engine (AC5/G-324).
+ */
 export type DoomErrorCode =
-  | 'notConfigured'
-  | 'acquireFailed'
-  | 'spawnFailed'
+  | 'engineStartFailed'
+  | 'wadMissing'
+  | 'wadCorrupt'
   | 'readyTimeout'
   | 'stopTimeout'
   | 'requestFailed'
@@ -26,13 +34,16 @@ export const DOOM_READY_TIMEOUT_S = 30;
 /** Frame polling cadence (~15 fps). */
 export const DOOM_FRAME_POLL_MS = 66;
 
-/** `doom-status-changed` payload (emitted to the `doom` window only). */
+/**
+ * `doom-status-changed` payload (emitted to the `doom` window only).
+ *
+ * Spec #3023 ST-7 — the `port`/`pid`/`enginePath` fields are DROPPED: the native
+ * engine is in-process (no child, no socket, no on-disk engine binary), so those
+ * process-boundary fields carry no meaning.
+ */
 export interface DoomStatusEvent {
   phase: DoomRuntimePhase;
   running?: boolean;
-  port?: number | null;
-  pid?: number | null;
-  enginePath?: string | null;
   lastError?: string | null;
   code?: DoomErrorCode | null;
 }
@@ -41,9 +52,6 @@ export interface DoomStatusEvent {
 export interface DoomLaunchResult {
   success: boolean;
   phase: DoomRuntimePhase;
-  port?: number | null;
-  pid?: number | null;
-  enginePath?: string | null;
   error?: string | null;
   code?: DoomErrorCode | null;
 }
@@ -63,19 +71,27 @@ export interface DoomFrame {
   pngBase64: string;
 }
 
-/** The human-facing error copy per `DoomErrorCode` (UI/UX error table). */
+/**
+ * The human-facing error copy per `DoomErrorCode` (UI/UX error table).
+ *
+ * Spec #3023 ST-7 — the retired from-source codes (`notConfigured`, `acquireFailed`)
+ * are gone; `spawnFailed` → `engineStartFailed`; the three native classes
+ * (`engineStartFailed`/`wadMissing`/`wadCorrupt`) carry the AC5 copy.
+ */
 export const DOOM_ERROR_MESSAGES: Record<DoomErrorCode, { title: string; message: string }> = {
-  notConfigured: {
-    title: "Doom isn't set up",
-    message: 'Choose a Doom engine and game data (WAD) in Settings, then retry.',
+  engineStartFailed: {
+    title: "Doom didn't start",
+    message: "The Doom engine couldn't start. Nothing was left running. Retry to try again.",
   },
-  acquireFailed: {
-    title: 'Download failed',
-    message: "Couldn't download the Doom engine or game data. Check your connection and retry.",
+  wadMissing: {
+    title: 'Game data missing',
+    message:
+      "The bundled game data (DOOM1.WAD) wasn't found. Retry to re-check, or reinstall Fredo.",
   },
-  spawnFailed: {
-    title: "Engine didn't start",
-    message: 'The Doom engine failed to launch. Check the engine path in Settings and retry.',
+  wadCorrupt: {
+    title: 'Game data unreadable',
+    message:
+      "The bundled game data (DOOM1.WAD) is damaged and couldn't be read. Retry to re-check, or reinstall Fredo.",
   },
   readyTimeout: {
     title: "Engine didn't respond",
@@ -109,75 +125,20 @@ export function doomErrorMessage(code: DoomErrorCode | null | undefined): {
   return { title: 'Doom error', message: 'The Doom runtime hit an unexpected error. Retry to try again.' };
 }
 
-// ── Engine provisioning copy (Spec #3012, ST-4) ──────────────────────────────
+// ── Engine provisioning copy ─────────────────────────────────────────────────
 //
-// The human-facing copy per `DoomProvisionErrorCode` (UI/UX provisioning table).
-// The code + wire shape live in `shared/doom-mode/provision.ts`; this is the ONE
-// presentation mapping, kept next to the other Doom error copy.
-
-import type { DoomProvisionErrorCode } from '../../shared/doom-mode/provision';
-
-export const DOOM_PROVISION_ERROR_MESSAGES: Record<
-  DoomProvisionErrorCode,
-  { title: string; message: string }
-> = {
-  installDirInvalid: {
-    title: "That install location can't be used",
-    message: "The folder doesn't exist or isn't writable. Pick a different location.",
-  },
-  toolchainUnavailable: {
-    title: 'Build toolchain unavailable',
-    message:
-      "Fredo couldn't get its managed build toolchain. Check your connection (or turn off Offline mode) and try again.",
-  },
-  toolchainDownloadFailed: {
-    title: 'Toolchain download failed',
-    message: 'The download was interrupted. Check your connection and retry.',
-  },
-  toolchainExtractFailed: {
-    title: 'Toolchain setup failed',
-    message: "The downloaded archive couldn't be unpacked. Free up disk space and retry.",
-  },
-  sourceMissing: {
-    title: 'Engine source missing',
-    message: "The bundled RESTful DOOM source couldn't be found. Reinstall Fredo, then retry.",
-  },
-  buildFailed: {
-    title: 'Engine build failed',
-    message:
-      "Compiling the bundled engine didn't finish. See the line above; retry to start over.",
-  },
-  timeout: {
-    title: 'Setup timed out',
-    message: 'Setup took too long and was stopped. Retry to continue.',
-  },
-  cancelled: {
-    title: 'Setup cancelled',
-    message: 'Setup was cancelled — no engine was installed. You can retry anytime.',
-  },
-};
-
-/** Resolve the human copy for a provisioning code, defaulting to a generic typed failure. */
-export function doomProvisionErrorMessage(code: DoomProvisionErrorCode | null | undefined): {
-  title: string;
-  message: string;
-} {
-  if (code && code in DOOM_PROVISION_ERROR_MESSAGES) {
-    return DOOM_PROVISION_ERROR_MESSAGES[code];
-  }
-  return {
-    title: 'Engine setup failed',
-    message: 'The engine setup hit an unexpected error. Retry to try again.',
-  };
-}
+// Spec #3023 ST-7 — RETIRED. The from-source engine provisioning path (and its
+// `DoomProvisionErrorCode` copy) was removed with the rest of the RESTful-DOOM
+// stack; the native in-process engine has no first-use build. The dead copy is
+// deleted, not left coexisting (Contract-Trust Cleanup).
 
 /** The phase label shown in `doom-status`. */
-export function doomPhaseLabel(phase: DoomRuntimePhase, port?: number | null): string {
+export function doomPhaseLabel(phase: DoomRuntimePhase): string {
   switch (phase) {
     case 'starting':
       return 'Starting…';
     case 'ready':
-      return port ? `Ready · :${port}` : 'Ready';
+      return 'Ready';
     case 'stopping':
       return 'Stopping…';
     case 'error':

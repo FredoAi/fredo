@@ -50,10 +50,6 @@
       "providerShortName": null,
       "signingIdentity": null
     },
-    "externalBin": [],
-    "resources": {
-      "../../../vendor/restful-doom/": "doom/source/",
-      "../../../scripts/doom/": "doom/scripts/"
-    }
+    "externalBin": []
   }
 }
