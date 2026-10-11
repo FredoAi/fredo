@@ -64,13 +64,21 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 ---
 ## Known Failure Modes
 
+### G-347: ac_error_state_unreachable_on_the_activation_path
+- **activation_date:** 2026-10-10
+- **observed:** #3023 round 1 (F-11/F-12 FAIL) — AC5/REQ-5.2 required a typed engine-start/WAD error surfaced in the Doom window; the plan designed the in-window `doom-error` panel (with the G-324 `data-doom-error-code` hook) and owned its checklist line, but the entry orchestrator `enter_doom_mode` launched the engine BEFORE opening the window and rolled the mode back to `inactive` on failure, so the panel was never opened on the ACTIVATION path. The panel rendered correctly when the window was opened directly, yet the user's actual trigger (`iddqd`) could never reach it. One rework round burned; the architect classified it `defect` and the fix opened the window on the launch-failure branch. Root-cause class: `defect`.
+- **target_failure:** a requirement's typed ERROR/FAILURE surface is designed and hooked, but its host surface is opened ONLY on the success path — so on the failure the user actually triggers, the surface never appears and the AC fails only live (the panel is correct in isolation, unreachable via the trigger).
+- **guardrail:** At convergence, for every AC whose observable is a typed ERROR/FAILURE state rendered on a surface (window/panel/dialog), verify the surface is reachable on the same ACTIVATION/trigger path the user takes — trace the entry orchestrator's order and confirm the surface still opens when the operation fails (or that the failure branch opens it). A surface opened only on success is a plan defect returned in the same pass. Extends G-265 (trigger reachable in the pre-feature state) to error-state surfaces.
+- **home:** playbooks/self-improver.md (convergence) + playbooks/software-architect.md (entry-path design) + playbooks/qa-expert.md (row) + references.md (this record)
+- **effectiveness:** Pending (first activation 2026-10-10, #3023 — the authored fix PASSed round 2)
+
 ### G-346: cargo_build_regenerates_tracked_tauri_schemas_dirtying_the_worktree
 - **activation_date:** 2026-10-10
 - **observed:** #3022 — every `cargo` verification run regenerates the tracked Tauri schema files under `apps/tauri/src-tauri/gen/schemas/`, marking a developer's detached worktree dirty; this blocked `git rebase` and the worktree removal for all three developers, each of whom worked around it with the allowlisted restore verb. Root-cause class: `environment` (tooling).
 - **target_failure:** a Rust sub-task's verification regenerates tracked generated files in the worktree, so the tree reads dirty and blocks a rebase/push/removal the developer needs to finish the round.
 - **guardrail:** A developer whose `cargo` verification regenerates tracked generated files MUST restore them (the allowlisted checkout of the path) before rebasing, committing, or removing the worktree, and MUST NOT commit them — the diff is expected build churn, not an edit. If the churn blocks a rebase, restore first, then rebase.
 - **home:** playbooks/developer.md (build-hygiene) + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed (2026-10-10, #3023) — four Rust developers each restored the regenerated `gen/schemas/{desktop,windows}-schema.json` before committing (the ST-6 commit and the round-2 fix commit exclude them; every report cites the restore), so no schema churn landed on the spec branch or blocked a rebase.
 
 ### G-345: env_mode_live_otlp_receipt_shadowed_by_a_persistent_user_level_endpoint
 - **activation_date:** 2026-10-10
@@ -241,6 +249,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** playbooks/self-improver.md (resume/sync) + playbooks/developer.md + references.md (this record)
 - **effectiveness:** Applied (2026-10-07, #2972) — the uncommitted CU-3 work was preserved and completed on the synced tip, the model-change sync preserved both pushed dev commits, and no work was destroyed.
 - **re-validated:** 2026-10-08, #2956 — RESUMED after a cancelled mid-implementation run: the leftover `.worktrees/2956-d` was inspected (clean, detached at the spec tip, ST-4 complete) before removal, then the ST-3 developer removed it and worked in its own fresh worktree; the four pushed dev commits and local-vs-remote spec-ref divergence (local behind 4/8) were reconciled without losing work. No stale-tree reuse, no destroyed work.
+- **re-validated:** 2026-10-10, #3023 — RECURRED (provider-usage-limit resume): a leftover `.worktrees/3023-e` sat detached mid-rebase (UU `agent.rs`) from the aborted ST-3 dispatch. The SI did not reuse it — the ST-3 developer aborted the in-progress rebase, removed it via `remove-worktree`, and worked in a fresh worktree. No work was destroyed (the mid-rebase state was unrecoverable scratch). Re-confirms the guardrail (inspect before remove); a dirty/stale worktree still surfaces only by manual inspection.
 
 ### G-324: convergence_leaves_a_planner_requested_dom_hook_unadjudicated
 - **activation_date:** 2026-10-05
@@ -424,6 +433,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **re-validated:** 2026-10-07, #2972 — the SI confirmed the served root sat on `spec/2972` at the origin tip (`4733440`, G-032 form) before `implementation → testing` and ran `test-scripts.ps1` on the SERVED spec tree: 118/118 PASS. (No pipeline-script changes this slice, but the gate was honored on the served tree, not `main`.) Confirmed.
 - **re-validated:** 2026-10-08, #2980 — the SI reset the served root to `origin/spec/2980` at the branch tip (G-032 form) and ran `test-scripts.ps1` on the SERVED spec tree before BOTH `implementation → testing` entries (round 1 and the round-2 rework): 118/118 PASS each time. (No pipeline-script changes this slice.) Confirmed.
 - **re-validated:** 2026-10-08, #2956 — the SI reset the served root to `origin/spec/2956` at the branch tip (G-032 form) and ran `test-scripts.ps1` on the SERVED spec tree before ALL THREE `implementation → testing` entries (round 1 + the round-2 and round-3 reworks): 118/118 PASS each time. (No pipeline-script changes this slice.) Confirmed.
+- **re-validated:** 2026-10-10, #3023 — the SI reset the served root to `origin/spec/3023` at the branch tip (G-032 form) before `implementation → testing` (round 1) and ran `test-scripts.ps1` on the SERVED spec tree: 118/118 PASS. (No pipeline-script changes this slice.) Confirmed.
 
 ### G-303: tauri_js_close_requested_without_the_destroy_capability_leaves_the_window_open
 - **activation_date:** 2026-10-03
@@ -599,6 +609,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **re-validated:** 2026-10-04, #2961 — RECURRED (line-ending-only): after the merge/`tests-commit`, the root checkout carried a modified `apps/tauri/src-tauri/Cargo.toml` (LF↔CRLF only). The SI restored it (`git checkout -- apps/tauri/src-tauri/Cargo.toml`) before the doc-sync fast-forward, so the working tree was clean for the doc commit. The script fix remains the open follow-up; the restore recipe is the working mitigation.
 - **re-validated:** 2026-10-03, #2944 — RECURRED: after the `planning → implementation` `tests-commit` the serving root carried a line-ending-only dirty `apps/tauri/src-tauri/Cargo.toml`; cleared with `git checkout -f -B spec/2944 origin/spec/2944` before the pre-testing serving checkout. The script fix remains the open follow-up.
 - **re-validated:** 2026-10-04, #2962 — RECURRED: after the tester's `tests-commit`, the serving tree carried staged `.opencode/tests/hotkeys/*.md` and a line-ending-only `apps/tauri/src-tauri/Cargo.toml`. The SI fast-forwarded local `main` to `origin/main` first (the ff absorbed the suite-file changes) and restored `Cargo.toml` with `git checkout HEAD -- <path>` before the doc commit, leaving the tree clean. The script fix remains the open follow-up; the restore recipe is the working mitigation.
+- **re-validated:** 2026-10-10, #3023 — RECURRED (line-ending-only): after the round-1 testing entry the serving root carried a modified `apps/tauri/src-tauri/Cargo.toml` (LF↔CRLF only); the SI restored it (`git checkout -- apps/tauri/src-tauri/Cargo.toml`) before the doc-sync commit, leaving only the intended doc edits. The script fix remains the open follow-up.
 
 ### G-288: plan_conflates_the_download_transfer_with_the_extracted_payload
 - **activation_date:** 2026-10-02

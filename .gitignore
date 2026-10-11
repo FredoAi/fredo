@@ -193,31 +193,13 @@ apps/browser-extension-svelte
 .opencode/tmp/
 .opencode/evidence/
 
-# --- Doom Mode engine provisioning (Spec #3012) -------------------------------
-# The RESTful-DOOM engine is built at RUNTIME on first activation from the
-# GPL-2.0 corresponding SOURCE vendored at vendor/restful-doom/ (pinned commit
-# eded41b5597b7738ec1fa06d24f62b53db982c2c). That source is tracked and ships
-# as a Tauri resource (`doom/source` in apps/tauri/src-tauri/tauri.conf.json);
-# the build script + patches ship as `doom/scripts`.
-#
-# Keep the vendored tree TRACKED even where a generic ignore above would match an
-# upstream path (e.g. build/, dist/, *.log). The trailing-slash rule re-enables
-# directory descent so the following file rule can re-include the contents.
-!vendor/restful-doom/
-!vendor/restful-doom/**/
-!vendor/restful-doom/**
-
-# The native engine (Spec #3023) is an in-process cargo dependency (`neurodoom`);
-# nothing is produced at runtime and no engine binary is committed. These guards
-# remain so any stale in-repo <install_dir> override from the retired RESTful-DOOM
-# provisioning path stays untracked, and stray/unmanaged WADs (downloads, test
-# fixtures) stay ignored.
-restful-doom.exe
+# --- Doom Mode engine (Spec #3023) --------------------------------------------
+# The native engine is an in-process cargo dependency (`neurodoom`); nothing is
+# produced at runtime and no engine binary is committed. Keep stray/unmanaged
+# WADs (downloads, test fixtures) ignored.
 *.wad
 # ... EXCEPT the bundled shareware `DOOM1.WAD`, which IS the game data the native
 # engine embeds at build time (`include_bytes!`) and MUST be tracked so every
 # clone/CI checkout has it (Spec #3023). The negation below re-includes it after
 # the `*.wad` rule above; all other WADs remain ignored.
 !apps/tauri/src-tauri/doom/DOOM1.WAD
-.restful-doom-commit
-.restful-doom-runtime-dlls
