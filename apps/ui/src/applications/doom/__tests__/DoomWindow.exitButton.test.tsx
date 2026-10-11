@@ -6,6 +6,9 @@
  * Inverts the former `doom-exit-button` suite: where it once asserted the
  * phase-gated exit affordance, this asserts the affordance and every other mode
  * control are ABSENT, and that the React layer never wires an exit/close path.
+ *
+ * Spec #3026 ST-6 additionally pins the raw-RGBA draw path (`doom_frame_raw` →
+ * `putImageData`) and the retirement of the PNG-over-poll `doom_frame` path.
  */
 
 import React from 'react';
@@ -15,7 +18,28 @@ import { resolve } from 'node:path';
 import { act, cleanup, screen, waitFor } from '@testing-library/react';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
+import * as doomTypes from '../types';
 import { DoomWindow } from '../DoomWindow';
+
+const { DOOM_FRAME_DRAW_MS, DOOM_FRAME_HEIGHT, DOOM_FRAME_WIDTH } = doomTypes;
+
+/**
+ * jsdom (24) has no `ImageData`; the WebView2 does. This minimal constructor
+ * lets the raw-RGBA draw path execute in tests — the assertion is on the
+ * component's use of the platform API, not on the platform class itself.
+ */
+class TestImageData {
+  readonly data: Uint8ClampedArray;
+  readonly width: number;
+  readonly height: number;
+  constructor(data: Uint8ClampedArray, width: number, height: number) {
+    this.data = data;
+    this.width = width;
+    this.height = height;
+  }
+}
+
+let putImageData: ReturnType<typeof vi.fn>;
 
 const listeners: Record<string, (payload: unknown) => void> = {};
 
@@ -51,9 +75,9 @@ const invoke = vi.fn(async (command: string, _args?: Record<string, unknown>) =>
       return { success: true, phase: 'ready', port: 6666, pid: 42, enginePath: 'engine' };
     case 'doom_read_state':
       return { raw: { tic: 1, outcome: 'alive' } };
-    case 'doom_frame':
+    case 'doom_frame_raw':
       frameCalls += 1;
-      return { pngBase64: 'AAAA' };
+      return new ArrayBuffer(DOOM_FRAME_WIDTH * DOOM_FRAME_HEIGHT * 4);
     case 'get_doom_mode_status':
       return modeSeed;
     case 'get_doom_autoplay_status':
@@ -113,6 +137,13 @@ beforeEach(() => {
   modeSeed = modeStatus({});
   frameCalls = 0;
   invoke.mockClear();
+  // The raw-RGBA draw path: jsdom has no `ImageData` and no real 2D context, so
+  // stub both to drive the component's putImageData call.
+  putImageData = vi.fn();
+  vi.stubGlobal('ImageData', TestImageData);
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(
+    () => ({ putImageData } as unknown as CanvasRenderingContext2D),
+  );
   adapterBridge.setInvoke(invoke as never);
   adapterBridge.setListen((async (event: string, handler: (payload: unknown) => void) => {
     listeners[event] = handler;
@@ -127,6 +158,8 @@ afterEach(() => {
   adapterBridge.setInvoke(undefined as never);
   adapterBridge.setListen(undefined as never);
   vi.clearAllMocks();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe('Spec #3007 ST-1 — no in-window exit control', () => {
@@ -173,5 +206,54 @@ describe('Spec #3007 ST-1 — no in-window exit control', () => {
     expect(source).not.toMatch(/getCurrentWindow/);
     expect(source).not.toMatch(/stop_doom_runtime/);
     expect(source).not.toMatch(/exit_doom_mode/);
+  });
+});
+
+describe('Spec #3026 ST-6 — raw-RGBA draw path retires PNG-over-poll', () => {
+  it('draws the raw framebuffer via putImageData at the 320×200 backing store', async () => {
+    await renderReady();
+    emitMode(modeStatus({ phase: 'active', active: true, voiceSuppressed: true, origin: 'code' }));
+    await waitFor(() => expect(putImageData).toHaveBeenCalled());
+
+    // `putImageData` ignores CSS scaling/DPR — the backing store is the framebuffer.
+    const canvas = screen.getByTestId('doom-frame-canvas') as HTMLCanvasElement;
+    expect(canvas.width).toBe(DOOM_FRAME_WIDTH);
+    expect(canvas.height).toBe(DOOM_FRAME_HEIGHT);
+
+    const image = putImageData.mock.calls[0][0] as {
+      width: number;
+      height: number;
+      data: Uint8ClampedArray;
+    };
+    expect(image.width).toBe(DOOM_FRAME_WIDTH);
+    expect(image.height).toBe(DOOM_FRAME_HEIGHT);
+    expect(image.data.length).toBe(DOOM_FRAME_WIDTH * DOOM_FRAME_HEIGHT * 4);
+    expect(putImageData.mock.calls[0][1]).toBe(0);
+    expect(putImageData.mock.calls[0][2]).toBe(0);
+  });
+
+  it('drives doom_frame_raw and never the retired PNG-over-poll doom_frame', async () => {
+    await renderReady();
+    await waitFor(() => expect(frameCalls).toBeGreaterThan(0));
+    const commands = invoke.mock.calls.map(([command]) => command);
+    expect(commands).toContain('doom_frame_raw');
+    expect(commands).not.toContain('doom_frame');
+  });
+
+  it('retires DOOM_FRAME_POLL_MS and pins DOOM_FRAME_DRAW_MS (~30 fps)', () => {
+    expect(DOOM_FRAME_DRAW_MS).toBe(33);
+    expect('DOOM_FRAME_POLL_MS' in doomTypes).toBe(false);
+  });
+
+  it('the draw path is raw RGBA — no PNG, base64, or data-URI source remains', () => {
+    const source = stripComments(
+      readFileSync(resolve(process.cwd(), 'src/applications/doom/DoomWindow.tsx'), 'utf8'),
+    );
+    expect(source).toMatch(/putImageData/);
+    expect(source).toMatch(/'doom_frame_raw'/);
+    expect(source).not.toMatch(/data:image\/png/);
+    expect(source).not.toMatch(/pngBase64/);
+    expect(source).not.toMatch(/'doom_frame'/);
+    expect(source).not.toMatch(/DOOM_FRAME_POLL_MS/);
   });
 });
