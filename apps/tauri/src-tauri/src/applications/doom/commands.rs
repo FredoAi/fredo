@@ -39,7 +39,6 @@ use super::state::{
     derive_phase, DoomErrorCode, DoomLaunchResult, DoomRuntimePhase, DoomStatus,
     DOOM_LAST_ERROR_CODE_KEY, DOOM_LAST_ERROR_KEY, DOOM_STATUS_EVENT, DOOM_WINDOW_LABEL,
 };
-use super::client;
 
 /// The default campaign map the native engine constructs at (E1M1).
 const DOOM_DEFAULT_MAP: i64 = 1;
@@ -543,14 +542,13 @@ fn publish_autoplay(app: &AppHandle, status: &DoomAutoplayStatus) {
     bus.emit_to_window(DOOM_WINDOW_LABEL, DOOM_AUTOPLAY_EVENT, status);
 }
 
-/// Start the bounded Doom autoplay loop (Spec #2969 ST-5).
+/// Start the bounded Doom autoplay loop (Spec #2969 ST-5; native engine #3023 ST-3).
 ///
 /// Idempotent: a live run wins immediately and a second loop is never spawned.
-/// When the engine is not serving (`client::active_port` is `None`) or the
-/// composition root installed no decision source, returns a typed
-/// `code = NotReady` result with **NO engine request** (F-32). The `doom-
-/// autoplay-changed` event (not this result) is the source of truth for
-/// `running`; the result only reports the start.
+/// When the native engine has no live session or the composition root installed
+/// no decision source, returns a typed `code = NotReady` result with **NO engine
+/// request** (F-32). The `doom-autoplay-changed` event (not this result) is the
+/// source of truth for `running`; the result only reports the start.
 #[tauri::command]
 pub async fn start_doom_autoplay(
     app: AppHandle,
@@ -568,28 +566,16 @@ pub async fn start_doom_autoplay(
         };
     }
 
-    // Readiness — the engine must be serving. Not ready ⇒ typed `NotReady` with
-    // NO engine request (F-32).
-    let Some(port) = client::active_port(&app) else {
+    // Readiness — a live native engine session must exist. Not ready ⇒ typed
+    // `NotReady` with NO engine request (F-32).
+    let engine = app.state::<DoomEngineState>().inner().clone();
+    if !engine.is_running() {
         return not_ready("the Doom engine is not ready — start the engine, then try again.");
-    };
+    }
 
     // The composition root installs the decision source; absent ⇒ `NotReady`.
     let Some(source) = app.state::<DoomDecisionSourceState>().get() else {
         return not_ready("no Doom decision source is installed.");
-    };
-
-    let transport = match client::ReqwestDoomTransport::new() {
-        Ok(transport) => transport,
-        Err(detail) => {
-            return DoomAutoplayResult {
-                success: false,
-                phase: DoomAutoplayPhase::Failed,
-                steps: 0,
-                code: Some(DoomAutoplayErrorCode::EngineRequestFailed),
-                error: Some(detail),
-            }
-        }
     };
 
     // Resolve the campaign to play (Spec #2972 R-1/R-5): an explicit fresh start
@@ -620,17 +606,16 @@ pub async fn start_doom_autoplay(
         };
     }
 
-    // Spawn the bounded loop. Every status transition is folded into the state
-    // and published; the terminal observation clears the live-run marker.
+    // Spawn the bounded loop over the native in-process engine. Every status
+    // transition is folded into the state and published; the terminal
+    // observation clears the live-run marker.
     let loop_app = app.clone();
     let observe_app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let transport_ref: &dyn client::DoomHttpTransport = &transport;
         let source_ref: &dyn crate::infrastructure::companion::doom_decision::DoomDecisionSource =
             source.as_ref();
         run_autoplay_loop(
-            transport_ref,
-            port,
+            &engine,
             source_ref,
             &config,
             AutoplayRun { campaign, progress },
