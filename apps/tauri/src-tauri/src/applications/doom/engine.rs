@@ -17,8 +17,10 @@
 //! (`applications::llm_server::doom_agent`) consume verbatim —
 //! `tic` / `done` / `outcome` / `level.*` / `player.{x,y}` — and adds the
 //! native parity fields `enemies` / `items` / `doors` (LOS-gated enemy intel,
-//! nearby items, door/switch state). `x`/`y` are integer map units derived from
-//! the engine's 16.16 `Fixed`, because `is_progress` compares integers.
+//! nearby items, door/switch state) plus the bounded `walls` geometry summary
+//! (Spec #3030 S1; see [`super::perception`]). `x`/`y` are integer map units
+//! derived from the engine's 16.16 `Fixed`, because `is_progress` compares
+//! integers.
 //!
 //! # Threading
 //!
@@ -59,6 +61,7 @@ use super::autoplay::{
 };
 use super::agent::{run_continuous_loop, AutoplayRun, DoomAutoplayConfig, DoomAutoplayEngine};
 use super::clock::{DoomTickClock, DOOM_CONTINUOUS_TICK_PERIOD_MS, DOOM_DEGRADED_TICK_PERIOD_MS};
+use super::perception;
 use super::progress::DoomProgressWriter;
 use super::save::DoomCampaign;
 
@@ -111,7 +114,7 @@ const DOOM_TURN_PER_TIC: i16 = 640;
 
 /// Bound on the number of parity entries emitted per list (keeps the
 /// observation payload bounded regardless of map size).
-const OBSERVATION_MAX_ENTRIES: usize = 16;
+pub(crate) const OBSERVATION_MAX_ENTRIES: usize = 16;
 
 // ── Typed native engine errors ────────────────────────────────────────────────
 
@@ -1064,6 +1067,7 @@ fn observation(session: &DoomSession) -> Value {
         "items": items_observation(world, px, py, angle, player_id),
         "doors": doors(world, map, px, py, angle),
         "exit": exit_observation(map, px, py),
+        "walls": perception::walls_observation(perception::perception_frame(engine).as_ref()),
     })
 }
 
@@ -2021,6 +2025,48 @@ mod tests {
         assert_eq!(terminal_kind(&dead).map(terminal_label), Some("dead"));
         let exited = json!({ "tic": 1, "outcome": "exited", "done": true });
         assert_eq!(terminal_kind(&exited).map(terminal_label), Some("exited"));
+    }
+
+    // ── Spec #3030 S1: the observation `walls` geometry (REQ-1 / AC1) ────────
+
+    #[test]
+    fn observation_carries_a_bounded_walls_array() {
+        use crate::applications::doom::perception::DOOM_PERCEPTION_RAY_COUNT;
+
+        let state = DoomEngineState::default();
+        state.launch(1, 3).expect("launch");
+
+        // The first read happens before any render, so the semantic/depth
+        // buffers are unpopulated → the AC4 fallback branch emits `[]`.
+        let first = state.read_state().expect("read_state");
+        assert!(
+            first["walls"].is_array(),
+            "walls is always a present array (never absent/null)"
+        );
+        assert!(
+            first["walls"].as_array().expect("array").is_empty(),
+            "unpopulated buffers fall back to an empty walls array"
+        );
+
+        // After a step the engine has rendered → the buffers are populated and
+        // the geometry is emitted, still bounded and in the direction vocab.
+        let stepped = state
+            .step(1, &json!([{ "type": "forward" }]))
+            .expect("step");
+        let walls = stepped["walls"].as_array().expect("walls array");
+        assert!(
+            walls.len() <= DOOM_PERCEPTION_RAY_COUNT,
+            "the geometry stays bounded by the ray budget"
+        );
+        for entry in walls {
+            let direction = entry["direction"].as_str().expect("direction string");
+            assert!(
+                matches!(direction, "front" | "left" | "right"),
+                "\"back\" is never emitted, got {direction}"
+            );
+            assert!(entry["distance"].as_i64().is_some(), "integer distance");
+            assert!(entry["blocked"].as_bool().is_some(), "boolean blocked");
+        }
     }
 
     // ── Spec #3023 ST-9: teardown (G-263 / REQ-5.3) ──────────────────────────

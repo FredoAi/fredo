@@ -22,6 +22,9 @@
 //!   terminal-state restart reaction, and the consecutive-failure budget.
 //! * [`mode`] — the Doom Mode lifecycle (activation, the singleton window, the
 //!   companion-suppression gate).
+//! * [`perception`] — the bounded observation geometry contract (the `walls`
+//!   field), the pure projection, and the semantic/depth → `PerceptionFrame`
+//!   bridge (Spec #3030 S1).
 //! * [`save`] — the persisted resume contract (`DoomSave` / `DoomSaveStatus` /
 //!   `DoomCampaign`) in the typed PostgreSQL feature table `feature_doom_save`,
 //!   with the test-only `FREDO_DOOM_SAVE_STATE_DIR` / `FREDO_DOOM_SAVE_FORCE_FAIL`
@@ -50,6 +53,7 @@ pub mod decision;
 pub mod engine;
 pub mod failure_seam;
 pub mod mode;
+pub mod perception;
 pub mod progress;
 pub mod save;
 pub mod state;
