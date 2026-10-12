@@ -30,7 +30,7 @@
 //! autoplay loop invokes these through `tauri::async_runtime::spawn_blocking`).
 //! A **dedicated engine thread is never spawned** — no orphan is constructible.
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -61,6 +61,10 @@ use super::autoplay::{
 };
 use super::agent::{run_continuous_loop, AutoplayRun, DoomAutoplayConfig, DoomAutoplayEngine};
 use super::clock::{DoomTickClock, DOOM_CONTINUOUS_TICK_PERIOD_MS, DOOM_DEGRADED_TICK_PERIOD_MS};
+// Deterministic route planner (Spec #3031 ST-1) — the AC5 route level knowledge
+// the loop consumes through [`DoomEngineState::exit_route`] / the
+// [`DoomAutoplayEngine::exit_route`] seam.
+use super::navigation::{self, DoomRoute};
 use super::perception;
 use super::progress::DoomProgressWriter;
 use super::save::DoomCampaign;
@@ -462,6 +466,28 @@ impl DoomEngineState {
         Ok(observation(session))
     }
 
+    /// Plan a deterministic route from the player's integer position to the
+    /// level's exit over the FULL map geometry (Spec #3031 AC5).
+    ///
+    /// Locks the session for a SHORT synchronous critical section — the SAME
+    /// access [`observation`] uses (`engine.map()` + the controlled player
+    /// entity's integer position) — and returns
+    /// [`navigation::plan_route`]`(map, pos)`. No lock is held across an `.await`
+    /// (the async loop drives this through [`run_blocking`] via the
+    /// [`DoomAutoplayEngine::exit_route`] seam), and the planner is bounded
+    /// (`DOOM_NAV_MAX_CELLS`/`DOOM_NAV_MAX_WAYPOINTS`). `Ok(None)` means no route
+    /// is available (no session/player, no exit line, or an unreachable exit) —
+    /// the loop then falls back to the retained reactive policy.
+    pub fn exit_route(&self) -> Result<Option<DoomRoute>, DoomEngineError> {
+        let guard = self.lock();
+        let session = guard.as_ref().ok_or_else(DoomEngineError::no_session)?;
+        let Some(player) = session.player_entity() else {
+            return Ok(None);
+        };
+        let from = (fixed_to_units(player.x), fixed_to_units(player.y));
+        Ok(navigation::plan_route(session.engine.map(), from))
+    }
+
     /// The current frame as raw RGBA bytes (`320 * 200 * 4 = 256_000` bytes),
     /// row-major with byte order R, G, B, A — NO PNG, NO base64 (Spec #3026
     /// ST-3). This is the AC2 frame transport: the webview wraps it in an
@@ -656,8 +682,13 @@ pub async fn run_bounded_driver(
         ..DoomAutoplayConfig::default()
     };
 
-    let engine = FrameCountingEngine::new(state.clone());
+    // The driver is a SINGLE-level deterministic harness: it stops the loop at
+    // the FIRST terminal observation (its documented contract) so `terminal`
+    // reflects the level the policy just reached, instead of advancing the
+    // campaign onto the next map. The flag is shared with the frame-counting
+    // engine, which raises it when it records a terminal observation.
     let stop = AtomicBool::new(false);
+    let engine = FrameCountingEngine::new(state.clone(), &stop);
     let mut last_status: Option<DoomAutoplayStatus> = None;
 
     let result = run_continuous_loop(
@@ -717,9 +748,16 @@ pub async fn run_bounded_driver(
 /// The driver's frame-counting engine seam: it forwards every engine call to the
 /// native adapter and, after each step, fingerprints the framebuffer to count
 /// consecutive DISTINCT (world-reflecting) frames (AC2).
-struct FrameCountingEngine {
+///
+/// It also raises the shared `stop` flag the first time a terminal observation is
+/// recorded, so [`run_bounded_driver`] plays exactly ONE level and reports the
+/// terminal it reached instead of advancing the campaign (its documented
+/// "terminates on ... a terminal observation" contract).
+struct FrameCountingEngine<'a> {
     state: DoomEngineState,
     counters: Mutex<FrameCounters>,
+    /// Raised when a terminal (death / level exit) observation is recorded.
+    stop: &'a AtomicBool,
 }
 
 /// The driver's accumulated counters + start/end observations.
@@ -736,11 +774,12 @@ struct FrameCounters {
     last: Option<Value>,
 }
 
-impl FrameCountingEngine {
-    fn new(state: DoomEngineState) -> Self {
+impl<'a> FrameCountingEngine<'a> {
+    fn new(state: DoomEngineState, stop: &'a AtomicBool) -> Self {
         Self {
             state,
             counters: Mutex::new(FrameCounters::default()),
+            stop,
         }
     }
 
@@ -750,33 +789,45 @@ impl FrameCountingEngine {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// Raise the stop flag on a terminal observation (single-level driver).
+    fn note_terminal(&self, observation: &Value) {
+        if super::agent::terminal_kind(observation).is_some() {
+            self.stop.store(true, Ordering::Relaxed);
+        }
+    }
+
     fn record_observation(&self, observation: &Value) {
         let mut counters = self.lock();
         if counters.first.is_none() {
             counters.first = Some(observation.clone());
         }
         counters.last = Some(observation.clone());
+        drop(counters);
+        self.note_terminal(observation);
     }
 
     fn record_frame(&self, observation: &Value, frame: &[u8]) {
         let fingerprint = frame_fingerprint(frame);
-        let mut counters = self.lock();
-        if counters
-            .previous_fingerprint
-            .is_some_and(|previous| previous != fingerprint)
         {
-            counters.distinct_frames = counters.distinct_frames.saturating_add(1);
+            let mut counters = self.lock();
+            if counters
+                .previous_fingerprint
+                .is_some_and(|previous| previous != fingerprint)
+            {
+                counters.distinct_frames = counters.distinct_frames.saturating_add(1);
+            }
+            counters.previous_fingerprint = Some(fingerprint);
+            if counters.first.is_none() {
+                counters.first = Some(observation.clone());
+            }
+            counters.last = Some(observation.clone());
         }
-        counters.previous_fingerprint = Some(fingerprint);
-        if counters.first.is_none() {
-            counters.first = Some(observation.clone());
-        }
-        counters.last = Some(observation.clone());
+        self.note_terminal(observation);
     }
 }
 
 #[async_trait]
-impl DoomAutoplayEngine for FrameCountingEngine {
+impl DoomAutoplayEngine for FrameCountingEngine<'_> {
     async fn read_state(&self) -> Result<Value, DoomEngineError> {
         let state = self.state.clone();
         let observation = run_engine_task(move || state.read_state()).await?;
@@ -799,6 +850,11 @@ impl DoomAutoplayEngine for FrameCountingEngine {
         let observation = run_engine_task(move || state.reset(episode, map, skill)).await?;
         self.record_observation(&observation);
         Ok(observation)
+    }
+
+    async fn exit_route(&self) -> Result<Option<DoomRoute>, DoomEngineError> {
+        let state = self.state.clone();
+        run_engine_task(move || state.exit_route()).await
     }
 }
 
@@ -1278,6 +1334,16 @@ fn fixed_to_units(value: Fixed) -> i64 {
 /// BAM `Angle` → integer degrees (0-359).
 fn angle_to_degrees(angle: Angle) -> i64 {
     i64::from(((u64::from(angle) * 360) >> 32) as u32)
+}
+
+/// The absolute map bearing (0-359 degrees) from `from` to `to`, in integer map
+/// units — the SAME convention as the observation's `exit.angle`
+/// ([`angle_to_degrees`] of [`point_to_angle`]). Consumed by the route-follow
+/// policy (Spec #3031 AC5) to face its current waypoint. Pure.
+pub fn bearing_degrees(from: (i64, i64), to: (i64, i64)) -> i64 {
+    let dx = ((to.0 - from.0) as Fixed) << FRACBITS;
+    let dy = ((to.1 - from.1) as Fixed) << FRACBITS;
+    angle_to_degrees(point_to_angle(dx, dy))
 }
 
 /// Approximate map-unit distance (Manhattan, converted from 16.16).
@@ -2416,6 +2482,11 @@ mod tests {
             self.record(&observation);
             Ok(observation)
         }
+
+        async fn exit_route(&self) -> Result<Option<DoomRoute>, DoomEngineError> {
+            let state = self.inner.clone();
+            run_engine_task(move || state.exit_route()).await
+        }
     }
 
     /// **ST-5 (R-5 / AC5, deterministic).** The exit-seek policy steers the
@@ -2455,6 +2526,76 @@ mod tests {
         assert!(
             minimum < first,
             "the exit-seek must steer toward the exit: spawn={first} min={minimum}"
+        );
+    }
+
+    // ── Spec #3031 ST-2 (round 3): the AC5 route seam ────────────────────────
+
+    /// **ST-2 (AC5 seam).** [`DoomEngineState::exit_route`] returns a bounded,
+    /// deterministic route from the E1M1 spawn to the exit line, and a typed
+    /// error (never a panic) when there is no live session.
+    #[test]
+    fn doom_engine_state_exit_route_returns_a_bounded_deterministic_e1m1_route() {
+        let state = DoomEngineState::default();
+        state.launch(1, 3).expect("launch E1M1");
+
+        let route = state
+            .exit_route()
+            .expect("the seam never fails on a live session")
+            .expect("E1M1 has a reachable exit route");
+        assert!(!route.is_empty(), "a non-empty route is returned");
+        assert!(
+            route.len() <= navigation::DOOM_NAV_MAX_WAYPOINTS,
+            "the route respects DOOM_NAV_MAX_WAYPOINTS"
+        );
+        let again = state
+            .exit_route()
+            .expect("seam")
+            .expect("E1M1 route");
+        assert_eq!(route, again, "exit_route is deterministic for a fixed state");
+
+        let empty = DoomEngineState::default();
+        assert_eq!(
+            empty.exit_route().expect_err("no session").code,
+            DoomEngineErrorCode::EngineStartFailed
+        );
+    }
+
+    /// **ST-2 (AC5).** The route-follow bearing uses the SAME convention as the
+    /// observation's `exit.angle`; due east is bearing 0.
+    #[test]
+    fn bearing_degrees_matches_the_exit_bearing_convention() {
+        assert_eq!(bearing_degrees((0, 0), (100, 0)), 0, "east is 0°");
+        for (dx, dy) in [(100, 0), (0, 100), (-100, 0), (0, -100), (73, -41)] {
+            let bearing = bearing_degrees((0, 0), (dx, dy));
+            assert!((0..360).contains(&bearing), "{dx},{dy} -> {bearing}");
+        }
+        assert_ne!(
+            bearing_degrees((0, 0), (100, 0)),
+            bearing_degrees((0, 0), (-100, 0)),
+            "opposite directions differ"
+        );
+    }
+
+    /// **ST-2 (AC5 / F-5G).** The driver is a SINGLE-level harness: the
+    /// frame-counting engine raises the shared stop flag the first time a
+    /// terminal observation is recorded (its documented "terminates on ... a
+    /// terminal observation" contract), and ignores a non-terminal one.
+    #[test]
+    fn the_frame_counting_engine_raises_the_stop_flag_on_a_terminal_observation() {
+        let stop = AtomicBool::new(false);
+        let engine = FrameCountingEngine::new(DoomEngineState::default(), &stop);
+
+        engine.record_observation(&json!({ "tic": 1, "done": false, "outcome": "alive" }));
+        assert!(
+            !stop.load(Ordering::Relaxed),
+            "a running observation does not stop the driver"
+        );
+
+        engine.record_observation(&json!({ "tic": 2, "done": true, "outcome": "exited" }));
+        assert!(
+            stop.load(Ordering::Relaxed),
+            "a terminal (level exit) observation raises the stop flag"
         );
     }
 }
