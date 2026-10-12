@@ -46,8 +46,12 @@ pub const DOOM_DEGRADED_TICK_PERIOD_MS: u64 = 50;
 pub const DOOM_DEGRADED_AFTER_FAILURES: u32 = 2;
 
 /// The total engine-advancing tick budget of one continuous run
-/// (~5 min @ 35 tics/s) — bounds every exit path (R-4/G-263).
-pub const DOOM_CONTINUOUS_MAX_TICKS: u32 = 10_500;
+/// (~14 min @ 35 tics/s) — bounds every exit path (R-4/G-263).
+///
+/// Finalized by Spec #3031 ST-3 from ST-1's measured deterministic completion
+/// estimate: comfortably above the 10,499-tick no-progress baseline the live
+/// freeze exhibited, with margin for the unstick/escape re-routes.
+pub const DOOM_CONTINUOUS_MAX_TICKS: u32 = 30_000;
 
 /// Throttle window for the `doom-autoplay-changed` status emission, in
 /// milliseconds (~4 Hz). The loop emits one status per `DOOM_STATUS_EMIT_MS`
@@ -135,7 +139,7 @@ mod tests {
         assert_eq!(DOOM_MIN_SMOOTH_FPS, 30);
         assert_eq!(DOOM_DEGRADED_TICK_PERIOD_MS, 50);
         assert_eq!(DOOM_DEGRADED_AFTER_FAILURES, 2);
-        assert_eq!(DOOM_CONTINUOUS_MAX_TICKS, 10_500);
+        assert_eq!(DOOM_CONTINUOUS_MAX_TICKS, 30_000);
         assert_eq!(DOOM_STATUS_EMIT_MS, 250);
     }
 
