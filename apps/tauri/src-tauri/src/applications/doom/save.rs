@@ -82,6 +82,22 @@ pub const DOOM_CAMPAIGN_LAST_MAP: i64 = 9;
 pub const DOOM_DEFAULT_SKILL: i64 = 3;
 /// The default deterministic seed.
 pub const DOOM_DEFAULT_SEED: i64 = 0;
+/// The **AC5 completion target** — the robustly-walkable NON-secret level the
+/// Companion plays to complete a level (Spec #3039 ST-5).
+///
+/// This value is the **ST-1 measured selection**, not a guess: ST-1's
+/// deterministic level-walkability scan (executed evidence in
+/// `.opencode/tmp/3039/level-feasibility.md`) measured every non-secret ship
+/// level and selected the widest — **E1M7**, path clearance `64` with a margin
+/// of `48` above the 16-unit player collision radius (E1M1–E1M6 measure
+/// clearance `32` / margin `16`; E1M8 has no linedef exit). It is **never** the
+/// secret level `E1M9` (map 9).
+///
+/// The target is deliberately NOT the campaign's final level: completing it
+/// reports a terminal SINGLE-LEVEL exit (`outcome == "exited"`), NOT the
+/// campaign's `completed:true` terminal — whose only trigger is the secret
+/// E1M9. Verify AC5 on `outcome == "exited"`, never on `completed:true`.
+pub const DOOM_COMPLETION_TARGET_MAP: i64 = 7;
 
 /// The valid skill range (inclusive) the engine's `/api/episode` accepts.
 const DOOM_SKILL_MIN: i64 = 0;
@@ -152,6 +168,32 @@ impl DoomCampaign {
             None
         }
     }
+}
+
+// ── AC5 completion target (Spec #3039 ST-5) ──────────────────────────────────
+
+/// A campaign positioned at the **AC5 completion target**
+/// ([`DOOM_COMPLETION_TARGET_MAP`]): `E1`, the target map, the default skill and
+/// seed, not yet completed.
+///
+/// This is the deterministic resume coordinate the QA drives AC5 from: persist
+/// [`completion_target_save`] through the [`DOOM_SAVE_STATE_DIR_ENV`] seam, then
+/// `start_doom_autoplay` resumes it (the loop issues exactly ONE `reset` to this
+/// map). The target is a NON-secret, NON-final level, so completing it reports
+/// the single-level `outcome == "exited"` — never the campaign terminal.
+pub fn completion_target_campaign() -> DoomCampaign {
+    DoomCampaign {
+        map: DOOM_COMPLETION_TARGET_MAP,
+        ..DoomCampaign::initial()
+    }
+}
+
+/// The `feature_doom_save`-shaped record that resumes a run at the AC5
+/// completion target ([`completion_target_campaign`]) — the deterministic QA
+/// driving surface for AC5. Write it to
+/// `<`[`DOOM_SAVE_STATE_DIR_ENV`]`>/doom-save.json`, then start autoplay.
+pub fn completion_target_save(updated_at: String) -> DoomSave {
+    DoomSave::from_campaign(&completion_target_campaign(), updated_at)
 }
 
 // ── Persisted record ─────────────────────────────────────────────────────────
@@ -608,6 +650,7 @@ mod tests {
         assert_eq!(DOOM_CAMPAIGN_LAST_MAP, 9);
         assert_eq!(DOOM_DEFAULT_SKILL, 3);
         assert_eq!(DOOM_DEFAULT_SEED, 0);
+        assert_eq!(DOOM_COMPLETION_TARGET_MAP, 7);
     }
 
     #[test]
@@ -1016,6 +1059,70 @@ mod tests {
         assert_eq!(
             resolve_start_campaign(Some(true), Some(completed)),
             DoomCampaign::initial()
+        );
+    }
+
+    // ── AC5 completion target (Spec #3039 ST-5) ──────────────────────────────
+
+    #[test]
+    fn completion_target_is_the_pinned_non_secret_level() {
+        // ST-1's executed scan (`.opencode/tmp/3039/level-feasibility.md`)
+        // selected E1M7 — the widest non-secret level (clearance 64, margin 48
+        // above the 16-unit collision radius). Pinned so the AC5 target cannot
+        // silently drift.
+        assert_eq!(DOOM_COMPLETION_TARGET_MAP, 7);
+        assert!(DOOM_COMPLETION_TARGET_MAP >= DOOM_CAMPAIGN_FIRST_MAP);
+        assert_ne!(
+            DOOM_COMPLETION_TARGET_MAP, DOOM_CAMPAIGN_LAST_MAP,
+            "the target is never the secret E1M9 — the campaign's only terminal"
+        );
+        // The target is inside the non-secret ship set (E1M1..E1M8).
+        assert!(DOOM_COMPLETION_TARGET_MAP < DOOM_CAMPAIGN_LAST_MAP);
+
+        let target = completion_target_campaign();
+        assert_eq!(target.episode, DOOM_CAMPAIGN_FIRST_EPISODE);
+        assert_eq!(target.map, DOOM_COMPLETION_TARGET_MAP);
+        assert_eq!(target.skill, DOOM_DEFAULT_SKILL);
+        assert_eq!(target.seed, DOOM_DEFAULT_SEED);
+        assert!(
+            !target.completed,
+            "completing the target is a single-level exit, not campaign completion"
+        );
+        assert!(
+            !target.at_final_level(),
+            "the target must not be the final (secret) level"
+        );
+    }
+
+    #[test]
+    fn completion_target_save_resumes_at_the_target_and_fresh_starts_at_e1m1() {
+        let save = completion_target_save("2026-10-12T00:00:00+00:00".to_string());
+        assert_eq!(save.version, DOOM_SAVE_VERSION);
+        assert_eq!(save.episode, DOOM_CAMPAIGN_FIRST_EPISODE);
+        assert_eq!(save.map, DOOM_COMPLETION_TARGET_MAP);
+        assert_eq!(save.skill, DOOM_DEFAULT_SKILL);
+
+        // The record round-trips through BOTH persisted contracts: the state-dir
+        // seam codec and the `feature_doom_save` row map.
+        assert_eq!(DoomSave::parse(&save.serialize()), Some(save.clone()));
+        assert_eq!(DoomSave::from_row(&save.to_row()), Some(save.clone()));
+
+        // Resuming the persisted target save positions the run at the target —
+        // NOT E1M1 (this is the QA's deterministic AC5 drive).
+        let resumed = resolve_start_campaign(None, Some(save.to_campaign()));
+        assert_eq!(resumed.map, DOOM_COMPLETION_TARGET_MAP);
+        assert_ne!(resumed.map, DOOM_CAMPAIGN_FIRST_MAP);
+
+        // An explicit fresh start IGNORES the target save and starts at E1M1 —
+        // the fresh-run default is unchanged.
+        let fresh = resolve_start_campaign(Some(true), Some(save.to_campaign()));
+        assert_eq!(fresh, DoomCampaign::initial());
+        assert_eq!(fresh.map, DOOM_CAMPAIGN_FIRST_MAP);
+
+        // Absent save is also the E1M1 fresh run.
+        assert_eq!(
+            resolve_start_campaign(None, None).map,
+            DOOM_CAMPAIGN_FIRST_MAP
         );
     }
 }
