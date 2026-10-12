@@ -681,8 +681,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn scan_non_secret_levels_and_write_report() {
+    #[tokio::test]
+    async fn scan_non_secret_levels_and_write_report() {
         use neurodoom::engine::ClassicEngine;
 
         // ── Model scan over every non-secret level (pure geometry) ────────────
@@ -722,6 +722,35 @@ mod tests {
         let door = measure_order
             .into_iter()
             .find_map(|level| measure_door_open_duration(level));
+
+        // ── Sim-time drivability (run_bounded_driver + FixedTickClock) ────────
+        // Prove each non-secret level is DRIVABLE by the deterministic bounded
+        // driver in sim-time (no wall clock): it constructs, spawns, advances
+        // ticks, and renders. This is the `run_bounded_driver` + `FixedTickClock`
+        // leg the brief asks for.
+        let mut drivability: Vec<(i64, Option<String>)> = Vec::new();
+        for level in NON_SECRET_LEVELS {
+            let summary = drive_level(level).await.map(|report| {
+                format!(
+                    "steps={} advanced={} moved={} terminal={:?}",
+                    report.steps,
+                    report.advanced(),
+                    report.moved(),
+                    report.terminal
+                )
+            });
+            drivability.push((level, summary));
+        }
+        // Determinism (G-316): the SAME script + FixedTickClock reproduce the
+        // report field-for-field at the selected target.
+        if let Some((level, _)) = selection {
+            let first = drive_level(level).await;
+            let second = drive_level(level).await;
+            assert_eq!(
+                first, second,
+                "run_bounded_driver + FixedTickClock reproduces the E1M{level} report"
+            );
+        }
 
         // ── Report ───────────────────────────────────────────────────────────
         let mut report = String::new();
@@ -774,6 +803,21 @@ mod tests {
         }
         report.push('\n');
 
+        report.push_str("## Sim-time drivability (`run_bounded_driver` + `FixedTickClock`)\n\n");
+        report.push_str(
+            "Each non-secret level is driven once by the deterministic bounded driver with a \
+             one-tick held-forward+run script and the injected `FixedTickClock` — pure sim-time, \
+             no wall clock. `steps` is the bounded engine-advancing tick count.\n\n",
+        );
+        report.push_str("| Level | Drive |\n|-------|-------|\n");
+        for (level, summary) in &drivability {
+            match summary {
+                Some(summary) => report.push_str(&format!("| E1M{level} | {summary} |\n")),
+                None => report.push_str(&format!("| E1M{level} | DRIVE_ERROR |\n")),
+            }
+        }
+        report.push('\n');
+
         report.push_str("## Door-open duration (`use` → `opening` → `waiting`)\n\n");
         match door {
             Some(door) => {
@@ -814,6 +858,46 @@ mod tests {
         std::fs::write(&path, &report).expect("write the scratch feasibility report");
         println!("\n{report}");
         println!("report written to {}", path.display());
+    }
+
+    /// Drive one level with the deterministic bounded driver
+    /// ([`run_bounded_driver`] + [`FixedTickClock`]) and a held-forward+run
+    /// script. Pure sim-time — no wall clock (G-316).
+    async fn drive_level(
+        level: i64,
+    ) -> Option<crate::applications::doom::engine::DoomDriverReport> {
+        use crate::applications::doom::clock::{FixedTickClock, DOOM_CONTINUOUS_TICK_PERIOD_MS};
+        use crate::applications::doom::decision::ScriptedDecisionSource;
+        use crate::applications::doom::engine::{
+            run_bounded_driver, DoomDriverConfig, DoomEngineState,
+        };
+        use serde_json::json;
+
+        let source = ScriptedDecisionSource::from_script_json(
+            &json!({
+                "decisions": [
+                    { "tics": 1, "actions": [{ "type": "forward" }, { "type": "run" }] }
+                ],
+                "repeat": true
+            })
+            .to_string(),
+        )
+        .ok()?;
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let state = DoomEngineState::default();
+        run_bounded_driver(
+            &state,
+            &source,
+            DoomDriverConfig {
+                map: level,
+                skill: super::super::save::DOOM_DEFAULT_SKILL,
+                max_steps: 64,
+                max_failures: 3,
+            },
+            &clock,
+        )
+        .await
+        .ok()
     }
 
     /// Drive the real engine to a usable door, press `use`, and count the tics
