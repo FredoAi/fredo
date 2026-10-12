@@ -399,4 +399,145 @@ mod tests {
         }
         frame(width, height, semantic, depth)
     }
+
+    // ── ST-4 (F-6/F-7 static leg): fallback + determinism + bound + payload ──
+
+    /// The length of the longest array nested anywhere in a JSON value. Used to
+    /// prove no array scales with the 320×200 framebuffer (F-6c) — a per-pixel
+    /// payload would be ~64,000 elements.
+    fn longest_array_len(value: &Value) -> usize {
+        match value {
+            Value::Array(items) => items
+                .iter()
+                .map(longest_array_len)
+                .max()
+                .unwrap_or(0)
+                .max(items.len()),
+            Value::Object(map) => map.values().map(longest_array_len).max().unwrap_or(0),
+            _ => 0,
+        }
+    }
+
+    /// **ST-4 (AC4 fallback, F-7 static).** `walls_observation(None)` is the AC4
+    /// fallback branch: `[]` — never absent, never a panic.
+    #[test]
+    fn st4_none_falls_back_to_an_empty_walls_array() {
+        assert!(
+            walls_observation(None).is_empty(),
+            "the AC4 fallback branch is `[]`"
+        );
+    }
+
+    /// **ST-4 (NFR-DET, F-7 static).** `walls_observation(Some(frame))` is
+    /// deterministic (two calls on identical input are byte-identical) and its
+    /// length is bounded by BOTH the wall cap (16) and the ray budget (9).
+    #[test]
+    fn st4_projection_is_deterministic_and_bounded() {
+        // A busy full-frame scene: every column sees a close wall → one entry
+        // per emitted ray.
+        let width = 320;
+        let height = 200;
+        let semantic = vec![SemanticClass::Wall as u8; width * height];
+        let depth = vec![10 << FRACBITS; width * height];
+        let f = frame(width, height, semantic, depth);
+
+        let first = walls_observation(Some(&f));
+        let second = walls_observation(Some(&f));
+        assert_eq!(
+            first, second,
+            "identical input ⇒ byte-identical output (no clock, no RNG)"
+        );
+        assert!(
+            first.len() <= DOOM_OBSERVATION_MAX_WALLS,
+            "≤ the wall cap ({DOOM_OBSERVATION_MAX_WALLS})"
+        );
+        assert!(
+            first.len() <= DOOM_PERCEPTION_RAY_COUNT,
+            "≤ the ray budget ({DOOM_PERCEPTION_RAY_COUNT})"
+        );
+        assert_eq!(first.len(), DOOM_PERCEPTION_RAY_COUNT);
+    }
+
+    /// **ST-4 (NFR-BOUND, F-6a/F-6c/F-6d).** A representative *bounded*
+    /// observation — capped `enemies`/`items`/`doors` plus a full `walls` array
+    /// — serializes within [`DOOM_OBSERVATION_BYTE_BUDGET`], and NO array scales
+    /// with the 320×200 framebuffer (~64,000 elements): there is no per-pixel
+    /// payload.
+    #[test]
+    fn st4_bounded_observation_fits_the_byte_budget_with_no_per_pixel_array() {
+        let width = 320;
+        let height = 200;
+        let semantic = vec![SemanticClass::Wall as u8; width * height];
+        let depth = vec![10 << FRACBITS; width * height];
+        let walls = Value::Array(walls_observation(Some(&frame(width, height, semantic, depth))));
+        let walls_len = walls.as_array().map(Vec::len).unwrap_or(0);
+
+        let enemies: Vec<Value> = (0..OBSERVATION_MAX_ENTRIES)
+            .map(|i| {
+                serde_json::json!({
+                    "kind": "imp",
+                    "hp": 60,
+                    "direction": "front",
+                    "distance": (i as i64) * 96,
+                })
+            })
+            .collect();
+        let items: Vec<Value> = (0..OBSERVATION_MAX_ENTRIES)
+            .map(|i| {
+                serde_json::json!({
+                    "kind": "stimpack",
+                    "direction": "left",
+                    "distance": (i as i64) * 48,
+                })
+            })
+            .collect();
+        let doors: Vec<Value> = (0..OBSERVATION_MAX_ENTRIES)
+            .map(|i| {
+                serde_json::json!({
+                    "kind": "door",
+                    "state": "opening",
+                    "direction": "right",
+                    "distance": (i as i64) * 64 + 32,
+                })
+            })
+            .collect();
+
+        let observation = serde_json::json!({
+            "tic": 12345u64,
+            "done": false,
+            "outcome": "alive",
+            "level": { "episode": 1, "map": 1, "skill": 3, "kills": 0, "items": 0, "secrets": 0 },
+            "player": {
+                "x": 1056, "y": -3616, "angle": 90, "health": 100, "armor": 0,
+                "ammo": { "bullets": 50, "shells": 0, "rockets": 0, "cells": 0 },
+                "weapon": "pistol",
+            },
+            "enemies": enemies,
+            "items": items,
+            "doors": doors,
+            "exit": { "distance": 812 },
+            "walls": walls,
+        });
+
+        let serialized = observation.to_string();
+        assert!(
+            serialized.len() <= DOOM_OBSERVATION_BYTE_BUDGET,
+            "F-6a: serialized observation is {} bytes, budget {DOOM_OBSERVATION_BYTE_BUDGET}",
+            serialized.len()
+        );
+        assert_eq!(walls_len, DOOM_PERCEPTION_RAY_COUNT, "a full walls array");
+
+        // F-6c: no per-pixel payload — the longest array is the 16-entry cap, far
+        // below the 320×200 framebuffer (~64,000).
+        let framebuffer_elements = width * height;
+        let longest = longest_array_len(&observation);
+        assert_eq!(
+            longest, OBSERVATION_MAX_ENTRIES,
+            "the longest array is the {OBSERVATION_MAX_ENTRIES}-entry cap"
+        );
+        assert!(
+            longest < framebuffer_elements,
+            "no array scales with the framebuffer: {longest} < {framebuffer_elements}"
+        );
+    }
 }

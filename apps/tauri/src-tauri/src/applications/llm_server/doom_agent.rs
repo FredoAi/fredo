@@ -384,6 +384,80 @@ mod tests {
         );
     }
 
+    /// **ST-5 (REQ-1 model receipt, NFR-BOUND, Spec #3030 S1).** A
+    /// `walls`-bearing observation is forwarded **verbatim** into
+    /// `messages[1].content` (`{"observation": <state>, "allowedActions": ...}`):
+    /// the exact `walls` array survives with no field dropped and no size/budget
+    /// guard rejecting it. Constructed as a generic `serde_json::json!` value —
+    /// this module NEVER imports `applications/doom` (cross-application imports
+    /// are forbidden).
+    #[test]
+    fn st5_walls_bearing_observation_passes_through_verbatim() {
+        let observation = json!({
+            "tic": 123,
+            "done": false,
+            "outcome": "alive",
+            "level": { "episode": 1, "map": 1, "skill": 3, "kills": 0, "items": 0, "secrets": 0 },
+            "player": {
+                "x": 1056, "y": -3616, "angle": 90, "health": 100, "armor": 0,
+                "ammo": { "bullets": 50, "shells": 0, "rockets": 0, "cells": 0 },
+                "weapon": "pistol",
+            },
+            "enemies": [],
+            "items": [],
+            "doors": [],
+            "exit": { "distance": 812 },
+            "walls": [
+                { "direction": "left",  "distance": 96,  "blocked": false },
+                { "direction": "front", "distance": 48,  "blocked": true  },
+                { "direction": "right", "distance": 640, "blocked": false },
+            ],
+        });
+        let vocabulary = json!([
+            { "type": "forward", "summary": "hold forward" },
+            { "type": "turn-to", "summary": "face an absolute angle", "params": ["angle"] },
+        ]);
+
+        let body = build_doom_agent_request_body(&observation, &vocabulary);
+
+        let user_content = body["messages"][1]["content"]
+            .as_str()
+            .expect("the user content is a plain string");
+        let payload: Value = serde_json::from_str(user_content).expect("structured JSON payload");
+
+        // The `walls` array (and the whole observation) survives VERBATIM.
+        assert_eq!(
+            payload["observation"], observation,
+            "the observation is forwarded byte-for-byte"
+        );
+        assert_eq!(payload["allowedActions"], vocabulary);
+
+        let walls = payload["observation"]["walls"]
+            .as_array()
+            .expect("walls is an array in the request");
+        assert_eq!(walls.len(), 3, "no wall entry was dropped");
+        assert_eq!(
+            walls[0],
+            json!({ "direction": "left", "distance": 96, "blocked": false })
+        );
+        assert_eq!(
+            walls[1],
+            json!({ "direction": "front", "distance": 48, "blocked": true })
+        );
+        assert_eq!(
+            walls[2],
+            json!({ "direction": "right", "distance": 640, "blocked": false })
+        );
+
+        // No size/budget guard rejected the payload: the builder bounds only
+        // `max_tokens` (unchanged), so the walls-bearing observation is intact.
+        assert_eq!(body["max_tokens"], DOOM_AGENT_MAX_TOKENS);
+        assert!(
+            user_content.contains("\"walls\""),
+            "the serialized user message carries the walls array: {user_content}"
+        );
+    }
+
     #[test]
     fn schema_name_and_persona_are_pinned() {
         assert_eq!(DOOM_ACTION_SCHEMA_NAME, "doom_action");

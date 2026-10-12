@@ -2069,6 +2069,63 @@ mod tests {
         }
     }
 
+    // ── Spec #3030 ST-4: driver determinism (F-7 static leg) ─────────────────
+
+    /// **ST-4 (NFR-DET, F-7 static).** `run_bounded_driver` run TWICE with
+    /// identical scripted decisions + a [`FixedTickClock`] yields a
+    /// field-for-field identical [`DoomDriverReport`] — step-driven, no
+    /// wall-clock motion assertion (G-316).
+    #[tokio::test]
+    async fn st4_bounded_driver_report_is_field_for_field_deterministic() {
+        async fn run() -> DoomDriverReport {
+            let state = DoomEngineState::default();
+            let source = scripted(
+                json!([
+                    { "tics": 2, "actions": [{ "type": "forward" }, { "type": "turn-left" }] },
+                    { "tics": 2, "actions": [{ "type": "strafe-right" }] },
+                ]),
+                true,
+            );
+            let clock = driver_clock();
+            run_bounded_driver(
+                &state,
+                &source,
+                DoomDriverConfig {
+                    map: 1,
+                    skill: 3,
+                    max_steps: 24,
+                    max_failures: 3,
+                },
+                &clock,
+            )
+            .await
+            .expect("driven run")
+        }
+
+        let first = run().await;
+        let second = run().await;
+        assert_eq!(
+            first, second,
+            "identical script + FixedTickClock ⇒ identical report"
+        );
+        // Field-for-field (explicit, beyond the derived `PartialEq`).
+        assert_eq!(first.episode, second.episode);
+        assert_eq!(first.map, second.map);
+        assert_eq!(first.skill, second.skill);
+        assert_eq!(first.steps, second.steps);
+        assert_eq!(first.ticks, second.ticks);
+        assert_eq!(first.distinct_frames, second.distinct_frames);
+        assert_eq!(first.fps_estimate, second.fps_estimate);
+        assert_eq!(first.decisions, second.decisions);
+        assert_eq!(first.failures, second.failures);
+        assert_eq!(first.start_tic, second.start_tic);
+        assert_eq!(first.last_tic, second.last_tic);
+        assert_eq!((first.start_x, first.start_y), (second.start_x, second.start_y));
+        assert_eq!((first.last_x, first.last_y), (second.last_x, second.last_y));
+        assert_eq!(first.terminal, second.terminal);
+        assert!(first.ticks > 0, "the step-driven run advanced");
+    }
+
     // ── Spec #3023 ST-9: teardown (G-263 / REQ-5.3) ──────────────────────────
 
     #[test]
