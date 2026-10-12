@@ -78,13 +78,7 @@ use super::clock::{
     DOOM_CONTINUOUS_TICK_PERIOD_MS, DOOM_DEGRADED_AFTER_FAILURES, DOOM_DEGRADED_TICK_PERIOD_MS,
     DOOM_STATUS_EMIT_MS,
 };
-use super::engine::{bearing_degrees, DoomEngineError, DoomEngineErrorCode, DoomEngineState};
-// Deterministic route planner (Spec #3031 ST-1) + its pinned follow tuning — the
-// AC5 route-follow policy the continuous loop composes over the reactive one.
-use super::navigation::{
-    DoomRoute, DOOM_NAV_FORWARD_AMOUNT, DOOM_NAV_MAX_SKIPS, DOOM_NAV_STALL_TICKS,
-    DOOM_NAV_WAYPOINT_RADIUS,
-};
+use super::engine::{DoomEngineError, DoomEngineErrorCode, DoomEngineState};
 use super::progress::DoomProgressWriter;
 use super::save::DoomCampaign;
 
@@ -155,20 +149,6 @@ pub const DOOM_LOCAL_DOOR_USE_TICKS: u32 = 30;
 /// Near range (map units) at which a front door earns the local `use` press —
 /// mirrors the perception near range (`DOOM_PERCEPTION_NEAR_RANGE = 64`).
 pub const DOOM_LOCAL_DOOR_NEAR_RANGE: i64 = 64;
-
-/// Consecutive ticks with no `exit.distance` decline before the exit-seek
-/// re-routes (R-5 / AC5). Reaching this window increments
-/// [`DoomLocalPolicy::exit_reroutes`]; after [`DOOM_ESCAPE_REROUTE_AFTER`] such
-/// re-routes with still no decline the policy falls back to the retained
-/// clearance wall-follow. Value finalized from ST-1's deterministic E1M1
-/// completion measurement.
-pub const DOOM_EXIT_STALL_TICKS: u32 = 45;
-
-/// Ticks the exit-seek commits to one absolute detour heading when the exit
-/// bearing is obstructed (R-5 / AC5). Committing to a fixed WORLD heading — not
-/// a facing-relative sidestep — breaks the near-range threshold oscillation that
-/// otherwise leaves the player pacing in place.
-pub const DOOM_EXIT_DETOUR_TICKS: u32 = 20;
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -251,11 +231,6 @@ pub trait DoomAutoplayEngine: Send + Sync {
     async fn step(&self, tics: i64, actions: &Value) -> Result<Value, DoomEngineError>;
     /// Re-position at `(episode, map, skill)` (resume / advance / death restart).
     async fn reset(&self, episode: i64, map: i64, skill: i64) -> Result<Value, DoomEngineError>;
-    /// The deterministic route from the player to the level exit over the FULL
-    /// map geometry (Spec #3031 AC5). `Ok(None)` when no route is available
-    /// (no session/player, no exit line, or an unreachable exit); an `Err` is
-    /// never fatal — the loop falls back to the retained reactive policy.
-    async fn exit_route(&self) -> Result<Option<DoomRoute>, DoomEngineError>;
 }
 
 /// Run one synchronous, CPU-bound native engine call on the blocking pool.
@@ -296,11 +271,6 @@ impl DoomAutoplayEngine for DoomEngineState {
     async fn reset(&self, episode: i64, map: i64, skill: i64) -> Result<Value, DoomEngineError> {
         let engine = self.clone();
         run_blocking(move || engine.reset(episode, map, skill)).await
-    }
-
-    async fn exit_route(&self) -> Result<Option<DoomRoute>, DoomEngineError> {
-        let engine = self.clone();
-        run_blocking(move || engine.exit_route()).await
     }
 }
 
@@ -891,188 +861,15 @@ pub struct DoomLocalPolicy {
     pub escapes: u32,
     /// Ticks remaining in the active escape window (`0` = none active).
     pub escape_ticks_remaining: u32,
-    /// Consecutive ticks with no `exit.distance` decline — the exit-seek stall
-    /// detector input (R-5 / AC5).
-    pub exit_stall_ticks: u32,
-    /// Exit-seek re-routes attempted since the last `exit.distance` decline.
-    pub exit_reroutes: u32,
-    /// The previous tick's `exit.distance` (the decline detector input).
-    pub last_exit_distance: Option<i64>,
-    /// Ticks remaining in the committed exit-seek wall-follow window (`0` = none).
-    pub exit_detour_ticks: u32,
 }
 
 impl DoomLocalPolicy {
     /// Reset the transient detector state on a level transition (death restart /
-    /// advance): the no-move streak, the escape window, and the exit-stall
-    /// detector do NOT carry across levels. The cumulative escape count does.
+    /// advance): the no-move streak and the escape window do NOT carry across
+    /// levels. The cumulative escape count does.
     pub fn reset_detector(&mut self) {
         self.no_move_ticks = 0;
         self.escape_ticks_remaining = 0;
-        self.exit_stall_ticks = 0;
-        self.exit_reroutes = 0;
-        self.last_exit_distance = None;
-        self.exit_detour_ticks = 0;
-    }
-}
-
-// ── Route-follow policy (Spec #3031 ST-2 / AC5) ──────────────────────────────
-
-/// The mutable per-level route-follow state (Spec #3031 ST-2 / AC5): the planned
-/// route plus the waypoint/stall/skip counters.
-///
-/// Pure data — no RNG, no clock. [`Self::set_route`] resets the counters on every
-/// (re)acquisition (level load / death restart / advance); [`Self::clear`] drops
-/// the route so [`effective_intent`] falls back to the retained reactive policy.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct RouteFollow {
-    /// The planned route for the current level (empty ⇒ no route: reactive
-    /// fallback).
-    route: DoomRoute,
-    /// The current waypoint index (monotonic within a route).
-    waypoint_index: usize,
-    /// Consecutive ticks with no position progress toward the current waypoint.
-    stall_ticks: u32,
-    /// Waypoints skipped since the last arrival (bounded by `DOOM_NAV_MAX_SKIPS`).
-    skips: u32,
-    /// The previous route tick's player position (the progress detector input).
-    last_position: Option<(i64, i64)>,
-}
-
-impl RouteFollow {
-    /// Adopt a freshly planned route, resetting the waypoint/stall/skip counters.
-    pub fn set_route(&mut self, route: DoomRoute) {
-        self.route = route;
-        self.waypoint_index = 0;
-        self.stall_ticks = 0;
-        self.skips = 0;
-        self.last_position = None;
-    }
-
-    /// Drop the route (no route available / bounded skips exhausted) so the
-    /// composer falls back to the retained reactive policy.
-    pub fn clear(&mut self) {
-        *self = Self::default();
-    }
-
-    /// Whether a current waypoint remains to be walked.
-    pub fn has_waypoint(&self) -> bool {
-        self.waypoint_index < self.route.waypoints.len()
-    }
-
-    /// The current 0-based waypoint index (the route length once exhausted).
-    pub fn waypoint_index(&self) -> usize {
-        self.waypoint_index
-    }
-
-    /// The number of waypoints in the adopted route (`0` when none).
-    pub fn route_len(&self) -> usize {
-        self.route.waypoints.len()
-    }
-}
-
-/// The route-follow action set (Spec #3031 AC5): `turn-to` the current waypoint
-/// bearing plus a bounded `forward`, so the policy walks the planned route.
-///
-/// * Arrival — within [`DOOM_NAV_WAYPOINT_RADIUS`] of the current waypoint: the
-///   index advances monotonically and the stall/skip counters reset.
-/// * Stall — no position progress for [`DOOM_NAV_STALL_TICKS`] consecutive ticks:
-///   one waypoint is skipped, bounded by [`DOOM_NAV_MAX_SKIPS`]; exhausting the
-///   skips (or the route) drops the route and returns `None`.
-///
-/// `None` means "no route action this tick" — the composer then uses the
-/// retained reactive policy. Pure: a function of the observation, the route, and
-/// finite counters (no RNG, no clock).
-fn route_follow_actions(observation: &Value, follow: &mut RouteFollow) -> Option<Vec<Value>> {
-    if !follow.has_waypoint() {
-        return None;
-    }
-    let position = player_position(observation)?;
-
-    // Progress detector: any position change since the last route tick clears
-    // the stall window (mirrors the AC1 no-move detector).
-    let moved = follow
-        .last_position
-        .is_none_or(|previous| previous != position);
-    if moved {
-        follow.stall_ticks = 0;
-    } else {
-        follow.stall_ticks = follow.stall_ticks.saturating_add(1);
-    }
-    follow.last_position = Some(position);
-
-    // Arrival: advance monotonically while within the arrival radius.
-    loop {
-        if !follow.has_waypoint() {
-            break;
-        }
-        let (wx, wy) = {
-            let waypoint = &follow.route.waypoints[follow.waypoint_index];
-            (waypoint.x, waypoint.y)
-        };
-        if !within_arrival_radius(position, (wx, wy)) {
-            break;
-        }
-        follow.waypoint_index += 1;
-        follow.stall_ticks = 0;
-        follow.skips = 0;
-    }
-    if !follow.has_waypoint() {
-        // The whole route was walked: hand locomotion back to the reactive
-        // policy (it may still need to step onto the exit line).
-        follow.clear();
-        return None;
-    }
-
-    // Stall: no progress for DOOM_NAV_STALL_TICKS → skip one waypoint (bounded).
-    if follow.stall_ticks >= DOOM_NAV_STALL_TICKS {
-        follow.stall_ticks = 0;
-        follow.skips = follow.skips.saturating_add(1);
-        follow.waypoint_index += 1;
-        if follow.skips > DOOM_NAV_MAX_SKIPS || !follow.has_waypoint() {
-            follow.clear();
-            return None;
-        }
-    }
-
-    let (wx, wy) = {
-        let waypoint = &follow.route.waypoints[follow.waypoint_index];
-        (waypoint.x, waypoint.y)
-    };
-    let bearing = bearing_degrees(position, (wx, wy));
-    Some(vec![
-        json!({ "type": DOOM_ACTION_TURN_TO, "angle": bearing }),
-        json!({ "type": DOOM_ACTION_FORWARD, "amount": DOOM_NAV_FORWARD_AMOUNT }),
-    ])
-}
-
-/// Whether the player's integer position is within [`DOOM_NAV_WAYPOINT_RADIUS`]
-/// map units of a waypoint (squared comparison — no `sqrt`). Pure.
-fn within_arrival_radius(position: (i64, i64), waypoint: (i64, i64)) -> bool {
-    let dx = position.0 - waypoint.0;
-    let dy = position.1 - waypoint.1;
-    let radius = DOOM_NAV_WAYPOINT_RADIUS;
-    dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy)) <= radius.saturating_mul(radius)
-}
-
-/// (Re)acquire the level route for the route-follow policy (Spec #3031 AC5).
-///
-/// Called after the initial positioning and after every Death/advance reset. On
-/// `Ok(Some(route))` the route is adopted and the counters reset; on `Ok(None)`
-/// or `Err` the route is cleared and the loop continues with the retained
-/// reactive fallback — never fatal, never hangs (the planner is bounded).
-async fn acquire_route(engine: &dyn DoomAutoplayEngine, follow: &mut RouteFollow) {
-    match engine.exit_route().await {
-        Ok(Some(route)) => follow.set_route(route),
-        Ok(None) => follow.clear(),
-        Err(error) => {
-            tracing::warn!(
-                target: "fredo::doom",
-                error = %error.message,
-                "the Doom route planner failed; using the reactive fallback"
-            );
-            follow.clear();
-        }
     }
 }
 
@@ -1246,121 +1043,11 @@ pub fn door_use_due(observation: &Value, ticks: u32) -> bool {
     has_front_near_door(observation) && ticks.is_multiple_of(DOOM_LOCAL_DOOR_USE_TICKS)
 }
 
-/// Whether the observation reports a near-front obstruction within
-/// [`DOOM_LOCAL_DOOR_NEAR_RANGE`]: a front door OR a front `blocked` wall ray.
-/// This extends today's door-only trigger into a switch/exit aid (R-5 / AC5).
-/// Pure.
-pub fn has_front_near_obstruction(observation: &Value) -> bool {
-    has_front_near_door(observation)
-        || observation_walls(observation).iter().any(|wall| {
-            wall.get("direction").and_then(Value::as_str) == Some("front")
-                && wall.get("blocked").and_then(Value::as_bool) == Some(true)
-        })
-}
-
-/// Whether the local `use` aid is due this tick: a near-front obstruction and
-/// the [`DOOM_LOCAL_DOOR_USE_TICKS`] cadence (`ticks % cadence == 0`). Pure.
-pub fn obstruction_use_due(observation: &Value, ticks: u32) -> bool {
-    has_front_near_obstruction(observation) && ticks.is_multiple_of(DOOM_LOCAL_DOOR_USE_TICKS)
-}
-
-/// Advance the exit-distance stall detector from the current observation: a
-/// strict `exit.distance` decline clears the stall and re-route counters
-/// (progress re-acquires the exit); otherwise the stall advances and, at
-/// [`DOOM_EXIT_STALL_TICKS`], opens one re-route window. Pure — no RNG, no clock.
-fn observe_exit_distance(policy: &mut DoomLocalPolicy, observation: &Value) {
-    let Some(current) = observation.pointer("/exit/distance").and_then(Value::as_i64) else {
-        return;
-    };
-    if policy
-        .last_exit_distance
-        .is_some_and(|previous| current < previous)
-    {
-        policy.exit_stall_ticks = 0;
-        policy.exit_reroutes = 0;
-    } else {
-        policy.exit_stall_ticks = policy.exit_stall_ticks.saturating_add(1);
-        if policy.exit_stall_ticks >= DOOM_EXIT_STALL_TICKS {
-            policy.exit_stall_ticks = 0;
-            policy.exit_reroutes = policy.exit_reroutes.saturating_add(1);
-        }
-    }
-    policy.last_exit_distance = Some(current);
-}
-
-/// The exit-seek action set (R-5 / AC5): `turn-to` + a bounded `forward` toward
-/// the exit.
+/// Compose the effective per-tick intent from the retained [`safety_reflex`] and
+/// the Spec #3031 unstick/escape + local-locomotion policy.
 ///
-/// * No wall straight ahead → face the exit bearing and walk (the heading is
-///   ABSOLUTE, so the `turn-to` servo converges instead of spinning).
-/// * A wall ahead → enter a committed right-hand wall-follow
-///   ([`DOOM_EXIT_DETOUR_TICKS`] ticks): step right when the right is open, else
-///   left, else turn around. The commitment (a fixed WORLD-facing rule evaluated
-///   tick by tick) breaks the near-range threshold oscillation that otherwise
-///   leaves the player pacing in place, and the right-hand rule walks the
-///   obstacle boundary until the exit bearing is clear again.
-/// * After [`DOOM_ESCAPE_REROUTE_AFTER`] failed re-routes (no `exit.distance`
-///   decline across that many [`DOOM_EXIT_STALL_TICKS`] windows) → the retained
-///   clearance wall-follow. Pure — no RNG, no clock.
-fn exit_seek_actions(
-    observation: &Value,
-    exit_angle: i64,
-    policy: &mut DoomLocalPolicy,
-) -> Vec<Value> {
-    let current = observation_angle(observation);
-    let walls = observation_walls(observation);
-    let turn = |heading: i64| json!({ "type": DOOM_ACTION_TURN_TO, "angle": heading });
-    let forward = json!({ "type": DOOM_ACTION_FORWARD, "amount": DOOM_ESCAPE_FORWARD_AMOUNT });
-
-    if policy.exit_reroutes >= DOOM_ESCAPE_REROUTE_AFTER {
-        policy.exit_detour_ticks = 0;
-        let direction = escape_direction(walls, policy.escapes.saturating_add(policy.exit_reroutes));
-        return vec![turn(escape_heading(direction, current)), forward];
-    }
-
-    let front_blocked = wall_direction_blocked(walls, "front");
-    let right_blocked = wall_direction_blocked(walls, "right");
-    let left_blocked = wall_direction_blocked(walls, "left");
-
-    // Clear run to the exit → face it and walk.
-    if policy.exit_detour_ticks == 0 && !front_blocked {
-        return vec![turn(exit_angle), forward];
-    }
-
-    // A door we are facing is an obstruction: press `use` (opens it) and keep
-    // walking forward, so the wall-follow does not turn away from a doorway.
-    if has_front_near_door(observation) {
-        policy.exit_detour_ticks = 0;
-        return vec![forward, json!({ "type": DOOM_ACTION_USE })];
-    }
-
-    // Enter a committed wall-follow when a wall appears ahead.
-    if policy.exit_detour_ticks == 0 {
-        policy.exit_detour_ticks = DOOM_EXIT_DETOUR_TICKS;
-    }
-    policy.exit_detour_ticks -= 1;
-
-    // Right-hand wall-follow step (all headings are absolute world angles).
-    let heading = if !right_blocked {
-        (current + 270).rem_euclid(360)
-    } else if !left_blocked {
-        (current + 90).rem_euclid(360)
-    } else {
-        (current + 180).rem_euclid(360)
-    };
-    vec![turn(heading), forward]
-}
-
-/// Compose the effective per-tick intent from the retained [`safety_reflex`], the
-/// Spec #3031 route-follow policy (AC5), and the unstick/escape +
-/// local-locomotion policy.
-///
-/// Pure: a function of the observation, the persisted intent, the counters, the
-/// route-follow state, and `ticks` — no RNG, no clock, no I/O.
-///
-/// Precedence (binding): terminal (outside this function) > position-freeze
-/// escape (AC1) > **route-follow (AC5)** > retained reactive exit-seek > model
-/// intent + local locomotion guard.
+/// Pure: a function of the observation, the persisted intent, the counters, and
+/// `ticks` — no RNG, no clock, no I/O.
 ///
 /// 1. `base` = [`safety_reflex`] (R-3a — semantics retained, never changed here).
 /// 2. **Escape / re-route (R-1 / AC1):** when the no-move streak reaches
@@ -1368,43 +1055,25 @@ fn exit_seek_actions(
 ///    becomes a `turn-to` (toward a less-blocked heading) AND a bounded
 ///    `forward` — a turn and a movement in the SAME action set. `escapes`
 ///    increments on window entry; the window is [`DOOM_ESCAPE_WINDOW_TICKS`].
-///    This is VERBATIM and takes PRIORITY over route-follow.
-/// 3. **Route-follow (R-5 / AC5):** when no escape fired and the route-follow
-///    state has a current waypoint, walk it (`turn-to` the waypoint bearing + a
-///    bounded `forward`, [`route_follow_actions`]) — the planned route owns
-///    locomotion between/over decisions. Arrival advances the index; a bounded
-///    stall skips a waypoint, then falls back.
-/// 4. **Reactive exit-seek (fallback):** only when there is no route action — the
-///    observation's `exit.angle` bearing steers toward the exit
-///    ([`exit_seek_actions`]). The `exit.distance` stall detector
-///    ([`observe_exit_distance`]) re-routes after [`DOOM_EXIT_STALL_TICKS`] with
-///    no decline.
-/// 5. **Local-locomotion guard (R-2 / R-3):** a locomotion-free intent (empty,
+/// 3. **Local-locomotion guard (R-2 / R-3):** a locomotion-free intent (empty,
 ///    `shoot`-only, `turn-*`-only, `use`) gets a bounded `forward` appended, so
 ///    the issued-locomotion gap is at most ONE tick.
-/// 6. **Use aid (R-5):** a near-front obstruction (door OR wall) earns a `use`
-///    press — UNCONDITIONALLY while route-following (a door the route passes
-///    through must open before the AC1 escape turns the player away), else on the
-///    [`DOOM_LOCAL_DOOR_USE_TICKS`] cadence (a switch/exit aid).
+/// 4. **Door explore (R-5):** a front near door earns a `use` press on the
+///    [`DOOM_LOCAL_DOOR_USE_TICKS`] cadence.
 pub fn effective_intent(
     observation: &Value,
     last_intent: &[Value],
     blocked_forward_ticks: u32,
     policy: &mut DoomLocalPolicy,
-    follow: &mut RouteFollow,
     ticks: u32,
 ) -> Vec<Value> {
-    // 0. Exit-distance stall detector (pure; feeds the reactive fallback).
-    observe_exit_distance(policy, observation);
-
     // 1. Retained safety reflex.
     let mut intent = safety_reflex(observation, last_intent, blocked_forward_ticks);
 
-    // 2. Position-freeze escape / re-route (AC1 — VERBATIM; overrides the seek).
+    // 2. Escape / re-route.
     let stuck = policy.no_move_ticks >= DOOM_ESCAPE_STUCK_TICKS;
     let in_window = policy.escape_ticks_remaining > 0;
-    let escaped = stuck || in_window;
-    if escaped {
+    if stuck || in_window {
         if !in_window {
             policy.escapes = policy.escapes.saturating_add(1);
             policy.escape_ticks_remaining = DOOM_ESCAPE_WINDOW_TICKS;
@@ -1418,22 +1087,7 @@ pub fn effective_intent(
     }
     policy.escape_ticks_remaining = policy.escape_ticks_remaining.saturating_sub(1);
 
-    // 3-4. Route-follow (AC5) then the retained reactive exit-seek fallback —
-    //      only when no escape fired this tick.
-    let mut route_active = false;
-    if !escaped {
-        if let Some(actions) = route_follow_actions(observation, follow) {
-            intent = actions;
-            route_active = true;
-        } else if let Some(exit_angle) = observation
-            .pointer("/exit/angle")
-            .and_then(Value::as_i64)
-        {
-            intent = exit_seek_actions(observation, exit_angle, policy);
-        }
-    }
-
-    // 5. Local-locomotion guard — the act-between-decisions guarantee.
+    // 3. Local-locomotion guard — the act-between-decisions guarantee.
     if !intent_has_locomotion(&intent) {
         intent.push(json!({
             "type": DOOM_ACTION_FORWARD,
@@ -1441,14 +1095,8 @@ pub fn effective_intent(
         }));
     }
 
-    // 6. Use aid (door/switch/exit) for a near-front obstruction: every tick
-    //    while route-following (open the door promptly), else on the cadence.
-    let use_due = if route_active {
-        has_front_near_obstruction(observation)
-    } else {
-        obstruction_use_due(observation, ticks)
-    };
-    if use_due {
+    // 4. Door explore.
+    if door_use_due(observation, ticks) {
         intent.push(json!({ "type": DOOM_ACTION_USE }));
     }
 
@@ -1595,8 +1243,6 @@ pub async fn run_continuous_loop(
     let mut blocked_forward_ticks: u32 = 0;
     // The unstick/escape + local-locomotion policy state (Spec #3031 ST-3).
     let mut policy = DoomLocalPolicy::default();
-    // The route-follow state (Spec #3031 ST-2 / AC5); (re)acquired per level.
-    let mut follow = RouteFollow::default();
 
     // The non-blocking pending decision and its pacing bookkeeping.
     let mut pending: Option<PendingDecision<'_>> = None;
@@ -1624,9 +1270,6 @@ pub async fn run_continuous_loop(
             return result;
         }
     };
-    // R-5 / AC5: acquire the level route over the FULL map geometry right after
-    // the initial positioning, so route-follow owns locomotion from the start.
-    acquire_route(engine, &mut follow).await;
     if let Some(kind) = terminal_kind(&observation) {
         pending_terminal = Some(kind);
     }
@@ -1661,9 +1304,6 @@ pub async fn run_continuous_loop(
                             blocked_forward_ticks = 0;
                             policy.reset_detector();
                             last_intent.clear();
-                            // Re-acquire the route for the (re)loaded level
-                            // (death restart / campaign advance).
-                            acquire_route(engine, &mut follow).await;
                             observe(&status);
                             continue;
                         }
@@ -1705,9 +1345,6 @@ pub async fn run_continuous_loop(
                             blocked_forward_ticks = 0;
                             policy.reset_detector();
                             last_intent.clear();
-                            // Re-acquire the route for the (re)loaded level
-                            // (death restart / campaign advance).
-                            acquire_route(engine, &mut follow).await;
                             observe(&status);
                             continue;
                         }
@@ -1822,7 +1459,6 @@ pub async fn run_continuous_loop(
             &last_intent,
             blocked_forward_ticks,
             &mut policy,
-            &mut follow,
             status.steps,
         );
         status.escapes = policy.escapes;
@@ -1909,7 +1545,6 @@ mod tests {
     use serde_json::json;
 
     use crate::applications::doom::clock::FixedTickClock;
-    use crate::applications::doom::navigation::DoomWaypoint;
 
     /// A typed native-engine failure for the fakes.
     fn engine_error(message: &str) -> DoomEngineError {
@@ -1962,17 +1597,11 @@ mod tests {
         step_queue: Mutex<VecDeque<Result<Value, DoomEngineError>>>,
         reset_queue: Mutex<VecDeque<Result<Value, DoomEngineError>>>,
         reset_always_error: Mutex<Option<String>>,
-        /// Scripted `exit_route` results (default `None` — no route).
-        route_queue: Mutex<VecDeque<Option<DoomRoute>>>,
     }
 
     impl FakeEngine {
         fn queue_get(&self, value: Value) {
             self.get_queue.lock().unwrap().push_back(Ok(value));
-        }
-        /// Script the next `exit_route` result (the AC5 route lever).
-        fn queue_route(&self, route: Option<DoomRoute>) {
-            self.route_queue.lock().unwrap().push_back(route);
         }
         /// Make EVERY `reset` call fail (the positioning-failure lever).
         fn set_reset_error(&self, message: &str) {
@@ -2068,12 +1697,6 @@ mod tests {
             *self.map.lock().unwrap() = map;
             *self.tic.lock().unwrap() = 0;
             Ok(state_at(0, false, false, episode, map))
-        }
-
-        async fn exit_route(&self) -> Result<Option<DoomRoute>, DoomEngineError> {
-            self.calls.lock().unwrap().push("exit_route".to_string());
-            // Default `None`: no scripted route ⇒ the reactive fallback runs.
-            Ok(self.route_queue.lock().unwrap().pop_front().unwrap_or(None))
         }
     }
 
@@ -3101,247 +2724,13 @@ mod tests {
             no_move_ticks: DOOM_ESCAPE_STUCK_TICKS,
             ..DoomLocalPolicy::default()
         };
-        let mut follow = RouteFollow::default();
-        let intent = effective_intent(
-            &observation,
-            &[json!({ "type": "shoot" })],
-            0,
-            &mut policy,
-            &mut follow,
-            1,
-        );
+        let intent = effective_intent(&observation, &[json!({ "type": "shoot" })], 0, &mut policy, 1);
         let types: Vec<&str> = intent.iter().filter_map(|a| a["type"].as_str()).collect();
         // A turn AND a movement in the SAME action set (R-1 / REQ-1).
         assert!(types.contains(&"turn-to"), "{intent:?}");
         assert!(types.contains(&"forward"), "{intent:?}");
         assert_eq!(policy.escapes, 1);
         assert_eq!(policy.escape_ticks_remaining, DOOM_ESCAPE_WINDOW_TICKS - 1);
-    }
-
-    #[test]
-    fn the_position_freeze_escape_takes_priority_over_the_exit_seek() {
-        // With an exit bearing present AND the position freeze reached, the AC1
-        // escape (a clearance turn + forward) fires — the exit-seek does NOT run.
-        let observation = json!({
-            "player": { "angle": 90 },
-            "exit": { "distance": 1000, "angle": 0 },
-            "walls": [
-                { "direction": "front", "distance": 40, "blocked": true },
-                { "direction": "left", "distance": 200, "blocked": false },
-                { "direction": "right", "distance": 150, "blocked": false },
-            ],
-        });
-        let mut policy = DoomLocalPolicy {
-            no_move_ticks: DOOM_ESCAPE_STUCK_TICKS,
-            ..DoomLocalPolicy::default()
-        };
-        let mut follow = RouteFollow::default();
-        let intent = effective_intent(
-            &observation,
-            &[json!({ "type": "shoot" })],
-            0,
-            &mut policy,
-            &mut follow,
-            1,
-        );
-        let types: Vec<&str> = intent.iter().filter_map(|a| a["type"].as_str()).collect();
-        assert!(types.contains(&"turn-to"), "{intent:?}");
-        assert!(types.contains(&"forward"), "{intent:?}");
-        assert_eq!(policy.escapes, 1);
-        // The escape heading is the clearance turn (left = 90 + 90 = 180), NOT the
-        // exit bearing (0) — the escape takes priority over the exit-seek.
-        let heading = intent
-            .iter()
-            .find(|action| action["type"] == "turn-to")
-            .and_then(|action| action["angle"].as_i64())
-            .expect("turn-to angle");
-        assert_ne!(
-            heading, 0,
-            "the exit-seek heading must not be used during an escape"
-        );
-    }
-
-    // ── Route-follow (Spec #3031 ST-2 / AC5) ─────────────────────────────────
-
-    /// Build a route from `(x, y)` cell-center waypoints.
-    fn route(points: &[(i64, i64)]) -> DoomRoute {
-        DoomRoute {
-            waypoints: points
-                .iter()
-                .map(|&(x, y)| DoomWaypoint { x, y })
-                .collect(),
-        }
-    }
-
-    #[test]
-    fn the_route_follow_policy_turns_and_walks_toward_its_waypoint() {
-        // The player at the origin faces west (90); the first waypoint is due
-        // east, so route-follow must turn to east (bearing 0) and walk forward.
-        let observation = json!({ "player": { "x": 0, "y": 0, "angle": 90 } });
-        let mut policy = DoomLocalPolicy::default();
-        let mut follow = RouteFollow::default();
-        follow.set_route(route(&[(640, 0)]));
-
-        let intent = effective_intent(&observation, &[], 0, &mut policy, &mut follow, 1);
-        let types: Vec<&str> = intent.iter().filter_map(|a| a["type"].as_str()).collect();
-        assert!(types.contains(&"turn-to"), "{intent:?}");
-        assert!(types.contains(&"forward"), "{intent:?}");
-        let heading = intent
-            .iter()
-            .find(|action| action["type"] == "turn-to")
-            .and_then(|action| action["angle"].as_i64())
-            .expect("turn-to");
-        assert_eq!(heading, 0, "east is bearing 0: {intent:?}");
-        assert_eq!(follow.waypoint_index(), 0, "still walking waypoint 0");
-    }
-
-    #[test]
-    fn the_route_follow_policy_advances_the_waypoint_on_arrival() {
-        // The player is within DOOM_NAV_WAYPOINT_RADIUS of waypoint 0, so the
-        // index advances monotonically to waypoint 1.
-        let observation = json!({ "player": { "x": 100, "y": 0, "angle": 0 } });
-        let mut policy = DoomLocalPolicy::default();
-        let mut follow = RouteFollow::default();
-        follow.set_route(route(&[(100, 0), (640, 0)]));
-
-        let _ = effective_intent(&observation, &[], 0, &mut policy, &mut follow, 1);
-        assert_eq!(
-            follow.waypoint_index(),
-            1,
-            "arrival within the radius advances the waypoint index"
-        );
-    }
-
-    #[test]
-    fn the_route_follow_policy_skips_a_stalled_waypoint_then_falls_back() {
-        // The player never moves: after DOOM_NAV_STALL_TICKS consecutive
-        // no-progress ticks one waypoint is skipped; exhausting the bounded
-        // DOOM_NAV_MAX_SKIPS drops the route (the reactive fallback takes over).
-        let observation = json!({ "player": { "x": 0, "y": 0, "angle": 0 }, "walls": [] });
-        let mut policy = DoomLocalPolicy::default();
-        let mut follow = RouteFollow::default();
-        follow.set_route(route(&[(1000, 0), (2000, 0), (3000, 0), (4000, 0), (5000, 0)]));
-
-        // The first call counts as "progress" (no previous position), so the
-        // first skip lands one tick after DOOM_NAV_STALL_TICKS.
-        let before = follow.waypoint_index();
-        for _ in 0..=DOOM_NAV_STALL_TICKS {
-            let _ = effective_intent(&observation, &[], 0, &mut policy, &mut follow, 1);
-        }
-        assert!(
-            follow.waypoint_index() > before,
-            "a stalled waypoint is skipped"
-        );
-
-        // Keep stalling: the bounded skips are exhausted and the route is
-        // dropped for the reactive fallback.
-        for _ in 0..(DOOM_NAV_STALL_TICKS as usize * (DOOM_NAV_MAX_SKIPS as usize + 2)) {
-            let _ = effective_intent(&observation, &[], 0, &mut policy, &mut follow, 1);
-        }
-        assert!(
-            !follow.has_waypoint(),
-            "the route falls back after the bounded skips are exhausted"
-        );
-    }
-
-    #[test]
-    fn the_escape_takes_priority_over_route_follow() {
-        // A position freeze AND a route whose first waypoint is due east: the
-        // AC1 escape (a clearance turn, heading != east) must win, and
-        // route-follow must NOT advance during the escape.
-        let observation = json!({
-            "player": { "x": 0, "y": 0, "angle": 90 },
-            "walls": [
-                { "direction": "front", "distance": 40, "blocked": true },
-                { "direction": "left", "distance": 200, "blocked": false },
-                { "direction": "right", "distance": 150, "blocked": false },
-            ],
-        });
-        let mut policy = DoomLocalPolicy {
-            no_move_ticks: DOOM_ESCAPE_STUCK_TICKS,
-            ..DoomLocalPolicy::default()
-        };
-        let mut follow = RouteFollow::default();
-        follow.set_route(route(&[(640, 0)]));
-
-        let intent =
-            effective_intent(&observation, &[json!({ "type": "shoot" })], 0, &mut policy, &mut follow, 1);
-        assert_eq!(policy.escapes, 1);
-        let heading = intent
-            .iter()
-            .find(|action| action["type"] == "turn-to")
-            .and_then(|action| action["angle"].as_i64())
-            .expect("turn-to");
-        // The escape heading is the clearance turn, NOT the east route bearing.
-        let expected_escape = escape_heading(
-            escape_direction(observation["walls"].as_array().unwrap(), 1),
-            90,
-        );
-        assert_eq!(heading, expected_escape, "{intent:?}");
-        assert_ne!(heading, bearing_degrees((0, 0), (640, 0)), "{intent:?}");
-        assert_eq!(
-            follow.waypoint_index(),
-            0,
-            "route-follow does not advance during an escape"
-        );
-    }
-
-    #[test]
-    fn the_route_follow_policy_presses_use_for_a_near_front_obstruction() {
-        // A front near door earns a `use` press UNCONDITIONALLY while
-        // route-following (so a door the route passes through opens promptly),
-        // even off the DOOM_LOCAL_DOOR_USE_TICKS cadence.
-        let observation = json!({
-            "player": { "x": 0, "y": 0, "angle": 0 },
-            "doors": [{ "direction": "front", "distance": 40 }],
-        });
-        let mut policy = DoomLocalPolicy::default();
-        let mut follow = RouteFollow::default();
-        follow.set_route(route(&[(1000, 0)]));
-
-        // `ticks` deliberately OFF the cadence — route-follow still presses `use`.
-        let intent = effective_intent(&observation, &[], 0, &mut policy, &mut follow, 7);
-        assert!(
-            intent.iter().any(|action| action["type"] == "use"),
-            "a near-front door is used while route-following: {intent:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn continuous_loop_acquires_the_route_after_positioning_and_on_restart() {
-        // A death in the first STEP re-issues the same level; the route is
-        // (re)acquired after BOTH the initial positioning and the death restart.
-        let engine = FakeEngine::default();
-        engine
-            .step_queue
-            .lock()
-            .unwrap()
-            .push_back(Ok(state_json(7, false, true)));
-        engine.queue_route(Some(route(&[(640, 0)])));
-        let source = FakeSource::repeating(Ok(decision(1)));
-        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
-        let stop = AtomicBool::new(false);
-        let cfg = continuous_config(6, 3, Duration::from_secs(1));
-
-        let _ = run_continuous_loop(
-            &engine,
-            &source,
-            &cfg,
-            &clock,
-            AutoplayRun {
-                campaign: campaign(1, 1),
-                progress: no_progress(),
-            },
-            &stop,
-            |_| {},
-        )
-        .await;
-
-        assert!(
-            engine.count("exit_route") >= 2,
-            "the route is acquired at positioning and after the death restart: {:?}",
-            engine.calls()
-        );
     }
 
     #[test]
@@ -3354,8 +2743,7 @@ mod tests {
             vec![json!({ "type": "use" })],
         ] {
             let mut policy = DoomLocalPolicy::default();
-            let mut follow = RouteFollow::default();
-            let intent = effective_intent(&json!({}), &actions, 0, &mut policy, &mut follow, 1);
+            let intent = effective_intent(&json!({}), &actions, 0, &mut policy, 1);
             assert!(
                 intent_has_locomotion(&intent),
                 "a locomotion-free intent must gain locomotion: {actions:?} -> {intent:?}"
@@ -3366,13 +2754,11 @@ mod tests {
     #[test]
     fn effective_intent_does_not_duplicate_an_existing_locomotion_action() {
         let mut policy = DoomLocalPolicy::default();
-        let mut follow = RouteFollow::default();
         let intent = effective_intent(
             &json!({}),
             &[json!({ "type": "forward", "amount": 3 })],
             0,
             &mut policy,
-            &mut follow,
             0,
         );
         assert_eq!(intent, vec![json!({ "type": "forward", "amount": 3 })]);
@@ -3385,18 +2771,17 @@ mod tests {
             no_move_ticks: DOOM_ESCAPE_STUCK_TICKS,
             ..DoomLocalPolicy::default()
         };
-        let mut follow = RouteFollow::default();
         // Entry increments once and opens the window.
-        let _ = effective_intent(&observation, &[], 0, &mut policy, &mut follow, 0);
+        let _ = effective_intent(&observation, &[], 0, &mut policy, 0);
         assert_eq!(policy.escapes, 1);
         // The window holds the escape without re-incrementing for its full length.
         for _ in 0..(DOOM_ESCAPE_WINDOW_TICKS - 1) {
-            let _ = effective_intent(&observation, &[], 0, &mut policy, &mut follow, 0);
+            let _ = effective_intent(&observation, &[], 0, &mut policy, 0);
         }
         assert_eq!(policy.escapes, 1, "no re-entry while the window is active");
         assert_eq!(policy.escape_ticks_remaining, 0);
         // Still stuck and the window expired → a fresh escape (re-route).
-        let _ = effective_intent(&observation, &[], 0, &mut policy, &mut follow, 0);
+        let _ = effective_intent(&observation, &[], 0, &mut policy, 0);
         assert_eq!(policy.escapes, 2, "a new escape begins after the window");
     }
 
@@ -3406,7 +2791,6 @@ mod tests {
             no_move_ticks: 20,
             escapes: 3,
             escape_ticks_remaining: 7,
-            ..DoomLocalPolicy::default()
         };
         policy.reset_detector();
         assert_eq!(policy.no_move_ticks, 0);
@@ -3438,8 +2822,7 @@ mod tests {
             no_move_ticks: DOOM_ESCAPE_STUCK_TICKS,
             ..DoomLocalPolicy::default()
         };
-        let mut follow = RouteFollow::default();
-        let intent = effective_intent(&observation, &[], 0, &mut policy, &mut follow, 1);
+        let intent = effective_intent(&observation, &[], 0, &mut policy, 1);
         let record = build_action_audit_record(Some(42), &intent, true, false);
         let actions = record["actions"].as_array().expect("issued actions array");
         assert!(actions.iter().any(|action| action["type"] == "turn-to"));

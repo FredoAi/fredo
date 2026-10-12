@@ -53,10 +53,6 @@ pub mod decision;
 pub mod engine;
 pub mod failure_seam;
 pub mod mode;
-// Deterministic in-process route planner (Spec #3031, AC5 / ST-1) — the bounded
-// grid/BFS over `MapData` geometry that supplies route-level knowledge to the
-// continuous loop's route-follow policy.
-pub mod navigation;
 pub mod perception;
 pub mod progress;
 pub mod save;
