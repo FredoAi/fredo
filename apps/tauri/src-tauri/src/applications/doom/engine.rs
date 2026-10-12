@@ -2363,4 +2363,98 @@ mod tests {
         let angle = value["angle"].as_i64().expect("integer angle");
         assert!((0..360).contains(&angle), "angle is 0-359, got {angle}");
     }
+
+    // ── Spec #3031 ST-5 (round 2): the exit-seek steering regression ─────────
+
+    /// A recording engine wrapper that captures the observation's
+    /// `exit.distance` after every engine call — the ST-5 exit-seek steering
+    /// probe. Forwards every call to the native adapter on the blocking pool.
+    struct ExitTrackingEngine {
+        inner: DoomEngineState,
+        distances: Mutex<Vec<i64>>,
+    }
+
+    impl ExitTrackingEngine {
+        fn new(inner: DoomEngineState) -> Self {
+            Self {
+                inner,
+                distances: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn record(&self, observation: &Value) {
+            if let Some(distance) = observation.pointer("/exit/distance").and_then(Value::as_i64) {
+                self.distances.lock().unwrap().push(distance);
+            }
+        }
+
+        fn distances(&self) -> Vec<i64> {
+            self.distances.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl DoomAutoplayEngine for ExitTrackingEngine {
+        async fn read_state(&self) -> Result<Value, DoomEngineError> {
+            let state = self.inner.clone();
+            let observation = run_engine_task(move || state.read_state()).await?;
+            self.record(&observation);
+            Ok(observation)
+        }
+
+        async fn step(&self, tics: i64, actions: &Value) -> Result<Value, DoomEngineError> {
+            let state = self.inner.clone();
+            let actions = actions.clone();
+            let observation = run_engine_task(move || state.step(tics, &actions)).await?;
+            self.record(&observation);
+            Ok(observation)
+        }
+
+        async fn reset(&self, episode: i64, map: i64, skill: i64) -> Result<Value, DoomEngineError> {
+            let state = self.inner.clone();
+            let observation = run_engine_task(move || state.reset(episode, map, skill)).await?;
+            self.record(&observation);
+            Ok(observation)
+        }
+    }
+
+    /// **ST-5 (R-5 / AC5, deterministic).** The exit-seek policy steers the
+    /// player TOWARD the exit on the real E1M1: over a bounded sim-time run
+    /// (`run_continuous_loop` + a [`FixedTickClock`] + a benign scripted source,
+    /// the exit-seek owning locomotion) the sampled `exit.distance` falls
+    /// strictly below its spawn value. This is the deterministic steering pin —
+    /// the end-to-end completion leg is the ST-1 gate (see the scratch report).
+    #[tokio::test]
+    async fn the_exit_seek_policy_steers_toward_the_exit_on_e1m1() {
+        let state = DoomEngineState::default();
+        state.launch(1, 3).expect("launch E1M1");
+        let engine = ExitTrackingEngine::new(state);
+        let source = scripted(json!([{ "tics": 1, "actions": [] }]), true);
+        let clock = driver_clock();
+        let stop = AtomicBool::new(false);
+        let config = DoomAutoplayConfig {
+            max_steps: 600,
+            max_ticks: 600,
+            ..DoomAutoplayConfig::default()
+        };
+        let run = AutoplayRun {
+            campaign: DoomCampaign {
+                episode: 1,
+                map: 1,
+                skill: 3,
+                ..DoomCampaign::initial()
+            },
+            progress: DoomProgressWriter::new(|_| Ok(())),
+        };
+
+        run_continuous_loop(&engine, &source, &config, &clock, run, &stop, |_| {}).await;
+
+        let distances = engine.distances();
+        let first = *distances.first().expect("exit distance sampled");
+        let minimum = distances.iter().copied().min().expect("distances");
+        assert!(
+            minimum < first,
+            "the exit-seek must steer toward the exit: spawn={first} min={minimum}"
+        );
+    }
 }

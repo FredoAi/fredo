@@ -150,6 +150,20 @@ pub const DOOM_LOCAL_DOOR_USE_TICKS: u32 = 30;
 /// mirrors the perception near range (`DOOM_PERCEPTION_NEAR_RANGE = 64`).
 pub const DOOM_LOCAL_DOOR_NEAR_RANGE: i64 = 64;
 
+/// Consecutive ticks with no `exit.distance` decline before the exit-seek
+/// re-routes (R-5 / AC5). Reaching this window increments
+/// [`DoomLocalPolicy::exit_reroutes`]; after [`DOOM_ESCAPE_REROUTE_AFTER`] such
+/// re-routes with still no decline the policy falls back to the retained
+/// clearance wall-follow. Value finalized from ST-1's deterministic E1M1
+/// completion measurement.
+pub const DOOM_EXIT_STALL_TICKS: u32 = 45;
+
+/// Ticks the exit-seek commits to one absolute detour heading when the exit
+/// bearing is obstructed (R-5 / AC5). Committing to a fixed WORLD heading — not
+/// a facing-relative sidestep — breaks the near-range threshold oscillation that
+/// otherwise leaves the player pacing in place.
+pub const DOOM_EXIT_DETOUR_TICKS: u32 = 20;
+
 // ── Configuration ────────────────────────────────────────────────────────────
 
 /// The bounded budgets and pacing of one autoplay run.
@@ -861,15 +875,28 @@ pub struct DoomLocalPolicy {
     pub escapes: u32,
     /// Ticks remaining in the active escape window (`0` = none active).
     pub escape_ticks_remaining: u32,
+    /// Consecutive ticks with no `exit.distance` decline — the exit-seek stall
+    /// detector input (R-5 / AC5).
+    pub exit_stall_ticks: u32,
+    /// Exit-seek re-routes attempted since the last `exit.distance` decline.
+    pub exit_reroutes: u32,
+    /// The previous tick's `exit.distance` (the decline detector input).
+    pub last_exit_distance: Option<i64>,
+    /// Ticks remaining in the committed exit-seek wall-follow window (`0` = none).
+    pub exit_detour_ticks: u32,
 }
 
 impl DoomLocalPolicy {
     /// Reset the transient detector state on a level transition (death restart /
-    /// advance): the no-move streak and the escape window do NOT carry across
-    /// levels. The cumulative escape count does.
+    /// advance): the no-move streak, the escape window, and the exit-stall
+    /// detector do NOT carry across levels. The cumulative escape count does.
     pub fn reset_detector(&mut self) {
         self.no_move_ticks = 0;
         self.escape_ticks_remaining = 0;
+        self.exit_stall_ticks = 0;
+        self.exit_reroutes = 0;
+        self.last_exit_distance = None;
+        self.exit_detour_ticks = 0;
     }
 }
 
@@ -1043,11 +1070,119 @@ pub fn door_use_due(observation: &Value, ticks: u32) -> bool {
     has_front_near_door(observation) && ticks.is_multiple_of(DOOM_LOCAL_DOOR_USE_TICKS)
 }
 
+/// Whether the observation reports a near-front obstruction within
+/// [`DOOM_LOCAL_DOOR_NEAR_RANGE`]: a front door OR a front `blocked` wall ray.
+/// This extends today's door-only trigger into a switch/exit aid (R-5 / AC5).
+/// Pure.
+pub fn has_front_near_obstruction(observation: &Value) -> bool {
+    has_front_near_door(observation)
+        || observation_walls(observation).iter().any(|wall| {
+            wall.get("direction").and_then(Value::as_str) == Some("front")
+                && wall.get("blocked").and_then(Value::as_bool) == Some(true)
+        })
+}
+
+/// Whether the local `use` aid is due this tick: a near-front obstruction and
+/// the [`DOOM_LOCAL_DOOR_USE_TICKS`] cadence (`ticks % cadence == 0`). Pure.
+pub fn obstruction_use_due(observation: &Value, ticks: u32) -> bool {
+    has_front_near_obstruction(observation) && ticks.is_multiple_of(DOOM_LOCAL_DOOR_USE_TICKS)
+}
+
+/// Advance the exit-distance stall detector from the current observation: a
+/// strict `exit.distance` decline clears the stall and re-route counters
+/// (progress re-acquires the exit); otherwise the stall advances and, at
+/// [`DOOM_EXIT_STALL_TICKS`], opens one re-route window. Pure — no RNG, no clock.
+fn observe_exit_distance(policy: &mut DoomLocalPolicy, observation: &Value) {
+    let Some(current) = observation.pointer("/exit/distance").and_then(Value::as_i64) else {
+        return;
+    };
+    if policy
+        .last_exit_distance
+        .is_some_and(|previous| current < previous)
+    {
+        policy.exit_stall_ticks = 0;
+        policy.exit_reroutes = 0;
+    } else {
+        policy.exit_stall_ticks = policy.exit_stall_ticks.saturating_add(1);
+        if policy.exit_stall_ticks >= DOOM_EXIT_STALL_TICKS {
+            policy.exit_stall_ticks = 0;
+            policy.exit_reroutes = policy.exit_reroutes.saturating_add(1);
+        }
+    }
+    policy.last_exit_distance = Some(current);
+}
+
+/// The exit-seek action set (R-5 / AC5): `turn-to` + a bounded `forward` toward
+/// the exit.
+///
+/// * No wall straight ahead → face the exit bearing and walk (the heading is
+///   ABSOLUTE, so the `turn-to` servo converges instead of spinning).
+/// * A wall ahead → enter a committed right-hand wall-follow
+///   ([`DOOM_EXIT_DETOUR_TICKS`] ticks): step right when the right is open, else
+///   left, else turn around. The commitment (a fixed WORLD-facing rule evaluated
+///   tick by tick) breaks the near-range threshold oscillation that otherwise
+///   leaves the player pacing in place, and the right-hand rule walks the
+///   obstacle boundary until the exit bearing is clear again.
+/// * After [`DOOM_ESCAPE_REROUTE_AFTER`] failed re-routes (no `exit.distance`
+///   decline across that many [`DOOM_EXIT_STALL_TICKS`] windows) → the retained
+///   clearance wall-follow. Pure — no RNG, no clock.
+fn exit_seek_actions(
+    observation: &Value,
+    exit_angle: i64,
+    policy: &mut DoomLocalPolicy,
+) -> Vec<Value> {
+    let current = observation_angle(observation);
+    let walls = observation_walls(observation);
+    let turn = |heading: i64| json!({ "type": DOOM_ACTION_TURN_TO, "angle": heading });
+    let forward = json!({ "type": DOOM_ACTION_FORWARD, "amount": DOOM_ESCAPE_FORWARD_AMOUNT });
+
+    if policy.exit_reroutes >= DOOM_ESCAPE_REROUTE_AFTER {
+        policy.exit_detour_ticks = 0;
+        let direction = escape_direction(walls, policy.escapes.saturating_add(policy.exit_reroutes));
+        return vec![turn(escape_heading(direction, current)), forward];
+    }
+
+    let front_blocked = wall_direction_blocked(walls, "front");
+    let right_blocked = wall_direction_blocked(walls, "right");
+    let left_blocked = wall_direction_blocked(walls, "left");
+
+    // Clear run to the exit → face it and walk.
+    if policy.exit_detour_ticks == 0 && !front_blocked {
+        return vec![turn(exit_angle), forward];
+    }
+
+    // A door we are facing is an obstruction: press `use` (opens it) and keep
+    // walking forward, so the wall-follow does not turn away from a doorway.
+    if has_front_near_door(observation) {
+        policy.exit_detour_ticks = 0;
+        return vec![forward, json!({ "type": DOOM_ACTION_USE })];
+    }
+
+    // Enter a committed wall-follow when a wall appears ahead.
+    if policy.exit_detour_ticks == 0 {
+        policy.exit_detour_ticks = DOOM_EXIT_DETOUR_TICKS;
+    }
+    policy.exit_detour_ticks -= 1;
+
+    // Right-hand wall-follow step (all headings are absolute world angles).
+    let heading = if !right_blocked {
+        (current + 270).rem_euclid(360)
+    } else if !left_blocked {
+        (current + 90).rem_euclid(360)
+    } else {
+        (current + 180).rem_euclid(360)
+    };
+    vec![turn(heading), forward]
+}
+
 /// Compose the effective per-tick intent from the retained [`safety_reflex`] and
 /// the Spec #3031 unstick/escape + local-locomotion policy.
 ///
 /// Pure: a function of the observation, the persisted intent, the counters, and
 /// `ticks` — no RNG, no clock, no I/O.
+///
+/// Precedence (binding): terminal (outside this function) > position-freeze
+/// escape (AC1) > exit-seek > model intent + local locomotion guard.
 ///
 /// 1. `base` = [`safety_reflex`] (R-3a — semantics retained, never changed here).
 /// 2. **Escape / re-route (R-1 / AC1):** when the no-move streak reaches
@@ -1055,11 +1190,17 @@ pub fn door_use_due(observation: &Value, ticks: u32) -> bool {
 ///    becomes a `turn-to` (toward a less-blocked heading) AND a bounded
 ///    `forward` — a turn and a movement in the SAME action set. `escapes`
 ///    increments on window entry; the window is [`DOOM_ESCAPE_WINDOW_TICKS`].
-/// 3. **Local-locomotion guard (R-2 / R-3):** a locomotion-free intent (empty,
+/// 3. **Exit-seek (R-5 / AC5):** when the escape is not active and the
+///    observation carries an `exit.angle` bearing, steer toward the exit
+///    ([`exit_seek_actions`]) instead of holding the model's stale heading
+///    between decisions. The `exit.distance` stall detector
+///    ([`observe_exit_distance`]) re-routes after [`DOOM_EXIT_STALL_TICKS`] with
+///    no decline.
+/// 4. **Local-locomotion guard (R-2 / R-3):** a locomotion-free intent (empty,
 ///    `shoot`-only, `turn-*`-only, `use`) gets a bounded `forward` appended, so
 ///    the issued-locomotion gap is at most ONE tick.
-/// 4. **Door explore (R-5):** a front near door earns a `use` press on the
-///    [`DOOM_LOCAL_DOOR_USE_TICKS`] cadence.
+/// 5. **Use aid (R-5):** a near-front obstruction (door OR wall) earns a `use`
+///    press on the [`DOOM_LOCAL_DOOR_USE_TICKS`] cadence — a switch/exit aid.
 pub fn effective_intent(
     observation: &Value,
     last_intent: &[Value],
@@ -1067,13 +1208,17 @@ pub fn effective_intent(
     policy: &mut DoomLocalPolicy,
     ticks: u32,
 ) -> Vec<Value> {
+    // 0. Exit-distance stall detector (pure).
+    observe_exit_distance(policy, observation);
+
     // 1. Retained safety reflex.
     let mut intent = safety_reflex(observation, last_intent, blocked_forward_ticks);
 
-    // 2. Escape / re-route.
+    // 2. Position-freeze escape / re-route (AC1 — VERBATIM; overrides the seek).
     let stuck = policy.no_move_ticks >= DOOM_ESCAPE_STUCK_TICKS;
     let in_window = policy.escape_ticks_remaining > 0;
-    if stuck || in_window {
+    let escaped = stuck || in_window;
+    if escaped {
         if !in_window {
             policy.escapes = policy.escapes.saturating_add(1);
             policy.escape_ticks_remaining = DOOM_ESCAPE_WINDOW_TICKS;
@@ -1087,7 +1232,17 @@ pub fn effective_intent(
     }
     policy.escape_ticks_remaining = policy.escape_ticks_remaining.saturating_sub(1);
 
-    // 3. Local-locomotion guard — the act-between-decisions guarantee.
+    // 3. Exit-seek (R-5 / AC5) — only when no escape fired this tick.
+    if !escaped {
+        if let Some(exit_angle) = observation
+            .pointer("/exit/angle")
+            .and_then(Value::as_i64)
+        {
+            intent = exit_seek_actions(observation, exit_angle, policy);
+        }
+    }
+
+    // 4. Local-locomotion guard — the act-between-decisions guarantee.
     if !intent_has_locomotion(&intent) {
         intent.push(json!({
             "type": DOOM_ACTION_FORWARD,
@@ -1095,8 +1250,8 @@ pub fn effective_intent(
         }));
     }
 
-    // 4. Door explore.
-    if door_use_due(observation, ticks) {
+    // 5. Use aid (door/switch/exit) on the cadence for a near-front obstruction.
+    if obstruction_use_due(observation, ticks) {
         intent.push(json!({ "type": DOOM_ACTION_USE }));
     }
 
@@ -2734,6 +2889,41 @@ mod tests {
     }
 
     #[test]
+    fn the_position_freeze_escape_takes_priority_over_the_exit_seek() {
+        // With an exit bearing present AND the position freeze reached, the AC1
+        // escape (a clearance turn + forward) fires — the exit-seek does NOT run.
+        let observation = json!({
+            "player": { "angle": 90 },
+            "exit": { "distance": 1000, "angle": 0 },
+            "walls": [
+                { "direction": "front", "distance": 40, "blocked": true },
+                { "direction": "left", "distance": 200, "blocked": false },
+                { "direction": "right", "distance": 150, "blocked": false },
+            ],
+        });
+        let mut policy = DoomLocalPolicy {
+            no_move_ticks: DOOM_ESCAPE_STUCK_TICKS,
+            ..DoomLocalPolicy::default()
+        };
+        let intent = effective_intent(&observation, &[json!({ "type": "shoot" })], 0, &mut policy, 1);
+        let types: Vec<&str> = intent.iter().filter_map(|a| a["type"].as_str()).collect();
+        assert!(types.contains(&"turn-to"), "{intent:?}");
+        assert!(types.contains(&"forward"), "{intent:?}");
+        assert_eq!(policy.escapes, 1);
+        // The escape heading is the clearance turn (left = 90 + 90 = 180), NOT the
+        // exit bearing (0) — the escape takes priority over the exit-seek.
+        let heading = intent
+            .iter()
+            .find(|action| action["type"] == "turn-to")
+            .and_then(|action| action["angle"].as_i64())
+            .expect("turn-to angle");
+        assert_ne!(
+            heading, 0,
+            "the exit-seek heading must not be used during an escape"
+        );
+    }
+
+    #[test]
     fn effective_intent_injects_locomotion_for_every_locomotion_free_intent() {
         for actions in [
             Vec::new(),
@@ -2791,6 +2981,7 @@ mod tests {
             no_move_ticks: 20,
             escapes: 3,
             escape_ticks_remaining: 7,
+            ..DoomLocalPolicy::default()
         };
         policy.reset_detector();
         assert_eq!(policy.no_move_ticks, 0);
