@@ -25,6 +25,10 @@
 //! * [`perception`] — the bounded observation geometry contract (the `walls`
 //!   field), the pure projection, and the semantic/depth → `PerceptionFrame`
 //!   bridge (Spec #3030 S1).
+//! * [`navigation`] — the deterministic level-walkability model (Spec #3039
+//!   ST-1): a coarse passability/clearance graph over the loaded `MapData` (a
+//!   two-sided linedef is a portal; an opened door is a passable edge) and the
+//!   executed E1M1–E1M8 feasibility scan that selects AC5's completion target.
 //! * [`save`] — the persisted resume contract (`DoomSave` / `DoomSaveStatus` /
 //!   `DoomCampaign`) in the typed PostgreSQL feature table `feature_doom_save`,
 //!   with the test-only `FREDO_DOOM_SAVE_STATE_DIR` / `FREDO_DOOM_SAVE_FORCE_FAIL`
@@ -53,6 +57,10 @@ pub mod decision;
 pub mod engine;
 pub mod failure_seam;
 pub mod mode;
+// Deterministic level-walkability model (Spec #3039 ST-1) — the AC5 feasibility
+// gate: a coarse passability/clearance graph over the loaded `MapData` plus the
+// executed E1M1-E1M8 scan that selects the completion target.
+pub mod navigation;
 pub mod perception;
 pub mod progress;
 pub mod save;
