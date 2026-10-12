@@ -64,7 +64,8 @@ use crate::infrastructure::companion::doom_decision::{
 };
 
 use super::actions::{
-    DOOM_ACTION_BACKWARD, DOOM_ACTION_FORWARD, DOOM_ACTION_SHOOT, DOOM_STEP_TICS_MAX,
+    DOOM_ACTION_BACKWARD, DOOM_ACTION_FORWARD, DOOM_ACTION_SHOOT, DOOM_ACTION_STRAFE_LEFT,
+    DOOM_ACTION_STRAFE_RIGHT, DOOM_ACTION_TURN_TO, DOOM_ACTION_USE, DOOM_STEP_TICS_MAX,
     DOOM_STEP_TICS_MIN,
 };
 use super::autoplay::{
@@ -120,6 +121,34 @@ pub const DOOM_AGENT_ACTION_AUDIT_FILE: &str = "doom-agent-actions.jsonl";
 
 /// Maximum records retained in the issued-action audit JSONL (the last-N bound).
 pub const DOOM_AGENT_ACTION_AUDIT_MAX_RECORDS: usize = 256;
+
+// ── Unstick / escape + local-locomotion policy (Spec #3031 ST-3) ─────────────
+
+/// K — consecutive no-move ticks before the escape maneuver fires (R-1 / AC1).
+pub const DOOM_ESCAPE_STUCK_TICKS: u32 = 12;
+
+/// Consecutive escapes with no net movement before the heading is re-routed to a
+/// different (less-blocked) direction (R-1).
+pub const DOOM_ESCAPE_REROUTE_AFTER: u32 = 2;
+
+/// Ticks one escape intent overrides the model intent (bounds one escape) (R-1).
+pub const DOOM_ESCAPE_WINDOW_TICKS: u32 = 24;
+
+/// Bounded forward burst an escape maneuver issues, in tics (R-1).
+pub const DOOM_ESCAPE_FORWARD_AMOUNT: i64 = 16;
+
+/// Bounded local-locomotion hold injected when the effective intent has no
+/// movement action (R-2 / R-3) — the "act between slow decisions" guarantee. The
+/// issued-locomotion gap is at most ONE tick.
+pub const DOOM_LOCAL_FORWARD_AMOUNT: i64 = 10;
+
+/// Tick cadence of the local `use` press when a near door is in front (R-5
+/// explore aids level completion).
+pub const DOOM_LOCAL_DOOR_USE_TICKS: u32 = 30;
+
+/// Near range (map units) at which a front door earns the local `use` press —
+/// mirrors the perception near range (`DOOM_PERCEPTION_NEAR_RANGE = 64`).
+pub const DOOM_LOCAL_DOOR_NEAR_RANGE: i64 = 64;
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -817,6 +846,263 @@ pub fn safety_reflex(
     out
 }
 
+// ── Unstick / escape + local-locomotion policy (Spec #3031 ST-3) ─────────────
+
+/// The mutable per-run state of the unstick/escape + local-locomotion policy.
+///
+/// Pure data: the policy has no RNG and reads no clock. [`effective_intent`]
+/// reads it and updates it exactly once per tick.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DoomLocalPolicy {
+    /// The current consecutive no-move tick streak, reset on any position change
+    /// (the AC1/R-1 detector input).
+    pub no_move_ticks: u32,
+    /// Total escape maneuvers issued this run (mirrors `status.escapes`).
+    pub escapes: u32,
+    /// Ticks remaining in the active escape window (`0` = none active).
+    pub escape_ticks_remaining: u32,
+}
+
+impl DoomLocalPolicy {
+    /// Reset the transient detector state on a level transition (death restart /
+    /// advance): the no-move streak and the escape window do NOT carry across
+    /// levels. The cumulative escape count does.
+    pub fn reset_detector(&mut self) {
+        self.no_move_ticks = 0;
+        self.escape_ticks_remaining = 0;
+    }
+}
+
+/// The next consecutive no-move tick streak: reset to `0` on any move, else
+/// `no_move + 1` (saturating). Pure.
+pub fn next_no_move_ticks(no_move: u32, moved: bool) -> u32 {
+    if moved {
+        0
+    } else {
+        no_move.saturating_add(1)
+    }
+}
+
+/// Whether an intent contains a locomotion action: `forward`, `backward`,
+/// `strafe-left`, or `strafe-right` (the R-2 local-locomotion guard input).
+/// `turn-*`, `shoot`, `use`, `run`, `switch-weapon`, and an empty intent are NOT
+/// locomotion.
+pub fn intent_has_locomotion(intent: &[Value]) -> bool {
+    intent.iter().any(|action| {
+        matches!(
+            action.get("type").and_then(Value::as_str),
+            Some(DOOM_ACTION_FORWARD)
+                | Some(DOOM_ACTION_BACKWARD)
+                | Some(DOOM_ACTION_STRAFE_LEFT)
+                | Some(DOOM_ACTION_STRAFE_RIGHT)
+        )
+    })
+}
+
+/// The player's facing in integer degrees from an observation (`0` when absent).
+fn observation_angle(observation: &Value) -> i64 {
+    observation
+        .pointer("/player/angle")
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+}
+
+/// The observation's `walls` array slice, empty when absent (the AC4 fallback).
+fn observation_walls(observation: &Value) -> &[Value] {
+    observation
+        .get("walls")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+}
+
+/// The escape heading in absolute map degrees (0-359) for a direction bucket and
+/// the current facing.
+///
+/// Mapping (ST-1 measured on the real engine): `turn-to A ⇒ player.angle == A`,
+/// `turn-left` = **+90° relative**, `turn-right` = **−90° relative**. Therefore:
+///
+/// * `front` → `angle`
+/// * `left`  → `(angle + 90).rem_euclid(360)`
+/// * `right` → `(angle + 270).rem_euclid(360)`
+///
+/// (The plan wrote `right = +90 / left = +270`; that is INVERTED and would turn
+/// AWAY from the target — this is the corrected mapping.) Pure.
+pub fn escape_heading(direction: &str, current_angle: i64) -> i64 {
+    let delta = match direction {
+        "left" => 90,
+        "right" => 270,
+        _ => 0,
+    };
+    (current_angle + delta).rem_euclid(360)
+}
+
+/// The direction bucket (`"front"` / `"left"` / `"right"`) the escape should
+/// face, from the observation's `walls` and the cumulative escape count.
+///
+/// Groups `walls` by `direction`; per direction the clearance is the minimum
+/// `distance` (an absent direction is open). The rotation
+/// `["front", "left", "right"]` starts at `escapes % 3`; the first non-`blocked`
+/// direction wins, else the maximum-clearance one. Once `escapes` has reached
+/// [`DOOM_ESCAPE_REROUTE_AFTER`], the rotation is re-ordered by clearance so a
+/// repeatedly blocked heading is abandoned for a different (less-blocked) one
+/// (R-1 re-route). Pure — no RNG, no clock.
+pub fn escape_direction(walls: &[Value], escapes: u32) -> &'static str {
+    const ORDER: [&str; 3] = ["front", "left", "right"];
+    let start = (escapes % 3) as usize;
+    let rotation = [
+        ORDER[start],
+        ORDER[(start + 1) % 3],
+        ORDER[(start + 2) % 3],
+    ];
+    let candidates = if escapes >= DOOM_ESCAPE_REROUTE_AFTER {
+        by_clearance(walls, rotation)
+    } else {
+        rotation
+    };
+
+    for direction in candidates {
+        if !wall_direction_blocked(walls, direction) {
+            return direction;
+        }
+    }
+
+    // Every candidate is blocked → the maximum-clearance (least-blocked) one.
+    let mut best = candidates[0];
+    let mut best_clearance = i64::MIN;
+    for direction in candidates {
+        let clearance = wall_direction_clearance(walls, direction).unwrap_or(i64::MAX);
+        if clearance > best_clearance {
+            best_clearance = clearance;
+            best = direction;
+        }
+    }
+    best
+}
+
+/// Re-order `rotation` by descending clearance (absent ⇒ open = `i64::MAX`),
+/// stable, so equal-clearance directions keep their rotation order.
+fn by_clearance(walls: &[Value], rotation: [&'static str; 3]) -> [&'static str; 3] {
+    let mut ordered = rotation;
+    for i in 1..ordered.len() {
+        let mut j = i;
+        while j > 0 {
+            let left = wall_direction_clearance(walls, ordered[j - 1]).unwrap_or(i64::MAX);
+            let right = wall_direction_clearance(walls, ordered[j]).unwrap_or(i64::MAX);
+            if left < right {
+                ordered.swap(j - 1, j);
+                j -= 1;
+            } else {
+                break;
+            }
+        }
+    }
+    ordered
+}
+
+/// The minimum `distance` over the `walls` entries facing `direction`, or `None`
+/// when no ray faces it (an open direction).
+fn wall_direction_clearance(walls: &[Value], direction: &str) -> Option<i64> {
+    walls
+        .iter()
+        .filter(|wall| wall.get("direction").and_then(Value::as_str) == Some(direction))
+        .filter_map(|wall| wall.get("distance").and_then(Value::as_i64))
+        .min()
+}
+
+/// Whether any `walls` ray facing `direction` is `blocked` (within the near
+/// range).
+fn wall_direction_blocked(walls: &[Value], direction: &str) -> bool {
+    walls.iter().any(|wall| {
+        wall.get("direction").and_then(Value::as_str) == Some(direction)
+            && wall.get("blocked").and_then(Value::as_bool) == Some(true)
+    })
+}
+
+/// Whether the observation reports a door in front within
+/// [`DOOM_LOCAL_DOOR_NEAR_RANGE`] map units (the R-5 explore trigger). Pure.
+pub fn has_front_near_door(observation: &Value) -> bool {
+    observation
+        .get("doors")
+        .and_then(Value::as_array)
+        .map(|doors| {
+            doors.iter().any(|door| {
+                door.get("direction").and_then(Value::as_str) == Some("front")
+                    && door
+                        .get("distance")
+                        .and_then(Value::as_i64)
+                        .is_some_and(|distance| distance <= DOOM_LOCAL_DOOR_NEAR_RANGE)
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// Whether the local `use` explore press is due this tick: a front near door and
+/// the [`DOOM_LOCAL_DOOR_USE_TICKS`] cadence (`ticks % cadence == 0`). Pure.
+pub fn door_use_due(observation: &Value, ticks: u32) -> bool {
+    has_front_near_door(observation) && ticks.is_multiple_of(DOOM_LOCAL_DOOR_USE_TICKS)
+}
+
+/// Compose the effective per-tick intent from the retained [`safety_reflex`] and
+/// the Spec #3031 unstick/escape + local-locomotion policy.
+///
+/// Pure: a function of the observation, the persisted intent, the counters, and
+/// `ticks` — no RNG, no clock, no I/O.
+///
+/// 1. `base` = [`safety_reflex`] (R-3a — semantics retained, never changed here).
+/// 2. **Escape / re-route (R-1 / AC1):** when the no-move streak reaches
+///    [`DOOM_ESCAPE_STUCK_TICKS`] OR an escape window is active, the intent
+///    becomes a `turn-to` (toward a less-blocked heading) AND a bounded
+///    `forward` — a turn and a movement in the SAME action set. `escapes`
+///    increments on window entry; the window is [`DOOM_ESCAPE_WINDOW_TICKS`].
+/// 3. **Local-locomotion guard (R-2 / R-3):** a locomotion-free intent (empty,
+///    `shoot`-only, `turn-*`-only, `use`) gets a bounded `forward` appended, so
+///    the issued-locomotion gap is at most ONE tick.
+/// 4. **Door explore (R-5):** a front near door earns a `use` press on the
+///    [`DOOM_LOCAL_DOOR_USE_TICKS`] cadence.
+pub fn effective_intent(
+    observation: &Value,
+    last_intent: &[Value],
+    blocked_forward_ticks: u32,
+    policy: &mut DoomLocalPolicy,
+    ticks: u32,
+) -> Vec<Value> {
+    // 1. Retained safety reflex.
+    let mut intent = safety_reflex(observation, last_intent, blocked_forward_ticks);
+
+    // 2. Escape / re-route.
+    let stuck = policy.no_move_ticks >= DOOM_ESCAPE_STUCK_TICKS;
+    let in_window = policy.escape_ticks_remaining > 0;
+    if stuck || in_window {
+        if !in_window {
+            policy.escapes = policy.escapes.saturating_add(1);
+            policy.escape_ticks_remaining = DOOM_ESCAPE_WINDOW_TICKS;
+        }
+        let direction = escape_direction(observation_walls(observation), policy.escapes);
+        let heading = escape_heading(direction, observation_angle(observation));
+        intent = vec![
+            json!({ "type": DOOM_ACTION_TURN_TO, "angle": heading }),
+            json!({ "type": DOOM_ACTION_FORWARD, "amount": DOOM_ESCAPE_FORWARD_AMOUNT }),
+        ];
+    }
+    policy.escape_ticks_remaining = policy.escape_ticks_remaining.saturating_sub(1);
+
+    // 3. Local-locomotion guard — the act-between-decisions guarantee.
+    if !intent_has_locomotion(&intent) {
+        intent.push(json!({
+            "type": DOOM_ACTION_FORWARD,
+            "amount": DOOM_LOCAL_FORWARD_AMOUNT,
+        }));
+    }
+
+    // 4. Door explore.
+    if door_use_due(observation, ticks) {
+        intent.push(json!({ "type": DOOM_ACTION_USE }));
+    }
+
+    intent
+}
+
 /// `ceil(duration / unit)`, at least 1 — the number of `unit`-length waits that
 /// cover `duration`. A zero `unit` (an immediate deterministic clock) is 1.
 fn pacing_ticks(duration: Duration, unit: Duration) -> u32 {
@@ -896,10 +1182,13 @@ type PendingDecision<'s> =
 /// waker (no thread, no timer, no wall clock — R-5).
 ///
 /// The persisted last intent is reissued between decisions, guarded by
-/// [`safety_reflex`]. An unavailable or timed-out decision degrades the pacing
-/// (R-4) but never stops the run; a malformed decision retains the bounded
-/// consecutive-failure stop. `observe` is invoked on the seeded/terminal
-/// transitions and throttled to ~[`DOOM_STATUS_EMIT_MS`] elsewhere.
+/// [`safety_reflex`] and the Spec #3031 unstick/escape + local-locomotion policy
+/// ([`effective_intent`]) — so the loop keeps acting between slow decisions and
+/// escapes an obstacle it cannot walk through. An unavailable or timed-out
+/// decision degrades the pacing (R-4) but never stops the run; a malformed
+/// decision retains the bounded consecutive-failure stop. `observe` is invoked on
+/// the seeded/terminal transitions and throttled to ~[`DOOM_STATUS_EMIT_MS`]
+/// elsewhere.
 pub async fn run_continuous_loop(
     engine: &dyn DoomAutoplayEngine,
     source: &dyn DoomDecisionSource,
@@ -952,6 +1241,8 @@ pub async fn run_continuous_loop(
     let mut last_intent: Vec<Value> = Vec::new();
     let mut previous_position: Option<(i64, i64)> = None;
     let mut blocked_forward_ticks: u32 = 0;
+    // The unstick/escape + local-locomotion policy state (Spec #3031 ST-3).
+    let mut policy = DoomLocalPolicy::default();
 
     // The non-blocking pending decision and its pacing bookkeeping.
     let mut pending: Option<PendingDecision<'_>> = None;
@@ -1011,6 +1302,7 @@ pub async fn run_continuous_loop(
                             observation = next;
                             previous_position = None;
                             blocked_forward_ticks = 0;
+                            policy.reset_detector();
                             last_intent.clear();
                             observe(&status);
                             continue;
@@ -1051,6 +1343,7 @@ pub async fn run_continuous_loop(
                             observation = next;
                             previous_position = None;
                             blocked_forward_ticks = 0;
+                            policy.reset_detector();
                             last_intent.clear();
                             observe(&status);
                             continue;
@@ -1148,18 +1441,28 @@ pub async fn run_continuous_loop(
             }
         }
 
-        // 3. Safety reflex over the persisted intent (R-3).
+        // 3. Compose the effective intent: the retained safety reflex plus the
+        //    Spec #3031 unstick/escape and local-locomotion policy (R-1/R-2/R-3).
         let current_position = player_position(&observation);
         let moved = match (previous_position, current_position) {
             (Some(previous), Some(current)) => previous != current,
             _ => true,
         };
+        policy.no_move_ticks = next_no_move_ticks(policy.no_move_ticks, moved);
         if stepped_forward && !moved {
             blocked_forward_ticks = blocked_forward_ticks.saturating_add(1);
         } else {
             blocked_forward_ticks = 0;
         }
-        let effective = safety_reflex(&observation, &last_intent, blocked_forward_ticks);
+        let effective = effective_intent(
+            &observation,
+            &last_intent,
+            blocked_forward_ticks,
+            &mut policy,
+            status.steps,
+        );
+        status.escapes = policy.escapes;
+        status.stuck_ticks = policy.no_move_ticks;
         let reflex_fired = effective != last_intent;
 
         // 4. Advance one tick with the persisted (reflex-guarded) intent (R-1).
@@ -2196,6 +2499,89 @@ mod tests {
         );
     }
 
+    // ── Spec #3031 ST-3: driven escape + determinism ─────────────────────────
+
+    /// **ST-3 (R-1/AC1, REQ-1).** A locomotion-free scripted hold (a `shoot`-only
+    /// intent) commands NO movement; the local-locomotion guard injects `forward`,
+    /// so the player walks into the wall and the no-move detector fires an escape
+    /// — asserted from the deterministic driver report (`escapes >= 1` AND the
+    /// player's `(x,y)` changed).
+    #[tokio::test]
+    async fn a_locomotion_free_scripted_run_escapes_and_moves() {
+        use crate::applications::doom::decision::ScriptedDecisionSource;
+        use crate::applications::doom::engine::{run_bounded_driver, DoomDriverConfig};
+
+        let engine = DoomEngineState::default();
+        let source = ScriptedDecisionSource::new(
+            vec![json!({ "tics": 1, "actions": [{ "type": "shoot" }] })],
+            true,
+        );
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+
+        let report = run_bounded_driver(
+            &engine,
+            &source,
+            DoomDriverConfig {
+                map: 1,
+                skill: 3,
+                max_steps: 1_500,
+                max_failures: 3,
+            },
+            &clock,
+        )
+        .await
+        .expect("the native driver runs");
+
+        assert!(
+            report.escapes >= 1,
+            "a locomotion-free hold must trigger the escape: {report:?}"
+        );
+        assert!(
+            report.moved(),
+            "the escape must change the player's position: {report:?}"
+        );
+    }
+
+    /// **ST-3 (NFR-DET, REQ-1).** The same driven run twice with a locomotion-free
+    /// script + [`FixedTickClock`] yields a field-for-field identical report —
+    /// including the ST-2 `escapes` counter — step-driven, no wall clock (G-316).
+    #[tokio::test]
+    async fn the_driven_report_is_deterministic_with_the_escape_policy() {
+        use crate::applications::doom::decision::ScriptedDecisionSource;
+        use crate::applications::doom::engine::{run_bounded_driver, DoomDriverConfig, DoomDriverReport};
+
+        async fn run() -> DoomDriverReport {
+            let engine = DoomEngineState::default();
+            let source = ScriptedDecisionSource::new(
+                vec![json!({ "tics": 1, "actions": [{ "type": "shoot" }] })],
+                true,
+            );
+            let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+            run_bounded_driver(
+                &engine,
+                &source,
+                DoomDriverConfig {
+                    map: 1,
+                    skill: 3,
+                    max_steps: 600,
+                    max_failures: 3,
+                },
+                &clock,
+            )
+            .await
+            .expect("driven run")
+        }
+
+        let first = run().await;
+        let second = run().await;
+        assert_eq!(first, second, "identical script ⇒ identical report");
+        assert_eq!(first.escapes, second.escapes);
+        assert_eq!(
+            (first.last_x, first.last_y),
+            (second.last_x, second.last_y)
+        );
+    }
+
     // ── Safety reflex (pure, R-3) ────────────────────────────────────────────
 
     #[test]
@@ -2237,6 +2623,211 @@ mod tests {
 
         // An empty intent stays empty.
         assert!(safety_reflex(&front, &[], DOOM_REFLEX_BLOCKED_TICKS).is_empty());
+    }
+
+    // ── Unstick / escape + local policy (pure, Spec #3031 ST-3) ──────────────
+
+    #[test]
+    fn escape_heading_uses_the_corrected_live_mapping() {
+        // ST-1 measured on the real engine: turn-to A ⇒ angle A; left = +90°
+        // relative, right = +270° relative (the plan's sign was inverted).
+        assert_eq!(escape_heading("front", 90), 90);
+        assert_eq!(escape_heading("left", 90), 180);
+        assert_eq!(escape_heading("right", 90), 0); // (90 + 270) % 360
+        assert_eq!(escape_heading("right", 45), 315);
+        assert_eq!(escape_heading("left", 300), 30); // wraps past 360
+        assert_eq!(escape_heading("right", 350), 260);
+        assert_eq!(escape_heading("front", 0), 0);
+        // Never negative and always within turn-to's accepted 0..=359.
+        for angle in [0, 45, 90, 180, 270, 359] {
+            for direction in ["front", "left", "right"] {
+                let heading = escape_heading(direction, angle);
+                assert!((0..=359).contains(&heading), "{direction} @ {angle}");
+            }
+        }
+    }
+
+    #[test]
+    fn escape_direction_rotates_and_prefers_open_directions() {
+        let blocked_front = json!([{ "direction": "front", "distance": 40, "blocked": true }]);
+        let walls = blocked_front.as_array().unwrap();
+        // escapes 0 → rotation starts at "front" (blocked) → "left" (absent=open).
+        assert_eq!(escape_direction(walls, 0), "left");
+        // escapes 1 → starts at "left" (open).
+        assert_eq!(escape_direction(walls, 1), "left");
+        // escapes 2 reaches the re-route threshold: the rotation is re-ordered by
+        // clearance (right/left ties at open, front blocked) → a DIFFERENT heading.
+        assert_eq!(escape_direction(walls, 2), "right");
+
+        // All blocked → the maximum-clearance (least-blocked) direction wins.
+        let all_blocked = json!([
+            { "direction": "front", "distance": 10, "blocked": true },
+            { "direction": "left", "distance": 20, "blocked": true },
+            { "direction": "right", "distance": 30, "blocked": true },
+        ]);
+        assert_eq!(escape_direction(all_blocked.as_array().unwrap(), 0), "right");
+        assert_eq!(escape_direction(all_blocked.as_array().unwrap(), 2), "right");
+
+        // Empty walls: everything is open; the rotation start advances each escape.
+        assert_eq!(escape_direction(&[], 0), "front");
+        assert_eq!(escape_direction(&[], 1), "left");
+        assert_eq!(escape_direction(&[], 2), "right");
+
+        // A non-blocked direction is preferred over a more distant but blocked one.
+        let mixed = json!([
+            { "direction": "front", "distance": 10, "blocked": true },
+            { "direction": "left", "distance": 900, "blocked": false },
+        ]);
+        assert_eq!(escape_direction(mixed.as_array().unwrap(), 0), "left");
+    }
+
+    #[test]
+    fn intent_has_locomotion_covers_movement_actions_only() {
+        assert!(!intent_has_locomotion(&[]));
+        assert!(!intent_has_locomotion(&[json!({ "type": "shoot" })]));
+        assert!(!intent_has_locomotion(&[json!({ "type": "turn-to", "angle": 90 })]));
+        assert!(!intent_has_locomotion(&[json!({ "type": "turn-left", "amount": 10 })]));
+        assert!(!intent_has_locomotion(&[json!({ "type": "use" })]));
+        assert!(!intent_has_locomotion(&[json!({ "type": "run", "amount": 10 })]));
+
+        assert!(intent_has_locomotion(&[json!({ "type": "forward" })]));
+        assert!(intent_has_locomotion(&[json!({ "type": "backward", "amount": 2 })]));
+        assert!(intent_has_locomotion(&[json!({ "type": "strafe-left" })]));
+        assert!(intent_has_locomotion(&[json!({ "type": "strafe-right" })]));
+        // Any locomotion action in a mixed set counts.
+        assert!(intent_has_locomotion(&[
+            json!({ "type": "shoot" }),
+            json!({ "type": "forward" }),
+        ]));
+    }
+
+    #[test]
+    fn next_no_move_ticks_resets_on_movement() {
+        assert_eq!(next_no_move_ticks(0, true), 0);
+        assert_eq!(next_no_move_ticks(5, true), 0);
+        assert_eq!(next_no_move_ticks(0, false), 1);
+        assert_eq!(next_no_move_ticks(11, false), 12);
+        assert_eq!(next_no_move_ticks(u32::MAX, false), u32::MAX);
+    }
+
+    #[test]
+    fn effective_intent_escapes_with_a_turn_and_a_movement_when_stuck() {
+        let observation = json!({
+            "player": { "angle": 90 },
+            "walls": [
+                { "direction": "front", "distance": 40, "blocked": true },
+                { "direction": "left", "distance": 200, "blocked": false },
+                { "direction": "right", "distance": 150, "blocked": false },
+            ],
+        });
+        let mut policy = DoomLocalPolicy {
+            no_move_ticks: DOOM_ESCAPE_STUCK_TICKS,
+            ..DoomLocalPolicy::default()
+        };
+        let intent = effective_intent(&observation, &[json!({ "type": "shoot" })], 0, &mut policy, 1);
+        let types: Vec<&str> = intent.iter().filter_map(|a| a["type"].as_str()).collect();
+        // A turn AND a movement in the SAME action set (R-1 / REQ-1).
+        assert!(types.contains(&"turn-to"), "{intent:?}");
+        assert!(types.contains(&"forward"), "{intent:?}");
+        assert_eq!(policy.escapes, 1);
+        assert_eq!(policy.escape_ticks_remaining, DOOM_ESCAPE_WINDOW_TICKS - 1);
+    }
+
+    #[test]
+    fn effective_intent_injects_locomotion_for_every_locomotion_free_intent() {
+        for actions in [
+            Vec::new(),
+            vec![json!({ "type": "shoot" })],
+            vec![json!({ "type": "turn-to", "angle": 90 })],
+            vec![json!({ "type": "turn-right", "amount": 10 })],
+            vec![json!({ "type": "use" })],
+        ] {
+            let mut policy = DoomLocalPolicy::default();
+            let intent = effective_intent(&json!({}), &actions, 0, &mut policy, 1);
+            assert!(
+                intent_has_locomotion(&intent),
+                "a locomotion-free intent must gain locomotion: {actions:?} -> {intent:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn effective_intent_does_not_duplicate_an_existing_locomotion_action() {
+        let mut policy = DoomLocalPolicy::default();
+        let intent = effective_intent(
+            &json!({}),
+            &[json!({ "type": "forward", "amount": 3 })],
+            0,
+            &mut policy,
+            0,
+        );
+        assert_eq!(intent, vec![json!({ "type": "forward", "amount": 3 })]);
+    }
+
+    #[test]
+    fn a_stuck_player_keeps_escaping_then_reroutes_after_the_window() {
+        let observation = json!({ "player": { "angle": 0 }, "walls": [] });
+        let mut policy = DoomLocalPolicy {
+            no_move_ticks: DOOM_ESCAPE_STUCK_TICKS,
+            ..DoomLocalPolicy::default()
+        };
+        // Entry increments once and opens the window.
+        let _ = effective_intent(&observation, &[], 0, &mut policy, 0);
+        assert_eq!(policy.escapes, 1);
+        // The window holds the escape without re-incrementing for its full length.
+        for _ in 0..(DOOM_ESCAPE_WINDOW_TICKS - 1) {
+            let _ = effective_intent(&observation, &[], 0, &mut policy, 0);
+        }
+        assert_eq!(policy.escapes, 1, "no re-entry while the window is active");
+        assert_eq!(policy.escape_ticks_remaining, 0);
+        // Still stuck and the window expired → a fresh escape (re-route).
+        let _ = effective_intent(&observation, &[], 0, &mut policy, 0);
+        assert_eq!(policy.escapes, 2, "a new escape begins after the window");
+    }
+
+    #[test]
+    fn reset_detector_clears_the_streak_and_window_but_not_the_escape_count() {
+        let mut policy = DoomLocalPolicy {
+            no_move_ticks: 20,
+            escapes: 3,
+            escape_ticks_remaining: 7,
+        };
+        policy.reset_detector();
+        assert_eq!(policy.no_move_ticks, 0);
+        assert_eq!(policy.escape_ticks_remaining, 0);
+        assert_eq!(policy.escapes, 3, "the run-total escape count is retained");
+    }
+
+    #[test]
+    fn door_use_presses_on_the_cadence_for_a_front_near_door() {
+        let near = json!({ "doors": [{ "direction": "front", "distance": 40 }] });
+        let far = json!({ "doors": [{ "direction": "front", "distance": 400 }] });
+        let back = json!({ "doors": [{ "direction": "back", "distance": 40 }] });
+        assert!(has_front_near_door(&near));
+        assert!(!has_front_near_door(&far));
+        assert!(!has_front_near_door(&back));
+        assert!(!has_front_near_door(&json!({})));
+
+        assert!(door_use_due(&near, 0));
+        assert!(door_use_due(&near, DOOM_LOCAL_DOOR_USE_TICKS));
+        assert!(!door_use_due(&near, 1));
+        assert!(!door_use_due(&far, 0));
+        assert!(!door_use_due(&back, 0));
+    }
+
+    #[test]
+    fn the_audit_record_carries_the_issued_escape_action_set() {
+        let observation = json!({ "player": { "angle": 0 }, "walls": [] });
+        let mut policy = DoomLocalPolicy {
+            no_move_ticks: DOOM_ESCAPE_STUCK_TICKS,
+            ..DoomLocalPolicy::default()
+        };
+        let intent = effective_intent(&observation, &[], 0, &mut policy, 1);
+        let record = build_action_audit_record(Some(42), &intent, true, false);
+        let actions = record["actions"].as_array().expect("issued actions array");
+        assert!(actions.iter().any(|action| action["type"] == "turn-to"));
+        assert!(actions.iter().any(|action| action["type"] == "forward"));
+        assert_eq!(record["tic"], 42);
     }
 
     #[test]
