@@ -60,7 +60,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::infrastructure::companion::doom_decision::{
-    DoomDecision, DoomDecisionError, DoomDecisionSource,
+    DoomDecision, DoomDecisionError, DoomDecisionSource, DoomPlan,
 };
 
 use super::actions::{
@@ -704,8 +704,12 @@ pub async fn run_autoplay_loop(
 
         // 2. Decide, bounded by the per-decision timeout (R-4/R-5).
         match tokio::time::timeout(config.decision_timeout, source.decide(&observation)).await {
-            Ok(Ok(decision)) => {
+            Ok(Ok(plan)) => {
                 status.decisions += 1;
+                // ST-3 compatibility shim: consume the plan as a single `Hold`
+                // step until the ST-4 tick-by-tick executor lands. A legacy
+                // `{tics, actions}` reply round-trips through a single `Hold`.
+                let decision = plan.as_single_hold();
                 // 3. Validate the decision against the engine contract.
                 if let Err(detail) = validate_decision(&decision) {
                     if let Some(result) = record_decision_failure(&mut status, config, detail) {
@@ -1172,7 +1176,7 @@ pub fn append_action_audit(dir: &Path, record: &Value) -> std::io::Result<()> {
 /// tick. It OWNS a clone of the observation, so it is self-contained apart from
 /// the borrowed decision source.
 type PendingDecision<'s> =
-    Pin<Box<dyn Future<Output = Result<DoomDecision, DoomDecisionError>> + Send + 's>>;
+    Pin<Box<dyn Future<Output = Result<DoomPlan, DoomDecisionError>> + Send + 's>>;
 
 /// Run the continuous autoplay loop (Spec #3026 ST-2) until the tick budget is
 /// exhausted, a stop is requested, a terminal campaign completes, or an engine
@@ -1384,8 +1388,11 @@ pub async fn run_continuous_loop(
                 pending = None;
                 pending_ticks = 0;
                 match result {
-                    Ok(decision) => {
+                    Ok(plan) => {
                         status.decisions += 1;
+                        // ST-3 compatibility shim: consume the plan as a single
+                        // `Hold` step until the ST-4 tick-by-tick executor lands.
+                        let decision = plan.as_single_hold();
                         if let Err(detail) = validate_decision(&decision) {
                             // A malformed decision retains the bounded stop.
                             if let Some(result) =
@@ -1732,12 +1739,12 @@ mod tests {
 
     #[async_trait]
     impl DoomDecisionSource for FakeSource {
-        async fn decide(&self, _observation: &Value) -> Result<DoomDecision, DoomDecisionError> {
+        async fn decide(&self, _observation: &Value) -> Result<DoomPlan, DoomDecisionError> {
             *self.decide_calls.lock().unwrap() += 1;
             let mut queue = self.queue.lock().unwrap();
             match queue.pop_front() {
-                Some(next) => next,
-                None => self.fallback.clone(),
+                Some(next) => next.map(DoomPlan::from),
+                None => self.fallback.clone().map(DoomPlan::from),
             }
         }
     }
@@ -1749,12 +1756,12 @@ mod tests {
 
     #[async_trait]
     impl DoomDecisionSource for SleepingSource {
-        async fn decide(&self, _observation: &Value) -> Result<DoomDecision, DoomDecisionError> {
+        async fn decide(&self, _observation: &Value) -> Result<DoomPlan, DoomDecisionError> {
             tokio::time::sleep(self.delay).await;
-            Ok(DoomDecision {
+            Ok(DoomPlan::from(DoomDecision {
                 tics: 1,
                 actions: vec![],
-            })
+            }))
         }
     }
 
@@ -1764,8 +1771,8 @@ mod tests {
 
     #[async_trait]
     impl DoomDecisionSource for PendingSource {
-        async fn decide(&self, _observation: &Value) -> Result<DoomDecision, DoomDecisionError> {
-            std::future::pending::<Result<DoomDecision, DoomDecisionError>>().await
+        async fn decide(&self, _observation: &Value) -> Result<DoomPlan, DoomDecisionError> {
+            std::future::pending::<Result<DoomPlan, DoomDecisionError>>().await
         }
     }
 
