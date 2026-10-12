@@ -29,7 +29,8 @@ use crate::infrastructure::companion::doom_decision::{
 
 // ── Env seams (inert when unset) ─────────────────────────────────────────────
 
-/// Selects the active decision source: `"model"` (default) or `"scripted"`.
+/// Selects the active decision source: `"model"` (default), `"scripted"`, or
+/// `"local"` (the deterministic, model-independent map-derived route source).
 pub const DOOM_AGENT_DECISION_SOURCE_ENV: &str = "FREDO_DOOM_AGENT_DECISION_SOURCE";
 /// Path to the scripted decision JSON ([`ScriptedDecisionSource`]).
 pub const DOOM_AGENT_SCRIPT_ENV: &str = "FREDO_DOOM_AGENT_SCRIPT";
@@ -56,14 +57,19 @@ pub const SCRIPT_ENTRY_STALL: &str = "stall";
 pub const DOOM_AGENT_SOURCE_MODEL: &str = "model";
 /// The scripted decision-source selector value.
 pub const DOOM_AGENT_SOURCE_SCRIPTED: &str = "scripted";
+/// The local, map-derived decision-source selector value (Spec #3039 ST-7).
+pub const DOOM_AGENT_SOURCE_LOCAL: &str = "local";
 
 /// Parse the decision-source selector from a raw value. An unrecognized or blank
 /// value resolves to `"model"` — the production default — so the seam is inert
-/// unless it explicitly selects `"scripted"`.
+/// unless it explicitly selects `"scripted"` or `"local"`.
 pub fn decision_source_from_value(raw: Option<&str>) -> String {
     match raw.map(str::trim) {
         Some(value) if value.eq_ignore_ascii_case(DOOM_AGENT_SOURCE_SCRIPTED) => {
             DOOM_AGENT_SOURCE_SCRIPTED.to_string()
+        }
+        Some(value) if value.eq_ignore_ascii_case(DOOM_AGENT_SOURCE_LOCAL) => {
+            DOOM_AGENT_SOURCE_LOCAL.to_string()
         }
         _ => DOOM_AGENT_SOURCE_MODEL.to_string(),
     }
@@ -620,6 +626,14 @@ mod tests {
             decision_source_from_value(Some(" SCRIPTED ")),
             DOOM_AGENT_SOURCE_SCRIPTED
         );
+        assert_eq!(
+            decision_source_from_value(Some("local")),
+            DOOM_AGENT_SOURCE_LOCAL
+        );
+        assert_eq!(
+            decision_source_from_value(Some(" LOCAL ")),
+            DOOM_AGENT_SOURCE_LOCAL
+        );
 
         assert_eq!(parse_u32(None), None);
         assert_eq!(parse_u32(Some("")), None);
@@ -648,5 +662,10 @@ mod tests {
         // ST-7 induction-entry keys (G-255 binding names).
         assert_eq!(SCRIPT_ENTRY_DELAY_MS, "delayMs");
         assert_eq!(SCRIPT_ENTRY_STALL, "stall");
+
+        // The decision-source selector values (ST-7 adds `local`).
+        assert_eq!(DOOM_AGENT_SOURCE_MODEL, "model");
+        assert_eq!(DOOM_AGENT_SOURCE_SCRIPTED, "scripted");
+        assert_eq!(DOOM_AGENT_SOURCE_LOCAL, "local");
     }
 }

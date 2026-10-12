@@ -383,9 +383,8 @@ pub fn run() {
             // `NotReady` instead of silently falling back to the model.
             let doom_decision_state =
                 infrastructure::companion::doom_decision::DoomDecisionSourceState::default();
-            if applications::doom::decision::decision_source_from_env()
-                == applications::doom::decision::DOOM_AGENT_SOURCE_SCRIPTED
-            {
+            let doom_source = applications::doom::decision::decision_source_from_env();
+            if doom_source == applications::doom::decision::DOOM_AGENT_SOURCE_SCRIPTED {
                 match applications::doom::decision::ScriptedDecisionSource::from_env() {
                     Ok(scripted) => doom_decision_state.set(Arc::new(scripted)),
                     Err(error) => tracing::error!(
@@ -395,6 +394,13 @@ pub fn run() {
                          start_doom_autoplay will report NotReady"
                     ),
                 }
+            } else if doom_source == applications::doom::decision::DOOM_AGENT_SOURCE_LOCAL {
+                // The deterministic, model-independent local route source
+                // (Spec #3039 ST-7): the `local` selector installs it; the
+                // `model` default is unchanged.
+                doom_decision_state.set(Arc::new(
+                    applications::doom::local_route::LocalRouteSource::new(),
+                ));
             } else {
                 doom_decision_state.set(Arc::new(
                     applications::llm_server::doom_agent::ModelDoomDecisionSource::new(

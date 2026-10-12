@@ -1181,6 +1181,7 @@ mod tests {
                 skill: super::super::save::DOOM_DEFAULT_SKILL,
                 max_steps: 64,
                 max_failures: 3,
+                stop_at_first_exit: false,
             },
             &clock,
         )

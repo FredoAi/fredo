@@ -18,6 +18,9 @@
 //!   result wire models, bounded budget constants).
 //! * [`decision`] — the deterministic scripted decision lever plus the
 //!   `FREDO_DOOM_AGENT_*` env seam.
+//! * [`local_route`] — the deterministic, model-independent local route source
+//!   (Spec #3039 ST-7): a [`DoomDecisionSource`](crate::infrastructure::companion::doom_decision::DoomDecisionSource)
+//!   that plans a route to the nearest non-secret exit from the loaded `MapData`.
 //! * [`agent`] — the bounded read → decide → validate → step autoplay loop, the
 //!   terminal-state restart reaction, and the consecutive-failure budget.
 //! * [`mode`] — the Doom Mode lifecycle (activation, the singleton window, the
@@ -60,6 +63,10 @@ pub mod decision;
 // observation/control surface.
 pub mod engine;
 pub mod failure_seam;
+// Deterministic, model-independent local route source (Spec #3039 ST-7) — the
+// `local` decision source: plans a route to the nearest non-secret exit from
+// the loaded `MapData`, so AC5 completion needs no model.
+pub mod local_route;
 pub mod mode;
 // Deterministic level-walkability model (Spec #3039 ST-1) — the AC5 feasibility
 // gate: a coarse passability/clearance graph over the loaded `MapData` plus the

@@ -516,6 +516,11 @@ pub struct DoomDriverConfig {
     pub max_steps: u32,
     /// Maximum consecutive unusable decisions before the run stops.
     pub max_failures: u32,
+    /// Test-only (Spec #3039 ST-8): when `true`, the driven run terminates
+    /// STABLY at the FIRST non-final level exit (the AC5 completion surface)
+    /// instead of advancing the campaign. Defaults to `false` (inert), so the
+    /// shipped advance path is byte-identical.
+    pub stop_at_first_exit: bool,
 }
 
 impl Default for DoomDriverConfig {
@@ -525,6 +530,7 @@ impl Default for DoomDriverConfig {
             skill: super::save::DOOM_DEFAULT_SKILL,
             max_steps: DOOM_AUTOPLAY_MAX_STEPS,
             max_failures: DOOM_AUTOPLAY_MAX_FAILURES,
+            stop_at_first_exit: false,
         }
     }
 }
@@ -653,6 +659,7 @@ pub async fn run_bounded_driver(
         max_failures: config.max_failures,
         tick_period: Duration::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS),
         degraded_tick_period: Duration::from_millis(DOOM_DEGRADED_TICK_PERIOD_MS),
+        stop_on_level_exit: config.stop_at_first_exit,
         ..DoomAutoplayConfig::default()
     };
 
@@ -2065,6 +2072,7 @@ mod tests {
                 skill: 3,
                 max_steps: 8,
                 max_failures: 3,
+                stop_at_first_exit: false,
             },
             &clock,
         )
@@ -2120,6 +2128,7 @@ mod tests {
                 // One budget tick is the resume positioning; the rest are engine ticks.
                 max_steps: window_ticks + 1,
                 max_failures: 3,
+                stop_at_first_exit: false,
             },
             &clock,
         )
@@ -2166,6 +2175,7 @@ mod tests {
                     skill: 3,
                     max_steps: 40,
                     max_failures: 3,
+                    stop_at_first_exit: false,
                 },
                 &clock,
             )
@@ -2197,6 +2207,7 @@ mod tests {
                     skill: 3,
                     max_steps: steps,
                     max_failures: 3,
+                    stop_at_first_exit: false,
                 },
                 &clock,
             )
@@ -2226,6 +2237,7 @@ mod tests {
                 skill: 3,
                 max_steps: 4,
                 max_failures: 3,
+                stop_at_first_exit: false,
             },
             &clock,
         )
@@ -2249,6 +2261,7 @@ mod tests {
                 skill: 3,
                 max_steps: 600,
                 max_failures: 3,
+                stop_at_first_exit: false,
             },
             &clock,
         )
@@ -2340,6 +2353,7 @@ mod tests {
                     skill: 3,
                     max_steps: 24,
                     max_failures: 3,
+                    stop_at_first_exit: false,
                 },
                 &clock,
             )
@@ -2369,6 +2383,118 @@ mod tests {
         assert_eq!((first.last_x, first.last_y), (second.last_x, second.last_y));
         assert_eq!(first.terminal, second.terminal);
         assert!(first.ticks > 0, "the step-driven run advanced");
+    }
+
+    // ── Spec #3039 ST-8: committed deterministic map-7 completion leg (AC5) ──
+
+    /// **ST-8 (AC5, F-5a).** The committed, model-independent, deterministic
+    /// completion leg: [`run_bounded_driver`] + [`FixedTickClock`] at
+    /// [`DOOM_COMPLETION_TARGET_MAP`] (7), `stop_at_first_exit: true`, driven by
+    /// the [`LocalRouteSource`] reaches the target level's exit
+    /// (`terminal == Some("exited")`), and the SAME run reproduces the report
+    /// field-for-field (G-316). If it under-completes, the failing observation
+    /// trace is printed so a re-scope can be judged from data — the assertion is
+    /// never loosened.
+    #[tokio::test]
+    async fn st8_local_route_completes_the_target_level_deterministically() {
+        use crate::applications::doom::local_route::LocalRouteSource;
+        use crate::applications::doom::save::{DOOM_COMPLETION_TARGET_MAP, DOOM_DEFAULT_SKILL};
+
+        async fn run() -> DoomDriverReport {
+            let state = DoomEngineState::default();
+            let source = LocalRouteSource::new();
+            let clock = driver_clock();
+            run_bounded_driver(
+                &state,
+                &source,
+                DoomDriverConfig {
+                    map: DOOM_COMPLETION_TARGET_MAP,
+                    skill: DOOM_DEFAULT_SKILL,
+                    max_steps: 4000,
+                    max_failures: 3,
+                    stop_at_first_exit: true,
+                },
+                &clock,
+            )
+            .await
+            .expect("the local-route driven run")
+        }
+
+        let first = run().await;
+        let second = run().await;
+
+        if first.terminal != Some("exited") {
+            print_completion_failure_trace(&first);
+        }
+
+        assert_eq!(
+            first.terminal,
+            Some("exited"),
+            "the local route must reach the target level's exit: {first:?}"
+        );
+        assert_eq!(first.map, DOOM_COMPLETION_TARGET_MAP);
+        assert!(
+            first.steps > 64,
+            "the completion leg must exceed the 64-step drivability cap: {first:?}"
+        );
+        assert_eq!(
+            first, second,
+            "the local route + FixedTickClock must be field-for-field deterministic (G-316)"
+        );
+    }
+
+    /// Print the failing observation trace for the ST-8 completion leg: the run
+    /// report, a fresh map-7 observation (`map` / `player` / `tic` / `terminal`
+    /// inputs), and the emitted route from the spawn. Deterministic, read-only —
+    /// it exists so a re-scope is judged from data, never a guess.
+    fn print_completion_failure_trace(report: &DoomDriverReport) {
+        use crate::applications::doom::navigation::{route_waypoints, spawn_point};
+        use neurodoom::engine::ClassicEngine;
+
+        println!("ST-8 FAILURE TRACE:");
+        println!("  report = {report:?}");
+
+        let wad = match load_wad() {
+            Ok(wad) => wad,
+            Err(error) => {
+                println!("  cannot load the WAD: {error}");
+                return;
+            }
+        };
+        let engine = match ClassicEngine::new(&wad, "E1M7") {
+            Ok(engine) => engine,
+            Err(error) => {
+                println!("  cannot build E1M7: {error}");
+                return;
+            }
+        };
+        let map = engine.map();
+        match spawn_point(map) {
+            Some((sx, sy)) => {
+                let from = (i64::from(sx), i64::from(sy));
+                println!("  E1M7 spawn = {from:?}");
+                println!("  emitted route = {:?}", route_waypoints(map, from));
+            }
+            None => println!("  E1M7 has no player-1 start"),
+        }
+
+        let state = DoomEngineState::default();
+        match state.launch(7, crate::applications::doom::save::DOOM_DEFAULT_SKILL) {
+            Ok(info) => {
+                println!("  launch = {info:?}");
+                if let Ok(observation) = state.read_state() {
+                    println!(
+                        "  observation: map={:?} player={:?} tic={:?} outcome={:?}",
+                        observation.pointer("/level/map"),
+                        observation.get("player"),
+                        observation.get("tic"),
+                        observation.get("outcome"),
+                    );
+                    println!("  exitBearing = {:?}", observation.pointer("/forward/exitBearing"));
+                }
+            }
+            Err(error) => println!("  launch failed: {error}"),
+        }
     }
 
     // ── Spec #3023 ST-9: teardown (G-263 / REQ-5.3) ──────────────────────────
@@ -2438,6 +2564,7 @@ mod tests {
                 skill: 3,
                 max_steps: 2,
                 max_failures: 3,
+                stop_at_first_exit: false,
             },
             &clock,
         )
