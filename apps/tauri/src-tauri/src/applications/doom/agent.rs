@@ -60,7 +60,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::infrastructure::companion::doom_decision::{
-    DoomDecision, DoomDecisionError, DoomDecisionSource, DoomPlan,
+    DoomDecision, DoomDecisionError, DoomDecisionSource, DoomPlan, DoomPlanStep,
 };
 
 use super::actions::{
@@ -79,6 +79,10 @@ use super::clock::{
     DOOM_STATUS_EMIT_MS,
 };
 use super::engine::{DoomEngineError, DoomEngineErrorCode, DoomEngineState};
+use super::plan::{
+    build_replan_audit_record, observation_has_front_enemy, PlanAction, PlanExecutor,
+    ReplanCounters,
+};
 use super::progress::DoomProgressWriter;
 use super::save::DoomCampaign;
 
@@ -293,6 +297,27 @@ pub fn validate_decision(decision: &DoomDecision) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate an adopted [`DoomPlan`] (Spec #3039 ST-4).
+///
+/// The native plan steps (`Move`/`OpenDoor`/`Shoot`/`Wait`) are range-checked by
+/// the shared [`parse_doom_plan`](crate::infrastructure::companion::doom_decision::parse_doom_plan)
+/// parser; only the LEGACY `Hold` step's `tics` is deliberately passed through
+/// unvalidated by the parser, so the loop validates it here — exactly as the
+/// pre-ST-4 loop validated the legacy single-step reply. An out-of-range hold is
+/// an unusable decision (the bounded consecutive-failure stop is retained).
+pub fn validate_plan(plan: &DoomPlan) -> Result<(), String> {
+    for step in &plan.steps {
+        if let DoomPlanStep::Hold { tics, .. } = step {
+            validate_decision(&DoomDecision {
+                tics: *tics,
+                actions: Vec::new(),
+            })
+            .map_err(|detail| format!("plan hold step: {detail}"))?;
+        }
+    }
+    Ok(())
+}
+
 /// The terminal kind of an engine observation (Spec #2972 R-3).
 ///
 /// A death restarts the SAME level (no advance); a level exit advances the
@@ -420,6 +445,9 @@ fn running_status(campaign: &DoomCampaign) -> DoomAutoplayStatus {
         failures: 0,
         consecutive_failures: 0,
         stuck_ticks: 0,
+        plans: 0,
+        replans: 0,
+        plan_index: 0,
         last_tic: None,
         outcome: None,
         episode: Some(campaign.episode),
@@ -444,6 +472,9 @@ fn completed_status(campaign: &DoomCampaign) -> DoomAutoplayStatus {
         failures: 0,
         consecutive_failures: 0,
         stuck_ticks: 0,
+        plans: 0,
+        replans: 0,
+        plan_index: 0,
         last_tic: None,
         outcome: None,
         episode: Some(campaign.episode),
@@ -800,16 +831,9 @@ fn intent_has_forward(intent: &[Value]) -> bool {
 }
 
 /// Whether the observation's `enemies` list reports at least one `front` target.
+/// Delegates to the single shared predicate in [`super::plan`] (Spec #3039 ST-4).
 fn has_front_enemy(observation: &Value) -> bool {
-    observation
-        .get("enemies")
-        .and_then(Value::as_array)
-        .map(|enemies| {
-            enemies
-                .iter()
-                .any(|enemy| enemy.get("direction").and_then(Value::as_str) == Some("front"))
-        })
-        .unwrap_or(false)
+    observation_has_front_enemy(observation)
 }
 
 /// The safety reflex (Spec #3026 R-3, lever B): given the current observation,
@@ -1248,6 +1272,16 @@ pub async fn run_continuous_loop(
     // The unstick/escape + local-locomotion policy state (Spec #3031 ST-3).
     let mut policy = DoomLocalPolicy::default();
 
+    // The Plan Executor (Spec #3039 ST-4): runs the adopted plan one step per
+    // tick and requests a re-plan on divergence (AC2/AC3/AC4). The retained
+    // reflex + escape/local-locomotion policy above is its FALLBACK when no plan
+    // step is active.
+    let mut executor = PlanExecutor::new();
+    // A resolved plan prefetched while the current one still executes — adopted
+    // on exhaustion/divergence without interrupting the in-flight step (AC2:
+    // one model call amortized across many ticks).
+    let mut next_plan: Option<DoomPlan> = None;
+
     // The non-blocking pending decision and its pacing bookkeeping.
     let mut pending: Option<PendingDecision<'_>> = None;
     let mut pending_ticks: u32 = 0;
@@ -1308,6 +1342,8 @@ pub async fn run_continuous_loop(
                             blocked_forward_ticks = 0;
                             policy.reset_detector();
                             last_intent.clear();
+                            executor.reset_positioning();
+                            next_plan = None;
                             observe(&status);
                             continue;
                         }
@@ -1349,6 +1385,8 @@ pub async fn run_continuous_loop(
                             blocked_forward_ticks = 0;
                             policy.reset_detector();
                             last_intent.clear();
+                            executor.reset_positioning();
+                            next_plan = None;
                             observe(&status);
                             continue;
                         }
@@ -1366,8 +1404,10 @@ pub async fn run_continuous_loop(
         // window), captured before a new decision may replace it.
         let stepped_forward = intent_has_forward(&last_intent);
 
-        // 1. Start a decision if none is in flight and the backoff has elapsed.
-        if pending.is_none() && cooldown_ticks == 0 {
+        // 1. Start a decision if none is in flight, no plan is prefetched, and
+        //    the backoff has elapsed. A prefetched plan suppresses a new call so
+        //    exactly one decision is ever in flight (AC2).
+        if pending.is_none() && next_plan.is_none() && cooldown_ticks == 0 {
             let obs = observation.clone();
             pending = Some(Box::pin(async move { source.decide(&obs).await }));
             pending_ticks = 0;
@@ -1389,12 +1429,10 @@ pub async fn run_continuous_loop(
                 pending_ticks = 0;
                 match result {
                     Ok(plan) => {
-                        status.decisions += 1;
-                        // ST-3 compatibility shim: consume the plan as a single
-                        // `Hold` step until the ST-4 tick-by-tick executor lands.
-                        let decision = plan.as_single_hold();
-                        if let Err(detail) = validate_decision(&decision) {
-                            // A malformed decision retains the bounded stop.
+                        // An out-of-range legacy `Hold` step retains the bounded
+                        // consecutive-failure stop (the native steps are already
+                        // range-checked by the shared parser).
+                        if let Err(detail) = validate_plan(&plan) {
                             if let Some(result) =
                                 record_decision_failure(&mut status, config, detail)
                             {
@@ -1403,11 +1441,20 @@ pub async fn run_continuous_loop(
                             }
                             cooldown_ticks = backoff_ticks;
                         } else {
-                            last_intent = decision.actions;
+                            status.decisions += 1;
                             status.consecutive_failures = 0;
                             degraded_consecutive = 0;
                             status.degraded = false;
-                            adopted = true;
+                            if executor.is_idle() {
+                                // No plan is executing → adopt and start now.
+                                executor.adopt(plan, &observation);
+                                adopted = true;
+                            } else {
+                                // A plan is mid-execution: prefetch this one and
+                                // adopt it on exhaustion/divergence WITHOUT
+                                // interrupting the in-flight step (AC2).
+                                next_plan = Some(plan);
+                            }
                         }
                     }
                     Err(DoomDecisionError::Malformed(detail)) => {
@@ -1448,8 +1495,8 @@ pub async fn run_continuous_loop(
             }
         }
 
-        // 3. Compose the effective intent: the retained safety reflex plus the
-        //    Spec #3031 unstick/escape and local-locomotion policy (R-1/R-2/R-3).
+        // 3a. Update the divergence counters from the observation — the executor
+        //     consumes them (AC3).
         let current_position = player_position(&observation);
         let moved = match (previous_position, current_position) {
             (Some(previous), Some(current)) => previous != current,
@@ -1461,13 +1508,63 @@ pub async fn run_continuous_loop(
         } else {
             blocked_forward_ticks = 0;
         }
-        let effective = effective_intent(
-            &observation,
-            &last_intent,
+
+        // 3b. Executor (Spec #3039 ST-4): evaluate divergence, then produce this
+        //     tick's plan action (one step per tick — AC2). A re-plan request stops
+        //     the divergent plan; the retained fallback drives until the next plan
+        //     (the prefetched one, or the in-flight call) is adopted.
+        let counters = ReplanCounters {
             blocked_forward_ticks,
-            &mut policy,
-            status.steps,
-        );
+            no_move_ticks: policy.no_move_ticks,
+        };
+        let plan_tick = executor.tick(&observation, &counters);
+        if let Some(reason) = plan_tick.replan {
+            if let Some(dir) = &audit_dir {
+                let record = build_replan_audit_record(reason);
+                if let Err(error) = append_action_audit(dir, &record) {
+                    tracing::warn!(
+                        target: "fredo::doom",
+                        error = %error,
+                        "could not append the Doom re-plan audit record"
+                    );
+                }
+            }
+            if let Some(plan) = next_plan.take() {
+                executor.adopt(plan, &observation);
+                adopted = true;
+            }
+        }
+        status.plans = executor.plans();
+        status.replans = executor.replans();
+        status.plan_index = plan_tick.index;
+
+        // 3c. Compose the effective intent. A NATIVE plan step is issued directly
+        //     (guarded by the retained safety reflex); the LEGACY `Hold` step and
+        //     the no-step fallback run through the retained reflex + unstick/escape
+        //     + local-locomotion pipeline (composed, never replaced).
+        let effective = match plan_tick.action {
+            PlanAction::Native(actions) => {
+                last_intent = actions.clone();
+                safety_reflex(&observation, &actions, blocked_forward_ticks)
+            }
+            PlanAction::Legacy(actions) => {
+                last_intent = actions;
+                effective_intent(
+                    &observation,
+                    &last_intent,
+                    blocked_forward_ticks,
+                    &mut policy,
+                    status.steps,
+                )
+            }
+            PlanAction::None => effective_intent(
+                &observation,
+                &last_intent,
+                blocked_forward_ticks,
+                &mut policy,
+                status.steps,
+            ),
+        };
         status.escapes = policy.escapes;
         status.stuck_ticks = policy.no_move_ticks;
         let reflex_fired = effective != last_intent;

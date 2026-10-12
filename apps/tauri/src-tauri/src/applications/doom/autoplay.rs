@@ -98,6 +98,12 @@ pub struct DoomAutoplayStatus {
     /// The current consecutive no-move tick streak (Spec #3031 ST-2): the number
     /// of successive ticks over which the player's position has not changed.
     pub stuck_ticks: u32,
+    /// Total plans obtained this run (Spec #3039 ST-4, AC2/AC3).
+    pub plans: u32,
+    /// Total re-plans requested this run (Spec #3039 ST-4, AC3).
+    pub replans: u32,
+    /// The current plan-step index (Spec #3039 ST-4, AC2).
+    pub plan_index: u32,
     /// The last observed engine tic, when known.
     pub last_tic: Option<u64>,
     /// The last observed engine outcome (e.g. `alive`, `dead`, `exited`).
@@ -195,6 +201,9 @@ mod tests {
             failures: 1,
             consecutive_failures: 1,
             stuck_ticks: 3,
+            plans: 2,
+            replans: 1,
+            plan_index: 4,
             last_tic: Some(42),
             outcome: Some("alive".to_string()),
             episode: Some(2),
@@ -214,6 +223,9 @@ mod tests {
         assert_eq!(value["failures"], 1);
         assert_eq!(value["consecutiveFailures"], 1);
         assert_eq!(value["stuckTicks"], 3);
+        assert_eq!(value["plans"], 2);
+        assert_eq!(value["replans"], 1);
+        assert_eq!(value["planIndex"], 4);
         assert_eq!(value["lastTic"], 42);
         assert_eq!(value["outcome"], "alive");
         assert_eq!(value["episode"], 2);

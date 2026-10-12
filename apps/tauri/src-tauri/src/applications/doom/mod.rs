@@ -29,6 +29,10 @@
 //!   ST-1): a coarse passability/clearance graph over the loaded `MapData` (a
 //!   two-sided linedef is a portal; an opened door is a passable edge) and the
 //!   executed E1M1–E1M8 feasibility scan that selects AC5's completion target.
+//! * [`plan`] — the deterministic plan executor + re-plan + first-class doors
+//!   (Spec #3039 ST-4): runs an adopted plan one step per engine tick, waits at a
+//!   door for `state == "waiting"` (bounded), and requests a re-plan on the five
+//!   divergence triggers.
 //! * [`save`] — the persisted resume contract (`DoomSave` / `DoomSaveStatus` /
 //!   `DoomCampaign`) in the typed PostgreSQL feature table `feature_doom_save`,
 //!   with the test-only `FREDO_DOOM_SAVE_STATE_DIR` / `FREDO_DOOM_SAVE_FORCE_FAIL`
@@ -62,6 +66,8 @@ pub mod mode;
 // executed E1M1-E1M8 scan that selects the completion target.
 pub mod navigation;
 pub mod perception;
+// Deterministic plan executor + re-plan + first-class doors (Spec #3039 ST-4).
+pub mod plan;
 pub mod progress;
 pub mod save;
 pub mod state;
