@@ -4,18 +4,20 @@
 //! This module gives the out-of-process companion a distinct Doom-playing persona
 //! and a request contract that carries **structured game state only**:
 //!
-//! * [`DOOM_AGENT_SYSTEM_PROMPT`] is the persona (forward progress, engage blocking
-//!   threats, respond with ONLY the `{tics, actions}` JSON, never request pixels or
-//!   audio);
+//! * [`DOOM_AGENT_SYSTEM_PROMPT`] is the persona (plan a short route ahead, open
+//!   doors, engage blocking threats, respond with ONLY the `{"steps": [...]}`
+//!   JSON, never request pixels or audio);
 //! * [`build_doom_agent_request_body`] renders a schema-constrained
-//!   (`response_format: json_schema`, name [`DOOM_ACTION_SCHEMA_NAME`]) request via
-//!   `chat::render_messages(..., None, None)`, so **no `image_url`/`input_audio`
-//!   part can appear** (the F-25 audit surface);
+//!   (`response_format: json_schema`, name
+//!   [`DOOM_PLAN_SCHEMA_NAME`](crate::infrastructure::companion::doom_decision::DOOM_PLAN_SCHEMA_NAME))
+//!   request via `chat::render_messages(..., None, None)`, so **no
+//!   `image_url`/`input_audio` part can appear** (the F-25 audit surface);
 //! * [`ModelDoomDecisionSource`] implements the shared
 //!   [`DoomDecisionSource`](crate::infrastructure::companion::doom_decision::DoomDecisionSource)
 //!   trait over the existing `chat::run_stream` shell, with a bounded per-decision
 //!   timeout ([`DOOM_AUTOPLAY_DECISION_TIMEOUT_S`]), accumulating the structured
-//!   `delta.content` and parsing a `DoomDecision`;
+//!   `delta.content` and parsing a
+//!   [`DoomPlan`](crate::infrastructure::companion::doom_decision::DoomPlan);
 //! * every request appends ONE compact audit record to a bounded JSONL (last
 //!   [`DOOM_AGENT_AUDIT_MAX_RECORDS`]) under `FREDO_DOOM_AGENT_LOG_DIR` — the live
 //!   AC2 receipt.
@@ -25,7 +27,7 @@
 //! The action vocabulary is a **parameter** of [`build_doom_agent_request_body`]
 //! and [`ModelDoomDecisionSource::new`] — this module never imports
 //! `applications/doom` (cross-application imports are forbidden, `AGENTS.md`). The
-//! composition root (`lib.rs`, ST-5) passes `applications/doom/actions::action_vocabulary_json()`.
+//! composition root (`lib.rs`) passes `applications/doom/actions::action_vocabulary_json()`.
 //! `FREDO_DOOM_AGENT_LOG_DIR` is read directly via `std::env::var` here (an env
 //! var is not a cross-application import).
 
@@ -37,7 +39,8 @@ use serde_json::{json, Value};
 use tauri::AppHandle;
 
 use crate::infrastructure::companion::doom_decision::{
-    DoomDecision, DoomDecisionError, DoomDecisionSource,
+    parse_doom_plan, DoomDecisionError, DoomDecisionSource, DoomPlan, DOOM_PLAN_DISTANCE_MAX,
+    DOOM_PLAN_MAX_STEPS, DOOM_PLAN_SCHEMA_NAME, DOOM_PLAN_TICS_MAX,
 };
 
 use super::chat::{self, ChatStreamEvent, LlmMessage};
@@ -45,14 +48,12 @@ use super::chat::{self, ChatStreamEvent, LlmMessage};
 /// The Doom-playing persona.
 ///
 /// It states: you are Fredo's Doom-playing agent; you receive the engine's
-/// structured observation and the allowed action objects; choose actions that make
-/// forward progress toward the level exit, engage threats when they block the
-/// route, and respond with ONLY the `{tics, actions}` JSON object matching the
-/// schema; never request pixels or audio.
-pub const DOOM_AGENT_SYSTEM_PROMPT: &str = "You are Fredo's Doom-playing agent. On each turn you receive the engine's structured observation of the game state and the list of allowed action objects. Choose actions that make forward progress toward the level exit, and engage threats when they block the route. Respond with ONLY a single JSON object of the form {\"tics\": <integer 1-350>, \"actions\": [<allowed action objects>]} that matches the provided schema - no prose, no markdown, no extra keys. Never request pixels, images, or audio; the structured observation is the only input you need.";
-
-/// The `response_format.json_schema.name` of the Doom decision contract.
-pub const DOOM_ACTION_SCHEMA_NAME: &str = "doom_action";
+/// structured observation and the allowed action objects; plan a short route that
+/// makes forward progress toward the level exit, opening a door the route
+/// requires and engaging threats that block the way; respond with ONLY the
+/// `{"steps": [...]}` JSON object matching the schema; never request pixels or
+/// audio.
+pub const DOOM_AGENT_SYSTEM_PROMPT: &str = "You are Fredo's Doom-playing agent. On each turn you receive the engine's structured observation of the game state and the list of allowed action objects. Plan a short route that makes forward progress toward the level exit, opening a door when the route requires one and engaging threats when they block the way. Respond with ONLY a single JSON object of the form {\"steps\": [{\"op\": \"move\", \"bearing\": <0-359>, \"distance\": <1-1024>}, {\"op\": \"open-door\", \"bearing\": <0-359>}, {\"op\": \"shoot\", \"tics\": <1-350>}, {\"op\": \"wait\", \"tics\": <1-350>}]} that matches the provided schema - no prose, no markdown, no extra keys. Never request pixels, images, or audio; the structured observation is the only input you need.";
 
 /// Environment seam naming the directory for the bounded request-audit JSONL.
 ///
@@ -85,20 +86,37 @@ pub const DOOM_AGENT_AUDIT_FILE: &str = "doom-agent-requests.jsonl";
 
 // ── Pure request contract ─────────────────────────────────────────────────────
 
-/// The `doom_action` response schema: `{tics: integer 1..350, actions: array}`.
-pub fn doom_action_schema() -> Value {
+/// The `doom_plan` response schema: `{"steps": [{"op": ..., ...}]}`.
+///
+/// Each step advertises `op` plus the optional typed fields, with
+/// `additionalProperties: false` at BOTH levels (Spec #3039 ST-3).
+pub fn doom_plan_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "tics": { "type": "integer", "minimum": 1, "maximum": 350 },
-            "actions": { "type": "array", "items": { "type": "object" } }
+            "steps": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": DOOM_PLAN_MAX_STEPS,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "op": { "type": "string", "enum": ["move", "open-door", "shoot", "wait"] },
+                        "bearing": { "type": "integer", "minimum": 0, "maximum": 359 },
+                        "distance": { "type": "integer", "minimum": 1, "maximum": DOOM_PLAN_DISTANCE_MAX },
+                        "tics": { "type": "integer", "minimum": 1, "maximum": DOOM_PLAN_TICS_MAX }
+                    },
+                    "required": ["op"],
+                    "additionalProperties": false
+                }
+            }
         },
-        "required": ["tics", "actions"],
+        "required": ["steps"],
         "additionalProperties": false
     })
 }
 
-/// Build the schema-constrained Doom decision request body.
+/// Build the schema-constrained Doom plan request body.
 ///
 /// Pure. The system message is [`DOOM_AGENT_SYSTEM_PROMPT`]; the user message is a
 /// plain STRING carrying `{"observation": <state JSON>, "allowedActions":
@@ -128,8 +146,8 @@ pub fn build_doom_agent_request_body(observation: &Value, vocabulary: &Value) ->
     ];
     let mut body = chat::build_response_format_request_body(
         &messages,
-        DOOM_ACTION_SCHEMA_NAME,
-        &doom_action_schema(),
+        DOOM_PLAN_SCHEMA_NAME,
+        &doom_plan_schema(),
     );
     // Lever D (#3026 ST-5): bound generation on the Doom path ONLY, at the
     // shared `chat::MAX_TOKENS` default (the reasoning-enabled server's invisible
@@ -196,31 +214,24 @@ pub fn append_audit_record(dir: &Path, record: &Value) -> std::io::Result<()> {
 
 // ── Model reply parsing ───────────────────────────────────────────────────────
 
-/// Parse an accumulated model reply into a [`DoomDecision`].
+/// Parse an accumulated model reply into a [`DoomPlan`].
 ///
-/// `Malformed` on any non-object / missing / wrong-typed field; the `tics` range
-/// is deliberately NOT checked here — the loop (ST-3) validates it.
-pub fn parse_doom_decision(content: &str) -> Result<DoomDecision, DoomDecisionError> {
+/// Delegates to the shared boundary parser
+/// ([`parse_doom_plan`](crate::infrastructure::companion::doom_decision::parse_doom_plan)),
+/// so the model path and the scripted lever derive the SAME plan from the SAME
+/// JSON. A non-object / missing `steps` / unknown `op` / out-of-bounds field /
+/// more than [`DOOM_PLAN_MAX_STEPS`] steps is
+/// [`DoomDecisionError::Malformed`]. A legacy `{tics, actions}` object maps to a
+/// single `Hold` step (the legacy `tics` is not range-checked here — the loop
+/// validates it).
+pub fn parse_doom_decision(content: &str) -> Result<DoomPlan, DoomDecisionError> {
     let value: Value = serde_json::from_str(content.trim()).map_err(|error| {
         DoomDecisionError::Malformed(format!("model reply is not valid JSON: {error}"))
     })?;
-    let object = value.as_object().ok_or_else(|| {
-        DoomDecisionError::Malformed("model reply is not a JSON object".to_string())
-    })?;
-    let tics = object.get("tics").and_then(Value::as_i64).ok_or_else(|| {
-        DoomDecisionError::Malformed("model reply is missing an integer `tics`".to_string())
-    })?;
-    let actions = object
-        .get("actions")
-        .and_then(Value::as_array)
-        .cloned()
-        .ok_or_else(|| {
-            DoomDecisionError::Malformed("model reply is missing an `actions` array".to_string())
-        })?;
-    Ok(DoomDecision { tics, actions })
+    parse_doom_plan(&value)
 }
 
-/// Classify the accumulated streaming reply into a [`DoomDecision`].
+/// Classify the accumulated streaming reply into a [`DoomPlan`].
 ///
 /// An **empty/whitespace** reply is an availability condition, NOT a malformed
 /// decision: the reasoning-enabled server may return nothing on the `content`
@@ -230,10 +241,10 @@ pub fn parse_doom_decision(content: &str) -> Result<DoomDecision, DoomDecisionEr
 /// to its NON-fatal degrade branch (R-4/AC4, #3026 ST-2 rework) — the run keeps
 /// advancing with the last intent instead of taking the fatal malformed stop.
 ///
-/// A **non-empty** reply is parsed as before: any invalid JSON stays
-/// [`DoomDecisionError::Malformed`], so the bounded failure-stop semantics for
-/// genuinely malformed decisions are unchanged.
-pub fn classify_doom_reply(content: &str) -> Result<DoomDecision, DoomDecisionError> {
+/// A **non-empty** reply is parsed as before: any invalid JSON or unusable plan
+/// stays [`DoomDecisionError::Malformed`], so the bounded failure-stop semantics
+/// for genuinely malformed decisions are unchanged.
+pub fn classify_doom_reply(content: &str) -> Result<DoomPlan, DoomDecisionError> {
     if content.trim().is_empty() {
         return Err(DoomDecisionError::ModelUnavailable(
             "model returned an empty reply".to_string(),
@@ -268,7 +279,7 @@ impl ModelDoomDecisionSource {
 
 #[async_trait]
 impl DoomDecisionSource for ModelDoomDecisionSource {
-    async fn decide(&self, observation: &Value) -> Result<DoomDecision, DoomDecisionError> {
+    async fn decide(&self, observation: &Value) -> Result<DoomPlan, DoomDecisionError> {
         let body = build_doom_agent_request_body(observation, &self.vocabulary);
 
         // One compact audit record per request (best-effort; never fails a decision).
@@ -311,6 +322,7 @@ impl DoomDecisionSource for ModelDoomDecisionSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure::companion::doom_decision::{DoomPlanStep, DOOM_PLAN_SCHEMA_NAME};
     use serde_json::json;
 
     /// **F-25 (QA unit pin, R-2/AC2).** The serialized request body carries
@@ -346,22 +358,34 @@ mod tests {
         assert_eq!(payload["observation"], observation);
         assert_eq!(payload["allowedActions"], vocabulary);
 
-        // The response_format is the schema-constrained `doom_action`.
+        // The response_format is the schema-constrained `doom_plan` (ST-3).
         assert_eq!(body["stream"], true);
         // Lever D (ST-5): the Doom body is bounded to DOOM_AGENT_MAX_TOKENS.
         assert_eq!(body["max_tokens"], DOOM_AGENT_MAX_TOKENS);
         assert_eq!(body["response_format"]["type"], "json_schema");
         assert_eq!(
             body["response_format"]["json_schema"]["name"],
-            DOOM_ACTION_SCHEMA_NAME
+            DOOM_PLAN_SCHEMA_NAME
         );
         let schema = &body["response_format"]["json_schema"]["schema"];
-        assert_eq!(schema["properties"]["tics"]["type"], "integer");
-        assert_eq!(schema["properties"]["tics"]["minimum"], 1);
-        assert_eq!(schema["properties"]["tics"]["maximum"], 350);
-        assert_eq!(schema["properties"]["actions"]["type"], "array");
-        assert_eq!(schema["properties"]["actions"]["items"]["type"], "object");
-        assert_eq!(schema["required"], json!(["tics", "actions"]));
+        assert_eq!(schema["properties"]["steps"]["type"], "array");
+        assert_eq!(schema["properties"]["steps"]["minItems"], 1);
+        assert_eq!(schema["properties"]["steps"]["maxItems"], DOOM_PLAN_MAX_STEPS);
+        let step = &schema["properties"]["steps"]["items"];
+        assert_eq!(step["type"], "object");
+        assert_eq!(
+            step["properties"]["op"]["enum"],
+            json!(["move", "open-door", "shoot", "wait"])
+        );
+        assert_eq!(step["properties"]["bearing"]["minimum"], 0);
+        assert_eq!(step["properties"]["bearing"]["maximum"], 359);
+        assert_eq!(step["properties"]["distance"]["minimum"], 1);
+        assert_eq!(step["properties"]["distance"]["maximum"], DOOM_PLAN_DISTANCE_MAX);
+        assert_eq!(step["properties"]["tics"]["minimum"], 1);
+        assert_eq!(step["properties"]["tics"]["maximum"], DOOM_PLAN_TICS_MAX);
+        assert_eq!(step["required"], json!(["op"]));
+        assert_eq!(step["additionalProperties"], false);
+        assert_eq!(schema["required"], json!(["steps"]));
         assert_eq!(schema["additionalProperties"], false);
 
         // F-25: NO image/audio part and NO image/audio field can appear.
@@ -460,11 +484,12 @@ mod tests {
 
     #[test]
     fn schema_name_and_persona_are_pinned() {
-        assert_eq!(DOOM_ACTION_SCHEMA_NAME, "doom_action");
+        assert_eq!(DOOM_PLAN_SCHEMA_NAME, "doom_plan");
         assert_eq!(DOOM_AUTOPLAY_DECISION_TIMEOUT_S, 30);
         assert!(DOOM_AGENT_SYSTEM_PROMPT.contains("Doom"));
-        assert!(DOOM_AGENT_SYSTEM_PROMPT.contains("tics"));
-        assert!(DOOM_AGENT_SYSTEM_PROMPT.contains("actions"));
+        assert!(DOOM_AGENT_SYSTEM_PROMPT.contains("steps"));
+        assert!(DOOM_AGENT_SYSTEM_PROMPT.contains("move"));
+        assert!(DOOM_AGENT_SYSTEM_PROMPT.contains("open-door"));
         assert!(DOOM_AGENT_SYSTEM_PROMPT.contains("pixels"));
         assert!(DOOM_AGENT_SYSTEM_PROMPT.contains("audio"));
         // ST-5 rework: the Doom bound is collapsed to the shared default.
@@ -490,7 +515,7 @@ mod tests {
                 content: "hello".to_string(),
             }],
             "fredo_reply",
-            &doom_action_schema(),
+            &doom_plan_schema(),
         );
         assert_eq!(shared["max_tokens"], chat::MAX_TOKENS);
         assert_eq!(shared["max_tokens"], DOOM_AGENT_MAX_TOKENS);
@@ -521,19 +546,37 @@ mod tests {
             Err(DoomDecisionError::Malformed(_))
         ));
 
-        // A valid reply still parses.
-        let decision =
-            classify_doom_reply(r#"{ "tics": 3, "actions": [] }"#).expect("valid reply parses");
-        assert_eq!(decision.tics, 3);
-        assert!(decision.actions.is_empty());
+        // A valid plan reply still parses.
+        let plan = classify_doom_reply(r#"{ "steps": [{ "op": "wait", "tics": 3 }] }"#)
+            .expect("a valid plan reply parses");
+        assert_eq!(plan.steps, vec![DoomPlanStep::Wait { tics: 3 }]);
     }
 
+    /// **ST-3 (R-2).** The model parser accepts the plan shape AND the legacy
+    /// `{tics, actions}` shape (→ a single `Hold` step).
     #[test]
-    fn parse_doom_decision_accepts_a_valid_object() {
-        let decision = parse_doom_decision(r#"{ "tics": 5, "actions": [{ "type": "forward" }] }"#)
-            .expect("valid decision");
-        assert_eq!(decision.tics, 5);
-        assert_eq!(decision.actions, vec![json!({ "type": "forward" })]);
+    fn parse_doom_decision_accepts_a_plan_and_a_legacy_object() {
+        let plan = parse_doom_decision(r#"{ "steps": [{ "op": "move", "bearing": 90, "distance": 256 }] }"#)
+            .expect("a valid plan");
+        assert_eq!(
+            plan.steps,
+            vec![DoomPlanStep::Move {
+                bearing: 90,
+                distance: 256,
+            }]
+        );
+
+        let legacy =
+            parse_doom_decision(r#"{ "tics": 5, "actions": [{ "type": "forward" }] }"#)
+                .expect("a legacy decision");
+        assert_eq!(
+            legacy.steps,
+            vec![DoomPlanStep::Hold {
+                tics: 5,
+                actions: vec![json!({ "type": "forward" })],
+            }]
+        );
+        assert_eq!(legacy.as_single_hold().tics, 5);
     }
 
     #[test]
@@ -546,6 +589,7 @@ mod tests {
             parse_doom_decision("[1, 2]"),
             Err(DoomDecisionError::Malformed(_))
         ));
+        // Neither a plan nor a legacy reply.
         assert!(matches!(
             parse_doom_decision(r#"{ "actions": [] }"#),
             Err(DoomDecisionError::Malformed(_))
@@ -554,9 +598,14 @@ mod tests {
             parse_doom_decision(r#"{ "tics": 1 }"#),
             Err(DoomDecisionError::Malformed(_))
         ));
-        // A non-integer `tics` is malformed.
+        // A non-integer legacy `tics` is malformed.
         assert!(matches!(
             parse_doom_decision(r#"{ "tics": 1.5, "actions": [] }"#),
+            Err(DoomDecisionError::Malformed(_))
+        ));
+        // A plan with an unknown op is malformed.
+        assert!(matches!(
+            parse_doom_decision(r#"{ "steps": [{ "op": "nope" }] }"#),
             Err(DoomDecisionError::Malformed(_))
         ));
     }
