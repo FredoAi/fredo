@@ -571,6 +571,9 @@ pub struct DoomDriverReport {
     pub fps_estimate: f64,
     /// Decisions obtained from the source.
     pub decisions: u32,
+    /// Escape maneuvers issued this run (Spec #3031 ST-2) — lifted from the
+    /// loop status exactly like [`Self::decisions`].
+    pub escapes: u32,
     /// Unusable (malformed/failed) decisions seen.
     pub failures: u32,
     /// The starting engine tic.
@@ -673,6 +676,7 @@ pub async fn run_bounded_driver(
     let (decisions, failures) = last_status
         .as_ref()
         .map_or((0, 0), |status| (status.decisions, status.failures));
+    let escapes = last_status.as_ref().map_or(0, |status| status.escapes);
     let counters = engine.lock();
     let first = counters.first.as_ref();
     let last = counters.last.as_ref();
@@ -698,6 +702,7 @@ pub async fn run_bounded_driver(
         distinct_frames,
         fps_estimate,
         decisions,
+        escapes,
         failures,
         start_tic,
         last_tic,
@@ -998,12 +1003,51 @@ fn turn_toward(current: Angle, target_degrees: i64) -> i16 {
 
 // ── Observation (the parity contract) ─────────────────────────────────────────
 
-/// Build the parity observation for a session (see the module docs).
+/// The `FREDO_DOOM_FORCE_EXIT` AC4 exit-induction lever (Spec #3031 ST-2). When
+/// set to `1`, [`observation`] reports the terminal level exit once the engine
+/// has advanced at least [`DOOM_FORCE_EXIT_AFTER_TICS`] tics, so the loop's real
+/// terminal path (`agent::run_continuous_loop`) is drivable on the REAL engine.
+/// Inert when unset, so the production observation is byte-identical.
+pub const DOOM_FORCE_EXIT_ENV: &str = "FREDO_DOOM_FORCE_EXIT";
+
+/// The engine-tic threshold at which [`DOOM_FORCE_EXIT_ENV`] reports the exit.
+pub const DOOM_FORCE_EXIT_AFTER_TICS: u32 = 1;
+
+/// The `FREDO_DOOM_FORCE_EXIT` lever: `true` iff set to `"1"`.
+pub fn force_exit_requested() -> bool {
+    force_exit_from(std::env::var(DOOM_FORCE_EXIT_ENV).ok().as_deref())
+}
+
+/// Pure parser for the AC4 lever (unit-testable without env mutation).
+pub fn force_exit_from(value: Option<&str>) -> bool {
+    matches!(value.map(str::trim), Some("1"))
+}
+
+/// Whether the force-exit lever should report the terminal exit at `tick`:
+/// `true` iff the lever is on AND the engine has reached
+/// [`DOOM_FORCE_EXIT_AFTER_TICS`].
+pub fn forced_exit_at(force_exit: bool, tick: u64) -> bool {
+    force_exit && tick >= u64::from(DOOM_FORCE_EXIT_AFTER_TICS)
+}
+
+/// Build the parity observation for a session (see the module docs). The
+/// [`DOOM_FORCE_EXIT_ENV`] lever is read here (inert when unset).
 fn observation(session: &DoomSession) -> Value {
+    observation_with(session, force_exit_requested())
+}
+
+/// Deterministic form of [`observation`] (mirrors [`super::perception`]'s
+/// injectable seam): the force-exit lever is an input, so the AC4 terminal
+/// branch is unit-testable without mutating process-global env (G-222).
+fn observation_with(session: &DoomSession, force_exit: bool) -> Value {
     let engine = &session.engine;
     let world = engine.world();
     let map = engine.map();
-    let done = engine.level_complete();
+    let tick = u64::from(world.tick);
+    // AC4 exit-induction lever (inert unless `FREDO_DOOM_FORCE_EXIT=1`): once the
+    // engine has advanced past DOOM_FORCE_EXIT_AFTER_TICS, report the terminal
+    // level exit so the loop's real terminal path is drivable.
+    let done = engine.level_complete() || forced_exit_at(force_exit, tick);
 
     let player_id = world.controlled_by(LOCAL_PEER);
     let player = player_id.and_then(|eid| world.get(eid));
@@ -1038,7 +1082,7 @@ fn observation(session: &DoomSession) -> Value {
         .unwrap_or(0);
 
     json!({
-        "tic": u64::from(world.tick),
+        "tic": tick,
         "done": done,
         "outcome": outcome,
         "level": {
@@ -2201,5 +2245,71 @@ mod tests {
         assert!(state.is_running());
         state.stop();
         assert!(!state.is_running(), "the driver leaves no orphan session");
+    }
+
+    // ── Spec #3031 ST-2: the AC4 exit-induction lever ────────────────────────
+
+    #[test]
+    fn force_exit_lever_names_and_parser_are_pinned() {
+        assert_eq!(DOOM_FORCE_EXIT_ENV, "FREDO_DOOM_FORCE_EXIT");
+        assert_eq!(DOOM_FORCE_EXIT_AFTER_TICS, 1);
+
+        assert!(force_exit_from(Some("1")));
+        assert!(force_exit_from(Some(" 1 ")));
+        assert!(!force_exit_from(Some("0")));
+        assert!(!force_exit_from(Some("01")));
+        assert!(!force_exit_from(Some("true")));
+        assert!(!force_exit_from(Some("")));
+        assert!(!force_exit_from(Some("   ")));
+        assert!(!force_exit_from(None));
+    }
+
+    #[test]
+    fn forced_exit_at_honours_the_tic_threshold() {
+        // Lever off: never forced, whatever the tick.
+        assert!(!forced_exit_at(false, 0));
+        assert!(!forced_exit_at(false, 1));
+        assert!(!forced_exit_at(false, 1_000));
+        // Lever on: inert at the launch observation, armed at the threshold.
+        assert!(
+            !forced_exit_at(true, 0),
+            "the launch observation (tick 0) is not exited"
+        );
+        assert!(forced_exit_at(true, u64::from(DOOM_FORCE_EXIT_AFTER_TICS)));
+        assert!(forced_exit_at(true, 5));
+    }
+
+    /// **ST-2 (AC4).** On the REAL engine, the force-exit lever reports the
+    /// terminal level exit (`done: true`, `outcome: "exited"`) and is completely
+    /// inert when off — the production observation is unchanged.
+    #[test]
+    fn force_exit_lever_reports_the_terminal_exit_on_the_real_engine() {
+        let state = DoomEngineState::default();
+        state.launch(1, 3).expect("launch");
+        // Advance past the threshold so the lever is armed.
+        state
+            .step(
+                i64::from(DOOM_FORCE_EXIT_AFTER_TICS),
+                &json!([{ "type": "forward" }]),
+            )
+            .expect("step");
+
+        let guard = state.0.lock().expect("session lock");
+        let session = guard.as_ref().expect("live session");
+
+        // Lever OFF (production): the real observation is unchanged.
+        let inert = observation_with(session, false);
+        assert_eq!(inert["done"], false);
+        assert_eq!(inert["outcome"], "alive");
+
+        // Lever ON: the observation reports the terminal exit.
+        let forced = observation_with(session, true);
+        assert_eq!(forced["done"], true);
+        assert_eq!(forced["outcome"], "exited");
+        // Additive only: every other field is byte-identical to the inert read.
+        assert_eq!(forced["tic"], inert["tic"]);
+        assert_eq!(forced["level"], inert["level"]);
+        assert_eq!(forced["player"], inert["player"]);
+        assert_eq!(forced["exit"], inert["exit"]);
     }
 }
