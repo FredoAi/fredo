@@ -154,6 +154,27 @@ pub const DOOM_LOCAL_DOOR_USE_TICKS: u32 = 30;
 /// mirrors the perception near range (`DOOM_PERCEPTION_NEAR_RANGE = 64`).
 pub const DOOM_LOCAL_DOOR_NEAR_RANGE: i64 = 64;
 
+// ── Stop-on-exit: the test-only seam (Spec #3039 ST-4b) ──────────────────────
+
+/// The `FREDO_DOOM_AGENT_STOP_ON_EXIT` test-only seam (G-275/G-300). When set to
+/// `1`, [`run_continuous_loop`] terminates STABLY at the FIRST non-final level
+/// exit ([`TerminalKind::Exit`]) instead of advancing the campaign — the
+/// deterministic AC5 completion surface. Inert when unset, so the shipped
+/// advance path is byte-identical.
+pub const DOOM_AGENT_STOP_ON_EXIT_ENV: &str = "FREDO_DOOM_AGENT_STOP_ON_EXIT";
+
+/// The `FREDO_DOOM_AGENT_STOP_ON_EXIT` lever: `true` iff set to `"1"` (mirrors
+/// [`super::engine::force_exit_requested`]).
+pub fn stop_on_level_exit_requested() -> bool {
+    stop_on_level_exit_from(std::env::var(DOOM_AGENT_STOP_ON_EXIT_ENV).ok().as_deref())
+}
+
+/// Pure parser for the stop-on-exit lever (unit-testable without env mutation).
+/// Only the exact trimmed `"1"` enables it; unset/blank/anything else is inert.
+pub fn stop_on_level_exit_from(value: Option<&str>) -> bool {
+    matches!(value.map(str::trim), Some("1"))
+}
+
 // ── Configuration ────────────────────────────────────────────────────────────
 
 /// The bounded budgets and pacing of one autoplay run.
@@ -184,6 +205,11 @@ pub struct DoomAutoplayConfig {
     /// The degraded continuous tick period (R-4) — the fallback cadence used
     /// while the decision source is unavailable or slower than the tick loop.
     pub degraded_tick_period: Duration,
+    /// Test-only (Spec #3039 ST-4b): when `true`, [`run_continuous_loop`]
+    /// terminates STABLY at the first non-final level exit instead of advancing
+    /// the campaign — the deterministic AC5 completion surface. Defaults to
+    /// `false` (unset/inert), so the shipped advance path is byte-identical.
+    pub stop_on_level_exit: bool,
 }
 
 impl Default for DoomAutoplayConfig {
@@ -196,6 +222,7 @@ impl Default for DoomAutoplayConfig {
             failure_backoff: Duration::from_millis(DOOM_AUTOPLAY_FAILURE_BACKOFF_MS),
             tick_period: Duration::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS),
             degraded_tick_period: Duration::from_millis(DOOM_DEGRADED_TICK_PERIOD_MS),
+            stop_on_level_exit: false,
         }
     }
 }
@@ -206,6 +233,8 @@ impl DoomAutoplayConfig {
     ///
     /// The legacy `FREDO_DOOM_AGENT_MAX_STEPS` seam maps onto `max_ticks` (the
     /// continuous tick budget) — one seam, kept for compatibility (Spec #3026).
+    /// The `FREDO_DOOM_AGENT_STOP_ON_EXIT` test-only seam (Spec #3039 ST-4b) is
+    /// inert when unset.
     pub fn from_env() -> Self {
         let mut config = Self::default();
         if let Some(max_ticks) = super::decision::max_steps_from_env() {
@@ -214,6 +243,7 @@ impl DoomAutoplayConfig {
         if let Some(max_failures) = super::decision::max_failures_from_env() {
             config.max_failures = max_failures;
         }
+        config.stop_on_level_exit = stop_on_level_exit_requested();
         config
     }
 }
@@ -1156,6 +1186,30 @@ async fn pace(clock: &dyn DoomTickClock, period: Duration) {
     }
 }
 
+/// Whether the issued-action audit should emit this tick (Spec #3039 ST-4b, F-4).
+///
+/// The historical gate emitted only on `adopted || reflex_fired`, so an executor
+/// step issued NATIVE actions that changed between those ticks — notably an
+/// `open-door` step's first `[turn-to, use]` tick, issued via
+/// [`PlanExecutor`](super::plan::PlanExecutor) rather than on an adoption tick —
+/// was never journalled. The broadened gate emits on any CHANGE of the issued
+/// native action set (`last_audited` vs `effective`), while leaving the
+/// adoption/reflex records intact.
+///
+/// A change-gate (not every tick) is deliberate: a `Move` step re-issues an
+/// identical `[turn-to, forward]` every tick, and journalling each would fill the
+/// bounded [`DOOM_AGENT_ACTION_AUDIT_MAX_RECORDS`] window and destroy the
+/// one-action-set-per-record evidence.
+fn should_audit_action_set(
+    adopted: bool,
+    reflex_fired: bool,
+    native_step: bool,
+    last_audited: Option<&[Value]>,
+    effective: &[Value],
+) -> bool {
+    adopted || reflex_fired || (native_step && last_audited != Some(effective))
+}
+
 /// One compact issued-action / reflex audit record (Spec #3026 R-3 / G-273).
 pub fn build_action_audit_record(
     tic: Option<u64>,
@@ -1269,6 +1323,11 @@ pub async fn run_continuous_loop(
     let mut last_intent: Vec<Value> = Vec::new();
     let mut previous_position: Option<(i64, i64)> = None;
     let mut blocked_forward_ticks: u32 = 0;
+    // The action set the audit last recorded (Spec #3039 ST-4b, F-4): the
+    // change-gate compares the executor's issued native set against this so a
+    // changed set (the `open-door` step's first `[turn-to, use]` tick) is
+    // journalled despite not being an adoption/reflex tick.
+    let mut last_audited_actions: Option<Vec<Value>> = None;
     // The unstick/escape + local-locomotion policy state (Spec #3031 ST-3).
     let mut policy = DoomLocalPolicy::default();
 
@@ -1355,6 +1414,22 @@ pub async fn run_continuous_loop(
                     }
                 }
                 TerminalKind::Exit => {
+                    // Test-only stop-on-exit (Spec #3039 ST-4b): when enabled,
+                    // terminate STABLY at the FIRST non-final level exit instead
+                    // of advancing the campaign — the observation's single-level
+                    // `outcome == "exited"` is carried on the terminal status.
+                    // Inert when the config is `false` (the shipped default), so
+                    // the advance path below is byte-identical.
+                    if config.stop_on_level_exit && !campaign.at_final_level() {
+                        status.phase = DoomAutoplayPhase::Completed;
+                        status.running = false;
+                        status.outcome = Some("exited".to_string());
+                        status.code = Some(DoomAutoplayErrorCode::CampaignComplete);
+                        status.episode = Some(campaign.episode);
+                        status.map = Some(campaign.map);
+                        observe(&status);
+                        return campaign_complete_result(status.steps);
+                    }
                     if campaign.at_final_level() {
                         campaign.completed = true;
                         progress.record(&campaign);
@@ -1542,6 +1617,7 @@ pub async fn run_continuous_loop(
         //     (guarded by the retained safety reflex); the LEGACY `Hold` step and
         //     the no-step fallback run through the retained reflex + unstick/escape
         //     + local-locomotion pipeline (composed, never replaced).
+        let native_step = matches!(plan_tick.action, PlanAction::Native(_));
         let effective = match plan_tick.action {
             PlanAction::Native(actions) => {
                 last_intent = actions.clone();
@@ -1589,8 +1665,17 @@ pub async fn run_continuous_loop(
             }
         }
 
-        // 5. Issued-action / reflex audit on adoption or override (G-273).
-        if adopted || reflex_fired {
+        // 5. Issued-action / reflex audit on adoption, override, OR a changed
+        //    executor-issued native set (Spec #3039 ST-4b, F-4). The change-gate
+        //    journals the `open-door` step's first `[turn-to, use]` tick without
+        //    flooding the bounded window on a repeated identical `Move` tick.
+        if should_audit_action_set(
+            adopted,
+            reflex_fired,
+            native_step,
+            last_audited_actions.as_deref(),
+            &effective,
+        ) {
             if let Some(dir) = &audit_dir {
                 let record = build_action_audit_record(
                     status.last_tic,
@@ -1606,6 +1691,7 @@ pub async fn run_continuous_loop(
                     );
                 }
             }
+            last_audited_actions = Some(effective.clone());
         }
 
         // 6. Throttled status emission (terminal transitions emit above); a
@@ -1889,6 +1975,7 @@ mod tests {
             failure_backoff: Duration::ZERO,
             tick_period: Duration::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS),
             degraded_tick_period: Duration::from_millis(DOOM_DEGRADED_TICK_PERIOD_MS),
+            stop_on_level_exit: false,
         }
     }
 
@@ -1902,6 +1989,7 @@ mod tests {
             failure_backoff: Duration::ZERO,
             tick_period: Duration::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS),
             degraded_tick_period: Duration::from_millis(DOOM_DEGRADED_TICK_PERIOD_MS),
+            stop_on_level_exit: false,
         }
     }
 
@@ -2498,6 +2586,7 @@ mod tests {
             failure_backoff: Duration::ZERO,
             tick_period: Duration::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS),
             degraded_tick_period: Duration::from_millis(DOOM_DEGRADED_TICK_PERIOD_MS),
+            stop_on_level_exit: false,
         };
 
         let result = run_autoplay_loop(
@@ -2985,13 +3074,32 @@ mod tests {
             Duration::from_millis(DOOM_DEGRADED_TICK_PERIOD_MS)
         );
 
+        // The stop-on-exit seam default is inert.
+        assert!(!default.stop_on_level_exit);
+
         if crate::applications::doom::decision::max_steps_from_env().is_none()
             && crate::applications::doom::decision::max_failures_from_env().is_none()
+            && std::env::var(DOOM_AGENT_STOP_ON_EXIT_ENV).is_err()
         {
             let resolved = DoomAutoplayConfig::from_env();
             assert_eq!(resolved.max_ticks, default.max_ticks);
             assert_eq!(resolved.max_failures, default.max_failures);
+            assert_eq!(resolved.stop_on_level_exit, default.stop_on_level_exit);
         }
+    }
+
+    #[test]
+    fn the_stop_on_exit_env_seam_is_inert_when_unset() {
+        assert_eq!(
+            DOOM_AGENT_STOP_ON_EXIT_ENV,
+            "FREDO_DOOM_AGENT_STOP_ON_EXIT"
+        );
+        assert!(!stop_on_level_exit_from(None));
+        assert!(!stop_on_level_exit_from(Some("")));
+        assert!(!stop_on_level_exit_from(Some("0")));
+        assert!(!stop_on_level_exit_from(Some("true")));
+        assert!(stop_on_level_exit_from(Some("1")));
+        assert!(stop_on_level_exit_from(Some(" 1 ")));
     }
 
     // ── The continuous loop (Spec #3026 R-1/R-3/R-4) ─────────────────────────
@@ -3169,5 +3277,185 @@ mod tests {
             !statuses.last().unwrap().degraded,
             "a valid decision recovers to nominal pacing"
         );
+    }
+
+    // ── Issued-action audit gate (Spec #3039 ST-4b, F-4) ─────────────────────
+
+    #[test]
+    fn a_use_bearing_action_set_is_journalled_and_a_repeated_move_tick_is_not() {
+        let observation = json!({ "player": { "x": 0, "y": 0, "angle": 0 } });
+
+        // (a) An `open-door` native step's FIRST tick issues `[turn-to, use]`.
+        let mut executor = PlanExecutor::new();
+        executor.adopt(
+            DoomPlan {
+                steps: vec![DoomPlanStep::OpenDoor { bearing: 90 }],
+            },
+            &observation,
+        );
+        let open_door_tick = executor.tick(&observation, &ReplanCounters::default());
+        let PlanAction::Native(open_door_actions) = open_door_tick.action else {
+            panic!("an open-door step must issue native actions");
+        };
+        assert!(
+            open_door_actions
+                .iter()
+                .any(|action| action["type"] == DOOM_ACTION_USE),
+            "the open-door first tick issues `use`"
+        );
+
+        // The change-gate fires (no previously-audited set) and the emitted record
+        // carries the `use` action — the F-4 receipt.
+        assert!(should_audit_action_set(
+            false,
+            false,
+            true,
+            None,
+            &open_door_actions,
+        ));
+        let record = build_action_audit_record(Some(1), &open_door_actions, false, false);
+        let dir = tempfile::tempdir().expect("tempdir");
+        append_action_audit(dir.path(), &record).expect("append");
+        let text = std::fs::read_to_string(dir.path().join(DOOM_AGENT_ACTION_AUDIT_FILE))
+            .expect("read audit");
+        assert!(
+            text.lines().any(|line| {
+                let value: Value = serde_json::from_str(line).expect("record JSON");
+                value["actions"]
+                    .as_array()
+                    .is_some_and(|actions| actions.iter().any(|a| a["type"] == DOOM_ACTION_USE))
+            }),
+            "a `{{\"type\":\"use\"}}`-bearing audit record is produced"
+        );
+
+        // (b) A repeated IDENTICAL `Move` tick is NOT re-journalled: the first
+        // tick changes the set (gate fires, records, sets `last_audited`), the
+        // second is byte-identical (gate suppressed — no window flooding).
+        let mut executor = PlanExecutor::new();
+        executor.adopt(
+            DoomPlan {
+                steps: vec![DoomPlanStep::Move {
+                    bearing: 0,
+                    distance: 8,
+                }],
+            },
+            &observation,
+        );
+        let first_tick = executor.tick(&observation, &ReplanCounters::default());
+        let PlanAction::Native(first_actions) = first_tick.action else {
+            panic!("a move step must issue native actions");
+        };
+        assert!(should_audit_action_set(
+            false,
+            false,
+            true,
+            None,
+            &first_actions,
+        ));
+        let last_audited = Some(first_actions.clone());
+
+        let second_tick = executor.tick(&observation, &ReplanCounters::default());
+        let PlanAction::Native(second_actions) = second_tick.action else {
+            panic!("a move step must keep issuing native actions");
+        };
+        assert_eq!(
+            second_actions, first_actions,
+            "an unchanged move step re-issues an identical action set"
+        );
+        assert!(
+            !should_audit_action_set(
+                false,
+                false,
+                true,
+                last_audited.as_deref(),
+                &second_actions,
+            ),
+            "a repeated identical move tick is not re-journalled"
+        );
+    }
+
+    // ── Stop-on-exit (Spec #3039 ST-4b) ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn stop_on_level_exit_holds_at_the_first_non_final_level_exit() {
+        let engine = FakeEngine::default();
+        // The FIRST step reports the terminal single-level exit (`outcome == "exited"`).
+        engine
+            .step_queue
+            .lock()
+            .unwrap()
+            .push_back(Ok(state_json(10, true, false)));
+        let source = FakeSource::repeating(Ok(decision(1)));
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(false);
+        let mut statuses: Vec<DoomAutoplayStatus> = Vec::new();
+        let mut cfg = continuous_config(50, 3, Duration::from_secs(1));
+        cfg.stop_on_level_exit = true;
+
+        let result = run_continuous_loop(
+            &engine,
+            &source,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |status| statuses.push(status.clone()),
+        )
+        .await;
+
+        assert!(result.success);
+        assert_eq!(result.phase, DoomAutoplayPhase::Completed);
+        assert_eq!(result.code, Some(DoomAutoplayErrorCode::CampaignComplete));
+        // Terminated AT the exit: only the resume positioning reset — the
+        // campaign was NOT advanced.
+        assert_eq!(engine.count("reset"), 1, "the campaign was not advanced");
+        let last = statuses.last().unwrap();
+        assert_eq!(last.outcome.as_deref(), Some("exited"));
+        assert_eq!(last.map, Some(1), "still at the exit level");
+        assert!(
+            !last.completed,
+            "a single-level exit is not campaign-complete"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_default_stop_on_exit_flag_advances_the_campaign() {
+        let engine = FakeEngine::default();
+        engine
+            .step_queue
+            .lock()
+            .unwrap()
+            .push_back(Ok(state_json(10, true, false)));
+        let source = FakeSource::repeating(Ok(decision(1)));
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(false);
+        // The shipped default (`stop_on_level_exit == false`) is byte-identical:
+        // the exit advances the campaign to map 2.
+        let cfg = continuous_config(6, 3, Duration::from_secs(1));
+
+        let result = run_continuous_loop(
+            &engine,
+            &source,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
+
+        assert_eq!(
+            engine.reset_calls(),
+            vec![(1, 1), (1, 2)],
+            "the exit advanced the campaign"
+        );
+        assert_eq!(result.phase, DoomAutoplayPhase::Completed);
+        assert_eq!(result.code, Some(DoomAutoplayErrorCode::BudgetExhausted));
     }
 }
