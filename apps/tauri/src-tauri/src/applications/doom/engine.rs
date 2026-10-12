@@ -1203,10 +1203,11 @@ fn doors(world: &neurodoom::world::World, map: &MapData, px: Fixed, py: Fixed, a
     out
 }
 
-/// The optional exit-distance observation: the nearest exit-line vertex in
-/// integer map units, or an empty object when no exit line is reachable.
+/// The optional exit observation: the nearest exit-line vertex's distance in
+/// integer map units and its absolute bearing (0-359 map degrees), or an empty
+/// object when no exit line is reachable.
 fn exit_observation(map: &MapData, px: Fixed, py: Fixed) -> Value {
-    let mut best: Option<i64> = None;
+    let mut best: Option<(i64, Fixed, Fixed)> = None;
     for line in &map.lines {
         if !is_exit_line(line.special) {
             continue;
@@ -1216,13 +1217,23 @@ fn exit_observation(map: &MapData, px: Fixed, py: Fixed) -> Value {
                 continue;
             };
             let distance = distance_units(vertex.x - px, vertex.y - py);
-            if best.is_none_or(|previous| distance < previous) {
-                best = Some(distance);
+            if best.is_none_or(|(previous, _, _)| distance < previous) {
+                best = Some((distance, vertex.x, vertex.y));
             }
         }
     }
-    match best {
-        Some(distance) => json!({ "distance": distance }),
+    exit_object(best, px, py)
+}
+
+/// Build the `exit` observation object from the nearest exit-line vertex: its
+/// integer distance and absolute bearing (0-359 map degrees — the direction the
+/// player must face to walk straight to it), or `{}` when none is reachable.
+fn exit_object(nearest: Option<(i64, Fixed, Fixed)>, px: Fixed, py: Fixed) -> Value {
+    match nearest {
+        Some((distance, vx, vy)) => {
+            let angle = angle_to_degrees(point_to_angle(vx - px, vy - py));
+            json!({ "distance": distance, "angle": angle })
+        }
         None => json!({}),
     }
 }
@@ -2311,5 +2322,45 @@ mod tests {
         assert_eq!(forced["level"], inert["level"]);
         assert_eq!(forced["player"], inert["player"]);
         assert_eq!(forced["exit"], inert["exit"]);
+    }
+
+    // ── Spec #3031 ST-2 (round 2): the exit bearing ─────────────────────────
+
+    /// **ST-2 (round 2).** With an exit line present (E1M1), the observation's
+    /// `exit` object carries BOTH the integer `distance` and a 0-359 map-degree
+    /// `angle` to the nearest exit-line vertex — and the value is deterministic.
+    #[test]
+    fn exit_observation_carries_a_distance_and_a_bearing() {
+        let state = DoomEngineState::default();
+        state.launch(1, 3).expect("launch");
+        let first = state.read_state().expect("read_state");
+
+        let exit = &first["exit"];
+        assert!(exit.is_object(), "the exit object is always present");
+        let distance = exit["distance"].as_i64().expect("integer distance");
+        let angle = exit["angle"].as_i64().expect("integer angle");
+        assert!(distance >= 0, "distance is non-negative, got {distance}");
+        assert!((0..360).contains(&angle), "angle is 0-359, got {angle}");
+
+        // Deterministic: a second read of the same engine state is identical.
+        let second = state.read_state().expect("read_state");
+        assert_eq!(
+            first["exit"], second["exit"],
+            "the exit bearing is a pure function of engine state"
+        );
+    }
+
+    /// **ST-2 (round 2).** The `{}` fallback is preserved when no exit line is
+    /// reachable; a known nearest vertex yields both fields with an in-range angle.
+    #[test]
+    fn exit_object_without_a_reachable_exit_is_empty() {
+        assert_eq!(exit_object(None, 0, 0), json!({}), "no exit line ⇒ empty object");
+
+        let vx: Fixed = 0;
+        let vy: Fixed = 1 << FRACBITS; // one map unit away from the player
+        let value = exit_object(Some((812, vx, vy)), 0, 0);
+        assert_eq!(value["distance"], 812, "the distance is preserved verbatim");
+        let angle = value["angle"].as_i64().expect("integer angle");
+        assert!((0..360).contains(&angle), "angle is 0-359, got {angle}");
     }
 }
