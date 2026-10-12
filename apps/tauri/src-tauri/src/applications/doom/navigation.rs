@@ -53,6 +53,8 @@ use std::collections::VecDeque;
 use neurodoom::map::{doomednum, line_special, MapData, SectorId};
 use neurodoom::math::FRACBITS;
 
+use crate::infrastructure::companion::doom_decision::{DoomPlanStep, DOOM_PLAN_DISTANCE_MAX};
+
 // ── Pinned model constants ────────────────────────────────────────────────────
 
 /// The classic Doom player collision radius, in integer map units.
@@ -402,6 +404,226 @@ fn route_counts(
     (0, 0)
 }
 
+// ── Map-derived route plan (Spec #3039 ST-6) ─────────────────────────────────
+
+/// One waypoint on a map-derived route: the point to head toward (a portal
+/// midpoint, or the exit-line midpoint), the bearing and distance to it, and
+/// whether a `use`-gated door must be opened first.
+///
+/// [`route_plan`] turns these into [`DoomPlanStep`]s; exposing the list lets a
+/// caller (ST-7's local source) chunk the route into bounded plans.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DoomRouteWaypoint {
+    /// The target point, in integer map units.
+    pub target: (i64, i64),
+    /// The absolute bearing (`0..=359`) from the previous waypoint (or the
+    /// route origin) toward `target`.
+    pub bearing: i64,
+    /// The distance to `target`, in integer map units, clamped to
+    /// `1..=DOOM_PLAN_DISTANCE_MAX`.
+    pub distance: i64,
+    /// Whether a `use`-gated door stands at this waypoint and must be opened
+    /// before the [`DoomPlanStep::Move`] through it.
+    pub door: bool,
+}
+
+/// A deterministic route from `from` to the nearest non-secret exit, as a
+/// bounded sequence of [`DoomPlanStep`]s (Spec #3039 ST-6).
+///
+/// The route reuses the ST-1 passability/clearance model: it BFS-walks the
+/// [`portals`] graph restricted to `clearance >= DOOM_PLAYER_RADIUS`, emitting
+/// an [`DoomPlanStep::OpenDoor`] for each door portal followed by a
+/// [`DoomPlanStep::Move`] toward that portal's midpoint, and finishes with a
+/// [`DoomPlanStep::Move`] toward the exit line midpoint. Pure and deterministic
+/// (no RNG, no clock, no environment): two calls on the same map and origin are
+/// byte-identical. Returns an empty plan when the map has no non-secret exit, or
+/// `from` lies outside every sector.
+pub fn route_plan(map: &MapData, from: (i64, i64)) -> Vec<DoomPlanStep> {
+    let mut steps = Vec::new();
+    for waypoint in route_waypoints(map, from) {
+        if waypoint.door {
+            steps.push(DoomPlanStep::OpenDoor {
+                bearing: waypoint.bearing,
+            });
+        }
+        steps.push(DoomPlanStep::Move {
+            bearing: waypoint.bearing,
+            distance: waypoint.distance,
+        });
+    }
+    steps
+}
+
+/// The waypoint list behind [`route_plan`] — the route's portal midpoints plus
+/// the exit-line midpoint — so a caller can chunk it (Spec #3039 ST-6/ST-7).
+pub fn route_waypoints(map: &MapData, from: (i64, i64)) -> Vec<DoomRouteWaypoint> {
+    let exits = exit_sectors(map);
+    if exits.is_empty() {
+        return Vec::new();
+    }
+    let Some(start) = sector_at(map, from.0 as i32, from.1 as i32) else {
+        return Vec::new();
+    };
+
+    let mut waypoints = Vec::new();
+    let mut reference = from;
+    let mut sector = start;
+
+    // A start already on an exit sector needs no portal — just the exit leg.
+    if !exits.contains(&start) {
+        let portals = portals(map);
+        let midpoints = portal_midpoints(map);
+        let path = route_portal_path(map, &portals, start, &exits);
+        if path.is_empty() {
+            return Vec::new();
+        }
+        for &index in &path {
+            let (Some(portal), Some(&midpoint)) = (portals.get(index), midpoints.get(index)) else {
+                return Vec::new();
+            };
+            waypoints.push(waypoint_toward(reference, midpoint, portal.door));
+            reference = midpoint;
+            sector = if portal.front == sector {
+                portal.back
+            } else {
+                portal.front
+            };
+        }
+    }
+
+    // The BFS terminates on an exit sector; finish by heading to its exit line.
+    if exits.contains(&sector) {
+        if let Some(midpoint) = exit_midpoint(map, sector) {
+            waypoints.push(waypoint_toward(reference, midpoint, false));
+        }
+    }
+
+    waypoints
+}
+
+/// The waypoint from `from` to `target`, carrying the door flag.
+fn waypoint_toward(from: (i64, i64), target: (i64, i64), door: bool) -> DoomRouteWaypoint {
+    let (dx, dy) = (target.0 - from.0, target.1 - from.1);
+    DoomRouteWaypoint {
+        target,
+        bearing: bearing_toward(dx, dy),
+        distance: distance_units(dx, dy).clamp(1, DOOM_PLAN_DISTANCE_MAX),
+        door,
+    }
+}
+
+/// The deterministic BFS over the [`portals`] graph restricted to
+/// `clearance >= DOOM_PLAYER_RADIUS`, from `start` to the nearest of `exits`.
+///
+/// Returns the traversed portal indices in order (empty when no route exists).
+/// Mirrors [`route_counts`]'s deterministic sorted-adjacency BFS, recording the
+/// portal index (not only the door flag) so [`route_plan`] can locate each
+/// midpoint.
+fn route_portal_path(
+    map: &MapData,
+    portals: &[DoomPortal],
+    start: SectorId,
+    exits: &[SectorId],
+) -> Vec<usize> {
+    let count = map.sectors.len();
+    let mut adjacency: Vec<Vec<(usize, usize)>> = vec![Vec::new(); count];
+    for (index, portal) in portals.iter().enumerate() {
+        if portal.clearance < DOOM_PLAYER_RADIUS {
+            continue;
+        }
+        adjacency[portal.front as usize].push((portal.back as usize, index));
+        adjacency[portal.back as usize].push((portal.front as usize, index));
+    }
+    for neighbours in &mut adjacency {
+        neighbours.sort_unstable();
+    }
+
+    let start = start as usize;
+    let mut visited = vec![false; count];
+    let mut previous: Vec<Option<(usize, usize)>> = vec![None; count];
+    let mut queue = VecDeque::new();
+    visited[start] = true;
+    queue.push_back(start);
+
+    while let Some(node) = queue.pop_front() {
+        if node != start && exits.contains(&(node as u16)) {
+            let mut path = Vec::new();
+            let mut cursor = node;
+            while let Some((back, portal)) = previous[cursor] {
+                path.push(portal);
+                cursor = back;
+            }
+            path.reverse();
+            return path;
+        }
+        for &(neighbour, portal) in &adjacency[node] {
+            if !visited[neighbour] {
+                visited[neighbour] = true;
+                previous[neighbour] = Some((node, portal));
+                queue.push_back(neighbour);
+            }
+        }
+    }
+    Vec::new()
+}
+
+/// The midpoint (integer map units) of each portal in [`portals`] order.
+///
+/// Mirrors the [`portals`] filter exactly (same `map.lines` order, same
+/// two-sided / distinct-sector / valid-vertex checks), so the returned midpoints
+/// align index-for-index with `portals(map)`.
+fn portal_midpoints(map: &MapData) -> Vec<(i64, i64)> {
+    let mut out = Vec::new();
+    for line in &map.lines {
+        let Some(back) = line.back_sector else {
+            continue;
+        };
+        let front = line.front_sector;
+        if front == back {
+            continue;
+        }
+        let (Some((ax, ay)), Some((bx, by))) =
+            (vertex_units(map, line.v1), vertex_units(map, line.v2))
+        else {
+            continue;
+        };
+        out.push(((ax + bx) / 2, (ay + by) / 2));
+    }
+    out
+}
+
+/// The midpoint (integer map units) of the non-secret exit line whose front side
+/// is `sector`, or `None` when that sector carries no non-secret exit.
+fn exit_midpoint(map: &MapData, sector: SectorId) -> Option<(i64, i64)> {
+    for line in &map.lines {
+        if line.front_sector != sector || line.special == line_special::EXIT_SECRET {
+            continue;
+        }
+        if !neurodoom::specials::is_exit_line(line.special) {
+            continue;
+        }
+        let (Some((ax, ay)), Some((bx, by))) =
+            (vertex_units(map, line.v1), vertex_units(map, line.v2))
+        else {
+            continue;
+        };
+        return Some(((ax + bx) / 2, (ay + by) / 2));
+    }
+    None
+}
+
+/// The integer bearing (`0..=359`) from `(dx, dy)` toward a target — the same
+/// projection the ST-1 door approach uses ([`neurodoom::map::point_to_angle`]).
+fn bearing_toward(dx: i64, dy: i64) -> i64 {
+    let angle = neurodoom::map::point_to_angle((dx as i32) << FRACBITS, (dy as i32) << FRACBITS);
+    (((u64::from(angle) * 360) >> 32) as i64).rem_euclid(360)
+}
+
+/// The integer euclidean distance of `(dx, dy)`, in map units.
+fn distance_units(dx: i64, dy: i64) -> i64 {
+    isqrt_u64((dx * dx + dy * dy) as u64) as i64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -637,6 +859,72 @@ mod tests {
         assert_eq!(isqrt_u64(64), 8);
         assert_eq!(isqrt_u64(65), 8);
         assert_eq!(isqrt_u64(4096), 64);
+    }
+
+    // ── Map-derived route plan (ST-6) ────────────────────────────────────────
+
+    #[test]
+    fn route_plan_on_e1m7_is_bounded_non_empty_and_deterministic() {
+        use crate::infrastructure::companion::doom_decision::DOOM_PLAN_MAX_STEPS;
+        use neurodoom::engine::ClassicEngine;
+
+        let engine = ClassicEngine::new(SCAN_WAD, "E1M7").expect("E1M7 loads");
+        let map = engine.map();
+        let (sx, sy) = spawn_point(map).expect("E1M7 has a player-1 start");
+        let from = (i64::from(sx), i64::from(sy));
+
+        let waypoints = route_waypoints(map, from);
+        assert!(!waypoints.is_empty(), "E1M7 must yield a non-empty route");
+        // Bounded: at most one waypoint per portal, plus the exit leg.
+        assert!(waypoints.len() <= portals(map).len() + 1);
+
+        let plan = route_plan(map, from);
+        println!(
+            "E1M7 route from {from:?}: {} waypoints, {} steps, doors={}",
+            waypoints.len(),
+            plan.len(),
+            waypoints.iter().filter(|waypoint| waypoint.door).count(),
+        );
+        assert!(!plan.is_empty(), "the route plan must be non-empty");
+        // Chunkable into <= DOOM_PLAN_MAX_STEPS-step plans (each waypoint
+        // contributes at most an OpenDoor + a Move).
+        assert!(plan.len() <= 2 * waypoints.len());
+        for chunk in plan.chunks(DOOM_PLAN_MAX_STEPS) {
+            assert!(!chunk.is_empty());
+        }
+        for step in &plan {
+            match step {
+                DoomPlanStep::Move { bearing, distance } => {
+                    assert!((0..=359).contains(bearing), "bearing {bearing}");
+                    assert!(
+                        (1..=DOOM_PLAN_DISTANCE_MAX).contains(distance),
+                        "distance {distance}"
+                    );
+                }
+                DoomPlanStep::OpenDoor { bearing } => {
+                    assert!((0..=359).contains(bearing), "bearing {bearing}");
+                }
+                other => panic!("route_plan emitted a non-route step: {other:?}"),
+            }
+        }
+
+        // Ends toward the exit: the final step is a Move, and the final waypoint
+        // targets an exit line midpoint.
+        assert!(matches!(plan.last(), Some(DoomPlanStep::Move { .. })));
+        let exit_midpoints: Vec<(i64, i64)> = exit_sectors(map)
+            .iter()
+            .filter_map(|sector| exit_midpoint(map, *sector))
+            .collect();
+        let last = waypoints.last().expect("the route is non-empty");
+        assert!(
+            exit_midpoints.contains(&last.target),
+            "the route must end at an exit line midpoint, got {:?}",
+            last.target
+        );
+
+        // Determinism: byte-identical across two calls.
+        assert_eq!(plan, route_plan(map, from));
+        assert_eq!(waypoints, route_waypoints(map, from));
     }
 
     // ── The executed feasibility scan + report ───────────────────────────────
