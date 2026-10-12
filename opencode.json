@@ -567,7 +567,8 @@
                     "$env:OPENCODE_ENABLE_TELEMETRY*Copy-Item*": "deny",
                     "$env:OPENCODE_ENABLE_TELEMETRY*New-Item*": "deny",
                     "gh run view*": "allow",
-                    "powershell -File .opencode/scripts/check-sqlite-retired.ps1*": "allow"
+                    "powershell -File .opencode/scripts/check-sqlite-retired.ps1*": "allow",
+                    "Remove-Item .git/index.lock*": "allow"
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny"
