@@ -68,6 +68,15 @@ export interface ContractPair {
   readonly fg: string;
   /** A token NAME resolved via `SEMANTIC_TOKENS`, never a literal. */
   readonly bg: string;
+  /**
+   * #3035 ST-2 — WCAG 1.4.3/1.4.11 INACTIVE-COMPONENT exemption. A `disabled`
+   * control is exempt from the 4.5:1 body floor: it must read *dimmer* than the
+   * enabled treatment, never reach AA. An `exempt` pair is still floor-REPORTED
+   * for perceptibility (it stays in the matrix) but is never a floor violation —
+   * `evaluateContrast` filters it out of `belowFloor`. This is not a tolerance
+   * tier: the floor is unchanged, the pair is simply outside the floor's scope.
+   */
+  readonly exempt?: boolean;
 }
 
 /** The painted surfaces, in declaration order (the binding vocabulary). */
@@ -99,8 +108,14 @@ export const CONTROL_STATE_IDS: readonly ControlState[] = [
 
 /**
  * The derivation weights — the ONE home (collapses `ThemeProvider.tsx:291-295`
- * ↔ `matrix.ts:121-125` ↔ `system.ts:114-115`). Byte-identical to both existing
- * copies: `--accent-strong` 55/45, `--text-subtle` 65/35, `--hover-bg` 6%.
+ * ↔ `matrix.ts:121-125` ↔ `system.ts:114-115`). `--accent-strong` stays 55/45,
+ * `--hover-bg` stays 6%.
+ *
+ * ST-1 (#3035) RAISED `--text-subtle` from 65/35 to 55/45 — the stronger mix of
+ * `--text-secondary` toward `--text-primary` makes `fg.subtle` clear its 4.5:1
+ * body floor on every preset the derivations can reach (solarized is tightened
+ * by the authored preset values in ST-2). The weight is the single home the
+ * engine, the gate and `theme/system.ts` all read.
  */
 export const DERIVATIONS: {
   readonly accentStrong: readonly [number, number];
@@ -108,11 +123,11 @@ export const DERIVATIONS: {
   readonly hoverBgPct: number;
 } = {
   accentStrong: [0.55, 0.45],
-  textSubtle: [0.65, 0.35],
+  textSubtle: [0.55, 0.45],
   hoverBgPct: 0.06,
 };
 
-/** `[surface, state, pairId, kind, fg, bg, composed?]` seed row. */
+/** `[surface, state, pairId, kind, fg, bg, composed?, exempt?]` seed row. */
 type PairSeed = readonly [
   surface: SurfaceId,
   state: ControlState,
@@ -121,6 +136,7 @@ type PairSeed = readonly [
   fg: string,
   bg: string,
   composed?: boolean,
+  exempt?: boolean,
 ];
 
 const seeds: PairSeed[] = [];
@@ -149,7 +165,8 @@ function addSurface(
     [surface, 'focus', 'focus-ring', 'focus', focusRing, bg],
     [surface, 'selected', 'indicator', 'ui', 'accent.strong', bg],
     [surface, 'selected', 'label', 'body', 'fg.onAccent', 'accent.strong'],
-    [surface, 'disabled', 'label', 'body', 'fg.subtle', bg],
+    // `disabled` is WCAG-exempt (inactive component) — floor-reported, never a violation.
+    [surface, 'disabled', 'label', 'body', 'fg.subtle', bg, false, true],
   );
 }
 
@@ -202,7 +219,7 @@ function floorFor(kind: ContrastKind): number {
  * token names resolved via `SEMANTIC_TOKENS` (`./tokens`), never literals.
  */
 export const CONTRACT_PAIRS: readonly ContractPair[] = seeds.map(
-  ([surface, state, pairId, kind, fg, bg, composed]) => ({
+  ([surface, state, pairId, kind, fg, bg, composed, exempt]) => ({
     surface,
     state,
     pairId,
@@ -211,5 +228,6 @@ export const CONTRACT_PAIRS: readonly ContractPair[] = seeds.map(
     composed: composed ?? false,
     fg,
     bg,
+    exempt: exempt ?? false,
   }),
 );

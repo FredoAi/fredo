@@ -3,6 +3,8 @@
  *
  * Given the built matrix and the committed baseline, `evaluateContrast` applies
  * the day-one-green rules:
+ *   0. WCAG-exempt rows (`disabled` inactive components, `MatrixRow.exempt`) are
+ *      OUT of the floor's scope — never a violation, never baselined.
  *   1. `violations` = every below-floor row whose `key` is NOT excused by the
  *      baseline (a NEW, unbaselined violation → FAIL).
  *   2. `baselined`  = the below-floor rows the baseline excuses (key identity).
@@ -60,7 +62,10 @@ export function evaluateContrast(
   }
 
   const baselineKeys = new Set(baseline.map((entry) => entry.key));
-  const belowFloor = rows.filter((row) => row.ratio < row.floor);
+  // #3035 ST-2 — WCAG inactive-component exemption: a `disabled` pair is
+  // floor-REPORTED (it stays in the matrix) but is never a floor violation, so
+  // it is filtered out of `belowFloor` before baseline/stale accounting.
+  const belowFloor = rows.filter((row) => !row.exempt && row.ratio < row.floor);
   const belowFloorKeys = new Set(belowFloor.map((row) => row.key));
   return {
     violations: belowFloor.filter((row) => !baselineKeys.has(row.key)),

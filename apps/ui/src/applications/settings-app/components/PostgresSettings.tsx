@@ -136,11 +136,11 @@ const PortModeOption: React.FC<{
     <RadioCard.ItemControl
       borderWidth="1px"
       borderRadius="md"
-      borderColor={selected ? 'var(--accent-primary)' : 'border.default'}
-      bg={selected ? tint('var(--accent-primary)', 12) : 'bg.surface'}
+      borderColor={selected ? 'accent.border' : 'border.default'}
+      bg={selected ? tint('var(--accent-primary)', 8) : 'bg.surface'}
       transition="background 0.15s ease, border-color 0.15s ease"
-      _hover={{ borderColor: 'var(--accent-primary)' }}
-      _focusWithin={{ outline: '2px solid var(--accent-primary)', outlineOffset: '2px' }}
+      _hover={{ borderColor: 'accent.border' }}
+      _focusWithin={{ outline: '2px solid var(--accent-strong)', outlineOffset: '2px' }}
     >
       <RadioCard.ItemContent>
         <RadioCard.ItemText fontWeight="600" color="fg.default">
@@ -148,7 +148,10 @@ const PortModeOption: React.FC<{
         </RadioCard.ItemText>
         <RadioCard.ItemDescription color="fg.muted">{description}</RadioCard.ItemDescription>
       </RadioCard.ItemContent>
-      <RadioCard.ItemIndicator />
+      <RadioCard.ItemIndicator
+        colorPalette="accent"
+        _checked={{ bg: 'accent.strong', borderColor: 'accent.strong' }}
+      />
     </RadioCard.ItemControl>
   </RadioCard.Item>
 );
@@ -390,7 +393,7 @@ export const PostgresSettings: React.FC = () => {
         data-testid="settings-postgres-section"
         bg="bg.surface"
         border="1px solid"
-        borderColor="border.default"
+        borderColor="border.subtle"
         borderRadius="lg"
         w="100%"
       >
@@ -547,7 +550,7 @@ export const PostgresSettings: React.FC = () => {
             </chakra.select>
           </Field.Root>
 
-          <Separator borderColor="border.default" />
+          <Separator borderColor="border.subtle" />
 
           {/* ── Actions ── */}
           <HStack justify="space-between" align="center" gap={3}>

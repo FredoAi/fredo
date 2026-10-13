@@ -34,7 +34,9 @@ const FREDO_TOKEN_ALIASES: ReadonlyArray<readonly [string, string]> = [
   ['--chakra-colors-fg-muted', 'var(--text-secondary)'],
   ['--chakra-colors-fg-subtle', 'var(--text-subtle)'],
   ['--chakra-colors-fg-on-accent', 'var(--accent-contrast)'],
-  ['--chakra-colors-border-default', 'var(--border-color)'],
+  // #3035 ST-1 — border.default is the DERIVED contrast-safe control boundary
+  // (`--border-strong`); border.subtle keeps the soft authored `--border-color`.
+  ['--chakra-colors-border-default', 'var(--border-strong)'],
   ['--chakra-colors-border-subtle', 'var(--border-color)'],
 ];
 
