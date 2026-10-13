@@ -97,7 +97,7 @@ The Doom Mode foundation runs a **native in-process pure-Rust engine** (`neurodo
 
 ## Database Client (`applications/db_client`, Spec #2950)
 
-The built-in PostgreSQL client connects to **external** PostgreSQL databases (separate per-connection pools; the embedded-PostgreSQL persistence plane is never touched).
+The built-in PostgreSQL client connects to **external** PostgreSQL databases (separate per-connection pools). Since Spec #3029 it also seeds ONE built-in connection — **"Fredo"** — that targets Fredo's own **embedded** cluster **read-only** (database `fredo`, role `postgres`); its endpoint (host/port) is resolved **live at connect time** from the supervisor and its password comes from the PG **supervisor's** loopback keychain entry (`fredo.postgres` / `loopback:password`), so **no ephemeral port and no secret are ever persisted** in the connection metadata. The client's own per-connection keychain (`fredo.dbclient`) and the external-connection credential model are unchanged.
 
 **Protections:**
 - **Credentials in the OS keychain only.** A saved connection's password is stored via the `keyring` crate (Windows Credential Manager / macOS Keychain / Linux Secret Service; service `fredo.dbclient`, account `connection:<id>:password`). The settings store (`settingsService`/`AppStore` KV) holds only **secret-free** connection metadata, history, saved queries, and preferences — no plaintext password is written to disk, logs, telemetry, or CSV/JSON exports. (Note: `patStorage.ts`'s base64 PAT handling is obfuscation, not a credential store; DB-client passwords never use it.)

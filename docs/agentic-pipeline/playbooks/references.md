@@ -63,6 +63,14 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 ---
 ## Known Failure Modes
+### G-360: multi_developer_dev_summary_draft_naming_and_round_stamp
+- **activation_date:** 2026-10-13
+- **observed:** #3029 round 1 — a 2-developer spec: the developers authored uniquely-named `dev-summary-a.md` / `dev-summary-b.md` (applying the G-143 status-draft caution), so the `implementation → testing` transition — which consumes exactly `dev-summary.md` — posted NO `## Development Summary`; the SI then assembled a combined `dev-summary.md` and flushed it manually AFTER entering testing, so the machine stamped it `## Development Summary (round 2)` (the stamp is testing-entries + 1, correct only when the draft flushes at the transition, before the destination `phase.started`).
+- **target_failure:** on a multi-developer spec the per-developer summary drafts do not match the fixed timeline-draft filename, so the transition posts nothing; a late manual flush then round-mis-stamps the summary because the stamp assumes the transition-time flush.
+- **guardrail:** The SI's developer brief must have each developer write its summary to a per-agent draft (e.g. `dev-summary-<agent>.md`) AND the SI must assemble the single `dev-summary.md` (concatenating the per-agent drafts, ending `*Authored by Developer*`) BEFORE the `implementation → testing` transition, so the transition — not a late manual flush — posts `## Development Summary (round 1)`. A manual flush is acceptable only when it precedes the destination `phase.started` (flush then transition), else the header is one round high.
+- **home:** playbooks/self-improver.md (developer dispatch) + playbooks/developer.md + references.md
+- **effectiveness:** Pending
+
 ### G-359: silent_timeline_post_failure_loses_the_governing_plan
 - **activation_date:** 2026-10-13
 - **observed:** #3036 round 1 — the `planning → implementation` transition's `## Triage Plan` comment write failed during a GitHub API outage (TLS timeouts / `unexpected EOF`) and the failure was swallowed as a stdout warning; the transition still recorded and advanced. The retained `triage-plan.md` draft was later compacted by a manual `post-comments` flush into a phantom `## Fix Plan (round 2)` (round 1, no rework in flight), so the issue lost its governing plan entirely.
