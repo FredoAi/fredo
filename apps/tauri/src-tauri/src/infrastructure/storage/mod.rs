@@ -1,8 +1,15 @@
 pub mod boot_config;
 pub mod engine;
 pub mod application_store;
+pub mod embedded_pg;
 pub mod settings_cache;
 pub mod span_store;
+
+// The embedded-PostgreSQL endpoint + loopback-credential seam (Spec #3029 ST-1):
+// db_client consumes it, pg_supervisor implements it — no cross-application import.
+pub use embedded_pg::{
+    EmbeddedPgEndpoint, EmbeddedPgEndpointProvider, EmbeddedPgEndpointState,
+};
 
 // The ONE synchronous boot KV + the app-data-dir resolver (Spec #3005 ST-1),
 // and the volatile PG-hydrated synchronous settings cache (Spec #3005 ST-2).

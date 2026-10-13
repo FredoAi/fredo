@@ -243,8 +243,14 @@ fn saved_connection_is_listed_from_a_fresh_state_handle() {
     // A new state over the same directory models an app restart.
     let reopened = DbClientState::new(None, dir.path().to_path_buf());
     let listed = connection_list_with(&reopened, &credentials).expect("list");
-    assert_eq!(listed.len(), 1);
-    let view = &listed[0];
+    // Spec #3029: a fresh-profile save also seeds the built-in "Fredo" row, so
+    // the store holds the builtin + the saved connection.
+    assert!(listed.iter().any(|row| row.builtin));
+    let view = listed
+        .iter()
+        .find(|row| row.id == created.id)
+        .expect("the saved connection is listed after restart");
+    assert!(!view.builtin);
     assert_eq!(view.id, created.id);
     assert_eq!(view.name, "qa-local");
     assert_eq!(view.host, "127.0.0.1");
@@ -281,7 +287,13 @@ fn delete_clears_metadata_secret_history_and_saved_queries() {
     )
     .expect("delete");
 
-    assert!(connection_list_with(&state, &credentials).unwrap().is_empty());
+    // Spec #3029: the fresh-profile seed leaves the built-in row, so the deleted
+    // connection is absent rather than an empty list.
+    let remaining = connection_list_with(&state, &credentials).unwrap();
+    assert!(
+        remaining.iter().all(|row| row.id != view.id),
+        "the deleted connection is removed from the store"
+    );
     assert!(!credentials.has_password(&view.id).unwrap());
     assert!(!history_path(&state, &view.id).exists());
     assert!(!saved_queries_path(&state, &view.id).exists());

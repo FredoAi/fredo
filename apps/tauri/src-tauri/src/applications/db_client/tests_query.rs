@@ -40,6 +40,7 @@ fn state_with_force(
         ssl_mode: SslMode::Prefer,
         access_mode: mode,
         has_password: false,
+        builtin: false,
     };
     let path = dir.path().join(format!("{DBCLIENT_CONNECTIONS_KEY}.json"));
     std::fs::write(path, serde_json::to_string(&vec![view]).expect("serialize")).expect("write");

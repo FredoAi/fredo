@@ -17,9 +17,12 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex as StdMutex, MutexGuard};
 
 use sqlx::PgPool;
 use tokio::sync::Mutex;
+
+use crate::infrastructure::storage::embedded_pg::EmbeddedPgEndpointProvider;
 
 use super::seam::{self, ForceFailStage};
 
@@ -34,6 +37,12 @@ pub struct DbClientState {
     state_dir: PathBuf,
     /// Open per-connection pools. Empty in ST-1 — no pool is opened here.
     pools: Mutex<PgPoolMap>,
+    /// Spec #3029 ST-2: the embedded-PostgreSQL endpoint provider. Installed
+    /// once by the composition root (`lib.rs`); `None` in unit tests and when no
+    /// managed supervisor is present (the `Disabled` fallback ⇒ a built-in
+    /// connect fails with the typed `config` error, EARS-4b). Guarded by a std
+    /// mutex (never held across an `.await`).
+    embedded_endpoint_provider: StdMutex<Option<Arc<dyn EmbeddedPgEndpointProvider>>>,
 }
 
 impl DbClientState {
@@ -44,6 +53,7 @@ impl DbClientState {
             force_fail,
             state_dir,
             pools: Mutex::new(HashMap::new()),
+            embedded_endpoint_provider: StdMutex::new(None),
         }
     }
 
@@ -65,6 +75,29 @@ impl DbClientState {
     /// The writable state dir used for test fixtures.
     pub fn state_dir(&self) -> &Path {
         &self.state_dir
+    }
+
+    /// Install the embedded-PostgreSQL endpoint provider (Spec #3029). Called
+    /// once by the composition root (`lib.rs`) after the managed supervisor is
+    /// available (a later install simply replaces the previous provider).
+    pub fn set_embedded_endpoint_provider(
+        &self,
+        provider: Arc<dyn EmbeddedPgEndpointProvider>,
+    ) {
+        *self.provider_lock() = Some(provider);
+    }
+
+    /// The installed embedded-PostgreSQL endpoint provider, if any (Spec #3029).
+    /// `None` when no managed supervisor was wired (the `Disabled` fallback).
+    pub fn embedded_endpoint_provider(&self) -> Option<Arc<dyn EmbeddedPgEndpointProvider>> {
+        self.provider_lock().clone()
+    }
+
+    /// Lock the provider slot, recovering from poisoning (no `unwrap`).
+    fn provider_lock(&self) -> MutexGuard<'_, Option<Arc<dyn EmbeddedPgEndpointProvider>>> {
+        self.embedded_endpoint_provider
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Register an open pool for `connection_id`, returning any pool it

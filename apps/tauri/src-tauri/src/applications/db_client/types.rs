@@ -142,6 +142,12 @@ pub struct DbConnectionView {
     pub access_mode: AccessMode,
     /// Whether a keychain secret exists. NEVER the secret itself.
     pub has_password: bool,
+    /// Spec #3029: `true` ONLY for the seeded built-in connection to Fredo's own
+    /// embedded cluster. Additive + serde-defaulted so existing documents stay
+    /// valid; every ordinary user-created/saved connection is `false`, and saving
+    /// the built-in (an edit) produces `false` (it becomes ordinary).
+    #[serde(default)]
+    pub builtin: bool,
 }
 
 /// Transient test-connection arguments. The password is used for this call only
