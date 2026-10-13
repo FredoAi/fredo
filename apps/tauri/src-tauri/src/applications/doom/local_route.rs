@@ -12,10 +12,11 @@
 //!    caches the [`MapData`] for `E1{map}` (once per level) via
 //!    [`super::engine::load_wad`] + `neurodoom::ClassicEngine::new` — the exact
 //!    API [`super::navigation`] already uses;
-//! 2. reads the player's integer `(x, y)` and asks [`navigation::route_waypoints`]
-//!    for a deterministic route to the nearest non-secret exit, emitting as many
-//!    [`DoomPlanStep`]s as fit in [`DOOM_PLAN_MAX_STEPS`] — the next call
-//!    recomputes from the then-current position (a receding horizon);
+//! 2. reads the player's integer `(x, y)` and asks the cached
+//!    [`navigation::WalkGrid`] for a deterministic route to the nearest
+//!    non-secret exit (an engine-accurate A* over free cells, string-pulled into
+//!    wall-free legs), then pure-pursues it — the next call recomputes from the
+//!    then-current position (a receding horizon);
 //! 3. when the route is empty (no exit reachable, or the player stands outside
 //!    every sector) falls back to a reactive plan — an `OpenDoor` for a near
 //!    front door plus a `Move` toward the forward sensor's exit bearing — and
@@ -38,6 +39,8 @@ use serde_json::{json, Value};
 
 use neurodoom::engine::ClassicEngine;
 use neurodoom::map::MapData;
+use neurodoom::math::FRACBITS;
+use neurodoom::world::PeerId;
 
 use crate::infrastructure::companion::doom_decision::{
     DoomDecisionError, DoomDecisionSource, DoomPlan, DoomPlanStep, DOOM_PLAN_DISTANCE_MAX,
@@ -47,7 +50,10 @@ use crate::infrastructure::companion::doom_decision::{
 use super::actions::{DOOM_ACTION_TURN_TO, DOOM_ACTION_USE};
 use super::agent::DOOM_LOCAL_DOOR_NEAR_RANGE;
 use super::engine::load_wad;
-use super::navigation::route_waypoints;
+use super::navigation::{
+    bearing_between, distance_between, door_on_segment, RouteOutcome, WalkGrid,
+    DOOM_PLAYER_HEIGHT_FALLBACK,
+};
 
 /// The `use` reach (map units) at which the source opens a door waypoint. The
 /// engine's `P_UseLines` traces ~64 units ahead; 56 is the measured reach the
@@ -68,34 +74,46 @@ pub const DOOM_LOCAL_MOVE_STEP_MAX: i64 = 8;
 /// front-facing.
 pub const DOOM_LOCAL_FRONT_DOOR_CONE_DEGREES: i64 = 45;
 
-/// The local, map-derived [`DoomDecisionSource`] (Spec #3039 ST-7).
+/// The pure-pursuit look-ahead (map units): the follower drives toward the
+/// FARTHEST route waypoint within this distance that is directly visible, so it
+/// smooths the string-pulled legs instead of stop-starting cell by cell.
+pub const DOOM_LOCAL_LOOKAHEAD_UNITS: i64 = 96;
+
+/// The cached per-level route data: the parsed [`MapData`] and the [`WalkGrid`]
+/// built ONCE from it (a lookup-only structure).
+struct LevelCache {
+    map: MapData,
+    grid: WalkGrid,
+}
+
+/// The local, map-derived [`DoomDecisionSource`] (Spec #3039 ST-7/ST-2).
 ///
-/// `maps` caches the parsed [`MapData`] per level so the WAD is parsed at most
-/// once per level (deterministic; the map is never mutated). The `Mutex` guards
-/// only a short synchronous critical section — it is NEVER held across an
-/// `.await`.
+/// `levels` caches the parsed [`MapData`] and the walkable [`WalkGrid`] per level
+/// so the WAD is parsed and the grid built at most once per level (deterministic;
+/// the map is never mutated). The `Mutex` guards only a short synchronous
+/// critical section — it is NEVER held across an `.await`.
 pub struct LocalRouteSource {
-    maps: Mutex<HashMap<i64, MapData>>,
+    levels: Mutex<HashMap<i64, LevelCache>>,
 }
 
 impl LocalRouteSource {
-    /// Build an empty local source; maps are parsed lazily on first use.
+    /// Build an empty local source; levels are parsed lazily on first use.
     pub fn new() -> Self {
         Self {
-            maps: Mutex::new(HashMap::new()),
+            levels: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Lock the map cache, recovering from a poisoned lock (a panic in a prior
+    /// Lock the level cache, recovering from a poisoned lock (a panic in a prior
     /// `decide` must not wedge the run).
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<i64, MapData>> {
-        self.maps
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<i64, LevelCache>> {
+        self.levels
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Ensure the [`MapData`] for `level` is cached, parsing the WAD once.
-    fn ensure_map(&self, level: i64) -> Result<(), DoomDecisionError> {
+    /// Ensure the level cache for `level` is built, parsing the WAD once.
+    fn ensure_level(&self, level: i64) -> Result<(), DoomDecisionError> {
         if self.lock().contains_key(&level) {
             return Ok(());
         }
@@ -106,8 +124,10 @@ impl LocalRouteSource {
         let engine = ClassicEngine::new(&wad, &name).map_err(|error| {
             DoomDecisionError::Malformed(format!("cannot build {name}: {error}"))
         })?;
+        let player_height = live_player_height(&engine);
         let map = engine.map().clone();
-        self.lock().insert(level, map);
+        let grid = WalkGrid::build(&map, player_height);
+        self.lock().insert(level, LevelCache { map, grid });
         Ok(())
     }
 
@@ -121,12 +141,12 @@ impl LocalRouteSource {
                     "observation is missing an integer `level.map`".to_string(),
                 )
             })?;
-        self.ensure_map(level)?;
+        self.ensure_level(level)?;
 
         let steps = {
-            let maps = self.lock();
-            match (maps.get(&level), player_position(observation)) {
-                (Some(map), Some(from)) => route_steps(map, from),
+            let levels = self.lock();
+            match (levels.get(&level), player_position(observation)) {
+                (Some(cache), Some(from)) => route_steps(&cache.map, &cache.grid, from),
                 _ => Vec::new(),
             }
         };
@@ -138,6 +158,19 @@ impl LocalRouteSource {
         };
         Ok(DoomPlan { steps })
     }
+}
+
+/// The engine's live player collision height (map units), read from its own
+/// player entity (`Entity.height`, 16.16 `Fixed`), falling back to
+/// [`DOOM_PLAYER_HEIGHT_FALLBACK`] when no live entity is present.
+fn live_player_height(engine: &ClassicEngine) -> i64 {
+    let world = engine.world();
+    world
+        .controlled_by(PeerId(0))
+        .and_then(|id| world.get(id))
+        .map(|entity| i64::from(entity.height >> FRACBITS))
+        .filter(|height| *height > 0)
+        .unwrap_or(DOOM_PLAYER_HEIGHT_FALLBACK)
 }
 
 impl Default for LocalRouteSource {
@@ -160,47 +193,83 @@ fn player_position(observation: &Value) -> Option<(i64, i64)> {
     Some((x, y))
 }
 
-/// Turn the route from `from` into the plan for the NEXT waypoint (Spec #3039
-/// ST-7).
+/// Turn the grid route from `from` into the plan for the next leg (Spec #3039
+/// ST-2). A receding horizon: the route is recomputed from the then-current
+/// position every call, so bearings are always FRESH.
 ///
-/// Only the nearest waypoint is planned, and its bearing/distance are taken from
-/// [`navigation::route_waypoints`], which computes the FIRST waypoint's bearing
-/// from `from` — so the plan is always FRESH (a receding horizon: the next call
-/// recomputes from the then-current position). Emitting the nearest waypoint
-/// only keeps the `use` trace aimed at the door the player is actually
-/// approaching; packing far waypoints would carry stale bearings the `use` trace
-/// would miss.
-///
-/// A door waypoint is opened (`OpenDoor`, facing its fresh bearing) only when the
-/// player is within [`DOOM_LOCAL_DOOR_USE_RANGE`] — pressing `use` from further
-/// away never opens it. Every waypoint also contributes the `Move` toward its
-/// midpoint. Empty when the route is empty.
-fn route_steps(map: &MapData, from: (i64, i64)) -> Vec<DoomPlanStep> {
-    let Some(waypoint) = route_waypoints(map, from).into_iter().next() else {
+/// * A `use`-activated exit SWITCH within [`DOOM_LOCAL_DOOR_USE_RANGE`] is
+///   pressed (one-tick `[turn-to, use]` hold) — the exit wall itself is not a
+///   walkable cell.
+/// * Otherwise the follower drives toward the FARTHEST visible route waypoint
+///   within [`DOOM_LOCAL_LOOKAHEAD_UNITS`] (pure pursuit), pressing `use` at a
+///   door crossing on the immediate leg once it is within range.
+fn route_steps(map: &MapData, grid: &WalkGrid, from: (i64, i64)) -> Vec<DoomPlanStep> {
+    // Exit approach: press `use` on a switch exit within reach.
+    if let Some(goal) = grid.nearest_goal(from) {
+        if goal.switch {
+            if let Some(target) = grid.centre(goal.cell) {
+                if distance_between(from, target) <= DOOM_LOCAL_DOOR_USE_RANGE {
+                    return vec![use_hold(from, target)];
+                }
+            }
+        }
+    }
+
+    let RouteOutcome::Path(waypoints) = grid.route(map, from) else {
         return Vec::new();
     };
+    let Some(target) = pursuit_target(grid, from, &waypoints) else {
+        return Vec::new();
+    };
+
     let mut steps: Vec<DoomPlanStep> = Vec::new();
-    if waypoint.door && waypoint.distance <= DOOM_LOCAL_DOOR_USE_RANGE {
-        // Press `use` ONCE, facing the door, via a one-tick legacy hold. The
-        // hold routes through the retained `effective_intent` pipeline (which
-        // preserves the `use` and appends bounded forward locomotion), so the
-        // door opens WITHOUT relying on the executor's `OpenDoor` step — whose
-        // completion waits for `state == "waiting"`, which the real engine never
-        // reports (it goes `"opening"` → fully open).
-        steps.push(DoomPlanStep::Hold {
-            tics: 1,
-            actions: vec![
-                json!({ "type": DOOM_ACTION_TURN_TO, "angle": waypoint.bearing }),
-                json!({ "type": DOOM_ACTION_USE }),
-            ],
-        });
+    // A door on the immediate leg is opened (face it, press `use`) before the
+    // Move through it. The executor's `OpenDoor` step is NOT used: it only
+    // completes on `state == "waiting"`, which the real engine never reports (it
+    // goes `"opening"` → fully open → absent from `doors[]`).
+    if let Some(crossing) = door_on_segment(map, from, target) {
+        if distance_between(from, crossing) <= DOOM_LOCAL_DOOR_USE_RANGE {
+            steps.push(use_hold(from, crossing));
+        }
     }
     steps.push(DoomPlanStep::Move {
-        bearing: waypoint.bearing,
-        distance: waypoint.distance.min(DOOM_LOCAL_MOVE_STEP_MAX),
+        bearing: bearing_between(from, target),
+        distance: distance_between(from, target).clamp(1, DOOM_LOCAL_MOVE_STEP_MAX),
     });
     debug_assert!(steps.len() <= DOOM_PLAN_MAX_STEPS);
     steps
+}
+
+/// A one-tick `[turn-to, use]` hold facing `target` from `from`.
+fn use_hold(from: (i64, i64), target: (i64, i64)) -> DoomPlanStep {
+    DoomPlanStep::Hold {
+        tics: 1,
+        actions: vec![
+            json!({ "type": DOOM_ACTION_TURN_TO, "angle": bearing_between(from, target) }),
+            json!({ "type": DOOM_ACTION_USE }),
+        ],
+    }
+}
+
+/// The pure-pursuit target: the FARTHEST visible waypoint within
+/// [`DOOM_LOCAL_LOOKAHEAD_UNITS`], else the first waypoint. `None` for an empty
+/// route.
+fn pursuit_target(
+    grid: &WalkGrid,
+    from: (i64, i64),
+    waypoints: &[super::navigation::DoomRouteWaypoint],
+) -> Option<(i64, i64)> {
+    let mut target = None;
+    for waypoint in waypoints {
+        if distance_between(from, waypoint.target) <= DOOM_LOCAL_LOOKAHEAD_UNITS
+            && grid.visible(from, waypoint.target)
+        {
+            target = Some(waypoint.target);
+        } else {
+            break;
+        }
+    }
+    target.or_else(|| waypoints.first().map(|waypoint| waypoint.target))
 }
 
 /// The reactive fallback plan: an `OpenDoor` for a near front door (when one is
@@ -301,19 +370,23 @@ mod tests {
     }
 
     #[test]
-    fn route_steps_are_bounded_non_empty_and_deterministic() {
+    fn route_steps_are_bounded_and_deterministic() {
         let map = e1m7_map();
+        let grid = WalkGrid::build(&map, DOOM_PLAYER_HEIGHT_FALLBACK);
         let from = super::super::navigation::spawn_point(&map)
             .map(|(x, y)| (i64::from(x), i64::from(y)))
             .expect("E1M7 has a player-1 start");
-        let steps = route_steps(&map, from);
-        assert!(!steps.is_empty(), "E1M7 must yield a non-empty route plan");
+        let steps = route_steps(&map, &grid, from);
         assert!(
             steps.len() <= DOOM_PLAN_MAX_STEPS,
             "the plan must fit the shared bound: {}",
             steps.len()
         );
-        assert_eq!(steps, route_steps(&map, from), "byte-identical across calls");
+        assert_eq!(
+            steps,
+            route_steps(&map, &grid, from),
+            "byte-identical across calls"
+        );
         for step in &steps {
             match step {
                 DoomPlanStep::Move { bearing, distance } => {

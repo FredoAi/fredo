@@ -34,6 +34,22 @@
 //!   a deterministic Kruskal (union-find) over edges sorted by clearance
 //!   descending.
 //!
+//! # Engine-accurate routing (Spec #3039 ST-2)
+//!
+//! The AC5 route does NOT use the coarse portal graph above: [`WalkGrid`]
+//! rasterizes a clearance-aware, engine-accurate walkable grid from the same
+//! [`MapData`] and runs a deterministic 8-connected A* over it. A cell is FREE
+//! unless its centre is within [`DOOM_PLAYER_RADIUS`] of a hard wall (one-sided,
+//! `ML_BLOCKING`, a key-locked door, or self-referencing). A move between two
+//! cells is allowed only when the ENGINE's DIRECTIONAL movement rule holds
+//! (`PIT_CheckLine`): the climb `floor(b) - floor(a) <= DOOM_MAX_STEP_HEIGHT` (a
+//! drop is free) and the headroom from the CURRENT floor,
+//! `min(ceiling(a), ceiling(b)) - floor(a) >= player_height`. A two-sided
+//! passage the engine blocks is therefore never routed through. [`portal_traversable`]
+//! is the conservative line-level form of the same rule (headroom measured from
+//! the higher floor); [`probe_engine_passage_rules`] pins the un-exposed engine
+//! step constant (`neurodoom::physics::MAXSTEPHEIGHT`).
+//!
 //! # Purity / determinism
 //!
 //! Every function here is a pure function of the [`MapData`] — no RNG, no wall
@@ -48,7 +64,8 @@
 //! duration (`use` → `state="opening"` → `state="waiting"`) so ST-4 can finalize
 //! `DOOM_DOOR_WAIT_MAX_TICKS`.
 
-use std::collections::VecDeque;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, VecDeque};
 
 use neurodoom::map::{doomednum, line_special, MapData, SectorId};
 use neurodoom::math::FRACBITS;
@@ -63,6 +80,37 @@ pub const DOOM_PLAYER_RADIUS: i64 = 16;
 /// The minimum opening width a radius-[`DOOM_PLAYER_RADIUS`] player can squeeze
 /// through with zero margin (`2 * radius`).
 pub const DOOM_PASSAGE_MIN_WIDTH: i64 = DOOM_PLAYER_RADIUS * 2;
+
+// ── Engine passage-rule constants (Spec #3039 ST-2, G-255 names block) ────────
+
+/// The player's vertical collision height (map units) used by the passage
+/// predicate ONLY when no live player entity is available. The authoritative
+/// value is read live from the engine's own player entity (`Entity.height`,
+/// `engine.rs:1118`); [`probe_engine_passage_rules`] pins this fallback to the
+/// engine's real player height (classic Doom `56`).
+pub const DOOM_PLAYER_HEIGHT_FALLBACK: i64 = 56;
+
+/// The maximum floor step-up a thing can walk up, in integer map units
+/// (classic Doom `24`). DECIDED by [`probe_engine_passage_rules`], which asserts
+/// it equals the engine's own `neurodoom::physics::MAXSTEPHEIGHT` — it is never a
+/// silent literal.
+pub const DOOM_MAX_STEP_HEIGHT: i64 = 24;
+
+/// `ML_BLOCKING` — the linedef flag that makes a line solid regardless of its
+/// sidedefs (classic Doom `ML_BLOCKING`, value `1`; `Line.flags`, `map.rs`).
+pub const DOOM_LINE_BLOCKING_FLAG: i16 = 1;
+
+/// The walkable-grid cell size in integer map units — one player collision
+/// radius, so a wall is at least one cell thick.
+pub const DOOM_ROUTE_CELL_UNITS: i64 = DOOM_PLAYER_RADIUS;
+
+/// The hard bound on the walkable-grid cell count. A map whose rasterized grid
+/// would exceed this is left EMPTY (no route) — the build stays bounded.
+pub const DOOM_ROUTE_MAX_CELLS: usize = 262_144;
+
+/// The extra A* cost of entering a cell that lies on a `use`-gated door line, so
+/// the route prefers an open way around a door when one exists.
+pub const DOOM_ROUTE_DOOR_PENALTY: i32 = 512;
 
 // ── Model types ───────────────────────────────────────────────────────────────
 
@@ -404,14 +452,194 @@ fn route_counts(
     (0, 0)
 }
 
-// ── Map-derived route plan (Spec #3039 ST-6) ─────────────────────────────────
+// ── Engine-accurate passage predicate (Spec #3039 ST-2) ──────────────────────
 
-/// One waypoint on a map-derived route: the point to head toward (a portal
-/// midpoint, or the exit-line midpoint), the bearing and distance to it, and
-/// whether a `use`-gated door must be opened first.
+/// Whether a linedef `special` is a key-locked door (classic `*_LOCKED_DOOR`).
+/// A locked door is never a route leg without its key.
+pub fn is_locked_door(special: i16) -> bool {
+    matches!(
+        special,
+        line_special::BLUE_LOCKED_DOOR
+            | line_special::YELLOW_LOCKED_DOOR
+            | line_special::RED_LOCKED_DOOR
+    )
+}
+
+/// Whether a linedef `special` is a walk-triggered door (opened by crossing it,
+/// not by a `use` press).
+pub fn is_walk_trigger_door(special: i16) -> bool {
+    matches!(
+        special,
+        line_special::WALK_OPEN_DOOR
+            | line_special::WALK_CLOSE_DOOR
+            | line_special::WALK_RAISE_DOOR
+            | line_special::WALK_CLOSE30_OPEN
+    )
+}
+
+/// A sector's floor height in integer map units (`MapData.sectors`).
+fn floor_units(map: &MapData, id: SectorId) -> i64 {
+    map.sectors
+        .get(id as usize)
+        .map_or(0, |sector| i64::from(sector.floor_height >> FRACBITS))
+}
+
+/// A sector's static (as-loaded) ceiling height in integer map units.
+fn ceiling_units(map: &MapData, id: SectorId) -> i64 {
+    map.sectors
+        .get(id as usize)
+        .map_or(0, |sector| i64::from(sector.ceiling_height >> FRACBITS))
+}
+
+/// The floor + ceiling height (map units) at an integer map-unit point. Uses the
+/// engine's BSP lookup on a node-bearing map; a synthetic map without nodes falls
+/// back to the even-odd [`sector_at`] scan.
+fn cell_heights(map: &MapData, point: (i64, i64)) -> (i64, i64) {
+    if map.nodes.is_empty() {
+        return match sector_at(map, point.0 as i32, point.1 as i32) {
+            Some(sector) => (floor_units(map, sector), ceiling_units(map, sector)),
+            None => (0, 0),
+        };
+    }
+    let (floor, ceiling) = neurodoom::physics::find_sector_heights(
+        map,
+        (point.0 as i32) << FRACBITS,
+        (point.1 as i32) << FRACBITS,
+    );
+    (i64::from(floor >> FRACBITS), i64::from(ceiling >> FRACBITS))
+}
+
+/// The OPENED ceiling height of every sector, in integer map units.
 ///
-/// [`route_plan`] turns these into [`DoomPlanStep`]s; exposing the list lets a
-/// caller (ST-7's local source) chunk the route into bounded plans.
+/// A door's static `ceiling_height` is its CLOSED position. When the engine opens
+/// a door it raises the door sector's ceiling to the LOWEST ceiling of the door's
+/// neighbours (classic `P_FindLowestCeilingSurrounding`). This pre-computes that
+/// opened ceiling so the passage predicate can evaluate a door at its OPEN
+/// clearance; every non-door sector keeps its static ceiling.
+fn sector_open_ceilings(map: &MapData) -> Vec<i64> {
+    let count = map.sectors.len();
+    let static_ceil: Vec<i64> = (0..count).map(|i| ceiling_units(map, i as u16)).collect();
+    let mut is_door = vec![false; count];
+    for line in &map.lines {
+        let Some(back) = line.back_sector else {
+            continue;
+        };
+        let front = line.front_sector;
+        if front == back || !is_door_special(line.special) {
+            continue;
+        }
+        let (cf, cb) = (static_ceil[front as usize], static_ceil[back as usize]);
+        // The door sector is the LOW-ceiling side of a closed-door linedef.
+        let door = if cf < cb {
+            front
+        } else if cb < cf {
+            back
+        } else {
+            continue;
+        };
+        is_door[door as usize] = true;
+    }
+    let mut open = static_ceil.clone();
+    for sector in 0..count {
+        if !is_door[sector] {
+            continue;
+        }
+        // A door opens to the LOWEST ceiling of its (non-door) neighbours — NOT
+        // below its own static ceiling, which is the closed position.
+        let mut lowest: Option<i64> = None;
+        for line in &map.lines {
+            let Some(back) = line.back_sector else {
+                continue;
+            };
+            let (f, b) = (line.front_sector as usize, back as usize);
+            if f != sector && b != sector {
+                continue;
+            }
+            let other = if f == sector { b } else { f };
+            if other == sector || is_door[other] {
+                continue;
+            }
+            lowest = Some(lowest.map_or(static_ceil[other], |value| value.min(static_ceil[other])));
+        }
+        if let Some(value) = lowest {
+            open[sector] = value;
+        }
+    }
+    open
+}
+
+/// The engine's movement rule for a two-sided linedef passage (Spec #3039 ST-2).
+///
+/// The passage from the linedef's FRONT sector `F` to its BACK sector `B` is
+/// traversable only when ALL of:
+///
+/// * the line is not `ML_BLOCKING` ([`DOOM_LINE_BLOCKING_FLAG`]);
+/// * it is two-sided and connects two distinct sectors;
+/// * it is not a key-locked door ([`is_locked_door`]);
+/// * `opening = min(ceil(F), ceil(B)) - max(floor(F), floor(B)) >= player_height`
+///   — a door is evaluated at its OPEN ceiling ([`sector_open_ceilings`]);
+/// * `step_up = floor(B) - floor(F) <= DOOM_MAX_STEP_HEIGHT` (a drop is allowed).
+pub fn portal_traversable(map: &MapData, line_index: usize, player_height: i64) -> bool {
+    let ceilings = sector_open_ceilings(map);
+    portal_traversable_with(map, &ceilings, line_index, player_height)
+}
+
+/// [`portal_traversable`] against a pre-computed opened-ceiling table (the grid
+/// builds [`sector_open_ceilings`] once and reuses it for every line).
+fn portal_traversable_with(
+    map: &MapData,
+    ceilings: &[i64],
+    line_index: usize,
+    player_height: i64,
+) -> bool {
+    let Some(line) = map.lines.get(line_index) else {
+        return false;
+    };
+    if line.flags & DOOM_LINE_BLOCKING_FLAG != 0 {
+        return false;
+    }
+    let Some(back) = line.back_sector else {
+        return false;
+    };
+    let front = line.front_sector;
+    if front == back || is_locked_door(line.special) {
+        return false;
+    }
+    let open_front = ceilings.get(front as usize).copied().unwrap_or(0);
+    let open_back = ceilings.get(back as usize).copied().unwrap_or(0);
+    let headroom = open_front.min(open_back) - floor_units(map, front).max(floor_units(map, back));
+    if headroom < player_height {
+        return false;
+    }
+    let step_up = floor_units(map, back) - floor_units(map, front);
+    step_up <= DOOM_MAX_STEP_HEIGHT
+}
+
+/// Whether a linedef is an UNCONDITIONAL wall for the walkable grid: one-sided
+/// (solid), flagged `ML_BLOCKING`, a key-locked door, or self-referencing. The
+/// height rules (step-up, headroom) are DIRECTIONAL — the engine measures them
+/// from the player's CURRENT floor (`PIT_CheckLine`) — so they are enforced on
+/// the directed cell-to-cell edge ([`WalkGrid::edge_ok`]), never by walling the
+/// line off. `ceilings` is retained so a door's line is evaluated at its OPEN
+/// clearance when the caller classifies it.
+fn linedef_is_wall(map: &MapData, _ceilings: &[i64], line_index: usize) -> bool {
+    let Some(line) = map.lines.get(line_index) else {
+        return true;
+    };
+    if line.back_sector.is_none()
+        || line.flags & DOOM_LINE_BLOCKING_FLAG != 0
+        || is_locked_door(line.special)
+    {
+        return true;
+    }
+    line.front_sector == line.back_sector.unwrap_or(line.front_sector)
+}
+
+// ── Clearance-aware walkable grid + deterministic A* (Spec #3039 ST-2) ───────
+
+/// One waypoint on the route: the point to head toward (a free-cell centre), the
+/// bearing and distance to it, and whether a `use`-gated door lies on the leg
+/// that ends here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DoomRouteWaypoint {
     /// The target point, in integer map units.
@@ -422,22 +650,703 @@ pub struct DoomRouteWaypoint {
     /// The distance to `target`, in integer map units, clamped to
     /// `1..=DOOM_PLAN_DISTANCE_MAX`.
     pub distance: i64,
-    /// Whether a `use`-gated door stands at this waypoint and must be opened
-    /// before the [`DoomPlanStep::Move`] through it.
+    /// Whether a `use`-gated door stands on the leg that ends at this waypoint.
     pub door: bool,
 }
 
-/// A deterministic route from `from` to the nearest non-secret exit, as a
-/// bounded sequence of [`DoomPlanStep`]s (Spec #3039 ST-6).
+/// The deterministic outcome of a route query (Spec #3039 ST-2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RouteOutcome {
+    /// A route of reachable free-cell-centre waypoints (empty when the player
+    /// already stands on a goal cell).
+    Path(Vec<DoomRouteWaypoint>),
+    /// No route exists except through a key-locked door (Spec #3039 ST-3).
+    LockedDoorOnly,
+    /// No goal is reachable from the origin.
+    NoRoute,
+}
+
+/// A route goal cell: an exit line's approach cell, and whether the exit is a
+/// `use`-activated switch (a one-sided exit line).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RouteGoal {
+    /// The grid cell index.
+    pub cell: usize,
+    /// Whether the exit is a `use`-activated switch.
+    pub switch: bool,
+}
+
+/// The fixed 8-connected neighbour order (orthogonals then diagonals, each with
+/// its A* base cost). A fixed order keeps A* deterministic.
+const ROUTE_NEIGHBOURS: [(i64, i64, u32); 8] = [
+    (1, 0, 10),
+    (-1, 0, 10),
+    (0, 1, 10),
+    (0, -1, 10),
+    (1, 1, 14),
+    (1, -1, 14),
+    (-1, 1, 14),
+    (-1, -1, 14),
+];
+
+/// The map's vertex bounding box in integer map units, or `None` for an empty map.
+fn vertex_bounds(map: &MapData) -> Option<(i64, i64, i64, i64)> {
+    let mut iter = map.vertexes.iter();
+    let first = iter.next()?;
+    let mut min_x = i64::from(first.x) >> FRACBITS;
+    let mut max_x = min_x;
+    let mut min_y = i64::from(first.y) >> FRACBITS;
+    let mut max_y = min_y;
+    for vertex in iter {
+        let x = i64::from(vertex.x) >> FRACBITS;
+        let y = i64::from(vertex.y) >> FRACBITS;
+        min_x = min_x.min(x);
+        max_x = max_x.max(x);
+        min_y = min_y.min(y);
+        max_y = max_y.max(y);
+    }
+    Some((min_x, min_y, max_x, max_y))
+}
+
+/// The grid cell index nearest the map-unit coordinate `v` along one axis.
+fn coord_to_cell(origin: i64, v: i64) -> i64 {
+    (v - origin + DOOM_ROUTE_CELL_UNITS / 2).div_euclid(DOOM_ROUTE_CELL_UNITS)
+}
+
+/// The map-unit centre of grid cell `index` along one axis.
+fn cell_centre(origin: i64, index: i64) -> i64 {
+    origin + index * DOOM_ROUTE_CELL_UNITS
+}
+
+/// The cell index for integer grid coordinates, or `None` when out of range.
+fn cell_index(cols: i64, rows: i64, cx: i64, cy: i64) -> Option<usize> {
+    if cx < 0 || cy < 0 || cx >= cols || cy >= rows {
+        return None;
+    }
+    Some(cy as usize * cols as usize + cx as usize)
+}
+
+/// The squared distance from point `p` to the segment `a`–`b`, integer-exact.
+fn point_segment_dist_sq(p: (i64, i64), a: (i64, i64), b: (i64, i64)) -> i64 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len_sq = dx * dx + dy * dy;
+    let (px, py) = (p.0 - a.0, p.1 - a.1);
+    if len_sq == 0 {
+        return px * px + py * py;
+    }
+    let dot = px * dx + py * dy;
+    if dot <= 0 {
+        return px * px + py * py;
+    }
+    if dot >= len_sq {
+        let (qx, qy) = (p.0 - b.0, p.1 - b.1);
+        return qx * qx + qy * qy;
+    }
+    let cross = px * dy - py * dx;
+    cross * cross / len_sq
+}
+
+/// Every grid cell the integer segment `(ax, ay)`–`(bx, by)` touches (the
+/// supercover). An exact corner crossing emits BOTH orthogonal cells, so a leg
+/// can never squeeze diagonally between two blocked cells.
+fn supercover(ax: i64, ay: i64, bx: i64, by: i64) -> Vec<(i64, i64)> {
+    let (dx, dy) = (bx - ax, by - ay);
+    let (nx, ny) = (dx.abs(), dy.abs());
+    let (sx, sy) = (dx.signum(), dy.signum());
+    let (mut x, mut y) = (ax, ay);
+    let (mut ix, mut iy) = (0i64, 0i64);
+    let mut out = vec![(x, y)];
+    while ix < nx || iy < ny {
+        let decision = (1 + 2 * ix) * ny - (1 + 2 * iy) * nx;
+        if decision == 0 {
+            out.push((x + sx, y));
+            out.push((x, y + sy));
+            x += sx;
+            y += sy;
+            ix += 1;
+            iy += 1;
+        } else if decision < 0 {
+            x += sx;
+            ix += 1;
+        } else {
+            y += sy;
+            iy += 1;
+        }
+        out.push((x, y));
+    }
+    out
+}
+
+/// A clearance-aware, engine-accurate walkable grid rasterized from [`MapData`].
 ///
-/// The route reuses the ST-1 passability/clearance model: it BFS-walks the
-/// [`portals`] graph restricted to `clearance >= DOOM_PLAYER_RADIUS`, emitting
-/// an [`DoomPlanStep::OpenDoor`] for each door portal followed by a
-/// [`DoomPlanStep::Move`] toward that portal's midpoint, and finishes with a
-/// [`DoomPlanStep::Move`] toward the exit line midpoint. Pure and deterministic
-/// (no RNG, no clock, no environment): two calls on the same map and origin are
-/// byte-identical. Returns an empty plan when the map has no non-secret exit, or
-/// `from` lies outside every sector.
+/// A cell's centre is FREE unless it lies within [`DOOM_PLAYER_RADIUS`] of a WALL
+/// — a one-sided linedef, an `ML_BLOCKING` line, or a two-sided passage the
+/// engine's movement rule rejects ([`portal_traversable`]). A traversable door
+/// line is NOT a wall (the doorway stays free) but its cells are tagged so A*
+/// pays [`DOOM_ROUTE_DOOR_PENALTY`] to cross it. Built ONCE per map and reused (a
+/// lookup-only structure); the build is pure and bounded ([`DOOM_ROUTE_MAX_CELLS`]).
+pub struct WalkGrid {
+    origin: (i64, i64),
+    cols: i64,
+    rows: i64,
+    free: Vec<bool>,
+    door: Vec<bool>,
+    /// The floor height (map units) at each cell centre — the oracle for the
+    /// directional step rule.
+    floor: Vec<i64>,
+    /// The ceiling height (map units) at each cell centre — the oracle for the
+    /// directional headroom rule.
+    ceiling: Vec<i64>,
+    /// The player collision height the grid was built for.
+    player_height: i64,
+    goals: Vec<RouteGoal>,
+}
+
+impl WalkGrid {
+    /// Rasterize the walkable grid for `map` at `player_height` map units.
+    pub fn build(map: &MapData, player_height: i64) -> Self {
+        let unit = DOOM_ROUTE_CELL_UNITS;
+        let (min_x, min_y, max_x, max_y) = vertex_bounds(map).unwrap_or((0, 0, 0, 0));
+        let origin = (min_x - unit, min_y - unit);
+        let cols = (max_x - min_x).div_euclid(unit) + 3;
+        let rows = (max_y - min_y).div_euclid(unit) + 3;
+        let total = (cols.max(0) as usize).saturating_mul(rows.max(0) as usize);
+        if cols <= 0 || rows <= 0 || total > DOOM_ROUTE_MAX_CELLS {
+            return Self {
+                origin,
+                cols: 0,
+                rows: 0,
+                free: Vec::new(),
+                door: Vec::new(),
+                floor: Vec::new(),
+                ceiling: Vec::new(),
+                player_height,
+                goals: Vec::new(),
+            };
+        }
+
+        // The floor + ceiling height at every cell centre (the directional step /
+        // headroom oracles), via the engine's own BSP lookup.
+        let mut floor = vec![0i64; total];
+        let mut ceiling = vec![0i64; total];
+        for cy in 0..rows {
+            for cx in 0..cols {
+                let Some(cell) = cell_index(cols, rows, cx, cy) else {
+                    continue;
+                };
+                let centre = (cell_centre(origin.0, cx), cell_centre(origin.1, cy));
+                let (cell_floor, cell_ceiling) = cell_heights(map, centre);
+                floor[cell] = cell_floor;
+                ceiling[cell] = cell_ceiling;
+            }
+        }
+
+        let mut free = vec![true; total];
+        let mut door = vec![false; total];
+        let ceilings = sector_open_ceilings(map);
+        let radius_sq = DOOM_PLAYER_RADIUS * DOOM_PLAYER_RADIUS;
+
+        for (index, line) in map.lines.iter().enumerate() {
+            let (Some(a), Some(b)) = (vertex_units(map, line.v1), vertex_units(map, line.v2)) else {
+                continue;
+            };
+            let blocking = linedef_is_wall(map, &ceilings, index);
+            let is_door = line.back_sector.is_some() && is_door_special(line.special) && !blocking;
+            if !blocking && !is_door {
+                continue;
+            }
+            // A door's cell is evaluated at the door's OPEN clearance (its static
+            // ceiling is the CLOSED position).
+            let door_open_ceiling = line
+                .back_sector
+                .map(|back| {
+                    ceilings
+                        .get(line.front_sector as usize)
+                        .copied()
+                        .unwrap_or(0)
+                        .max(ceilings.get(back as usize).copied().unwrap_or(0))
+                })
+                .unwrap_or(0);
+            let lo_x = coord_to_cell(origin.0, a.0.min(b.0) - DOOM_PLAYER_RADIUS);
+            let hi_x = coord_to_cell(origin.0, a.0.max(b.0) + DOOM_PLAYER_RADIUS);
+            let lo_y = coord_to_cell(origin.1, a.1.min(b.1) - DOOM_PLAYER_RADIUS);
+            let hi_y = coord_to_cell(origin.1, a.1.max(b.1) + DOOM_PLAYER_RADIUS);
+            for cy in lo_y..=hi_y {
+                for cx in lo_x..=hi_x {
+                    let Some(cell) = cell_index(cols, rows, cx, cy) else {
+                        continue;
+                    };
+                    let centre = (cell_centre(origin.0, cx), cell_centre(origin.1, cy));
+                    if point_segment_dist_sq(centre, a, b) < radius_sq {
+                        if blocking {
+                            free[cell] = false;
+                        } else {
+                            door[cell] = true;
+                            ceiling[cell] = ceiling[cell].max(door_open_ceiling);
+                        }
+                    }
+                }
+            }
+        }
+
+        let goals = exit_goals(map, &free, origin, cols, rows);
+        Self {
+            origin,
+            cols,
+            rows,
+            free,
+            door,
+            floor,
+            ceiling,
+            player_height,
+            goals,
+        }
+    }
+
+    /// The engine's directional movement rule for the move from cell `a` to cell
+    /// `b` (`PIT_CheckLine`): the climb `floor(b) - floor(a)` must not exceed
+    /// [`DOOM_MAX_STEP_HEIGHT`] (a drop is free), and the headroom from the
+    /// CURRENT floor, `min(ceiling(a), ceiling(b)) - floor(a)`, must fit the
+    /// player.
+    fn edge_ok(&self, a: usize, b: usize) -> bool {
+        let (Some(from), Some(to)) = (self.floor.get(a), self.floor.get(b)) else {
+            return false;
+        };
+        let (Some(ceil_from), Some(ceil_to)) = (self.ceiling.get(a), self.ceiling.get(b)) else {
+            return false;
+        };
+        if to - from > DOOM_MAX_STEP_HEIGHT {
+            return false;
+        }
+        ceil_from.min(ceil_to) - from >= self.player_height
+    }
+
+    /// Whether `cell` is a free (occupiable) cell.
+    pub fn is_free(&self, cell: usize) -> bool {
+        self.free.get(cell).copied().unwrap_or(false)
+    }
+
+    /// Whether `cell` is one of this grid's route goals.
+    pub fn is_goal(&self, cell: usize) -> bool {
+        self.goals.iter().any(|goal| goal.cell == cell)
+    }
+
+    /// The map-unit centre of `cell`, or `None` for an out-of-range cell.
+    pub fn centre(&self, cell: usize) -> Option<(i64, i64)> {
+        if self.cols == 0 || cell >= self.free.len() {
+            return None;
+        }
+        Some((
+            cell_centre(self.origin.0, cell as i64 % self.cols),
+            cell_centre(self.origin.1, cell as i64 / self.cols),
+        ))
+    }
+
+    /// The nearest FREE cell to the map-unit point `point`, or `None`.
+    pub fn nearest_free_cell(&self, point: (i64, i64)) -> Option<usize> {
+        if self.cols == 0 || self.rows == 0 {
+            return None;
+        }
+        nearest_free_snapped(&self.free, self.origin, self.cols, self.rows, point)
+    }
+
+    /// The goal cell nearest `from`, or `None` when the map has no goal.
+    pub fn nearest_goal(&self, from: (i64, i64)) -> Option<RouteGoal> {
+        if self.cols == 0 {
+            return None;
+        }
+        self.goals.iter().copied().min_by_key(|goal| {
+            let centre = (
+                cell_centre(self.origin.0, goal.cell as i64 % self.cols),
+                cell_centre(self.origin.1, goal.cell as i64 / self.cols),
+            );
+            (centre.0 - from.0).pow(2) + (centre.1 - from.1).pow(2)
+        })
+    }
+
+    /// Whether the straight map-unit segment `a`–`b` stays inside free cells (its
+    /// supercover touches no blocked cell).
+    pub fn visible(&self, a: (i64, i64), b: (i64, i64)) -> bool {
+        if self.cols == 0 {
+            return false;
+        }
+        self.segment_free(
+            (coord_to_cell(self.origin.0, a.0), coord_to_cell(self.origin.1, a.1)),
+            (coord_to_cell(self.origin.0, b.0), coord_to_cell(self.origin.1, b.1)),
+        )
+    }
+
+    /// Whether the supercover of the grid segment `a`–`b` is entirely free AND
+    /// every consecutive step along it clears the directional step rule.
+    fn segment_free(&self, a: (i64, i64), b: (i64, i64)) -> bool {
+        let mut previous: Option<usize> = None;
+        for (cx, cy) in supercover(a.0, a.1, b.0, b.1) {
+            let Some(cell) = cell_index(self.cols, self.rows, cx, cy) else {
+                return false;
+            };
+            if !self.free[cell] {
+                return false;
+            }
+            if let Some(prev) = previous {
+                if !self.edge_ok(prev, cell) {
+                    return false;
+                }
+            }
+            previous = Some(cell);
+        }
+        true
+    }
+
+    /// The deterministic A* route from `from` to the nearest goal, string-pulled
+    /// into straight wall-free legs.
+    pub fn route(&self, map: &MapData, from: (i64, i64)) -> RouteOutcome {
+        if self.goals.is_empty() || self.cols == 0 {
+            return RouteOutcome::NoRoute;
+        }
+        let Some(start) = self.nearest_free_cell(from) else {
+            return RouteOutcome::NoRoute;
+        };
+        let heuristic = |cell: usize| -> u32 {
+            let (cx, cy) = (cell as i64 % self.cols, cell as i64 / self.cols);
+            self.goals
+                .iter()
+                .map(|goal| {
+                    let (gx, gy) = (goal.cell as i64 % self.cols, goal.cell as i64 / self.cols);
+                    let dx = (cx - gx).unsigned_abs() as u32;
+                    let dy = (cy - gy).unsigned_abs() as u32;
+                    10 * (dx + dy) - 6 * dx.min(dy)
+                })
+                .min()
+                .unwrap_or(0)
+        };
+
+        let total = self.free.len();
+        let mut best_g = vec![u32::MAX; total];
+        let mut previous = vec![usize::MAX; total];
+        let mut heap: BinaryHeap<Reverse<(u32, u32, usize)>> = BinaryHeap::new();
+        best_g[start] = 0;
+        heap.push(Reverse((heuristic(start), 0, start)));
+
+        let mut reached = None;
+        while let Some(Reverse((_f, g, cell))) = heap.pop() {
+            if g > best_g[cell] {
+                continue;
+            }
+            if self.is_goal(cell) {
+                reached = Some(cell);
+                break;
+            }
+            let cx = cell as i64 % self.cols;
+            let cy = cell as i64 / self.cols;
+            for (dx, dy, base) in ROUTE_NEIGHBOURS {
+                let Some(next) = cell_index(self.cols, self.rows, cx + dx, cy + dy) else {
+                    continue;
+                };
+                if !self.free[next] {
+                    continue;
+                }
+                if dx != 0 && dy != 0 {
+                    // Corner-cut rejection: both orthogonal neighbours must be free.
+                    let (Some(ox), Some(oy)) = (
+                        cell_index(self.cols, self.rows, cx + dx, cy),
+                        cell_index(self.cols, self.rows, cx, cy + dy),
+                    ) else {
+                        continue;
+                    };
+                    if !self.free[ox] || !self.free[oy] {
+                        continue;
+                    }
+                }
+                if !self.edge_ok(cell, next) {
+                    continue;
+                }
+                let cost = base
+                    + if self.door[next] {
+                        DOOM_ROUTE_DOOR_PENALTY as u32
+                    } else {
+                        0
+                    };
+                let tentative = g.saturating_add(cost);
+                if tentative < best_g[next] {
+                    best_g[next] = tentative;
+                    previous[next] = cell;
+                    heap.push(Reverse((
+                        tentative.saturating_add(heuristic(next)),
+                        tentative,
+                        next,
+                    )));
+                }
+            }
+        }
+
+        let Some(goal) = reached else {
+            return RouteOutcome::NoRoute;
+        };
+        let mut cells = Vec::new();
+        let mut cursor = goal;
+        loop {
+            cells.push(cursor);
+            if cursor == start || previous[cursor] == usize::MAX {
+                break;
+            }
+            cursor = previous[cursor];
+        }
+        if cells.last() != Some(&start) {
+            return RouteOutcome::NoRoute;
+        }
+        cells.reverse();
+        let stringed = self.string_pull(&cells);
+        RouteOutcome::Path(self.waypoints(map, &stringed, from))
+    }
+
+    /// The straight, wall-free cells of `cells` a walker can follow greedily.
+    fn string_pull(&self, cells: &[usize]) -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut index = 0;
+        while index < cells.len() {
+            out.push(cells[index]);
+            if index + 1 >= cells.len() {
+                break;
+            }
+            let mut next = index + 1;
+            let mut farthest = cells.len() - 1;
+            while farthest > index + 1 {
+                if self.cells_visible(cells[index], cells[farthest]) {
+                    next = farthest;
+                    break;
+                }
+                farthest -= 1;
+            }
+            index = next;
+        }
+        out
+    }
+
+    /// Whether the supercover between two cell indices is entirely free.
+    fn cells_visible(&self, a: usize, b: usize) -> bool {
+        self.segment_free(
+            (a as i64 % self.cols, a as i64 / self.cols),
+            (b as i64 % self.cols, b as i64 / self.cols),
+        )
+    }
+
+    /// Build the waypoint list from a string-pulled cell path.
+    fn waypoints(&self, map: &MapData, cells: &[usize], from: (i64, i64)) -> Vec<DoomRouteWaypoint> {
+        let targets: &[usize] = if cells.len() > 1 { &cells[1..] } else { cells };
+        let mut out = Vec::new();
+        let mut reference = from;
+        for &cell in targets {
+            let Some(target) = self.centre(cell) else {
+                continue;
+            };
+            let door = door_on_segment(map, reference, target).is_some();
+            let (dx, dy) = (target.0 - reference.0, target.1 - reference.1);
+            out.push(DoomRouteWaypoint {
+                target,
+                bearing: bearing_toward(dx, dy),
+                distance: distance_units(dx, dy).clamp(1, DOOM_PLAN_DISTANCE_MAX),
+                door,
+            });
+            reference = target;
+        }
+        out
+    }
+}
+
+/// The nearest free cell to `point`, searching outward ring by ring.
+fn nearest_free_snapped(
+    free: &[bool],
+    origin: (i64, i64),
+    cols: i64,
+    rows: i64,
+    point: (i64, i64),
+) -> Option<usize> {
+    let cx0 = coord_to_cell(origin.0, point.0);
+    let cy0 = coord_to_cell(origin.1, point.1);
+    for ring in 0..=16i64 {
+        let mut best: Option<(i64, usize)> = None;
+        for cy in (cy0 - ring)..=(cy0 + ring) {
+            for cx in (cx0 - ring)..=(cx0 + ring) {
+                if ring > 0 && (cx - cx0).abs() != ring && (cy - cy0).abs() != ring {
+                    continue;
+                }
+                let Some(cell) = cell_index(cols, rows, cx, cy) else {
+                    continue;
+                };
+                if !free[cell] {
+                    continue;
+                }
+                let centre = (cell_centre(origin.0, cx), cell_centre(origin.1, cy));
+                let dist = (centre.0 - point.0).pow(2) + (centre.1 - point.1).pow(2);
+                if best.is_none_or(|(best_dist, _)| dist < best_dist) {
+                    best = Some((dist, cell));
+                }
+            }
+        }
+        if let Some((_, cell)) = best {
+            return Some(cell);
+        }
+    }
+    None
+}
+
+/// The goal cells: the free cell nearest each non-secret exit line, tagged with
+/// whether the exit is a `use`-activated switch (a one-sided exit line).
+fn exit_goals(
+    map: &MapData,
+    free: &[bool],
+    origin: (i64, i64),
+    cols: i64,
+    rows: i64,
+) -> Vec<RouteGoal> {
+    let mut goals = Vec::new();
+    for line in &map.lines {
+        if line.special == line_special::EXIT_SECRET
+            || !neurodoom::specials::is_exit_line(line.special)
+        {
+            continue;
+        }
+        let (Some(a), Some(b)) = (vertex_units(map, line.v1), vertex_units(map, line.v2)) else {
+            continue;
+        };
+        let midpoint = ((a.0 + b.0) / 2, (a.1 + b.1) / 2);
+        // The goal must be on the exit's FRONT sector (the reachable side): a
+        // one-sided exit wall's nearest free cell can otherwise be in the void
+        // behind the wall, which is unreachable.
+        let Some(cell) = exit_goal_cell(map, free, origin, cols, rows, midpoint, line.front_sector)
+        else {
+            continue;
+        };
+        if goals.iter().any(|goal: &RouteGoal| goal.cell == cell) {
+            continue;
+        }
+        goals.push(RouteGoal {
+            cell,
+            switch: line.back_sector.is_none(),
+        });
+    }
+    goals
+}
+
+/// The free cell nearest `point` whose sector is `front`, searching outward ring
+/// by ring (so an exit goal is never picked on the unreachable far side).
+fn exit_goal_cell(
+    map: &MapData,
+    free: &[bool],
+    origin: (i64, i64),
+    cols: i64,
+    rows: i64,
+    point: (i64, i64),
+    front: SectorId,
+) -> Option<usize> {
+    let cx0 = coord_to_cell(origin.0, point.0);
+    let cy0 = coord_to_cell(origin.1, point.1);
+    for ring in 0..=24i64 {
+        let mut best: Option<(i64, usize)> = None;
+        for cy in (cy0 - ring)..=(cy0 + ring) {
+            for cx in (cx0 - ring)..=(cx0 + ring) {
+                if ring > 0 && (cx - cx0).abs() != ring && (cy - cy0).abs() != ring {
+                    continue;
+                }
+                let Some(cell) = cell_index(cols, rows, cx, cy) else {
+                    continue;
+                };
+                if !free[cell] {
+                    continue;
+                }
+                let centre = (cell_centre(origin.0, cx), cell_centre(origin.1, cy));
+                if sector_at(map, centre.0 as i32, centre.1 as i32) != Some(front) {
+                    continue;
+                }
+                let dist = (centre.0 - point.0).pow(2) + (centre.1 - point.1).pow(2);
+                if best.is_none_or(|(best_dist, _)| dist < best_dist) {
+                    best = Some((dist, cell));
+                }
+            }
+        }
+        if let Some((_, cell)) = best {
+            return Some(cell);
+        }
+    }
+    None
+}
+
+/// The integer bearing (`0..=359`) from `a` toward `b`.
+pub fn bearing_between(a: (i64, i64), b: (i64, i64)) -> i64 {
+    bearing_toward(b.0 - a.0, b.1 - a.1)
+}
+
+/// The integer euclidean distance between `a` and `b`, in map units.
+pub fn distance_between(a: (i64, i64), b: (i64, i64)) -> i64 {
+    distance_units(b.0 - a.0, b.1 - a.1)
+}
+
+/// The crossing point of the segment `a`–`b` with a DOOR linedef, or `None`.
+/// Used by the follower to press `use` at the door it is walking into.
+pub fn door_on_segment(map: &MapData, a: (i64, i64), b: (i64, i64)) -> Option<(i64, i64)> {
+    for line in &map.lines {
+        if line.back_sector.is_none() || !is_door_special(line.special) {
+            continue;
+        }
+        let (Some(p), Some(q)) = (vertex_units(map, line.v1), vertex_units(map, line.v2)) else {
+            continue;
+        };
+        if let Some(point) = segment_intersection(a, b, p, q) {
+            return Some(point);
+        }
+    }
+    None
+}
+
+/// The intersection point of segments `a`–`b` and `p`–`q`, when they cross.
+fn segment_intersection(
+    a: (i64, i64),
+    b: (i64, i64),
+    p: (i64, i64),
+    q: (i64, i64),
+) -> Option<(i64, i64)> {
+    let r = (b.0 - a.0, b.1 - a.1);
+    let s = (q.0 - p.0, q.1 - p.1);
+    let denom = r.0 * s.1 - r.1 * s.0;
+    if denom == 0 {
+        return None;
+    }
+    let qp = (p.0 - a.0, p.1 - a.1);
+    let t_num = qp.0 * s.1 - qp.1 * s.0;
+    let u_num = qp.0 * r.1 - qp.1 * r.0;
+    let within = |num: i64| {
+        if denom > 0 {
+            num >= 0 && num <= denom
+        } else {
+            num <= 0 && num >= denom
+        }
+    };
+    if within(t_num) && within(u_num) {
+        Some((a.0 + t_num * r.0 / denom, a.1 + t_num * r.1 / denom))
+    } else {
+        None
+    }
+}
+
+/// A deterministic route from `from` to the nearest non-secret exit (Spec #3039
+/// ST-2), as a [`RouteOutcome`]. Pure: the grid is built from `map` and the
+/// player height only — no RNG, no clock, no I/O.
+pub fn route_path(map: &MapData, from: (i64, i64), player_height: i64) -> RouteOutcome {
+    WalkGrid::build(map, player_height).route(map, from)
+}
+
+/// The waypoint list of [`route_path`] at the fallback player height — retained
+/// for callers that do not carry a live player entity (the ST-8 failure trace
+/// and tests). Empty when no route exists.
+pub fn route_waypoints(map: &MapData, from: (i64, i64)) -> Vec<DoomRouteWaypoint> {
+    match route_path(map, from, DOOM_PLAYER_HEIGHT_FALLBACK) {
+        RouteOutcome::Path(waypoints) => waypoints,
+        RouteOutcome::LockedDoorOnly | RouteOutcome::NoRoute => Vec::new(),
+    }
+}
+
+/// [`route_plan`] — the waypoint list projected onto [`DoomPlanStep`]s. Retained
+/// as the pure plan projection of the ST-2 route.
 pub fn route_plan(map: &MapData, from: (i64, i64)) -> Vec<DoomPlanStep> {
     let mut steps = Vec::new();
     for waypoint in route_waypoints(map, from) {
@@ -452,164 +1361,6 @@ pub fn route_plan(map: &MapData, from: (i64, i64)) -> Vec<DoomPlanStep> {
         });
     }
     steps
-}
-
-/// The waypoint list behind [`route_plan`] — the route's portal midpoints plus
-/// the exit-line midpoint — so a caller can chunk it (Spec #3039 ST-6/ST-7).
-pub fn route_waypoints(map: &MapData, from: (i64, i64)) -> Vec<DoomRouteWaypoint> {
-    let exits = exit_sectors(map);
-    if exits.is_empty() {
-        return Vec::new();
-    }
-    let Some(start) = sector_at(map, from.0 as i32, from.1 as i32) else {
-        return Vec::new();
-    };
-
-    let mut waypoints = Vec::new();
-    let mut reference = from;
-    let mut sector = start;
-
-    // A start already on an exit sector needs no portal — just the exit leg.
-    if !exits.contains(&start) {
-        let portals = portals(map);
-        let midpoints = portal_midpoints(map);
-        let path = route_portal_path(map, &portals, start, &exits);
-        if path.is_empty() {
-            return Vec::new();
-        }
-        for &index in &path {
-            let (Some(portal), Some(&midpoint)) = (portals.get(index), midpoints.get(index)) else {
-                return Vec::new();
-            };
-            waypoints.push(waypoint_toward(reference, midpoint, portal.door));
-            reference = midpoint;
-            sector = if portal.front == sector {
-                portal.back
-            } else {
-                portal.front
-            };
-        }
-    }
-
-    // The BFS terminates on an exit sector; finish by heading to its exit line.
-    if exits.contains(&sector) {
-        if let Some(midpoint) = exit_midpoint(map, sector) {
-            waypoints.push(waypoint_toward(reference, midpoint, false));
-        }
-    }
-
-    waypoints
-}
-
-/// The waypoint from `from` to `target`, carrying the door flag.
-fn waypoint_toward(from: (i64, i64), target: (i64, i64), door: bool) -> DoomRouteWaypoint {
-    let (dx, dy) = (target.0 - from.0, target.1 - from.1);
-    DoomRouteWaypoint {
-        target,
-        bearing: bearing_toward(dx, dy),
-        distance: distance_units(dx, dy).clamp(1, DOOM_PLAN_DISTANCE_MAX),
-        door,
-    }
-}
-
-/// The deterministic BFS over the [`portals`] graph restricted to
-/// `clearance >= DOOM_PLAYER_RADIUS`, from `start` to the nearest of `exits`.
-///
-/// Returns the traversed portal indices in order (empty when no route exists).
-/// Mirrors [`route_counts`]'s deterministic sorted-adjacency BFS, recording the
-/// portal index (not only the door flag) so [`route_plan`] can locate each
-/// midpoint.
-fn route_portal_path(
-    map: &MapData,
-    portals: &[DoomPortal],
-    start: SectorId,
-    exits: &[SectorId],
-) -> Vec<usize> {
-    let count = map.sectors.len();
-    let mut adjacency: Vec<Vec<(usize, usize)>> = vec![Vec::new(); count];
-    for (index, portal) in portals.iter().enumerate() {
-        if portal.clearance < DOOM_PLAYER_RADIUS {
-            continue;
-        }
-        adjacency[portal.front as usize].push((portal.back as usize, index));
-        adjacency[portal.back as usize].push((portal.front as usize, index));
-    }
-    for neighbours in &mut adjacency {
-        neighbours.sort_unstable();
-    }
-
-    let start = start as usize;
-    let mut visited = vec![false; count];
-    let mut previous: Vec<Option<(usize, usize)>> = vec![None; count];
-    let mut queue = VecDeque::new();
-    visited[start] = true;
-    queue.push_back(start);
-
-    while let Some(node) = queue.pop_front() {
-        if node != start && exits.contains(&(node as u16)) {
-            let mut path = Vec::new();
-            let mut cursor = node;
-            while let Some((back, portal)) = previous[cursor] {
-                path.push(portal);
-                cursor = back;
-            }
-            path.reverse();
-            return path;
-        }
-        for &(neighbour, portal) in &adjacency[node] {
-            if !visited[neighbour] {
-                visited[neighbour] = true;
-                previous[neighbour] = Some((node, portal));
-                queue.push_back(neighbour);
-            }
-        }
-    }
-    Vec::new()
-}
-
-/// The midpoint (integer map units) of each portal in [`portals`] order.
-///
-/// Mirrors the [`portals`] filter exactly (same `map.lines` order, same
-/// two-sided / distinct-sector / valid-vertex checks), so the returned midpoints
-/// align index-for-index with `portals(map)`.
-fn portal_midpoints(map: &MapData) -> Vec<(i64, i64)> {
-    let mut out = Vec::new();
-    for line in &map.lines {
-        let Some(back) = line.back_sector else {
-            continue;
-        };
-        let front = line.front_sector;
-        if front == back {
-            continue;
-        }
-        let (Some((ax, ay)), Some((bx, by))) =
-            (vertex_units(map, line.v1), vertex_units(map, line.v2))
-        else {
-            continue;
-        };
-        out.push(((ax + bx) / 2, (ay + by) / 2));
-    }
-    out
-}
-
-/// The midpoint (integer map units) of the non-secret exit line whose front side
-/// is `sector`, or `None` when that sector carries no non-secret exit.
-fn exit_midpoint(map: &MapData, sector: SectorId) -> Option<(i64, i64)> {
-    for line in &map.lines {
-        if line.front_sector != sector || line.special == line_special::EXIT_SECRET {
-            continue;
-        }
-        if !neurodoom::specials::is_exit_line(line.special) {
-            continue;
-        }
-        let (Some((ax, ay)), Some((bx, by))) =
-            (vertex_units(map, line.v1), vertex_units(map, line.v2))
-        else {
-            continue;
-        };
-        return Some(((ax + bx) / 2, (ay + by) / 2));
-    }
-    None
 }
 
 /// The integer bearing (`0..=359`) from `(dx, dy)` toward a target — the same
@@ -864,34 +1615,43 @@ mod tests {
     // ── Map-derived route plan (ST-6) ────────────────────────────────────────
 
     #[test]
-    fn route_plan_on_e1m7_is_bounded_non_empty_and_deterministic() {
-        use crate::infrastructure::companion::doom_decision::DOOM_PLAN_MAX_STEPS;
+    fn route_on_e1m1_is_reachable_bounded_and_deterministic() {
         use neurodoom::engine::ClassicEngine;
 
-        let engine = ClassicEngine::new(SCAN_WAD, "E1M7").expect("E1M7 loads");
+        let engine = ClassicEngine::new(SCAN_WAD, "E1M1").expect("E1M1 loads");
         let map = engine.map();
-        let (sx, sy) = spawn_point(map).expect("E1M7 has a player-1 start");
+        let (sx, sy) = spawn_point(map).expect("E1M1 has a player-1 start");
         let from = (i64::from(sx), i64::from(sy));
 
+        let grid = WalkGrid::build(map, DOOM_PLAYER_HEIGHT_FALLBACK);
         let waypoints = route_waypoints(map, from);
-        assert!(!waypoints.is_empty(), "E1M7 must yield a non-empty route");
-        // Bounded: at most one waypoint per portal, plus the exit leg.
-        assert!(waypoints.len() <= portals(map).len() + 1);
+        assert!(!waypoints.is_empty(), "E1M1 must yield a reachable route");
+        // Every leg is a straight, wall-free supercover through FREE cells that
+        // also clears the directional step/headroom rule.
+        let mut reference = from;
+        for waypoint in &waypoints {
+            assert!(
+                grid.visible(reference, waypoint.target),
+                "leg {reference:?} -> {:?} must be wall-free",
+                waypoint.target
+            );
+            assert!(
+                (0..=359).contains(&waypoint.bearing),
+                "bearing {}",
+                waypoint.bearing
+            );
+            reference = waypoint.target;
+        }
 
         let plan = route_plan(map, from);
         println!(
-            "E1M7 route from {from:?}: {} waypoints, {} steps, doors={}",
+            "E1M1 route from {from:?}: {} waypoints, {} steps, doors={}",
             waypoints.len(),
             plan.len(),
             waypoints.iter().filter(|waypoint| waypoint.door).count(),
         );
         assert!(!plan.is_empty(), "the route plan must be non-empty");
-        // Chunkable into <= DOOM_PLAN_MAX_STEPS-step plans (each waypoint
-        // contributes at most an OpenDoor + a Move).
         assert!(plan.len() <= 2 * waypoints.len());
-        for chunk in plan.chunks(DOOM_PLAN_MAX_STEPS) {
-            assert!(!chunk.is_empty());
-        }
         for step in &plan {
             match step {
                 DoomPlanStep::Move { bearing, distance } => {
@@ -908,23 +1668,168 @@ mod tests {
             }
         }
 
-        // Ends toward the exit: the final step is a Move, and the final waypoint
-        // targets an exit line midpoint.
-        assert!(matches!(plan.last(), Some(DoomPlanStep::Move { .. })));
-        let exit_midpoints: Vec<(i64, i64)> = exit_sectors(map)
-            .iter()
-            .filter_map(|sector| exit_midpoint(map, *sector))
-            .collect();
-        let last = waypoints.last().expect("the route is non-empty");
-        assert!(
-            exit_midpoints.contains(&last.target),
-            "the route must end at an exit line midpoint, got {:?}",
-            last.target
-        );
-
         // Determinism: byte-identical across two calls.
         assert_eq!(plan, route_plan(map, from));
         assert_eq!(waypoints, route_waypoints(map, from));
+    }
+
+    // ── Engine-accurate passage predicate + walkable grid (Spec #3039 ST-2) ──
+
+    /// The index of the synthetic two-room map's shared portal linedef.
+    fn portal_index(map: &MapData) -> usize {
+        map.lines
+            .iter()
+            .position(|line| line.back_sector.is_some())
+            .expect("the two-room map has a two-sided portal")
+    }
+
+    #[test]
+    fn a_full_headroom_passage_is_traversable() {
+        let map = two_room_map(64, 0);
+        assert!(portal_traversable(
+            &map,
+            portal_index(&map),
+            DOOM_PLAYER_HEIGHT_FALLBACK
+        ));
+    }
+
+    #[test]
+    fn a_step_blocked_passage_is_not_traversable() {
+        let mut map = two_room_map(64, 0);
+        map.sectors[1].floor_height = (DOOM_MAX_STEP_HEIGHT as i32 + 8) << FRACBITS;
+        assert!(!portal_traversable(
+            &map,
+            portal_index(&map),
+            DOOM_PLAYER_HEIGHT_FALLBACK
+        ));
+    }
+
+    #[test]
+    fn a_step_at_the_engine_boundary_is_traversable() {
+        let mut map = two_room_map(64, 0);
+        map.sectors[1].floor_height = (DOOM_MAX_STEP_HEIGHT as i32) << FRACBITS;
+        assert!(portal_traversable(
+            &map,
+            portal_index(&map),
+            DOOM_PLAYER_HEIGHT_FALLBACK
+        ));
+    }
+
+    #[test]
+    fn a_drop_is_traversable() {
+        let mut map = two_room_map(64, 0);
+        map.sectors[1].floor_height = -(64 << FRACBITS);
+        assert!(portal_traversable(
+            &map,
+            portal_index(&map),
+            DOOM_PLAYER_HEIGHT_FALLBACK
+        ));
+    }
+
+    #[test]
+    fn a_low_headroom_passage_is_not_traversable() {
+        let mut map = two_room_map(64, 0);
+        map.sectors[1].ceiling_height = ((DOOM_PLAYER_HEIGHT_FALLBACK - 8) as i32) << FRACBITS;
+        assert!(!portal_traversable(
+            &map,
+            portal_index(&map),
+            DOOM_PLAYER_HEIGHT_FALLBACK
+        ));
+    }
+
+    #[test]
+    fn a_locked_door_is_never_traversable() {
+        let map = two_room_map(64, line_special::RED_LOCKED_DOOR);
+        assert!(!portal_traversable(
+            &map,
+            portal_index(&map),
+            DOOM_PLAYER_HEIGHT_FALLBACK
+        ));
+    }
+
+    #[test]
+    fn an_ml_blocking_line_is_never_traversable() {
+        let mut map = two_room_map(64, 0);
+        let index = portal_index(&map);
+        map.lines[index].flags = DOOM_LINE_BLOCKING_FLAG;
+        assert!(!portal_traversable(
+            &map,
+            portal_index(&map),
+            DOOM_PLAYER_HEIGHT_FALLBACK
+        ));
+    }
+
+    #[test]
+    fn the_grid_routes_through_a_passable_portal() {
+        let map = two_room_map(64, 0);
+        let outcome = route_path(&map, (32, 16), DOOM_PLAYER_HEIGHT_FALLBACK);
+        let RouteOutcome::Path(waypoints) = outcome else {
+            panic!("expected a reachable path, got {outcome:?}");
+        };
+        assert!(
+            !waypoints.is_empty(),
+            "the exit room must be reachable through the portal"
+        );
+    }
+
+    #[test]
+    fn the_grid_refuses_a_step_blocked_passage() {
+        let mut map = two_room_map(64, 0);
+        map.sectors[1].floor_height = (DOOM_MAX_STEP_HEIGHT as i32 + 8) << FRACBITS;
+        assert_eq!(
+            route_path(&map, (32, 16), DOOM_PLAYER_HEIGHT_FALLBACK),
+            RouteOutcome::NoRoute,
+            "A* must never route through a step-blocked two-sided passage"
+        );
+    }
+
+    #[test]
+    fn the_grid_refuses_a_low_headroom_passage() {
+        let mut map = two_room_map(64, 0);
+        map.sectors[1].ceiling_height = ((DOOM_PLAYER_HEIGHT_FALLBACK - 8) as i32) << FRACBITS;
+        assert_eq!(
+            route_path(&map, (32, 16), DOOM_PLAYER_HEIGHT_FALLBACK),
+            RouteOutcome::NoRoute
+        );
+    }
+
+    #[test]
+    fn the_grid_routes_across_a_drop() {
+        let mut map = two_room_map(64, 0);
+        map.sectors[1].floor_height = -(64 << FRACBITS);
+        let outcome = route_path(&map, (32, 16), DOOM_PLAYER_HEIGHT_FALLBACK);
+        assert!(
+            matches!(outcome, RouteOutcome::Path(_)),
+            "a drop is traversable, got {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn probe_engine_passage_rules() {
+        // Compiler probe: the engine exposes its OWN max step height as
+        // `neurodoom::physics::MAXSTEPHEIGHT` (a 16.16 Fixed). DOOM_MAX_STEP_HEIGHT
+        // must equal it — FAIL LOUD on any mismatch, never a silent literal.
+        let engine_step = i64::from(neurodoom::physics::MAXSTEPHEIGHT >> FRACBITS);
+        assert_eq!(
+            DOOM_MAX_STEP_HEIGHT, engine_step,
+            "DOOM_MAX_STEP_HEIGHT must equal neurodoom::physics::MAXSTEPHEIGHT"
+        );
+
+        // Empirical probe: read the engine's own live player entity height (the
+        // oracle for DOOM_PLAYER_HEIGHT_FALLBACK).
+        use neurodoom::engine::ClassicEngine;
+        use neurodoom::world::PeerId;
+        let engine = ClassicEngine::new(SCAN_WAD, "E1M1").expect("E1M1 loads");
+        let world = engine.world();
+        let height = world
+            .controlled_by(PeerId(0))
+            .and_then(|id| world.get(id))
+            .map(|entity| i64::from(entity.height >> FRACBITS))
+            .expect("the engine has a live player entity");
+        assert_eq!(
+            DOOM_PLAYER_HEIGHT_FALLBACK, height,
+            "DOOM_PLAYER_HEIGHT_FALLBACK must equal the engine player height"
+        );
     }
 
     // ── The executed feasibility scan + report ───────────────────────────────
