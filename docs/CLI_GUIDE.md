@@ -131,6 +131,29 @@ fredo open-terminal --cli copilot
 
 > A malformed invocation exits `1` (invalid argument), distinct from the `2` used for app-not-running. Re-invoking focuses the same single `terminal` window.
 
+### `fredo doom export-dataset`
+
+Exports the Doom Companion's **fine-tuning dataset** — the raw per-decision records captured (opt-in) from the companion's play — to a local file in the chosen format. Each record correlates one decision's observation (including the additive `forward` sensor), the adopted **plan** (`doom_plan`), the per-step executed actions, the re-plan events + triggers, the next state, the shaped reward, and the terminal result. The export is **local-only — no egress**; the CLI forwards to the running app, which writes the file.
+
+```bash
+fredo doom export-dataset [--format <raw|sft|dpo>] [--out <PATH>]
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `--format` | No | `raw` (default — the lossless per-decision JSONL), `sft`, or `dpo` |
+| `--out` | No | Target file path. Relative → resolved under the app-data dataset dir; omitted → `<dataset dir>/exports/doom-dataset-<ts>.<ext>` |
+
+**Exit codes**
+
+| Exit | Meaning | stdout |
+|------|---------|--------|
+| `0` | Written | `{"path":"…","format":"raw","records":N,"bytes":N}` |
+| `1` | Invalid format / empty dataset / write failure | a clear error |
+| `2` | Fredo app is not running | _(the fallback message below)_ |
+
+> Capture is **opt-in** (`doom_dataset_enabled`, off by default; env `FREDO_DOOM_DATASET_ENABLED` overrides) and **local-only** — nothing is transmitted off-device. The dataset lives as an append-only JSONL under `<app-data>/doom-dataset/` with a bounded retention/rotation policy (it replaces the retired `doom-agent-requests.jsonl` / `doom-agent-actions.jsonl` audit files).
+
 ### `fredo ingest`
 
 Runs Fredo's **headless ingest daemon**: a long-lived, non-GUI process that owns the embedded PostgreSQL cluster and the OTLP receivers so agent telemetry keeps being captured while the desktop app is closed. It uses the **same data dir and the same control-plane credential** as the desktop app and holds the **exclusive data-dir lock**, so exactly one owner starts the cluster. Events flow through the existing paths — the `IngestClassifier` (canonical rows) and `SpanStore` (raw `telemetry_spans`) — with no alternate row-emission route and no subscription gating.
