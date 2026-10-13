@@ -24,7 +24,7 @@ use crate::infrastructure::companion::PerformanceModeState;
 use crate::infrastructure::storage::application_store::ApplicationStore;
 use crate::infrastructure::storage::AppStore;
 
-use super::agent::{run_continuous_loop, AutoplayRun, DoomAutoplayConfig};
+use super::agent::{run_continuous_loop_with_writer, AutoplayControl, AutoplayRun, DoomAutoplayConfig};
 use super::dataset::{
     self, DoomDatasetConfig, DoomDatasetError, DoomDatasetExportResult, DoomDatasetFormat,
     DoomDatasetStatus, DoomDatasetWriter, DOOM_DATASET_ENABLED_ENV, DOOM_DATASET_ENABLED_KEY,
@@ -616,15 +616,14 @@ pub async fn start_doom_autoplay(
 
     // Opt-in capture gate (Spec #3032 ST-3, R-5): resolve the persisted KV (the
     // `FREDO_DOOM_DATASET_ENABLED` env override wins) and, when ON, build the ONE
-    // shared dataset writer so the loop assembler (ST-2) appends through the SAME
-    // instance the export IPC reads — a single `export_in_progress` guard defers
-    // eviction for both (AC3). OFF ⇒ no writer is built and no dataset file is
-    // ever created.
+    // shared dataset writer and hand it to the loop (ST-2), so the assembler
+    // appends through the SAME instance the export IPC reads — a single
+    // `export_in_progress` guard defers eviction for both (AC3). OFF ⇒ no writer
+    // is built and no dataset file is ever created.
     let dataset_enabled =
         dataset_enabled_from_store(app.state::<Arc<AppStore>>().inner().as_ref());
-    if dataset_enabled {
-        app.state::<Arc<DoomDatasetState>>().writer();
-    }
+    let dataset_writer =
+        dataset_enabled.then(|| app.state::<Arc<DoomDatasetState>>().writer());
 
     // Resolve the campaign to play (Spec #2972 R-1/R-5): an explicit fresh start
     // → the campaign initial; otherwise a valid loaded save, else the initial.
@@ -665,13 +664,16 @@ pub async fn start_doom_autoplay(
         let source_ref: &dyn crate::infrastructure::companion::doom_decision::DoomDecisionSource =
             source.as_ref();
         let clock = TokioTickClock::new(config.tick_period);
-        run_continuous_loop(
+        run_continuous_loop_with_writer(
             &engine,
             source_ref,
             &config,
             &clock,
             AutoplayRun { campaign, progress },
-            &stop,
+            AutoplayControl {
+                stop: stop.as_ref(),
+                dataset: dataset_writer,
+            },
             move |observed| {
                 let state = observe_app.state::<DoomAutoplayState>();
                 let published = state.apply(observed);
