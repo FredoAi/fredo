@@ -60,6 +60,41 @@ touching the `database-client` surface re-runs these. Seeded at issue **#3048**.
   rename/restructure.
   **FAIL** = a cross-app import.
 
+## Resize-slice baseline (#3049)
+
+The "must not change" set for the resize slice. Resizing is **additive**: it changes split SIZES
+only — every pane's content, the query capability, the settings document and the default layout
+stay frozen. Links point at the cases that already cover each invariant.
+
+- [ ] **R-X (pane content unchanged):** the connection list, schema tree, schema inspector,
+  history panel, saved-queries panel and results grid still render their content; a resize changes
+  geometry only, never which content is shown. Overlaps `sql-studio F-1..F-12` /
+  `db-client-builtin regression.md` / `postgres-client functional.md`.
+  **FAIL** = a pane's content is dropped or altered by a resize.
+- [ ] **R-XI (query capability / workspace toolbar unchanged):** the multi-tab query workspace
+  (independent tab text/result state), Run / Run-all, destructive-confirm gate, export menu and
+  history append behave exactly as before. Resize handles (S3) must not steal clicks from, or
+  overlap, the tab strip / Run controls. Overlaps `postgres-client F-5`, `sql-studio F-8/F-9`.
+  **FAIL** = a query-workspace control is broken, unreachable, or overlapped by a divider.
+- [ ] **R-XII (schema-inspector `height="35%"` box preserved):** when a schema node is selected,
+  the inspector still renders in its `height="35%"` / `minHeight="120px"` box (with its top border).
+  The S4 split resizes the connections↔schema area WITHOUT removing or collapsing the inspector.
+  **FAIL** = the inspector box is gone, permanently collapsed, or broken by S4.
+- [ ] **R-XIII (`Fredo_dbclient_prefs` settings document preserved):** the KV key stays
+  `Fredo_dbclient_prefs` and still round-trips `defaultRowLimit` / `pageSize` / `confirmDestructive`;
+  the unified settings Save still works; any new layout preference EXTENDS this document without
+  corrupting the existing fields, and a corrupt/out-of-range value degrades to defaults (tolerant,
+  R-4.5 — see `sql-studio F-33`). Overlaps `postgres-client` settings case.
+  **FAIL** = a renamed/lost key, a lost existing preference, or a settings-save regression.
+- [ ] **R-XIV (layout regions + default sizes unchanged on first run):** the 3-region layout
+  (left column, centre workspace, right column) + the bottom live-status region remain; with NO
+  persisted layout (fresh profile), the split sizes default to the prior fixed sizes (left 300px,
+  right 280px, inspector 35%) so first-run looks unchanged. Overlaps `sql-studio R-V`.
+  **FAIL** = a missing region or a shifted default layout on first run.
+- [ ] **R-XV (build gates + no cross-app imports):** re-run R-VIII (`pnpm --filter @fredo/ui build`
+  zero TS errors, `pnpm test` green; `cargo check` N/A unless Rust touched) and R-IX (no
+  cross-application import). **FAIL** = any TS error, failing test, or cross-app import.
+
 ## Notes
 
 - The rename is a UI-identity change ONLY: every engine, command, id, testid, and enforcement
