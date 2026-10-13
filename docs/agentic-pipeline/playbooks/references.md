@@ -63,6 +63,14 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 ---
 ## Known Failure Modes
+### G-359: silent_timeline_post_failure_loses_the_governing_plan
+- **activation_date:** 2026-10-13
+- **observed:** #3036 round 1 — the `planning → implementation` transition's `## Triage Plan` comment write failed during a GitHub API outage (TLS timeouts / `unexpected EOF`) and the failure was swallowed as a stdout warning; the transition still recorded and advanced. The retained `triage-plan.md` draft was later compacted by a manual `post-comments` flush into a phantom `## Fix Plan (round 2)` (round 1, no rework in flight), so the issue lost its governing plan entirely.
+- **target_failure:** a timeline-comment post that fails mid-transition is silent and unrecoverable — the plan (or a verdict) can vanish with no event or guard recorded, and the ordinary draft-consumption paths can then destroy the only remaining copy.
+- **guardrail:** A failed timeline-comment post MUST be recorded (a `guard.fired` event), never merely printed. Recovering a lost `## Triage Plan` is a supported operation: the manual `post-comments` flush re-assembles it from the CONVERGED A2A file and posts the FULL plan when the plan comment is absent and no draft remains (idempotent; a manual flush must never compact a draft into a `## Fix Plan` when no governing plan exists).
+- **home:** .opencode/scripts/pipeline-state.rs (plan flush) + references.md
+- **effectiveness:** Applied (2026-10-13, #3036) — the lost `## Triage Plan` was re-posted via the new recovery; the pipeline harness passes 119/119.
+
 ### G-358: server_connection_limit_must_exceed_the_client_pool_cap
 - **activation_date:** 2026-10-13
 - **observed:** #3028 — the embedded PostgreSQL server's `max_connections` (8) **EQUALED** the shared application pool's cap (`PG_POOL_MAX_CONNECTIONS` 8), so the pool held every server slot and any second client (the built-in PostgreSQL app, an external `psql`, the `telemetry-query`/managed-`psql` tester lever) was refused `FATAL: sorry, too many clients already` — a recurring, documented coupling across #2969/#2970/#2972/#3005/#3011. Fix: the server limit is **strictly greater** than the pool cap (12 > 8), the three connection-count sites are consistent, and the server-knob overlay is **reconciled in place** so an existing cluster takes the new value. Root-cause class: `defect` (in the prior sizing slice #2975).

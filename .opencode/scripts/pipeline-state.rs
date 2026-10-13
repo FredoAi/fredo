@@ -3143,6 +3143,57 @@ fn fix_plan_round_posted(issue: u32) -> bool {
     get_issue_comments(issue).iter().any(|b| b.trim_start().starts_with(&needle))
 }
 
+/// True when the feature issue already carries its governing `## Triage Plan`
+/// comment. Used to recover a plan comment that was lost when the
+/// `planning → implementation` transition's comment write failed (e.g. a GitHub
+/// API outage) — the machine must never compact a rework-shaped draft into a
+/// `## Fix Plan` when no governing plan exists to fix (G-259 family; observed
+/// on #3036).
+fn triage_plan_posted(issue: u32) -> bool {
+    get_issue_comments(issue)
+        .iter()
+        .any(|b| b.trim_start().starts_with("## Triage Plan"))
+}
+
+/// Recovery for a LOST `## Triage Plan` comment. The plan comment can vanish when
+/// the `planning → implementation` transition's comment write fails during an API
+/// outage, and its assembled `triage-plan.md` draft is then consumed by a manual
+/// `post-comments` flush — which compacts a rework-shaped draft into a spurious
+/// `## Fix Plan`, losing the plan entirely (#3036). When the governing plan comment
+/// is ABSENT and no `triage-plan.md` draft remains, re-assemble it from the
+/// CONVERGED A2A file and post the FULL plan, restoring the issue's single plan
+/// artifact. Idempotent: a present plan comment or a present draft (owned by the
+/// generic flush) short-circuits; a non-converged A2A is never posted. Never fatal
+/// — a recovery failure is surfaced as a warning only.
+fn recover_missing_triage_plan(issue: u32, actor: &str, phase: &str) {
+    if triage_plan_posted(issue) {
+        return;
+    }
+    let dir = match project_root() {
+        Ok(r) => r.join(".opencode").join("tmp").join(issue.to_string()),
+        Err(_) => return,
+    };
+    let draft = dir.join("triage-plan.md");
+    if draft.exists() {
+        return; // a present draft is owned by the generic flush
+    }
+    let a2a = std::fs::read_to_string(triage_a2a_path(issue).unwrap_or_default()).unwrap_or_default();
+    if !a2a.contains("## Convergence: agreed") {
+        return; // never re-post a non-converged plan
+    }
+    if assemble_impl_plan(issue, actor).is_err() {
+        return;
+    }
+    let body = match std::fs::read_to_string(&draft) {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+    match post_one_timeline_comment(issue, actor, phase, &draft, "Triage Plan", &body) {
+        Ok(()) => println!("RECOVERY: re-posted the missing `## Triage Plan` comment on #{}", issue),
+        Err(e) => println!("WARNING: could not re-post the missing Triage Plan on #{}: {}", issue, e),
+    }
+}
+
 fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str>) -> anyhow::Result<()> {
     const TIMELINE: &[(&str, &str)] = &[
         ("triage-plan.md", "Triage Plan"),
@@ -3266,7 +3317,16 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
         };
         match post_one_timeline_comment(issue, actor, phase, &p, &post_title, &post_body) {
             Ok(()) => {}
-            Err(e) => println!("WARNING: could not post {} comment ({}): {}", post_title, fname, e),
+            Err(e) => {
+                // A failed timeline post must be OBSERVABLE, not silent: a lost
+                // plan/verdict comment is otherwise invisible until an agent
+                // notices the gap (observed #3036 — the `## Triage Plan` post
+                // failed during an API outage and the loss was never surfaced).
+                let _ = append_event_attrs(issue, "guard.fired", actor, phase, "blocked",
+                    &format!("timeline comment post failed for {}: {}", fname, e),
+                    &[("guardKey", "timeline_post_failed"), ("failureClass", "timeline_comment_lost")]);
+                println!("WARNING: could not post {} comment ({}): {}", post_title, fname, e);
+            }
         }
     }
     Ok(())
@@ -3621,6 +3681,12 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // pending drafts without a transition).
             let issue = req_issue(a)?;
             let phase = phase_of(a)?.as_str().to_string();
+            // Recovery: re-assemble + post a `## Triage Plan` comment that was lost
+            // to a failed transition-side post (API outage) BEFORE the generic
+            // flush — whose rework heuristic would otherwise compact a rework-shaped
+            // draft into a spurious `## Fix Plan` with no governing plan to fix
+            // (G-259 family; observed on #3036). Idempotent and non-fatal.
+            recover_missing_triage_plan(issue, &a.actor, &phase);
             post_pending_comments(issue, &a.actor, &phase, None)?;
         }
         "record-improvement" => {
