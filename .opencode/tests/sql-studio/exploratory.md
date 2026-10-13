@@ -29,3 +29,13 @@ Tester probes beyond the script.
   is the Disconnect affordance absent (nothing connected), and does the app stay interactive?
 - Probe: in a `new-window` presentation, does the window title read "SQL Studio" (not the Tab title
   only), and does the app still render the decluttered shell?
+
+## Run log
+
+### Round 1 — 2026-10-13 (spec/3048 @ bc741d6)
+
+PASS: Disconnect placement (no sibling collision — 8px gap); empty-state reach + "SQL Studio" copy;
+window resize (fixed 283px column, cards flush, no exempt-child clipping); long-name intended
+ellipsis with `title`; zero residual `db-access-mode-badge`; light/dark with the app connected.
+NOT RUN this round: the `FREDO_DBCLIENT_FORCE_FAIL=connect` env-gated leg and the `new-window`
+presentation leg (neither is a case FAIL — recorded as exploratory gaps).
