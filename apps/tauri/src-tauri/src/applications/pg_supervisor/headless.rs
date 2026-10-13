@@ -15,7 +15,8 @@
 //! 2. `PgDataDirLock::acquire_in(resolve_lock_dir(app_data_dir))` — a held lock is
 //!    a clear fail-fast (exit 1), no cluster started.
 //! 3. `AppStore::open` → `ensure_password` (the shared OS-keychain credential).
-//! 4. `PgRuntime` setup → knobs → start → `probe_ready`; the `HeadlessDescriptor`
+//! 4. `PgRuntime` setup → knobs → start → database-identity migration →
+//!    `probe_ready`; the `HeadlessDescriptor`
 //!    is published ONLY after readiness succeeds.
 //! 5. `build_pg_pool` → `ensure_schema` on `RtdbStore`/`SpanStore` → `RtdbCache`/
 //!    `Rtdb` with a **no-op `RowEmitter`** → `IngestClassifier` →
@@ -223,6 +224,12 @@ pub async fn run_ingest_daemon(args: IngestDaemonArgs) -> Result<()> {
         .await
         .context("[ingest] embedded PostgreSQL start")?;
     persist_pid(&app_store, Some(postmaster_pid));
+    // Spec #3036: rename the bootstrap database to `fredo` BEFORE readiness /
+    // the pool build (idempotent; fail-closed `database` stage).
+    runtime
+        .migrate_database_identity()
+        .await
+        .context("[ingest] migrate the database identity")?;
     runtime
         .probe_ready()
         .await

@@ -11,7 +11,7 @@ description: Query Fredo's telemetry store (the embedded PostgreSQL cluster) to 
 
 ## How It Works
 
-`telemetry-query.ps1` → managed `psql` (database `postgres`) at the env's ephemeral PostgreSQL port → formatted output (JSON / markdown / table).
+`telemetry-query.ps1` → managed `psql` (database `fredo`) at the env's ephemeral PostgreSQL port → formatted output (JSON / markdown / table).
 
 PostgreSQL is the **only** persistence system (Spec #3005). The telemetry subsystem stores OpenTelemetry-compatible spans in a `telemetry_spans` table inside the embedded PostgreSQL cluster — the same store used by the settings KV, the canonical RTDB `*_rows` tables, and `telemetry_metrics` / `telemetry_logs`. This skill provides a read-only query interface — no mutations, no DDL, no DML.
 
@@ -26,7 +26,7 @@ Span lifecycle:
 The store is the managed embedded PostgreSQL cluster. It has **no fixed file path** — connect through the managed `psql` at the running cluster's loopback port:
 
 1. **Port:** read it from the app's `pg_supervisor_status` (the `port` field). For an isolated dev env, the manifest records it as `ports.pg` (`-Manifest`).
-2. **Database / user:** database `postgres`, user `postgres`, host `127.0.0.1`.
+2. **Database / user:** database `fredo` (the Fredo application database, Spec #3036), user `postgres` (the unchanged bootstrap superuser role), host `127.0.0.1`.
 3. **Password:** the generated loopback password lives in the **OS keychain** (service `fredo.postgres`, account `loopback:password`). Supply it with `-PgPassword` (or `$env:PGPASSWORD`); the wrapper also reads `$env:FREDO_PG_PASSWORD_FILE` (first non-blank line), then the documented loopback-only fallback. The password is never printed or logged.
 
 > **G-307:** the ephemeral port can read `0` on a stale manifest/status. When it does, a re-resolve is required — re-run `dev-env.ps1 -Action Up` (or `-Action Status`) and pass the fresh `-PgPort`. Never guess a port.
@@ -58,7 +58,7 @@ powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
   [-Format json|md|table] `
   [-Limit 1000] `
   [-Manifest <env-root>/manifest.json] `
-  [-PgPort <env pg port>] [-PgHost 127.0.0.1] [-PgUser postgres] [-PgDatabase postgres] [-PgPassword <pw>]
+  [-PgPort <env pg port>] [-PgHost 127.0.0.1] [-PgUser postgres] [-PgDatabase fredo] [-PgPassword <pw>]
 ```
 
 ### Parameters
@@ -70,7 +70,7 @@ powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
 | `-Limit`  | No       | `1000`  | Maximum rows returned. Appended as `LIMIT N` unless query already contains `LIMIT`. |
 | `-Manifest` | No     | (empty) | Env process-manifest path (`<env-root>/manifest.json`). Resolves `ports.pg`. Explicit `-PgPort` wins. |
 | `-PgPort` | No       | `0`     | PostgreSQL loopback port (G-284/G-307). `>0` selects the managed-`psql` engine. `0` ⇒ the `-Manifest` `ports.pg` when present; else a usage error (re-resolve). |
-| `-PgHost` / `-PgUser` / `-PgDatabase` / `-PgPassword` | No | `127.0.0.1` / `postgres` / `postgres` / `$env:PGPASSWORD` | PostgreSQL connection fields. Password resolution: param → `$env:PGPASSWORD` → `FREDO_PG_PASSWORD_FILE` → loopback fallback. |
+| `-PgHost` / `-PgUser` / `-PgDatabase` / `-PgPassword` | No | `127.0.0.1` / `postgres` / `fredo` / `$env:PGPASSWORD` | PostgreSQL connection fields (the database default is `fredo` — the Fredo application database, Spec #3036; the user stays the unchanged `postgres` role). Password resolution: param → `$env:PGPASSWORD` → `FREDO_PG_PASSWORD_FILE` → loopback fallback. |
 
 ### Guardrails (enforced by the wrapper)
 

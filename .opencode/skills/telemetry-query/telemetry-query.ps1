@@ -9,7 +9,8 @@
   DDL/DML. Defaults to LIMIT 1000. Supports json, markdown, and table output.
 
   Engine (Spec #3005, closes G-284): PostgreSQL ONLY. The script connects with
-  the managed `psql` (database `postgres`) at the env's ephemeral PG port.
+  the managed `psql` (database `fredo`, the Fredo application database since
+  Spec #3036) at the env's ephemeral PG port.
   Resolve the port with -PgPort or -Manifest (ports.pg); when the port reads 0
   a re-resolve is required (G-307) - re-run dev-env.ps1 -Action Up / Status and
   pass the fresh port.
@@ -41,9 +42,9 @@
 .PARAMETER PgHost
   PostgreSQL host. Default: 127.0.0.1.
 .PARAMETER PgUser
-  PostgreSQL user. Default: postgres.
+  PostgreSQL user. Default: postgres (the unchanged bootstrap superuser role).
 .PARAMETER PgDatabase
-  PostgreSQL database. Default: postgres.
+  PostgreSQL database. Default: fredo (the Fredo application database, Spec #3036).
 .PARAMETER PgPassword
   PostgreSQL password. Default: $env:PGPASSWORD (then FREDO_PG_PASSWORD_FILE,
   then the loopback-only fallback). Never printed.
@@ -69,7 +70,7 @@ param(
   [int]$PgPort = 0,
   [string]$PgHost = "127.0.0.1",
   [string]$PgUser = "postgres",
-  [string]$PgDatabase = "postgres",
+  [string]$PgDatabase = "fredo",
   [string]$PgPassword = $env:PGPASSWORD
 )
 

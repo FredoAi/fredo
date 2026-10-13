@@ -276,7 +276,7 @@ exports are idempotent: rows upsert on `(session_id, correlation_id)` with no
 ## 5. Source of truth + how to query
 
 - **Database:** the embedded PostgreSQL cluster (the ONLY store since Spec #3005) — holding `telemetry_spans`, `telemetry_metrics`, `telemetry_logs`. No legacy SQLite file exists or is read.
-- **Query tool:** query the managed cluster with its `psql` (via the `telemetry-query` skill — database `postgres`, port from `pg_supervisor_status` or the manifest `ports.pg`, password from the OS keychain).
+- **Query tool:** query the managed cluster with its `psql` (via the `telemetry-query` skill — database `fredo`, port from `pg_supervisor_status` or the manifest `ports.pg`, password from the OS keychain).
 - **Emission side:** `apps/opencode-plugin/` (fredo plugin) — spans/metrics/logs.
 - **Adapter (consumption side):** `apps/tauri/src-tauri/src/infrastructure/comm/adapters/otlp.rs` — maps `gen_ai.input.messages`/`gen_ai.output.messages` (parsed JSON-string message arrays) to `userMessage`/`agentReply` (the frontend contract).
 - **Registry (source of truth for `gen_ai.*` names):** OTel GenAI semantic conventions — https://github.com/open-telemetry/semantic-conventions-genai/tree/main/docs/gen-ai/

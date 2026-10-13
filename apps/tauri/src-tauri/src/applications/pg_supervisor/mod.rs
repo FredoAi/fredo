@@ -83,6 +83,56 @@ pub const PG_LOG_FILENAME: &str = "postgres.log";
 /// Ephemeral loopback bind host (never `0.0.0.0`).
 pub const DEFAULT_PG_HOST: &str = "127.0.0.1";
 
+// ── Database identity (Spec #3036, Option (b)) ───────────────────────────────
+//
+// The human decision for #3036: the application DATABASE reads as Fredo's own
+// (`fredo`), while the bootstrap superuser ROLE stays `postgres` — the role
+// rename is DECLINED (`initdb` hard-codes it, and `postgresql_embedded` 0.21's
+// `settings.username` only builds `url()`). The one-time migration IS the
+// catalog-only rename `ALTER DATABASE postgres RENAME TO fredo`.
+
+/// The Fredo-named application database — the database every pool/attach/headless
+/// URL targets, and the destination of the one-time rename.
+pub const PG_DATABASE: &str = "fredo";
+/// `initdb`'s bootstrap superuser role — UNCHANGED (the role rename is declined;
+/// the URL user and `ALTER USER … PASSWORD` keep this literal).
+pub const PG_SUPERUSER: &str = "postgres";
+/// `initdb`'s default database — the `ALTER DATABASE … RENAME TO` SOURCE. On a
+/// fresh cluster it exists after `setup()` and is renamed to [`PG_DATABASE`]
+/// before the first pool connect; on an upgraded cluster it is the legacy name.
+pub const PG_BOOTSTRAP_DATABASE: &str = "postgres";
+/// The connectable maintenance database the rename runs FROM. `template1` is
+/// connectable (`template0` is not) and still exists AFTER the rename — so the
+/// migration never depends on a database literally named `postgres`.
+pub const PG_MAINTENANCE_DATABASE: &str = "template1";
+
+/// **G-275** injectable fault seam (Spec #3036): when set to a non-blank value
+/// other than `0`/`false`, [`runtime::PgRuntime::migrate_database_identity`] fails
+/// closed AFTER detection and BEFORE any DDL, so the fail-closed `database` stage
+/// is drivable in-repo without corrupting a cluster. Inert when unset — the
+/// default migration path is byte-identical.
+pub const PG_FORCE_DB_MIGRATION_FAIL_ENV: &str = "FREDO_PG_FORCE_DB_MIGRATION_FAIL";
+
+/// Resolve the **#3036** forced-database-migration-failure lever (mirrors
+/// [`force_start_fail`]): `true` when [`PG_FORCE_DB_MIGRATION_FAIL_ENV`] is set to
+/// a non-blank value other than `0`/`false`, else `false`. Inert by default.
+pub fn force_db_migration_fail() -> bool {
+    force_db_migration_fail_with(std::env::var(PG_FORCE_DB_MIGRATION_FAIL_ENV).ok().as_deref())
+}
+
+/// The pure forced-database-migration-failure rule, split out so the lever
+/// contract is unit-testable without mutating process-global environment state
+/// (G-222).
+fn force_db_migration_fail_with(value: Option<&str>) -> bool {
+    match value {
+        Some(value) => {
+            let raw = value.trim();
+            !raw.is_empty() && !raw.eq_ignore_ascii_case("0") && !raw.eq_ignore_ascii_case("false")
+        }
+        None => false,
+    }
+}
+
 // ── Test hooks (Spec #2974 fix round: inert when unset — default behaviour is
 //    byte-identical to the slice-1 path) ───────────────────────────────────────
 
@@ -343,6 +393,46 @@ mod tests {
         assert!(force_start_fail_with(Some("1")));
         assert!(force_start_fail_with(Some("true")));
         assert!(force_start_fail_with(Some("yes")));
+    }
+
+    /// ST-1 (#3036): the database-identity constants pin the DECISION OF RECORD —
+    /// the application database is `fredo`, the bootstrap superuser ROLE / boot
+    /// database / maintenance database stay the unchanged literals.
+    #[test]
+    fn database_identity_constants_match_the_decision_of_record() {
+        assert_eq!(PG_DATABASE, "fredo", "the application database is fredo");
+        assert_eq!(PG_SUPERUSER, "postgres", "the superuser ROLE is unchanged");
+        assert_eq!(
+            PG_BOOTSTRAP_DATABASE, "postgres",
+            "initdb's bootstrap database is the rename SOURCE"
+        );
+        assert_eq!(
+            PG_MAINTENANCE_DATABASE, "template1",
+            "the rename connects to template1 (connectable, survives the rename)"
+        );
+    }
+
+    /// ST-1 (#3036): the forced-database-migration-failure lever is inert unless
+    /// explicitly set, and a `0`/`false` value leaves it off. The pure rule is
+    /// tested so the contract is pinned without mutating process-global env (G-222).
+    #[test]
+    fn force_db_migration_fail_rule_is_inert_by_default_and_reads_the_lever() {
+        assert_eq!(
+            PG_FORCE_DB_MIGRATION_FAIL_ENV, "FREDO_PG_FORCE_DB_MIGRATION_FAIL",
+            "the seam env name is the QA-facing contract"
+        );
+        assert!(!force_db_migration_fail_with(None), "unset is inert");
+        assert!(!force_db_migration_fail_with(Some("")), "blank is inert");
+        assert!(!force_db_migration_fail_with(Some("   ")), "blank is inert");
+        assert!(!force_db_migration_fail_with(Some("0")), "0 is inert");
+        assert!(!force_db_migration_fail_with(Some("false")), "false is inert");
+        assert!(
+            !force_db_migration_fail_with(Some("FALSE")),
+            "false is case-insensitive"
+        );
+        assert!(force_db_migration_fail_with(Some("1")));
+        assert!(force_db_migration_fail_with(Some("true")));
+        assert!(force_db_migration_fail_with(Some("yes")));
     }
 
     /// ST-2 (#3028): the rendered `PG_SERVER_KNOBS` `max_connections` string MUST

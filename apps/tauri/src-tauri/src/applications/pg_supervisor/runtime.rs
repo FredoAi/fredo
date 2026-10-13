@@ -31,7 +31,8 @@ use sqlx::Connection as _;
 
 use super::config::PgSupervisorConfig;
 use super::{
-    PG_CONNECT_TIMEOUT, PG_CONTROL_TIMEOUT, PG_READY_BOUND, PG_SETUP_BOUND, PG_START_BOUND,
+    PG_BOOTSTRAP_DATABASE, PG_CONNECT_TIMEOUT, PG_CONTROL_TIMEOUT, PG_DATABASE,
+    PG_MAINTENANCE_DATABASE, PG_READY_BOUND, PG_SETUP_BOUND, PG_START_BOUND, PG_SUPERUSER,
 };
 
 /// Marker line that makes the [`PgRuntime::apply_server_knobs`] overlay
@@ -293,6 +294,51 @@ pub(crate) async fn alter_password_on_connection(
     Ok(())
 }
 
+// ── Database identity migration (Spec #3036, Option (b)) ─────────────────────
+
+/// The one-time database-identity decision, derived purely from the live
+/// `pg_database` catalog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DatabaseIdentityPlan {
+    /// The application database already reads [`super::PG_DATABASE`] — a re-run
+    /// is a byte-identical no-op (R-2c/R-4b).
+    Noop,
+    /// The bootstrap database is still named [`super::PG_BOOTSTRAP_DATABASE`];
+    /// rename it to [`super::PG_DATABASE`] (R-2a/R-2b).
+    Rename,
+}
+
+/// The pure idempotence rule: `db_fredo` present ⇒ [`DatabaseIdentityPlan::Noop`];
+/// otherwise, when `db_postgres` is present, [`DatabaseIdentityPlan::Rename`].
+/// Neither name present is an anomalous (unreachable after `initdb`) state and is
+/// treated as `Noop` — the caller's readiness gate then fails closed. Pure so the
+/// contract is unit-testable without a live server (G-222).
+pub fn plan_database_migration(db_postgres: bool, db_fredo: bool) -> DatabaseIdentityPlan {
+    if db_fredo || !db_postgres {
+        DatabaseIdentityPlan::Noop
+    } else {
+        DatabaseIdentityPlan::Rename
+    }
+}
+
+/// The idempotence read: does the catalog hold a database with this name? A pure
+/// `pg_database` lookup — never DDL, never a connect.
+pub const DATABASE_EXISTS_SQL: &str = "SELECT COUNT(*) FROM pg_database WHERE datname = $1";
+
+/// The defensive terminate of any lingering backend on the SOURCE database. A
+/// no-op in the normal pre-pool window (the cluster has just started); present so
+/// an open legacy session cannot block the rename.
+pub const TERMINATE_SOURCE_BACKENDS_SQL: &str =
+    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()";
+
+/// The catalog-only rename DDL (R-2a). `ALTER DATABASE … RENAME TO` keeps the
+/// database's OID and its `base/<oid>` files — no data copy, no orphaning — and
+/// is ONE atomic statement (crash-recoverable). Identifiers cannot be bind
+/// parameters; the two names are compile-time constants (never user input).
+pub fn rename_database_statement() -> String {
+    format!("ALTER DATABASE {PG_BOOTSTRAP_DATABASE} RENAME TO {PG_DATABASE}")
+}
+
 /// Owns the embedded server. Constructed before `setup`, dropped last.
 pub struct PgRuntime {
     pg: PostgreSQL,
@@ -446,6 +492,14 @@ impl PgRuntime {
         // ("postgres") — see the spike's empirically verified finding: the field
         // only builds `url()`, while `initdb` still creates the `postgres`
         // superuser, so overriding it yields a URL whose user does not exist.
+        //
+        // Spec #3036: the ROLE is unchanged (`PG_SUPERUSER`); only the DATABASE is
+        // Fredo-named. Pin that the crate default username IS the recorded role so
+        // the URL user and the recorded decision can never silently diverge.
+        debug_assert_eq!(
+            settings.username, PG_SUPERUSER,
+            "the crate default username must equal PG_SUPERUSER (the role is not renamed)"
+        );
         Self {
             pg: PostgreSQL::new(settings),
             data_dir,
@@ -462,8 +516,20 @@ impl PgRuntime {
 
     /// The connection URL the readiness probe (and later slices' pools) must use
     /// — authoritative because the bound ephemeral port lives in these settings.
+    ///
+    /// Addresses the Fredo application database ([`super::PG_DATABASE`]) with the
+    /// unchanged bootstrap superuser role ([`super::PG_SUPERUSER`]); the role
+    /// literal stays `postgres` (Spec #3036, Option (b)).
     pub fn connection_url(&self) -> String {
-        self.pg.settings().url("postgres")
+        self.pg.settings().url(PG_DATABASE)
+    }
+
+    /// The maintenance connection URL (Spec #3036): the SAME settings as
+    /// [`Self::connection_url`] but addressing
+    /// [`super::PG_MAINTENANCE_DATABASE`] (`template1`) — the connectable
+    /// database [`Self::migrate_database_identity`] runs the rename FROM.
+    pub fn maintenance_connection_url(&self) -> String {
+        self.pg.settings().url(PG_MAINTENANCE_DATABASE)
     }
 
     /// The port the server is bound to; `0` before `start()` requests an
@@ -579,6 +645,84 @@ impl PgRuntime {
                 }
             },
         )
+        .await
+    }
+
+    /// One-time database-identity migration (Spec #3036, R-2a..R-2c, R-4).
+    ///
+    /// Connects to [`super::PG_MAINTENANCE_DATABASE`] (`template1`), reads the
+    /// `pg_database` catalog, and — iff the bootstrap database is still named
+    /// [`super::PG_BOOTSTRAP_DATABASE`] and the Fredo database is absent — runs
+    /// the catalog-only [`rename_database_statement`]
+    /// (`ALTER DATABASE postgres RENAME TO fredo`). Because the rename is
+    /// OID-keyed, the migration preserves every existing table and row (no data
+    /// copy, no orphaning) and is ONE atomic statement (crash-recoverable: a
+    /// crash leaves EITHER the legacy name with all rows OR the renamed name with
+    /// all rows). Idempotent: a second call over an already-migrated cluster is a
+    /// pure read — no DDL, no error.
+    ///
+    /// Called between [`Self::start`] and [`Self::probe_ready`] on every owner
+    /// path, so no pool ever connects before the database is named `fredo`.
+    ///
+    /// Bounded by [`PG_CONTROL_TIMEOUT`] (G-263). The
+    /// `FREDO_PG_FORCE_DB_MIGRATION_FAIL` seam fails closed AFTER detection and
+    /// BEFORE any DDL (G-275), inert when unset. Any error is mapped by the
+    /// caller to the named `database` stage.
+    pub async fn migrate_database_identity(&self) -> Result<()> {
+        let maintenance_url = self.maintenance_connection_url();
+        let rename = rename_database_statement();
+        run_bounded(PG_CONTROL_TIMEOUT, "pg.migrate_database_identity", async move {
+            let mut connection = sqlx::PgConnection::connect(&maintenance_url)
+                .await
+                .context("connecting to the maintenance database for the identity migration")?;
+            let db_fredo: i64 = sqlx::query_scalar(DATABASE_EXISTS_SQL)
+                .bind(PG_DATABASE)
+                .fetch_one(&mut connection)
+                .await
+                .context("reading the fredo database from the catalog")?;
+            let db_postgres: i64 = sqlx::query_scalar(DATABASE_EXISTS_SQL)
+                .bind(PG_BOOTSTRAP_DATABASE)
+                .fetch_one(&mut connection)
+                .await
+                .context("reading the bootstrap database from the catalog")?;
+            let plan = plan_database_migration(db_postgres > 0, db_fredo > 0);
+            if plan == DatabaseIdentityPlan::Noop {
+                return Ok(());
+            }
+            if super::force_db_migration_fail() {
+                return Err(anyhow!(
+                    "FREDO_PG_FORCE_DB_MIGRATION_FAIL is set: forced database-migration failure (test seam)"
+                ));
+            }
+            // Defensive: terminate any lingering backend on the SOURCE database so
+            // the rename cannot be blocked (a no-op in the normal pre-pool window).
+            sqlx::query(TERMINATE_SOURCE_BACKENDS_SQL)
+                .bind(PG_BOOTSTRAP_DATABASE)
+                .execute(&mut connection)
+                .await
+                .context("terminating lingering bootstrap-database backends")?;
+            sqlx::query(&rename)
+                .execute(&mut connection)
+                .await
+                .context("renaming the bootstrap database to the Fredo database")?;
+            // Verify the rename converged: fredo present AND postgres absent.
+            let fredo_after: i64 = sqlx::query_scalar(DATABASE_EXISTS_SQL)
+                .bind(PG_DATABASE)
+                .fetch_one(&mut connection)
+                .await
+                .context("verifying the Fredo database exists")?;
+            let postgres_after: i64 = sqlx::query_scalar(DATABASE_EXISTS_SQL)
+                .bind(PG_BOOTSTRAP_DATABASE)
+                .fetch_one(&mut connection)
+                .await
+                .context("verifying the bootstrap database is gone")?;
+            if fredo_after != 1 || postgres_after != 0 {
+                return Err(anyhow!(
+                    "database-identity migration verification failed: {PG_DATABASE}={fredo_after}, {PG_BOOTSTRAP_DATABASE}={postgres_after}"
+                ));
+            }
+            Ok(())
+        })
         .await
     }
 
@@ -782,6 +926,97 @@ mod tests {
         );
         let expected = dir.path().join(PG_DATA_SUBDIR);
         assert_eq!(runtime.data_dir(), expected.as_path());
+    }
+
+    /// ST-1 (#3036, R-2d): the pool URL addresses the Fredo application database
+    /// (`fredo`) with the unchanged `postgres` user; the old `/postgres` end-path
+    /// is gone.
+    #[test]
+    fn connection_url_addresses_the_fredo_database_with_the_postgres_user() {
+        use crate::applications::pg_supervisor::{PG_BOOTSTRAP_DATABASE, PG_SUPERUSER};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = PgRuntime::new(dir.path(), "pw".to_string());
+        let url = runtime.connection_url();
+        assert!(
+            url.ends_with(&format!("/{PG_DATABASE}")),
+            "the pool URL must end /{PG_DATABASE}: {url}"
+        );
+        assert!(
+            !url.ends_with(&format!("/{PG_BOOTSTRAP_DATABASE}")),
+            "the old /{PG_BOOTSTRAP_DATABASE} end-path must be gone: {url}"
+        );
+        assert!(
+            url.starts_with(&format!("postgresql://{PG_SUPERUSER}:")),
+            "the URL user must stay {PG_SUPERUSER}: {url}"
+        );
+    }
+
+    /// ST-1 (#3036): the maintenance URL the rename runs FROM addresses
+    /// `template1` — connectable, and it survives the rename.
+    #[test]
+    fn maintenance_connection_url_addresses_the_maintenance_database() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = PgRuntime::new(dir.path(), "pw".to_string());
+        let url = runtime.maintenance_connection_url();
+        assert!(
+            url.ends_with(&format!("/{PG_MAINTENANCE_DATABASE}")),
+            "the maintenance URL must end /{PG_MAINTENANCE_DATABASE}: {url}"
+        );
+    }
+
+    /// ST-1 (#3036, R-2c/R-4b): the idempotence rule is pure and total — `fredo`
+    /// present ⇒ Noop; bootstrap-only ⇒ Rename; `fredo` always wins.
+    #[test]
+    fn plan_database_migration_is_pure_and_total() {
+        use DatabaseIdentityPlan::{Noop, Rename};
+        assert_eq!(
+            plan_database_migration(true, false),
+            Rename,
+            "a legacy bootstrap database must be renamed"
+        );
+        assert_eq!(
+            plan_database_migration(false, true),
+            Noop,
+            "an already-migrated cluster is a no-op"
+        );
+        assert_eq!(
+            plan_database_migration(true, true),
+            Noop,
+            "fredo present wins over a lingering source"
+        );
+        assert_eq!(
+            plan_database_migration(false, false),
+            Noop,
+            "neither present (unreachable after initdb) is a no-op; readiness fails closed"
+        );
+    }
+
+    /// ST-1 (#3036, R-2a): the rename DDL is the pinned catalog-only literal and
+    /// names NO role (the role rename is declined).
+    #[test]
+    fn rename_database_statement_pins_the_catalog_only_ddl_literal() {
+        assert_eq!(
+            rename_database_statement(),
+            "ALTER DATABASE postgres RENAME TO fredo"
+        );
+        assert!(
+            !rename_database_statement().contains("ROLE"),
+            "the migration must never rename a role"
+        );
+    }
+
+    /// ST-1 (#3036, R-2c): the detection/idempotence read is a pure `pg_database`
+    /// lookup by bind parameter — no DDL.
+    #[test]
+    fn database_exists_read_is_a_pure_catalog_lookup_by_bind() {
+        assert!(DATABASE_EXISTS_SQL.contains("pg_database"));
+        assert!(DATABASE_EXISTS_SQL.contains("datname = $1"));
+        for keyword in ["ALTER", "CREATE", "DROP", "DELETE", "INSERT", "UPDATE"] {
+            assert!(
+                !DATABASE_EXISTS_SQL.to_uppercase().contains(keyword),
+                "the detection read must stay DDL/DML-free, found {keyword}"
+            );
+        }
     }
 
     /// S4 / REQ-3.2 (Q-17): the crate settings point the postmaster's logging
