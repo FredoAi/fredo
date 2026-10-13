@@ -565,7 +565,7 @@ export const VoiceInputSettings: React.FC<VoiceInputSettingsProps> = ({
                   borderColor: 'var(--accent-primary)',
                   boxShadow: '0 0 0 1px var(--accent-primary)',
                 }}
-                _disabled={{ opacity: 0.6 }}
+                _disabled={{ color: 'fg.subtle' }}
               >
                 <option value="">{SYSTEM_DEFAULT_DEVICE_LABEL}</option>
                 {deviceVanishedOption && (
