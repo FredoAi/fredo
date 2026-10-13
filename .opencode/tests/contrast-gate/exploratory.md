@@ -3,6 +3,18 @@
 > Unscripted probes the Tester runs beyond the functional cases. A confirmed finding **PROMOTES** to
 > `functional.md` as a new `F-` row (keep the origin note). The gate is static/pure — probes target
 > the MATRIX, the SCANNER, and the BASELINE mechanics, not a running app.
+>
+> **Round 1 notes (spec/3033 @ `beec583`).** Exercised:
+> - **E-5 (allowlist over-broad match)** — CONFIRMED literal-pinned, no finding: pinned literal in the
+>   allowlisted canvas file → 0 violations; a NEW literal (`#ff00aa`) in that same file → reported
+>   (`["#ff00aa"]`). Anti-widening holds; no file-level blanket excuse.
+> - **E-1 (key collisions)** — no finding: the 589 emitted keys are unique (`Set(keys).size === keys.length`).
+> - **E-6 (cap/stale interaction)** — no finding: over-cap baseline throws; a removed baselined row
+>   yields a `staleBaseline` entry. The combined add-while-deleting move is jointly FAILed.
+> - **E-7 (determinism)** — no finding: `buildContrastMatrix()` returned the identical 589 rows across
+>   the suite and the independent probe; no `Date`/random/browser access in the modules.
+>   Not separately exercised this round: E-2 (derived-token drift), E-3 (key-format drift), E-4
+>   (scanner false-negative hunt beyond the shipped fixtures), E-8 (CI step-name coupling).
 
 ## Probes to try
 
