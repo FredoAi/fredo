@@ -10,7 +10,8 @@
         "dev": "vite",
         "build": "tsc && vite build",
         "typecheck": "tsc --noEmit",
-        "test:run": "vitest run"
+        "test:run": "vitest run",
+        "contrast:gate": "vitest run src/app/theme/contrast"
     },
     "dependencies": {
         "@chakra-ui/react": "^3.2.2",

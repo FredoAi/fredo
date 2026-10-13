@@ -1,10 +1,12 @@
 /**
- * Spec #3033 ST-4 — raw-colour scanner (AC3 / R-3).
+ * Spec #3033 ST-4 — raw-colour scanner (AC3 / R-3). POLICY-FREE.
  *
  * Detects hardcoded colour literals in the scanned sources *after stripping
- * comments*, then reports every hit that is not **pinned** by a
- * `RAW_COLOR_ALLOWLIST` entry (exact `{file, literal}` match via
- * `normalizeRawLiteral`; no glob/regex file matching — see `rawColorAllowlist.ts`).
+ * comments*, and returns a `RawColorHit` for EVERY match — allowlist-blind and
+ * baseline-blind. This is the producer stage (the `buildContrastMatrix`
+ * analogue): the excuse layers (literal-pinned `RAW_COLOR_ALLOWLIST` filter +
+ * the `RAW_COLOR_BASELINE` diff) live in `rawColorEvaluate.evaluateRawColors`,
+ * so there is exactly ONE source of "what is a raw-colour violation".
  *
  * Patterns (reused from `shared/hotkeys/__tests__/themeHygiene.test.ts`):
  *   - hex                 `#[0-9a-fA-F]{3,8}\b`
@@ -19,9 +21,7 @@
  * Read-only, deterministic, pure-of-side-effects; no browser, no new dependency.
  */
 
-import { RAW_COLOR_ALLOWLIST } from './rawColorAllowlist';
-
-export interface RawColorViolation {
+export interface RawColorHit {
   /** POSIX-relative path (as supplied, normalised to forward slashes). */
   file: string;
   /** `normalizeRawLiteral`-normalised token. */
@@ -52,7 +52,7 @@ const FUNCTION_COLOR = /\b(?:rgba?|hsla?)\s*\(/g;
 
 interface RawMatch {
   literal: string;
-  kind: RawColorViolation['kind'];
+  kind: RawColorHit['kind'];
 }
 
 /** Every raw-colour hit in already-comment-stripped code. */
@@ -86,29 +86,22 @@ function matchRawLiterals(code: string): RawMatch[] {
   return matches;
 }
 
-/** A hit is allowed iff its EXACT `{file, literal}` pair is pinned. */
-function isAllowed(file: string, literal: string): boolean {
-  return RAW_COLOR_ALLOWLIST.some(
-    (entry) => entry.file === file && entry.literals.includes(literal),
-  );
-}
-
 /**
- * Scan provided sources for unallowlisted raw-colour literals. The allowlist is
- * applied here so a caller gets only the genuine violations (an allowlisted
- * file does NOT license an unpinned literal).
+ * Scan provided sources and return EVERY raw-colour hit (policy-free — the
+ * allowlist and baseline are applied by `evaluateRawColors`, never here). A hit
+ * carries its exact `{file, literal, kind}` so the evaluator can pin it.
  */
 export function scanRawColors(
   input: ReadonlyArray<{ path: string; source: string }>,
-): RawColorViolation[] {
-  const violations: RawColorViolation[] = [];
+): RawColorHit[] {
+  const hits: RawColorHit[] = [];
   for (const { path, source } of input) {
     const file = path.replace(/\\/g, '/');
     for (const { literal, kind } of matchRawLiterals(stripComments(source))) {
-      if (!isAllowed(file, literal)) violations.push({ file, literal, kind });
+      hits.push({ file, literal, kind });
     }
   }
-  return violations;
+  return hits;
 }
 
 /** Test/spec and declaration files are not "feature components" (AC3). */

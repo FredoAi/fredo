@@ -3,16 +3,17 @@
  *
  * Given the built matrix and the committed baseline, `evaluateContrast` applies
  * the day-one-green rules:
- *   1. `violations` = every row below its absolute floor.
- *   2. `baselined`  = the violating rows the baseline excuses (key identity).
+ *   1. `violations` = every below-floor row whose `key` is NOT excused by the
+ *      baseline (a NEW, unbaselined violation → FAIL).
+ *   2. `baselined`  = the below-floor rows the baseline excuses (key identity).
  *   3. `staleBaseline` = baseline entries whose row is NOT a violation any more
  *      (the ratchet-down rule — a fixed pair must leave the baseline).
  *   4. The baseline may never grow past the frozen cap; an entry without a live
  *      issue number is invalid. Both are hard contract breaches and THROW (they
  *      have no representation in the returned `Evaluation`).
  *
- * A caller FAILS the gate when any of: `violations` has a key absent from the
- * baseline, `staleBaseline` is non-empty, or this function throws.
+ * A caller FAILS the gate when any of: `violations` is non-empty, `staleBaseline`
+ * is non-empty, or this function throws — the `evaluateRawColors` mirror.
  *
  * Pure and deterministic — no filesystem/browser/random access. Read-only: it
  * never writes the baseline or any source.
@@ -59,11 +60,11 @@ export function evaluateContrast(
   }
 
   const baselineKeys = new Set(baseline.map((entry) => entry.key));
-  const violations = rows.filter((row) => row.ratio < row.floor);
-  const violatingKeys = new Set(violations.map((row) => row.key));
+  const belowFloor = rows.filter((row) => row.ratio < row.floor);
+  const belowFloorKeys = new Set(belowFloor.map((row) => row.key));
   return {
-    violations,
-    baselined: rows.filter((row) => baselineKeys.has(row.key)),
-    staleBaseline: baseline.filter((entry) => !violatingKeys.has(entry.key)),
+    violations: belowFloor.filter((row) => !baselineKeys.has(row.key)),
+    baselined: belowFloor.filter((row) => baselineKeys.has(row.key)),
+    staleBaseline: baseline.filter((entry) => !belowFloorKeys.has(entry.key)),
   };
 }

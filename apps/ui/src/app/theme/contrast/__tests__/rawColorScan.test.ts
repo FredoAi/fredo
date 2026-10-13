@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import { defaultScanTargets, normalizeRawLiteral, scanRawColors } from '../rawColorScan';
 import { RAW_COLOR_ALLOWLIST } from '../rawColorAllowlist';
+import { evaluateRawColors } from '../rawColorEvaluate';
 
 const ALLOWLISTED_TERMINAL_FILE =
   'apps/ui/src/applications/terminal/components/SessionTerminal.tsx';
@@ -64,30 +65,35 @@ describe('scanRawColors — detection', () => {
   });
 });
 
-describe('scanRawColors — literal-pinned allowlist (anti-widening)', () => {
-  it('allows an allowlisted file + one of its enumerated literals', () => {
-    const violations = scanRawColors([
+describe('scanRawColors — policy-free (allowlist-blind, baseline-blind)', () => {
+  it('returns an allowlisted file + one of its enumerated literals (no filtering)', () => {
+    const hits = scanRawColors([
       { path: ALLOWLISTED_TERMINAL_FILE, source: "const c = '#f44747';" },
     ]);
-    expect(violations).toEqual([]);
-  });
-
-  it('reports a NEW literal added to an allowlisted file', () => {
-    const violations = scanRawColors([
-      { path: ALLOWLISTED_TERMINAL_FILE, source: "const c = '#123456';" },
-    ]);
-    expect(violations).toEqual([
-      { file: ALLOWLISTED_TERMINAL_FILE, literal: '#123456', kind: 'hex' },
+    expect(hits).toEqual([
+      { file: ALLOWLISTED_TERMINAL_FILE, literal: '#f44747', kind: 'hex' },
     ]);
   });
 
-  it('reports a DOM-chrome colour added beside an allowlisted canvas palette', () => {
-    const violations = scanRawColors([
+  it('returns a DOM-chrome colour added beside an allowlisted canvas palette', () => {
+    const hits = scanRawColors([
       { path: ALLOWLISTED_CANVAS_FILE, source: 'color="rgba(255,255,255,0.25)"' },
     ]);
-    expect(violations).toEqual([
+    expect(hits).toEqual([
       { file: ALLOWLISTED_CANVAS_FILE, literal: 'rgba(255,255,255,0.25)', kind: 'function' },
     ]);
+  });
+
+  it('excuses ONLY literal-pinned hits via evaluateRawColors (anti-widening)', () => {
+    const pinned = scanRawColors([
+      { path: ALLOWLISTED_TERMINAL_FILE, source: "const c = '#f44747';" },
+    ]);
+    expect(evaluateRawColors(pinned, RAW_COLOR_ALLOWLIST, [], 0).violations).toEqual([]);
+
+    const unpinned = scanRawColors([
+      { path: ALLOWLISTED_TERMINAL_FILE, source: "const c = '#123456';" },
+    ]);
+    expect(evaluateRawColors(unpinned, RAW_COLOR_ALLOWLIST, [], 0).violations).toHaveLength(1);
   });
 });
 
