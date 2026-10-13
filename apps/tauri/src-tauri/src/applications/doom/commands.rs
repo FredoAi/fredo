@@ -472,6 +472,9 @@ fn idle_status() -> DoomAutoplayStatus {
         failures: 0,
         consecutive_failures: 0,
         stuck_ticks: 0,
+        plans: 0,
+        replans: 0,
+        plan_index: 0,
         last_tic: None,
         outcome: None,
         episode: None,
@@ -497,6 +500,9 @@ fn running_status(campaign: &DoomCampaign) -> DoomAutoplayStatus {
         failures: 0,
         consecutive_failures: 0,
         stuck_ticks: 0,
+        plans: 0,
+        replans: 0,
+        plan_index: 0,
         last_tic: None,
         outcome: None,
         episode: Some(campaign.episode),
@@ -1265,6 +1271,40 @@ mod tests {
         if std::env::var(decision::DOOM_AGENT_MAX_FAILURES_ENV).is_err() {
             assert_eq!(autoplay_config(None).max_failures, base.max_failures);
         }
+    }
+
+    // ── AC5 completion target wiring (Spec #3039 ST-5) ───────────────────────
+
+    #[test]
+    fn the_start_path_positions_at_the_ac5_target_from_a_target_save_and_e1m1_fresh() {
+        // `start_doom_autoplay` resolves the campaign from the persisted save
+        // (`save::resolve_start_campaign`) then seeds `running_status` from it.
+        // A `feature_doom_save` written at the AC5 target resumes there; an
+        // explicit fresh start (or an absent save) still starts at E1M1.
+        let resumed =
+            save::resolve_start_campaign(Some(false), Some(save::completion_target_campaign()));
+        let status = running_status(&resumed);
+        assert_eq!(status.map, Some(save::DOOM_COMPLETION_TARGET_MAP));
+        assert_eq!(status.episode, Some(save::DOOM_CAMPAIGN_FIRST_EPISODE));
+
+        // The resume path uses the PERSISTED map, never the fresh default — a save
+        // at a different map resumes there.
+        let other = save::DoomCampaign {
+            map: save::DOOM_COMPLETION_TARGET_MAP + 1,
+            ..save::completion_target_campaign()
+        };
+        let resumed_other = running_status(&save::resolve_start_campaign(Some(false), Some(other)));
+        assert_eq!(resumed_other.map, Some(save::DOOM_COMPLETION_TARGET_MAP + 1));
+
+        let fresh = running_status(&save::resolve_start_campaign(
+            Some(true),
+            Some(save::completion_target_campaign()),
+        ));
+        assert_eq!(
+            fresh.map,
+            Some(DOOM_DEFAULT_MAP),
+            "a fresh run still starts at E1M1"
+        );
     }
 
     // ── Close-path teardown (Spec #3007 ST-3) ────────────────────────────────

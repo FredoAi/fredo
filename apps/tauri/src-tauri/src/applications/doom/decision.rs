@@ -4,11 +4,12 @@
 //! [`ScriptedDecisionSource`] implements the SAME
 //! [`DoomDecisionSource`](crate::infrastructure::companion::doom_decision::DoomDecisionSource)
 //! interface the model path uses, reading a JSON script from
-//! [`DOOM_AGENT_SCRIPT_ENV`]. It can emit a valid decision, a malformed decision
-//! (`{"malformed": true}`), or a source error (`{"error": "..."}`), which makes
-//! AC1/3/4/5 verifiable WITHOUT a live model (G-172).
+//! [`DOOM_AGENT_SCRIPT_ENV`]. It can emit a valid plan (or a legacy
+//! `{tics, actions}` decision), a malformed decision (`{"malformed": true}`), or a
+//! source error (`{"error": "..."}`), which makes AC1/3/4/5 verifiable WITHOUT a
+//! live model (G-172).
 //!
-//! A valid entry's `tics` is deliberately returned **unvalidated**, so an
+//! A valid legacy entry's `tics` is deliberately returned **unvalidated**, so an
 //! out-of-range value exercises the loop's own validation path (ST-3).
 //!
 //! This module also owns the `FREDO_DOOM_AGENT_*` env seam for the slice: every
@@ -23,12 +24,13 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::infrastructure::companion::doom_decision::{
-    DoomDecision, DoomDecisionError, DoomDecisionSource,
+    parse_doom_plan, DoomDecisionError, DoomDecisionSource, DoomPlan, DoomPlanStep,
 };
 
 // ── Env seams (inert when unset) ─────────────────────────────────────────────
 
-/// Selects the active decision source: `"model"` (default) or `"scripted"`.
+/// Selects the active decision source: `"model"` (default), `"scripted"`, or
+/// `"local"` (the deterministic, model-independent map-derived route source).
 pub const DOOM_AGENT_DECISION_SOURCE_ENV: &str = "FREDO_DOOM_AGENT_DECISION_SOURCE";
 /// Path to the scripted decision JSON ([`ScriptedDecisionSource`]).
 pub const DOOM_AGENT_SCRIPT_ENV: &str = "FREDO_DOOM_AGENT_SCRIPT";
@@ -55,14 +57,19 @@ pub const SCRIPT_ENTRY_STALL: &str = "stall";
 pub const DOOM_AGENT_SOURCE_MODEL: &str = "model";
 /// The scripted decision-source selector value.
 pub const DOOM_AGENT_SOURCE_SCRIPTED: &str = "scripted";
+/// The local, map-derived decision-source selector value (Spec #3039 ST-7).
+pub const DOOM_AGENT_SOURCE_LOCAL: &str = "local";
 
 /// Parse the decision-source selector from a raw value. An unrecognized or blank
 /// value resolves to `"model"` — the production default — so the seam is inert
-/// unless it explicitly selects `"scripted"`.
+/// unless it explicitly selects `"scripted"` or `"local"`.
 pub fn decision_source_from_value(raw: Option<&str>) -> String {
     match raw.map(str::trim) {
         Some(value) if value.eq_ignore_ascii_case(DOOM_AGENT_SOURCE_SCRIPTED) => {
             DOOM_AGENT_SOURCE_SCRIPTED.to_string()
+        }
+        Some(value) if value.eq_ignore_ascii_case(DOOM_AGENT_SOURCE_LOCAL) => {
+            DOOM_AGENT_SOURCE_LOCAL.to_string()
         }
         _ => DOOM_AGENT_SOURCE_MODEL.to_string(),
     }
@@ -125,6 +132,7 @@ pub fn log_dir_from_env() -> Option<PathBuf> {
 /// ```json
 /// {
 ///   "decisions": [
+///     { "steps": [{ "op": "move", "bearing": 90, "distance": 256 }] },
 ///     { "tics": 1, "actions": [{ "type": "turn-to", "angle": 90 }] },
 ///     { "malformed": true },
 ///     { "error": "model unavailable" },
@@ -135,12 +143,14 @@ pub fn log_dir_from_env() -> Option<PathBuf> {
 /// }
 /// ```
 ///
-/// Each call consumes the next entry: a valid `{tics, actions}` object yields a
-/// decision (its `tics` is NOT range-checked here — the loop validates it), a
-/// `{"malformed": true}` entry yields [`DoomDecisionError::Malformed`], and an
-/// `{"error": "..."}` entry yields [`DoomDecisionError::ModelUnavailable`]. With
-/// `repeat: true` the script wraps after the last entry; otherwise it fails
-/// closed with [`DoomDecisionError::Malformed`] once exhausted.
+/// Each call consumes the next entry: a plan object `{"steps": [...]}` yields a
+/// [`DoomPlan`] (Spec #3039 ST-3), and a legacy `{tics, actions}` object yields a
+/// single [`DoomPlanStep::Hold`] (its `tics` is NOT range-checked here — the loop
+/// validates it). A `{"malformed": true}` entry yields
+/// [`DoomDecisionError::Malformed`], and an `{"error": "..."}` entry yields
+/// [`DoomDecisionError::ModelUnavailable`]. With `repeat: true` the script wraps
+/// after the last entry; otherwise it fails closed with
+/// [`DoomDecisionError::Malformed`] once exhausted.
 ///
 /// Two induction entries (Spec #3026 ST-7) let a test drive the "decision in
 /// flight" and "model unavailable" legs without a live model:
@@ -263,10 +273,13 @@ fn entry_delay_ms(entry: &Value) -> Result<Option<u64>, DoomDecisionError> {
 ///
 /// `{"error": "..."}` → [`DoomDecisionError::ModelUnavailable`];
 /// `{"malformed": true}` → [`DoomDecisionError::Malformed`]; a delay-only entry
-/// → a neutral one-tick hold; otherwise a `{tics, actions}` decision. The `tics`
-/// range is NOT checked here — the loop validates it, so an out-of-range value
-/// exercises that path.
-fn parse_script_entry(entry: &Value) -> Result<DoomDecision, DoomDecisionError> {
+/// → a neutral one-tick hold; otherwise the entry is parsed as a plan
+/// (`{"steps": [...]}`) OR a legacy `{tics, actions}` decision (→ a single
+/// [`DoomPlanStep::Hold`]) via the shared
+/// [`parse_doom_plan`](crate::infrastructure::companion::doom_decision::parse_doom_plan).
+/// A legacy `tics` is NOT range-checked here — the loop validates it, so an
+/// out-of-range value exercises that path.
+fn parse_script_entry(entry: &Value) -> Result<DoomPlan, DoomDecisionError> {
     let object = entry.as_object().ok_or_else(|| {
         DoomDecisionError::Malformed("script entry is not a JSON object".to_string())
     })?;
@@ -288,42 +301,34 @@ fn parse_script_entry(entry: &Value) -> Result<DoomDecision, DoomDecisionError> 
 
     // A `{"delayMs": N}`-only entry has no decision payload: answer a neutral
     // one-tick hold, so the entry is self-contained (the DELAY is the
-    // observable). An entry that ALSO carries `tics`/`actions` falls through and
-    // is interpreted as that decision.
+    // observable). An entry that ALSO carries `tics`/`actions`/`steps` falls
+    // through and is interpreted as that plan.
     if object.contains_key(SCRIPT_ENTRY_DELAY_MS)
         && !object.contains_key("tics")
         && !object.contains_key("actions")
+        && !object.contains_key("steps")
     {
-        return Ok(DoomDecision {
-            tics: 1,
-            actions: Vec::new(),
+        return Ok(DoomPlan {
+            steps: vec![DoomPlanStep::Hold {
+                tics: 1,
+                actions: Vec::new(),
+            }],
         });
     }
 
-    let tics = object.get("tics").and_then(Value::as_i64).ok_or_else(|| {
-        DoomDecisionError::Malformed("decision entry is missing an integer `tics`".to_string())
-    })?;
-    let actions = object
-        .get("actions")
-        .and_then(Value::as_array)
-        .cloned()
-        .ok_or_else(|| {
-            DoomDecisionError::Malformed("decision entry is missing an `actions` array".to_string())
-        })?;
-
-    Ok(DoomDecision { tics, actions })
+    parse_doom_plan(entry)
 }
 
 #[async_trait]
 impl DoomDecisionSource for ScriptedDecisionSource {
-    async fn decide(&self, _observation: &Value) -> Result<DoomDecision, DoomDecisionError> {
+    async fn decide(&self, _observation: &Value) -> Result<DoomPlan, DoomDecisionError> {
         let entry = self.next_entry()?;
 
         // `{"stall": true}` — never answers (the REQ-4 "model unavailable" leg):
         // the returned future stays pending, so the consumer's per-decision
         // timeout (or its own clock) is what eventually fires.
         if entry_is_stall(&entry) {
-            return std::future::pending::<Result<DoomDecision, DoomDecisionError>>().await;
+            return std::future::pending::<Result<DoomPlan, DoomDecisionError>>().await;
         }
 
         // `{"delayMs": N}` — await N ms before answering (the REQ-1 "decision in
@@ -352,16 +357,52 @@ mod tests {
             vec![json!({ "tics": 1, "actions": [{ "type": "turn-to", "angle": 90 }] })],
             false,
         );
-        let decision = scripted.decide(&json!({})).await.expect("valid entry");
-        assert_eq!(decision.tics, 1);
-        assert_eq!(decision.actions, vec![json!({ "type": "turn-to", "angle": 90 })]);
+        let plan = scripted.decide(&json!({})).await.expect("valid entry");
+        assert_eq!(
+            plan,
+            DoomPlan {
+                steps: vec![DoomPlanStep::Hold {
+                    tics: 1,
+                    actions: vec![json!({ "type": "turn-to", "angle": 90 })],
+                }],
+            }
+        );
+    }
+
+    /// **ST-3.** The scripted lever accepts a plan entry (`{"steps": [...]}`) and
+    /// yields the parsed [`DoomPlan`] — the same shared parser the model path uses.
+    #[tokio::test]
+    async fn a_plan_entry_yields_a_plan() {
+        let scripted = source(
+            vec![json!({
+                "steps": [
+                    { "op": "move", "bearing": 90, "distance": 256 },
+                    { "op": "open-door", "bearing": 270 },
+                ]
+            })],
+            false,
+        );
+        let plan = scripted.decide(&json!({})).await.expect("valid plan entry");
+        assert_eq!(
+            plan,
+            DoomPlan {
+                steps: vec![
+                    DoomPlanStep::Move {
+                        bearing: 90,
+                        distance: 256,
+                    },
+                    DoomPlanStep::OpenDoor { bearing: 270 },
+                ],
+            }
+        );
     }
 
     #[tokio::test]
     async fn out_of_range_tics_pass_through_unvalidated() {
         // The loop (ST-3) owns range validation; the lever must NOT hide it.
         let scripted = source(vec![json!({ "tics": 9999, "actions": [] })], false);
-        let decision = scripted.decide(&json!({})).await.expect("valid entry");
+        let plan = scripted.decide(&json!({})).await.expect("valid entry");
+        let decision = plan.as_single_hold();
         assert_eq!(decision.tics, 9999);
         assert!(decision.actions.is_empty());
     }
@@ -404,9 +445,9 @@ mod tests {
             ],
             true,
         );
-        assert_eq!(scripted.decide(&json!({})).await.expect("first").tics, 1);
-        assert_eq!(scripted.decide(&json!({})).await.expect("second").tics, 2);
-        assert_eq!(scripted.decide(&json!({})).await.expect("wrapped").tics, 1);
+        assert_eq!(scripted.decide(&json!({})).await.expect("first").as_single_hold().tics, 1);
+        assert_eq!(scripted.decide(&json!({})).await.expect("second").as_single_hold().tics, 2);
+        assert_eq!(scripted.decide(&json!({})).await.expect("wrapped").as_single_hold().tics, 1);
     }
 
     #[tokio::test]
@@ -472,7 +513,7 @@ mod tests {
     async fn a_delay_only_entry_awaits_then_answers_a_hold() {
         let scripted = source(vec![json!({ "delayMs": 30 })], false);
         let start = std::time::Instant::now();
-        let decision = scripted
+        let plan = scripted
             .decide(&json!({}))
             .await
             .expect("the delay entry answers a hold");
@@ -480,6 +521,7 @@ mod tests {
             start.elapsed() >= Duration::from_millis(30),
             "the delay entry must have awaited its delay before answering"
         );
+        let decision = plan.as_single_hold();
         assert_eq!(decision.tics, 1);
         assert!(decision.actions.is_empty());
     }
@@ -492,7 +534,8 @@ mod tests {
             vec![json!({ "delayMs": 1, "tics": 7, "actions": [{ "type": "shoot" }] })],
             false,
         );
-        let decision = scripted.decide(&json!({})).await.expect("delayed decision");
+        let plan = scripted.decide(&json!({})).await.expect("delayed decision");
+        let decision = plan.as_single_hold();
         assert_eq!(decision.tics, 7);
         assert_eq!(decision.actions, vec![json!({ "type": "shoot" })]);
     }
@@ -510,7 +553,15 @@ mod tests {
     async fn the_source_is_object_safe() {
         let source: Arc<dyn DoomDecisionSource> =
             Arc::new(source(vec![json!({ "tics": 1, "actions": [] })], true));
-        assert_eq!(source.decide(&json!({})).await.expect("decision").tics, 1);
+        assert_eq!(
+            source
+                .decide(&json!({}))
+                .await
+                .expect("decision")
+                .as_single_hold()
+                .tics,
+            1
+        );
     }
 
     #[test]
@@ -575,6 +626,14 @@ mod tests {
             decision_source_from_value(Some(" SCRIPTED ")),
             DOOM_AGENT_SOURCE_SCRIPTED
         );
+        assert_eq!(
+            decision_source_from_value(Some("local")),
+            DOOM_AGENT_SOURCE_LOCAL
+        );
+        assert_eq!(
+            decision_source_from_value(Some(" LOCAL ")),
+            DOOM_AGENT_SOURCE_LOCAL
+        );
 
         assert_eq!(parse_u32(None), None);
         assert_eq!(parse_u32(Some("")), None);
@@ -603,5 +662,10 @@ mod tests {
         // ST-7 induction-entry keys (G-255 binding names).
         assert_eq!(SCRIPT_ENTRY_DELAY_MS, "delayMs");
         assert_eq!(SCRIPT_ENTRY_STALL, "stall");
+
+        // The decision-source selector values (ST-7 adds `local`).
+        assert_eq!(DOOM_AGENT_SOURCE_MODEL, "model");
+        assert_eq!(DOOM_AGENT_SOURCE_SCRIPTED, "scripted");
+        assert_eq!(DOOM_AGENT_SOURCE_LOCAL, "local");
     }
 }

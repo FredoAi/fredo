@@ -18,6 +18,9 @@
 //!   result wire models, bounded budget constants).
 //! * [`decision`] — the deterministic scripted decision lever plus the
 //!   `FREDO_DOOM_AGENT_*` env seam.
+//! * [`local_route`] — the deterministic, model-independent local route source
+//!   (Spec #3039 ST-7): a [`DoomDecisionSource`](crate::infrastructure::companion::doom_decision::DoomDecisionSource)
+//!   that plans a route to the nearest non-secret exit from the loaded `MapData`.
 //! * [`agent`] — the bounded read → decide → validate → step autoplay loop, the
 //!   terminal-state restart reaction, and the consecutive-failure budget.
 //! * [`mode`] — the Doom Mode lifecycle (activation, the singleton window, the
@@ -25,6 +28,14 @@
 //! * [`perception`] — the bounded observation geometry contract (the `walls`
 //!   field), the pure projection, and the semantic/depth → `PerceptionFrame`
 //!   bridge (Spec #3030 S1).
+//! * [`navigation`] — the deterministic level-walkability model (Spec #3039
+//!   ST-1): a coarse passability/clearance graph over the loaded `MapData` (a
+//!   two-sided linedef is a portal; an opened door is a passable edge) and the
+//!   executed E1M1–E1M8 feasibility scan that selects AC5's completion target.
+//! * [`plan`] — the deterministic plan executor + re-plan + first-class doors
+//!   (Spec #3039 ST-4): runs an adopted plan one step per engine tick, waits at a
+//!   door for `state == "waiting"` (bounded), and requests a re-plan on the five
+//!   divergence triggers.
 //! * [`save`] — the persisted resume contract (`DoomSave` / `DoomSaveStatus` /
 //!   `DoomCampaign`) in the typed PostgreSQL feature table `feature_doom_save`,
 //!   with the test-only `FREDO_DOOM_SAVE_STATE_DIR` / `FREDO_DOOM_SAVE_FORCE_FAIL`
@@ -52,8 +63,18 @@ pub mod decision;
 // observation/control surface.
 pub mod engine;
 pub mod failure_seam;
+// Deterministic, model-independent local route source (Spec #3039 ST-7) — the
+// `local` decision source: plans a route to the nearest non-secret exit from
+// the loaded `MapData`, so AC5 completion needs no model.
+pub mod local_route;
 pub mod mode;
+// Deterministic level-walkability model (Spec #3039 ST-1) — the AC5 feasibility
+// gate: a coarse passability/clearance graph over the loaded `MapData` plus the
+// executed E1M1-E1M8 scan that selects the completion target.
+pub mod navigation;
 pub mod perception;
+// Deterministic plan executor + re-plan + first-class doors (Spec #3039 ST-4).
+pub mod plan;
 pub mod progress;
 pub mod save;
 pub mod state;

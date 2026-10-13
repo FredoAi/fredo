@@ -516,6 +516,11 @@ pub struct DoomDriverConfig {
     pub max_steps: u32,
     /// Maximum consecutive unusable decisions before the run stops.
     pub max_failures: u32,
+    /// Test-only (Spec #3039 ST-8): when `true`, the driven run terminates
+    /// STABLY at the FIRST non-final level exit (the AC5 completion surface)
+    /// instead of advancing the campaign. Defaults to `false` (inert), so the
+    /// shipped advance path is byte-identical.
+    pub stop_at_first_exit: bool,
 }
 
 impl Default for DoomDriverConfig {
@@ -525,6 +530,7 @@ impl Default for DoomDriverConfig {
             skill: super::save::DOOM_DEFAULT_SKILL,
             max_steps: DOOM_AUTOPLAY_MAX_STEPS,
             max_failures: DOOM_AUTOPLAY_MAX_FAILURES,
+            stop_at_first_exit: false,
         }
     }
 }
@@ -653,6 +659,7 @@ pub async fn run_bounded_driver(
         max_failures: config.max_failures,
         tick_period: Duration::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS),
         degraded_tick_period: Duration::from_millis(DOOM_DEGRADED_TICK_PERIOD_MS),
+        stop_on_level_exit: config.stop_at_first_exit,
         ..DoomAutoplayConfig::default()
     };
 
@@ -1030,16 +1037,46 @@ pub fn forced_exit_at(force_exit: bool, tick: u64) -> bool {
     force_exit && tick >= u64::from(DOOM_FORCE_EXIT_AFTER_TICS)
 }
 
+/// The `FREDO_DOOM_INJECT_OBSERVATION` AC3 induction lever (Spec #3039 ST-2).
+/// When set to a JSON object, [`observation`] top-level-merges that object into
+/// the observation before the executor/model sees it — so the tester can drive a
+/// `front` enemy, a `closing` door, or any re-plan trigger live against the real
+/// engine. Inert when unset (production is byte-identical); mirrors
+/// [`DOOM_FORCE_EXIT_ENV`] / [`super::perception::DOOM_FAIL_PERCEPTION_ENV`].
+pub const DOOM_INJECT_OBSERVATION_ENV: &str = "FREDO_DOOM_INJECT_OBSERVATION";
+
+/// The `FREDO_DOOM_INJECT_OBSERVATION` lever: the JSON object to merge, or `None`
+/// when unset, blank, or not a JSON object (inert / never fatal).
+pub fn injected_observation() -> Option<Value> {
+    inject_observation_from(std::env::var(DOOM_INJECT_OBSERVATION_ENV).ok().as_deref())
+}
+
+/// Pure parser for the AC3 inject lever (unit-testable without env mutation).
+/// Returns the object only when the value parses to a JSON object; anything else
+/// (unset, blank, a bare scalar/array, malformed JSON) is inert.
+pub fn inject_observation_from(value: Option<&str>) -> Option<Value> {
+    let text = value?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    match serde_json::from_str::<Value>(text) {
+        Ok(object @ Value::Object(_)) => Some(object),
+        _ => None,
+    }
+}
+
 /// Build the parity observation for a session (see the module docs). The
-/// [`DOOM_FORCE_EXIT_ENV`] lever is read here (inert when unset).
+/// [`DOOM_FORCE_EXIT_ENV`] and [`DOOM_INJECT_OBSERVATION_ENV`] levers are read
+/// here (inert when unset).
 fn observation(session: &DoomSession) -> Value {
-    observation_with(session, force_exit_requested())
+    observation_with(session, force_exit_requested(), injected_observation().as_ref())
 }
 
 /// Deterministic form of [`observation`] (mirrors [`super::perception`]'s
-/// injectable seam): the force-exit lever is an input, so the AC4 terminal
-/// branch is unit-testable without mutating process-global env (G-222).
-fn observation_with(session: &DoomSession, force_exit: bool) -> Value {
+/// injectable seam): the force-exit and inject levers are inputs, so the AC4
+/// terminal branch and the AC3 induction seam are unit-testable without mutating
+/// process-global env (G-222).
+fn observation_with(session: &DoomSession, force_exit: bool, inject: Option<&Value>) -> Value {
     let engine = &session.engine;
     let world = engine.world();
     let map = engine.map();
@@ -1081,7 +1118,15 @@ fn observation_with(session: &DoomSession, force_exit: bool) -> Value {
         .map(|e| e.z + e.height - (e.height >> 2))
         .unwrap_or(0);
 
-    json!({
+    // The additive `forward` sensor (AC1): per-ray distance+class + bounded
+    // openings + door bearings + exit bearing, over the same semantic/depth
+    // bridge as `walls`. The engine supplies the LOS-gated enemy bearings, the
+    // door bearings, and the exit bearing; the projection itself is pure.
+    let enemy_bearings = enemy_bearings(world, map, px, py, eye_z, angle, player_id);
+    let door_bearings = door_bearings(world, map, px, py, angle);
+    let exit_bearing = exit_bearing(map, px, py);
+
+    let mut observation = json!({
         "tic": tick,
         "done": done,
         "outcome": outcome,
@@ -1112,11 +1157,45 @@ fn observation_with(session: &DoomSession, force_exit: bool) -> Value {
         "doors": doors(world, map, px, py, angle),
         "exit": exit_observation(map, px, py),
         "walls": perception::walls_observation(perception::perception_frame(engine).as_ref()),
-    })
+        "forward": perception::forward_observation(
+            perception::perception_frame(engine).as_ref(),
+            &enemy_bearings,
+            &door_bearings,
+            exit_bearing,
+        ),
+    });
+
+    // AC3 induction seam (inert unless `FREDO_DOOM_INJECT_OBSERVATION` is set):
+    // top-level-merge the tester's patch so a re-plan trigger is drivable live.
+    if let Some(patch) = inject {
+        merge_observation(&mut observation, patch);
+    }
+    observation
 }
 
-/// The LOS-gated enemy list (direction/distance/hp), bounded.
-fn enemies(
+/// Top-level merge of a tester-injected patch into the observation (the
+/// [`DOOM_INJECT_OBSERVATION_ENV`] AC3 induction seam). Each top-level key of
+/// `patch` replaces the corresponding observation key.
+fn merge_observation(observation: &mut Value, patch: &Value) {
+    if let (Some(target), Some(source)) = (observation.as_object_mut(), patch.as_object()) {
+        for (key, value) in source {
+            target.insert(key.clone(), value.clone());
+        }
+    }
+}
+
+/// One LOS-gated visible enemy (the single extraction rule shared by the
+/// `enemies` observation and the `forward` sensor's enemy bearings).
+struct VisibleEnemy {
+    kind: String,
+    hp: i32,
+    direction: &'static str,
+    distance: i64,
+}
+
+/// The bounded, LOS-gated visible-enemy list — one extraction rule (the
+/// `enemies` observation and the `forward` enemy bearings both consume this).
+fn visible_enemies(
     world: &neurodoom::world::World,
     map: &MapData,
     px: Fixed,
@@ -1124,7 +1203,7 @@ fn enemies(
     eye_z: Fixed,
     angle: Angle,
     player_id: Option<neurodoom::world::EntityId>,
-) -> Vec<Value> {
+) -> Vec<VisibleEnemy> {
     let mut out = Vec::new();
     for entity in world.iter() {
         if Some(entity.id) == player_id
@@ -1139,17 +1218,60 @@ fn enemies(
         ) {
             continue;
         }
-        out.push(json!({
-            "kind": entity_kind(entity),
-            "hp": entity.health,
-            "direction": relative_direction(px, py, angle, entity.x, entity.y),
-            "distance": distance_units(entity.x - px, entity.y - py),
-        }));
+        out.push(VisibleEnemy {
+            kind: entity_kind(entity),
+            hp: entity.health,
+            direction: relative_direction(px, py, angle, entity.x, entity.y),
+            distance: distance_units(entity.x - px, entity.y - py),
+        });
         if out.len() >= OBSERVATION_MAX_ENTRIES {
             break;
         }
     }
     out
+}
+
+/// The LOS-gated enemy list (direction/distance/hp), bounded.
+fn enemies(
+    world: &neurodoom::world::World,
+    map: &MapData,
+    px: Fixed,
+    py: Fixed,
+    eye_z: Fixed,
+    angle: Angle,
+    player_id: Option<neurodoom::world::EntityId>,
+) -> Vec<Value> {
+    visible_enemies(world, map, px, py, eye_z, angle, player_id)
+        .into_iter()
+        .map(|enemy| {
+            json!({
+                "kind": enemy.kind,
+                "hp": enemy.hp,
+                "direction": enemy.direction,
+                "distance": enemy.distance,
+            })
+        })
+        .collect()
+}
+
+/// The LOS-gated enemy bearings for the `forward` sensor (same rule as
+/// [`enemies`], reduced to the sensor's direction/distance pair).
+fn enemy_bearings(
+    world: &neurodoom::world::World,
+    map: &MapData,
+    px: Fixed,
+    py: Fixed,
+    eye_z: Fixed,
+    angle: Angle,
+    player_id: Option<neurodoom::world::EntityId>,
+) -> Vec<perception::EnemyBearing> {
+    visible_enemies(world, map, px, py, eye_z, angle, player_id)
+        .into_iter()
+        .map(|enemy| perception::EnemyBearing {
+            direction: enemy.direction,
+            distance: enemy.distance,
+        })
+        .collect()
 }
 
 /// The nearby pickups list (direction/distance), bounded.
@@ -1203,10 +1325,9 @@ fn doors(world: &neurodoom::world::World, map: &MapData, px: Fixed, py: Fixed, a
     out
 }
 
-/// The optional exit-distance observation: the nearest exit-line vertex in
-/// integer map units, or an empty object when no exit line is reachable.
-fn exit_observation(map: &MapData, px: Fixed, py: Fixed) -> Value {
-    let mut best: Option<i64> = None;
+/// The nearest exit-line vertex as `(distance_units, x, y)`, or `None`.
+fn nearest_exit_vertex(map: &MapData, px: Fixed, py: Fixed) -> Option<(i64, Fixed, Fixed)> {
+    let mut best: Option<(i64, Fixed, Fixed)> = None;
     for line in &map.lines {
         if !is_exit_line(line.special) {
             continue;
@@ -1216,25 +1337,39 @@ fn exit_observation(map: &MapData, px: Fixed, py: Fixed) -> Value {
                 continue;
             };
             let distance = distance_units(vertex.x - px, vertex.y - py);
-            if best.is_none_or(|previous| distance < previous) {
-                best = Some(distance);
+            if best.is_none_or(|(previous, _, _)| distance < previous) {
+                best = Some((distance, vertex.x, vertex.y));
             }
         }
     }
-    match best {
-        Some(distance) => json!({ "distance": distance }),
+    best
+}
+
+/// The optional exit-distance observation: the nearest exit-line vertex in
+/// integer map units, or an empty object when no exit line is reachable.
+fn exit_observation(map: &MapData, px: Fixed, py: Fixed) -> Value {
+    match nearest_exit_vertex(map, px, py) {
+        Some((distance, _, _)) => json!({ "distance": distance }),
         None => json!({}),
     }
 }
 
-/// The nearest door-sector vertex, as `(distance_in_units, direction)`.
-fn door_distance_and_direction(
+/// The nearest exit line as the `forward` sensor's `exitBearing` input
+/// (absolute bearing `0..=359` + distance), or `None` when no exit is reachable.
+fn exit_bearing(map: &MapData, px: Fixed, py: Fixed) -> Option<perception::ExitBearing> {
+    nearest_exit_vertex(map, px, py).map(|(distance, vx, vy)| perception::ExitBearing {
+        bearing: angle_to_degrees(point_to_angle(vx - px, vy - py)),
+        distance,
+    })
+}
+
+/// The nearest door-sector vertex as `(distance_units, x, y)`, or `None`.
+fn nearest_door_vertex(
     map: &MapData,
     sector: SectorId,
     px: Fixed,
     py: Fixed,
-    angle: Angle,
-) -> (i64, &'static str) {
+) -> Option<(i64, Fixed, Fixed)> {
     let mut best: Option<(i64, Fixed, Fixed)> = None;
     for line in &map.lines {
         if line.front_sector != sector && line.back_sector != Some(sector) {
@@ -1250,10 +1385,67 @@ fn door_distance_and_direction(
             }
         }
     }
-    match best {
+    best
+}
+
+/// The nearest door-sector vertex, as `(distance_in_units, direction)`.
+fn door_distance_and_direction(
+    map: &MapData,
+    sector: SectorId,
+    px: Fixed,
+    py: Fixed,
+    angle: Angle,
+) -> (i64, &'static str) {
+    match nearest_door_vertex(map, sector, px, py) {
         Some((distance, vx, vy)) => (distance, relative_direction(px, py, angle, vx, vy)),
         None => (0, "front"),
     }
+}
+
+/// The nearest door-sector vertex, as `(distance_in_units, relative_bearing)`.
+fn door_distance_and_bearing(
+    map: &MapData,
+    sector: SectorId,
+    px: Fixed,
+    py: Fixed,
+    angle: Angle,
+) -> (i64, i64) {
+    match nearest_door_vertex(map, sector, px, py) {
+        Some((distance, vx, vy)) => (distance, relative_bearing_degrees(px, py, angle, vx, vy)),
+        None => (0, 0),
+    }
+}
+
+/// The engine's doors as the `forward` sensor's `doorBearings` input (state +
+/// relative bearing + distance), bounded.
+fn door_bearings(
+    world: &neurodoom::world::World,
+    map: &MapData,
+    px: Fixed,
+    py: Fixed,
+    angle: Angle,
+) -> Vec<perception::DoorBearing> {
+    let mut out = Vec::new();
+    for thinker in &world.specials {
+        let SpecialThinker::Door(door) = thinker else {
+            continue;
+        };
+        let state = match door.direction {
+            DoorDirection::Opening => "opening",
+            DoorDirection::Waiting => "waiting",
+            DoorDirection::Closing => "closing",
+        };
+        let (distance, bearing) = door_distance_and_bearing(map, door.sector, px, py, angle);
+        out.push(perception::DoorBearing {
+            bearing,
+            distance,
+            state,
+        });
+        if out.len() >= perception::DOOM_SENSOR_MAX_DOORS {
+            break;
+        }
+    }
+    out
 }
 
 // ── Pure observation helpers ──────────────────────────────────────────────────
@@ -1292,6 +1484,22 @@ fn relative_direction(px: Fixed, py: Fixed, angle: Angle, tx: Fixed, ty: Fixed) 
         "back"
     } else {
         "right"
+    }
+}
+
+/// A target's bearing relative to the player's facing, in degrees normalized to
+/// `-180..=180` (the `forward.doorBearings` vocabulary).
+fn relative_bearing_degrees(px: Fixed, py: Fixed, angle: Angle, tx: Fixed, ty: Fixed) -> i64 {
+    if tx == px && ty == py {
+        return 0;
+    }
+    let to_target = point_to_angle(tx - px, ty - py);
+    let relative = to_target.wrapping_sub(angle);
+    let degrees = ((u64::from(relative) * 360) >> 32) as i64; // 0..=359
+    if degrees > 180 {
+        degrees - 360
+    } else {
+        degrees
     }
 }
 
@@ -1864,6 +2072,7 @@ mod tests {
                 skill: 3,
                 max_steps: 8,
                 max_failures: 3,
+                stop_at_first_exit: false,
             },
             &clock,
         )
@@ -1919,6 +2128,7 @@ mod tests {
                 // One budget tick is the resume positioning; the rest are engine ticks.
                 max_steps: window_ticks + 1,
                 max_failures: 3,
+                stop_at_first_exit: false,
             },
             &clock,
         )
@@ -1965,6 +2175,7 @@ mod tests {
                     skill: 3,
                     max_steps: 40,
                     max_failures: 3,
+                    stop_at_first_exit: false,
                 },
                 &clock,
             )
@@ -1996,6 +2207,7 @@ mod tests {
                     skill: 3,
                     max_steps: steps,
                     max_failures: 3,
+                    stop_at_first_exit: false,
                 },
                 &clock,
             )
@@ -2025,6 +2237,7 @@ mod tests {
                 skill: 3,
                 max_steps: 4,
                 max_failures: 3,
+                stop_at_first_exit: false,
             },
             &clock,
         )
@@ -2048,6 +2261,7 @@ mod tests {
                 skill: 3,
                 max_steps: 600,
                 max_failures: 3,
+                stop_at_first_exit: false,
             },
             &clock,
         )
@@ -2139,6 +2353,7 @@ mod tests {
                     skill: 3,
                     max_steps: 24,
                     max_failures: 3,
+                    stop_at_first_exit: false,
                 },
                 &clock,
             )
@@ -2168,6 +2383,124 @@ mod tests {
         assert_eq!((first.last_x, first.last_y), (second.last_x, second.last_y));
         assert_eq!(first.terminal, second.terminal);
         assert!(first.ticks > 0, "the step-driven run advanced");
+    }
+
+    // ── Spec #3039 ST-8: committed deterministic target-level completion (AC5) ──
+
+    /// **ST-8 (AC5, F-5a).** The committed, model-independent, deterministic
+    /// completion leg: [`run_bounded_driver`] + [`FixedTickClock`] at
+    /// [`DOOM_COMPLETION_TARGET_MAP`] (E1M1), `stop_at_first_exit: true`, driven by
+    /// the [`LocalRouteSource`] reaches the target level's exit
+    /// (`terminal == Some("exited")`), and the SAME run reproduces the report
+    /// field-for-field (G-316). If it under-completes, the failing observation
+    /// trace is printed so a re-scope can be judged from data — the assertion is
+    /// never loosened.
+    #[tokio::test]
+    async fn st8_local_route_completes_the_target_level_deterministically() {
+        use crate::applications::doom::local_route::LocalRouteSource;
+        use crate::applications::doom::save::{
+            DOOM_COMPLETION_STEP_BUDGET, DOOM_COMPLETION_TARGET_MAP, DOOM_DEFAULT_SKILL,
+        };
+
+        async fn run() -> DoomDriverReport {
+            let state = DoomEngineState::default();
+            let source = LocalRouteSource::new();
+            let clock = driver_clock();
+            run_bounded_driver(
+                &state,
+                &source,
+                DoomDriverConfig {
+                    map: DOOM_COMPLETION_TARGET_MAP,
+                    skill: DOOM_DEFAULT_SKILL,
+                    max_steps: DOOM_COMPLETION_STEP_BUDGET,
+                    max_failures: 3,
+                    stop_at_first_exit: true,
+                },
+                &clock,
+            )
+            .await
+            .expect("the local-route driven run")
+        }
+
+        let first = run().await;
+        let second = run().await;
+
+        if first.terminal != Some("exited") {
+            print_completion_failure_trace(&first);
+        }
+
+        assert_eq!(
+            first.terminal,
+            Some("exited"),
+            "the local route must reach the target level's exit: {first:?}"
+        );
+        assert_eq!(first.map, DOOM_COMPLETION_TARGET_MAP);
+        assert!(
+            first.steps > 64 && first.steps <= DOOM_COMPLETION_STEP_BUDGET,
+            "the completion leg must fit the committed budget: {first:?}"
+        );
+        assert_eq!(
+            first, second,
+            "the local route + FixedTickClock must be field-for-field deterministic (G-316)"
+        );
+    }
+
+    /// Print the failing observation trace for the ST-8 completion leg: the run
+    /// report, a fresh target-map observation (`map` / `player` / `tic` /
+    /// `terminal` inputs), and the emitted route from the spawn. Deterministic,
+    /// read-only — it exists so a re-scope is judged from data, never a guess.
+    fn print_completion_failure_trace(report: &DoomDriverReport) {
+        use crate::applications::doom::navigation::{route_waypoints, spawn_point};
+        use crate::applications::doom::save::DOOM_COMPLETION_TARGET_MAP;
+        use neurodoom::engine::ClassicEngine;
+
+        let level = DOOM_COMPLETION_TARGET_MAP;
+        let name = format!("E1M{level}");
+
+        println!("ST-8 FAILURE TRACE:");
+        println!("  report = {report:?}");
+
+        let wad = match load_wad() {
+            Ok(wad) => wad,
+            Err(error) => {
+                println!("  cannot load the WAD: {error}");
+                return;
+            }
+        };
+        let engine = match ClassicEngine::new(&wad, &name) {
+            Ok(engine) => engine,
+            Err(error) => {
+                println!("  cannot build {name}: {error}");
+                return;
+            }
+        };
+        let map = engine.map();
+        match spawn_point(map) {
+            Some((sx, sy)) => {
+                let from = (i64::from(sx), i64::from(sy));
+                println!("  {name} spawn = {from:?}");
+                println!("  emitted route = {:?}", route_waypoints(map, from));
+            }
+            None => println!("  {name} has no player-1 start"),
+        }
+
+        let state = DoomEngineState::default();
+        match state.launch(level, crate::applications::doom::save::DOOM_DEFAULT_SKILL) {
+            Ok(info) => {
+                println!("  launch = {info:?}");
+                if let Ok(observation) = state.read_state() {
+                    println!(
+                        "  observation: map={:?} player={:?} tic={:?} outcome={:?}",
+                        observation.pointer("/level/map"),
+                        observation.get("player"),
+                        observation.get("tic"),
+                        observation.get("outcome"),
+                    );
+                    println!("  exitBearing = {:?}", observation.pointer("/forward/exitBearing"));
+                }
+            }
+            Err(error) => println!("  launch failed: {error}"),
+        }
     }
 
     // ── Spec #3023 ST-9: teardown (G-263 / REQ-5.3) ──────────────────────────
@@ -2237,6 +2570,7 @@ mod tests {
                 skill: 3,
                 max_steps: 2,
                 max_failures: 3,
+                stop_at_first_exit: false,
             },
             &clock,
         )
@@ -2298,12 +2632,12 @@ mod tests {
         let session = guard.as_ref().expect("live session");
 
         // Lever OFF (production): the real observation is unchanged.
-        let inert = observation_with(session, false);
+        let inert = observation_with(session, false, None);
         assert_eq!(inert["done"], false);
         assert_eq!(inert["outcome"], "alive");
 
         // Lever ON: the observation reports the terminal exit.
-        let forced = observation_with(session, true);
+        let forced = observation_with(session, true, None);
         assert_eq!(forced["done"], true);
         assert_eq!(forced["outcome"], "exited");
         // Additive only: every other field is byte-identical to the inert read.
@@ -2311,5 +2645,148 @@ mod tests {
         assert_eq!(forced["level"], inert["level"]);
         assert_eq!(forced["player"], inert["player"]);
         assert_eq!(forced["exit"], inert["exit"]);
+    }
+
+    // ── Spec #3039 ST-2: the additive `forward` sensor + AC3 inject seam ─────
+
+    #[test]
+    fn inject_observation_lever_names_and_parser_are_pinned() {
+        assert_eq!(DOOM_INJECT_OBSERVATION_ENV, "FREDO_DOOM_INJECT_OBSERVATION");
+        // A JSON object is accepted (trimmed); everything else is inert.
+        let object = inject_observation_from(Some("  {\"a\":1}  ")).expect("object");
+        assert_eq!(object["a"], 1);
+        assert!(inject_observation_from(Some("")).is_none());
+        assert!(inject_observation_from(Some("   ")).is_none());
+        assert!(inject_observation_from(Some("[1,2]")).is_none());
+        assert!(inject_observation_from(Some("42")).is_none());
+        assert!(inject_observation_from(Some("not json")).is_none());
+        assert!(inject_observation_from(None).is_none());
+    }
+
+    /// **AC1.** The observation always carries the additive `forward` sibling
+    /// with its four keys, and after a step the ray geometry is bounded + typed.
+    #[test]
+    fn observation_carries_the_additive_forward_sensor() {
+        use crate::applications::doom::perception::{
+            DOOM_SENSOR_MAX_DOORS, DOOM_SENSOR_MAX_OPENINGS, DOOM_SENSOR_MAX_RAYS,
+        };
+
+        let state = DoomEngineState::default();
+        state.launch(1, 3).expect("launch");
+
+        // `forward` is always present with the four keys — never absent/null.
+        let first = state.read_state().expect("read_state");
+        let forward = &first["forward"];
+        assert!(forward.is_object(), "forward is always present");
+        assert!(forward["rays"].is_array(), "rays is an array");
+        assert!(forward["openings"].is_array(), "openings is an array");
+        assert!(forward["doorBearings"].is_array(), "doorBearings is an array");
+        assert!(forward.get("exitBearing").is_some(), "exitBearing present");
+
+        // After a step the buffers are rendered → bounded, typed geometry.
+        let stepped = state
+            .step(1, &json!([{ "type": "forward" }]))
+            .expect("step");
+        let forward = &stepped["forward"];
+        let rays = forward["rays"].as_array().expect("rays");
+        assert!(rays.len() <= DOOM_SENSOR_MAX_RAYS);
+        for ray in rays {
+            assert!(ray["index"].as_i64().is_some(), "integer index");
+            let direction = ray["direction"].as_str().expect("direction string");
+            assert!(matches!(direction, "left" | "front" | "right"));
+            let class = ray["class"].as_str().expect("class string");
+            assert!(matches!(
+                class,
+                "wall" | "door" | "enemy" | "floor" | "unknown"
+            ));
+            assert!(ray["distance"].as_i64().is_some(), "integer distance");
+            assert!(ray["blocked"].as_bool().is_some(), "boolean blocked");
+        }
+        assert!(forward["openings"].as_array().expect("openings").len() <= DOOM_SENSOR_MAX_OPENINGS);
+        assert!(
+            forward["doorBearings"].as_array().expect("doorBearings").len() <= DOOM_SENSOR_MAX_DOORS
+        );
+    }
+
+    /// **AC1 fallback.** On the REAL engine, the `FREDO_DOOM_FAIL_PERCEPTION`
+    /// lever makes the bridge report the buffers unavailable → the `forward`
+    /// sensor falls back to the empty object (present, never absent) and the run
+    /// never fails.
+    #[test]
+    fn forward_sensor_falls_back_to_empty_when_perception_fails() {
+        use crate::applications::doom::perception::{forward_observation, perception_frame_with};
+
+        let state = DoomEngineState::default();
+        state.launch(1, 3).expect("launch");
+        state
+            .step(1, &json!([{ "type": "forward" }]))
+            .expect("step");
+
+        let guard = state.0.lock().expect("session lock");
+        let session = guard.as_ref().expect("live session");
+
+        // Buffers are populated (lever off) but the fail lever reports them
+        // unavailable (lever on) — the AC1 fallback condition.
+        assert!(perception_frame_with(&session.engine, false).is_some());
+        assert!(
+            perception_frame_with(&session.engine, true).is_none(),
+            "the fail lever reports the buffers unavailable"
+        );
+
+        let forward = forward_observation(None, &[], &[], None);
+        assert!(forward["rays"].as_array().expect("rays").is_empty());
+        assert!(forward["openings"].as_array().expect("openings").is_empty());
+        assert!(forward["doorBearings"].as_array().expect("doorBearings").is_empty());
+        assert_eq!(forward["exitBearing"], Value::Null);
+    }
+
+    /// **NFR-4.** The S1 `walls` contract is unchanged by the additive sensor —
+    /// still the `{direction, distance, blocked}` triple, no `class` key.
+    #[test]
+    fn forward_sensor_is_additive_and_leaves_walls_unchanged() {
+        let state = DoomEngineState::default();
+        state.launch(1, 3).expect("launch");
+        let stepped = state
+            .step(1, &json!([{ "type": "forward" }]))
+            .expect("step");
+        assert!(stepped["forward"].is_object(), "forward is a sibling of walls");
+        for wall in stepped["walls"].as_array().expect("walls") {
+            assert!(wall.get("class").is_none(), "walls stays the S1 triple");
+            assert!(wall["direction"].as_str().is_some());
+            assert!(wall["distance"].as_i64().is_some());
+            assert!(wall["blocked"].as_bool().is_some());
+        }
+    }
+
+    /// **AC3 seam (G-275/G-300).** `observation_with(..., Some(patch))`
+    /// top-level-merges the tester's patch before the executor/model sees it;
+    /// `None` is inert (production is byte-identical).
+    #[test]
+    fn inject_observation_merges_a_patch_into_the_observation() {
+        let state = DoomEngineState::default();
+        state.launch(1, 3).expect("launch");
+        state
+            .step(1, &json!([{ "type": "forward" }]))
+            .expect("step");
+
+        let guard = state.0.lock().expect("session lock");
+        let session = guard.as_ref().expect("live session");
+
+        // Inert: no patch → no injected marker.
+        let inert = observation_with(session, false, None);
+        assert!(inert.get("injectedMarker").is_none());
+
+        // A patch top-level-merges into the observation the model/executor sees.
+        let patch = json!({
+            "injectedMarker": true,
+            "enemies": [{ "kind": "injected", "hp": 1, "direction": "front", "distance": 16 }],
+        });
+        let injected = observation_with(session, false, Some(&patch));
+        assert_eq!(injected["injectedMarker"], true);
+        assert_eq!(injected["enemies"], patch["enemies"]);
+        // Every unpatched field is unchanged.
+        assert_eq!(injected["tic"], inert["tic"]);
+        assert_eq!(injected["player"], inert["player"]);
+        assert_eq!(injected["forward"], inert["forward"]);
     }
 }
