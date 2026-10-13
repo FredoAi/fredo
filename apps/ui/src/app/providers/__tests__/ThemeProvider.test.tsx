@@ -310,7 +310,8 @@ describe('ThemeProvider ST-1 token foundation (#2864)', () => {
 
     // T1–T4/T6: single derived `color-mix` vars that resolve live per preset/override.
     expect(readVar('--hover-bg')).toBe('color-mix(in srgb, var(--text-primary) 6%, transparent)');
-    expect(readVar('--text-subtle')).toBe('color-mix(in srgb, var(--text-secondary) 65%, var(--text-primary) 35%)');
+    // #3035 ST-1 — DERIVATIONS.textSubtle raised 65/35 → 55/45.
+    expect(readVar('--text-subtle')).toBe('color-mix(in srgb, var(--text-secondary) 55%, var(--text-primary) 45%)');
     expect(readVar('--scrollbar-thumb')).toBe('color-mix(in srgb, var(--text-secondary) 45%, transparent)');
     expect(readVar('--scrollbar-thumb-hover')).toBe('color-mix(in srgb, var(--text-secondary) 70%, transparent)');
     expect(readVar('--accent-strong')).toBe('color-mix(in srgb, var(--accent-primary) 55%, var(--text-primary) 45%)');
@@ -383,7 +384,8 @@ describe('ThemeProvider ST-1 token foundation (#2864)', () => {
 
     expect(base['--chakra-colors-accent\\.solid']).toBe('var(--accent-primary)');
     expect(base['--chakra-colors-accent\\.contrast']).toBe('var(--accent-contrast)');
-    expect(base['--chakra-colors-accent\\.focus-ring']).toBe('var(--accent-primary)');
+    // #3035 ST-1 — accent.focusRing resolves from the deepened accent.strong.
+    expect(base['--chakra-colors-accent\\.focus-ring']).toBe('var(--accent-strong)');
     expect(base['--chakra-colors-accent\\.fg']).toBe('var(--accent-primary)');
     expect(base['--chakra-colors-accent\\.strong']).toBe('var(--accent-strong)');
     // The other new audited-surface tokens emit their CSS-var aliases too.

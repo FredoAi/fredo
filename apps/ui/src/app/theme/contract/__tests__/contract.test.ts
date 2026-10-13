@@ -176,7 +176,8 @@ describe('#3034 ST-1 contract — floors and derivations are byte-identical', ()
 
   it('single-homes the derivation weights in DERIVATIONS', () => {
     expect([...DERIVATIONS.accentStrong]).toEqual([0.55, 0.45]);
-    expect([...DERIVATIONS.textSubtle]).toEqual([0.65, 0.35]);
+    // #3035 ST-1 — textSubtle raised 65/35 → 55/45 so `fg.subtle` clears 4.5.
+    expect([...DERIVATIONS.textSubtle]).toEqual([0.55, 0.45]);
     expect(DERIVATIONS.hoverBgPct).toBe(0.06);
 
     expect([...(TOKEN_BY_NAME.get('accent.strong')!.derivation!.weights ?? [])]).toEqual([

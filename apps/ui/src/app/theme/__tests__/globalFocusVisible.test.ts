@@ -17,6 +17,16 @@
  *     primary painted pair, the nav pair and the foreground-on-surface pair and
  *     asserts the tier (`absolute-3:1` | `no-worse-than-control`) is consistent
  *     with the theme tokens — settled BEFORE implementation, not after a FAIL.
+ *
+ * #3035 ST-3 re-based this suite (regression surface). ST-1 re-pointed
+ * `accent.focusRing` — and the painted global `:focus-visible` ring — from the
+ * raw brand fill (`--accent-primary`) to the deepened `accent.strong`
+ * (`--accent-strong`), and split `border.default` onto the derived
+ * `--border-strong`. The pins below now assert the NEW contract values, and the
+ * G-235 table scores the DEEPENED ring (the same `accent.strong` mix the painted
+ * rule resolves to). The `no-worse-than-control` machinery is retained (it still
+ * governs any pair that genuinely cannot clear the absolute floor); it is simply
+ * empty now that the deepened ring clears every preset.
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
@@ -81,14 +91,17 @@ const ACCENT_STRONG_TEXT_PCT = 0.45;
 
 interface GoverningRow {
   id: string;
-  /** primary painted pair: ring (accent.focusRing) vs bg.surface (--card-bg). */
+  /**
+   * primary painted pair: the DEEPENED ring (`accent.focusRing` → `accent.strong`,
+   * #3035 ST-1) vs bg.surface (--card-bg).
+   */
   ringSurface: number;
-  /** primary painted pair: ring vs bg.canvas (--body-bg). */
+  /** primary painted pair: deepened ring vs bg.canvas (--body-bg). */
   ringCanvas: number;
   /** worst-case primary pair — the value the tier is decided on. */
   primaryMin: number;
   primaryTier: string;
-  /** |new − pre-change control| ratio for the primary pair (same token ⇒ 0). */
+  /** |deepened ring − pre-change control| ratio for the primary pair (same token ⇒ 0). */
   primaryDelta: number;
   /** nav pair: ring (accent.strong) vs bg.subtle (--header-bg). */
   navStrong: number;
@@ -128,15 +141,21 @@ function buildGoverningTierTable(): GoverningRow[] {
     // `--accent-strong` is a live color-mix over the resolved accent + text.
     const strong = mixSrgb(accent!, text!, ACCENT_STRONG_ACCENT_PCT, ACCENT_STRONG_TEXT_PCT);
 
-    const ringSurface = contrast(accent!, card!);
-    const ringCanvas = contrast(accent!, body!);
+    // #3035 ST-1 — the painted ring is the deepened `accent.strong`
+    // (`accent.focusRing` was re-pointed from the raw brand fill), so the
+    // G-235 table scores the DEEPENED ring, never the raw accent.
+    const ringSurface = contrast(strong, card!);
+    const ringCanvas = contrast(strong, body!);
     const primaryMin = Math.min(ringSurface, ringCanvas);
     const navStrong = contrast(strong, header!);
     const glyphSurface = contrast(text!, card!);
     const glyphNav = contrast(text!, header!);
 
-    // The pre-change control paints the SAME tokens (accent.focusRing /
-    // accent.strong), so the new global rule can never be worse than it.
+    // The pre-change control painted the RAW brand fill (`--accent-primary`)
+    // as the ring; `primaryDelta` measures how far the deepened ring moved from
+    // it. A positive delta is normally an improvement; on a near-white accent
+    // the deepened mix can dip marginally (still far above the floor), which the
+    // governing tier accounts for.
     const primaryDelta = round2(Math.max(
       Math.abs(ringSurface - contrast(accent!, card!)),
       Math.abs(ringCanvas - contrast(accent!, body!)),
@@ -173,7 +192,9 @@ describe('#2946 ST-11 global :focus-visible rule', () => {
   it('emits ONE global :focus-visible treatment with a tokenised 2px accent ring', () => {
     const rule = globalFocusRule();
     expect(rule, 'global :focus-visible rule').toBeTruthy();
-    expect(rule.outline).toBe('2px solid var(--accent-primary)');
+    // #3035 ST-1 — the deepened ring (`accent.strong`) is now the painted
+    // global treatment, not the raw brand fill.
+    expect(rule.outline).toBe('2px solid var(--accent-strong)');
     expect(rule.outlineOffset).toBe('2px');
   });
 
@@ -195,9 +216,10 @@ describe('#2946 ST-11 global :focus-visible rule', () => {
 
   it('resolves the ring tokens through the semantic-token bridge', () => {
     const base = tokenBase();
-    // accent.focusRing (system.ts:90) and accent.strong (system.ts:81) — Chakra
-    // kebab-cases the camelCase token segment (`focus-ring`).
-    expect(base['--chakra-colors-accent\\.focus-ring']).toBe('var(--accent-primary)');
+    // accent.focusRing (system.ts) and accent.strong — Chakra kebab-cases the
+    // camelCase token segment (`focus-ring`). #3035 ST-1 re-pointed
+    // accent.focusRing onto the deepened `--accent-strong`.
+    expect(base['--chakra-colors-accent\\.focus-ring']).toBe('var(--accent-strong)');
     expect(base['--chakra-colors-accent\\.strong']).toBe('var(--accent-strong)');
     expect(globalFocusRule().outline).toContain(base['--chakra-colors-accent\\.focus-ring']);
     expect(navFocusRule().outline).toContain(base['--chakra-colors-accent\\.strong']);
@@ -215,8 +237,10 @@ describe('#2946 ST-11 global :focus-visible rule', () => {
   it('keeps the existing globalCss outline-variant behaviour untouched', () => {
     const base = globalBase();
     expect(base['&button']).toEqual({ color: 'inherit' });
+    // #3035 ST-1 — the ENABLED outline boundary is the derived
+    // `border.default` (`--border-strong`); the `:hover` shape is byte-identical.
     expect(base['&button[data-variant="outline"]']).toEqual({
-      borderColor: 'var(--border-color)',
+      borderColor: 'var(--border-strong)',
     });
     expect(base['&button[data-variant="outline"]:hover']).toEqual({
       borderColor: 'var(--accent-primary)',
@@ -256,9 +280,20 @@ describe('#2946 ST-11 G-235 per-preset governing-tier table', () => {
     }
   });
 
-  it('never regresses the pre-change control on any preset (delta ≤ 0.2)', () => {
+  it('holds the pre-change control guarantee via the tier (absolute clears; tolerance bounded)', () => {
     for (const row of TABLE) {
-      expect(row.primaryDelta, `${row.id} primary delta`).toBeLessThanOrEqual(TOLERANCE);
+      // #3035 ST-3 — the deepened ring now clears the absolute floor on every
+      // preset, so NO row needs the no-worse-than-control fallback; the machinery
+      // remains for any pair that genuinely cannot clear (checked in the else leg).
+      if (row.primaryTier === ABSOLUTE_TIER) {
+        expect(row.primaryMin, `${row.id} absolute tier ⇒ ≥3:1`).toBeGreaterThanOrEqual(
+          ABSOLUTE_FLOOR,
+        );
+      } else {
+        // A pair that cannot clear must stay within the tolerance of the control.
+        expect(row.primaryDelta, `${row.id} within ≤0.2 of control`).toBeLessThanOrEqual(TOLERANCE);
+      }
+      // The nav pair already painted `accent.strong` pre-change (delta === 0).
       expect(row.navDelta, `${row.id} nav delta`).toBeLessThanOrEqual(TOLERANCE);
     }
   });
@@ -271,14 +306,17 @@ describe('#2946 ST-11 G-235 per-preset governing-tier table', () => {
     }
   });
 
-  it('pins the two canonical preset outcomes (dark clears 3:1; light-default does not)', () => {
+  it('pins the two canonical preset outcomes (both clear 3:1 on the deepened ring)', () => {
+    // #3035 ST-3 — with the deepened ring, light-default (the pale-accent preset
+    // that previously needed the tolerance tier) now clears the absolute floor,
+    // exactly like dark. Neither row needs the no-worse-than-control fallback.
     const dark = TABLE.find((r) => r.id === 'dark')!;
     expect(dark.primaryTier).toBe(ABSOLUTE_TIER);
     expect(dark.primaryMin).toBeGreaterThanOrEqual(ABSOLUTE_FLOOR);
 
     const lightDefault = TABLE.find((r) => r.id === 'light-default')!;
-    expect(lightDefault.primaryTier).toBe(TOLERANCE_TIER);
-    expect(lightDefault.primaryMin).toBeLessThan(ABSOLUTE_FLOOR);
+    expect(lightDefault.primaryTier).toBe(ABSOLUTE_TIER);
+    expect(lightDefault.primaryMin).toBeGreaterThanOrEqual(ABSOLUTE_FLOOR);
   });
 
   it('derives --accent-strong from the contract DERIVATIONS (single weight home)', () => {

@@ -50,7 +50,8 @@ describe('#3034 ST-2 — the engine derives color-mix values from the contract',
       'color-mix(in srgb, var(--text-primary) 6%, transparent)',
     );
     expect(colorMixValueFor(token('fg.subtle').derivation!)).toBe(
-      'color-mix(in srgb, var(--text-secondary) 65%, var(--text-primary) 35%)',
+      // #3035 ST-1 — DERIVATIONS.textSubtle raised 65/35 → 55/45.
+      'color-mix(in srgb, var(--text-secondary) 55%, var(--text-primary) 45%)',
     );
     expect(colorMixValueFor(token('accent.strong').derivation!)).toBe(
       'color-mix(in srgb, var(--accent-primary) 55%, var(--text-primary) 45%)',
@@ -105,7 +106,8 @@ describe('#3034 ST-2 — the Chakra bridge derives from the contract', () => {
     expect(base['--chakra-colors-bg-hover']).toBe('var(--hover-bg)');
     expect(base['--chakra-colors-fg-subtle']).toBe('var(--text-subtle)');
     expect(base['--chakra-colors-accent\\.strong']).toBe('var(--accent-strong)');
-    expect(base['--chakra-colors-accent\\.focus-ring']).toBe('var(--accent-primary)');
+    // #3035 ST-1 — accent.focusRing resolves from accent.strong (deepened ring).
+    expect(base['--chakra-colors-accent\\.focus-ring']).toBe('var(--accent-strong)');
     expect(base['--chakra-colors-avatar\\.interior']).toBe('var(--fredo-avatar-interior)');
     expect(base['--chakra-colors-overlay\\.scrim']).toBe('var(--overlay-bg)');
     expect(emitted('status.onSolids')).toBe('var(--status-on-solids)');
@@ -156,9 +158,11 @@ describe('#3034 ST-2 — the ONE structural control rule + shared select recipe'
   });
 
   it('extends globalCss with the select / radio-card / disabled structural rules', () => {
-    // The existing outline border/hover objects are unchanged (focus suite pins them).
+    // #3035 ST-1 — the enabled outline boundary is now the derived
+    // `border.default` (`--border-strong`); the `:hover` shape is byte-identical
+    // (the focus suite pins both).
     expect(globalBase()['&button[data-variant="outline"]']).toEqual({
-      borderColor: 'var(--border-color)',
+      borderColor: 'var(--border-strong)',
     });
     expect(globalBase()['&button[data-variant="outline"]:hover']).toEqual({
       borderColor: 'var(--accent-primary)',
