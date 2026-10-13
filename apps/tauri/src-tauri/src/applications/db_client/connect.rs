@@ -62,8 +62,13 @@ use super::types::{
 /// Hard bound on every connect/probe attempt (R-1.3/R-1.8).
 pub const CONNECT_BOUND: Duration = Duration::from_secs(10);
 
-/// Maximum simultaneously open external pools (mirrors `PG_SERVER_KNOBS`).
-pub const MAX_OPEN_CONNECTIONS: usize = 8;
+/// Maximum simultaneously open external pools (Spec #3028). Derived from the
+/// shared connection-count policy so it can never drift from the server limit:
+/// it stays strictly BELOW `PG_SERVER_MAX_CONNECTIONS` (leaving headroom), and
+/// no longer equals it — the pre-#3028 literal `8` matched the server's
+/// `max_connections = 8` and left no room for an additional client.
+pub const MAX_OPEN_CONNECTIONS: usize =
+    crate::infrastructure::storage::engine::PG_DBCLIENT_MAX_OPEN_CONNECTIONS as usize;
 
 /// A newly created connection defaults to read-only (R-5.1). The mode is changed
 /// only by an explicit later edit.

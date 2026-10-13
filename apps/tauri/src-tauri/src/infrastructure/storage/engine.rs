@@ -14,10 +14,24 @@
 use anyhow::Result;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
-// -- Pool + server tuning constants (Spec #2975, Q-6) -------------------------
+// -- Pool + server tuning constants (Spec #2975 Q-6; Spec #3028 connection policy)
 
-/// Pool sizing: `max_connections` inside the required 5-10 band (REQ-5/EARS-5.1).
+/// Shared-pool sizing: `max_connections` inside the required 5-10 band
+/// (REQ-5/EARS-5.1). **UNCHANGED by Spec #3028** — this is the tuned band. The
+/// embedded server limit ([`PG_SERVER_MAX_CONNECTIONS`]) is raised ABOVE it so
+/// the pool can no longer hold every server slot (the observed 8/8 saturation).
 pub const PG_POOL_MAX_CONNECTIONS: u32 = 8;
+/// Embedded-server `max_connections` (Spec #3028): the single HIGHEST of the
+/// three connection-count values. Budget: 8 (shared pool) + 2 (the built-in PG
+/// app) + 2 spare (an external `psql` + the superuser reserve) = 12. MUST stay
+/// strictly greater than both [`PG_POOL_MAX_CONNECTIONS`] and
+/// [`PG_DBCLIENT_MAX_OPEN_CONNECTIONS`] — the headroom invariant is pinned by
+/// the same-module unit test below (a re-introduced equality fails CI).
+pub const PG_SERVER_MAX_CONNECTIONS: u32 = 12;
+/// Built-in PostgreSQL app open-connection cap (Spec #3028). Each open PG-app
+/// connection is its OWN one-slot pool, so this stays strictly below the server
+/// limit and fits the server's headroom above the shared pool cap.
+pub const PG_DBCLIENT_MAX_OPEN_CONNECTIONS: u32 = 2;
 /// Keep one warm connection; the rest are opened on demand.
 pub const PG_POOL_MIN_CONNECTIONS: u32 = 1;
 /// Bound every pool acquisition (G-263: no unbounded wait).
@@ -26,6 +40,18 @@ pub const PG_POOL_ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::fr
 pub const PG_POOL_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 /// Recycle every connection after 30 minutes.
 pub const PG_POOL_MAX_LIFETIME: std::time::Duration = std::time::Duration::from_secs(1800);
+
+/// Test-only shared-pool occupancy seam (Spec #3028, ST-4 / G-275/G-300).
+///
+/// Set to a positive integer `n` to make [`build_pg_pool_inner`] spawn a holder
+/// that acquires and holds `min(n, PG_POOL_MAX_CONNECTIONS)` connections for the
+/// rest of the test process's lifetime — driving the SHARED application pool to
+/// full occupancy so AC3/R-3 ("pool at full occupancy ⇒ an extra client still
+/// connects") is exercised literally. DEFAULT-INERT: unset / `0` / `false` adds
+/// no task and no connection, so the build is byte-identical in normal use. It is
+/// a test seam, never a user-configurable setting, and it never changes
+/// [`PG_POOL_MAX_CONNECTIONS`].
+pub const FREDO_PG_POOL_TEST_HOLD_ENV: &str = "FREDO_PG_POOL_TEST_HOLD";
 
 /// The hot PostgreSQL statements the slice-3 stores prepare ONCE and reuse
 /// (`sqlx::query(...).persistent(true)`), per Q-6 (Spec #2976).
@@ -335,6 +361,17 @@ async fn build_pg_pool_inner(url: &str, force_fail: Option<PgPoolStage>) -> Resu
         .await
         .map_err(|error| anyhow::anyhow!("[pool:schemaInit] {error}"))?;
 
+    // ST-4 test-only occupancy seam: DEFAULT-INERT. When
+    // `FREDO_PG_POOL_TEST_HOLD=<n>` is set to a positive integer, spawn a holder
+    // that takes `min(n, PG_POOL_MAX_CONNECTIONS)` shared-pool connections for
+    // the rest of the test process's lifetime, so AC3's literal full-occupancy
+    // leg can be driven. Unset / `0` / `false` spawns nothing and adds no
+    // connection, so the normal build stays byte-identical.
+    let test_hold = std::env::var(FREDO_PG_POOL_TEST_HOLD_ENV).ok();
+    if let Some(hold) = pool_test_hold(test_hold.as_deref()) {
+        spawn_pool_test_holder(pool.clone(), hold);
+    }
+
     Ok(PgEngine {
         pool,
         url: url.to_string(),
@@ -346,6 +383,51 @@ fn forced_pool_failure(stage: PgPoolStage) -> anyhow::Error {
         "[pool:{}] forced failure via the FS-4 fault seam",
         stage.name()
     )
+}
+
+// -- Test-only pool-occupancy seam (Spec #3028, ST-4) -------------------------
+
+/// Resolve the [`FREDO_PG_POOL_TEST_HOLD_ENV`] occupancy seam value.
+///
+/// PURE and env-free so it is unit-pinned without mutating the process
+/// environment (G-222). Returns `Some(n)` only for a positive integer `n`;
+/// unset, blank, `0`, `false` (any case), or any non-numeric value yields
+/// `None`, keeping the seam INERT by default (no task, no extra connection).
+pub fn pool_test_hold(raw: Option<&str>) -> Option<u32> {
+    let raw = raw?.trim();
+    if raw.is_empty() || raw.eq_ignore_ascii_case("false") {
+        return None;
+    }
+    match raw.parse::<u32>() {
+        Ok(n) if n > 0 => Some(n),
+        _ => None,
+    }
+}
+
+/// Spawn the test-only occupancy holder: acquire and hold `min(hold,
+/// PG_POOL_MAX_CONNECTIONS)` connections for the rest of the process lifetime.
+///
+/// Spawned via [`tauri::async_runtime::spawn`] (never `tokio::spawn` — it panics
+/// with "no reactor"; G-275). The holder is fire-and-forget: the bounded build
+/// path never awaits it. Each acquire is bounded by the pool's
+/// [`PG_POOL_ACQUIRE_TIMEOUT`]; the final wait is a parked, never-resolving
+/// future with no external resource, so there is no unbounded await (G-263).
+fn spawn_pool_test_holder(pool: sqlx::PgPool, hold: u32) {
+    let hold = hold.min(PG_POOL_MAX_CONNECTIONS);
+    tauri::async_runtime::spawn(async move {
+        let mut held = Vec::with_capacity(hold as usize);
+        for _ in 0..hold {
+            match pool.acquire().await {
+                Ok(connection) => held.push(connection),
+                // A failed acquire ends the attempt; the connections acquired so
+                // far stay held for the process lifetime regardless.
+                Err(_) => break,
+            }
+        }
+        // Park forever, keeping `held` alive across the await point.
+        std::future::pending::<()>().await;
+        drop(held);
+    });
 }
 
 /// Create the shared `settings` KV schema on a PostgreSQL pool (idempotent).
@@ -676,6 +758,40 @@ pub async fn storage_engine_status(app: tauri::AppHandle) -> StorageEngineStatus
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- connection-count headroom invariant (Spec #3028) ----------------------
+
+    /// The embedded server limit MUST leave headroom above BOTH client caps: the
+    /// shared pool and the built-in PG app. When the server limit equals the pool
+    /// cap (the pre-#3028 `max_connections = 8`), the pool can hold every server
+    /// slot and an extra client is refused `too many clients already`. The
+    /// assertions are const-evaluated, so a re-introduced equality fails to
+    /// COMPILE (and therefore CI), not merely at test runtime.
+    #[test]
+    fn server_max_connections_leaves_headroom_above_the_pool_and_pg_app_caps() {
+        const { assert!(PG_SERVER_MAX_CONNECTIONS > PG_POOL_MAX_CONNECTIONS) };
+        const { assert!(PG_SERVER_MAX_CONNECTIONS > PG_DBCLIENT_MAX_OPEN_CONNECTIONS) };
+    }
+
+    // -- test-only pool-occupancy seam (Spec #3028, ST-4) ----------------------
+
+    /// The occupancy resolver is INERT unless a positive integer is present. It
+    /// reads no process env (G-222), so this pin is deterministic under any
+    /// suite order.
+    #[test]
+    fn pool_test_hold_is_inert_unless_a_positive_integer() {
+        assert_eq!(pool_test_hold(None), None);
+        for inert in [
+            "", "   ", "0", "00", "false", "FALSE", "False", "true", "abc", "-1", "1.5",
+        ] {
+            assert_eq!(pool_test_hold(Some(inert)), None, "{inert:?} must be inert");
+        }
+        assert_eq!(pool_test_hold(Some("1")), Some(1));
+        assert_eq!(pool_test_hold(Some("2")), Some(2));
+        assert_eq!(pool_test_hold(Some("8")), Some(8));
+        assert_eq!(pool_test_hold(Some(" 9 ")), Some(9));
+        assert_eq!(pool_test_hold(Some("999")), Some(999));
+    }
 
     /// A lazily-connected pool: enough to build a `PgEngine` for the type/handle
     /// tests without a live server.

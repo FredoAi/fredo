@@ -19,7 +19,6 @@
 //! it is NOT a dependency on the spike crate (no cross-crate reference).
 
 use std::future::Future;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -38,6 +37,103 @@ use super::{
 /// Marker line that makes the [`PgRuntime::apply_server_knobs`] overlay
 /// idempotent (never appended twice).
 const PG_KNOB_MARKER: &str = "# fredo server-memory knobs (Spec #2975)";
+
+/// Render the canonical Fredo overlay block: a blank separator line, the
+/// [`PG_KNOB_MARKER`] line, then one `name = value` line per
+/// [`super::PG_SERVER_KNOBS`] entry — exactly what a fresh append writes.
+fn render_knob_block() -> String {
+    let mut block = String::new();
+    block.push('\n');
+    block.push_str(PG_KNOB_MARKER);
+    block.push('\n');
+    for (name, value) in super::PG_SERVER_KNOBS {
+        block.push_str(name);
+        block.push_str(" = ");
+        block.push_str(value);
+        block.push('\n');
+    }
+    block
+}
+
+/// Whether `line` is one of Fredo's rendered overlay `key = value` lines (a
+/// non-blank, non-comment line carrying `=`). Used to find the END of the marked
+/// block so trailing non-overlay content is never consumed.
+fn is_knob_value_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    !trimmed.is_empty() && !trimmed.starts_with('#') && trimmed.contains('=')
+}
+
+/// Locate the Fredo overlay block in `existing`: the byte range covering the
+/// [`PG_KNOB_MARKER`] line plus the contiguous `key = value` lines that follow
+/// it. `None` when the marker is absent.
+fn overlay_block_range(existing: &str) -> Option<std::ops::Range<usize>> {
+    let marker_at = existing.find(PG_KNOB_MARKER)?;
+    let mut cursor = existing[marker_at..]
+        .find('\n')
+        .map(|offset| marker_at + offset + 1)
+        .unwrap_or(existing.len());
+    let mut end = cursor;
+    while cursor < existing.len() {
+        let line_end = existing[cursor..]
+            .find('\n')
+            .map(|offset| cursor + offset + 1)
+            .unwrap_or(existing.len());
+        if !is_knob_value_line(&existing[cursor..line_end]) {
+            break;
+        }
+        end = line_end;
+        cursor = line_end;
+    }
+    Some(marker_at..end)
+}
+
+/// Reconcile the Fredo server-knob overlay in `existing` against the CURRENT
+/// [`super::PG_SERVER_KNOBS`]. Returns `None` when the marked block is already
+/// current (a byte-identical no-op); otherwise the full new file contents.
+///
+/// * marker absent ⇒ append the freshly-rendered block (fresh-cluster path);
+/// * marker present ⇒ supersede the marked block in place, keeping all content
+///   before and after it — the apply-to-existing mechanism (Spec #3028).
+fn reconcile_knob_overlay(existing: &str) -> Option<String> {
+    let block = render_knob_block();
+    let Some(range) = overlay_block_range(existing) else {
+        let mut updated = String::with_capacity(existing.len() + block.len());
+        updated.push_str(existing);
+        updated.push_str(&block);
+        return Some(updated);
+    };
+
+    // Drop the '\n' that separated the stale block from its predecessor: the
+    // freshly-rendered block carries its own leading '\n', so re-inserting it at
+    // the same offset is byte-identical when the block is already current.
+    let prefix_end = existing[..range.start].rfind('\n').unwrap_or(0);
+    let mut updated = String::with_capacity(existing.len() + block.len());
+    updated.push_str(&existing[..prefix_end]);
+    updated.push_str(&block);
+    updated.push_str(&existing[range.end..]);
+
+    (updated != existing).then_some(updated)
+}
+
+/// Atomically replace `path` with `contents` via a sibling temp file + rename
+/// (same directory ⇒ same volume, so the rename is an atomic replace on
+/// Windows). A failure is returned so the caller maps it to the existing
+/// `("knobs", error)` fail-closed stage.
+fn write_atomically(path: &Path, contents: &str) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("{} has no parent directory", path.display()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("postgresql.conf");
+    let tmp = parent.join(format!(".{file_name}.fredo-{}.tmp", std::process::id()));
+    std::fs::write(&tmp, contents)
+        .with_context(|| format!("writing the temp overlay {}", tmp.display()))?;
+    std::fs::rename(&tmp, path)
+        .with_context(|| format!("atomically replacing {}", path.display()))?;
+    Ok(())
+}
 
 /// **Q-17 log-destination mechanism (Spec #2978 S4, REQ-3.2).** The crate
 /// (`postgresql_embedded` 0.21) owns the postmaster spawn, so Fredo cannot apply
@@ -391,16 +487,23 @@ impl PgRuntime {
         .await
     }
 
-    /// Append the [`super::PG_SERVER_KNOBS`] to `<data_dir>/postgresql.conf`
-    /// (REQ-5/EARS-5.1). Called after `setup()` (which creates the file via
-    /// `initdb`) and before `start()`.
+    /// Reconcile the [`super::PG_SERVER_KNOBS`] overlay into
+    /// `<data_dir>/postgresql.conf` (REQ-5/EARS-5.1; Spec #3028). Called after
+    /// `setup()` (which creates the file via `initdb`) and before `start()`.
     ///
-    /// Idempotent: a marker line guards the append, so a second call — or a
-    /// restart over an existing data dir — is a no-op. PostgreSQL applies later
-    /// settings last, so the overlay wins over the `initdb` defaults; the live
-    /// values are verified with `SHOW` by ST-7/QA. If a future crate version
-    /// rewrote `postgresql.conf` in `start()`, that live `SHOW` check would catch
-    /// it and the crate `Settings` hook is the fallback (plan risk row).
+    /// The overlay is a marked block: the [`PG_KNOB_MARKER`] line followed by one
+    /// `name = value` line per knob. Reconciliation:
+    ///
+    /// * marker absent (fresh cluster) ⇒ append the freshly-rendered block;
+    /// * marked block already current ⇒ byte-identical no-op (idempotent);
+    /// * marked block stale (an existing cluster whose overlay still pins an old
+    ///   value, e.g. `max_connections = 8`) ⇒ **supersede** the marked block in
+    ///   place via an atomic temp-file + rename rewrite — the apply-to-existing
+    ///   mechanism. No data-dir reset, no data loss: only the overlay block is
+    ///   rewritten, before the server starts.
+    ///
+    /// PostgreSQL applies later settings last, so the overlay wins over the
+    /// `initdb` defaults; the live values are verified with `SHOW` by ST-7/QA.
     ///
     /// **FS-5** (Spec #2975 ST-7, AC5): when [`super::PG_SKIP_SERVER_KNOBS_ENV`]
     /// is set, this is a no-op, so the managed server starts UNTUNED — the
@@ -412,26 +515,13 @@ impl PgRuntime {
         let path = self.data_dir.join("postgresql.conf");
         let existing = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
-        if existing.contains(PG_KNOB_MARKER) {
-            return Ok(());
+        match reconcile_knob_overlay(&existing) {
+            // Already current: leave the file untouched (byte-identical no-op).
+            None => Ok(()),
+            Some(updated) => write_atomically(&path, &updated).with_context(|| {
+                format!("superseding the server-memory knobs in {}", path.display())
+            }),
         }
-        let mut block = String::new();
-        block.push('\n');
-        block.push_str(PG_KNOB_MARKER);
-        block.push('\n');
-        for (name, value) in super::PG_SERVER_KNOBS {
-            block.push_str(name);
-            block.push_str(" = ");
-            block.push_str(value);
-            block.push('\n');
-        }
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .with_context(|| format!("opening {} for append", path.display()))?
-            .write_all(block.as_bytes())
-            .with_context(|| format!("appending server-memory knobs to {}", path.display()))?;
-        Ok(())
     }
 
     /// Bounded `start()`; returns the postmaster PID once it has been written.
@@ -903,6 +993,100 @@ mod tests {
         runtime.apply_server_knobs().expect("second call is a no-op");
         let second = std::fs::read_to_string(&conf).expect("read conf");
         assert_eq!(first, second, "the overlay must be appended exactly once");
+    }
+
+    /// ST-2 (#3028): the overlay reconcile is pure and total — absent ⇒ append,
+    /// current ⇒ byte-identical no-op, stale ⇒ supersede (converge on the
+    /// canonical form).
+    #[test]
+    fn reconcile_knob_overlay_appends_noops_and_supersedes() {
+        // marker absent ⇒ append the rendered block
+        let appended = reconcile_knob_overlay("# initdb defaults\n").expect("append");
+        assert!(appended.starts_with("# initdb defaults\n"));
+        assert!(appended.contains(PG_KNOB_MARKER));
+        assert_eq!(appended.matches(PG_KNOB_MARKER).count(), 1);
+
+        // already current ⇒ byte-identical no-op
+        assert!(
+            reconcile_knob_overlay(&appended).is_none(),
+            "a current overlay must be a no-op"
+        );
+
+        // stale value ⇒ supersede and converge on the canonical form
+        let stale = appended.replace("max_connections = 12", "max_connections = 8");
+        let superseded = reconcile_knob_overlay(&stale).expect("supersede");
+        assert_eq!(
+            superseded, appended,
+            "supersede must converge on the canonical overlay"
+        );
+        assert!(!superseded.contains("max_connections = 8"));
+    }
+
+    /// ST-2 (#3028): an existing (v1) overlay that still pins
+    /// `max_connections = 8` is SUPERSEDED, not shadowed — after a single apply
+    /// there is exactly one uncommented `max_connections = 12` and no `= 8` line,
+    /// with no duplicate marker block and no data-dir reset.
+    #[test]
+    fn apply_server_knobs_supersedes_a_stale_existing_overlay() {
+        let _env_lock = KNOB_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::remove_var(PG_SKIP_SERVER_KNOBS_ENV);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata-v1");
+        let install_dir = dir.path().join("pginstall");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        let conf = data_dir.join("postgresql.conf");
+        // A v1 cluster: the overlay was appended with the old max_connections = 8.
+        let v1 = format!(
+            "# initdb defaults\n\n{PG_KNOB_MARKER}\n\
+             shared_buffers = 32MB\n\
+             work_mem = 4MB\n\
+             maintenance_work_mem = 32MB\n\
+             max_connections = 8\n\
+             synchronous_commit = off\n"
+        );
+        std::fs::write(&conf, &v1).expect("seed the v1 overlay");
+
+        let runtime = PgRuntime::with_dirs(
+            &data_dir,
+            &install_dir,
+            "test-password".to_string(),
+            record_kill,
+            hang_stop,
+        );
+        runtime.apply_server_knobs().expect("supersede the stale overlay");
+
+        let updated = std::fs::read_to_string(&conf).expect("read conf");
+        assert_eq!(
+            updated.matches("max_connections = 12").count(),
+            1,
+            "exactly one uncommented max_connections = 12:\n{updated}"
+        );
+        assert!(
+            !updated.contains("max_connections = 8"),
+            "the stale max_connections = 8 must be gone:\n{updated}"
+        );
+        assert_eq!(
+            updated.matches(PG_KNOB_MARKER).count(),
+            1,
+            "the marker block must not be duplicated:\n{updated}"
+        );
+        assert!(
+            updated.starts_with("# initdb defaults\n"),
+            "non-overlay content must be preserved:\n{updated}"
+        );
+        for (name, value) in PG_SERVER_KNOBS {
+            assert!(
+                updated.contains(&format!("{name} = {value}")),
+                "missing knob {name} = {value} in:\n{updated}"
+            );
+        }
+
+        // Idempotent: a second apply over the reconciled overlay is byte-identical.
+        runtime.apply_server_knobs().expect("second call is a no-op");
+        let again = std::fs::read_to_string(&conf).expect("read conf");
+        assert_eq!(updated, again, "the reconciled overlay must be stable");
     }
 
     /// ST-2: a missing `postgresql.conf` is a clean error (bounded, no panic) —
