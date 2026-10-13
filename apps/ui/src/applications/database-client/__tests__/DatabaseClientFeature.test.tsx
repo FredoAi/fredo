@@ -49,7 +49,26 @@ beforeEach(() => {
   localStorage.clear();
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
+
+/**
+ * Build a pointer event with clientX/clientY/pointerId explicitly defined. jsdom
+ * does not propagate PointerEvent init props onto the created event, so a plain
+ * bubbling Event with the properties defined is the reliable simulation.
+ */
+function makePointerEvent(
+  type: string,
+  init: { clientX?: number; clientY?: number; pointerId?: number },
+): Event {
+  const ev = new Event(type, { bubbles: true, cancelable: true, composed: true });
+  Object.defineProperty(ev, 'clientX', { value: init.clientX ?? 0, configurable: true });
+  Object.defineProperty(ev, 'clientY', { value: init.clientY ?? 0, configurable: true });
+  Object.defineProperty(ev, 'pointerId', { value: init.pointerId ?? 1, configurable: true });
+  return ev;
+}
 
 describe('DatabaseClientFeature — first-run empty state (R-1.1 / G-265)', () => {
   it('renders the root, the Add-connection affordance and no access-mode badge', async () => {
@@ -103,5 +122,176 @@ describe('DatabaseClientFeature — selecting a connection opens a session', () 
     // The export affordance is mounted beside the results grid (R-4.4).
     expect(screen.getByTestId('db-export-csv')).toBeInTheDocument();
     expect(screen.getByTestId('db-export-json')).toBeInTheDocument();
+  });
+});
+
+// ── Spec #3049 (ST-4): resizable split handles + layout persistence ───────────
+//
+// The four binding handles must render with their separator ARIA and per-split
+// bounds; a drag commits once (persist-on-release), survives a remount from the
+// separate `Fredo_dbclient_layout` document, restores tolerantly from a corrupt /
+// out-of-range doc, and leaves no residual text-selection override.
+
+function leftSidebarEl(): HTMLElement {
+  const root = screen.getByTestId('db-client-root');
+  // root → splitRow Flex → left sidebar VStack
+  const row = root.firstElementChild as HTMLElement;
+  return row.firstElementChild as HTMLElement;
+}
+
+describe('DatabaseClientFeature — resizable split handles (Spec #3049, ST-4)', () => {
+  it('renders all four binding handles with separator ARIA and the per-split bounds', async () => {
+    listMock.mockResolvedValue([]);
+    renderWithChakra(<DatabaseClientFeatureView />);
+    await screen.findByTestId('db-connections-empty');
+
+    const specs: Array<[string, string, string, string, string]> = [
+      // testid, aria-orientation, valuenow, valuemin, valuemax
+      ['db-resize-handle-left-sidebar', 'vertical', '300', '220', '560'],
+      ['db-resize-handle-right-sidebar', 'vertical', '280', '200', '520'],
+      ['db-resize-handle-editor-results', 'horizontal', '220', '120', '720'],
+      ['db-resize-handle-connections-schema', 'horizontal', '220', '120', '560'],
+    ];
+
+    for (const [id, orientation, now, min, max] of specs) {
+      const el = screen.getByTestId(id);
+      expect(el.getAttribute('role')).toBe('separator');
+      expect(el.getAttribute('aria-orientation')).toBe(orientation);
+      expect(el.getAttribute('aria-valuenow')).toBe(now);
+      expect(el.getAttribute('aria-valuemin')).toBe(min);
+      expect(el.getAttribute('aria-valuemax')).toBe(max);
+      expect(el.tabIndex).toBe(0);
+    }
+  });
+});
+
+describe('DatabaseClientFeature — layout persistence (AC5 / GA-6, GA-8, GA-9)', () => {
+  it('a drag writes the layout exactly once, leaves prefs untouched and clears the drag overrides', async () => {
+    listMock.mockResolvedValue([]);
+    const setItemSpy = vi.spyOn(Storage.prototype, 'setItem');
+    renderWithChakra(<DatabaseClientFeatureView />);
+    await screen.findByTestId('db-connections-empty');
+
+    const handle = screen.getByTestId('db-resize-handle-left-sidebar');
+    fireEvent(handle, makePointerEvent('pointerdown', { clientX: 400 }));
+    fireEvent(handle, makePointerEvent('pointermove', { clientX: 450 }));
+    fireEvent(handle, makePointerEvent('pointermove', { clientX: 470 }));
+    fireEvent(handle, makePointerEvent('pointerup', { clientX: 470 }));
+
+    // Exactly one persistence write, for the layout key only.
+    const layoutWrites = setItemSpy.mock.calls.filter(([key]) => key === 'Fredo_dbclient_layout');
+    expect(layoutWrites).toHaveLength(1);
+    const stored = JSON.parse(String(localStorage.getItem('Fredo_dbclient_layout'))) as {
+      leftSidebarWidth: number;
+    };
+    expect(stored.leftSidebarWidth).toBe(370);
+
+    // The settings document is a separate key and is never written by a drag.
+    expect(localStorage.getItem('Fredo_dbclient_prefs')).toBeNull();
+
+    // Clean release — no residual text-selection / cursor override.
+    expect(document.body.style.userSelect).toBe('');
+    expect(document.body.style.cursor).toBe('');
+  });
+
+  it('restores a persisted split across a remount (not a ref)', async () => {
+    listMock.mockResolvedValue([]);
+    const first = renderWithChakra(<DatabaseClientFeatureView />);
+    await screen.findByTestId('db-connections-empty');
+
+    const handle = screen.getByTestId('db-resize-handle-left-sidebar');
+    fireEvent(handle, makePointerEvent('pointerdown', { clientX: 400 }));
+    fireEvent(handle, makePointerEvent('pointermove', { clientX: 470 }));
+    fireEvent(handle, makePointerEvent('pointerup', { clientX: 470 }));
+    expect(
+      (JSON.parse(String(localStorage.getItem('Fredo_dbclient_layout'))) as {
+        leftSidebarWidth: number;
+      }).leftSidebarWidth,
+    ).toBe(370);
+
+    first.unmount();
+
+    renderWithChakra(<DatabaseClientFeatureView />);
+    await screen.findByTestId('db-connections-empty');
+    await waitFor(() =>
+      expect(screen.getByTestId('db-resize-handle-left-sidebar').getAttribute('aria-valuenow')).toBe(
+        '370',
+      ),
+    );
+    // The rendered sidebar width reflects the restored value (from storage, not a ref).
+    expect(getComputedStyle(leftSidebarEl()).width).toBe('370px');
+  });
+
+  it('a corrupt stored document renders the documented defaults', async () => {
+    localStorage.setItem('Fredo_dbclient_layout', 'not-json{');
+    listMock.mockResolvedValue([]);
+    renderWithChakra(<DatabaseClientFeatureView />);
+    await screen.findByTestId('db-connections-empty');
+
+    await waitFor(() =>
+      expect(screen.getByTestId('db-resize-handle-left-sidebar').getAttribute('aria-valuenow')).toBe(
+        '300',
+      ),
+    );
+    expect(screen.getByTestId('db-resize-handle-right-sidebar').getAttribute('aria-valuenow')).toBe(
+      '280',
+    );
+    expect(screen.getByTestId('db-resize-handle-editor-results').getAttribute('aria-valuenow')).toBe(
+      '220',
+    );
+    expect(
+      screen.getByTestId('db-resize-handle-connections-schema').getAttribute('aria-valuenow'),
+    ).toBe('220');
+  });
+
+  it('an out-of-range stored document is clamped on restore', async () => {
+    localStorage.setItem(
+      'Fredo_dbclient_layout',
+      JSON.stringify({
+        leftSidebarWidth: 99999,
+        rightSidebarWidth: 'nope',
+        editorResultsHeight: -5,
+        connectionsSchemaHeight: 300,
+      }),
+    );
+    listMock.mockResolvedValue([]);
+    renderWithChakra(<DatabaseClientFeatureView />);
+    await screen.findByTestId('db-connections-empty');
+
+    await waitFor(() =>
+      expect(screen.getByTestId('db-resize-handle-left-sidebar').getAttribute('aria-valuenow')).toBe(
+        '560',
+      ),
+    );
+    expect(screen.getByTestId('db-resize-handle-right-sidebar').getAttribute('aria-valuenow')).toBe(
+      '280',
+    );
+    expect(screen.getByTestId('db-resize-handle-editor-results').getAttribute('aria-valuenow')).toBe(
+      '120',
+    );
+    expect(
+      screen.getByTestId('db-resize-handle-connections-schema').getAttribute('aria-valuenow'),
+    ).toBe('300');
+  });
+});
+
+describe('DatabaseClientFeature — no re-render loop during a drag (NFR-1 / GA-12)', () => {
+  it('a continuous multi-move drag produces no "Maximum update depth exceeded" error', async () => {
+    listMock.mockResolvedValue([]);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    renderWithChakra(<DatabaseClientFeatureView />);
+    await screen.findByTestId('db-connections-empty');
+
+    const handle = screen.getByTestId('db-resize-handle-left-sidebar');
+    fireEvent(handle, makePointerEvent('pointerdown', { clientX: 400 }));
+    for (let i = 0; i < 30; i += 1) {
+      fireEvent(handle, makePointerEvent('pointermove', { clientX: 400 + i }));
+    }
+    fireEvent(handle, makePointerEvent('pointerup', { clientX: 430 }));
+
+    const loopErrors = errorSpy.mock.calls.filter((args) =>
+      args.some((arg) => typeof arg === 'string' && arg.includes('Maximum update depth exceeded')),
+    );
+    expect(loopErrors).toHaveLength(0);
   });
 });

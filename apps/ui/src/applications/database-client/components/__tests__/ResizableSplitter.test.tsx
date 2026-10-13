@@ -362,3 +362,49 @@ describe('clampSplitSize', () => {
     expect(clampSplitSize(Number.POSITIVE_INFINITY, 220, 560)).toBe(220);
   });
 });
+
+// ── Spec #3049 (ST-4): additional contract pins ───────────────────────────────
+//
+// The lost-capture path is a second commit route (GA-7 "clean release");
+// `preventDefault` on pointerdown is the AC-5 "dragging never selects text"
+// contract at the event level; and a boundary keyboard step must clamp and
+// commit exactly once.
+
+describe('ResizableSplitter — lost capture & interaction guards (GA-7)', () => {
+  it('commits exactly once when pointer capture is lost, and a later pointerup does not double-commit', () => {
+    const onChange = vi.fn();
+    renderSplitter({ onChange });
+
+    const handle = screen.getByTestId('test-resize-handle');
+    fireEvent(handle, makePointerEvent('pointerdown', { clientX: 400 }));
+    fireEvent(handle, makePointerEvent('pointermove', { clientX: 500 }));
+    fireEvent(handle, makePointerEvent('lostpointercapture', { clientX: 500 }));
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith(400);
+    // Overrides are cleared on the lost-capture path too.
+    expect(document.body.style.userSelect).toBe('');
+    expect(document.body.style.cursor).toBe('');
+
+    fireEvent(handle, makePointerEvent('pointerup', { clientX: 500 }));
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('prevents the pointerdown default so a drag never starts a text selection', () => {
+    renderSplitter({ onChange: vi.fn() });
+    const handle = screen.getByTestId('test-resize-handle');
+    const down = makePointerEvent('pointerdown', { clientX: 400 });
+    fireEvent(handle, down);
+    expect(down.defaultPrevented).toBe(true);
+  });
+
+  it('clamps a keyboard step at the boundary and commits exactly once per key', () => {
+    const onChange = vi.fn();
+    renderSplitter({ onChange, value: 550, min: 220, max: 560 });
+
+    fireEvent.keyDown(screen.getByTestId('test-resize-handle'), { key: 'ArrowRight' });
+    // 550 + 16 = 566 → clamped to the 560 boundary, one commit.
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith(560);
+  });
+});

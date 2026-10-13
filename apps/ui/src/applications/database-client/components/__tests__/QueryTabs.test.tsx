@@ -44,6 +44,33 @@ function outcome(overrides: Partial<DbQueryOutcome> = {}): DbQueryOutcome {
 const editor = (): HTMLTextAreaElement =>
   screen.getByTestId('db-query-editor') as HTMLTextAreaElement;
 
+/**
+ * Build a pointer event with clientX/clientY/pointerId explicitly defined. jsdom
+ * does not propagate PointerEvent init props onto the created event, so a plain
+ * bubbling Event with the properties defined is the reliable simulation.
+ */
+function makePointerEvent(
+  type: string,
+  init: { clientX?: number; clientY?: number; pointerId?: number },
+): Event {
+  const ev = new Event(type, { bubbles: true, cancelable: true, composed: true });
+  Object.defineProperty(ev, 'clientX', { value: init.clientX ?? 0, configurable: true });
+  Object.defineProperty(ev, 'clientY', { value: init.clientY ?? 0, configurable: true });
+  Object.defineProperty(ev, 'pointerId', { value: init.pointerId ?? 1, configurable: true });
+  return ev;
+}
+
+/**
+ * The editor-row Box the workspace sizes: `<Textarea data-testid="db-query-editor">`
+ * → relative Box → SqlEditor root Flex → the height-bearing Box (QueryTabs.tsx:465).
+ */
+function editorRowBox(): HTMLElement {
+  const textarea = screen.getByTestId('db-query-editor');
+  const box = textarea.parentElement?.parentElement?.parentElement;
+  if (!box) throw new Error('editor row box not found');
+  return box;
+}
+
 beforeEach(() => {
   dbQueryExecuteMock.mockReset();
   dbQueryExecuteMock.mockResolvedValue(outcome());
@@ -277,5 +304,67 @@ describe('QueryTabs — destructive confirmation (R-5.3 UI)', () => {
     fireEvent.click(screen.getByTestId('db-destructive-cancel'));
     await waitFor(() => expect(screen.queryByTestId('db-destructive-confirm')).toBeNull());
     expect(dbQueryExecuteMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── Spec #3049 (ST-4): the editor ↔ results split (GA-3, GA-5, GA-7) ──────────
+//
+// The QueryTabs-internal split is threaded the committed height as a prop and
+// reports changes once per drag-end / key step; a drag reflows the editor row
+// live and clamps to the split's static bounds.
+
+describe('QueryTabs — editor↔results split (Spec #3049, ST-4)', () => {
+  it('renders the editor-results separator with the binding ARIA + default height', () => {
+    renderWithChakra(<QueryTabs connectionId="c1" />);
+
+    const handle = screen.getByTestId('db-resize-handle-editor-results');
+    expect(handle.getAttribute('role')).toBe('separator');
+    expect(handle.getAttribute('aria-orientation')).toBe('horizontal');
+    expect(handle.getAttribute('aria-valuenow')).toBe('220');
+    expect(handle.getAttribute('aria-valuemin')).toBe('120');
+    expect(handle.getAttribute('aria-valuemax')).toBe('720');
+    expect(handle.tabIndex).toBe(0);
+  });
+
+  it('the editor row reflects the editorHeight prop (the size drives the box)', () => {
+    renderWithChakra(<QueryTabs connectionId="c1" editorHeight={333} />);
+
+    expect(
+      screen.getByTestId('db-resize-handle-editor-results').getAttribute('aria-valuenow'),
+    ).toBe('333');
+    expect(getComputedStyle(editorRowBox()).height).toBe('333px');
+  });
+
+  it('a drag reflows the editor live and commits once with the clamped height', () => {
+    const onEditorHeightChange = vi.fn();
+    renderWithChakra(<QueryTabs connectionId="c1" onEditorHeightChange={onEditorHeightChange} />);
+
+    const handle = screen.getByTestId('db-resize-handle-editor-results');
+    fireEvent(handle, makePointerEvent('pointerdown', { clientY: 300 }));
+    expect(onEditorHeightChange).not.toHaveBeenCalled();
+
+    fireEvent(handle, makePointerEvent('pointermove', { clientY: 360 })); // +60 → 280
+    expect(handle.getAttribute('aria-valuenow')).toBe('280');
+    expect(getComputedStyle(editorRowBox()).height).toBe('280px');
+    expect(onEditorHeightChange).not.toHaveBeenCalled();
+
+    fireEvent(handle, makePointerEvent('pointermove', { clientY: 9999 })); // clamp at max
+    expect(handle.getAttribute('aria-valuenow')).toBe('720');
+
+    fireEvent(handle, makePointerEvent('pointerup', { clientY: 9999 }));
+    expect(onEditorHeightChange).toHaveBeenCalledTimes(1);
+    expect(onEditorHeightChange).toHaveBeenCalledWith(720);
+  });
+
+  it('keyboard Home/End commit the min/max editor height', () => {
+    const onEditorHeightChange = vi.fn();
+    renderWithChakra(<QueryTabs connectionId="c1" onEditorHeightChange={onEditorHeightChange} />);
+
+    const handle = screen.getByTestId('db-resize-handle-editor-results');
+    fireEvent.keyDown(handle, { key: 'Home' });
+    expect(onEditorHeightChange).toHaveBeenLastCalledWith(120);
+
+    fireEvent.keyDown(handle, { key: 'End' });
+    expect(onEditorHeightChange).toHaveBeenLastCalledWith(720);
   });
 });
