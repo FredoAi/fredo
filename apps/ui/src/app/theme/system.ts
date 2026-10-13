@@ -84,38 +84,29 @@ function buildColorTokens(): ColorTokenTree {
 
 const config = defineConfig({
   /**
-   * Global CSS normalizations.
-   *
-   * `button { color: inherit }` — Chakra's ghost/outline/subtle variants default to the
-   * "gray" colorPalette which is nearly invisible on dark surfaces. Forcing inheritance
-   * means every button picks up the container text color (body → theme CSS vars)
-   * automatically, including any new feature components created in the future.
+   * Global CSS normalizations — emitted into Chakra's `@layer base` (which is
+   * OUTRANKED by component recipes in `@layer recipes`, so component chrome must
+   * be themed via `theme.recipes`, not a global selector).
    */
   globalCss: {
+    /**
+     * `button { color: inherit }` — kept byte-identical (pinned by
+     * `globalFocusVisible.test.ts`). NOTE: this rule is emitted into `@layer base`
+     * and therefore LOSES to Chakra's button recipe in `@layer recipes` (layer
+     * order `reset, base, tokens, recipes`) — it does not by itself theme any
+     * button. The outline/ghost chrome is delivered by the `theme.recipes.button`
+     * override below (the cascade-winning path), NOT by a `data-variant`
+     * attribute selector: Chakra v3.34.0 never emits `data-variant` on a Button
+     * (the former `button[data-variant="outline"]*` rules matched NOTHING).
+     */
     button: { color: 'inherit' },
     /**
-     * ST-1 (#3035) — the outline control boundary is now the ENABLED control
-     * boundary `border.default` (`--border-strong`, ≥3:1 by construction). The
-     * `:hover` shape below stays byte-identical (`var(--accent-primary)`); the
-     * `:disabled` rule repaints the soft `border.subtle` (`--border-color`) so
-     * enabled and disabled are never confused.
+     * Spec #3034 ST-2 (R-4.1) — the shared select control resolves its chrome
+     * from the contract tokens. `disabled` is the `fg.subtle` TOKEN
+     * (`--text-subtle`), never an opacity wash (the direct source of every
+     * composed `disabled|label` violation). WCAG-exempt: it reads dimmer, it does
+     * not reach AA.
      */
-    'button[data-variant="outline"]': { borderColor: 'var(--border-strong)' },
-    'button[data-variant="outline"]:hover': { borderColor: 'var(--accent-primary)' },
-    /**
-     * Spec #3034 ST-2 (R-4.1) — the ONE structural control-level rule: the
-     * implicated control classes (outline buttons, selects, radio cards) resolve
-     * their chrome from the contract tokens, so no component needs a local colour
-     * override. `disabled` is the `border.subtle` boundary (`--border-color`) +
-     * the `fg.subtle` TOKEN (`--text-subtle`), never an opacity wash (which was
-     * the direct source of every composed `disabled|label` violation). This is
-     * the WCAG-exempt disabled treatment: it reads dimmer, it does not reach AA.
-     */
-    'button[data-variant="outline"]:disabled': {
-      color: 'var(--text-subtle)',
-      borderColor: 'var(--border-color)',
-      opacity: 1,
-    },
     select: {
       backgroundColor: 'var(--card-bg)',
       borderColor: 'var(--border-color)',
@@ -161,6 +152,52 @@ const config = defineConfig({
     },
   },
   theme: {
+    /**
+     * ST-1 (#3035 rework) — the ONE live mechanism for the app-wide outline/ghost
+     * button chrome. Chakra deep-merges `defineConfig.theme.recipes.button` over
+     * its built-in `button` recipe (`merge-config.js` + the recursive
+     * `utils/merge.js`), and the merged recipe's class is emitted into
+     * `@layer recipes` — which BEATS the old `@layer base` `data-variant` rules by
+     * cascade-layer order (`reset, base, tokens, recipes`). `IconButton` shares
+     * this recipe, so the edit/delete icon buttons are covered by the same change.
+     *
+     * This is the single source for: `layout-new-button`, `layout-{assign,edit,
+     * delete}`, `db-conn-test`, `db-conn-cancel`, `db-query-tab-new`,
+     * `db-export-{csv,json}` and `db-query-run-all`. Contract tokens only — no
+     * raw colour, no `!important`. The `_disabled` override drops the built-in
+     * `disabled` layer style (0.5 opacity wash) and repaints the WCAG-exempt
+     * `fg.subtle` label + `border.subtle` boundary so enabled and disabled are
+     * never confused.
+     */
+    recipes: {
+      button: {
+        variants: {
+          variant: {
+            outline: {
+              color: 'fg.default',
+              borderColor: 'border.default',
+              _hover: { borderColor: 'accent.border' },
+              _disabled: {
+                layerStyle: 'none',
+                opacity: 1,
+                cursor: 'not-allowed',
+                color: 'fg.subtle',
+                borderColor: 'border.subtle',
+              },
+            },
+            ghost: {
+              color: 'fg.default',
+              _disabled: {
+                layerStyle: 'none',
+                opacity: 1,
+                cursor: 'not-allowed',
+                color: 'fg.subtle',
+              },
+            },
+          },
+        },
+      },
+    },
     tokens: {
       fonts: {
         heading: { value: 'var(--font-primary)' },

@@ -44,6 +44,18 @@ function globalRuleContaining(needle: string): Record<string, unknown> | undefin
   return key ? (base[key] as Record<string, unknown>) : undefined;
 }
 
+/**
+ * The LIVE merged `button` recipe's `variant` group (the built-in recipe
+ * deep-merged with `system.ts`'s `theme.recipes.button` override). This is the
+ * one mechanism that actually paints outline/ghost buttons (#3035 ST-1 rework).
+ */
+function buttonVariants(): Record<string, Record<string, unknown>> {
+  const recipe = system.getRecipe('button') as {
+    variants: { variant: Record<string, Record<string, unknown>> };
+  };
+  return recipe.variants.variant;
+}
+
 describe('#3034 ST-2 — the engine derives color-mix values from the contract', () => {
   it('reproduces the pinned engine expressions byte-for-byte from DERIVATIONS', () => {
     expect(colorMixValueFor(token('bg.hover').derivation!)).toBe(
@@ -157,21 +169,7 @@ describe('#3034 ST-2 — the ONE structural control rule + shared select recipe'
     expect(selectRecipe).not.toHaveProperty('opacity');
   });
 
-  it('extends globalCss with the select / radio-card / disabled structural rules', () => {
-    // #3035 ST-1 — the enabled outline boundary is now the derived
-    // `border.default` (`--border-strong`); the `:hover` shape is byte-identical
-    // (the focus suite pins both).
-    expect(globalBase()['&button[data-variant="outline"]']).toEqual({
-      borderColor: 'var(--border-strong)',
-    });
-    expect(globalBase()['&button[data-variant="outline"]:hover']).toEqual({
-      borderColor: 'var(--accent-primary)',
-    });
-
-    const outlineDisabled = globalRuleContaining('button[data-variant="outline"]:disabled');
-    expect(outlineDisabled).toBeDefined();
-    expect(outlineDisabled!.color).toBe('var(--text-subtle)');
-
+  it('extends globalCss with the select / radio-card structural rules', () => {
     const selectDisabled = globalRuleContaining('select:disabled');
     expect(selectDisabled).toBeDefined();
     expect(selectDisabled!.color).toBe('var(--text-subtle)');
@@ -180,5 +178,34 @@ describe('#3034 ST-2 — the ONE structural control rule + shared select recipe'
     expect(globalRuleContaining('select:hover')).toBeDefined();
     expect(globalRuleContaining('.chakra-radio-card__itemControl[data-state="checked"]')).toBeDefined();
     expect(globalRuleContaining('.chakra-radio-card__itemControl:hover')).toBeDefined();
+  });
+
+  it('themes outline/ghost buttons via the LIVE recipe (the dead data-variant rules are gone)', () => {
+    // #3035 ST-1 rework — the former `button[data-variant="outline"]*` global
+    // rules were INERT: Chakra v3.34.0 emits no `data-variant` (the selector
+    // matched nothing), and a `@layer base` global rule also loses to the recipe
+    // in `@layer recipes` by layer order. The chrome is now delivered by
+    // `theme.recipes.button`, deep-merged over the built-in recipe — assert the
+    // contract tokens actually land on the LIVE recipe. This re-bases the pin to
+    // the real new mechanism; it is not a relaxation.
+    expect(globalRuleContaining('button[data-variant="outline"]')).toBeUndefined();
+
+    const variants = buttonVariants();
+    expect(variants.outline.color).toBe('fg.default');
+    expect(variants.outline.borderColor).toBe('border.default');
+    expect((variants.outline._hover as Record<string, unknown>).borderColor).toBe('accent.border');
+
+    const outlineDisabled = variants.outline._disabled as Record<string, unknown>;
+    expect(outlineDisabled.color).toBe('fg.subtle');
+    expect(outlineDisabled.borderColor).toBe('border.subtle');
+    expect(outlineDisabled.opacity).toBe(1);
+    // The built-in `disabled` layer style (a 0.5 opacity wash) is dropped.
+    expect(outlineDisabled.layerStyle).toBe('none');
+
+    expect(variants.ghost.color).toBe('fg.default');
+    const ghostDisabled = variants.ghost._disabled as Record<string, unknown>;
+    expect(ghostDisabled.color).toBe('fg.subtle');
+    expect(ghostDisabled.opacity).toBe(1);
+    expect(ghostDisabled.layerStyle).toBe('none');
   });
 });

@@ -234,17 +234,21 @@ describe('#2946 ST-11 global :focus-visible rule', () => {
     expect(JSON.stringify(globalBase())).not.toContain('!important');
   });
 
-  it('keeps the existing globalCss outline-variant behaviour untouched', () => {
+  it('keeps the `button { color: inherit }` pin and re-bases the outline chrome onto the recipe', () => {
     const base = globalBase();
+    // The pre-existing globalCss `button { color: inherit }` pin is retained.
     expect(base['&button']).toEqual({ color: 'inherit' });
-    // #3035 ST-1 — the ENABLED outline boundary is the derived
-    // `border.default` (`--border-strong`); the `:hover` shape is byte-identical.
-    expect(base['&button[data-variant="outline"]']).toEqual({
-      borderColor: 'var(--border-strong)',
-    });
-    expect(base['&button[data-variant="outline"]:hover']).toEqual({
-      borderColor: 'var(--accent-primary)',
-    });
+    // #3035 ST-1 rework — the outline/ghost chrome lives in the recipe (the
+    // cascade-winning `@layer recipes` path), not in `button[data-variant=…]`
+    // global rules that match nothing (Chakra v3.34.0 emits no `data-variant`).
+    // Those dead selectors are GONE; the LIVE recipe carries the contract tokens.
+    expect(base['&button[data-variant="outline"]']).toBeUndefined();
+    expect(base['&button[data-variant="outline"]:hover']).toBeUndefined();
+    const recipe = system.getRecipe('button') as {
+      variants: { variant: Record<string, Record<string, unknown>> };
+    };
+    expect(recipe.variants.variant.outline.color).toBe('fg.default');
+    expect(recipe.variants.variant.outline.borderColor).toBe('border.default');
   });
 
   it('source audit — zero hex/rgba and zero var()NN alpha-append in system.ts', () => {

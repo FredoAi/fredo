@@ -136,11 +136,11 @@ const PortModeOption: React.FC<{
     <RadioCard.ItemControl
       borderWidth="1px"
       borderRadius="md"
-      borderColor={selected ? 'var(--accent-primary)' : 'border.default'}
+      borderColor={selected ? 'accent.border' : 'border.default'}
       bg={selected ? tint('var(--accent-primary)', 8) : 'bg.surface'}
       transition="background 0.15s ease, border-color 0.15s ease"
-      _hover={{ borderColor: 'var(--accent-primary)' }}
-      _focusWithin={{ outline: '2px solid var(--accent-primary)', outlineOffset: '2px' }}
+      _hover={{ borderColor: 'accent.border' }}
+      _focusWithin={{ outline: '2px solid var(--accent-strong)', outlineOffset: '2px' }}
     >
       <RadioCard.ItemContent>
         <RadioCard.ItemText fontWeight="600" color="fg.default">
