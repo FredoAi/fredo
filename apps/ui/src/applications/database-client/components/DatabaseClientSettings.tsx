@@ -87,7 +87,7 @@ export const DatabaseClientSettings: React.FC = () => {
       minHeight="100%"
     >
       <Text fontSize="sm" fontWeight="600" color="fg.default">
-        PostgreSQL client preferences
+        SQL Studio preferences
       </Text>
 
       <VStack align="stretch" gap={4} maxWidth="420px">

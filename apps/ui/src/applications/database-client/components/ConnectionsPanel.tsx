@@ -78,6 +78,8 @@ export const ConnectionsPanel: React.FC<ConnectionsPanelProps> = ({
     <Flex
       data-testid="db-connections-panel"
       direction="column"
+      flex="1"
+      minWidth={0}
       minHeight={0}
       bg="bg.surface"
       borderWidth="1px"
@@ -156,7 +158,7 @@ export const ConnectionsPanel: React.FC<ConnectionsPanelProps> = ({
             p={4}
           >
             <Text fontSize="xs" color="fg.muted" textAlign="center">
-              No connections yet. Add a PostgreSQL connection to get started.
+              No connections yet. Add a connection to get started with SQL Studio.
             </Text>
             <Button
               data-testid="db-connection-new"
@@ -260,7 +262,7 @@ export const ConnectionsPanel: React.FC<ConnectionsPanelProps> = ({
                     color="fg.muted"
                     overflow="hidden"
                     textOverflow="ellipsis"
-                    whiteSpace="nowrap"
+                    whiteSpace="normal"
                     title={
                       view.builtin
                         ? `${view.user}@${view.host}/${view.database} · port resolved automatically when you connect`

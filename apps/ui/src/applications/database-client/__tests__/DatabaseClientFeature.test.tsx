@@ -2,9 +2,10 @@
  * DatabaseClientFeature shell tests (Spec #2950, ST-7).
  *
  * Pins the reachability contract of the shell: the first-run empty state
- * ("Add connection", G-265) opens the connection form; the always-visible
- * access-mode badge renders; selecting a saved connection opens a live session
- * and mounts the schema tree + query workspace + export affordance.
+ * ("Add connection", G-265) opens the connection form; the retired
+ * access-mode badge no longer renders; selecting a saved connection opens a live
+ * session and mounts the schema tree + query workspace + export affordance, with
+ * the Disconnect control relocated into the bottom status bar.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
@@ -51,13 +52,13 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('DatabaseClientFeature — first-run empty state (R-1.1 / G-265)', () => {
-  it('renders the root, the always-visible badge and the Add-connection affordance', async () => {
+  it('renders the root, the Add-connection affordance and no access-mode badge', async () => {
     listMock.mockResolvedValue([]);
     renderWithChakra(<DatabaseClientFeatureView />);
 
     await screen.findByTestId('db-connections-empty');
     expect(screen.getByTestId('db-client-root')).toBeInTheDocument();
-    expect(screen.getByTestId('db-access-mode-badge')).toHaveTextContent('Not connected');
+    expect(screen.queryByTestId('db-access-mode-badge')).not.toBeInTheDocument();
     expect(screen.getByTestId('db-connection-new')).toHaveTextContent('Add connection');
   });
 
@@ -72,7 +73,7 @@ describe('DatabaseClientFeature — first-run empty state (R-1.1 / G-265)', () =
 });
 
 describe('DatabaseClientFeature — selecting a connection opens a session', () => {
-  it('connects, shows the read-only badge and mounts the schema/query surfaces', async () => {
+  it('connects, mounts the schema/query surfaces and offers Disconnect in the status bar', async () => {
     listMock.mockResolvedValue([view]);
     connectMock.mockResolvedValue({
       connectionId: 'c1',
@@ -91,7 +92,12 @@ describe('DatabaseClientFeature — selecting a connection opens a session', () 
         'connected',
       ),
     );
-    expect(screen.getByTestId('db-access-mode-badge')).toHaveTextContent('Read-only');
+    // The access-mode badge is retired; the Disconnect control is relocated into
+    // the bottom status bar and is a SIBLING of the live region, never a child.
+    expect(screen.queryByTestId('db-access-mode-badge')).not.toBeInTheDocument();
+    const disconnect = screen.getByTestId('db-disconnect');
+    expect(disconnect).toHaveTextContent('Disconnect');
+    expect(screen.getByTestId('db-status-operation')).not.toContainElement(disconnect);
     expect(screen.getByTestId('db-schema-tree')).toBeInTheDocument();
     expect(screen.getByTestId('db-query-tabs')).toBeInTheDocument();
     // The export affordance is mounted beside the results grid (R-4.4).
