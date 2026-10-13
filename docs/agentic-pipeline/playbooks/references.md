@@ -63,6 +63,30 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 ---
 ## Known Failure Modes
+### G-356: local_spec_ref_lag_before_planner_dispatch
+- **activation_date:** 2026-10-12
+- **observed:** #3039 — on multiple Phase-2 rescopes the local `spec/<N>` ref lagged `origin/spec/<N>` by unmerged developer commits, so the planning cluster researched a STALE tree (citing symbols/line numbers that did not exist at the real tip). The planner flagged it each time; the plan stayed usable (symbol-name cites), but the citations were wrong. Root-cause class: `machine`/process.
+- **target_failure:** the SI dispatches a planning/rescope cluster while the serving checkout's local spec ref is behind `origin/spec/<N>`, so the planners read a stale tree and cite the wrong state.
+- **guardrail:** Before dispatching ANY planner (triage or rescope), the SI MUST sync the local `spec/<N>` ref to `origin/spec/<N>` (fetch the ref while off the branch, then check it out) so the served tree IS the spec tip. A planner reporting a checkout mismatch is a process defect to fix before trusting the plan's line-number cites.
+- **home:** playbooks/self-improver.md (dispatch) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-355: remove_worktree_discards_a_dirty_worktree
+- **activation_date:** 2026-10-12
+- **observed:** #3039 — a developer's `remove-worktree` discarded its DIRTY worktree (the uncommitted ST-1 implementation was lost); the playbook says it "refuses dirty worktrees" but it did not. The design + root-cause trace survived only in the developer's summary. Root-cause class: `machine defect`.
+- **target_failure:** the `remove-worktree` action removes a worktree that still holds uncommitted edits, so a developer's in-progress implementation is lost between a failed gate check and the handoff.
+- **guardrail:** `remove-worktree` MUST refuse (or loudly warn + require an explicit flag) when the target worktree is dirty, naming the uncommitted paths; a developer never removes a worktree with uncommitted work (commit or stash first). Until the machine hardens it, a developer inspects `git status` in the worktree before removal. Durable fix = the `remove-worktree` handler in `pipeline-state.rs`.
+- **home:** `.opencode/scripts/pipeline-state.rs` (remove-worktree handler) + `.opencode/skills/pipeline-state/SKILL.md` + references.md (this record)
+- **effectiveness:** Pending
+
+### G-354: engine_driven_route_model_must_be_passability_accurate_not_geometric
+- **activation_date:** 2026-10-12
+- **observed:** #3039 (2 Phase-2 rescopes) — the AC5 "complete a level" local route planner shipped a clearance/GEOMETRY model (one-sided line blocks, two-sided passes) that routed THROUGH a two-sided linedef the engine actually BLOCKS (a floor/ceiling height/step delta); the follower rammed it and the retained reflex backed off (a corridor oscillation, `terminal: None`). The fix: an ENGINE-ACCURATE predicate — headroom ≥ the entity height, step-up ≤ the engine's max step height, door OPEN clearance — with the un-exposed engine constant decided by an in-repo empirical probe. Root-cause class: `scope`.
+- **target_failure:** a deterministic route/walkability model over a game engine's map geometry treats a passage as traversable on GEOMETRY alone (e.g. "two-sided linedef = open"), so the planned route crosses a passage the engine's movement rules block and the follower wedges — surfacing only when the policy is driven on real geometry.
+- **guardrail:** When a plan builds a route/passability model over an engine's map data, the traversable predicate MUST replicate the engine's MOVEMENT rules (floor/ceiling headroom vs the entity height, step-up vs the engine's max step, door-open clearance), not geometry alone. Verify each engine constant against the crate's public surface or an in-repo empirical probe — never a guessed literal. A route planner's unit pins MUST assert engine-passable edges (not just that a route exists), and a committed sim-time completion gate MUST run BEFORE the live leg.
+- **home:** playbooks/software-architect.md (route/passability design) + playbooks/developer.md + playbooks/qa-expert.md (row) + references.md (this record)
+- **effectiveness:** Pending
+
 ### G-352: stale_git_index_lock_from_a_crashed_interactive_commit_blocks_the_serving_checkout
 - **activation_date:** 2026-10-12
 - **observed:** #3031 implementation→testing — the repo root carried a stale `.git/index.lock` plus two vim swap files (`.git/.COMMIT_EDITMSG.swp`, `.git/.MERGE_MSG.swp`), the residue of a crashed interactive `git commit`; every index-writing git operation failed ("Unable to create .../.git/index.lock: File exists"), including the `spec/<N>` fast-forward the G-052 serving-currency guard requires before entering `testing`. No git process held it (the process-hygiene inventory listed no git process and zero unprotected orphans) — i.e. a stale lock. Root-cause class: `environment` (tooling/harness). No round burned; the spec completed.
@@ -597,6 +621,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **guardrail:** A CI-parity receipt MUST run the SAME toolchain the gate uses (read/pin the CI toolchain; use `cargo +<version>`), and when the gate's clippy fails while local is green, suspect a toolchain/dependency-resolution skew before a source defect. CI may also run `cargo nextest` rather than `cargo test` — name the actual gate command.
 - **home:** playbooks/developer.md (verification) + playbooks/tester.md + .opencode/skills/dev-environment/SKILL.md + references.md (this record)
 - **effectiveness:** Confirmed (2026-10-01, #2976) — reproducing under the CI toolchain (`cargo +1.99.0 clippy --locked -- -D warnings`) reproduced the 8 errors, and the dependency bump cleared them with a positive control (same toolchain, same source, only the dependency changed: 8 errors → 0); CI then went green.
+- **re-validated:** 2026-10-12, #3039 — RECURRED: the developer's local clippy (older) passed the full suite green, but CI's clippy (1.99.0) flagged `clippy::unnecessary_sort_by` at `navigation.rs:373` under `-D warnings`, so the required `rust-validate` check went red after a green local receipt and cost a scoped CI-fix commit (`b5fcf35`) landed on the open spec branch while in `testing` (G-164). The remedy held: the fix applied the CI help-text's idiomatic form (`sort_by_key(|a| std::cmp::Reverse(a.clearance))`) and swept the module for the same pattern; the remote PASS was the authoritative receipt. Refinement: when the local clippy is older than CI's, proactively rewrite any `sort_by(|a, b| <cmp>)`-shaped pattern in a changed module to its `sort_by_key`/idiomatic form before push.
 
 ### G-283: plan_pins_an_ac_fallback_asset_a_concurrent_main_commit_deletes
 - **activation_date:** 2026-10-01
