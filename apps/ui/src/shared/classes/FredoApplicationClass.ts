@@ -6,7 +6,7 @@
  * 
  * Features that extend this class:
  * - Diagram (Infrastructure Diagram)
- * - QueryViewer (multiple instances for query results)
+ * - Mission Monitor (real-time agent activity graph)
  *
  * Features that DO NOT extend this class:
  * - StreamStatus (fixed position status indicator)
@@ -134,7 +134,7 @@ export abstract class FredoApplicationClass<TProps = {}> {
   /**
    * Callback to request opening this feature's window.
    * Registered by Home.tsx. Call `this.openSelf()` from row-driven one-shot
-   * effects (e.g. the stepper probe's auto-navigation).
+   * effects (e.g. a feature's auto-navigation).
    * No-op if the feature is already open (callback is only called once).
    */
   private _requestOpen: (() => void) | null = null;

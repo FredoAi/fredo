@@ -14,7 +14,7 @@ export interface GenericFeatureResponse {
  * Send a feature response to the backend
  * 
  * @param connectionId - MCP session/connection ID
- * @param featureId - Feature identifier (e.g., 'alerts', 'diagram', 'query-viewer')
+ * @param featureId - Feature identifier (e.g., 'alerts', 'diagram', 'browser-preview')
  * @param payload - Response payload (flexible structure per feature)
  * @param metadata - Optional metadata (timestamps, correlation IDs, etc.)
  */

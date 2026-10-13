@@ -33,7 +33,7 @@ Yes — Fredo's main window is a customizable dockable/tileable workspace (Spec 
 
 ### Can I choose whether an app opens in the main window or in its own window?
 
-Yes — Spec #2955 adds a per-app window choice. Open **Settings → Apps** and, for each app, pick **Main window** (the default — the app opens inside the main Fredo window as one of Fredo's in-window apps) or **Own window** (the app opens in its own separate OS window). The choice is remembered per app and survives a restart. Separate windows are per-app singletons: opening an app whose separate window is already open brings that window to the front rather than creating a second. Apps that open several independent views at once (for example Query Viewer) stay in the main window, since a single separate window cannot represent several instances. Wherever you open the app — the launcher grid, the Open apps row, the companion's `open_app` skill, or `fredo open-app` — the same choice is honoured.
+Yes — Spec #2955 adds a per-app window choice. Open **Settings → Apps** and, for each app, pick **Main window** (the default — the app opens inside the main Fredo window as one of Fredo's in-window apps) or **Own window** (the app opens in its own separate OS window). The choice is remembered per app and survives a restart. Separate windows are per-app singletons: opening an app whose separate window is already open brings that window to the front rather than creating a second. Apps that open several independent views at once stay in the main window, since a single separate window cannot represent several instances. Wherever you open the app — the launcher grid, the Open apps row, the companion's `open_app` skill, or `fredo open-app` — the same choice is honoured.
 
 ---
 

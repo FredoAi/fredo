@@ -147,7 +147,7 @@ describe('LauncherShell — Open-apps row gating (R-2 / R-1 edge)', () => {
   it('renders the row immediately above the grid when engaged with open windows', () => {
     windowsMock.current = [
       win({ id: 'mission-monitor', title: 'Mission Monitor', focused: true, zIndex: 2 }),
-      win({ id: 'query-viewer', title: 'Query Viewer', zIndex: 1 }),
+      win({ id: 'browser-preview', title: 'Browser', zIndex: 1 }),
     ];
     const { container } = renderShell();
     engage();
@@ -160,7 +160,7 @@ describe('LauncherShell — Open-apps row gating (R-2 / R-1 edge)', () => {
     // Exactly the open windows — no more, no fewer.
     expect(screen.getAllByTestId(/^launcher-open-app-entry-/)).toHaveLength(2);
     expect(screen.getByTestId('launcher-open-app-entry-mission-monitor')).toBeInTheDocument();
-    expect(screen.getByTestId('launcher-open-app-entry-query-viewer')).toBeInTheDocument();
+    expect(screen.getByTestId('launcher-open-app-entry-browser-preview')).toBeInTheDocument();
 
     // The grid is present and the row precedes it in document order.
     const grid = container.querySelector('#fredo-launcher-grid');
@@ -197,16 +197,16 @@ describe('LauncherShell — Open-apps row gating (R-2 / R-1 edge)', () => {
 
 describe('LauncherShell — host focus/close dispatch (R-3)', () => {
   it('activate dispatches focusWindow(id); close dispatches closeWindow(id)', () => {
-    const target = win({ id: 'query-viewer', title: 'Query Viewer' });
+    const target = win({ id: 'browser-preview', title: 'Browser' });
     windowsMock.current = [target];
     renderShell();
     engage();
 
-    fireEvent.click(screen.getByTestId('launcher-open-app-entry-query-viewer'));
-    expect(actionsMock.current.focusWindow).toHaveBeenCalledWith('query-viewer');
+    fireEvent.click(screen.getByTestId('launcher-open-app-entry-browser-preview'));
+    expect(actionsMock.current.focusWindow).toHaveBeenCalledWith('browser-preview');
 
-    fireEvent.click(screen.getByTestId('launcher-open-app-close-query-viewer'));
-    expect(actionsMock.current.closeWindow).toHaveBeenCalledWith('query-viewer');
+    fireEvent.click(screen.getByTestId('launcher-open-app-close-browser-preview'));
+    expect(actionsMock.current.closeWindow).toHaveBeenCalledWith('browser-preview');
     // The close never doubles as an activate.
     expect(actionsMock.current.focusWindow).toHaveBeenCalledTimes(1);
   });

@@ -61,14 +61,14 @@ describe('appNameMatches — whole-query prefix OR whole-word run (R-5.1/R-5.4)'
   it('matches a whole word occurring inside the name (AC5: `monitor`)', () => {
     expect(appNameMatches('monitor', 'Mission Monitor')).toBe(true);
     expect(appNameMatches('Monitor', 'Mission Monitor')).toBe(true);
-    expect(appNameMatches('Viewer', 'Query Viewer')).toBe(true);
+    expect(appNameMatches('Storage', 'Model Storage')).toBe(true);
   });
 
   it('matches a contiguous run of whole words inside the name', () => {
     // `Monitor` alone and the full run both hold; the run is boundary-checked
     // as one needle, not word-by-word.
     expect(appNameMatches('monitor', 'Mission Monitor')).toBe(true);
-    expect(appNameMatches('query viewer', 'Query Viewer')).toBe(true);
+    expect(appNameMatches('model storage', 'Model Storage')).toBe(true);
   });
 
   it('REJECTS a sentence that merely contains a matching fragment (R-6.2)', () => {
@@ -114,7 +114,7 @@ describe('appNameMatches — whole-query prefix OR whole-word run (R-5.1/R-5.4)'
   it('INVARIANT: every rule-matching app also passes the grid substring filter', () => {
     // `prefix ⇒ includes` and `whole-word run ⇒ includes` (contract 2) — the
     // grid therefore always shows the app the hint names.
-    const names = ['Settings', 'Mission Monitor', 'Status', 'Query Viewer', 'Terminal'];
+    const names = ['Settings', 'Mission Monitor', 'Status', 'Model Storage', 'Terminal'];
     const queries = [
       'set',
       'Miss',
@@ -131,7 +131,7 @@ describe('appNameMatches — whole-query prefix OR whole-word run (R-5.1/R-5.4)'
       '  set  ',
       's',
       'm',
-      'viewer',
+      'storage',
     ];
     for (const name of names) {
       for (const query of queries) {

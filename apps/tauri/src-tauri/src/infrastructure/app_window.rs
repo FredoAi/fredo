@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     fn generic_apps_use_the_prefixed_label() {
-        assert_eq!(app_window_label("query-viewer"), "app-query-viewer");
+        assert_eq!(app_window_label("browser-preview"), "app-browser-preview");
         assert_eq!(app_window_label("mission-monitor"), "app-mission-monitor");
         assert_eq!(
             app_window_label("x"),
