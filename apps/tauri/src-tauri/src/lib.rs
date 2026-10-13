@@ -809,9 +809,25 @@ pub fn run() {
             // Spec #2950 ST-7 integration: the production state dir is rooted at
             // the resolved app-data dir (`<app_data_dir>/dbclient`), never the
             // repo-relative test fallback; `FREDO_DBCLIENT_STATE_DIR` still wins.
-            app.manage(Arc::new(applications::db_client::state::DbClientState::from_env(
-                &data_dir,
-            )));
+            let db_client_state = Arc::new(
+                applications::db_client::state::DbClientState::from_env(&data_dir),
+            );
+            // Spec #3029 ST-3: the composition root (which MAY import both
+            // applications) wires the live embedded-PostgreSQL endpoint provider
+            // onto the db-client state — the endpoint is resolved at connect time
+            // with NO cross-application import. When no managed supervisor is
+            // present the provider stays absent, so a built-in connect fails with
+            // the typed `config` error (EARS-4b).
+            if let Some(supervisor) =
+                app.try_state::<Arc<applications::pg_supervisor::state::PgSupervisorState>>()
+            {
+                db_client_state.set_embedded_endpoint_provider(Arc::new(
+                    applications::pg_supervisor::endpoint::PgSupervisorEndpointProvider::new(
+                        supervisor.inner().clone(),
+                    ),
+                ));
+            }
+            app.manage(db_client_state);
 
 
             // -- OTLP receiver (Spec #2944 ST-2: env-resolved loopback ports) --

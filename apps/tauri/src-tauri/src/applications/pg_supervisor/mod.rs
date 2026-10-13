@@ -321,6 +321,7 @@ pub mod acquisition; // S1/S2/S3 (#2978): acquisition mode + pinned archive
 pub mod config; // ST-1 (#3022): typed port + verbosity config (pre-PostgreSQL)
 pub mod credentials; // ST-7 (#3005): OS-keychain loopback password
 pub mod descriptor; // CU-1/ST-1 (#2992): headless daemon descriptor
+pub mod endpoint; // ST-3 (#3029): the embedded-endpoint seam adapter (db_client)
 pub mod headless; // ST-5 (#2992): the `fredo ingest` daemon
 pub mod runtime; // ST-1
 pub mod sweep; // ST-2
