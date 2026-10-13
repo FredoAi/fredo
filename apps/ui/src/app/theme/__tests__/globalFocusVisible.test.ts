@@ -23,6 +23,10 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { system } from '../system';
 import { themes, themePresets } from '../../types/theme';
+// #3033 ST-1 — the WCAG arithmetic is single-sourced into `../contrast/wcag`
+// (the contrast gate's shared implementation). Imported, not re-declared; the
+// assertions, floors and tiers below stay byte-identical (G-235 history).
+import { type Rgb, contrast, mixSrgb, parseColor, round2 } from '../contrast/wcag';
 
 // ── globalCss / token CSS readers (same shape the #2865 suite uses) ───────────
 
@@ -58,55 +62,9 @@ const stripComments = (src: string): string =>
   src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
 
 // ── WCAG contrast arithmetic (the G-235 pre-validation) ──────────────────────
-
-type Rgb = [number, number, number];
-
-function parseColor(color: string): Rgb | null {
-  const value = color.trim().toLowerCase();
-  if (value.startsWith('#')) {
-    const hex = value.slice(1);
-    const rrggbb =
-      hex.length === 3 || hex.length === 4
-        ? hex.slice(0, 3).split('').map((c) => c + c).join('')
-        : hex.slice(0, 6);
-    if (rrggbb.length !== 6) return null;
-    return [
-      parseInt(rrggbb.slice(0, 2), 16),
-      parseInt(rrggbb.slice(2, 4), 16),
-      parseInt(rrggbb.slice(4, 6), 16),
-    ];
-  }
-  const m = value.match(/^rgba?\(([^)]+)\)$/);
-  if (!m) return null;
-  const parts = m[1].split(/[\s,/]+/).filter(Boolean).slice(0, 3).map(Number);
-  if (parts.length !== 3 || parts.some((c) => !Number.isFinite(c))) return null;
-  return [parts[0], parts[1], parts[2]];
-}
-
-const toLinear = (c: number): number => {
-  const s = c / 255;
-  return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
-};
-
-const luminance = ([r, g, b]: Rgb): number =>
-  0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
-
-const contrast = (a: Rgb, b: Rgb): number => {
-  const la = luminance(a);
-  const lb = luminance(b);
-  const lighter = Math.max(la, lb);
-  const darker = Math.min(la, lb);
-  return (lighter + 0.05) / (darker + 0.05);
-};
-
-/** `color-mix(in srgb, first p%, second q%)` over opaque colours. */
-const mixSrgb = (first: Rgb, second: Rgb, p: number, q: number): Rgb => [
-  Math.round(first[0] * p + second[0] * q),
-  Math.round(first[1] * p + second[1] * q),
-  Math.round(first[2] * p + second[2] * q),
-];
-
-const round2 = (n: number): number => Math.round(n * 100) / 100;
+// #3033 ST-1 — `Rgb`, `parseColor`, `contrast`, `mixSrgb`, `round2` (and the
+// internal `luminance`) live in `../contrast/wcag`, imported above. The table
+// below is byte-identical to its pre-extraction form (G-235 history).
 
 // ── The table ────────────────────────────────────────────────────────────────
 
