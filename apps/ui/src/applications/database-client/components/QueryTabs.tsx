@@ -8,7 +8,7 @@ import {
   RESULTS_MIN,
 } from '../lib/storage';
 import { DestructiveConfirm } from './DestructiveConfirm';
-import { ResizableSplitter, RESIZE_HIT_AREA } from './ResizableSplitter';
+import { ResizableSplitter, RESIZE_HIT_AREA, clampSplitSize } from './ResizableSplitter';
 import { ResultsGrid } from './ResultsGrid';
 import { SqlEditor, type DbCompletion, type SqlRunRequest } from './SqlEditor';
 import type {
@@ -161,7 +161,11 @@ export const QueryTabs: React.FC<QueryTabsProps> = ({
   }, []);
 
   // Tier-2 (container-aware) max: the editor can never grow so far that the
-  // results region loses its floor. Static limits still bound persistence.
+  // results region loses its floor. Applied to the RENDERED height on every
+  // render (window shrink / restore included) — not just the drag handle — so a
+  // vertical shrink with no divider touched still reflows. Static limits still
+  // bound persistence; the clamped value is never written back. Unmeasured
+  // container (jsdom / first paint) → static max → derived equals persisted.
   const editorHeightLimits = DBCLIENT_LAYOUT_LIMITS.editorResultsHeight;
   const effectiveEditorMax =
     bodyHeight > 0
@@ -182,7 +186,8 @@ export const QueryTabs: React.FC<QueryTabsProps> = ({
     [onEditorHeightChange],
   );
 
-  const renderedEditorHeight = liveEditorHeight ?? editorHeight;
+  const renderedEditorHeight =
+    liveEditorHeight ?? clampSplitSize(editorHeight, editorHeightLimits.min, effectiveEditorMax);
 
   const activeTab = tabs.find((tab) => tab.id === activeId) ?? tabs[0] ?? null;
   const activeTabIdRef = useRef<string | null>(activeTab?.id ?? null);

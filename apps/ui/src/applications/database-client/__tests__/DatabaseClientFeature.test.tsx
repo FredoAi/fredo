@@ -8,7 +8,7 @@
  * the Disconnect control relocated into the bottom status bar.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { DatabaseClientFeatureView } from '../DatabaseClientFeature';
 import { dbConnect, dbConnectionList } from '../lib/api';
@@ -293,5 +293,116 @@ describe('DatabaseClientFeature — no re-render loop during a drag (NFR-1 / GA-
       args.some((arg) => typeof arg === 'string' && arg.includes('Maximum update depth exceeded')),
     );
     expect(loopErrors).toHaveLength(0);
+  });
+});
+
+// ── Spec #3049 (round 2): the tier-2 clamp must bound the RENDERED value ──────
+//
+// Regression for the tester's GA-7 FAIL: a wide layout persisted at a wide
+// window, then the window shrinks with NO divider touched, must still reflow the
+// panes under the container-aware effective max so the workspace keeps its
+// `WORKSPACE_MIN` floor and `db-client-root` cannot overflow. jsdom has no
+// layout engine, so a captured ResizeObserver callback drives the measured size.
+
+/** Capture the ResizeObserver callback so a test can drive a measured size. */
+class ControlledResizeObserver {
+  static instances: ControlledResizeObserver[] = [];
+  private readonly callback: ResizeObserverCallback;
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback;
+    ControlledResizeObserver.instances.push(this);
+  }
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+  emit(size: { width: number; height: number }): void {
+    this.callback(
+      [{ contentRect: size } as unknown as ResizeObserverEntry],
+      this as unknown as ResizeObserver,
+    );
+  }
+}
+
+function emitContainerSize(size: { width: number; height: number }): void {
+  act(() => {
+    for (const observer of ControlledResizeObserver.instances) observer.emit(size);
+  });
+}
+
+describe('DatabaseClientFeature — tier-2 clamp on the render path (Spec #3049 round 2 / GA-7)', () => {
+  beforeEach(() => {
+    ControlledResizeObserver.instances = [];
+    vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('clamps a wide persisted layout when the pane row shrinks (no divider touched)', async () => {
+    // A layout valid at a wide window (left 560 / right 520).
+    localStorage.setItem(
+      'Fredo_dbclient_layout',
+      JSON.stringify({
+        leftSidebarWidth: 560,
+        rightSidebarWidth: 520,
+        editorResultsHeight: 220,
+        connectionsSchemaHeight: 220,
+      }),
+    );
+    listMock.mockResolvedValue([]);
+    renderWithChakra(<DatabaseClientFeatureView />);
+    await screen.findByTestId('db-connections-empty');
+
+    // Unmeasured (jsdom) → the rendered value equals the persisted value.
+    await waitFor(() =>
+      expect(screen.getByTestId('db-resize-handle-left-sidebar').getAttribute('aria-valuenow')).toBe(
+        '560',
+      ),
+    );
+    expect(getComputedStyle(leftSidebarEl()).width).toBe('560px');
+
+    // Shrink the measured pane row to the tester's narrow-window row (863px).
+    emitContainerSize({ width: 863, height: 602 });
+
+    // left  = clamp(560, 220, max(220, min(560, 863-200-320-16=327))) = 327
+    // right = clamp(520, 200, max(200, min(520, 863-327-320-16=200))) = 200
+    await waitFor(() =>
+      expect(screen.getByTestId('db-resize-handle-left-sidebar').getAttribute('aria-valuenow')).toBe(
+        '327',
+      ),
+    );
+    const rightSidebar = screen.getByTestId('db-resize-handle-right-sidebar')
+      .nextElementSibling as HTMLElement;
+    expect(getComputedStyle(leftSidebarEl()).width).toBe('327px');
+    expect(getComputedStyle(rightSidebar).width).toBe('200px');
+    expect(screen.getByTestId('db-resize-handle-right-sidebar').getAttribute('aria-valuenow')).toBe(
+      '200',
+    );
+
+    // Joint floor + no-overflow invariant: sidebars + both 8px bands + the
+    // workspace floor must fit inside the row (jsdom cannot measure scrollWidth,
+    // so this arithmetic is the verifiable proxy for "no db-client-root overflow").
+    const reserved = 327 + 200 + 2 * 8;
+    expect(863 - reserved).toBeGreaterThanOrEqual(320);
+    expect(reserved + 320).toBeLessThanOrEqual(863);
+  });
+
+  it('keeps the persisted value when the container is unmeasured (jsdom fallback)', async () => {
+    localStorage.setItem(
+      'Fredo_dbclient_layout',
+      JSON.stringify({
+        leftSidebarWidth: 420,
+        rightSidebarWidth: 342,
+        editorResultsHeight: 300,
+        connectionsSchemaHeight: 340,
+      }),
+    );
+    listMock.mockResolvedValue([]);
+    renderWithChakra(<DatabaseClientFeatureView />);
+    await screen.findByTestId('db-connections-empty');
+
+    await waitFor(() => expect(getComputedStyle(leftSidebarEl()).width).toBe('420px'));
+    expect(getComputedStyle(leftSidebarEl()).width).toBe('420px');
   });
 });

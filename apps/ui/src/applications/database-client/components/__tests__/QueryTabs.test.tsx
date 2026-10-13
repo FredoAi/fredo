@@ -7,7 +7,7 @@
  * the statement hash only after an explicit confirm).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { QueryTabs } from '../QueryTabs';
 import type { DbQueryOutcome, DbResultSet } from '../../lib/types';
@@ -366,5 +366,66 @@ describe('QueryTabs — editor↔results split (Spec #3049, ST-4)', () => {
 
     fireEvent.keyDown(handle, { key: 'End' });
     expect(onEditorHeightChange).toHaveBeenLastCalledWith(720);
+  });
+});
+
+// ── Spec #3049 (round 2): the tier-2 clamp must bound the RENDERED height ─────
+//
+// Same class as the shell regression: a tall editor height committed at a tall
+// window, then the workspace body shrinks with NO divider touched, must reflow
+// the editor under the container-aware max so the results region keeps its
+// `RESULTS_MIN` floor. A captured ResizeObserver drives the measured size (jsdom
+// has no layout engine).
+
+/** Capture the ResizeObserver callback so a test can drive a measured size. */
+class ControlledResizeObserver {
+  static instances: ControlledResizeObserver[] = [];
+  private readonly callback: ResizeObserverCallback;
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback;
+    ControlledResizeObserver.instances.push(this);
+  }
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+  emit(size: { width: number; height: number }): void {
+    this.callback(
+      [{ contentRect: size } as unknown as ResizeObserverEntry],
+      this as unknown as ResizeObserver,
+    );
+  }
+}
+
+function emitContainerSize(size: { width: number; height: number }): void {
+  act(() => {
+    for (const observer of ControlledResizeObserver.instances) observer.emit(size);
+  });
+}
+
+describe('QueryTabs — tier-2 clamp on the render path (Spec #3049 round 2)', () => {
+  beforeEach(() => {
+    ControlledResizeObserver.instances = [];
+    vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('clamps the rendered editor height when the workspace body shrinks below the prop', async () => {
+    renderWithChakra(<QueryTabs connectionId="c1" editorHeight={720} />);
+
+    // Unmeasured → the rendered height equals the committed prop.
+    expect(getComputedStyle(editorRowBox()).height).toBe('720px');
+
+    emitContainerSize({ width: 900, height: 602 });
+
+    // effectiveMax = max(120, min(720, 602 - 120 - 8)) = 474
+    await waitFor(() => expect(getComputedStyle(editorRowBox()).height).toBe('474px'));
+    expect(screen.getByTestId('db-resize-handle-editor-results').getAttribute('aria-valuenow')).toBe(
+      '474',
+    );
+    // The results region keeps its floor: 602 - 474 - 8 = 120 ≥ RESULTS_MIN.
+    expect(602 - 474 - 8).toBeGreaterThanOrEqual(120);
   });
 });

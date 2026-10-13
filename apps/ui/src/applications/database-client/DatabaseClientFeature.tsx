@@ -11,7 +11,11 @@ import { DatabaseClientSettings } from './components/DatabaseClientSettings';
 import { ExportMenu } from './components/ExportMenu';
 import { HistoryPanel } from './components/HistoryPanel';
 import { QueryTabs } from './components/QueryTabs';
-import { ResizableSplitter, RESIZE_HIT_AREA } from './components/ResizableSplitter';
+import {
+  ResizableSplitter,
+  RESIZE_HIT_AREA,
+  clampSplitSize,
+} from './components/ResizableSplitter';
 import { SavedQueriesPanel } from './components/SavedQueriesPanel';
 import { SchemaInspector } from './components/SchemaInspector';
 import { SchemaTree } from './components/SchemaTree';
@@ -140,14 +144,20 @@ export const DatabaseClientFeatureView: React.FC = () => {
     [commit],
   );
 
-  // Effective (container-aware) tier-2 max. The static `DBCLIENT_LAYOUT_LIMITS`
-  // still bounds what is PERSISTED (ST-1's `commit`); these bounds only limit the
-  // live drag so the workspace/downstream pane keeps its floor. When the
-  // container is unmeasured (jsdom / first paint) the static max applies.
+  // Effective (container-aware) tier-2 bounds, applied to the RENDERED value on
+  // every render — not just the drag handle. So a window shrink (or a restore at
+  // a smaller window) with NO divider touched still reflows the panes under the
+  // live container size and keeps the workspace floor. The static
+  // `DBCLIENT_LAYOUT_LIMITS` still bounds what is PERSISTED (ST-1's `commit`);
+  // these bounds are never written back. When the container is unmeasured
+  // (jsdom / first paint) the static max applies, so the derived value equals
+  // the persisted value.
   const leftLimits = DBCLIENT_LAYOUT_LIMITS.leftSidebarWidth;
   const rightLimits = DBCLIENT_LAYOUT_LIMITS.rightSidebarWidth;
   const connLimits = DBCLIENT_LAYOUT_LIMITS.connectionsSchemaHeight;
   const handleBand = Number.parseInt(RESIZE_HIT_AREA, 10);
+
+  // Left first: its bound reserves the right sidebar's min + the workspace floor.
   const effectiveLeftMax =
     rowWidth > 0
       ? Math.max(
@@ -155,21 +165,28 @@ export const DatabaseClientFeatureView: React.FC = () => {
           Math.min(leftLimits.max, rowWidth - rightLimits.min - WORKSPACE_MIN - 2 * handleBand),
         )
       : leftLimits.max;
+  const leftWidth =
+    liveLeft ?? clampSplitSize(layout.leftSidebarWidth, leftLimits.min, effectiveLeftMax);
+
+  // The right bound is derived from the RENDERED left width so the JOINT floor
+  // holds: leftWidth + rightWidth + 2*band + WORKSPACE_MIN ≤ rowWidth.
   const effectiveRightMax =
     rowWidth > 0
       ? Math.max(
           rightLimits.min,
-          Math.min(rightLimits.max, rowWidth - leftLimits.min - WORKSPACE_MIN - 2 * handleBand),
+          Math.min(rightLimits.max, rowWidth - leftWidth - WORKSPACE_MIN - 2 * handleBand),
         )
       : rightLimits.max;
+  const rightWidth =
+    liveRight ?? clampSplitSize(layout.rightSidebarWidth, rightLimits.min, effectiveRightMax);
+
   const effectiveConnMax =
     rowHeight > 0
       ? Math.max(Math.min(connLimits.max, rowHeight - EDITOR_MIN - handleBand), connLimits.min)
       : connLimits.max;
-
-  const leftWidth = liveLeft ?? layout.leftSidebarWidth;
-  const rightWidth = liveRight ?? layout.rightSidebarWidth;
-  const connHeight = liveConnHeight ?? layout.connectionsSchemaHeight;
+  const connHeight =
+    liveConnHeight ??
+    clampSplitSize(layout.connectionsSchemaHeight, connLimits.min, effectiveConnMax);
 
   const reload = useCallback(async () => {
     setLoadingConnections(true);
