@@ -49,6 +49,14 @@ pub enum CliCommand {
         cli: Option<String>,
         work_dir: Option<String>,
     },
+    /// Export the Doom fine-tuning dataset to a LOCAL path (Spec #3032 ST-5).
+    /// `format` is the canonical lowercase token (`raw|sft|dpo`; default `raw`);
+    /// `out` may be relative (resolved under the dataset dir) or absent. The
+    /// server calls ST-3's `export_doom_dataset` — no network I/O.
+    DoomExportDataset {
+        format: Option<String>,
+        out: Option<String>,
+    },
 }
 
 /// Response the server sends back to the CLI after processing a command.
@@ -155,6 +163,45 @@ async fn dispatch_command(cmd: CliCommand, app: &AppHandle) -> CliResponse {
         }
         CliCommand::OpenTerminal { cli, work_dir } => {
             crate::applications::terminal::open_terminal::dispatch_open_terminal(cli, work_dir, app).await
+        }
+        CliCommand::DoomExportDataset { format, out } => {
+            dispatch_doom_export_dataset(format, out, app).await
+        }
+    }
+}
+
+/// Handle one `CliCommand::DoomExportDataset` from the IPC server: validate the
+/// format token against the declared value set (G-254), run ST-3's LOCAL export
+/// command, and translate the typed outcome into the CLI response (`ok` → exit 0;
+/// a typed error → exit 1). The CLI performs no network I/O.
+async fn dispatch_doom_export_dataset(
+    format: Option<String>,
+    out: Option<String>,
+    app: &AppHandle,
+) -> CliResponse {
+    let format = match format.as_deref() {
+        Some(token) => match crate::applications::doom::dataset::DoomDatasetFormat::parse(token) {
+            Some(parsed) => Some(parsed),
+            None => {
+                return CliResponse::err(format!(
+                    "invalid dataset format `{token}` (expected raw, sft, or dpo)"
+                ))
+            }
+        },
+        None => None,
+    };
+
+    match crate::applications::doom::commands::export_doom_dataset(app.clone(), format, out).await {
+        Ok(result) => {
+            CliResponse::ok(serde_json::to_value(result).unwrap_or(serde_json::Value::Null))
+        }
+        Err(error) => {
+            let message = error.message.clone();
+            CliResponse {
+                ok: false,
+                message: Some(message),
+                data: Some(serde_json::to_value(error).unwrap_or(serde_json::Value::Null)),
+            }
         }
     }
 }
@@ -279,6 +326,44 @@ mod tests {
                 assert!(work_dir.is_none());
             }
             other => panic!("expected OpenTerminal, got {other:?}"),
+        }
+    }
+
+    /// ST-5 (R-4): the `DoomExportDataset` wire command serializes with the
+    /// snake_case tag and its `format`/`out` fields.
+    #[test]
+    fn doom_export_dataset_command_serializes_with_snake_case_tag_and_fields() {
+        let cmd = CliCommand::DoomExportDataset {
+            format: Some("sft".into()),
+            out: Some(".opencode/tmp/3032/export.jsonl".into()),
+        };
+        let json = serde_json::to_value(&cmd).expect("CliCommand serializes");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "doom_export_dataset",
+                "format": "sft",
+                "out": ".opencode/tmp/3032/export.jsonl",
+            })
+        );
+    }
+
+    /// ST-5: an absent `out` round-trips (the server then uses the default
+    /// `<dataset_dir>/exports/` path).
+    #[test]
+    fn doom_export_dataset_command_round_trips_including_absent_out() {
+        let cmd = CliCommand::DoomExportDataset {
+            format: Some("raw".into()),
+            out: None,
+        };
+        let json = serde_json::to_string(&cmd).expect("serialize");
+        let decoded: CliCommand = serde_json::from_str(&json).expect("deserialize");
+        match decoded {
+            CliCommand::DoomExportDataset { format, out } => {
+                assert_eq!(format.as_deref(), Some("raw"));
+                assert!(out.is_none());
+            }
+            other => panic!("expected DoomExportDataset, got {other:?}"),
         }
     }
 
