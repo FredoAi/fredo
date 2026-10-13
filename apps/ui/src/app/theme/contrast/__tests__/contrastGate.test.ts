@@ -15,6 +15,7 @@ import {
   KNOWN_OUT_OF_SCOPE_PAIRS,
   PRESET_IDS,
   type ControlState,
+  type MatrixRow,
   type SurfaceId,
 } from '../matrix';
 import { evaluateContrast } from '../evaluate';
@@ -47,6 +48,7 @@ const ROW_FIELDS = [
   'ratio',
   'floor',
   'composed',
+  'exempt',
 ] as const;
 
 const matrix = buildContrastMatrix();
@@ -63,7 +65,7 @@ describe('matrix coverage (Q-1, AC1 / R-1)', () => {
     expect(new Set(PRESET_IDS).size).toBe(19);
   });
 
-  it('every row carries all 9 fields and its identity is <preset>|<surface>|<state>|<pair>', () => {
+  it('every row carries all 10 fields and its identity is <preset>|<surface>|<state>|<pair>', () => {
     for (const row of matrix) {
       for (const field of ROW_FIELDS) {
         expect(Object.prototype.hasOwnProperty.call(row, field), `${row.key} missing ${field}`).toBe(
@@ -74,6 +76,7 @@ describe('matrix coverage (Q-1, AC1 / R-1)', () => {
       expect(Number.isFinite(row.ratio)).toBe(true);
       expect(Number.isFinite(row.floor)).toBe(true);
       expect(typeof row.composed).toBe('boolean');
+      expect(typeof row.exempt).toBe('boolean');
     }
   });
 
@@ -119,7 +122,10 @@ describe('absolute floor, no tolerance tier (Q-2, AC2 / R-2)', () => {
     expect(UI_FLOOR).toBe(3);
   });
 
-  it('floor-checks the light-default primary focus pairs at 3 and baselines them to #3035', () => {
+  it('resolves the light-default primary focus pairs from the deepened contract chrome token and clears 3', () => {
+    // ST-2 (#3035) — the gate now resolves `accent.focusRing` (the deepened
+    // contract token) rather than the raw brand fill, so these rows clear the
+    // 3:1 floor and leave the (now empty) baseline.
     for (const key of [
       'light-default|canvas|focus|focus-ring',
       'light-default|surface|focus|focus-ring',
@@ -128,9 +134,8 @@ describe('absolute floor, no tolerance tier (Q-2, AC2 / R-2)', () => {
       expect(row, key).toBeDefined();
       expect(row!.kind).toBe('focus');
       expect(row!.floor).toBe(UI_FLOOR);
-      const entry = CONTRAST_BASELINE.find((e) => e.key === key);
-      expect(entry, `${key} must be baselined`).toBeDefined();
-      expect(entry!.issue).toBe(3035);
+      expect(row!.ratio, `${key} must clear its 3:1 floor`).toBeGreaterThanOrEqual(UI_FLOOR);
+      expect(CONTRAST_BASELINE.find((e) => e.key === key), `${key} must not be baselined`).toBeUndefined();
     }
   });
 
@@ -168,6 +173,8 @@ describe('AC5 control classes and states (Q-7, R-5)', () => {
       expect(row.composed, `${row.key} must be a token read, not an opacity composition`).toBe(false);
       expect(row.kind, row.key).toBe('body');
       expect(row.floor, row.key).toBe(BODY_FLOOR);
+      // ST-2 (#3035) — WCAG inactive-component exemption (never a floor violation).
+      expect(row.exempt, `${row.key} must be WCAG-exempt`).toBe(true);
     }
     // `fg.subtle` on the surface background is preset-uniform across the three classes.
     for (const presetId of PRESET_IDS) {
@@ -187,12 +194,22 @@ describe('AC5 control classes and states (Q-7, R-5)', () => {
     expect(solidHover?.composed).toBe(true);
   });
 
-  it('routes the non-token RadioCard.ItemIndicator to #3035 in KNOWN_OUT_OF_SCOPE_PAIRS', () => {
-    const entry = KNOWN_OUT_OF_SCOPE_PAIRS.find(
-      (p) => p.surface === 'radio-card' && p.pairId === 'item-indicator',
-    );
-    expect(entry).toBeDefined();
-    expect(entry!.issue).toBe(3035);
+  it('closes the RadioCard.ItemIndicator route: KNOWN_OUT_OF_SCOPE_PAIRS is empty and the indicator is an in-scope row', () => {
+    // ST-2 (#3035) — the indicator is now token-backed, so the out-of-scope
+    // route is emptied and it becomes a first-class gate row.
+    expect(KNOWN_OUT_OF_SCOPE_PAIRS).toEqual([]);
+    for (const presetId of PRESET_IDS) {
+      const row = matrix.find(
+        (r) =>
+          r.presetId === presetId &&
+          r.surface === 'radio-card' &&
+          r.state === 'selected' &&
+          r.pairId === 'indicator',
+      );
+      expect(row, `${presetId} radio-card|selected|indicator`).toBeDefined();
+      expect(row!.kind).toBe('ui');
+      expect(row!.floor).toBe(UI_FLOOR);
+    }
   });
 
   it('uses the 4.5 body floor for the radio-card label (body text), not 3', () => {
@@ -205,11 +222,50 @@ describe('AC5 control classes and states (Q-7, R-5)', () => {
 });
 
 describe('day-one green on the tip (Q-5 re-bind, AC1 / AC3)', () => {
-  it('contrast matrix evaluates green: no violations, no stale, baseline at or under the frozen cap', () => {
+  it('contrast matrix evaluates green: no violations, no stale, the ledger emptied and the cap at 0', () => {
     expect(contrast.violations).toEqual([]);
     expect(contrast.staleBaseline).toEqual([]);
-    expect(BASELINE_MAX).toBe(184);
-    expect(CONTRAST_BASELINE.length).toBeLessThanOrEqual(BASELINE_MAX);
+    expect(BASELINE_MAX).toBe(0);
+    expect(CONTRAST_BASELINE.length).toBe(0);
+  });
+
+  it('exempt (WCAG inactive-component) rows are floor-reported but never violations', () => {
+    const exemptRows = matrix.filter((r) => r.exempt);
+    expect(exemptRows.length).toBeGreaterThan(0);
+    const violationKeys = new Set(contrast.violations.map((v) => v.key));
+    for (const row of exemptRows) {
+      expect(violationKeys.has(row.key), `${row.key} must never be a violation`).toBe(false);
+    }
+    // Every `disabled` gate row is exempt; no non-disabled row is.
+    for (const row of matrix) {
+      expect(row.exempt, row.key).toBe(row.state === 'disabled');
+    }
+  });
+
+  it('filters an exempt row out of belowFloor regardless of ratio (WCAG exemption, not a baseline)', () => {
+    // A below-floor exempt row is never a violation; an identical NON-exempt row
+    // at the same ratio IS. Proves the exemption is a scope filter, not a cap.
+    const base: MatrixRow = {
+      key: 'x|control-outline|disabled|label',
+      presetId: 'x',
+      surface: 'control-outline',
+      state: 'disabled',
+      pairId: 'label',
+      kind: 'body',
+      ratio: 1,
+      floor: BODY_FLOOR,
+      composed: false,
+      exempt: true,
+    };
+    const exempt = base;
+    const floorRow: MatrixRow = {
+      ...base,
+      key: 'x|control-outline|default|label',
+      state: 'default',
+      exempt: false,
+    };
+    const evaluation = evaluateContrast([exempt, floorRow], [], 0);
+    expect(evaluation.violations.map((v) => v.key)).toEqual([floorRow.key]);
   });
 
   it('raw-colour scan evaluates green on the real tree: no violations, no stale, cap === baseline length', () => {

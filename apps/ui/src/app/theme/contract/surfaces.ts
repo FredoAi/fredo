@@ -68,6 +68,15 @@ export interface ContractPair {
   readonly fg: string;
   /** A token NAME resolved via `SEMANTIC_TOKENS`, never a literal. */
   readonly bg: string;
+  /**
+   * #3035 ST-2 — WCAG 1.4.3/1.4.11 INACTIVE-COMPONENT exemption. A `disabled`
+   * control is exempt from the 4.5:1 body floor: it must read *dimmer* than the
+   * enabled treatment, never reach AA. An `exempt` pair is still floor-REPORTED
+   * for perceptibility (it stays in the matrix) but is never a floor violation —
+   * `evaluateContrast` filters it out of `belowFloor`. This is not a tolerance
+   * tier: the floor is unchanged, the pair is simply outside the floor's scope.
+   */
+  readonly exempt?: boolean;
 }
 
 /** The painted surfaces, in declaration order (the binding vocabulary). */
@@ -118,7 +127,7 @@ export const DERIVATIONS: {
   hoverBgPct: 0.06,
 };
 
-/** `[surface, state, pairId, kind, fg, bg, composed?]` seed row. */
+/** `[surface, state, pairId, kind, fg, bg, composed?, exempt?]` seed row. */
 type PairSeed = readonly [
   surface: SurfaceId,
   state: ControlState,
@@ -127,6 +136,7 @@ type PairSeed = readonly [
   fg: string,
   bg: string,
   composed?: boolean,
+  exempt?: boolean,
 ];
 
 const seeds: PairSeed[] = [];
@@ -155,7 +165,8 @@ function addSurface(
     [surface, 'focus', 'focus-ring', 'focus', focusRing, bg],
     [surface, 'selected', 'indicator', 'ui', 'accent.strong', bg],
     [surface, 'selected', 'label', 'body', 'fg.onAccent', 'accent.strong'],
-    [surface, 'disabled', 'label', 'body', 'fg.subtle', bg],
+    // `disabled` is WCAG-exempt (inactive component) — floor-reported, never a violation.
+    [surface, 'disabled', 'label', 'body', 'fg.subtle', bg, false, true],
   );
 }
 
@@ -208,7 +219,7 @@ function floorFor(kind: ContrastKind): number {
  * token names resolved via `SEMANTIC_TOKENS` (`./tokens`), never literals.
  */
 export const CONTRACT_PAIRS: readonly ContractPair[] = seeds.map(
-  ([surface, state, pairId, kind, fg, bg, composed]) => ({
+  ([surface, state, pairId, kind, fg, bg, composed, exempt]) => ({
     surface,
     state,
     pairId,
@@ -217,5 +228,6 @@ export const CONTRACT_PAIRS: readonly ContractPair[] = seeds.map(
     composed: composed ?? false,
     fg,
     bg,
+    exempt: exempt ?? false,
   }),
 );

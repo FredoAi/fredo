@@ -74,6 +74,12 @@ export interface MatrixRow {
   floor: number;
   /** True when the pair is opacity/alpha-derived (H1), never a token read. */
   composed: boolean;
+  /**
+   * #3035 ST-2 — WCAG inactive-component exemption, propagated from the
+   * contract (`ContractPair.exempt`, `../contract`). An exempt pair is
+   * floor-REPORTED (it stays in the matrix) but never a floor violation.
+   */
+  exempt: boolean;
 }
 
 /**
@@ -88,21 +94,15 @@ export interface OutOfScopePair {
 }
 
 /**
- * `RadioCard.ItemIndicator` declares no `colorPalette`/`color`
- * (`AppPresentationSettings.tsx:123`, `PostgresSettings.tsx:164`, `CliOption.tsx:48`),
- * so it resolves from Chakra's stock palette — not a Fredo token. #3035 owns
- * making it token-driven (add a `colorPalette`), after which it becomes an
- * in-scope row and this entry is removed.
+ * KNOWN colour pairs the token-arithmetic gate CANNOT derive deterministically,
+ * routed to the issue that owns making them token-driven. Never silently omitted.
+ *
+ * #3035 ST-2 — EMPTY. The former `radio-card|item-indicator` route is closed:
+ * the `RadioCard.ItemIndicator` is token-driven (ST-4 adds the component
+ * `colorPalette`), so it is now the in-scope, token-backed
+ * `radio-card|selected|indicator` gate row (`PAIR_SPECS` below).
  */
-export const KNOWN_OUT_OF_SCOPE_PAIRS: readonly OutOfScopePair[] = [
-  {
-    surface: 'radio-card',
-    pairId: 'item-indicator',
-    reason:
-      'RadioCard.ItemIndicator declares no colorPalette/color → resolves from the Chakra stock palette, not a Fredo token; the token-arithmetic gate cannot derive it deterministically.',
-    issue: 3035,
-  },
-];
+export const KNOWN_OUT_OF_SCOPE_PAIRS: readonly OutOfScopePair[] = [];
 
 /** The base record's id in the matrix — `themes.classic`, the locked base. */
 const BASE_PRESET_ID = 'classic (base — no preset)';
@@ -231,6 +231,10 @@ function resolveTokenRgb(
 interface PresetTokens {
   readonly accent: Rgb;
   readonly accentStrong: Rgb;
+  /** `accent.border` — the deepened hover/selected control boundary (ST-1). */
+  readonly accentBorder: Rgb;
+  /** `accent.focusRing` — the deepened keyboard focus ring (ST-1). */
+  readonly accentFocusRing: Rgb;
   readonly accentContrast: Rgb;
   readonly textPrimary: Rgb;
   readonly textSecondary: Rgb;
@@ -245,6 +249,11 @@ function resolveTokens(colors: Record<string, string>): PresetTokens {
   return {
     accent: resolveTokenRgb('accent.default', colors),
     accentStrong: resolveTokenRgb('accent.strong', colors),
+    // #3035 ST-2 — the gate resolves the DECLARED contract chrome tokens by NAME
+    // (not the raw brand `accent.default`), so ST-1's deepening of
+    // `accent.border` / `accent.focusRing` propagates into the matrix.
+    accentBorder: resolveTokenRgb('accent.border', colors),
+    accentFocusRing: resolveTokenRgb('accent.focusRing', colors),
     accentContrast: resolveTokenRgb('fg.onAccent', colors),
     textPrimary: resolveTokenRgb('fg.default', colors),
     textSecondary: resolveTokenRgb('fg.muted', colors),
@@ -268,8 +277,15 @@ function resolveTokens(colors: Record<string, string>): PresetTokens {
 
 /** Solid confirm Button `_hover={{ opacity: 0.9 }}` (AppPresentationSettings.tsx:422). */
 const SOLID_HOVER_OPACITY = 0.9;
-/** Radio-card selected fill `tint(--accent-primary, 12)` (AppPresentationSettings.tsx:110). */
-const RADIO_SELECTED_TINT = 0.12;
+/**
+ * Radio-card selected fill `tint(--accent-primary, RADIO_SELECTED_TINT)`.
+ *
+ * #3035 ST-2 lowered this from 0.12 to 0.08 so `fg.default` over the composed
+ * selected fill clears its 4.5:1 body floor on the short solarized preset
+ * (solarized `radio-card|selected|label` 3.92 → 4.93). The component tint
+ * (owned by the surface call sites) must mirror this exact value.
+ */
+const RADIO_SELECTED_TINT = 0.08;
 
 /** One pair specification, resolved against a preset's tokens. */
 interface PairSpec {
@@ -300,13 +316,13 @@ const PAIR_SPECS: readonly PairSpec[] = [
   { surface: 'canvas', state: 'default', pairId: 'fg-default', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.default', bgToken: 'bg.canvas', fg: (t) => t.textPrimary, bg: (t) => t.bodyBg },
   { surface: 'canvas', state: 'default', pairId: 'fg-muted', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.muted', bgToken: 'bg.canvas', fg: (t) => t.textSecondary, bg: (t) => t.bodyBg },
   { surface: 'canvas', state: 'default', pairId: 'fg-subtle', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.subtle', bgToken: 'bg.canvas', fg: (t) => t.textSubtle, bg: (t) => t.bodyBg },
-  { surface: 'canvas', state: 'focus', pairId: 'focus-ring', kind: 'focus', floor: UI_FLOOR, composed: false, fgToken: 'accent.focusRing', bgToken: 'bg.canvas', fg: (t) => t.accent, bg: (t) => t.bodyBg },
+  { surface: 'canvas', state: 'focus', pairId: 'focus-ring', kind: 'focus', floor: UI_FLOOR, composed: false, fgToken: 'accent.focusRing', bgToken: 'bg.canvas', fg: (t) => t.accentFocusRing, bg: (t) => t.bodyBg },
 
   // ── surface (--card-bg) ─────────────────────────────────────────────────────
   { surface: 'surface', state: 'default', pairId: 'fg-default', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.default', bgToken: 'bg.surface', fg: (t) => t.textPrimary, bg: (t) => t.cardBg },
   { surface: 'surface', state: 'default', pairId: 'fg-muted', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.muted', bgToken: 'bg.surface', fg: (t) => t.textSecondary, bg: (t) => t.cardBg },
   { surface: 'surface', state: 'default', pairId: 'fg-subtle', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.subtle', bgToken: 'bg.surface', fg: (t) => t.textSubtle, bg: (t) => t.cardBg },
-  { surface: 'surface', state: 'focus', pairId: 'focus-ring', kind: 'focus', floor: UI_FLOOR, composed: false, fgToken: 'accent.focusRing', bgToken: 'bg.surface', fg: (t) => t.accent, bg: (t) => t.cardBg },
+  { surface: 'surface', state: 'focus', pairId: 'focus-ring', kind: 'focus', floor: UI_FLOOR, composed: false, fgToken: 'accent.focusRing', bgToken: 'bg.surface', fg: (t) => t.accentFocusRing, bg: (t) => t.cardBg },
 
   // ── subtle (--header-bg) ────────────────────────────────────────────────────
   { surface: 'subtle', state: 'default', pairId: 'fg-default', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.default', bgToken: 'bg.subtle', fg: (t) => t.textPrimary, bg: (t) => t.headerBg },
@@ -317,25 +333,30 @@ const PAIR_SPECS: readonly PairSpec[] = [
   // ── control-outline (global `button` + `button[data-variant=outline]`, :18-20) ─
   { surface: 'control-outline', state: 'default', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.default', bgToken: 'bg.surface', fg: (t) => t.textPrimary, bg: (t) => t.cardBg },
   { surface: 'control-outline', state: 'default', pairId: 'border', kind: 'border', floor: UI_FLOOR, composed: false, fgToken: 'border.default', bgToken: 'bg.surface', fg: (t) => t.borderColor, bg: (t) => t.cardBg },
-  { surface: 'control-outline', state: 'hover', pairId: 'border', kind: 'border', floor: UI_FLOOR, composed: false, fgToken: 'accent.border', bgToken: 'bg.surface', fg: (t) => t.accent, bg: (t) => t.cardBg },
-  { surface: 'control-outline', state: 'focus', pairId: 'focus-ring', kind: 'focus', floor: UI_FLOOR, composed: false, fgToken: 'accent.focusRing', bgToken: 'bg.surface', fg: (t) => t.accent, bg: (t) => t.cardBg },
+  { surface: 'control-outline', state: 'hover', pairId: 'border', kind: 'border', floor: UI_FLOOR, composed: false, fgToken: 'accent.border', bgToken: 'bg.surface', fg: (t) => t.accentBorder, bg: (t) => t.cardBg },
+  { surface: 'control-outline', state: 'focus', pairId: 'focus-ring', kind: 'focus', floor: UI_FLOOR, composed: false, fgToken: 'accent.focusRing', bgToken: 'bg.surface', fg: (t) => t.accentFocusRing, bg: (t) => t.cardBg },
   { surface: 'control-outline', state: 'disabled', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.subtle', bgToken: 'bg.surface', fg: (t) => t.textSubtle, bg: (t) => t.cardBg },
 
   // ── select (canonical `selectStyles`, LayoutSettings.tsx:71-89) ─────────────
   { surface: 'select', state: 'default', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.default', bgToken: 'bg.surface', fg: (t) => t.textPrimary, bg: (t) => t.cardBg },
   { surface: 'select', state: 'default', pairId: 'border', kind: 'border', floor: UI_FLOOR, composed: false, fgToken: 'border.default', bgToken: 'bg.surface', fg: (t) => t.borderColor, bg: (t) => t.cardBg },
-  { surface: 'select', state: 'hover', pairId: 'border', kind: 'border', floor: UI_FLOOR, composed: false, fgToken: 'accent.border', bgToken: 'bg.surface', fg: (t) => t.accent, bg: (t) => t.cardBg },
-  { surface: 'select', state: 'focus', pairId: 'focus-ring', kind: 'focus', floor: UI_FLOOR, composed: false, fgToken: 'accent.focusRing', bgToken: 'bg.surface', fg: (t) => t.accent, bg: (t) => t.cardBg },
+  { surface: 'select', state: 'hover', pairId: 'border', kind: 'border', floor: UI_FLOOR, composed: false, fgToken: 'accent.border', bgToken: 'bg.surface', fg: (t) => t.accentBorder, bg: (t) => t.cardBg },
+  { surface: 'select', state: 'focus', pairId: 'focus-ring', kind: 'focus', floor: UI_FLOOR, composed: false, fgToken: 'accent.focusRing', bgToken: 'bg.surface', fg: (t) => t.accentFocusRing, bg: (t) => t.cardBg },
   { surface: 'select', state: 'disabled', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.subtle', bgToken: 'bg.surface', fg: (t) => t.textSubtle, bg: (t) => t.cardBg },
 
   // ── radio-card (AppPresentationSettings.tsx:100-124) ────────────────────────
   { surface: 'radio-card', state: 'default', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.default', bgToken: 'bg.surface', fg: (t) => t.textPrimary, bg: (t) => t.cardBg },
   { surface: 'radio-card', state: 'default', pairId: 'border', kind: 'border', floor: UI_FLOOR, composed: false, fgToken: 'border.default', bgToken: 'bg.surface', fg: (t) => t.borderColor, bg: (t) => t.cardBg },
-  { surface: 'radio-card', state: 'hover', pairId: 'border', kind: 'border', floor: UI_FLOOR, composed: false, fgToken: 'accent.border', bgToken: 'bg.surface', fg: (t) => t.accent, bg: (t) => t.cardBg },
-  { surface: 'radio-card', state: 'focus', pairId: 'focus-ring', kind: 'focus', floor: UI_FLOOR, composed: false, fgToken: 'accent.focusRing', bgToken: 'bg.surface', fg: (t) => t.accent, bg: (t) => t.cardBg },
+  { surface: 'radio-card', state: 'hover', pairId: 'border', kind: 'border', floor: UI_FLOOR, composed: false, fgToken: 'accent.border', bgToken: 'bg.surface', fg: (t) => t.accentBorder, bg: (t) => t.cardBg },
+  { surface: 'radio-card', state: 'focus', pairId: 'focus-ring', kind: 'focus', floor: UI_FLOOR, composed: false, fgToken: 'accent.focusRing', bgToken: 'bg.surface', fg: (t) => t.accentFocusRing, bg: (t) => t.cardBg },
   { surface: 'radio-card', state: 'disabled', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.subtle', bgToken: 'bg.surface', fg: (t) => t.textSubtle, bg: (t) => t.cardBg },
   { surface: 'radio-card', state: 'selected', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: true, fgToken: 'fg.default', bgToken: 'accent.solid', fg: (t) => t.textPrimary, bg: (t) => composite(t.accent, t.cardBg, RADIO_SELECTED_TINT) },
-  { surface: 'radio-card', state: 'selected', pairId: 'border', kind: 'border', floor: UI_FLOOR, composed: false, fgToken: 'accent.border', bgToken: 'bg.surface', fg: (t) => t.accent, bg: (t) => t.cardBg },
+  { surface: 'radio-card', state: 'selected', pairId: 'border', kind: 'border', floor: UI_FLOOR, composed: false, fgToken: 'accent.border', bgToken: 'bg.surface', fg: (t) => t.accentBorder, bg: (t) => t.cardBg },
+  // #3035 ST-2 — the selected indicator dot (was KNOWN_OUT_OF_SCOPE_PAIRS). It
+  // is now a token-backed row: the contract enumerates `radio-card|selected|
+  // indicator` as `accent.strong` on `bg.surface` (`surfaces.ts` `addSurface`),
+  // which the surface fixes (ST-4) make truthful by token-driving the dot.
+  { surface: 'radio-card', state: 'selected', pairId: 'indicator', kind: 'ui', floor: UI_FLOOR, composed: false, fgToken: 'accent.strong', bgToken: 'bg.surface', fg: (t) => t.accentStrong, bg: (t) => t.cardBg },
 
   // ── control-solid (system.ts:111,89; AppPresentationSettings.tsx:418-427) ───
   { surface: 'control-solid', state: 'default', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.onAccent', bgToken: 'accent.solid', fg: (t) => t.accentContrast, bg: (t) => t.accent },
@@ -345,6 +366,18 @@ const PAIR_SPECS: readonly PairSpec[] = [
 /** The contract `surface|state` cells (the completeness enumeration). */
 export const CONTRACT_CELLS: ReadonlySet<string> = new Set(
   CONTRACT_PAIRS.map((pair) => `${pair.surface}|${pair.state}`),
+);
+
+/**
+ * The contract `surface|state|pairId` cells flagged WCAG-exempt (#3035 ST-2),
+ * propagated from the contract (`ContractPair.exempt`) so the gate never
+ * re-invents the inactive-component exemption. `evaluateContrast` filters these
+ * rows out of `belowFloor`, so an exempt pair is never a floor violation.
+ */
+const EXEMPT_CELLS: ReadonlySet<string> = new Set(
+  CONTRACT_PAIRS.filter((pair) => pair.exempt).map(
+    (pair) => `${pair.surface}|${pair.state}|${pair.pairId}`,
+  ),
 );
 
 /**
@@ -381,6 +414,7 @@ export function buildContrastMatrix(): MatrixRow[] {
         ratio: round2(contrast(spec.fg(tokens), spec.bg(tokens))),
         floor: spec.floor,
         composed: spec.composed,
+        exempt: EXEMPT_CELLS.has(`${spec.surface}|${spec.state}|${spec.pairId}`),
       });
     }
   }

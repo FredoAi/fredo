@@ -27,8 +27,21 @@ function injectedRow(over: Partial<MatrixRow> & Pick<MatrixRow, 'key'>): MatrixR
     ratio: 1.2,
     floor: BODY_FLOOR,
     composed: false,
+    exempt: false,
     ...over,
   };
+}
+
+/**
+ * A synthesized baseline entry — the committed ledger is EMPTY after the #3035
+ * ST-2 drain, so the excuse-layer seams build their own fixture rather than
+ * indexing `CONTRAST_BASELINE[0]` (now absent). Mirrors the raw-colour stale
+ * test's synthesized `{file, literal}` entry.
+ */
+function injectedBaselineEntry(
+  over: Partial<ContrastBaselineEntry> & Pick<ContrastBaselineEntry, 'key'>,
+): ContrastBaselineEntry {
+  return { ratio: 1.2, issue: 3035, note: 'synthesized ledger fixture', ...over };
 }
 
 describe('contrast: an unbaselined below-floor pair is a NEW violation (Q-3 / Q-8, AC2.b)', () => {
@@ -55,19 +68,21 @@ describe('contrast: an unbaselined below-floor pair is a NEW violation (Q-3 / Q-
   });
 
   it('keys a violating row to the baseline by identity (baselined, not new)', () => {
-    const baselined = CONTRAST_BASELINE[0];
+    // #3035 ST-2 — the committed ledger is empty, so synthesize the entry.
+    const baselined = injectedBaselineEntry({ key: 'light-default|canvas|default|__ledger__' });
     const row = injectedRow({ key: baselined.key, ratio: 1.2 });
-    const evaluation = evaluateContrast([row], CONTRAST_BASELINE, BASELINE_MAX);
+    const evaluation = evaluateContrast([row], [baselined], 1);
     expect(evaluation.violations).toEqual([]);
     expect(evaluation.baselined.map((r) => r.key)).toContain(baselined.key);
   });
 });
 
 describe('contrast: a stale baseline entry fails (Q-9)', () => {
-  it('reports a baselined entry whose row is removed from the matrix', () => {
-    const entry = CONTRAST_BASELINE[0];
-    const rows = matrix.filter((r) => r.key !== entry.key);
-    const evaluation = evaluateContrast(rows, CONTRAST_BASELINE, BASELINE_MAX);
+  it('reports a baselined entry whose row is absent from the matrix', () => {
+    // #3035 ST-2 — the committed ledger is empty, so synthesize an entry whose
+    // key cannot match any live matrix row (mirrors the raw-colour stale test).
+    const entry = injectedBaselineEntry({ key: 'light-default|canvas|default|__stale__' });
+    const evaluation = evaluateContrast(matrix, [entry], 1);
     expect(evaluation.staleBaseline.map((e) => e.key)).toContain(entry.key);
   });
 });
