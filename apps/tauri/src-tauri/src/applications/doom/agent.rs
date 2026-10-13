@@ -50,9 +50,10 @@
 //! therefore OPTIONAL — never required.
 
 use std::future::Future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -60,8 +61,10 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::infrastructure::companion::doom_decision::{
-    DoomDecision, DoomDecisionError, DoomDecisionSource, DoomPlan, DoomPlanStep,
+    DoomDecision, DoomDecisionError, DoomDecisionSource, DoomDecisionTrace, DoomPlan, DoomPlanStep,
+    DOOM_PLAN_SCHEMA_NAME,
 };
+use crate::infrastructure::storage::boot_config::DATA_DIR_ENV;
 
 use super::actions::{
     DOOM_ACTION_BACKWARD, DOOM_ACTION_FORWARD, DOOM_ACTION_SHOOT, DOOM_ACTION_STRAFE_LEFT,
@@ -78,10 +81,16 @@ use super::clock::{
     DOOM_CONTINUOUS_TICK_PERIOD_MS, DOOM_DEGRADED_AFTER_FAILURES, DOOM_DEGRADED_TICK_PERIOD_MS,
     DOOM_STATUS_EMIT_MS,
 };
+use super::dataset::{
+    dataset_dir_from, dataset_enabled_from_env, decision_id_for, episode_id_for,
+    plan_steps_to_values, DoomDatasetConfig, DoomDatasetDecision, DoomDatasetDecisionError,
+    DoomDatasetExecution, DoomDatasetExecutionStep, DoomDatasetLevel, DoomDatasetLevelResult,
+    DoomDatasetModel, DoomDatasetRecord, DoomDatasetReplan, DoomDatasetReward, DoomDatasetTerminal,
+    DoomDatasetWriter, DOOM_DATASET_DIR_ENV, DOOM_DATASET_SCHEMA_VERSION,
+};
 use super::engine::{DoomEngineError, DoomEngineErrorCode, DoomEngineState};
 use super::plan::{
-    build_replan_audit_record, observation_has_front_enemy, PlanAction, PlanExecutor,
-    ReplanCounters,
+    observation_has_front_enemy, PlanAction, PlanExecutor, ReplanCounters,
 };
 use super::progress::DoomProgressWriter;
 use super::save::DoomCampaign;
@@ -118,13 +127,6 @@ pub const DOOM_REFLEX_BLOCKED_TICKS: u32 = 4;
 /// The bounded step-back length (held tics) the reflex issues when it drops a
 /// wall-running `forward` (R-3a).
 pub const DOOM_REFLEX_STEP_BACK_TICKS: i64 = 2;
-
-/// File name of the bounded issued-action / reflex audit JSONL inside
-/// [`super::decision::DOOM_AGENT_LOG_DIR_ENV`].
-pub const DOOM_AGENT_ACTION_AUDIT_FILE: &str = "doom-agent-actions.jsonl";
-
-/// Maximum records retained in the issued-action audit JSONL (the last-N bound).
-pub const DOOM_AGENT_ACTION_AUDIT_MAX_RECORDS: usize = 256;
 
 // ── Unstick / escape + local-locomotion policy (Spec #3031 ST-3) ─────────────
 
@@ -1186,68 +1188,511 @@ async fn pace(clock: &dyn DoomTickClock, period: Duration) {
     }
 }
 
-/// Whether the issued-action audit should emit this tick (Spec #3039 ST-4b, F-4).
-///
-/// The historical gate emitted only on `adopted || reflex_fired`, so an executor
-/// step issued NATIVE actions that changed between those ticks — notably an
-/// `open-door` step's first `[turn-to, use]` tick, issued via
-/// [`PlanExecutor`](super::plan::PlanExecutor) rather than on an adoption tick —
-/// was never journalled. The broadened gate emits on any CHANGE of the issued
-/// native action set (`last_audited` vs `effective`), while leaving the
-/// adoption/reflex records intact.
-///
-/// A change-gate (not every tick) is deliberate: a `Move` step re-issues an
-/// identical `[turn-to, forward]` every tick, and journalling each would fill the
-/// bounded [`DOOM_AGENT_ACTION_AUDIT_MAX_RECORDS`] window and destroy the
-/// one-action-set-per-record evidence.
-fn should_audit_action_set(
-    adopted: bool,
-    reflex_fired: bool,
-    native_step: bool,
-    last_audited: Option<&[Value]>,
-    effective: &[Value],
-) -> bool {
-    adopted || reflex_fired || (native_step && last_audited != Some(effective))
+// ── Dataset assembly (Spec #3032, ST-2) ──────────────────────────────────────
+
+/// The embedded shareware WAD name stamped on every dataset record's
+/// `level.wadId`. The engine plays the bundled `DOOM1.WAD`; the observation
+/// carries no WAD id, so the name is pinned here (G-255).
+pub const DOOM_DATASET_WAD_ID: &str = "DOOM1.WAD";
+
+/// The engine tic of an observation (`0` when absent).
+fn observation_tic(observation: &Value) -> u64 {
+    observation.get("tic").and_then(Value::as_u64).unwrap_or(0)
 }
 
-/// One compact issued-action / reflex audit record (Spec #3026 R-3 / G-273).
-pub fn build_action_audit_record(
-    tic: Option<u64>,
-    actions: &[Value],
-    reflex: bool,
-    degraded: bool,
-) -> Value {
-    json!({
-        "at": chrono::Utc::now().to_rfc3339(),
-        "tic": tic,
-        "actions": actions,
-        "reflex": reflex,
-        "degraded": degraded,
-    })
+/// An integer field of an observation at a JSON pointer, when present.
+fn observation_int(observation: &Value, pointer: &str) -> Option<i64> {
+    observation.pointer(pointer).and_then(Value::as_i64)
 }
 
-/// Append one record to the bounded issued-action JSONL under `dir`, retaining
-/// the last [`DOOM_AGENT_ACTION_AUDIT_MAX_RECORDS`] lines. Best-effort: a caller
-/// treats a failure as non-fatal (an audit write never fails the run).
-pub fn append_action_audit(dir: &Path, record: &Value) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    let path = dir.join(DOOM_AGENT_ACTION_AUDIT_FILE);
-    let mut lines: Vec<String> = std::fs::read_to_string(&path)
-        .map(|text| {
-            text.lines()
-                .filter(|line| !line.trim().is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
-    lines.push(record.to_string());
-    if lines.len() > DOOM_AGENT_ACTION_AUDIT_MAX_RECORDS {
-        let excess = lines.len() - DOOM_AGENT_ACTION_AUDIT_MAX_RECORDS;
-        lines.drain(..excess);
+/// The level identity of a record, from the observation (falling back to the
+/// resolved campaign coordinates).
+fn dataset_level(observation: &Value, campaign: &DoomCampaign) -> DoomDatasetLevel {
+    DoomDatasetLevel {
+        episode: observation_int(observation, "/level/episode").unwrap_or(campaign.episode),
+        map: observation_int(observation, "/level/map").unwrap_or(campaign.map),
+        skill: observation_int(observation, "/level/skill").unwrap_or(campaign.skill),
+        wad_id: DOOM_DATASET_WAD_ID.to_string(),
     }
-    let mut content = lines.join("\n");
-    content.push('\n');
-    std::fs::write(&path, content)
+}
+
+/// The model metadata of a record: the decision trace's model identity when a
+/// source reported one, else the absent-string shape (a scripted/local source).
+/// `schemaVersion` is always the `doom_plan` contract name.
+fn dataset_model(trace: Option<&DoomDecisionTrace>) -> DoomDatasetModel {
+    DoomDatasetModel {
+        id: trace.and_then(|trace| trace.model_id.clone()),
+        server_flags: trace.and_then(|trace| trace.server_flags.clone()),
+        prompt_version: trace.and_then(|trace| trace.prompt_version.clone()),
+        schema_version: trace
+            .map(|trace| trace.schema_version.to_string())
+            .unwrap_or_else(|| DOOM_PLAN_SCHEMA_NAME.to_string()),
+    }
+}
+
+/// The decision source of a record: the trace's source when the source reported
+/// one (the model path), else the active `FREDO_DOOM_AGENT_DECISION_SOURCE`
+/// selector resolved at loop start.
+fn dataset_source(trace: Option<&DoomDecisionTrace>, selector: &str) -> String {
+    trace
+        .map(|trace| trace.source.to_string())
+        .unwrap_or_else(|| selector.to_string())
+}
+
+/// The typed failure of a decision error (`decisionError.kind`).
+fn dataset_decision_error(error: &DoomDecisionError) -> DoomDatasetDecisionError {
+    let kind = match error {
+        DoomDecisionError::Malformed(_) => "malformed",
+        DoomDecisionError::ModelUnavailable(_) => "modelUnavailable",
+        DoomDecisionError::TimedOut => "timedOut",
+    };
+    DoomDatasetDecisionError {
+        kind: kind.to_string(),
+        detail: error.to_string(),
+    }
+}
+
+/// The shaped reward between the adoption observation and `next` — the deltas of
+/// the observation's counters plus the `moved` flag. `dDistanceToExit` is `null`
+/// when either side is fair-play gated (no exit info).
+fn shaped_reward(baseline: &Value, next: &Value) -> DoomDatasetReward {
+    let delta = |pointer: &str| {
+        observation_int(next, pointer).unwrap_or(0) - observation_int(baseline, pointer).unwrap_or(0)
+    };
+    let d_distance_to_exit = match (
+        observation_int(baseline, "/exit/distance"),
+        observation_int(next, "/exit/distance"),
+    ) {
+        (Some(before), Some(after)) => Some(after - before),
+        _ => None,
+    };
+    let moved = match (player_position(baseline), player_position(next)) {
+        (Some(before), Some(after)) => before != after,
+        _ => false,
+    };
+    DoomDatasetReward {
+        d_kills: delta("/level/kills"),
+        d_items: delta("/level/items"),
+        d_secrets: delta("/level/secrets"),
+        d_health: delta("/player/health"),
+        d_distance_to_exit,
+        moved,
+    }
+}
+
+/// The engine-tic duration of a level, in milliseconds. Deterministic — derived
+/// from the observation's own engine-tic counter and the pinned nominal pacing,
+/// never a wall clock (NFR-5).
+fn dataset_tic_ms(observation: &Value) -> u64 {
+    observation_tic(observation) * DOOM_CONTINUOUS_TICK_PERIOD_MS
+        / (DOOM_CONTINUOUS_TICS_PER_TICK.max(1) as u64)
+}
+
+/// The terminal level result at `observation` (`terminal.levelResult`).
+fn dataset_level_result(observation: &Value, campaign: &DoomCampaign) -> DoomDatasetLevelResult {
+    let level = dataset_level(observation, campaign);
+    let count = |pointer: &str| observation_int(observation, pointer).unwrap_or(0).max(0) as u64;
+    DoomDatasetLevelResult {
+        episode: level.episode,
+        map: level.map,
+        outcome: observation
+            .get("outcome")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string(),
+        kills: count("/level/kills"),
+        items: count("/level/items"),
+        secrets: count("/level/secrets"),
+        tic_ms: dataset_tic_ms(observation),
+    }
+}
+
+/// The `runId` of a run: a compact, process-local-stable stamp every record
+/// correlates with. The ONE clock read for run identity (shared with the record
+/// `ts`); no RNG.
+fn dataset_run_id() -> String {
+    format!(
+        "{:016x}",
+        chrono::Utc::now().timestamp_micros().unsigned_abs()
+    )
+}
+
+/// Resolve the dataset directory from the env seams (G-275): the
+/// [`DOOM_DATASET_DIR_ENV`] override wins, else `<FREDO_DATA_DIR>/doom-dataset`.
+/// `None` when neither is set — the loop then captures nothing and never guesses
+/// a directory (R-5).
+fn dataset_dir_from_env() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var(DOOM_DATASET_DIR_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        return Some(PathBuf::from(dir));
+    }
+    let data_dir = std::env::var(DATA_DIR_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())?;
+    Some(dataset_dir_from(Path::new(&data_dir), None))
+}
+
+/// A partially-assembled per-decision record (the in-flight window).
+#[derive(Clone, Debug)]
+struct OpenRecord {
+    /// The RFC3339 adoption timestamp.
+    ts: String,
+    /// The correlation id (`<runId>:<n>`, monotonic per run).
+    decision_id: String,
+    /// The decision source (`model|scripted|local`).
+    source: String,
+    /// The level identity.
+    level: DoomDatasetLevel,
+    /// The model metadata.
+    model: DoomDatasetModel,
+    /// The observation at adoption.
+    observation: Value,
+    /// The adopted plan (`null` for a failed attempt).
+    decision: Option<DoomDatasetDecision>,
+    /// The gated raw reply (present only when the source captured it).
+    model_raw: Option<String>,
+    /// The gated reasoning text (present only when the source captured it).
+    reasoning: Option<String>,
+    /// The typed failure (present only for a failed attempt).
+    decision_error: Option<DoomDatasetDecisionError>,
+    /// The loop-stamped latency, in ms.
+    latency_ms: u64,
+    /// The engine tic at adoption.
+    tic: u64,
+    /// The executor cursor at adoption.
+    step_index: u32,
+    /// The planned step count.
+    planned_steps: u32,
+    /// The executed steps (one entry per plan step, coalesced across its ticks).
+    steps: Vec<DoomDatasetExecutionStep>,
+    /// The re-plan events (the #3039 five-reason vocabulary).
+    replans: Vec<DoomDatasetReplan>,
+    /// The last `(index, controller)` coalesced into `steps`.
+    last_step: Option<(u32, String)>,
+    /// The latest observation (the record's `nextState`).
+    next_state: Value,
+}
+
+impl OpenRecord {
+    /// Coalesce one executed tick into `steps`: a same-step tick increments its
+    /// `tics`; a new step (index or controller) starts a fresh entry holding this
+    /// tick's issued actions. Only plan steps are recorded here — the no-plan
+    /// fallback is attached separately (R-6).
+    fn record_tick(&mut self, index: u32, controller: &str, actions: &[Value]) {
+        let key = (index, controller.to_string());
+        if self.last_step.as_ref() == Some(&key) {
+            if let Some(step) = self.steps.last_mut() {
+                step.tics = step.tics.saturating_add(1);
+            }
+            return;
+        }
+        self.steps.push(DoomDatasetExecutionStep {
+            index,
+            controller: controller.to_string(),
+            actions: actions.to_vec(),
+            tics: 1,
+        });
+        self.last_step = Some(key);
+    }
+
+    /// Build the final published record.
+    fn finish(self, run_id: &str, terminal: Option<DoomDatasetTerminal>) -> DoomDatasetRecord {
+        let reward = shaped_reward(&self.observation, &self.next_state);
+        DoomDatasetRecord {
+            v: DOOM_DATASET_SCHEMA_VERSION,
+            run_id: run_id.to_string(),
+            episode_id: episode_id_for(run_id, self.level.episode, self.level.map),
+            decision_id: self.decision_id,
+            ts: self.ts,
+            tic: self.tic,
+            step_index: self.step_index,
+            source: self.source,
+            level: self.level,
+            model: self.model,
+            observation: self.observation,
+            decision: self.decision,
+            model_raw: self.model_raw,
+            reasoning: self.reasoning,
+            latency_ms: self.latency_ms,
+            decision_error: self.decision_error,
+            execution: DoomDatasetExecution {
+                adopted_tic: self.tic,
+                exhausted_tic: observation_tic(&self.next_state),
+                planned_steps: self.planned_steps,
+                executed_steps: self.steps.len() as u32,
+                steps: self.steps,
+                replans: self.replans,
+            },
+            next_state: self.next_state,
+            reward,
+            terminal,
+        }
+    }
+}
+
+/// The loop-side dataset assembler (Spec #3032 ST-2).
+///
+/// Accumulates ONE correlated record per decision attempt inside
+/// [`run_continuous_loop`] and appends it through ST-1's [`DoomDatasetWriter`] —
+/// ONLY when capture is enabled (R-5). Disabled (the default) ⇒ no writer ⇒ no
+/// directory, no file, no record; the loop's control behaviour is unchanged.
+///
+/// The writer is resolved once per run from the opt-in seams
+/// ([`DOOM_DATASET_ENABLED_ENV`](super::dataset::DOOM_DATASET_ENABLED_ENV) +
+/// [`DOOM_DATASET_DIR_ENV`] / `FREDO_DATA_DIR`) — one writer per run, best-effort
+/// (a write failure is logged, never fatal). The record's `runId`/`ts` are the
+/// ONE clock read; assembly otherwise reads no RNG and no hidden clock.
+struct DoomDatasetAssembler {
+    run_id: String,
+    writer: Option<Arc<DoomDatasetWriter>>,
+    /// The `FREDO_DOOM_AGENT_DECISION_SOURCE` selector resolved at loop start —
+    /// the fallback `source` when a decision carried no trace.
+    source: String,
+    next_decision: u64,
+    /// The record of the plan currently executing.
+    active: Option<OpenRecord>,
+    /// The record of a resolved-but-not-yet-adopted (prefetched) plan.
+    prefetch: Option<OpenRecord>,
+    /// A failed attempt's record, awaiting its applied-fallback step.
+    failed: Option<OpenRecord>,
+}
+
+impl DoomDatasetAssembler {
+    /// Build an assembler over an explicit writer (tests, or a caller that
+    /// resolved the writer itself).
+    fn new(writer: Option<Arc<DoomDatasetWriter>>, run_id: String, source: String) -> Self {
+        Self {
+            run_id,
+            writer,
+            source,
+            next_decision: 0,
+            active: None,
+            prefetch: None,
+            failed: None,
+        }
+    }
+
+    /// Resolve the assembler from the process environment: no writer (and no id
+    /// generated) unless capture is enabled AND a directory is resolvable.
+    fn from_env() -> Self {
+        let selector = super::decision::decision_source_from_env();
+        let dir = if dataset_enabled_from_env() {
+            dataset_dir_from_env()
+        } else {
+            None
+        };
+        match dir {
+            Some(dir) => {
+                let writer = Arc::new(DoomDatasetWriter::new(DoomDatasetConfig::from_env(dir)));
+                Self::new(Some(writer), dataset_run_id(), selector)
+            }
+            None => Self::new(None, String::new(), selector),
+        }
+    }
+
+    /// Whether capture is enabled (a writer is present).
+    fn is_enabled(&self) -> bool {
+        self.writer.is_some()
+    }
+
+    /// Append one finished record. Best-effort: a failure is logged, never fatal.
+    fn append(&self, record: DoomDatasetRecord) {
+        if let Some(writer) = &self.writer {
+            if let Err(error) = writer.append(&record) {
+                tracing::warn!(
+                    target: "fredo::doom",
+                    error = %error,
+                    "could not append a Doom dataset record"
+                );
+            }
+        }
+    }
+
+    /// Open a record for a resolved (and validated) plan. `deferred` is `true`
+    /// when the plan is prefetched (a plan is already executing) — the record is
+    /// then held until the plan is adopted; otherwise it supersedes the active
+    /// record and becomes it.
+    fn open_plan(
+        &mut self,
+        plan: &DoomPlan,
+        observation: &Value,
+        trace: Option<&DoomDecisionTrace>,
+        latency_ms: u64,
+        campaign: &DoomCampaign,
+        deferred: bool,
+    ) {
+        if !self.is_enabled() {
+            return;
+        }
+        self.next_decision += 1;
+        let record = self.open_record(
+            Some(plan),
+            observation,
+            trace,
+            latency_ms,
+            campaign,
+            None,
+        );
+        if deferred {
+            if let Some(previous) = self.prefetch.take() {
+                self.append(previous.finish(&self.run_id, None));
+            }
+            self.prefetch = Some(record);
+        } else {
+            self.close_active(observation, None);
+            self.active = Some(record);
+        }
+    }
+
+    /// Open a failed attempt's record (R-6): `decision` is `null` and the typed
+    /// error is carried; the applied fallback is attached by [`Self::set_fallback`]
+    /// and the record is closed by [`Self::after_step`].
+    fn record_failure(
+        &mut self,
+        error: &DoomDecisionError,
+        observation: &Value,
+        trace: Option<&DoomDecisionTrace>,
+        latency_ms: u64,
+        campaign: &DoomCampaign,
+    ) {
+        if !self.is_enabled() {
+            return;
+        }
+        self.next_decision += 1;
+        self.failed = Some(self.open_record(
+            None,
+            observation,
+            trace,
+            latency_ms,
+            campaign,
+            Some(dataset_decision_error(error)),
+        ));
+    }
+
+    /// Build an [`OpenRecord`] for `plan` (or a failed attempt when `plan` is
+    /// `None`).
+    fn open_record(
+        &self,
+        plan: Option<&DoomPlan>,
+        observation: &Value,
+        trace: Option<&DoomDecisionTrace>,
+        latency_ms: u64,
+        campaign: &DoomCampaign,
+        decision_error: Option<DoomDatasetDecisionError>,
+    ) -> OpenRecord {
+        OpenRecord {
+            ts: chrono::Utc::now().to_rfc3339(),
+            decision_id: decision_id_for(&self.run_id, self.next_decision),
+            source: dataset_source(trace, &self.source),
+            level: dataset_level(observation, campaign),
+            model: dataset_model(trace),
+            observation: observation.clone(),
+            decision: plan.map(|plan| DoomDatasetDecision {
+                plan: plan_steps_to_values(plan),
+            }),
+            model_raw: trace.and_then(|trace| trace.raw_reply.clone()),
+            reasoning: trace.and_then(|trace| trace.reasoning.clone()),
+            decision_error,
+            latency_ms: trace
+                .and_then(|trace| trace.latency_ms)
+                .unwrap_or(latency_ms),
+            tic: observation_tic(observation),
+            step_index: 0,
+            planned_steps: plan.map_or(0, |plan| plan.steps.len() as u32),
+            steps: Vec::new(),
+            replans: Vec::new(),
+            last_step: None,
+            next_state: observation.clone(),
+        }
+    }
+
+    /// Promote the prefetched plan's record to active (the plan was adopted). The
+    /// superseded active record is closed with no terminal.
+    fn adopt_prefetch(&mut self, observation: &Value) {
+        let Some(next) = self.prefetch.take() else {
+            return;
+        };
+        self.close_active(observation, None);
+        self.active = Some(next);
+    }
+
+    /// Record one executed plan-step tick on the active record.
+    fn record_tick(&mut self, index: u32, controller: &str, actions: &[Value]) {
+        if let Some(active) = self.active.as_mut() {
+            active.record_tick(index, controller, actions);
+        }
+    }
+
+    /// Record one re-plan event on the active record (the #3039 reason
+    /// vocabulary: `blocked|noProgress|frontEnemy|doorClosed|exhausted`).
+    fn record_replan(&mut self, index: u32, reason: &str, tic: u64) {
+        if let Some(active) = self.active.as_mut() {
+            active.replans.push(DoomDatasetReplan {
+                index,
+                reason: reason.to_string(),
+                tic,
+            });
+        }
+    }
+
+    /// Attach the fallback action(s) actually issued after the failed attempt
+    /// (`controller` ∈ `reflex|fallback`).
+    fn set_fallback(&mut self, controller: &str, actions: &[Value]) {
+        if let Some(failed) = self.failed.as_mut() {
+            if failed.steps.is_empty() {
+                failed.record_tick(0, controller, actions);
+            }
+        }
+    }
+
+    /// Close the in-flight record after an engine tick: a failed attempt (if any)
+    /// is published with the post-step state; otherwise the active record's
+    /// `nextState` is refreshed.
+    fn after_step(&mut self, observation: &Value) {
+        if let Some(mut failed) = self.failed.take() {
+            failed.next_state = observation.clone();
+            self.append(failed.finish(&self.run_id, None));
+            return;
+        }
+        if let Some(active) = self.active.as_mut() {
+            active.next_state = observation.clone();
+        }
+    }
+
+    /// Stamp a terminal onto the open record(s) at run end / a level-terminal
+    /// observation (AC2): the active (in-flight) record carries
+    /// `terminal{kind,levelResult}`; the never-executed prefetched record and any
+    /// unauthorised failed record close plain. Idempotent — after it, a fresh
+    /// decision opens a fresh record (a death restart / campaign advance).
+    fn finalize(&mut self, kind: &str, observation: &Value, campaign: &DoomCampaign) {
+        if !self.is_enabled() {
+            return;
+        }
+        let terminal = DoomDatasetTerminal {
+            kind: kind.to_string(),
+            level_result: dataset_level_result(observation, campaign),
+        };
+        self.close_active(observation, Some(terminal));
+        if let Some(prefetch) = self.prefetch.take() {
+            self.append(prefetch.finish(&self.run_id, None));
+        }
+        if let Some(mut failed) = self.failed.take() {
+            failed.next_state = observation.clone();
+            self.append(failed.finish(&self.run_id, None));
+        }
+    }
+
+    /// Close and publish the active record with `next_state = observation`.
+    fn close_active(&mut self, observation: &Value, terminal: Option<DoomDatasetTerminal>) {
+        if let Some(mut active) = self.active.take() {
+            active.next_state = observation.clone();
+            self.append(active.finish(&self.run_id, terminal));
+        }
+    }
 }
 
 /// The non-blocking pending-decision future the continuous loop polls once per
@@ -1313,7 +1758,12 @@ pub async fn run_continuous_loop(
     let emit_interval = pacing_ticks(Duration::from_millis(DOOM_STATUS_EMIT_MS), unit);
     let timeout_ticks = pacing_ticks(config.decision_timeout, unit);
     let backoff_ticks = pacing_ticks(config.failure_backoff, unit);
-    let audit_dir = super::decision::log_dir_from_env();
+
+    // The loop-side dataset assembler (Spec #3032 ST-2): ONE correlated record
+    // per decision attempt, appended through ST-1's bounded writer — but ONLY
+    // when capture is enabled (R-5). Disabled ⇒ no writer ⇒ no file, and the
+    // loop's control behaviour is byte-identical.
+    let mut dataset = DoomDatasetAssembler::from_env();
 
     let mut campaign = campaign;
     let mut budget_used: u32 = 0;
@@ -1323,11 +1773,6 @@ pub async fn run_continuous_loop(
     let mut last_intent: Vec<Value> = Vec::new();
     let mut previous_position: Option<(i64, i64)> = None;
     let mut blocked_forward_ticks: u32 = 0;
-    // The action set the audit last recorded (Spec #3039 ST-4b, F-4): the
-    // change-gate compares the executor's issued native set against this so a
-    // changed set (the `open-door` step's first `[turn-to, use]` tick) is
-    // journalled despite not being an adoption/reflex tick.
-    let mut last_audited_actions: Option<Vec<Value>> = None;
     // The unstick/escape + local-locomotion policy state (Spec #3031 ST-3).
     let mut policy = DoomLocalPolicy::default();
 
@@ -1373,6 +1818,7 @@ pub async fn run_continuous_loop(
 
     while budget_used < config.max_ticks {
         if stop.load(Ordering::Relaxed) {
+            dataset.finalize("aborted", &observation, &campaign);
             status.phase = DoomAutoplayPhase::Idle;
             status.running = false;
             observe(&status);
@@ -1387,6 +1833,14 @@ pub async fn run_continuous_loop(
 
         // React to a terminal observation with exactly ONE bounded action (R-3).
         if let Some(kind) = pending_terminal.take() {
+            // AC2: stamp the terminal `levelResult` onto the run's in-flight
+            // dataset record at the terminal observation. The run then either
+            // restarts the level on a death or advances/completes on an exit.
+            let terminal_kind = match kind {
+                TerminalKind::Death => "dead",
+                TerminalKind::Exit => "exited",
+            };
+            dataset.finalize(terminal_kind, &observation, &campaign);
             match kind {
                 TerminalKind::Death => {
                     match engine
@@ -1407,6 +1861,7 @@ pub async fn run_continuous_loop(
                             continue;
                         }
                         Err(error) => {
+                            dataset.finalize("aborted", &observation, &campaign);
                             let result = engine_failure(&mut status, error.message);
                             observe(&status);
                             return result;
@@ -1466,6 +1921,7 @@ pub async fn run_continuous_loop(
                             continue;
                         }
                         Err(error) => {
+                            dataset.finalize("aborted", &observation, &campaign);
                             let result = engine_failure(&mut status, error.message);
                             observe(&status);
                             return result;
@@ -1497,20 +1953,38 @@ pub async fn run_continuous_loop(
             None
         };
 
-        let mut adopted = false;
+        // The loop-measured latency of a resolved decision: the pending ticks it
+        // spanned × the clock's declared period (NFR-5 — never a hidden clock).
+        let decision_latency_ms = u64::from(pending_ticks) * (unit.as_millis() as u64);
         match polled {
             Some(Poll::Ready(result)) => {
                 pending = None;
                 pending_ticks = 0;
+                // Read the source's side-channel trace IMMEDIATELY after `decide`
+                // resolves (ST-4): model metadata plus the flag-gated raw reply /
+                // reasoning. Skipped entirely when capture is disabled (R-5).
+                let trace = dataset
+                    .is_enabled()
+                    .then(|| source.last_decision_trace())
+                    .flatten();
                 match result {
                     Ok(plan) => {
                         // An out-of-range legacy `Hold` step retains the bounded
                         // consecutive-failure stop (the native steps are already
                         // range-checked by the shared parser).
                         if let Err(detail) = validate_plan(&plan) {
+                            let error = DoomDecisionError::Malformed(detail.clone());
+                            dataset.record_failure(
+                                &error,
+                                &observation,
+                                trace.as_ref(),
+                                decision_latency_ms,
+                                &campaign,
+                            );
                             if let Some(result) =
                                 record_decision_failure(&mut status, config, detail)
                             {
+                                dataset.finalize("aborted", &observation, &campaign);
                                 observe(&status);
                                 return result;
                             }
@@ -1522,26 +1996,60 @@ pub async fn run_continuous_loop(
                             status.degraded = false;
                             if executor.is_idle() {
                                 // No plan is executing → adopt and start now.
+                                dataset.open_plan(
+                                    &plan,
+                                    &observation,
+                                    trace.as_ref(),
+                                    decision_latency_ms,
+                                    &campaign,
+                                    false,
+                                );
                                 executor.adopt(plan, &observation);
-                                adopted = true;
                             } else {
                                 // A plan is mid-execution: prefetch this one and
                                 // adopt it on exhaustion/divergence WITHOUT
                                 // interrupting the in-flight step (AC2).
+                                dataset.open_plan(
+                                    &plan,
+                                    &observation,
+                                    trace.as_ref(),
+                                    decision_latency_ms,
+                                    &campaign,
+                                    true,
+                                );
                                 next_plan = Some(plan);
                             }
                         }
                     }
                     Err(DoomDecisionError::Malformed(detail)) => {
+                        // R-6: the failed attempt closes a record carrying the
+                        // typed error; the applied fallback is attached at step 3c.
+                        let error = DoomDecisionError::Malformed(detail.clone());
+                        dataset.record_failure(
+                            &error,
+                            &observation,
+                            trace.as_ref(),
+                            decision_latency_ms,
+                            &campaign,
+                        );
                         if let Some(result) = record_decision_failure(&mut status, config, detail) {
+                            dataset.finalize("aborted", &observation, &campaign);
                             observe(&status);
                             return result;
                         }
                         cooldown_ticks = backoff_ticks;
                     }
-                    Err(DoomDecisionError::ModelUnavailable(_))
-                    | Err(DoomDecisionError::TimedOut) => {
-                        // Non-fatal (R-4): count it, maybe degrade, keep motion.
+                    Err(other) => {
+                        // `ModelUnavailable` / `TimedOut` — non-fatal (R-4): the
+                        // failed attempt is recorded (R-6), the count climbs,
+                        // motion continues.
+                        dataset.record_failure(
+                            &other,
+                            &observation,
+                            trace.as_ref(),
+                            decision_latency_ms,
+                            &campaign,
+                        );
                         status.failures += 1;
                         degraded_consecutive += 1;
                         if degraded_consecutive >= DOOM_DEGRADED_AFTER_FAILURES {
@@ -1554,9 +2062,18 @@ pub async fn run_continuous_loop(
             Some(Poll::Pending) => {
                 pending_ticks = pending_ticks.saturating_add(1);
                 if pending_ticks >= timeout_ticks {
-                    // Slower than the tick loop → abandon + degrade (R-4).
+                    // Slower than the tick loop → abandon + degrade (R-4). The
+                    // source has not returned, so no fresh trace is read — the
+                    // failure is recorded as a timeout (R-6).
                     pending = None;
                     pending_ticks = 0;
+                    dataset.record_failure(
+                        &DoomDecisionError::TimedOut,
+                        &observation,
+                        None,
+                        decision_latency_ms,
+                        &campaign,
+                    );
                     status.failures += 1;
                     degraded_consecutive += 1;
                     if degraded_consecutive >= DOOM_DEGRADED_AFTER_FAILURES {
@@ -1592,21 +2109,18 @@ pub async fn run_continuous_loop(
             blocked_forward_ticks,
             no_move_ticks: policy.no_move_ticks,
         };
+        // The executor cursor at the START of this tick — the plan-step index a
+        // re-plan fires at (the executor reports index 0 on a re-plan).
+        let tick_index = executor.index();
         let plan_tick = executor.tick(&observation, &counters);
         if let Some(reason) = plan_tick.replan {
-            if let Some(dir) = &audit_dir {
-                let record = build_replan_audit_record(reason);
-                if let Err(error) = append_action_audit(dir, &record) {
-                    tracing::warn!(
-                        target: "fredo::doom",
-                        error = %error,
-                        "could not append the Doom re-plan audit record"
-                    );
-                }
-            }
+            // Preserve the #3039 re-plan observable in the dataset's
+            // `execution.replans[]` — the retired action-audit `replan` record's
+            // successor (`reason` is the five-reason vocabulary).
+            dataset.record_replan(tick_index, reason.wire(), observation_tic(&observation));
             if let Some(plan) = next_plan.take() {
+                dataset.adopt_prefetch(&observation);
                 executor.adopt(plan, &observation);
-                adopted = true;
             }
         }
         status.plans = executor.plans();
@@ -1617,7 +2131,11 @@ pub async fn run_continuous_loop(
         //     (guarded by the retained safety reflex); the LEGACY `Hold` step and
         //     the no-step fallback run through the retained reflex + unstick/escape
         //     + local-locomotion pipeline (composed, never replaced).
-        let native_step = matches!(plan_tick.action, PlanAction::Native(_));
+        let step_controller = match &plan_tick.action {
+            PlanAction::Native(_) => Some("plan"),
+            PlanAction::Legacy(_) => Some("legacy"),
+            PlanAction::None => None,
+        };
         let effective = match plan_tick.action {
             PlanAction::Native(actions) => {
                 last_intent = actions.clone();
@@ -1645,6 +2163,17 @@ pub async fn run_continuous_loop(
         status.stuck_ticks = policy.no_move_ticks;
         let reflex_fired = effective != last_intent;
 
+        // 3d. Dataset assembly (Spec #3032 ST-2): append the executed plan step
+        //     with its controller; on a no-plan tick the retained reflex/fallback
+        //     drives, and if a decision just failed this is its applied fallback
+        //     (R-6). Both are no-ops when capture is disabled or no failure is
+        //     pending.
+        if let Some(controller) = step_controller {
+            dataset.record_tick(plan_tick.index, controller, &effective);
+        } else {
+            dataset.set_fallback(if reflex_fired { "reflex" } else { "fallback" }, &effective);
+        }
+
         // 4. Advance one tick with the persisted (reflex-guarded) intent (R-1).
         let actions = Value::Array(effective.clone());
         match engine.step(DOOM_CONTINUOUS_TICS_PER_TICK, &actions).await {
@@ -1656,52 +2185,26 @@ pub async fn run_continuous_loop(
                 if let Some(kind) = terminal_kind(&next) {
                     pending_terminal = Some(kind);
                 }
+                // Publish/refresh the dataset record for the tick just taken.
+                dataset.after_step(&next);
                 observation = next;
             }
             Err(error) => {
+                dataset.finalize("aborted", &observation, &campaign);
                 let result = engine_failure(&mut status, error.message);
                 observe(&status);
                 return result;
             }
         }
 
-        // 5. Issued-action / reflex audit on adoption, override, OR a changed
-        //    executor-issued native set (Spec #3039 ST-4b, F-4). The change-gate
-        //    journals the `open-door` step's first `[turn-to, use]` tick without
-        //    flooding the bounded window on a repeated identical `Move` tick.
-        if should_audit_action_set(
-            adopted,
-            reflex_fired,
-            native_step,
-            last_audited_actions.as_deref(),
-            &effective,
-        ) {
-            if let Some(dir) = &audit_dir {
-                let record = build_action_audit_record(
-                    status.last_tic,
-                    &effective,
-                    reflex_fired,
-                    status.degraded,
-                );
-                if let Err(error) = append_action_audit(dir, &record) {
-                    tracing::warn!(
-                        target: "fredo::doom",
-                        error = %error,
-                        "could not append the Doom action audit record"
-                    );
-                }
-            }
-            last_audited_actions = Some(effective.clone());
-        }
-
-        // 6. Throttled status emission (terminal transitions emit above); a
+        // 5. Throttled status emission (terminal transitions emit above); a
         // degrade/recover transition always emits.
         if status.degraded != observed_degraded || budget_used.is_multiple_of(emit_interval) {
             observe(&status);
             observed_degraded = status.degraded;
         }
 
-        // 7. Pace the next tick through the injected clock (R-5).
+        // 6. Pace the next tick through the injected clock (R-5).
         let period = if status.degraded {
             config.degraded_tick_period
         } else {
@@ -1711,6 +2214,7 @@ pub async fn run_continuous_loop(
     }
 
     // The tick budget was reached cleanly — a bounded exit on every path (R-4).
+    dataset.finalize("timeout", &observation, &campaign);
     status.phase = DoomAutoplayPhase::Completed;
     status.running = false;
     status.code = Some(DoomAutoplayErrorCode::BudgetExhausted);
@@ -3011,18 +3515,15 @@ mod tests {
     }
 
     #[test]
-    fn the_audit_record_carries_the_issued_escape_action_set() {
+    fn the_escape_intent_carries_the_issued_turn_and_forward_action_set() {
         let observation = json!({ "player": { "angle": 0 }, "walls": [] });
         let mut policy = DoomLocalPolicy {
             no_move_ticks: DOOM_ESCAPE_STUCK_TICKS,
             ..DoomLocalPolicy::default()
         };
         let intent = effective_intent(&observation, &[], 0, &mut policy, 1);
-        let record = build_action_audit_record(Some(42), &intent, true, false);
-        let actions = record["actions"].as_array().expect("issued actions array");
-        assert!(actions.iter().any(|action| action["type"] == "turn-to"));
-        assert!(actions.iter().any(|action| action["type"] == "forward"));
-        assert_eq!(record["tic"], 42);
+        assert!(intent.iter().any(|action| action["type"] == "turn-to"));
+        assert!(intent.iter().any(|action| action["type"] == "forward"));
     }
 
     #[test]
@@ -3033,34 +3534,6 @@ mod tests {
         assert_eq!(pacing_ticks(Duration::ZERO, unit), 1);
         // A zero unit (immediate deterministic clock) is always one wait.
         assert_eq!(pacing_ticks(Duration::from_millis(50), Duration::ZERO), 1);
-    }
-
-    #[test]
-    fn action_audit_record_is_compact_and_the_jsonl_is_bounded() {
-        let record = build_action_audit_record(
-            Some(17),
-            &[json!({ "type": "backward", "amount": 2 })],
-            true,
-            true,
-        );
-        assert_eq!(record["tic"], 17);
-        assert_eq!(record["reflex"], true);
-        assert_eq!(record["degraded"], true);
-        assert_eq!(record["actions"][0]["type"], "backward");
-        assert!(record["at"].as_str().map(|at| !at.is_empty()).unwrap_or(false));
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let total = DOOM_AGENT_ACTION_AUDIT_MAX_RECORDS + 5;
-        for tic in 0..total {
-            let record = build_action_audit_record(Some(tic as u64), &[], false, false);
-            append_action_audit(dir.path(), &record).expect("append");
-        }
-        let text = std::fs::read_to_string(dir.path().join(DOOM_AGENT_ACTION_AUDIT_FILE))
-            .expect("read audit");
-        let lines: Vec<&str> = text.lines().filter(|line| !line.trim().is_empty()).collect();
-        assert_eq!(lines.len(), DOOM_AGENT_ACTION_AUDIT_MAX_RECORDS);
-        let last: Value = serde_json::from_str(lines[lines.len() - 1]).expect("last line JSON");
-        assert_eq!(last["tic"], (total - 1) as u64);
     }
 
     #[test]
@@ -3281,13 +3754,15 @@ mod tests {
         );
     }
 
-    // ── Issued-action audit gate (Spec #3039 ST-4b, F-4) ─────────────────────
+    // ── Executor action-set observability (Spec #3039 ST-4b, F-4) ────────────
 
     #[test]
-    fn a_use_bearing_action_set_is_journalled_and_a_repeated_move_tick_is_not() {
+    fn the_open_door_step_issues_use_and_a_repeated_move_tick_repeats_identically() {
         let observation = json!({ "player": { "x": 0, "y": 0, "angle": 0 } });
 
-        // (a) An `open-door` native step's FIRST tick issues `[turn-to, use]`.
+        // (a) An `open-door` native step's FIRST tick issues `[turn-to, use]` —
+        // the observable the retired audit record carried, now preserved in the
+        // dataset's `execution.steps[].actions`.
         let mut executor = PlanExecutor::new();
         executor.adopt(
             DoomPlan {
@@ -3306,33 +3781,9 @@ mod tests {
             "the open-door first tick issues `use`"
         );
 
-        // The change-gate fires (no previously-audited set) and the emitted record
-        // carries the `use` action — the F-4 receipt.
-        assert!(should_audit_action_set(
-            false,
-            false,
-            true,
-            None,
-            &open_door_actions,
-        ));
-        let record = build_action_audit_record(Some(1), &open_door_actions, false, false);
-        let dir = tempfile::tempdir().expect("tempdir");
-        append_action_audit(dir.path(), &record).expect("append");
-        let text = std::fs::read_to_string(dir.path().join(DOOM_AGENT_ACTION_AUDIT_FILE))
-            .expect("read audit");
-        assert!(
-            text.lines().any(|line| {
-                let value: Value = serde_json::from_str(line).expect("record JSON");
-                value["actions"]
-                    .as_array()
-                    .is_some_and(|actions| actions.iter().any(|a| a["type"] == DOOM_ACTION_USE))
-            }),
-            "a `{{\"type\":\"use\"}}`-bearing audit record is produced"
-        );
-
-        // (b) A repeated IDENTICAL `Move` tick is NOT re-journalled: the first
-        // tick changes the set (gate fires, records, sets `last_audited`), the
-        // second is byte-identical (gate suppressed — no window flooding).
+        // (b) A repeated IDENTICAL `Move` tick re-issues its action set: the
+        // dataset coalesces the two ticks into ONE step entry (its `tics` counts
+        // both), so the bounded writer is not flooded.
         let mut executor = PlanExecutor::new();
         executor.adopt(
             DoomPlan {
@@ -3347,15 +3798,6 @@ mod tests {
         let PlanAction::Native(first_actions) = first_tick.action else {
             panic!("a move step must issue native actions");
         };
-        assert!(should_audit_action_set(
-            false,
-            false,
-            true,
-            None,
-            &first_actions,
-        ));
-        let last_audited = Some(first_actions.clone());
-
         let second_tick = executor.tick(&observation, &ReplanCounters::default());
         let PlanAction::Native(second_actions) = second_tick.action else {
             panic!("a move step must keep issuing native actions");
@@ -3363,16 +3805,6 @@ mod tests {
         assert_eq!(
             second_actions, first_actions,
             "an unchanged move step re-issues an identical action set"
-        );
-        assert!(
-            !should_audit_action_set(
-                false,
-                false,
-                true,
-                last_audited.as_deref(),
-                &second_actions,
-            ),
-            "a repeated identical move tick is not re-journalled"
         );
     }
 
@@ -3459,5 +3891,264 @@ mod tests {
         );
         assert_eq!(result.phase, DoomAutoplayPhase::Completed);
         assert_eq!(result.code, Some(DoomAutoplayErrorCode::BudgetExhausted));
+    }
+
+    // ── Dataset assembly (Spec #3032 ST-2) ───────────────────────────────────
+
+    use crate::applications::doom::dataset::DOOM_DATASET_FILE;
+
+    /// A capture-enabled assembler writing into `dir`.
+    fn dataset_assembler(dir: &Path) -> DoomDatasetAssembler {
+        let writer = Arc::new(DoomDatasetWriter::new(DoomDatasetConfig::new(dir)));
+        DoomDatasetAssembler::new(Some(writer), "run-test".to_string(), "scripted".to_string())
+    }
+
+    /// Every record currently in the active dataset file, in order.
+    fn dataset_records(dir: &Path) -> Vec<DoomDatasetRecord> {
+        std::fs::read_to_string(dir.join(DOOM_DATASET_FILE))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| DoomDatasetRecord::from_json_line(line).expect("a dataset record"))
+            .collect()
+    }
+
+    /// An alive observation at E1M1 with the shaped-reward counters set.
+    fn level_observation(
+        tic: u64,
+        kills: i64,
+        items: i64,
+        secrets: i64,
+        health: i64,
+        x: i64,
+        y: i64,
+    ) -> Value {
+        json!({
+            "tic": tic,
+            "done": false,
+            "outcome": "alive",
+            "level": {
+                "episode": 1, "map": 1, "skill": 3,
+                "kills": kills, "items": items, "secrets": secrets,
+            },
+            "player": { "x": x, "y": y, "angle": 90, "health": health },
+            "exit": { "distance": 400 },
+            "forward": { "rays": [], "openings": [], "doorBearings": [] },
+        })
+    }
+
+    fn sample_plan() -> DoomPlan {
+        DoomPlan {
+            steps: vec![DoomPlanStep::Move {
+                bearing: 90,
+                distance: 256,
+            }],
+        }
+    }
+
+    fn forward_tick_actions() -> Vec<Value> {
+        vec![
+            json!({ "type": "turn-to", "angle": 90 }),
+            json!({ "type": "forward", "amount": 1 }),
+        ]
+    }
+
+    #[test]
+    fn capture_disabled_writes_no_record_and_no_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut assembler =
+            DoomDatasetAssembler::new(None, "run".to_string(), "scripted".to_string());
+        assert!(!assembler.is_enabled());
+        let observation = level_observation(10, 0, 0, 0, 100, 0, 0);
+        assembler.open_plan(&sample_plan(), &observation, None, 0, &campaign(1, 1), false);
+        assembler.record_tick(0, "plan", &forward_tick_actions());
+        assembler.finalize("exited", &observation, &campaign(1, 1));
+        assert!(
+            !dir.path().join(DOOM_DATASET_FILE).exists(),
+            "capture OFF creates no dataset file (R-5)"
+        );
+    }
+
+    #[test]
+    fn a_resolved_plan_opens_one_correlated_record_with_plan_and_execution() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut assembler = dataset_assembler(dir.path());
+        assert!(assembler.is_enabled());
+        let baseline = level_observation(10, 1, 0, 0, 100, 0, 0);
+        let next = level_observation(12, 2, 0, 0, 90, 20, 0);
+        assembler.open_plan(&sample_plan(), &baseline, None, 7, &campaign(1, 1), false);
+        // Two ticks of the SAME plan step coalesce into ONE step entry (tics 2).
+        assembler.record_tick(0, "plan", &forward_tick_actions());
+        assembler.record_tick(0, "plan", &forward_tick_actions());
+        assembler.record_replan(1, "exhausted", 12);
+        assembler.after_step(&next);
+        assembler.finalize("timeout", &next, &campaign(1, 1));
+
+        let records = dataset_records(dir.path());
+        assert_eq!(records.len(), 1, "ONE record per decision attempt");
+        let record = &records[0];
+        assert_eq!(record.run_id, "run-test");
+        assert_eq!(record.decision_id, "run-test:1");
+        assert_eq!(record.episode_id, "run-test:e1-m1");
+        assert_eq!(record.source, "scripted");
+        assert_eq!(record.latency_ms, 7);
+        assert_eq!(record.tic, 10);
+        assert_eq!(record.step_index, 0);
+        assert_eq!(record.level.wad_id, DOOM_DATASET_WAD_ID);
+        assert_eq!(record.model.schema_version, DOOM_PLAN_SCHEMA_NAME);
+        assert_eq!(record.observation, baseline);
+        // The adopted decision is the PLAN (`doom_plan` steps), not `{tics,actions}`.
+        let plan = record.decision.as_ref().expect("the adopted plan").plan.clone();
+        assert_eq!(plan, vec![json!({ "op": "move", "bearing": 90, "distance": 256 })]);
+        // Execution: one coalesced step, the re-plan reason, and the window.
+        assert_eq!(record.execution.adopted_tic, 10);
+        assert_eq!(record.execution.exhausted_tic, 12);
+        assert_eq!(record.execution.planned_steps, 1);
+        assert_eq!(record.execution.executed_steps, 1);
+        assert_eq!(record.execution.steps[0].index, 0);
+        assert_eq!(record.execution.steps[0].controller, "plan");
+        assert_eq!(record.execution.steps[0].tics, 2);
+        assert_eq!(record.execution.replans[0].index, 1);
+        assert_eq!(record.execution.replans[0].reason, "exhausted");
+        assert_eq!(record.execution.replans[0].tic, 12);
+        // nextState + the shaped reward (the adoption→next deltas).
+        assert_eq!(record.next_state, next);
+        assert_eq!(record.reward.d_kills, 1);
+        assert_eq!(record.reward.d_items, 0);
+        assert_eq!(record.reward.d_health, -10);
+        assert_eq!(record.reward.d_distance_to_exit, Some(0));
+        assert!(record.reward.moved, "the player moved between the two states");
+        // The run-end terminal stamp.
+        assert_eq!(record.terminal.as_ref().expect("terminal").kind, "timeout");
+    }
+
+    #[test]
+    fn a_fair_play_gated_exit_yields_a_null_distance_delta() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut assembler = dataset_assembler(dir.path());
+        let baseline = json!({ "tic": 1, "level": { "episode": 1, "map": 1 } });
+        let next = json!({ "tic": 2, "level": { "episode": 1, "map": 1 } });
+        assembler.open_plan(&sample_plan(), &baseline, None, 0, &campaign(1, 1), false);
+        assembler.after_step(&next);
+        assembler.finalize("timeout", &next, &campaign(1, 1));
+        let records = dataset_records(dir.path());
+        assert_eq!(
+            records[0].reward.d_distance_to_exit, None,
+            "no exit info ⇒ a null distance delta (fair-play gated)"
+        );
+    }
+
+    #[test]
+    fn the_terminal_stamp_lands_on_the_in_flight_record() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut assembler = dataset_assembler(dir.path());
+        let start = level_observation(10, 4, 1, 1, 100, 0, 0);
+        assembler.open_plan(&sample_plan(), &start, None, 0, &campaign(1, 1), false);
+        assembler.record_tick(0, "plan", &forward_tick_actions());
+        let terminal = json!({
+            "tic": 40, "done": true, "outcome": "exited",
+            "level": { "episode": 1, "map": 1, "skill": 3, "kills": 5, "items": 2, "secrets": 1 },
+            "player": { "x": 5, "y": 6, "angle": 90, "health": 80 },
+        });
+        assembler.finalize("exited", &terminal, &campaign(1, 1));
+
+        let records = dataset_records(dir.path());
+        assert_eq!(records.len(), 1);
+        let stamp = records[0].terminal.as_ref().expect("the terminal stamp");
+        assert_eq!(stamp.kind, "exited");
+        assert_eq!(stamp.level_result.episode, 1);
+        assert_eq!(stamp.level_result.map, 1);
+        assert_eq!(stamp.level_result.outcome, "exited");
+        assert_eq!(stamp.level_result.kills, 5);
+        assert_eq!(stamp.level_result.items, 2);
+        assert_eq!(stamp.level_result.secrets, 1);
+    }
+
+    #[test]
+    fn a_decision_error_records_the_applied_fallback_with_its_controller() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut assembler = dataset_assembler(dir.path());
+        let observation = level_observation(10, 0, 0, 0, 100, 0, 0);
+        assembler.record_failure(
+            &DoomDecisionError::TimedOut,
+            &observation,
+            None,
+            3,
+            &campaign(1, 1),
+        );
+        assembler.set_fallback(
+            "fallback",
+            &[
+                json!({ "type": "turn-to", "angle": 90 }),
+                json!({ "type": "forward", "amount": 10 }),
+            ],
+        );
+        assembler.after_step(&observation);
+
+        let records = dataset_records(dir.path());
+        assert_eq!(records.len(), 1);
+        let record = &records[0];
+        assert!(record.decision.is_none(), "a failed attempt has no plan");
+        let error = record.decision_error.as_ref().expect("the typed error");
+        assert_eq!(error.kind, "timedOut");
+        assert_eq!(record.execution.steps.len(), 1);
+        assert_eq!(record.execution.steps[0].controller, "fallback");
+        assert_eq!(record.execution.steps[0].actions[0]["type"], "turn-to");
+    }
+
+    #[test]
+    fn the_decision_error_kinds_are_pinned() {
+        assert_eq!(
+            dataset_decision_error(&DoomDecisionError::Malformed("x".to_string())).kind,
+            "malformed"
+        );
+        assert_eq!(
+            dataset_decision_error(&DoomDecisionError::ModelUnavailable("x".to_string())).kind,
+            "modelUnavailable"
+        );
+        assert_eq!(
+            dataset_decision_error(&DoomDecisionError::TimedOut).kind,
+            "timedOut"
+        );
+    }
+
+    #[test]
+    fn a_prefetched_plan_gets_its_own_record_and_is_promoted_on_adoption() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut assembler = dataset_assembler(dir.path());
+        let observation = level_observation(10, 0, 0, 0, 100, 0, 0);
+        let plan = sample_plan();
+        // Plan A adopted; plan B resolves while A still executes (prefetched).
+        assembler.open_plan(&plan, &observation, None, 0, &campaign(1, 1), false);
+        assembler.record_tick(0, "plan", &forward_tick_actions());
+        assembler.open_plan(&plan, &observation, None, 0, &campaign(1, 1), true);
+        // B is adopted on A's exhaustion: A closes (superseded), B becomes active.
+        assembler.adopt_prefetch(&observation);
+        assembler.record_tick(0, "plan", &forward_tick_actions());
+        assembler.finalize("timeout", &observation, &campaign(1, 1));
+
+        let records = dataset_records(dir.path());
+        assert_eq!(records.len(), 2, "one record per resolved decision");
+        assert_eq!(records[0].decision_id, "run-test:1");
+        assert!(records[0].terminal.is_none(), "the superseded record has no terminal");
+        assert_eq!(records[1].decision_id, "run-test:2");
+        assert_eq!(records[1].terminal.as_ref().expect("terminal").kind, "timeout");
+    }
+
+    #[test]
+    fn the_retired_action_audit_file_is_never_written() {
+        // The captured run writes ONLY the dataset; the capped
+        // `doom-agent-actions.jsonl` writer is gone (ST-2 retires it).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut assembler = dataset_assembler(dir.path());
+        let observation = level_observation(10, 0, 0, 0, 100, 0, 0);
+        assembler.open_plan(&sample_plan(), &observation, None, 0, &campaign(1, 1), false);
+        assembler.record_tick(0, "plan", &forward_tick_actions());
+        assembler.finalize("timeout", &observation, &campaign(1, 1));
+        assert!(dir.path().join(DOOM_DATASET_FILE).exists());
+        assert!(
+            !dir.path().join("doom-agent-actions.jsonl").exists(),
+            "the retired action-audit file is never written"
+        );
     }
 }
