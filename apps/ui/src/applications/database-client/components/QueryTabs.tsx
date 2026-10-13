@@ -2,7 +2,13 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Button, Flex, Text } from '@chakra-ui/react';
 import { LuPlus, LuX } from 'react-icons/lu';
 import { dbQueryExecute, normalizeDbError } from '../lib/api';
+import {
+  DBCLIENT_LAYOUT_LIMITS,
+  DEFAULT_DB_CLIENT_LAYOUT,
+  RESULTS_MIN,
+} from '../lib/storage';
 import { DestructiveConfirm } from './DestructiveConfirm';
+import { ResizableSplitter, RESIZE_HIT_AREA } from './ResizableSplitter';
 import { ResultsGrid } from './ResultsGrid';
 import { SqlEditor, type DbCompletion, type SqlRunRequest } from './SqlEditor';
 import type {
@@ -105,6 +111,16 @@ export interface QueryTabsProps {
    * integration). Receives the first result set (or `null`) and the running flag.
    */
   renderExport?: (activeSet: DbResultSet | null, running: boolean) => React.ReactNode;
+  /**
+   * Committed editor-row height in px (Spec #3049, ST-3). Defaults to the
+   * shipped 220 so a bare `<QueryTabs>` (existing callers/tests) is unchanged.
+   */
+  editorHeight?: number;
+  /**
+   * Persist a new editor-row height; fired once per drag-end / key step. The
+   * shell's `useDbClientLayout().commit` clamps + stores it.
+   */
+  onEditorHeightChange?: (px: number) => void;
 }
 
 export const QueryTabs: React.FC<QueryTabsProps> = ({
@@ -117,9 +133,56 @@ export const QueryTabs: React.FC<QueryTabsProps> = ({
   onQueryComplete,
   onActiveSqlChange,
   renderExport,
+  editorHeight = DEFAULT_DB_CLIENT_LAYOUT.editorResultsHeight,
+  onEditorHeightChange,
 }) => {
   const [tabs, setTabs] = useState<QueryTab[]>(() => [newTab(1)]);
   const [activeId, setActiveId] = useState<string | null>(null);
+
+  // ── Editor ↔ results split (Spec #3049, ST-3) ──────────────────────────────
+  // The committed height is a prop (persisted by the shell); the in-flight drag
+  // value is local and transient so the editor reflows live while a single
+  // `onEditorHeightChange` on release remains the only persistence write.
+  const [liveEditorHeight, setLiveEditorHeight] = useState<number | null>(null);
+  const workspaceBodyRef = useRef<HTMLDivElement | null>(null);
+  const [bodyHeight, setBodyHeight] = useState(0);
+
+  useEffect(() => {
+    const el = workspaceBodyRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      setBodyHeight(entry.contentRect.height);
+    });
+    observer.observe(el);
+    setBodyHeight(el.clientHeight);
+    return () => observer.disconnect();
+  }, []);
+
+  // Tier-2 (container-aware) max: the editor can never grow so far that the
+  // results region loses its floor. Static limits still bound persistence.
+  const editorHeightLimits = DBCLIENT_LAYOUT_LIMITS.editorResultsHeight;
+  const effectiveEditorMax =
+    bodyHeight > 0
+      ? Math.max(
+          Math.min(
+            editorHeightLimits.max,
+            bodyHeight - RESULTS_MIN - Number.parseInt(RESIZE_HIT_AREA, 10),
+          ),
+          editorHeightLimits.min,
+        )
+      : editorHeightLimits.max;
+
+  const handleEditorHeightChange = useCallback(
+    (px: number) => {
+      setLiveEditorHeight(null);
+      onEditorHeightChange?.(px);
+    },
+    [onEditorHeightChange],
+  );
+
+  const renderedEditorHeight = liveEditorHeight ?? editorHeight;
 
   const activeTab = tabs.find((tab) => tab.id === activeId) ?? tabs[0] ?? null;
   const activeTabIdRef = useRef<string | null>(activeTab?.id ?? null);
@@ -388,10 +451,18 @@ export const QueryTabs: React.FC<QueryTabsProps> = ({
         </Button>
       </Flex>
 
-      <Box flex="1" minHeight={0} display="flex" flexDirection="column" p={2} gap={2}>
+      <Box
+        ref={workspaceBodyRef}
+        flex="1"
+        minHeight={0}
+        display="flex"
+        flexDirection="column"
+        p={2}
+        gap={2}
+      >
         {activeTab ? (
           <>
-            <Box flexShrink={0}>
+            <Box flexShrink={0} height={`${renderedEditorHeight}px`} minHeight={0}>
               <SqlEditor
                 value={activeTab.sql}
                 onChange={handleChangeSql}
@@ -402,6 +473,17 @@ export const QueryTabs: React.FC<QueryTabsProps> = ({
                 completions={completions}
               />
             </Box>
+            <ResizableSplitter
+              orientation="horizontal"
+              direction="start"
+              value={renderedEditorHeight}
+              min={editorHeightLimits.min}
+              max={effectiveEditorMax}
+              onChange={handleEditorHeightChange}
+              onDragChange={setLiveEditorHeight}
+              ariaLabel="Resize editor and results"
+              testId="db-resize-handle-editor-results"
+            />
             <Flex flex="1" minHeight={0} direction="column" gap={1}>
               {renderExport ? (
                 <Box data-testid="db-results-export" flexShrink={0} px={1}>
