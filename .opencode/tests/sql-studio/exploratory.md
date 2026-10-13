@@ -30,6 +30,29 @@ Tester probes beyond the script.
 - Probe: in a `new-window` presentation, does the window title read "SQL Studio" (not the Tab title
   only), and does the app still render the decluttered shell?
 
+## Prompt lines — resize slice (#3049)
+
+- Probe (rapid reversals): drag a divider back and forth rapidly for several seconds — does it
+  jitter, drop pointer capture mid-gesture, leave a stuck cursor, or trip a re-render loop
+  ("Maximum update depth exceeded")? Is the drag coalesced or laggy (G-275)?
+- Probe (extreme narrow window): shrink the window far below the sum of both sidebar minimums —
+  does a defined precedence hold (workspace min wins), or do the sidebars overlap, vanish, or clip
+  each other?
+- Probe (drag-across-editor selection): start a drag on a divider and sweep across the SQL editor /
+  results grid — is any text selected, does the editor lose its caret or scroll position, does the
+  results grid lose its selection?
+- Probe (keyboard path): is there ANY keyboard affordance for the splits (a separator role with
+  arrow-key resize, or focusable handles)? A pointer-only split with no keyboard path is an
+  accessibility finding.
+- Probe (presentation modes): resize the splits, then switch `same-window` / `new-window` — do the
+  sizes persist or restore, or reset?
+- Probe (multi-tab / multi-result): resize S3 with several result sets or after Run-all — does the
+  grid keep its scroll position and selection?
+- Probe (theme + accent): resize, then change theme (light/dark) and the user accent — does the
+  divider affordance stay visible and contrast-adequate, and does a resize mid-transition break?
+- Probe (zoomed content): zoom the webview / change font scaling — do the persisted pixel sizes and
+  the min/max clamps still behave, or does content clip?
+
 ## Run log
 
 ### Round 1 — 2026-10-13 (spec/3048 @ bc741d6)
