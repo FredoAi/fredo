@@ -22,6 +22,8 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { system } from '../system';
+import { SEMANTIC_TOKENS } from '../contract';
+import { colorMixValueFor } from '../../providers/ThemeProvider';
 import { themes, themePresets } from '../../types/theme';
 // #3033 ST-1 — the WCAG arithmetic is single-sourced into `../contrast/wcag`
 // (the contrast gate's shared implementation). Imported, not re-declared; the
@@ -279,10 +281,18 @@ describe('#2946 ST-11 G-235 per-preset governing-tier table', () => {
     expect(lightDefault.primaryMin).toBeLessThan(ABSOLUTE_FLOOR);
   });
 
-  it('is consistent with the live --accent-strong derivation in ThemeProvider', () => {
+  it('derives --accent-strong from the contract DERIVATIONS (single weight home)', () => {
+    // #3034 ST-2 — the engine no longer inlines the weight: it reads the ONE
+    // contract home (`SEMANTIC_TOKENS`) that the contrast gate also consumes, so
+    // the derivation cannot drift from the G-235 table above. The derived
+    // expression still resolves to the pinned 55/45 mix this suite was settled on.
     const provider = readSource('../../providers/ThemeProvider.tsx');
-    expect(provider).toContain(
-      "'color-mix(in srgb, var(--accent-primary) 55%, var(--text-primary) 45%)'",
+    expect(provider).toContain('SEMANTIC_TOKENS');
+    const strong = SEMANTIC_TOKENS.find((token) => token.name === 'accent.strong');
+    expect(strong, 'contract declares accent.strong').toBeDefined();
+    expect(strong!.derivation!.weights).toEqual([0.55, 0.45]);
+    expect(colorMixValueFor(strong!.derivation!)).toBe(
+      'color-mix(in srgb, var(--accent-primary) 55%, var(--text-primary) 45%)',
     );
   });
 });
