@@ -9,6 +9,7 @@ import {
   Spinner,
 } from '@chakra-ui/react';
 import { LuRefreshCw, LuPencil, LuX } from 'react-icons/lu';
+import { tint } from '../../../shared/utils/colorTint';
 import { validatePAT, getUserProfile, isTokenExpiredError, type AzdoUserProfile } from '../../../shared/utils/azdoApi';
 import {
   storePAT,
@@ -164,7 +165,7 @@ export const WorkItemsSettings: React.FC = () => {
           </Text>
 
           {error && (
-            <Box bg="rgba(239, 68, 68, 0.1)" borderColor="var(--status-error)" borderWidth="1px" padding={3} borderRadius="md">
+            <Box bg={tint('var(--status-error)', 10)} borderColor="var(--status-error)" borderWidth="1px" padding={3} borderRadius="md">
               <Text fontSize="sm" color="var(--status-error)">{error}</Text>
             </Box>
           )}

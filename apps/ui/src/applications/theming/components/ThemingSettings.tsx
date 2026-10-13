@@ -4,6 +4,7 @@ import { LuRotateCcw } from 'react-icons/lu';
 import { useTheme } from '../../../app/providers/ThemeProvider';
 import type { ThemeOverrides } from '../../../app/types/theme';
 import { NewPresetPrompt } from './NewPresetPrompt';
+import { selectRecipeWith } from '../../../shared/utils/selectStyles';
 
 // ── Fonts available (all loaded via Google Fonts in index.html) ───────────────
 const FONT_OPTIONS = [
@@ -16,10 +17,13 @@ const FONT_OPTIONS = [
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/** Convert any CSS color string to a #rrggbb hex string for <input type="color">. */
-function toHex(color: string): string {
-  if (!color) return '#888888';
-  const s = color.trim();
+/**
+ * Convert any CSS color string to a #rrggbb hex string for <input type="color">.
+ * `fallback` is the theme's muted `textSecondary` value (never a local literal);
+ * the color picker only accepts `#rrggbb`.
+ */
+function toHex(color: string, fallback: string): string {
+  const s = (color || fallback).trim();
   if (/^#[0-9a-fA-F]{6}$/.test(s)) return s;
   if (/^#[0-9a-fA-F]{3}$/.test(s)) {
     const [, r, g, b] = s;
@@ -27,7 +31,7 @@ function toHex(color: string): string {
   }
   const m = s.match(/rgb[a]?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
   if (m) return '#' + [m[1], m[2], m[3]].map((n) => parseInt(n).toString(16).padStart(2, '0')).join('');
-  return '#888888';
+  return fallback;
 }
 
 /** Match a font CSS value against FONT_OPTIONS by primary family name. */
@@ -44,21 +48,12 @@ function matchFont(value: string): string {
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
 
-const selectStyles = {
+const selectStyles = selectRecipeWith({
   width: '100%',
   p: 2,
-  borderRadius: 'md',
-  bg: 'var(--card-bg)',
-  border: '1px solid',
-  borderColor: 'var(--border-color)',
-  color: 'var(--text-primary)',
-  fontSize: 'sm',
   fontWeight: '500',
-  cursor: 'pointer',
   transition: 'all 0.2s',
-  _hover: { borderColor: 'var(--accent-primary)' },
-  _focus: { outline: 'none', borderColor: 'var(--accent-primary)', boxShadow: '0 0 0 1px var(--accent-primary)' },
-} as const;
+});
 
 const SectionLabel: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <Text
@@ -234,6 +229,7 @@ export const ThemingSettings: React.FC = () => {
       overrides[key]
         ?? (activePreset?.colors as Partial<ThemeOverrides> | undefined)?.[key]
         ?? theme.colors[THEME_COLOR_MAP[key]],
+      theme.colors.textSecondary,
     );
 
   const fontValue = (key: FontKey): string =>

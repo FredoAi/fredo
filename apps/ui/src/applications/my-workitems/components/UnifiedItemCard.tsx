@@ -4,6 +4,7 @@ import {
   LuBug, LuCircleCheck, LuFileText, LuFlag, LuLayers, LuListTodo,
 } from 'react-icons/lu';
 import type { UnifiedWorkItem } from '../types';
+import { tint } from '../../../shared/utils/colorTint';
 
 interface UnifiedItemCardProps {
   item: UnifiedWorkItem;
@@ -56,7 +57,7 @@ export const UnifiedItemCard: React.FC<UnifiedItemCardProps> = ({ item, onClick 
         background: 'var(--card-hover-bg)',
         borderColor: 'var(--accent-primary)',
         transform: 'translateY(-2px)',
-        boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+        boxShadow: `0 4px 12px ${tint('var(--overlay-bg)', 25)}`,
       }}
     >
       <VStack align="stretch" gap={3}>

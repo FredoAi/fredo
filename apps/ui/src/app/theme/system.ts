@@ -1,10 +1,87 @@
 import { createSystem, defaultConfig, defineConfig } from '@chakra-ui/react';
+import { SEMANTIC_TOKENS, type SemanticToken } from './contract';
 
 /**
  * Custom Chakra UI system that bridges Fredo CSS variables into Chakra semantic tokens.
  * Components can use `bg="bg.surface"` instead of `bg="var(--card-bg)"` in new code,
  * and Chakra's internal focus-ring / colorPalette tokens pick up the live theme.
+ *
+ * #3034 ST-2 — every colour token is DERIVED from the theme contract (`./contract`),
+ * never re-declared here: `SEMANTIC_TOKENS` is the single home for each token's
+ * backing CSS var / `color-mix()` derivation (the triplication
+ * `ThemeProvider.tsx:291-295` ↔ `matrix.ts:121-125` ↔ `system.ts:114-115`). This
+ * module only maps the Chakra-facing subset into the nested/flat shape Chakra
+ * resolves.
  */
+
+/** Namespaces Chakra declares NESTED in `defaultConfig` — keep that exact shape. */
+const NESTED_NAMESPACES: ReadonlySet<string> = new Set(['bg', 'fg', 'border']);
+
+/**
+ * Engine-presentation namespaces that are NOT Chakra-facing: their consumers read
+ * the CSS vars directly (`var(--life-neutral)` / `var(--scrollbar-thumb)`), so they
+ * are deliberately not bridged. `system.semanticTokens.test.ts` pins the exact set.
+ */
+const NON_CHAKRA_NAMESPACES: ReadonlySet<string> = new Set(['scrollbar', 'life']);
+
+/** Authored var names — a derived token aliasing one is a Chakra-only mix. */
+const AUTHORED_VARS: ReadonlySet<string> = new Set(
+  SEMANTIC_TOKENS.filter((token) => token.authored).map((token) => token.varName),
+);
+
+/** One emitted Chakra colour token (or a nested namespace of them). */
+interface ColorToken {
+  value: string;
+}
+type ColorTokenTree = { [key: string]: ColorToken | ColorTokenTree };
+
+/**
+ * Build the `color-mix(in srgb, …)` value for a contract derivation (the same
+ * builder the engine uses, so the bridge and the engine cannot drift).
+ */
+function colorMixExpression(token: SemanticToken): string {
+  const derivation = token.derivation!;
+  const stops = derivation.sources.map((source, index) => {
+    const weight = derivation.weights?.[index];
+    return weight === undefined ? `var(${source})` : `var(${source}) ${Math.round(weight * 100)}%`;
+  });
+  if (stops.length === 1) stops.push('transparent');
+  return `color-mix(in srgb, ${stops.join(', ')})`;
+}
+
+/**
+ * A token's Chakra `value`:
+ *  - an authored token (or a derived token written by the engine) → `var(<var>)`;
+ *  - a Chakra-only derived alias (`accent.subtle` / `accent.muted`, which share
+ *    `--accent-primary` with authored tokens and have no engine var) → the live
+ *    `color-mix()` expression.
+ */
+function chakraValue(token: SemanticToken): string {
+  if (!token.authored && token.derivation?.fn === 'color-mix' && AUTHORED_VARS.has(token.varName)) {
+    return colorMixExpression(token);
+  }
+  return `var(${token.varName})`;
+}
+
+/** Derive the `semanticTokens.colors` map from the contract. */
+function buildColorTokens(): ColorTokenTree {
+  const tree: ColorTokenTree = {};
+  for (const token of SEMANTIC_TOKENS) {
+    const [namespace] = token.name.split('.');
+    if (NON_CHAKRA_NAMESPACES.has(namespace)) continue;
+    const entry: ColorToken = { value: chakraValue(token) };
+    if (NESTED_NAMESPACES.has(namespace)) {
+      const leaf = token.name.slice(namespace.length + 1);
+      const node = (tree[namespace] as ColorTokenTree | undefined) ?? {};
+      node[leaf] = entry;
+      tree[namespace] = node;
+    } else {
+      tree[token.name] = entry;
+    }
+  }
+  return tree;
+}
+
 const config = defineConfig({
   /**
    * Global CSS normalizations.
@@ -18,6 +95,36 @@ const config = defineConfig({
     button: { color: 'inherit' },
     'button[data-variant="outline"]': { borderColor: 'var(--border-color)' },
     'button[data-variant="outline"]:hover': { borderColor: 'var(--accent-primary)' },
+    /**
+     * Spec #3034 ST-2 (R-4.1) — the ONE structural control-level rule: the
+     * implicated control classes (outline buttons, selects, radio cards) resolve
+     * their chrome from the contract tokens, so no component needs a local colour
+     * override. The outline border/hover above stay byte-identical; these rules
+     * extend it, and `disabled` is the `fg.subtle` TOKEN (`--text-subtle`), never
+     * an opacity wash (which was the direct source of every composed
+     * `disabled|label` violation).
+     */
+    'button[data-variant="outline"]:disabled': {
+      color: 'var(--text-subtle)',
+      opacity: 1,
+    },
+    select: {
+      backgroundColor: 'var(--card-bg)',
+      borderColor: 'var(--border-color)',
+      color: 'var(--text-primary)',
+    },
+    'select:hover': { borderColor: 'var(--accent-primary)' },
+    'select:disabled': {
+      color: 'var(--text-subtle)',
+      opacity: 1,
+      cursor: 'not-allowed',
+    },
+    '.chakra-radio-card__itemControl': { borderColor: 'var(--border-color)' },
+    '.chakra-radio-card__itemControl:hover': { borderColor: 'var(--accent-primary)' },
+    '.chakra-radio-card__itemControl[data-state="checked"]': {
+      borderColor: 'var(--accent-primary)',
+    },
+    '.chakra-radio-card__itemControl[data-disabled]': { color: 'var(--text-subtle)' },
     /**
      * Spec #2946 ST-11 (R-1.3) — the SINGLE global keyboard-focus guarantee.
      *
@@ -54,86 +161,11 @@ const config = defineConfig({
       },
     },
     semanticTokens: {
-      colors: {
-        // #2865 R-3.2 — these namespaces MUST be defined in the SAME NESTED shape
-        // as Chakra's `defaultConfig` (NOT flat dotted keys). `defaultConfig`
-        // declares `bg`/`fg`/`border` as nested objects, which emit dash custom
-        // properties (`--chakra-colors-fg-muted`) and WIN the `colors.<path>`
-        // resolution; the same names as flat dotted keys emit escaped-dot
-        // properties (`--chakra-colors-fg\.muted`) that no consumer resolves, so
-        // the stock Chakra default survived (fg.muted rendered #52525b, bg.subtle a
-        // stock near-white). Nested keys merge over the defaults, so the Fredo vars
-        // win for every token-name consumer (F-14/F-15).
-        //
-        // Backgrounds
-        bg: {
-          canvas: { value: 'var(--body-bg)' },
-          surface: { value: 'var(--card-bg)' },
-          subtle: { value: 'var(--header-bg)' },
-          muted: { value: 'var(--card-hover-bg)' },
-          // #2864 ST-1 (T1): derived row/nav hover fill — `color-mix` from the live
-          // text color so it stays legible in light AND dark with no per-preset value.
-          hover: { value: 'var(--hover-bg)' },
-        },
-
-        // Foreground
-        fg: {
-          default: { value: 'var(--text-primary)' },
-          muted: { value: 'var(--text-secondary)' },
-          // #2864 ST-1 (T2): xs help/caption text — derived toward `--text-primary`
-          // so 12px help clears WCAG AA on dark surfaces.
-          subtle: { value: 'var(--text-subtle)' },
-          // #2864 ST-1 (T5): the foreground ON an accent-filled control, computed in
-          // ThemeProvider from the RESOLVED accent's WCAG luminance.
-          // (nested key emits `--chakra-colors-fg-on-accent`)
-          onAccent: { value: 'var(--accent-contrast)' },
-        },
-
-        // Borders
-        border: {
-          default: { value: 'var(--border-color)' },
-          subtle: { value: 'var(--border-color)' },
-        },
-
-        // Overlay
-        // #2864 ST-1 (T7): dialog backdrop scrim (base-record only).
-        'overlay.scrim': { value: 'var(--overlay-bg)' },
-
-        // Accent — maps to the live accent-primary/secondary CSS vars
-        'accent.default': { value: 'var(--accent-primary)' },
-        'accent.emphasized': { value: 'var(--accent-secondary)' },
-        // #2864 ST-1 (T6): deepened/lightened accent for the active-nav indicator
-        // so pale accents still clear 3:1 on the nav surface.
-        'accent.strong': { value: 'var(--accent-strong)' },
-        // #2864 ST-1: a live-`accent` Chakra colorPalette, so `colorPalette="accent"`
-        // resolves to the accent CSS vars instead of a stock Chakra hue (ST-3 swaps
-        // the Switch's stock-purple palette for this). Chakra's palette contract keys.
-        'accent.solid': { value: 'var(--accent-primary)' },
-        'accent.contrast': { value: 'var(--accent-contrast)' },
-        'accent.fg': { value: 'var(--accent-primary)' },
-        'accent.subtle': { value: 'color-mix(in srgb, var(--accent-primary) 8%, transparent)' },
-        'accent.muted': { value: 'color-mix(in srgb, var(--accent-primary) 15%, transparent)' },
-        'accent.focusRing': { value: 'var(--accent-primary)' },
-        'accent.border': { value: 'var(--accent-primary)' },
-        // #2745 ST-5: the subagent identity accent (--accent-subagent) — a
-        // dedicated hue so subagent chrome stays distinguishable from the
-        // chat node's --accent-primary working state at a glance.
-        'accent.subagent': { value: 'var(--accent-subagent)' },
-        // #2770: the nested-subagent identity accent (--accent-nested-subagent)
-        // — depth ≥ 2 cards; hue/luminance-distinct from accent.subagent (L1).
-        'accent.nestedSubagent': { value: 'var(--accent-nested-subagent)' },
-
-        // #2917 ST-1: the FREDO avatar interior fill. An OPAQUE derived token
-        // (accent mixed into the opaque body surface) so the figure reads solid
-        // instead of hollow; the value is derived live in ThemeProvider.
-        'avatar.interior': { value: 'var(--fredo-avatar-interior)' },
-
-        // Status
-        'status.success': { value: 'var(--status-success)' },
-        'status.warning': { value: 'var(--status-warning)' },
-        'status.error': { value: 'var(--status-error)' },
-        'status.info': { value: 'var(--status-info)' },
-      },
+      // #3034 ST-2 — derived from the contract (see `buildColorTokens`). The
+      // `bg`/`fg`/`border` namespaces MUST stay NESTED (Chakra's `defaultConfig`
+      // declares them nested and the nested definitions win `colors.<path>`;
+      // #2865 R-3.2). Every other token keeps its flat dotted key.
+      colors: buildColorTokens(),
       shadows: {
         // #2864 ST-1 (T8): dialog elevation shadow (base-record only).
         'shadow.dialog': { value: 'var(--shadow-dialog)' },

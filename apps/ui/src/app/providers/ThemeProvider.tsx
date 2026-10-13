@@ -24,6 +24,17 @@ import {
   LIFE_NEUTRAL_BG_MIX,
   LIFE_SCRIM_WEIGHT,
 } from '../../applications/home/components/background/life/lifeConstants';
+// #3034 ST-2 — the theme contract is the SINGLE home for every derivation weight
+// (collapsing the triplication `ThemeProvider.tsx:291-295` ↔ `matrix.ts:121-125`
+// ↔ `system.ts:114-115`). The engine derives its `color-mix()` presentation vars
+// from `SEMANTIC_TOKENS` — no weight is inlined in this file any more. The
+// `life.*` weights stay single-homed in `lifeConstants.ts` (imported above),
+// whose slice owns a source-shape pin for the `--life-*` expressions.
+import {
+  SEMANTIC_TOKENS,
+  type SemanticToken,
+  type TokenDerivation,
+} from '../theme/contract';
 
 export interface ThemeContextType {
   currentTheme: ThemeMode;
@@ -92,6 +103,43 @@ const LIFE_CELL_BASE_PCT = 100 - LIFE_CELL_MIX_PCT;
 const LIFE_SCRIM_PCT = LIFE_SCRIM_WEIGHT * 100;
 const LIFE_SCRIM_BASE_PCT = 100 - LIFE_SCRIM_PCT;
 
+/** Authored var names — a derived token aliasing one is not engine-written. */
+const AUTHORED_VAR_NAMES: ReadonlySet<string> = new Set(
+  SEMANTIC_TOKENS.filter((token) => token.authored).map((token) => token.varName),
+);
+
+/**
+ * #3034 ST-2 — the engine-written derived `color-mix` tokens, read from the
+ * contract. Excludes:
+ *  - the Chakra-only aliases (`accent.subtle` / `accent.muted` → `--accent-primary`)
+ *    — their live mix is bridged in `theme/system.ts`, not written here;
+ *  - the `life.*` presentation vars, whose numeric weights are single-homed in
+ *    `lifeConstants.ts` and pinned by the Life slice's own source test.
+ * Every weight below is the contract's — never a local literal.
+ */
+const ENGINE_COLOR_MIX_TOKENS: readonly SemanticToken[] = SEMANTIC_TOKENS.filter(
+  (token) =>
+    !token.authored &&
+    token.derivation?.fn === 'color-mix' &&
+    !AUTHORED_VAR_NAMES.has(token.varName) &&
+    !token.name.startsWith('life.'),
+);
+
+/**
+ * Build the `color-mix(in srgb, …)` value for a contract derivation. A single
+ * colour stop mixes toward `transparent` (the visible-tint form); an unweighted
+ * stop takes the remainder. The weights are the contract's percentages, so the
+ * engine expression cannot drift from the gate's arithmetic.
+ */
+export function colorMixValueFor(derivation: TokenDerivation): string {
+  const stops = derivation.sources.map((source, index) => {
+    const weight = derivation.weights?.[index];
+    return weight === undefined ? `var(${source})` : `var(${source}) ${Math.round(weight * 100)}%`;
+  });
+  if (stops.length === 1) stops.push('transparent');
+  return `color-mix(in srgb, ${stops.join(', ')})`;
+}
+
 /**
  * Parse a CSS color (hex or rgb/rgba) into 0-255 RGB channels. Returns null for
  * anything unparseable so the caller can fall back deterministically.
@@ -156,6 +204,28 @@ export function resolveAccentContrast(accent: string): string {
   const accentLuminance = relativeLuminance(rgb);
   const againstWhite = contrastRatio(1, accentLuminance);
   const againstDark = contrastRatio(relativeLuminance(ACCENT_CONTRAST_DARK_RGB), accentLuminance);
+  return againstWhite >= againstDark ? ACCENT_CONTRAST_LIGHT : ACCENT_CONTRAST_DARK;
+}
+
+/**
+ * #3034 ST-2 — resolve the NEW `status.onSolids` token: the foreground painted on
+ * a solid status fill. It reuses the SAME `#ffffff` vs `#0c1117` WCAG-max
+ * luminance rule as `resolveAccentContrast`, generalised to the resolved status
+ * colours — the candidate with the higher MINIMUM contrast across every status
+ * hue wins, so a status pill can never pair white-on-yellow. A tie resolves to
+ * `#ffffff`; empty/unparseable input falls back to `#ffffff` (the safe choice).
+ */
+export function resolveOnSolids(statusColors: readonly string[]): string {
+  const rgbs = statusColors
+    .map(parseAccentRgb)
+    .filter((rgb): rgb is [number, number, number] => rgb !== null);
+  if (rgbs.length === 0) return ACCENT_CONTRAST_LIGHT;
+  const minContrast = (candidate: string): number => {
+    const candidateLuminance = relativeLuminance(parseAccentRgb(candidate)!);
+    return Math.min(...rgbs.map((rgb) => contrastRatio(candidateLuminance, relativeLuminance(rgb))));
+  };
+  const againstWhite = minContrast(ACCENT_CONTRAST_LIGHT);
+  const againstDark = minContrast(ACCENT_CONTRAST_DARK);
   return againstWhite >= againstDark ? ACCENT_CONTRAST_LIGHT : ACCENT_CONTRAST_DARK;
 }
 
@@ -284,15 +354,18 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
     root.style.setProperty('--font-secondary', theme.colors.fontSecondary);
     root.style.setProperty('--font-base', theme.colors.fontBase);
 
-    // --- #2864 ST-1 derived presentation vars (set ONCE in the base pass) ---
-    // These are `color-mix()` expressions over the live theme vars, so they resolve
-    // against whatever the preset/override passes put on --text-primary /
-    // --text-secondary / --accent-primary later — no per-preset values needed.
-    root.style.setProperty('--hover-bg', 'color-mix(in srgb, var(--text-primary) 6%, transparent)'); // T1
-    root.style.setProperty('--text-subtle', 'color-mix(in srgb, var(--text-secondary) 65%, var(--text-primary) 35%)'); // T2
-    root.style.setProperty('--scrollbar-thumb', 'color-mix(in srgb, var(--text-secondary) 45%, transparent)'); // T3
-    root.style.setProperty('--scrollbar-thumb-hover', 'color-mix(in srgb, var(--text-secondary) 70%, transparent)'); // T4
-    root.style.setProperty('--accent-strong', 'color-mix(in srgb, var(--accent-primary) 55%, var(--text-primary) 45%)'); // T6
+    // --- #3034 ST-2: contract-driven derived presentation vars (base pass) ---
+    // Every `color-mix()` expression is built from the contract's `SEMANTIC_TOKENS`
+    // (the ONE weight home that also feeds the contrast gate), so a weight change
+    // in the contract re-resolves here with no per-file edit — no per-preset
+    // values, no remount. These are live var references, so they resolve against
+    // whatever the preset/override/Doom passes put on `--text-primary` /
+    // `--accent-primary` / `--body-bg` / … later. Covers T1 (`--hover-bg`),
+    // T2 (`--text-subtle`), T3/T4 (scrollbar), T6 (`--accent-strong`) and the
+    // avatar interior (`--fredo-avatar-interior`).
+    for (const token of ENGINE_COLOR_MIX_TOKENS) {
+      root.style.setProperty(token.varName, colorMixValueFor(token.derivation!));
+    }
     // #2925 ST-1 — the Life field's three dimmed paint tokens. Set ONCE here,
     // like `--accent-strong`, as live `color-mix()` expressions so they
     // re-resolve against whatever the preset/override passes put on
@@ -317,11 +390,11 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
       '--life-dim',
       `color-mix(in srgb, transparent ${LIFE_SCRIM_BASE_PCT}%, var(--overlay-bg) ${LIFE_SCRIM_PCT}%)`,
     );
-    // #2917 ST-1 (T9): the FREDO avatar interior fill — accent mixed into the
-    // OPAQUE body surface (NOT --card-bg, which is rgba(0,0,0,0.3) in the classic
-    // dark preset and would re-open the hollow-figure defect). Opaque in every
-    // preset; re-resolves live on any preset/accent change with no remount.
-    root.style.setProperty('--fredo-avatar-interior', 'color-mix(in srgb, var(--accent-primary) 20%, var(--body-bg))');
+    // #2917 ST-1 (T9): the FREDO avatar interior fill is now written by the
+    // contract loop above (`avatar.interior` — accent mixed into the OPAQUE body
+    // surface, NOT --card-bg, which is rgba(0,0,0,0.3) in the classic dark preset
+    // and would re-open the hollow-figure defect). Opaque in every preset;
+    // re-resolves live on any preset/accent change with no remount.
     // T7/T8 — base-record-only presentation values (never part of the override contract).
     root.style.setProperty('--overlay-bg', theme.colors.overlayBg);
     root.style.setProperty('--shadow-dialog', theme.colors.shadowDialog);
@@ -458,6 +531,16 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
     // inline value guarantees arbitrary user accentPrimary overrides are covered.
     const resolvedAccent = root.style.getPropertyValue('--accent-primary') || theme.colors.accentPrimary;
     root.style.setProperty('--accent-contrast', resolveAccentContrast(resolvedAccent));
+
+    // --- #3034 ST-2: status-solid foreground (`status.onSolids`) ---
+    // The contract declares `status.onSolids` (`--status-on-solids`) as a
+    // `wcag-max-contrast` derivation over the four status tokens. Like the
+    // on-accent foreground it is computed in JS (no sufficient CSS equivalent)
+    // from the RESOLVED status vars — covering base, preset, override and Doom.
+    const resolvedStatus = ['--status-success', '--status-warning', '--status-error', '--status-info']
+      .map((name) => root.style.getPropertyValue(name))
+      .filter((value): value is string => value.length > 0);
+    root.style.setProperty('--status-on-solids', resolveOnSolids(resolvedStatus));
   }, [activeTheme, overrides, activePreset, doomEngaged]);
 
   const setOverride = (key: keyof ThemeOverrides, value: string) => {

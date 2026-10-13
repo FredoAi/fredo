@@ -4,6 +4,7 @@ import type { K8sNodeData, TooltipButton, TooltipActionType } from './K8sNode';
 import { getActionsForNodeType, type NodeAction } from '../utils/nodeActionRegistry';
 import { buildPromptForNode } from '../utils/promptBuilder';
 import { LuX } from 'react-icons/lu';
+import { tint } from '../../../shared/utils/colorTint';
 
 interface NodeContextMenuProps {
   id: string;
@@ -81,7 +82,7 @@ export const NodeContextMenu: React.FC<NodeContextMenuProps> = ({
       zIndex={1000}
       bg="var(--node-bg)"
       borderRadius="lg"
-      boxShadow="0 4px 12px rgba(0, 0, 0, 0.5)"
+      boxShadow={`0 4px 12px ${tint('var(--overlay-bg)', 83)}`}
       border="2px solid"
       borderColor="var(--border-color)"
       width="500px"
@@ -172,7 +173,7 @@ export const NodeContextMenu: React.FC<NodeContextMenuProps> = ({
       {data.issues && data.issues.length > 0 && (
         <HStack 
           p={2} 
-          bg="rgba(239, 68, 68, 0.15)" 
+          bg={tint('var(--status-error)', 15)} 
           borderBottom="1px solid" 
           borderColor="var(--status-error)"
           fontSize="xs"
@@ -205,7 +206,7 @@ export const NodeContextMenu: React.FC<NodeContextMenuProps> = ({
                     border="1px solid"
                     borderColor="var(--border-color)"
                     bg="var(--card-bg)"
-                    _hover={{ bg: 'rgba(147, 51, 234, 0.2)', borderColor: 'var(--accent-primary)' }}
+                    _hover={{ bg: tint('var(--accent-primary)', 20), borderColor: 'var(--accent-primary)' }}
                     cursor="pointer"
                     onClick={() => handleActionClick(action)}
                     textAlign="left"
@@ -245,7 +246,7 @@ export const NodeContextMenu: React.FC<NodeContextMenuProps> = ({
                     border="1px solid"
                     borderColor="var(--border-color)"
                     bg="var(--card-bg)"
-                    _hover={{ bg: 'rgba(147, 51, 234, 0.2)', borderColor: 'var(--accent-primary)' }}
+                    _hover={{ bg: tint('var(--accent-primary)', 20), borderColor: 'var(--accent-primary)' }}
                     cursor="pointer"
                     onClick={() => handleActionClick(action)}
                     textAlign="left"
@@ -284,8 +285,8 @@ export const NodeContextMenu: React.FC<NodeContextMenuProps> = ({
                     borderRadius="md"
                     border="1px solid"
                     borderColor="var(--status-warning)"
-                    bg="rgba(245, 158, 11, 0.1)"
-                    _hover={{ bg: 'rgba(245, 158, 11, 0.2)', borderColor: 'var(--status-warning)' }}
+                    bg={tint('var(--status-warning)', 10)}
+                    _hover={{ bg: tint('var(--status-warning)', 20), borderColor: 'var(--status-warning)' }}
                     cursor="pointer"
                     onClick={() => handleActionClick(action)}
                     textAlign="left"
@@ -324,8 +325,8 @@ export const NodeContextMenu: React.FC<NodeContextMenuProps> = ({
                     borderRadius="md"
                     border="1px solid"
                     borderColor="var(--status-info)"
-                    bg="rgba(59, 130, 246, 0.1)"
-                    _hover={{ bg: 'rgba(59, 130, 246, 0.2)', borderColor: 'var(--status-info)' }}
+                    bg={tint('var(--status-info)', 10)}
+                    _hover={{ bg: tint('var(--status-info)', 20), borderColor: 'var(--status-info)' }}
                     cursor="pointer"
                     onClick={() => handleActionClick(action)}
                     textAlign="left"

@@ -42,6 +42,7 @@ import {
 import { LuCircle, LuCircleCheck, LuLoader, LuTriangleAlert } from 'react-icons/lu';
 
 import { tint } from '../../../shared/utils/colorTint';
+import { selectRecipeWith } from '../../../shared/utils/selectStyles';
 import {
   applyPostgresConfig,
   DEFAULT_PG_CONFIG,
@@ -90,26 +91,12 @@ const CANCEL_LABEL = 'Cancel';
 /** The step readout shown while a restart is in flight (Doherty). */
 const APPLY_STEPS = ['Saving config…', 'Restarting cluster…', 'Reconnecting…'] as const;
 
-/** The select chrome (CSS vars so it follows the user theme — never NativeSelect). */
-const selectStyles = {
+/** The select chrome — the ONE shared token recipe (`selectStyles.ts`), never NativeSelect. */
+const selectStyles = selectRecipeWith({
   width: 'auto',
   minW: '200px',
   p: 2,
-  borderRadius: 'md',
-  bg: 'var(--card-bg)',
-  border: '1px solid',
-  borderColor: 'var(--border-color)',
-  color: 'var(--text-primary)',
-  fontSize: 'sm',
-  cursor: 'pointer',
-  _hover: { borderColor: 'var(--accent-primary)' },
-  _focus: {
-    outline: 'none',
-    borderColor: 'var(--accent-primary)',
-    boxShadow: '0 0 0 1px var(--accent-primary)',
-  },
-  _disabled: { opacity: 0.5, cursor: 'not-allowed' },
-} as const;
+});
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

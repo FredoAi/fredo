@@ -16,6 +16,7 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { Box, HStack, Text } from '@chakra-ui/react';
 import { LuMinimize2, LuMaximize2, LuDownload } from 'react-icons/lu';
+import { tint } from '../../../shared/utils/colorTint';
 import type { DevModeStreamEvent } from '../hooks/useDevModeStream';
 import {
   TOOL_CATEGORY,
@@ -38,14 +39,18 @@ function makeSquareSprite(): THREE.Texture {
   canvas.height = s;
   const ctx = canvas.getContext('2d')!;
   // Soft radial halo
+  // Soft radial halo — white at decreasing alpha (the sprite is tinted by
+  // vertex colours, so the canvas art palette stays achromatic). `color-mix`
+  // (Chromium 111+ / WebView2 evergreen) keeps the alpha profile with no raw
+  // hex/rgba literal — `var()` alpha-append is invalid CSS.
   const g = ctx.createRadialGradient(32, 32, 2, 32, 32, 30);
-  g.addColorStop(0,    'rgba(255,255,255,0.95)');
-  g.addColorStop(0.42, 'rgba(255,255,255,0.28)');
-  g.addColorStop(1,    'rgba(255,255,255,0.0)');
+  g.addColorStop(0,    tint('white', 95));
+  g.addColorStop(0.42, tint('white', 28));
+  g.addColorStop(1,    'transparent');
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, s, s);
   // Crisp inner square (the "node body")
-  ctx.fillStyle = 'rgba(255,255,255,1)';
+  ctx.fillStyle = 'white';
   ctx.fillRect(22, 22, 20, 20);
   return new THREE.CanvasTexture(canvas);
 }
@@ -576,7 +581,7 @@ export const SpatiotemporalManifold: React.FC<Props> = ({ events }) => {
         <HStack gap="5px" pointerEvents="none">
           <Text
             fontSize="8px"
-            color="rgba(255,255,255,0.25)"
+            color={tint('var(--text-primary)', 25)}
             textTransform="uppercase"
             letterSpacing="0.1em"
             fontWeight="600"
@@ -609,10 +614,10 @@ export const SpatiotemporalManifold: React.FC<Props> = ({ events }) => {
                 cursor="pointer"
                 border="1px solid"
                 transition="all 0.15s"
-                background={active ? 'rgba(147,51,234,0.20)' : 'transparent'}
-                color={active ? '#a855f7' : 'rgba(255,255,255,0.25)'}
-                borderColor={active ? 'rgba(147,51,234,0.50)' : 'rgba(255,255,255,0.10)'}
-                _hover={{ color: '#c084fc', borderColor: 'rgba(147,51,234,0.4)' }}
+                background={active ? tint('var(--accent-primary)', 20) : 'transparent'}
+                color={active ? 'var(--accent-primary)' : tint('var(--text-primary)', 25)}
+                borderColor={active ? tint('var(--accent-primary)', 50) : tint('var(--text-primary)', 10)}
+                _hover={{ color: 'var(--accent-secondary)', borderColor: tint('var(--accent-primary)', 40) }}
                 style={{ userSelect: 'none' }}
               >
                 {label}
@@ -628,8 +633,8 @@ export const SpatiotemporalManifold: React.FC<Props> = ({ events }) => {
             display="flex"
             alignItems="center"
             cursor={events.length > 0 ? 'pointer' : 'not-allowed'}
-            color={events.length > 0 ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.12)'}
-            _hover={events.length > 0 ? { color: 'rgba(255,255,255,0.7)' } : undefined}
+            color={events.length > 0 ? tint('var(--text-primary)', 35) : tint('var(--text-primary)', 12)}
+            _hover={events.length > 0 ? { color: tint('var(--text-primary)', 70) } : undefined}
             style={{ background: 'none', border: 'none', padding: '2px 3px' }}
             aria-label="Download events as JSONL"
           >
@@ -642,8 +647,8 @@ export const SpatiotemporalManifold: React.FC<Props> = ({ events }) => {
             onClick={() => setCollapsed((v) => !v)}
             display="flex"
             alignItems="center"
-            color="rgba(255,255,255,0.25)"
-            _hover={{ color: 'rgba(255,255,255,0.6)' }}
+            color={tint('var(--text-primary)', 25)}
+            _hover={{ color: tint('var(--text-primary)', 60) }}
             style={{ background: 'none', border: 'none', padding: '2px 3px', cursor: 'pointer' }}
             aria-label={collapsed ? 'Expand manifold' : 'Collapse manifold'}
           >

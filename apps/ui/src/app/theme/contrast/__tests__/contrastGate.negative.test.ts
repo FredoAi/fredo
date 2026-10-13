@@ -74,14 +74,19 @@ describe('contrast: a stale baseline entry fails (Q-9)', () => {
 
 describe('contrast: the frozen cap fails closed (Q-10)', () => {
   it('throws when the baseline grows past BASELINE_MAX', () => {
-    const extra: ContrastBaselineEntry = {
-      key: 'light-default|canvas|default|__extra__',
-      ratio: 1,
-      issue: 3035,
-      note: 'injected over-cap entry',
-    };
+    // #3034 follow-up: the ledger ratcheted DOWN below the frozen cap, so exceed
+    // the cap explicitly (intent unchanged: an over-cap baseline must throw).
+    const overCap: ContrastBaselineEntry[] = Array.from(
+      { length: BASELINE_MAX - CONTRAST_BASELINE.length + 1 },
+      (_, index) => ({
+        key: `light-default|canvas|default|__over-cap-${index}__`,
+        ratio: 1,
+        issue: 3035,
+        note: 'injected over-cap entry',
+      }),
+    );
     expect(() =>
-      evaluateContrast(matrix, [...CONTRAST_BASELINE, extra], BASELINE_MAX),
+      evaluateContrast(matrix, [...CONTRAST_BASELINE, ...overCap], BASELINE_MAX),
     ).toThrow();
   });
 
@@ -113,16 +118,16 @@ describe('raw colour: an unbaselined literal is a NEW violation (Q-4 re-bind, AC
 
 describe('raw colour: a stale baseline entry fails', () => {
   it('reports a baselined literal that no longer appears in the tree', () => {
-    const entry = RAW_COLOR_BASELINE[0];
-    const remaining = hits.filter(
-      (h) => !(h.file === entry.file && h.literal === entry.literal),
-    );
-    const evaluation = evaluateRawColors(
-      remaining,
-      RAW_COLOR_ALLOWLIST,
-      RAW_COLOR_BASELINE,
-      RAW_COLOR_BASELINE_MAX,
-    );
+    // #3034 ST-4 emptied the committed ledger, so the stale-proof synthesizes
+    // its own baseline entry (a `{file, literal}` that cannot match any live
+    // hit) instead of indexing `RAW_COLOR_BASELINE[0]` (now absent).
+    const entry: RawColorBaselineEntry = {
+      file: 'apps/ui/src/applications/__stale__/Gone.tsx',
+      literal: '#ff00aa',
+      issue: 3035,
+      note: 'stale entry — the literal is no longer present in the tree',
+    };
+    const evaluation = evaluateRawColors(hits, RAW_COLOR_ALLOWLIST, [entry], 1);
     expect(
       evaluation.staleBaseline.some(
         (e) => e.file === entry.file && e.literal === entry.literal,

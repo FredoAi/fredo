@@ -21,6 +21,7 @@ import {
 } from 'react-icons/lu';
 import { useOptimizelyFlags } from '../hooks/useOptimizelyFlags';
 import type { OptimizelyFlag, FlagEnvironment } from '../types';
+import { tint } from '../../../shared/utils/colorTint';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -82,10 +83,10 @@ const StatusBadge: React.FC<{ enabled: boolean }> = ({ enabled }) => (
     borderRadius="full"
     fontSize="xs"
     fontWeight="500"
-    background={enabled ? 'rgba(34, 197, 94, 0.12)' : 'rgba(148, 163, 184, 0.08)'}
-    color={enabled ? '#4ade80' : 'var(--text-muted)'}
+    background={enabled ? tint('var(--status-success)', 12) : tint('var(--text-secondary)', 8)}
+    color={enabled ? 'var(--status-success)' : 'var(--text-muted)'}
     border="1px solid"
-    borderColor={enabled ? 'rgba(74, 222, 128, 0.28)' : 'rgba(148, 163, 184, 0.18)'}
+    borderColor={enabled ? tint('var(--status-success)', 28) : tint('var(--text-secondary)', 18)}
     display="inline-flex"
     alignItems="center"
     gap="5px"
@@ -95,7 +96,7 @@ const StatusBadge: React.FC<{ enabled: boolean }> = ({ enabled }) => (
       width="6px"
       height="6px"
       borderRadius="full"
-      background={enabled ? '#4ade80' : 'rgba(148, 163, 184, 0.5)'}
+      background={enabled ? 'var(--status-success)' : tint('var(--text-secondary)', 50)}
       flexShrink={0}
     />
     {enabled ? 'Running' : 'Draft'}
@@ -126,7 +127,7 @@ const ConfirmToggleDialog: React.FC<ConfirmToggleDialogProps> = ({
 
   return (
     <Dialog.Root open={open} onOpenChange={(details) => !details.open && onClose()}>
-      <Dialog.Backdrop bg="rgba(0,0,0,0.55)" backdropFilter="blur(4px)" />
+      <Dialog.Backdrop bg="var(--overlay-bg)" backdropFilter="blur(4px)" />
       <Dialog.Positioner>
         <Dialog.Content
           background="var(--card-bg)"
@@ -176,7 +177,7 @@ const ConfirmToggleDialog: React.FC<ConfirmToggleDialogProps> = ({
                   </Text>
                 )}
                 {flag.environment === 'production' && (
-                  <HStack mt={2} gap={1} background="rgba(239,68,68,0.1)" borderRadius="sm" p={2}>
+                  <HStack mt={2} gap={1} background={tint('var(--status-error)', 10)} borderRadius="sm" p={2}>
                     <Box color="var(--status-error)" flexShrink={0}>
                       <LuTriangleAlert size={12} />
                     </Box>
@@ -241,7 +242,7 @@ const TableHeader: React.FC = () => (
     px={4}
     py={2}
     borderBottom="1px solid var(--border-color)"
-    background="rgba(0,0,0,0.18)"
+    background={tint('var(--overlay-bg)', 30)}
     flexShrink={0}
     gap={3}
   >
@@ -286,7 +287,7 @@ const FlagRow: React.FC<FlagRowProps> = ({ group, isExpanded, onToggle, onToggle
       cursor="pointer"
       onClick={onToggle}
       transition="background 0.15s"
-      _hover={{ background: 'rgba(147, 51, 234, 0.06)' }}
+      _hover={{ background: tint('var(--accent-primary)', 6) }}
       role="button"
     >
       <Box width={COL.chevron} flexShrink={0} color="var(--text-muted)" fontSize="sm" display="flex" alignItems="center">
@@ -344,8 +345,8 @@ const FlagRow: React.FC<FlagRowProps> = ({ group, isExpanded, onToggle, onToggle
           px={4}
           py="10px"
           gap={3}
-          borderBottom="1px solid rgba(255,255,255,0.04)"
-          background="rgba(0,0,0,0.14)"
+          borderBottom={`1px solid ${tint('var(--text-primary)', 4)}`}
+          background={tint('var(--overlay-bg)', 23)}
           onClick={(e) => e.stopPropagation()}
         >
           {/* Indent line */}
@@ -472,7 +473,7 @@ export const OptimizelyFlagsPanel: React.FC = () => {
         align="center"
         borderBottom="1px solid var(--border-color)"
         flexShrink={0}
-        background="rgba(0,0,0,0.08)"
+        background={tint('var(--overlay-bg)', 13)}
       >
         <Text fontSize="xs" color="var(--text-muted)" flex={1} mr={4}>
           Flags are decision points in your code and rules are used to run experiments and rollouts.
@@ -488,7 +489,7 @@ export const OptimizelyFlagsPanel: React.FC = () => {
             fontSize="xs"
             data-testid="optimizely-expand-all"
             data-hotkey="e"
-            _hover={{ background: 'rgba(147, 51, 234, 0.08)' }}
+            _hover={{ background: tint('var(--accent-primary)', 8) }}
           >
             Expand All
           </Button>
@@ -503,7 +504,7 @@ export const OptimizelyFlagsPanel: React.FC = () => {
             fontSize="xs"
             data-testid="optimizely-collapse-all"
             data-hotkey="c"
-            _hover={{ background: 'rgba(147, 51, 234, 0.08)' }}
+            _hover={{ background: tint('var(--accent-primary)', 8) }}
           >
             Collapse All
           </Button>
@@ -606,7 +607,7 @@ export const OptimizelyFlagsPanel: React.FC = () => {
           justify="space-between"
           align="center"
           flexShrink={0}
-          background="rgba(0,0,0,0.1)"
+          background={tint('var(--overlay-bg)', 17)}
         >
           <Text color="var(--text-muted)" fontSize="xs">
             {groups.length} flag{groups.length !== 1 ? 's' : ''}

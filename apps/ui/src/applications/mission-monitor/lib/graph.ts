@@ -388,14 +388,15 @@ export const EMPTY_STATE_JOKES = [
 // -- Status colors ------------------------------------------------------------
 
 export const GRAPH_STATUS_COLORS: Record<GraphNodeStatus, string> = {
-  'in-progress': '#a855f7', // purple
-  'active':       '#6366f1', // indigo
-  'complete':     '#334155', // muted
-  'error':        '#ef4444', // red
-  'compacted':    '#475569', // slate
+  // #3034 ST-4 — graph/status hues resolve from the theme contract tokens.
+  'in-progress': 'var(--accent-primary)',   // purple
+  'active':       'var(--accent-subagent)', // indigo
+  'complete':     'var(--border-color)',    // muted
+  'error':        'var(--status-error)',    // red
+  'compacted':    'var(--text-secondary)',  // slate
 };
 
 export const GRAPH_NODE_BORDER_COLORS: Record<GraphNodeType, string> = {
-  agent:    '#a855f7', // purple
-  subagent: '#6366f1', // indigo
+  agent:    'var(--accent-primary)',   // purple
+  subagent: 'var(--accent-subagent)',  // indigo
 };

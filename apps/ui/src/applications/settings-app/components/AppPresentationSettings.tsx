@@ -108,7 +108,6 @@ const ModeOption: React.FC<{
       borderStyle={disabled ? 'dashed' : 'solid'}
       borderColor={selected ? 'var(--accent-primary)' : 'border.default'}
       bg={selected ? tint('var(--accent-primary)', 12) : 'bg.surface'}
-      opacity={disabled ? 0.55 : 1}
       cursor={disabled ? 'not-allowed' : 'pointer'}
       transition="background 0.15s ease, border-color 0.15s ease"
       _hover={disabled ? undefined : { borderColor: 'var(--accent-primary)' }}

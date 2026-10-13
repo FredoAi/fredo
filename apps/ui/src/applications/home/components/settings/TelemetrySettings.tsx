@@ -268,7 +268,7 @@ export const TelemetrySettings: React.FC = () => {
                 fontWeight="500"
                 cursor="pointer"
                 transition="all 0.2s"
-                _disabled={{ opacity: 0.4, cursor: 'not-allowed' }}
+                _disabled={{ color: 'fg.subtle', cursor: 'not-allowed' }}
                 _hover={{ borderColor: 'var(--accent-primary)' }}
                 _focus={{ outline: 'none', borderColor: 'var(--accent-primary)', boxShadow: '0 0 0 1px var(--accent-primary)' }}
               >
@@ -300,7 +300,7 @@ export const TelemetrySettings: React.FC = () => {
                 fontWeight="500"
                 cursor="pointer"
                 transition="all 0.2s"
-                _disabled={{ opacity: 0.4, cursor: 'not-allowed' }}
+                _disabled={{ color: 'fg.subtle', cursor: 'not-allowed' }}
                 _hover={{ borderColor: 'var(--accent-primary)' }}
                 _focus={{ outline: 'none', borderColor: 'var(--accent-primary)', boxShadow: '0 0 0 1px var(--accent-primary)' }}
               >
@@ -332,7 +332,7 @@ export const TelemetrySettings: React.FC = () => {
                 fontWeight="500"
                 cursor="pointer"
                 transition="all 0.2s"
-                _disabled={{ opacity: 0.4, cursor: 'not-allowed' }}
+                _disabled={{ color: 'fg.subtle', cursor: 'not-allowed' }}
                 _hover={{ borderColor: 'var(--accent-primary)' }}
                 _focus={{ outline: 'none', borderColor: 'var(--accent-primary)', boxShadow: '0 0 0 1px var(--accent-primary)' }}
               >
@@ -377,7 +377,7 @@ export const TelemetrySettings: React.FC = () => {
               open={showPurgeDialog}
               onOpenChange={(details) => setShowPurgeDialog(details.open)}
             >
-              <Dialog.Backdrop bg="rgba(0,0,0,0.55)" backdropFilter="blur(4px)" />
+              <Dialog.Backdrop bg="var(--overlay-bg)" backdropFilter="blur(4px)" />
               <Dialog.Positioner>
                 <Dialog.Content
                   bg="bg.surface"

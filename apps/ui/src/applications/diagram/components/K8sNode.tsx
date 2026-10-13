@@ -42,13 +42,15 @@ export interface K8sNodeData {
 }
 
 const getTypeColor = (type: string): string => {
+  // #3034 ST-4 — node identity hues resolve from the theme contract tokens
+  // (no component-local colour decision).
   const colors: Record<string, string> = {
-    service: '#8b5cf6',      // Purple
-    pod: '#6366f1',          // Indigo
-    database: '#10b981',     // Green
-    deployment: '#3b82f6',   // Blue
-    firewall: '#ef4444',     // Red
-    default: '#6b7280'       // Gray
+    service: 'var(--accent-primary)',   // Purple
+    pod: 'var(--accent-subagent)',      // Indigo
+    database: 'var(--status-success)',  // Green
+    deployment: 'var(--status-info)',   // Blue
+    firewall: 'var(--status-error)',    // Red
+    default: 'var(--text-secondary)'    // Gray
   };
   return colors[type] || colors.default;
 };

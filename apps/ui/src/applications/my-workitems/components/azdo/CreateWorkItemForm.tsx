@@ -6,6 +6,7 @@ import { useCreateWorkItem } from '../../hooks/useCreateWorkItem';
 import { buildReviewRequestPrompt } from '../../utils/azdoCreatePromptBuilder';
 import type { CreateWorkItemData } from '../../types';
 import { getUserProfile } from '../../../../shared/utils/patStorage';
+import { tint } from '../../../../shared/utils/colorTint';
 
 interface CreateWorkItemFormProps {
   initialData?: Partial<CreateWorkItemData>;
@@ -181,7 +182,7 @@ export const CreateWorkItemForm: React.FC<CreateWorkItemFormProps> = ({
           @keyframes fieldUpdate {
             from {
               border-color: var(--status-success);
-              box-shadow: 0 0 0 3px rgba(72, 187, 120, 0.2);
+              box-shadow: 0 0 0 3px ${tint('var(--status-success)', 20)};
             }
             to {
               border-color: var(--border-color);
