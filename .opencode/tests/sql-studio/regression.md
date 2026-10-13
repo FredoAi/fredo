@@ -65,3 +65,13 @@ touching the `database-client` surface re-runs these. Seeded at issue **#3048**.
 - The rename is a UI-identity change ONLY: every engine, command, id, testid, and enforcement
   contract above stays frozen. The durable contract is the "app identity = SQL Studio, engine
   identity = PostgreSQL" split; a future spec touching the same surface inherits this suite.
+
+## Run log
+
+### Round 1 — 2026-10-13 (spec/3048 @ bc741d6) — Verdict: **PASS**
+
+R-1..R-4 (inherited overlapping surface) and R-I..R-IX all PASS live. R-I engine strings
+(`PostgreSQL 18.6`, role `postgres`, db `fredo`) unchanged; R-II `database-client` id + `db_*`
+commands unchanged; R-III read-only default + `readOnlyBlocked` refusal confirmed; R-VII
+`AccessModeBadge.tsx` + its test absent; R-VIII build 0 TS errors + 212/2690 tests green; R-IX diff
+scoped to `database-client/**` + 2 docs (no cross-app import, no Rust change).
