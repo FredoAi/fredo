@@ -203,7 +203,7 @@ fn tcp_open(port: u16, bound: Duration) -> bool {
 }
 
 fn dsn(port: u16) -> String {
-    format!("postgresql://postgres:{E2E_PASSWORD}@127.0.0.1:{port}/postgres")
+    format!("postgresql://postgres:{E2E_PASSWORD}@127.0.0.1:{port}/fredo")
 }
 
 fn read_descriptor(path: &Path) -> Option<HeadlessDescriptor> {

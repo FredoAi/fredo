@@ -473,7 +473,8 @@ pub fn start_supervisor(app: &AppHandle) {
     }
 }
 
-/// The background start: bounded setup → start → marker → readiness. On any
+/// The background start: bounded setup → start → marker → database-identity
+/// migration → readiness. On any
 /// bounded failure, tear down under a bounded stop, clear the marker, and publish
 /// `Failed` (R-1.3). Never awaited from `setup`.
 ///
@@ -531,6 +532,13 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf) {
         let pid = runtime.start().await.map_err(|error| ("start", error))?;
         // Persist the PID marker after the spawn, before the readiness poll (R-1.1).
         persist_pid(&store, Some(pid));
+        // Spec #3036: rename the bootstrap database to `fredo` BEFORE the
+        // readiness probe / pool build, so no pool ever connects to a database
+        // literally named `postgres` (idempotent; fail-closed `database` stage).
+        runtime
+            .migrate_database_identity()
+            .await
+            .map_err(|error| ("database", error))?;
         runtime
             .probe_ready()
             .await
@@ -922,7 +930,8 @@ async fn change_password_safely(
 
 /// The shared bounded cluster-restart leg (Spec #3022 ST-4): take the runtime →
 /// bounded stop → build [`PgRuntime::with_config`] → `setup` → `apply_server_knobs`
-/// → `start` → `probe_ready` → rebuild the pool → `EngineHandle::swap` → publish
+/// → `start` → `migrate_database_identity` → `probe_ready` → rebuild the pool →
+/// `EngineHandle::swap` → publish
 /// `Ready`. The WHOLE leg is wrapped in [`PG_APPLY_BOUND`] (over the existing inner
 /// bounds). On failure the runtime is torn down, the marker cleared, and a
 /// classified `Failed` is published. The caller refuses while the data dir is
@@ -1042,6 +1051,12 @@ async fn restart_cluster_inner(
         if let Some(store) = store.as_ref() {
             persist_pid(store, Some(pid));
         }
+        // Spec #3036: migrate the database identity BEFORE the readiness probe /
+        // pool rebuild (idempotent; fail-closed `database` stage).
+        runtime
+            .migrate_database_identity()
+            .await
+            .map_err(|error| ("database", error))?;
         runtime
             .probe_ready()
             .await
@@ -1291,10 +1306,12 @@ pub async fn pg_config_get(app: AppHandle) -> PgConfigView {
 
 /// The attach connection URL: the headless cluster's published loopback port +
 /// the SHARED control-plane credential
-/// (`postgresql://postgres:<pw>@<host>:<port>/postgres`). The password is a
-/// generated hex token, so no percent-encoding is required.
+/// (`postgresql://postgres:<pw>@<host>:<port>/fredo`). The user stays the
+/// unchanged bootstrap superuser `postgres`; the database is the Fredo
+/// application database `fredo` (Spec #3036). The password is a generated hex
+/// token, so no percent-encoding is required.
 fn attach_connection_url(host: &str, port: u16, password: &str) -> String {
-    format!("postgresql://postgres:{password}@{host}:{port}/postgres")
+    format!("postgresql://postgres:{password}@{host}:{port}/fredo")
 }
 
 /// The background attach leg (Spec #2992 CU-1, R-3): with the data dir locked by
@@ -1781,7 +1798,7 @@ mod tests {
 
         install_engine_on_pool(
             &engine,
-            "postgresql://postgres:pw@127.0.0.1:1/postgres",
+            "postgresql://postgres:pw@127.0.0.1:1/fredo",
         )
         .await;
 
@@ -2101,10 +2118,10 @@ mod tests {
     /// credential segment.
     #[test]
     fn url_with_password_replaces_only_the_credential() {
-        let url = "postgresql://postgres:oldpw@127.0.0.1:5432/postgres";
+        let url = "postgresql://postgres:oldpw@127.0.0.1:5432/fredo";
         assert_eq!(
             url_with_password(url, "oldpw", "newpw"),
-            "postgresql://postgres:newpw@127.0.0.1:5432/postgres"
+            "postgresql://postgres:newpw@127.0.0.1:5432/fredo"
         );
         // A blank source password cannot be compensated — the URL is unchanged.
         assert_eq!(url_with_password(url, "", "newpw"), url);
