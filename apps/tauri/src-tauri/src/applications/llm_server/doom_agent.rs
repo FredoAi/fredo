@@ -1,5 +1,5 @@
 //! Doom-playing agent persona + schema-constrained request builder + model-backed
-//! decision source + bounded request audit (Spec #2969, ST-4; EARS R-2).
+//! decision source (Spec #2969, ST-4; EARS R-2; Spec #3032, ST-4).
 //!
 //! This module gives the out-of-process companion a distinct Doom-playing persona
 //! and a request contract that carries **structured game state only**:
@@ -18,9 +18,16 @@
 //!   timeout ([`DOOM_AUTOPLAY_DECISION_TIMEOUT_S`]), accumulating the structured
 //!   `delta.content` and parsing a
 //!   [`DoomPlan`](crate::infrastructure::companion::doom_decision::DoomPlan);
-//! * every request appends ONE compact audit record to a bounded JSONL (last
-//!   [`DOOM_AGENT_AUDIT_MAX_RECORDS`]) under `FREDO_DOOM_AGENT_LOG_DIR` — the live
-//!   AC2 receipt.
+//! * the source records an ADDITIVE
+//!   [`DoomDecisionTrace`](crate::infrastructure::companion::doom_decision::DoomDecisionTrace)
+//!   for its most recent decision (model id / server flags / prompt + schema
+//!   versions, plus the flag-gated, size-bounded raw reply + reasoning text) and
+//!   exposes it via `last_decision_trace` for the loop-side dataset assembler.
+//!
+//! The earlier bounded request-audit JSONL (`doom-agent-requests.jsonl`) is
+//! **RETIRED** (Spec #3032 ST-4): the dataset's `model`/`modelRaw` blocks carry
+//! the same structured-text-only receipt, correlated to the decision (no dead
+//! dual-writer).
 //!
 //! # Cross-application boundary
 //!
@@ -28,22 +35,27 @@
 //! and [`ModelDoomDecisionSource::new`] — this module never imports
 //! `applications/doom` (cross-application imports are forbidden, `AGENTS.md`). The
 //! composition root (`lib.rs`) passes `applications/doom/actions::action_vocabulary_json()`.
-//! `FREDO_DOOM_AGENT_LOG_DIR` is read directly via `std::env::var` here (an env
-//! var is not a cross-application import).
+//! The dataset capture env seams ([`DOOM_DATASET_RAW_ENV`] /
+//! [`DOOM_DATASET_REASONING_ENV`]) and the persisted server settings are read
+//! directly here (an env var / the AppStore is not a cross-application import).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use crate::infrastructure::companion::doom_decision::{
-    parse_doom_plan, DoomDecisionError, DoomDecisionSource, DoomPlan, DOOM_PLAN_DISTANCE_MAX,
-    DOOM_PLAN_MAX_STEPS, DOOM_PLAN_SCHEMA_NAME, DOOM_PLAN_TICS_MAX,
+    parse_doom_plan, DoomDecisionError, DoomDecisionSource, DoomDecisionTrace, DoomPlan,
+    DOOM_PLAN_DISTANCE_MAX, DOOM_PLAN_MAX_STEPS, DOOM_PLAN_SCHEMA_NAME, DOOM_PLAN_TICS_MAX,
 };
+use crate::infrastructure::storage::AppStore;
 
 use super::chat::{self, ChatStreamEvent, LlmMessage};
+use super::config::LlamaServerConfig;
+use super::{LLAMA_SERVER_ARGS_KEY, LLAMA_SERVER_MODEL_PATH_KEY};
 
 /// The Doom-playing persona.
 ///
@@ -55,19 +67,11 @@ use super::chat::{self, ChatStreamEvent, LlmMessage};
 /// audio.
 pub const DOOM_AGENT_SYSTEM_PROMPT: &str = "You are Fredo's Doom-playing agent. On each turn you receive the engine's structured observation of the game state and the list of allowed action objects. Plan a short route that makes forward progress toward the level exit, opening a door when the route requires one and engaging threats when they block the way. Respond with ONLY a single JSON object of the form {\"steps\": [{\"op\": \"move\", \"bearing\": <0-359>, \"distance\": <1-1024>}, {\"op\": \"open-door\", \"bearing\": <0-359>}, {\"op\": \"shoot\", \"tics\": <1-350>}, {\"op\": \"wait\", \"tics\": <1-350>}]} that matches the provided schema - no prose, no markdown, no extra keys. Never request pixels, images, or audio; the structured observation is the only input you need.";
 
-/// Environment seam naming the directory for the bounded request-audit JSONL.
-///
-/// Read directly here (an env var is not a cross-application import); inert when unset.
-pub const DOOM_AGENT_LOG_DIR_ENV: &str = "FREDO_DOOM_AGENT_LOG_DIR";
-
 /// Bound on a single model decision, in seconds (the per-decision timeout).
 ///
 /// Mirrors `applications/doom/autoplay::DOOM_AUTOPLAY_DECISION_TIMEOUT_S`; duplicated
 /// locally because this application may not import the doom application.
 pub const DOOM_AUTOPLAY_DECISION_TIMEOUT_S: u64 = 30;
-
-/// Maximum number of audit records retained in the JSONL (the last-N bound).
-pub const DOOM_AGENT_AUDIT_MAX_RECORDS: usize = 64;
 
 /// Maximum `max_tokens` for a single Doom decision reply (lever D, #3026 ST-5).
 ///
@@ -81,8 +85,29 @@ pub const DOOM_AGENT_AUDIT_MAX_RECORDS: usize = 64;
 /// every other caller are untouched.
 pub const DOOM_AGENT_MAX_TOKENS: u32 = chat::MAX_TOKENS;
 
-/// File name of the bounded request-audit JSONL inside the log directory.
-pub const DOOM_AGENT_AUDIT_FILE: &str = "doom-agent-requests.jsonl";
+/// Persona/prompt version stamped into the decision trace (Spec #3032 ST-4).
+///
+/// Bump when [`DOOM_AGENT_SYSTEM_PROMPT`] changes materially, so a dataset record
+/// can be correlated with the prompt that produced it.
+pub const DOOM_AGENT_PROMPT_VERSION: &str = "1";
+
+/// Env seam: capture the model's raw reply text into the decision trace (the
+/// dataset `modelRaw` block). Inert when unset (Spec #3032 ST-4).
+pub const DOOM_DATASET_RAW_ENV: &str = "FREDO_DOOM_DATASET_RAW";
+
+/// Env seam: capture the model's hidden reasoning text into the decision trace
+/// (the dataset `reasoning` block). Inert when unset; has its OWN opt-in flag
+/// (Spec #3032 ST-4).
+pub const DOOM_DATASET_REASONING_ENV: &str = "FREDO_DOOM_DATASET_REASONING";
+
+/// Byte bound applied to a captured raw reply before it enters the trace.
+pub const DOOM_DATASET_RAW_MAX_BYTES: usize = 8192;
+
+/// Byte bound applied to a captured reasoning text before it enters the trace.
+///
+/// Mirrors the dataset's `DOOM_DATASET_REASONING_MAX_BYTES` (Spec #3032 ST-1);
+/// duplicated because `applications/llm_server` may not import `applications/doom`.
+pub const DOOM_DATASET_REASONING_MAX_BYTES: usize = 4096;
 
 // ── Pure request contract ─────────────────────────────────────────────────────
 
@@ -158,58 +183,116 @@ pub fn build_doom_agent_request_body(observation: &Value, vocabulary: &Value) ->
     body
 }
 
-// ── Bounded request audit ─────────────────────────────────────────────────────
+// ── Model-source metadata + dataset capture gates (Spec #3032 ST-4) ──────────
 
-/// The audit directory from [`DOOM_AGENT_LOG_DIR_ENV`], or `None` when unset/blank.
-pub fn doom_agent_log_dir() -> Option<PathBuf> {
-    std::env::var(DOOM_AGENT_LOG_DIR_ENV)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-}
-
-/// Build one compact audit record for a request (the live AC2 receipt).
+/// The best-effort model identity for the decision trace: the persisted served
+/// `alias` when set, else the model file's stem. `None` when neither is known.
 ///
-/// `tic` is read from the observation when present (else `null`). The record
-/// carries exactly: `{at, tic, contentParts:["text"], hasImage:false,
-/// hasAudio:false, systemPrompt}`.
-pub fn build_audit_record(observation: &Value) -> Value {
-    json!({
-        "at": chrono::Utc::now().to_rfc3339(),
-        "tic": observation.get("tic").cloned().unwrap_or(Value::Null),
-        "contentParts": ["text"],
-        "hasImage": false,
-        "hasAudio": false,
-        "systemPrompt": DOOM_AGENT_SYSTEM_PROMPT,
+/// Pure — the caller reads the persisted settings; this only shapes them.
+pub fn model_id_from(model_path: Option<&str>, args_json: Option<&str>) -> Option<String> {
+    let alias = args_json
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .and_then(|value| value.get("alias").and_then(Value::as_str).map(str::to_string))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    alias.or_else(|| {
+        model_path
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .and_then(|path| {
+                Path::new(path)
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+            })
+            .filter(|value| !value.is_empty())
     })
 }
 
-/// Append one record to the bounded JSONL under `dir`, retaining the last
-/// [`DOOM_AGENT_AUDIT_MAX_RECORDS`] lines.
-///
-/// The directory is created when absent. Reads-modifies-writes the file so the
-/// bound holds across process restarts; callers treat a failure as best-effort
-/// (an audit write must never fail a decision).
-pub fn append_audit_record(dir: &Path, record: &Value) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    let path = dir.join(DOOM_AGENT_AUDIT_FILE);
-    let mut lines: Vec<String> = std::fs::read_to_string(&path)
-        .map(|text| {
-            text.lines()
-                .filter(|line| !line.trim().is_empty())
-                .map(str::to_string)
-                .collect()
+/// The best-effort server flags for the decision trace: the persisted
+/// `--reasoning` mode (else the launch-config default), rendered as
+/// `reasoning=<mode>`. Pure.
+pub fn server_flags_from(args_json: Option<&str>) -> String {
+    let reasoning = args_json
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .and_then(|value| value.get("reasoning").and_then(Value::as_str).map(str::to_string))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| LlamaServerConfig::default().reasoning);
+    format!("reasoning={reasoning}")
+}
+
+/// Read the dataset capture flags from [`DOOM_DATASET_RAW_ENV`] /
+/// [`DOOM_DATASET_REASONING_ENV`]. `1` / `true` (case-insensitive) enables; unset
+/// or anything else is inert.
+pub fn dataset_capture_flags() -> (bool, bool) {
+    (
+        env_flag_enabled(DOOM_DATASET_RAW_ENV),
+        env_flag_enabled(DOOM_DATASET_REASONING_ENV),
+    )
+}
+
+/// `true` iff the env var `name` is set to trimmed `1` / `true` (case-insensitive).
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            let value = value.trim().to_ascii_lowercase();
+            value == "1" || value == "true"
         })
-        .unwrap_or_default();
-    lines.push(record.to_string());
-    if lines.len() > DOOM_AGENT_AUDIT_MAX_RECORDS {
-        let excess = lines.len() - DOOM_AGENT_AUDIT_MAX_RECORDS;
-        lines.drain(..excess);
+        .unwrap_or(false)
+}
+
+/// Gate + bound the captured reply/reasoning: each is `None` unless its flag is
+/// on, and is UTF-8-safely truncated to its byte bound otherwise.
+pub fn gate_decision_capture(
+    raw_enabled: bool,
+    reasoning_enabled: bool,
+    raw_reply: &str,
+    reasoning: &str,
+) -> (Option<String>, Option<String>) {
+    let raw = raw_enabled.then(|| truncate_bytes(raw_reply, DOOM_DATASET_RAW_MAX_BYTES));
+    let reason =
+        reasoning_enabled.then(|| truncate_bytes(reasoning, DOOM_DATASET_REASONING_MAX_BYTES));
+    (raw, reason)
+}
+
+/// Build the decision trace for one model decision (pure; no I/O).
+///
+/// The raw reply and reasoning are attached ONLY when their capture flags are on,
+/// and each is bounded. `latency_ms` is left `None` — the driving loop stamps it
+/// (the source never reads a clock, R-1 / NFR-5).
+pub fn build_decision_trace(
+    model_id: Option<String>,
+    server_flags: Option<String>,
+    raw_reply: &str,
+    reasoning: &str,
+    raw_enabled: bool,
+    reasoning_enabled: bool,
+) -> DoomDecisionTrace {
+    let (raw, reason) =
+        gate_decision_capture(raw_enabled, reasoning_enabled, raw_reply, reasoning);
+    DoomDecisionTrace {
+        source: "model",
+        model_id,
+        server_flags,
+        prompt_version: Some(DOOM_AGENT_PROMPT_VERSION.to_string()),
+        schema_version: DOOM_PLAN_SCHEMA_NAME,
+        latency_ms: None,
+        raw_reply: raw,
+        reasoning: reason,
     }
-    let mut content = lines.join("\n");
-    content.push('\n');
-    std::fs::write(&path, content)
+}
+
+/// Truncate `text` to at most `max` BYTES on a UTF-8 character boundary.
+fn truncate_bytes(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    let mut end = max;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_string()
 }
 
 // ── Model reply parsing ───────────────────────────────────────────────────────
@@ -262,18 +345,42 @@ pub fn classify_doom_reply(content: &str) -> Result<DoomPlan, DoomDecisionError>
 /// within [`DOOM_AUTOPLAY_DECISION_TIMEOUT_S`], and classifies the reply via
 /// [`classify_doom_reply`] (`Malformed` on invalid non-empty JSON,
 /// `ModelUnavailable` on an empty reply or a stream/transport error, `TimedOut` on
-/// the per-decision bound). Each request appends one audit record (best-effort)
-/// when [`DOOM_AGENT_LOG_DIR_ENV`] names a directory.
+/// the per-decision bound).
+///
+/// Each decision also records a [`DoomDecisionTrace`] for the MOST RECENT decision
+/// (Spec #3032 ST-4), exposed through
+/// [`DoomDecisionSource::last_decision_trace`] for the loop-side dataset
+/// assembler. The request-audit JSONL this source used to append is retired.
 pub struct ModelDoomDecisionSource {
     app: AppHandle,
     vocabulary: Value,
+    /// The MOST RECENT decision's trace. The `Mutex` guards a short synchronous
+    /// read/write — it is NEVER held across an `.await`.
+    last_trace: Mutex<Option<DoomDecisionTrace>>,
 }
 
 impl ModelDoomDecisionSource {
     /// Build a model-backed source over `app` with the allowed-action `vocabulary`
     /// (the composition root supplies it — no cross-application import).
     pub fn new(app: AppHandle, vocabulary: Value) -> Self {
-        Self { app, vocabulary }
+        Self {
+            app,
+            vocabulary,
+            last_trace: Mutex::new(None),
+        }
+    }
+
+    /// The best-effort model identity + server flags for the trace, read from the
+    /// persisted server settings (an absent setting yields `None` / the config
+    /// default). Never fails a decision.
+    fn model_metadata(&self) -> (Option<String>, Option<String>) {
+        let store = self.app.state::<Arc<AppStore>>();
+        let model_path = store.cached_get(LLAMA_SERVER_MODEL_PATH_KEY).ok().flatten();
+        let args_json = store.cached_get(LLAMA_SERVER_ARGS_KEY).ok().flatten();
+        (
+            model_id_from(model_path.as_deref(), args_json.as_deref()),
+            Some(server_flags_from(args_json.as_deref())),
+        )
     }
 }
 
@@ -282,22 +389,17 @@ impl DoomDecisionSource for ModelDoomDecisionSource {
     async fn decide(&self, observation: &Value) -> Result<DoomPlan, DoomDecisionError> {
         let body = build_doom_agent_request_body(observation, &self.vocabulary);
 
-        // One compact audit record per request (best-effort; never fails a decision).
-        if let Some(dir) = doom_agent_log_dir() {
-            let record = build_audit_record(observation);
-            if let Err(error) = append_audit_record(&dir, &record) {
-                tracing::warn!(
-                    target: "fredo::llm_server",
-                    error = %error,
-                    "could not append the Doom request audit record"
-                );
-            }
-        }
-
         let mut content = String::new();
+        let mut reasoning = String::new();
         let stream_result = tokio::time::timeout(
             Duration::from_secs(DOOM_AUTOPLAY_DECISION_TIMEOUT_S),
             chat::run_stream(&self.app, &body, |frame| {
+                // The reasoning channel is separate from `content` (Spec #3032
+                // ST-4); capture it (gated later) without disturbing the plan
+                // reply accumulation.
+                if let Some(chunk) = frame.reasoning {
+                    reasoning.push_str(&chunk);
+                }
                 for event in frame.events {
                     if let ChatStreamEvent::Delta(delta) = event {
                         content.push_str(&delta);
@@ -308,6 +410,23 @@ impl DoomDecisionSource for ModelDoomDecisionSource {
         )
         .await;
 
+        // Record the trace BEFORE returning: the failure paths (R-6) then also
+        // carry the model metadata + whatever reply/reasoning was captured.
+        let (model_id, server_flags) = self.model_metadata();
+        let (raw_enabled, reasoning_enabled) = dataset_capture_flags();
+        let trace = build_decision_trace(
+            model_id,
+            server_flags,
+            &content,
+            &reasoning,
+            raw_enabled,
+            reasoning_enabled,
+        );
+        *self
+            .last_trace
+            .lock()
+            .expect("the Doom decision trace lock is not poisoned") = Some(trace);
+
         match stream_result {
             Err(_elapsed) => Err(DoomDecisionError::TimedOut),
             Ok(Err(detail)) => Err(DoomDecisionError::ModelUnavailable(detail)),
@@ -316,6 +435,13 @@ impl DoomDecisionSource for ModelDoomDecisionSource {
             // `ModelUnavailable` so the loop degrades and keeps advancing.
             Ok(Ok(())) => classify_doom_reply(&content),
         }
+    }
+
+    fn last_decision_trace(&self) -> Option<DoomDecisionTrace> {
+        self.last_trace
+            .lock()
+            .expect("the Doom decision trace lock is not poisoned")
+            .clone()
     }
 }
 
@@ -610,49 +736,105 @@ mod tests {
         ));
     }
 
+    // ── ST-4: decision-trace contract + dataset capture (Spec #3032) ──────────
+
     #[test]
-    fn audit_record_carries_the_f30_shape() {
-        let record = build_audit_record(&json!({ "tic": 17 }));
-        assert_eq!(record["tic"], 17);
-        assert_eq!(record["contentParts"], json!(["text"]));
-        assert_eq!(record["hasImage"], false);
-        assert_eq!(record["hasAudio"], false);
-        assert_eq!(record["systemPrompt"], DOOM_AGENT_SYSTEM_PROMPT);
-        assert!(
-            record["at"]
-                .as_str()
-                .map(|at| !at.is_empty())
-                .unwrap_or(false),
-            "the audit record must carry a non-empty timestamp"
+    fn dataset_capture_env_seams_are_pinned() {
+        assert_eq!(DOOM_DATASET_RAW_ENV, "FREDO_DOOM_DATASET_RAW");
+        assert_eq!(DOOM_DATASET_REASONING_ENV, "FREDO_DOOM_DATASET_REASONING");
+        assert_eq!(DOOM_DATASET_REASONING_MAX_BYTES, 4096);
+        assert_eq!(DOOM_AGENT_PROMPT_VERSION, "1");
+    }
+
+    /// **Spec #3032 ST-4 (R-1).** The trace carries the model metadata, the
+    /// prompt/schema versions, and the raw reply — and leaves `latency_ms` for the
+    /// driving loop.
+    #[test]
+    fn build_decision_trace_carries_the_model_metadata() {
+        let trace = build_decision_trace(
+            Some("Gemma-4-E2B".to_string()),
+            Some("reasoning=on".to_string()),
+            "{}",
+            "hidden chain",
+            true,
+            true,
         );
-        assert_eq!(record.as_object().map(|object| object.len()), Some(6));
+        assert_eq!(trace.source, "model");
+        assert_eq!(trace.model_id.as_deref(), Some("Gemma-4-E2B"));
+        assert_eq!(trace.server_flags.as_deref(), Some("reasoning=on"));
+        assert_eq!(trace.prompt_version.as_deref(), Some("1"));
+        assert_eq!(trace.schema_version, DOOM_PLAN_SCHEMA_NAME);
+        assert!(
+            trace.latency_ms.is_none(),
+            "the loop stamps latency, not the source"
+        );
+        assert_eq!(trace.raw_reply.as_deref(), Some("{}"));
+        assert_eq!(trace.reasoning.as_deref(), Some("hidden chain"));
     }
 
+    /// **Spec #3032 ST-4 (NFR-4).** `modelRaw` / `reasoning` are captured ONLY
+    /// under their OWN flags; each is inert when its flag is off.
     #[test]
-    fn audit_record_tic_is_null_when_absent() {
-        let record = build_audit_record(&json!({}));
-        assert!(record["tic"].is_null());
+    fn capture_is_inert_unless_its_own_flag_is_on() {
+        let (raw, reasoning) = gate_decision_capture(false, false, "reply", "why");
+        assert!(raw.is_none(), "modelRaw off => absent");
+        assert!(reasoning.is_none(), "reasoning off => absent");
+
+        let (raw, reasoning) = gate_decision_capture(true, false, "reply", "why");
+        assert_eq!(raw.as_deref(), Some("reply"));
+        assert!(reasoning.is_none(), "reasoning has its OWN flag");
+
+        let (raw, reasoning) = gate_decision_capture(false, true, "reply", "why");
+        assert!(raw.is_none(), "modelRaw has its OWN flag");
+        assert_eq!(reasoning.as_deref(), Some("why"));
     }
 
+    /// **Spec #3032 ST-4 (NFR-1/NFR-4).** A captured reply/reasoning is bounded to
+    /// its byte bound and truncated UTF-8-safely (no split character).
     #[test]
-    fn append_audit_record_bounds_the_jsonl_to_the_last_64() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let total = DOOM_AGENT_AUDIT_MAX_RECORDS + 5;
-        for tic in 0..total {
-            let record = build_audit_record(&json!({ "tic": tic }));
-            append_audit_record(dir.path(), &record).expect("append");
-        }
-        let text =
-            std::fs::read_to_string(dir.path().join(DOOM_AGENT_AUDIT_FILE)).expect("read audit");
-        let lines: Vec<&str> = text
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .collect();
-        assert_eq!(lines.len(), DOOM_AGENT_AUDIT_MAX_RECORDS);
-        // The retained window is the LAST 64: tics 5..=68.
-        let first: Value = serde_json::from_str(lines[0]).expect("first line JSON");
-        let last: Value = serde_json::from_str(lines[lines.len() - 1]).expect("last line JSON");
-        assert_eq!(first["tic"], 5);
-        assert_eq!(last["tic"], (total - 1) as i64);
+    fn capture_is_bounded_and_utf8_safe() {
+        let big = "a".repeat(DOOM_DATASET_REASONING_MAX_BYTES + 100);
+        let (_, reasoning) = gate_decision_capture(false, true, "", &big);
+        assert_eq!(
+            reasoning.as_deref().map(str::len),
+            Some(DOOM_DATASET_REASONING_MAX_BYTES),
+            "reasoning is truncated to the byte bound"
+        );
+
+        // A multi-byte character straddling the raw bound is not split.
+        let mut text = "é".repeat(DOOM_DATASET_RAW_MAX_BYTES);
+        text.push('x');
+        let (raw, _) = gate_decision_capture(true, false, &text, "");
+        let raw = raw.expect("raw captured");
+        assert!(raw.len() <= DOOM_DATASET_RAW_MAX_BYTES);
+        assert!(raw.is_char_boundary(raw.len()));
+        assert!(raw.chars().all(|character| character == 'é'));
+    }
+
+    /// **Spec #3032 ST-4.** The model identity prefers the served alias and falls
+    /// back to the model file stem; the server flags render the reasoning mode.
+    #[test]
+    fn model_metadata_prefers_alias_and_falls_back_to_the_file_stem() {
+        assert_eq!(
+            model_id_from(
+                Some(r"C:\models\gemma.gguf"),
+                Some(r#"{"alias":"Gemma-4-E2B"}"#)
+            )
+            .as_deref(),
+            Some("Gemma-4-E2B")
+        );
+        assert_eq!(
+            model_id_from(Some(r"C:\models\gemma.gguf"), None).as_deref(),
+            Some("gemma")
+        );
+        assert_eq!(model_id_from(None, None), None);
+        assert_eq!(model_id_from(Some("   "), Some("not json")), None);
+
+        assert_eq!(server_flags_from(None), "reasoning=on");
+        assert_eq!(
+            server_flags_from(Some(r#"{"reasoning":"off"}"#)),
+            "reasoning=off"
+        );
+        assert_eq!(server_flags_from(Some("not json")), "reasoning=on");
     }
 }

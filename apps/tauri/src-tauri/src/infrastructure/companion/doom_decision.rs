@@ -17,6 +17,13 @@
 //! [`DoomPlan`]. [`DoomDecision`] is retained as the LEGACY single-hold value the
 //! continuous loop collapses a plan to until the ST-4 executor lands, and
 //! [`DoomPlanStep::Hold`] carries the same `{tics, actions}` shim.
+//!
+//! Spec #3032 ST-4 adds the ADDITIVE side-channel [`DoomDecisionTrace`] +
+//! [`DoomDecisionSource::last_decision_trace`]: a source MAY record the model
+//! metadata for its most recent decision (model id / server flags / prompt +
+//! schema versions / the flag-gated, size-bounded raw reply + reasoning) so the
+//! loop-side dataset assembler can carry it into a decision record. It never
+//! changes [`DoomDecisionSource::decide`].
 
 use std::sync::{Arc, Mutex};
 
@@ -150,6 +157,39 @@ impl std::fmt::Display for DoomDecisionError {
 }
 
 impl std::error::Error for DoomDecisionError {}
+
+/// The optional model-source metadata attached to a decision (Spec #3032 ST-4).
+///
+/// An ADDITIVE side-channel on the shared decision boundary: a source MAY record
+/// the metadata for its most recent decision and the loop-side dataset assembler
+/// reads it via [`DoomDecisionSource::last_decision_trace`]. It deliberately does
+/// NOT change [`DoomDecisionSource::decide`] — every existing impl (scripted /
+/// local) keeps its signature and defaults to `None`.
+///
+/// `raw_reply` and `reasoning` are populated ONLY when their own dataset capture
+/// flags are on, and each is already size-bounded by the source
+/// (`applications/llm_server`) before it enters the trace.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DoomDecisionTrace {
+    /// Which source produced the decision: `"model"` | `"scripted"` | `"local"`.
+    pub source: &'static str,
+    /// The backing model's id (the served alias / model file stem), when known.
+    pub model_id: Option<String>,
+    /// The server flags the decision ran under (e.g. `reasoning=on`), when known.
+    pub server_flags: Option<String>,
+    /// The persona/prompt version the request was built with, when known.
+    pub prompt_version: Option<String>,
+    /// The response-schema contract name ([`DOOM_PLAN_SCHEMA_NAME`]).
+    pub schema_version: &'static str,
+    /// The decision's latency, stamped by the loop that drives the source (the
+    /// source itself never reads a clock — R-1 / NFR-5).
+    pub latency_ms: Option<u64>,
+    /// The model's raw reply text — present only when raw capture is enabled.
+    pub raw_reply: Option<String>,
+    /// The model's hidden reasoning text — present only when its own capture
+    /// flag is enabled (its own flag + size bound).
+    pub reasoning: Option<String>,
+}
 
 // ── Plan JSON parser (shared by the model path and the scripted lever) ────────
 
@@ -294,6 +334,13 @@ fn require_tics(object: &Map<String, Value>) -> Result<i64, DoomDecisionError> {
 pub trait DoomDecisionSource: Send + Sync {
     /// Decide the next [`DoomPlan`] from the whole engine observation.
     async fn decide(&self, observation: &Value) -> Result<DoomPlan, DoomDecisionError>;
+
+    /// The MOST RECENT decision's optional [`DoomDecisionTrace`] (Spec #3032
+    /// ST-4). The default is `None`: the scripted and local sources carry no
+    /// model metadata, and this method MUST NOT change `decide`'s contract.
+    fn last_decision_trace(&self) -> Option<DoomDecisionTrace> {
+        None
+    }
 }
 
 /// Tauri-managed holder of the active decision source.
@@ -377,6 +424,55 @@ mod tests {
             "model unavailable: down"
         );
         assert_eq!(DoomDecisionError::TimedOut.to_string(), "decision timed out");
+    }
+
+    // ── ST-4 decision-trace contract pins ─────────────────────────────────────
+
+    /// The trace side-channel is defaulted: a source that does not override it
+    /// (the scripted/local shape) reports no trace, and `decide` stays unchanged.
+    #[test]
+    fn the_default_decision_trace_is_absent() {
+        assert!(FixedSource.last_decision_trace().is_none());
+    }
+
+    /// A source MAY override [`DoomDecisionSource::last_decision_trace`] to carry
+    /// the model metadata, without touching `decide`.
+    #[test]
+    fn a_source_may_override_the_decision_trace() {
+        struct TracedSource;
+
+        #[async_trait]
+        impl DoomDecisionSource for TracedSource {
+            async fn decide(&self, _observation: &Value) -> Result<DoomPlan, DoomDecisionError> {
+                Ok(DoomPlan {
+                    steps: vec![DoomPlanStep::Wait { tics: 1 }],
+                })
+            }
+
+            fn last_decision_trace(&self) -> Option<DoomDecisionTrace> {
+                Some(DoomDecisionTrace {
+                    source: "model",
+                    model_id: Some("Gemma-4-E2B".to_string()),
+                    server_flags: Some("reasoning=on".to_string()),
+                    prompt_version: Some("1".to_string()),
+                    schema_version: DOOM_PLAN_SCHEMA_NAME,
+                    latency_ms: Some(12),
+                    raw_reply: Some("{}".to_string()),
+                    reasoning: None,
+                })
+            }
+        }
+
+        let trace = TracedSource
+            .last_decision_trace()
+            .expect("the override yields a trace");
+        assert_eq!(trace.source, "model");
+        assert_eq!(trace.model_id.as_deref(), Some("Gemma-4-E2B"));
+        assert_eq!(trace.server_flags.as_deref(), Some("reasoning=on"));
+        assert_eq!(trace.prompt_version.as_deref(), Some("1"));
+        assert_eq!(trace.schema_version, "doom_plan");
+        assert_eq!(trace.latency_ms, Some(12));
+        assert!(trace.reasoning.is_none());
     }
 
     // ── ST-3 plan contract pins ───────────────────────────────────────────────

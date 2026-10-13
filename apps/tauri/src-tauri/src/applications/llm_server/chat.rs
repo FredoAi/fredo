@@ -111,6 +111,13 @@ pub struct ChatSseFrame {
     /// (`"tool_calls"` / `"stop"` / `"length"`). Read to know the stream ended
     /// on a tool call.
     pub finish_reason: Option<String>,
+    /// The chunk's accumulated reasoning text (`delta.reasoning_content` /
+    /// legacy `delta.reasoning`), when the server runs reasoning on.
+    ///
+    /// Deliberately NOT part of [`Self::events`]: the webview path never
+    /// surfaces reasoning (its behavior is unchanged). Spec #3032 ST-4 reads it
+    /// to feed the opt-in dataset `reasoning` block.
+    pub reasoning: Option<String>,
 }
 
 // ── Pure SSE mapping (unit-tested seam) ───────────────────────────────────────
@@ -129,6 +136,7 @@ pub fn parse_sse_frame(payload: &str) -> ChatSseFrame {
         return ChatSseFrame {
             events: vec![ChatStreamEvent::Done],
             finish_reason: None,
+            reasoning: None,
         };
     }
 
@@ -140,11 +148,23 @@ pub fn parse_sse_frame(payload: &str) -> ChatSseFrame {
     };
 
     let mut events = Vec::new();
+    let mut reasoning: Option<String> = None;
     if let Some(delta) = choice.delta {
         if let Some(content) = delta.content {
             if !content.is_empty() {
                 events.push(ChatStreamEvent::Delta(content));
             }
+        }
+        // Reasoning is a separate channel from `content` (Spec #3032 ST-4): the
+        // modern `reasoning_content` and the legacy `reasoning` key are merged
+        // here so the Doom source can capture the hidden reasoning text.
+        let merged = format!(
+            "{}{}",
+            delta.reasoning_content.as_deref().unwrap_or(""),
+            delta.reasoning.as_deref().unwrap_or("")
+        );
+        if !merged.is_empty() {
+            reasoning = Some(merged);
         }
         for call in delta.tool_calls.into_iter().flatten() {
             let (name, arguments_fragment) = match call.function {
@@ -167,6 +187,7 @@ pub fn parse_sse_frame(payload: &str) -> ChatSseFrame {
     ChatSseFrame {
         events,
         finish_reason: choice.finish_reason.filter(|reason| !reason.is_empty()),
+        reasoning,
     }
 }
 
@@ -213,6 +234,10 @@ struct ChatChoice {
 struct ChatDelta {
     content: Option<String>,
     tool_calls: Option<Vec<ChatToolCallDelta>>,
+    /// Modern reasoning channel (llama.cpp `delta.reasoning_content`).
+    reasoning_content: Option<String>,
+    /// Legacy reasoning channel (llama.cpp `delta.reasoning`).
+    reasoning: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1041,6 +1066,27 @@ mod tests {
         let frame = parse_sse_frame(payload);
         assert_eq!(frame.events, vec![ChatStreamEvent::Delta("hi".to_string())]);
         assert_eq!(frame.finish_reason.as_deref(), Some("stop"));
+        assert!(frame.reasoning.is_none(), "no reasoning key => no capture");
+    }
+
+    /// Spec #3032 ST-4: the reasoning channels are surfaced on the frame (NOT in
+    /// `events`), so the Doom source can capture them and the webview path — which
+    /// only reads `events` — is unchanged.
+    #[test]
+    fn parse_sse_frame_surfaces_reasoning_without_touching_events() {
+        let payload = r#"{"choices":[{"index":0,"delta":{"reasoning_content":"step one","content":"hi"}}]}"#;
+        let frame = parse_sse_frame(payload);
+        assert_eq!(frame.events, vec![ChatStreamEvent::Delta("hi".to_string())]);
+        assert_eq!(frame.reasoning.as_deref(), Some("step one"));
+
+        // The legacy `reasoning` key is surfaced too.
+        let legacy = r#"{"choices":[{"index":0,"delta":{"reasoning":"old"}}]}"#;
+        let frame = parse_sse_frame(legacy);
+        assert!(frame.events.is_empty());
+        assert_eq!(frame.reasoning.as_deref(), Some("old"));
+
+        // A pure reasoning chunk carries no content event.
+        assert!(parse_sse_frame(r#"{"choices":[{"delta":{}}]}"#).reasoning.is_none());
     }
 
     #[test]
