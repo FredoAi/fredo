@@ -13,23 +13,37 @@ import {
   DBCLIENT_CONNECTIONS_KEY,
   DBCLIENT_HISTORY_KEY_PREFIX,
   DBCLIENT_HISTORY_MAX_ENTRIES,
+  DBCLIENT_LAYOUT_KEY,
+  DBCLIENT_LAYOUT_LIMITS,
   DBCLIENT_PREFS_KEY,
   DBCLIENT_SAVED_QUERIES_KEY_PREFIX,
+  DEFAULT_DB_CLIENT_LAYOUT,
   DEFAULT_DB_CLIENT_PREFS,
+  EDITOR_MIN,
+  RESULTS_MIN,
+  WORKSPACE_MIN,
   appendHistory,
   clearConnectionData,
   historyKey,
   loadConnections,
   loadHistory,
+  loadLayout,
   loadPrefs,
   loadSavedQueries,
+  parseDbClientLayout,
   saveConnections,
   saveHistory,
+  saveLayout,
   savePrefs,
   saveSavedQueries,
   savedQueriesKey,
 } from '../storage';
-import type { DbConnectionView, QueryHistoryEntry, SavedQuery } from '../types';
+import type {
+  DbClientLayoutPrefs,
+  DbConnectionView,
+  QueryHistoryEntry,
+  SavedQuery,
+} from '../types';
 
 beforeEach(() => {
   localStorage.clear();
@@ -212,5 +226,137 @@ describe('clearConnectionData (R-1.7)', () => {
     await clearConnectionData('c1');
     await expect(loadHistory('c1')).resolves.toEqual([]);
     await expect(loadSavedQueries('c1')).resolves.toEqual([]);
+  });
+});
+
+describe('SQL Studio layout (Spec #3049, ST-1)', () => {
+  it('freezes the layout key, separate from the prefs key', () => {
+    expect(DBCLIENT_LAYOUT_KEY).toBe('Fredo_dbclient_layout');
+    expect(DBCLIENT_LAYOUT_KEY).not.toBe(DBCLIENT_PREFS_KEY);
+  });
+
+  it('freezes the per-split tier-1 limits', () => {
+    expect(DBCLIENT_LAYOUT_LIMITS).toEqual({
+      leftSidebarWidth: { min: 220, max: 560 },
+      rightSidebarWidth: { min: 200, max: 520 },
+      editorResultsHeight: { min: 120, max: 720 },
+      connectionsSchemaHeight: { min: 120, max: 560 },
+    });
+  });
+
+  it('preserves the shipped look with the default document', () => {
+    expect(DEFAULT_DB_CLIENT_LAYOUT).toEqual({
+      leftSidebarWidth: 300,
+      rightSidebarWidth: 280,
+      editorResultsHeight: 220,
+      connectionsSchemaHeight: 220,
+    });
+  });
+
+  it('exposes positive container-floor constants (tier-2 input)', () => {
+    expect(WORKSPACE_MIN).toBeGreaterThan(0);
+    expect(RESULTS_MIN).toBeGreaterThan(0);
+    expect(EDITOR_MIN).toBeGreaterThan(0);
+  });
+
+  describe('parseDbClientLayout (tolerant pin)', () => {
+    it('degrades corrupt JSON to the defaults (R-4.5)', () => {
+      expect(parseDbClientLayout('{not-json')).toEqual(DEFAULT_DB_CLIENT_LAYOUT);
+    });
+
+    it('degrades a non-object document to the defaults', () => {
+      expect(parseDbClientLayout('42')).toEqual(DEFAULT_DB_CLIENT_LAYOUT);
+      expect(parseDbClientLayout('null')).toEqual(DEFAULT_DB_CLIENT_LAYOUT);
+      expect(parseDbClientLayout('[1,2,3]')).toEqual(DEFAULT_DB_CLIENT_LAYOUT);
+    });
+
+    it('merges a partial document with per-split defaults', () => {
+      const parsed = parseDbClientLayout(JSON.stringify({ leftSidebarWidth: 420 }));
+      expect(parsed).toEqual({
+        leftSidebarWidth: 420,
+        rightSidebarWidth: DEFAULT_DB_CLIENT_LAYOUT.rightSidebarWidth,
+        editorResultsHeight: DEFAULT_DB_CLIENT_LAYOUT.editorResultsHeight,
+        connectionsSchemaHeight: DEFAULT_DB_CLIENT_LAYOUT.connectionsSchemaHeight,
+      });
+    });
+
+    it('clamps finite out-of-range values to the split limits', () => {
+      const parsed = parseDbClientLayout(
+        JSON.stringify({
+          leftSidebarWidth: 9999,
+          rightSidebarWidth: -50,
+          editorResultsHeight: 10_000,
+          connectionsSchemaHeight: 1,
+        }),
+      );
+      expect(parsed.leftSidebarWidth).toBe(560);
+      expect(parsed.rightSidebarWidth).toBe(200);
+      expect(parsed.editorResultsHeight).toBe(720);
+      expect(parsed.connectionsSchemaHeight).toBe(120);
+    });
+
+    it('degrades non-numeric values to that split default', () => {
+      const parsed = parseDbClientLayout(
+        JSON.stringify({
+          leftSidebarWidth: 'lots',
+          rightSidebarWidth: null,
+          editorResultsHeight: {},
+          connectionsSchemaHeight: true,
+        }),
+      );
+      expect(parsed).toEqual(DEFAULT_DB_CLIENT_LAYOUT);
+    });
+
+    it('truncates fractional values to integer px', () => {
+      const parsed = parseDbClientLayout(
+        JSON.stringify({
+          leftSidebarWidth: 300.9,
+          rightSidebarWidth: 280.4,
+          editorResultsHeight: 219.6,
+          connectionsSchemaHeight: 220.5,
+        }),
+      );
+      expect(parsed).toEqual({
+        leftSidebarWidth: 300,
+        rightSidebarWidth: 280,
+        editorResultsHeight: 219,
+        connectionsSchemaHeight: 220,
+      });
+    });
+  });
+
+  describe('loadLayout / saveLayout', () => {
+    it('returns the defaults when absent', async () => {
+      await expect(loadLayout()).resolves.toEqual(DEFAULT_DB_CLIENT_LAYOUT);
+    });
+
+    it('round-trips a saved layout', async () => {
+      const layout: DbClientLayoutPrefs = {
+        leftSidebarWidth: 360,
+        rightSidebarWidth: 240,
+        editorResultsHeight: 300,
+        connectionsSchemaHeight: 180,
+      };
+      await saveLayout(layout);
+      await expect(loadLayout()).resolves.toEqual(layout);
+    });
+
+    it('tolerates a corrupt persisted layout', async () => {
+      localStorage.setItem(DBCLIENT_LAYOUT_KEY, 'nope{');
+      await expect(loadLayout()).resolves.toEqual(DEFAULT_DB_CLIENT_LAYOUT);
+    });
+
+    it('clamps an out-of-range persisted layout on load', async () => {
+      localStorage.setItem(DBCLIENT_LAYOUT_KEY, JSON.stringify({ leftSidebarWidth: 1000 }));
+      const loaded = await loadLayout();
+      expect(loaded.leftSidebarWidth).toBe(560);
+      expect(loaded.rightSidebarWidth).toBe(DEFAULT_DB_CLIENT_LAYOUT.rightSidebarWidth);
+    });
+
+    it('does not touch the prefs document (separate keys)', async () => {
+      await saveLayout({ ...DEFAULT_DB_CLIENT_LAYOUT, leftSidebarWidth: 420 });
+      await expect(loadPrefs()).resolves.toEqual(DEFAULT_DB_CLIENT_PREFS);
+      expect(localStorage.getItem(DBCLIENT_PREFS_KEY)).toBeNull();
+    });
   });
 });

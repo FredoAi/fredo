@@ -12,7 +12,9 @@
 
 import { settingsService } from '../../settings';
 import type {
+  DbClientLayoutPrefs,
   DbClientPrefs,
+  DbClientSplitId,
   DbConnectionView,
   QueryHistoryEntry,
   SavedQuery,
@@ -24,6 +26,12 @@ export const DBCLIENT_CONNECTIONS_KEY = 'Fredo_dbclient_connections';
 export const DBCLIENT_HISTORY_KEY_PREFIX = 'Fredo_dbclient_history_';
 export const DBCLIENT_SAVED_QUERIES_KEY_PREFIX = 'Fredo_dbclient_saved_queries_';
 export const DBCLIENT_PREFS_KEY = 'Fredo_dbclient_prefs';
+/**
+ * Spec #3049: SQL-Studio split sizes live in their OWN document, deliberately
+ * SEPARATE from `DBCLIENT_PREFS_KEY`, so the settings panel's whole-document
+ * `savePrefs` can never wipe the layout (and vice-versa).
+ */
+export const DBCLIENT_LAYOUT_KEY = 'Fredo_dbclient_layout';
 
 /** History is bounded to the 200 newest entries (R-4.1). */
 export const DBCLIENT_HISTORY_MAX_ENTRIES = 200;
@@ -108,6 +116,120 @@ export async function loadPrefs(): Promise<DbClientPrefs> {
 
 export async function savePrefs(prefs: DbClientPrefs): Promise<void> {
   await settingsService.set(DBCLIENT_PREFS_KEY, JSON.stringify(prefs));
+}
+
+// ── SQL Studio layout (Spec #3049, ST-1) ──────────────────────────────────────
+
+/**
+ * Tier-1 (stored) clamp bounds, in integer CSS px. `DBCLIENT_LAYOUT_LIMITS`
+ * bounds the PERSISTED value — never write outside it. The consuming component
+ * (ST-3) additionally applies a container-aware tier-2 `effectiveMax` at drag /
+ * restore time so a split can never hide the workspace; the storage layer only
+ * enforces these static bounds.
+ */
+export const DBCLIENT_LAYOUT_LIMITS: Record<DbClientSplitId, { min: number; max: number }> = {
+  leftSidebarWidth: { min: 220, max: 560 },
+  rightSidebarWidth: { min: 200, max: 520 },
+  editorResultsHeight: { min: 120, max: 720 },
+  connectionsSchemaHeight: { min: 120, max: 560 },
+};
+
+/**
+ * Defaults chosen to preserve the shipped look (left 300 / right 280), so a
+ * first run with no stored layout is visually unchanged.
+ */
+export const DEFAULT_DB_CLIENT_LAYOUT: DbClientLayoutPrefs = {
+  leftSidebarWidth: 300,
+  rightSidebarWidth: 280,
+  editorResultsHeight: 220,
+  connectionsSchemaHeight: 220,
+};
+
+// ── Tier-2 (container-floor) constants (Spec #3049) ──────────────────────────
+//
+// These are the container-aware floors the consuming component uses to derive
+// the live `effectiveMax` (the workspace/pane floor WINS when the container is
+// too small to honour both static mins). They are NOT applied by the storage
+// clamp — the stored value is only ever bounded by `DBCLIENT_LAYOUT_LIMITS`.
+
+/** Minimum visible central-workspace width (px) — tier-2 floor for S1/S2. */
+export const WORKSPACE_MIN = 320;
+/** Minimum visible results-region height (px) — tier-2 floor for S3. */
+export const RESULTS_MIN = 120;
+/** Minimum visible schema/editor-region height (px) — tier-2 floor for S4. */
+export const EDITOR_MIN = 120;
+
+/**
+ * Clamp one stored/committed split value into `[min, max]`, rounding to integer
+ * px. Non-finite (NaN/Infinity/non-number/absent) input degrades to `fallback`.
+ * Mirrors `clampPref` (`components/DatabaseClientSettings.tsx`) semantics.
+ */
+function clampLayoutValue(
+  value: unknown,
+  min: number,
+  max: number,
+  fallback: number,
+): number {
+  const finite = numberOr(value, fallback);
+  return Math.min(max, Math.max(min, Math.trunc(finite)));
+}
+
+/**
+ * Tolerant deserializer for the persisted layout document (mirrors `parsePrefs`):
+ * a corrupt/absent document, a non-object document, or any non-finite/absent
+ * field degrades to that split's default; an out-of-range finite value is
+ * clamped to `DBCLIENT_LAYOUT_LIMITS`. Always returns a fresh, fully-populated,
+ * integer-px document.
+ */
+export function parseDbClientLayout(raw: string): DbClientLayoutPrefs {
+  let parsed: Partial<DbClientLayoutPrefs> | null = null;
+  try {
+    const candidate: unknown = JSON.parse(raw);
+    if (candidate != null && typeof candidate === 'object') {
+      parsed = candidate as Partial<DbClientLayoutPrefs>;
+    }
+  } catch {
+    /* corrupt — fall through to defaults */
+  }
+
+  return {
+    leftSidebarWidth: clampLayoutValue(
+      parsed?.leftSidebarWidth,
+      DBCLIENT_LAYOUT_LIMITS.leftSidebarWidth.min,
+      DBCLIENT_LAYOUT_LIMITS.leftSidebarWidth.max,
+      DEFAULT_DB_CLIENT_LAYOUT.leftSidebarWidth,
+    ),
+    rightSidebarWidth: clampLayoutValue(
+      parsed?.rightSidebarWidth,
+      DBCLIENT_LAYOUT_LIMITS.rightSidebarWidth.min,
+      DBCLIENT_LAYOUT_LIMITS.rightSidebarWidth.max,
+      DEFAULT_DB_CLIENT_LAYOUT.rightSidebarWidth,
+    ),
+    editorResultsHeight: clampLayoutValue(
+      parsed?.editorResultsHeight,
+      DBCLIENT_LAYOUT_LIMITS.editorResultsHeight.min,
+      DBCLIENT_LAYOUT_LIMITS.editorResultsHeight.max,
+      DEFAULT_DB_CLIENT_LAYOUT.editorResultsHeight,
+    ),
+    connectionsSchemaHeight: clampLayoutValue(
+      parsed?.connectionsSchemaHeight,
+      DBCLIENT_LAYOUT_LIMITS.connectionsSchemaHeight.min,
+      DBCLIENT_LAYOUT_LIMITS.connectionsSchemaHeight.max,
+      DEFAULT_DB_CLIENT_LAYOUT.connectionsSchemaHeight,
+    ),
+  };
+}
+
+export async function loadLayout(): Promise<DbClientLayoutPrefs> {
+  return settingsService.get<DbClientLayoutPrefs>(
+    DBCLIENT_LAYOUT_KEY,
+    { ...DEFAULT_DB_CLIENT_LAYOUT },
+    parseDbClientLayout,
+  );
+}
+
+export async function saveLayout(layout: DbClientLayoutPrefs): Promise<void> {
+  await settingsService.set(DBCLIENT_LAYOUT_KEY, JSON.stringify(layout));
 }
 
 // ── History (bounded, newest first) ───────────────────────────────────────────
