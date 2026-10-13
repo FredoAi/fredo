@@ -359,6 +359,17 @@ pub fn run() {
             // `get_doom_autoplay_status` commands below own it.
             app.manage(applications::doom::commands::DoomAutoplayState::default());
 
+            // -- Doom fine-tuning dataset state (Spec #3032 ST-3) --------------
+            // The opt-in capture gate's writer + the resolved dataset directory
+            // (`<app_data_dir>/doom-dataset/`, `FREDO_DOOM_DATASET_DIR` test
+            // override) resolved from the ONE app-data-dir resolver above. The
+            // writer is built lazily — default OFF builds none and creates no
+            // dataset file (R-5). Shared (`Arc`) so the export IPC and the loop
+            // (ST-2) use the SAME instance / `export_in_progress` guard (AC3).
+            app.manage(Arc::new(
+                applications::doom::commands::DoomDatasetState::new(&data_dir),
+            ));
+
             // -- Doom Mode state (Spec #2970 ST-2) -----------------------------
             // The single source of truth for "is Doom Mode active" (G-124); the
             // `enter_doom_mode` / `exit_doom_mode` / `get_doom_mode_status`
@@ -995,6 +1006,14 @@ pub fn run() {
             applications::doom::commands::start_doom_autoplay,
             applications::doom::commands::stop_doom_autoplay,
             applications::doom::commands::get_doom_autoplay_status,
+            // Doom fine-tuning dataset (Spec #3032 ST-3): the opt-in capture gate
+            // (`set_doom_dataset_enabled` / `get_doom_dataset_status`, persisted at
+            // the Rust-readable `doom_dataset_enabled` KV the loop reads) and the
+            // LOCAL-ONLY export (`export_doom_dataset`, no egress). No new visible
+            // settings surface.
+            applications::doom::commands::get_doom_dataset_status,
+            applications::doom::commands::set_doom_dataset_enabled,
+            applications::doom::commands::export_doom_dataset,
             // Doom save/resume (Spec #2972 CU-3/ST-5): the durable resume point
             // read (`get_doom_save`) and the explicit discard
             // (`reset_doom_save`). Save WRITES are owned by the autoplay loop's
