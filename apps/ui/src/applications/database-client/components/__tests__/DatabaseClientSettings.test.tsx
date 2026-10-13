@@ -65,6 +65,10 @@ describe('DatabaseClientSettings — defaults', () => {
       'checked',
     );
     expect(screen.getByTestId('dbclient-settings')).toBeInTheDocument();
+    // Spec #3048 (R-1.2): the panel heading reads the tool name, not the engine.
+    const panel = screen.getByTestId('dbclient-settings');
+    expect(panel).toHaveTextContent('SQL Studio preferences');
+    expect(panel.textContent).not.toMatch(/PostgreSQL/);
   });
 });
 
