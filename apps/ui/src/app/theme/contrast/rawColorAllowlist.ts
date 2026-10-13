@@ -30,26 +30,15 @@ export interface RawColorAllowlistEntry {
 
 export const RAW_COLOR_ALLOWLIST: readonly RawColorAllowlistEntry[] = [
   {
-    // Canvas-owned art palette: the Three.js legend/sprite identity hues and the
-    // `#000` viewport, plus the in-canvas sprite gradient/glyph colours (all
-    // painted into the Three canvas — never DOM chrome). The DOM caption
-    // `rgba(255,255,255,0.25)` and the mode-chip colours are deliberately NOT
-    // pinned here so they are reported for tokenisation (#3034/#3035).
+    // Canvas-owned art palette: the Three.js manifold legend/sprite identity
+    // hues (`:542-553`) and the `#000` viewport (`:562`) — the enumerated
+    // literal set settled in the plan. The DOM caption `rgba(255,255,255,0.25)`
+    // (`:579`) and every DOM mode-chip literal in the same file are deliberately
+    // NOT pinned, so adding/keeping DOM chrome here is still reported
+    // (#3034/#3035). The manifest pins exactly these literals — no file scope.
     file: 'apps/ui/src/applications/dev-mode/components/SpatiotemporalManifold.tsx',
     kind: 'canvas-3d',
-    literals: [
-      '#000',
-      '#04a5ec',
-      '#22c55e',
-      '#3b82f6',
-      '#9333f2',
-      '#ef4444',
-      '#f59e0b',
-      'rgba(255,255,255,0.95)',
-      'rgba(255,255,255,0.28)',
-      'rgba(255,255,255,0.0)',
-      'rgba(255,255,255,1)',
-    ],
+    literals: ['#000', '#04a5ec', '#22c55e', '#3b82f6', '#9333f2', '#ef4444', '#f59e0b'],
     since: '#3033',
   },
   {
