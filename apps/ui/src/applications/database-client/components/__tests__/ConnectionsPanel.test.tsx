@@ -24,6 +24,21 @@ const view: DbConnectionView = {
   sslMode: 'prefer',
   accessMode: 'readOnly',
   hasPassword: true,
+  builtin: false,
+};
+
+const builtinView: DbConnectionView = {
+  id: 'builtin-fredo',
+  name: 'Fredo',
+  engine: 'postgres',
+  host: '127.0.0.1',
+  port: 0,
+  user: 'postgres',
+  database: 'fredo',
+  sslMode: 'disable',
+  accessMode: 'readOnly',
+  hasPassword: true,
+  builtin: true,
 };
 
 function renderPanel(overrides: Partial<React.ComponentProps<typeof ConnectionsPanel>> = {}) {
@@ -98,5 +113,63 @@ describe('ConnectionsPanel — confirmed delete (R-1.7)', () => {
     expect(props.onDelete).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTestId('db-connection-delete-confirm'));
     expect(props.onDelete).toHaveBeenCalledWith(view);
+  });
+});
+
+describe('ConnectionsPanel — built-in affordance (Spec #3029 ST-4)', () => {
+  it('renders the built-in badge with an accessible name for a builtin row only', () => {
+    renderPanel({ connections: [builtinView] });
+    const badge = screen.getByTestId('db-connection-builtin-badge');
+    expect(badge).toBeInTheDocument();
+    expect(badge).toHaveTextContent('Built-in');
+    expect(badge).toHaveAttribute('aria-label', 'Built-in connection');
+    expect(badge.tagName).toBe('SPAN');
+    // Non-interactive: adds no tab stop.
+    expect((badge as HTMLElement).tabIndex).toBe(-1);
+  });
+
+  it('omits the badge on an ordinary row', () => {
+    renderPanel({ connections: [view] });
+    expect(screen.queryByTestId('db-connection-builtin-badge')).not.toBeInTheDocument();
+  });
+
+  it('omits the port sentinel (`:0`) from the builtin target line', () => {
+    renderPanel({ connections: [builtinView] });
+    const target = screen.getByTestId('db-connection-target');
+    expect(target).toHaveTextContent('postgres@127.0.0.1/fredo');
+    expect(target.textContent).not.toContain(':0');
+  });
+
+  it('keeps the `:port` target line for an ordinary row', () => {
+    renderPanel({ connections: [view] });
+    expect(screen.getByTestId('db-connection-target')).toHaveTextContent(
+      'postgres@127.0.0.1:5432/postgres',
+    );
+  });
+
+  it('clicking the badge still selects the row (no stopPropagation)', () => {
+    const props = renderPanel({ connections: [builtinView] });
+    fireEvent.click(screen.getByTestId('db-connection-builtin-badge'));
+    expect(props.onSelect).toHaveBeenCalledWith(builtinView);
+  });
+
+  it('labels the builtin delete confirm "Delete Fredo" with a warning line', () => {
+    const props = renderPanel({ connections: [builtinView] });
+    fireEvent.click(screen.getByTestId('db-connection-delete-builtin-fredo'));
+    const confirm = screen.getByTestId('db-connection-delete-confirm');
+    expect(confirm).toHaveTextContent('Delete Fredo');
+    expect(
+      screen.getByText("Fredo won't be recreated. You can add it again as a new connection."),
+    ).toBeInTheDocument();
+    expect(props.onDelete).not.toHaveBeenCalled();
+    fireEvent.click(confirm);
+    expect(props.onDelete).toHaveBeenCalledWith(builtinView);
+  });
+
+  it('keeps the plain "Confirm" label and no warning for an ordinary row', () => {
+    renderPanel({ connections: [view] });
+    fireEvent.click(screen.getByTestId('db-connection-delete-c1'));
+    expect(screen.getByTestId('db-connection-delete-confirm')).toHaveTextContent('Confirm');
+    expect(screen.queryByText(/Fredo won't be recreated/)).not.toBeInTheDocument();
   });
 });

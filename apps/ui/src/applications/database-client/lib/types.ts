@@ -46,6 +46,12 @@ export interface DbConnectionView {
   sslMode: SslMode;
   accessMode: AccessMode;
   hasPassword: boolean;
+  /**
+   * Spec #3029: `true` ONLY for the seeded built-in "Fredo" connection. The
+   * built-in resolves its endpoint at connect time and is never re-seeded once
+   * deleted; every ordinary connection is `false`.
+   */
+  builtin: boolean;
 }
 
 export interface DbConnectionTestArgs {

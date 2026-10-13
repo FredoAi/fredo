@@ -28,6 +28,18 @@
 //! No schema or query logic; no password ever enters a returned view
 //! (`has_password` only), the metadata documents, tracing, or an error message
 //! (messages are sanitized against the submitted password).
+//!
+//! # Built-in "Fredo" connection (Spec #3029, ST-2)
+//!
+//! On a fresh profile (the connection-store document does NOT exist) the list /
+//! save / connect entry points seed ONE built-in connection
+//! ([`builtin_connection_view`]) to Fredo's own embedded cluster via
+//! [`ensure_builtin_seeded`]. It persists a `port=0` sentinel and no secret; its
+//! endpoint + loopback password are resolved at connect time from the
+//! [`crate::infrastructure::storage::embedded_pg::EmbeddedPgEndpointProvider`]
+//! (no cross-application import). Saving it makes it an ordinary connection
+//! (`builtin=false`); deletion is permanent (the store document exists, so it is
+//! never re-seeded).
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -46,17 +58,23 @@ pub mod credentials;
 mod tests_connect;
 
 #[cfg(test)]
+#[path = "tests_builtin.rs"]
+mod tests_builtin;
+
+#[cfg(test)]
 #[path = "tests_credentials.rs"]
 mod tests_credentials;
 
 use credentials::{CredentialStore, KeyringCredentialStore};
 
+use crate::infrastructure::storage::embedded_pg::EmbeddedPgEndpointProvider;
+
 use super::seam::{self, ForceFailStage};
 use super::state::DbClientState;
 use super::types::{
     history_key, saved_queries_key, AccessMode, DbConnectArgs, DbConnectionDeleteArgs,
-    DbConnectionSaveArgs, DbConnectionTestArgs, DbConnectionView, DbErrorKind, DbQueryError,
-    DbSessionInfo, DbTestResult, SslMode, DBCLIENT_CONNECTIONS_KEY,
+    DbConnectionSaveArgs, DbConnectionTestArgs, DbConnectionView, DbEngineKind, DbErrorKind,
+    DbQueryError, DbSessionInfo, DbTestResult, SslMode, DBCLIENT_CONNECTIONS_KEY,
 };
 
 /// Hard bound on every connect/probe attempt (R-1.3/R-1.8).
@@ -73,6 +91,62 @@ pub const MAX_OPEN_CONNECTIONS: usize =
 /// A newly created connection defaults to read-only (R-5.1). The mode is changed
 /// only by an explicit later edit.
 pub const DEFAULT_ACCESS_MODE: AccessMode = AccessMode::ReadOnly;
+
+// ── Built-in "Fredo" connection (Spec #3029, ST-2) ────────────────────────────
+
+/// The stable id of the seeded built-in connection to Fredo's own embedded
+/// cluster (Spec #3029).
+pub const DBCLIENT_BUILTIN_FREDO_ID: &str = "builtin-fredo";
+/// The user-facing name of the seeded built-in connection (Spec #3029).
+pub const DBCLIENT_BUILTIN_FREDO_NAME: &str = "Fredo";
+/// The persisted port SENTINEL for the built-in connection: `0` means "resolve
+/// the bound port from the live supervisor at connect time". It is NEVER
+/// overwritten with the bound ephemeral port (EARS-6/EARS-7).
+pub const DBCLIENT_BUILTIN_PORT_SENTINEL: u16 = 0;
+
+/// The stable loopback host the built-in connection targets (loopback-only —
+/// never `0.0.0.0`). Mirrors `pg_supervisor::DEFAULT_PG_HOST` without importing it.
+const BUILTIN_HOST: &str = "127.0.0.1";
+/// The bootstrap superuser role the built-in connection targets (Spec #3036).
+const BUILTIN_USER: &str = "postgres";
+/// The Fredo application database the built-in connection targets (Spec #3036).
+const BUILTIN_DATABASE: &str = "fredo";
+
+/// The seeded built-in connection view (Spec #3029). Never carries a secret; the
+/// loopback password is resolved from the OS keychain at connect time only.
+pub fn builtin_connection_view() -> DbConnectionView {
+    DbConnectionView {
+        id: DBCLIENT_BUILTIN_FREDO_ID.to_string(),
+        name: DBCLIENT_BUILTIN_FREDO_NAME.to_string(),
+        engine: DbEngineKind::Postgres,
+        host: BUILTIN_HOST.to_string(),
+        port: DBCLIENT_BUILTIN_PORT_SENTINEL,
+        user: BUILTIN_USER.to_string(),
+        database: BUILTIN_DATABASE.to_string(),
+        // Loopback-only ⇒ no TLS.
+        ssl_mode: SslMode::Disable,
+        access_mode: DEFAULT_ACCESS_MODE,
+        // The connection is credentialed via the shared loopback keychain; the
+        // `Fredo_dbclient_connections.json` document itself never holds a secret.
+        has_password: true,
+        builtin: true,
+    }
+}
+
+/// Seed the built-in connection ONCE, keyed SOLELY on the connection-store
+/// document NOT existing (a fresh profile). Idempotent: a no-op when the
+/// document exists (even an empty `[]`), so a deleted built-in is never
+/// re-seeded on an existing profile — the binding "deletion is permanent"
+/// decision. Any save/delete writes the document (`write_array`), so it exists
+/// after any user action.
+pub fn ensure_builtin_seeded(state: &DbClientState) -> Result<(), ProbeError> {
+    let path = connections_path(state);
+    if path.exists() {
+        return Ok(());
+    }
+    let views = [builtin_connection_view()];
+    write_array(&path, &views)
+}
 
 // ── Typed internal error ──────────────────────────────────────────────────────
 
@@ -385,6 +459,7 @@ pub fn connection_list_with(
     state: &DbClientState,
     credentials: &dyn CredentialStore,
 ) -> Result<Vec<DbConnectionView>, Vec<String>> {
+    ensure_builtin_seeded(state).map_err(|e| e.to_messages())?;
     let mut views = read_array::<DbConnectionView>(&connections_path(state));
     for view in &mut views {
         view.has_password = credential_present(credentials, &view.id);
@@ -451,6 +526,7 @@ pub fn connection_save_with(
     state: &DbClientState,
     credentials: &dyn CredentialStore,
 ) -> Result<DbConnectionView, Vec<String>> {
+    ensure_builtin_seeded(state).map_err(|e| e.to_messages())?;
     validate_save_args(&args).map_err(|e| e.to_messages())?;
 
     if let Some(id) = &args.id {
@@ -497,6 +573,11 @@ pub fn connection_save_with(
         ssl_mode: args.ssl_mode,
         access_mode,
         has_password: credential_present(credentials, &id),
+        // Spec #3029: every SAVE produces an ordinary connection. Editing the
+        // built-in (via `db_connection_save` with its id) therefore converts it
+        // to an ordinary saved connection and stops connect-time endpoint
+        // resolution (binding "edit ⇒ ordinary" decision).
+        builtin: false,
     };
 
     match existing {
@@ -552,15 +633,86 @@ pub async fn connect(
     args: DbConnectArgs,
     state: &DbClientState,
 ) -> Result<DbSessionInfo, Vec<String>> {
-    connect_with(args, state, &KeyringCredentialStore).await
+    let provider = state.embedded_endpoint_provider();
+    connect_with(args, state, &KeyringCredentialStore, provider.as_deref()).await
 }
 
-/// Testable `connect` with an injected credential store.
+/// The effective connect target for a stored connection, resolved per call.
+struct ResolvedTarget {
+    host: String,
+    port: u16,
+    user: String,
+    database: String,
+    ssl_mode: SslMode,
+    password: Option<String>,
+}
+
+/// Resolve the effective connect target for a stored [`DbConnectionView`]
+/// (Spec #3029).
+///
+/// * `builtin=true` (EARS-3/EARS-6/EARS-7): host/port/user/database come from the
+///   LIVE [`EmbeddedPgEndpointProvider`] on EVERY call (no stale persisted port),
+///   the password from the provider's keychain resolution, and TLS is `Disable`
+///   (loopback-only). This arm resolves BEFORE any credential path: provider
+///   absent ⇒ typed `config` (EARS-4b); provider present but not serving ⇒ typed
+///   `unreachable` (EARS-4a). It NEVER prompts for a credential.
+/// * `builtin=false` (ordinary): the persisted view fields + the per-connection
+///   `fredo.dbclient` keychain secret — byte-identical to the pre-#3029 path.
+fn resolve_target(
+    view: &DbConnectionView,
+    credentials: &dyn CredentialStore,
+    endpoint_provider: Option<&dyn EmbeddedPgEndpointProvider>,
+) -> Result<ResolvedTarget, Vec<String>> {
+    if view.builtin {
+        let provider = endpoint_provider.ok_or_else(|| {
+            ProbeError::new(
+                DbErrorKind::Config,
+                "the embedded PostgreSQL endpoint is not managed in this environment",
+            )
+            .to_messages()
+        })?;
+        let endpoint = provider.endpoint().ok_or_else(|| {
+            ProbeError::new(
+                DbErrorKind::Unreachable,
+                "the embedded PostgreSQL cluster is not serving yet",
+            )
+            .to_messages()
+        })?;
+        let password = provider
+            .loopback_password()
+            .map_err(|e| ProbeError::new(DbErrorKind::Other, e).to_messages())?;
+        return Ok(ResolvedTarget {
+            host: endpoint.host,
+            port: endpoint.port,
+            user: endpoint.user,
+            database: endpoint.database,
+            ssl_mode: SslMode::Disable,
+            password,
+        });
+    }
+
+    let password = credentials
+        .get_password(&view.id)
+        .map_err(|e| ProbeError::new(DbErrorKind::Other, e).to_messages())?;
+    Ok(ResolvedTarget {
+        host: view.host.clone(),
+        port: view.port,
+        user: view.user.clone(),
+        database: view.database.clone(),
+        ssl_mode: view.ssl_mode,
+        password,
+    })
+}
+
+/// Testable `connect` with an injected credential store and endpoint provider.
 pub async fn connect_with(
     args: DbConnectArgs,
     state: &DbClientState,
     credentials: &dyn CredentialStore,
+    endpoint_provider: Option<&dyn EmbeddedPgEndpointProvider>,
 ) -> Result<DbSessionInfo, Vec<String>> {
+    ensure_builtin_seeded(state).map_err(|e| e.to_messages())?;
+
     let view = read_array::<DbConnectionView>(&connections_path(state))
         .into_iter()
         .find(|view| view.id == args.connection_id)
@@ -573,18 +725,16 @@ pub async fn connect_with(
         .to_messages());
     }
 
-    let password = credentials
-        .get_password(&view.id)
-        .map_err(|e| ProbeError::new(DbErrorKind::Other, e).to_messages())?;
+    let target = resolve_target(&view, credentials, endpoint_provider)?;
     let options = build_connect_options(
-        &view.host,
-        view.port,
-        &view.user,
-        &view.database,
-        password.as_deref(),
-        view.ssl_mode,
+        &target.host,
+        target.port,
+        &target.user,
+        &target.database,
+        target.password.as_deref(),
+        target.ssl_mode,
     );
-    let (pool, server_version) = open_bounded(options, state.force_fail(), password.as_deref())
+    let (pool, server_version) = open_bounded(options, state.force_fail(), target.password.as_deref())
         .await
         .map_err(|e| e.to_messages())?;
 

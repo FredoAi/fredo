@@ -1,7 +1,12 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Box, Button, chakra, Flex, HStack, Input, Spinner, Text, VStack } from '@chakra-ui/react';
 import { LuCircleCheck, LuTriangleAlert } from 'react-icons/lu';
-import { dbConnectionSave, dbConnectionTest, normalizeDbError } from '../lib/api';
+import {
+  dbConnectionSave,
+  dbConnectionTest,
+  normalizeDbError,
+  pgSupervisorStatus,
+} from '../lib/api';
 import type {
   AccessMode,
   DbConnectionView,
@@ -22,6 +27,11 @@ import type {
  * until a field changes.
  * R-1.6: the password input is write-only — on edit it renders empty with an
  * "unchanged" placeholder and is never echoed back.
+ *
+ * Spec #3029 ST-4: editing the built-in connection starts with a blank port
+ * (never the `0` sentinel), prefills it from the live `pg_supervisor_status`,
+ * and shows an inline disclosure that saving turns it into an ordinary
+ * connection. Title: "Edit built-in connection".
  *
  * Token-first: semantic tokens only, no hex/rgba literal.
  */
@@ -111,10 +121,17 @@ export const ConnectionForm: React.FC<ConnectionFormProps> = ({
   onCancel,
 }) => {
   const isEditing = Boolean(initial?.id);
+  /**
+   * Spec #3029 ST-4: the seeded built-in "Fredo" connection persists a `port=0`
+   * SENTINEL ("resolve at connect"). `String(0)` would fail
+   * `validateConnectionFields` and leave Save disabled the instant the form
+   * opens, so the port starts blank and is prefilled from the live supervisor.
+   */
+  const isBuiltin = Boolean(initial?.builtin);
 
   const [name, setName] = useState(initial?.name ?? '');
   const [host, setHost] = useState(initial?.host ?? '127.0.0.1');
-  const [port, setPort] = useState(initial ? String(initial.port) : '5432');
+  const [port, setPort] = useState(!initial ? '5432' : isBuiltin ? '' : String(initial.port));
   const [user, setUser] = useState(initial?.user ?? 'postgres');
   const [password, setPassword] = useState('');
   const [database, setDatabase] = useState(initial?.database ?? 'postgres');
@@ -128,6 +145,31 @@ export const ConnectionForm: React.FC<ConnectionFormProps> = ({
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+
+  /**
+   * Spec #3029 ST-4: for the built-in connection, prefill the port from the live
+   * supervisor (`pg_supervisor_status`) so the user does not have to look it up.
+   * Runs ONCE on mount; on error / a non-positive port the field stays blank —
+   * saving turns the endpoint ordinary, so a real port is then required.
+   */
+  useEffect(() => {
+    if (!isBuiltin) return undefined;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const status = await pgSupervisorStatus();
+        const resolved = status?.port;
+        if (!cancelled && typeof resolved === 'number' && Number.isInteger(resolved) && resolved > 0) {
+          setPort(String(resolved));
+        }
+      } catch {
+        // Leave the port blank — the user supplies a real port before saving.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isBuiltin]);
 
   const fields = useMemo(
     () => ({ name, host, port, user, database }),
@@ -238,8 +280,23 @@ export const ConnectionForm: React.FC<ConnectionFormProps> = ({
       }}
     >
       <Text fontSize="sm" fontWeight="600" color="fg.default">
-        {isEditing ? 'Edit connection' : 'New connection'}
+        {isBuiltin ? 'Edit built-in connection' : isEditing ? 'Edit connection' : 'New connection'}
       </Text>
+
+      {isBuiltin ? (
+        <Box
+          bg="bg.subtle"
+          borderWidth="1px"
+          borderColor="border.default"
+          borderRadius="sm"
+          p={2}
+        >
+          <Text fontSize="xs" color="fg.muted">
+            Fredo is the built-in connection. Saving changes turns it into an ordinary connection —
+            it will no longer connect to the embedded database automatically.
+          </Text>
+        </Box>
+      ) : null}
 
       <VStack align="stretch" gap={2}>
         <Field label="Name" testId="db-conn-name-field" errorId="db-conn-error-name" error={errors.name}>

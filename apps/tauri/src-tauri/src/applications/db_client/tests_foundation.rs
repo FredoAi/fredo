@@ -29,6 +29,7 @@ fn sample_view() -> DbConnectionView {
         ssl_mode: SslMode::VerifyCa,
         access_mode: AccessMode::ReadOnly,
         has_password: true,
+        builtin: false,
     }
 }
 
@@ -167,11 +168,19 @@ async fn state_registry_tracks_pools_by_connection_id() {
 
 #[tokio::test]
 async fn command_bodies_are_real_and_fail_closed_without_a_connection() {
-    let state = DbClientState::new(None, PathBuf::from("C:/tmp/dbclient"));
+    // A tempdir-backed state so the Spec #3029 built-in seed writes a disposable
+    // store (never the host) — order-independent (G-222).
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = DbClientState::new(None, dir.path().to_path_buf());
 
-    // ST-2 filled the connection lifecycle: `db_connection_list` is real and
-    // returns the (empty) saved-connection list without any network call.
-    assert!(super::connect::connection_list(&state).await.is_ok());
+    // ST-2 filled the connection lifecycle: `db_connection_list` is real. On a
+    // fresh profile it seeds (and returns) the single built-in "Fredo" row
+    // (Spec #3029) without any network call.
+    let listed = super::connect::connection_list(&state)
+        .await
+        .expect("list succeeds");
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0].builtin);
 
     // ST-3 filled the schema browse: with no open pool it returns the typed
     // "not open" error (no network call).

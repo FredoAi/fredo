@@ -84,3 +84,20 @@ export function dbQueryExecute(args: DbQueryArgs): Promise<DbQueryOutcome> {
 export function dbResultPage(args: DbResultPageArgs): Promise<DbResultSet> {
   return invokeDb<DbResultSet>('db_result_page', { args });
 }
+
+/**
+ * The subset of the existing `pg_supervisor_status` view the built-in
+ * connection edit path reads (Spec #3029 ST-4). Faithful to the backend
+ * `PgStatusView` (`port: Option<u16>` ⇒ `number | null`) — only `port` is used,
+ * guarded before prefill. NO new Tauri command: `pg_supervisor_status` is
+ * already registered and invoked with no args.
+ */
+export interface PgSupervisorStatus {
+  state: 'disabled' | 'starting' | 'ready' | 'attached' | 'failed';
+  port: number | null;
+}
+
+/** Read the embedded cluster's live bound port (existing `pg_supervisor_status`). */
+export function pgSupervisorStatus(): Promise<PgSupervisorStatus> {
+  return invokeDb<PgSupervisorStatus>('pg_supervisor_status');
+}
