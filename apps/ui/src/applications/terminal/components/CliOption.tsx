@@ -45,7 +45,10 @@ export const CliOption: React.FC<{ value: TerminalSessionKind; selected: boolean
           </Text>
         </RadioCard.ItemDescription>
       </RadioCard.ItemContent>
-      <RadioCard.ItemIndicator />
+      <RadioCard.ItemIndicator
+        colorPalette="accent"
+        _checked={{ bg: 'accent.strong', borderColor: 'accent.strong' }}
+      />
     </RadioCard.ItemControl>
   </RadioCard.Item>
 );

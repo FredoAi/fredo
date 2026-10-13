@@ -264,7 +264,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
 
   return (
     <Flex direction="column" gap={2}>
-      <HStack gap={2} flexShrink={0} align="center">
+      <HStack gap={2} flexWrap="wrap" align="flex-start">
         <Button
           data-testid="db-query-run"
           size="xs"
@@ -287,7 +287,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
         >
           Run all
         </Button>
-        <Text fontSize="xs" color="fg.muted">
+        <Text fontSize="xs" color="fg.muted" flex="1 1 auto" minW={0}>
           Run executes the selection, or the statement at the caret.
         </Text>
       </HStack>
@@ -363,7 +363,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
             overflowY="auto"
             bg="bg.surface"
             borderWidth="1px"
-            borderColor="border.default"
+            borderColor="border.subtle"
             borderRadius="sm"
             boxShadow="shadow.dialog"
           >

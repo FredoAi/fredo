@@ -107,7 +107,7 @@ const ModeOption: React.FC<{
       borderRadius="md"
       borderStyle={disabled ? 'dashed' : 'solid'}
       borderColor={selected ? 'var(--accent-primary)' : 'border.default'}
-      bg={selected ? tint('var(--accent-primary)', 12) : 'bg.surface'}
+      bg={selected ? tint('var(--accent-primary)', 8) : 'bg.surface'}
       cursor={disabled ? 'not-allowed' : 'pointer'}
       transition="background 0.15s ease, border-color 0.15s ease"
       _hover={disabled ? undefined : { borderColor: 'var(--accent-primary)' }}
@@ -119,7 +119,10 @@ const ModeOption: React.FC<{
           {title}
         </RadioCard.ItemText>
       </HStack>
-      <RadioCard.ItemIndicator />
+      <RadioCard.ItemIndicator
+        colorPalette="accent"
+        _checked={{ bg: 'accent.strong', borderColor: 'accent.strong' }}
+      />
     </RadioCard.ItemControl>
   </RadioCard.Item>
 );

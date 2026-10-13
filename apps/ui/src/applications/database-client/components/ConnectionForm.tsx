@@ -272,7 +272,7 @@ export const ConnectionForm: React.FC<ConnectionFormProps> = ({
       p={3}
       bg="bg.surface"
       borderWidth="1px"
-      borderColor="border.default"
+      borderColor="border.subtle"
       borderRadius="sm"
       onSubmit={(event) => {
         event.preventDefault();
@@ -287,7 +287,7 @@ export const ConnectionForm: React.FC<ConnectionFormProps> = ({
         <Box
           bg="bg.subtle"
           borderWidth="1px"
-          borderColor="border.default"
+          borderColor="border.subtle"
           borderRadius="sm"
           p={2}
         >
@@ -465,7 +465,7 @@ export const ConnectionForm: React.FC<ConnectionFormProps> = ({
         gap={2}
         bg="bg.subtle"
         borderWidth="1px"
-        borderColor={testState === 'failure' ? 'status.error' : 'border.default'}
+        borderColor={testState === 'failure' ? 'status.error' : 'border.subtle'}
         borderRadius="sm"
         p={2}
         minHeight="32px"
