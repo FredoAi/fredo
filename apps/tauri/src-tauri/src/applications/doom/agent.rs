@@ -1494,6 +1494,17 @@ impl DoomDatasetAssembler {
         }
     }
 
+    /// Build an assembler over the command root's ONE shared writer (Spec #3032
+    /// ST-3 injects it), so the loop and the export IPC share a single
+    /// `export_in_progress` guard (AC3).
+    fn from_writer(writer: DoomDatasetWriter) -> Self {
+        Self::new(
+            Some(Arc::new(writer)),
+            dataset_run_id(),
+            super::decision::decision_source_from_env(),
+        )
+    }
+
     /// Whether capture is enabled (a writer is present).
     fn is_enabled(&self) -> bool {
         self.writer.is_some()
@@ -1716,6 +1727,10 @@ type PendingDecision<'s> =
 /// decision retains the bounded consecutive-failure stop. `observe` is invoked on
 /// the seeded/terminal transitions and throttled to ~[`DOOM_STATUS_EMIT_MS`]
 /// elsewhere.
+///
+/// This entry point resolves the dataset writer from the `FREDO_DOOM_DATASET_*`
+/// env seams (Spec #3032 ST-2); the command root uses
+/// [`run_continuous_loop_with_writer`] to inject the ONE shared writer instead.
 pub async fn run_continuous_loop(
     engine: &dyn DoomAutoplayEngine,
     source: &dyn DoomDecisionSource,
@@ -1723,6 +1738,26 @@ pub async fn run_continuous_loop(
     clock: &dyn DoomTickClock,
     run: AutoplayRun,
     stop: &AtomicBool,
+    observe: impl FnMut(&DoomAutoplayStatus) + Send,
+) -> DoomAutoplayResult {
+    run_continuous_loop_with_writer(engine, source, config, clock, run, stop, None, observe).await
+}
+
+/// Run the continuous loop with an explicit dataset writer (Spec #3032 ST-2).
+///
+/// The command root (ST-3) builds the ONE shared [`DoomDatasetWriter`] and passes
+/// it here, so the loop assembler and the export IPC observe the SAME
+/// `export_in_progress` guard (AC3). `None` resolves the writer from the
+/// `FREDO_DOOM_DATASET_*` env seams (the deterministic driver + tests), staying
+/// disabled when capture is off (R-5).
+pub async fn run_continuous_loop_with_writer(
+    engine: &dyn DoomAutoplayEngine,
+    source: &dyn DoomDecisionSource,
+    config: &DoomAutoplayConfig,
+    clock: &dyn DoomTickClock,
+    run: AutoplayRun,
+    stop: &AtomicBool,
+    dataset_writer: Option<DoomDatasetWriter>,
     mut observe: impl FnMut(&DoomAutoplayStatus) + Send,
 ) -> DoomAutoplayResult {
     let AutoplayRun { campaign, progress } = run;
@@ -1761,9 +1796,13 @@ pub async fn run_continuous_loop(
 
     // The loop-side dataset assembler (Spec #3032 ST-2): ONE correlated record
     // per decision attempt, appended through ST-1's bounded writer — but ONLY
-    // when capture is enabled (R-5). Disabled ⇒ no writer ⇒ no file, and the
-    // loop's control behaviour is byte-identical.
-    let mut dataset = DoomDatasetAssembler::from_env();
+    // when capture is enabled (R-5). The command root injects the ONE shared
+    // writer; the deterministic driver resolves it from the env seams. Disabled
+    // ⇒ no writer ⇒ no file, and the loop's control behaviour is byte-identical.
+    let mut dataset = match dataset_writer {
+        Some(writer) => DoomDatasetAssembler::from_writer(writer),
+        None => DoomDatasetAssembler::from_env(),
+    };
 
     let mut campaign = campaign;
     let mut budget_used: u32 = 0;
