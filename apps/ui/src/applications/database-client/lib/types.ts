@@ -204,3 +204,28 @@ export interface SavedQuery {
   sql: string;
   createdAt: string;
 }
+
+// ── SQL Studio layout (Spec #3049, ST-1) ─────────────────────────────────────
+//
+// The four user-resizable splits of the SQL Studio workspace. Layout is kept in
+// a SEPARATE persisted document (`Fredo_dbclient_layout` — see `storage.ts`) so
+// the settings panel's whole-document `savePrefs` can never clobber it.
+
+/** The four draggable SQL-Studio splits; each key names one persisted size. */
+export type DbClientSplitId =
+  | 'leftSidebarWidth'
+  | 'rightSidebarWidth'
+  | 'editorResultsHeight'
+  | 'connectionsSchemaHeight';
+
+/** Persisted, clamped SQL-Studio split sizes. Units: integer CSS px. */
+export interface DbClientLayoutPrefs {
+  /** Width of the left sidebar (connections / schema / inspector). */
+  leftSidebarWidth: number;
+  /** Width of the right sidebar (history / saved queries). */
+  rightSidebarWidth: number;
+  /** Height of the editor row; the results region fills the remainder. */
+  editorResultsHeight: number;
+  /** Height of the connections region; the schema tree fills the remainder. */
+  connectionsSchemaHeight: number;
+}

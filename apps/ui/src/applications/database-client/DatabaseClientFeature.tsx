@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Box, Button, Flex, VStack } from '@chakra-ui/react';
 import { LuDatabase, LuUnplug } from 'react-icons/lu';
 import { FredoApplicationClass } from '../../shared/classes';
@@ -11,6 +11,11 @@ import { DatabaseClientSettings } from './components/DatabaseClientSettings';
 import { ExportMenu } from './components/ExportMenu';
 import { HistoryPanel } from './components/HistoryPanel';
 import { QueryTabs } from './components/QueryTabs';
+import {
+  ResizableSplitter,
+  RESIZE_HIT_AREA,
+  clampSplitSize,
+} from './components/ResizableSplitter';
 import { SavedQueriesPanel } from './components/SavedQueriesPanel';
 import { SchemaInspector } from './components/SchemaInspector';
 import { SchemaTree } from './components/SchemaTree';
@@ -21,7 +26,15 @@ import {
   dbDisconnect,
   normalizeDbError,
 } from './lib/api';
-import { appendHistory, clearConnectionData, loadPrefs } from './lib/storage';
+import {
+  DBCLIENT_LAYOUT_LIMITS,
+  EDITOR_MIN,
+  WORKSPACE_MIN,
+  appendHistory,
+  clearConnectionData,
+  loadPrefs,
+} from './lib/storage';
+import { useDbClientLayout } from './lib/useDbClientLayout';
 import type { DbConnectionView, SchemaNode } from './lib/types';
 
 /**
@@ -69,6 +82,111 @@ export const DatabaseClientFeatureView: React.FC = () => {
   const [pageSize, setPageSize] = useState(100);
   const [defaultRowLimit, setDefaultRowLimit] = useState(100);
   const [statusMessage, setStatusMessage] = useState('');
+
+  // ── Resizable split layout (Spec #3049, ST-3) ──────────────────────────────
+  // ONE `useDbClientLayout()` instance for the whole shell (never instantiate it
+  // twice on the same key); the centre workspace gets the editor height threaded
+  // down as props. Layout values are primitives; the live drag values below are
+  // transient (`null` = fall back to the persisted value) so a drag reflows live
+  // while a single `commit` on release persists.
+  const { layout, commit } = useDbClientLayout();
+  const [liveLeft, setLiveLeft] = useState<number | null>(null);
+  const [liveRight, setLiveRight] = useState<number | null>(null);
+  const [liveConnHeight, setLiveConnHeight] = useState<number | null>(null);
+
+  // Container measurement for the tier-2 (container-aware) clamp so a split can
+  // never hide the workspace. Only fires on a real container resize — a drag does
+  // not change the pane-row's own size, so this never becomes a drag-loop source.
+  const splitRowRef = useRef<HTMLDivElement | null>(null);
+  const [rowWidth, setRowWidth] = useState(0);
+  const [rowHeight, setRowHeight] = useState(0);
+
+  useEffect(() => {
+    const el = splitRowRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      setRowWidth(entry.contentRect.width);
+      setRowHeight(entry.contentRect.height);
+    });
+    observer.observe(el);
+    setRowWidth(el.clientWidth);
+    setRowHeight(el.clientHeight);
+    return () => observer.disconnect();
+  }, []);
+
+  const handleLeftChange = useCallback(
+    (px: number) => {
+      setLiveLeft(null);
+      commit('leftSidebarWidth', px);
+    },
+    [commit],
+  );
+  const handleRightChange = useCallback(
+    (px: number) => {
+      setLiveRight(null);
+      commit('rightSidebarWidth', px);
+    },
+    [commit],
+  );
+  const handleConnChange = useCallback(
+    (px: number) => {
+      setLiveConnHeight(null);
+      commit('connectionsSchemaHeight', px);
+    },
+    [commit],
+  );
+  const handleEditorHeightChange = useCallback(
+    (px: number) => {
+      commit('editorResultsHeight', px);
+    },
+    [commit],
+  );
+
+  // Effective (container-aware) tier-2 bounds, applied to the RENDERED value on
+  // every render — not just the drag handle. So a window shrink (or a restore at
+  // a smaller window) with NO divider touched still reflows the panes under the
+  // live container size and keeps the workspace floor. The static
+  // `DBCLIENT_LAYOUT_LIMITS` still bounds what is PERSISTED (ST-1's `commit`);
+  // these bounds are never written back. When the container is unmeasured
+  // (jsdom / first paint) the static max applies, so the derived value equals
+  // the persisted value.
+  const leftLimits = DBCLIENT_LAYOUT_LIMITS.leftSidebarWidth;
+  const rightLimits = DBCLIENT_LAYOUT_LIMITS.rightSidebarWidth;
+  const connLimits = DBCLIENT_LAYOUT_LIMITS.connectionsSchemaHeight;
+  const handleBand = Number.parseInt(RESIZE_HIT_AREA, 10);
+
+  // Left first: its bound reserves the right sidebar's min + the workspace floor.
+  const effectiveLeftMax =
+    rowWidth > 0
+      ? Math.max(
+          leftLimits.min,
+          Math.min(leftLimits.max, rowWidth - rightLimits.min - WORKSPACE_MIN - 2 * handleBand),
+        )
+      : leftLimits.max;
+  const leftWidth =
+    liveLeft ?? clampSplitSize(layout.leftSidebarWidth, leftLimits.min, effectiveLeftMax);
+
+  // The right bound is derived from the RENDERED left width so the JOINT floor
+  // holds: leftWidth + rightWidth + 2*band + WORKSPACE_MIN ≤ rowWidth.
+  const effectiveRightMax =
+    rowWidth > 0
+      ? Math.max(
+          rightLimits.min,
+          Math.min(rightLimits.max, rowWidth - leftWidth - WORKSPACE_MIN - 2 * handleBand),
+        )
+      : rightLimits.max;
+  const rightWidth =
+    liveRight ?? clampSplitSize(layout.rightSidebarWidth, rightLimits.min, effectiveRightMax);
+
+  const effectiveConnMax =
+    rowHeight > 0
+      ? Math.max(Math.min(connLimits.max, rowHeight - EDITOR_MIN - handleBand), connLimits.min)
+      : connLimits.max;
+  const connHeight =
+    liveConnHeight ??
+    clampSplitSize(layout.connectionsSchemaHeight, connLimits.min, effectiveConnMax);
 
   const reload = useCallback(async () => {
     setLoadingConnections(true);
@@ -218,17 +336,15 @@ export const DatabaseClientFeatureView: React.FC = () => {
       minHeight={0}
       bg="bg.canvas"
     >
-      <Flex flex="1" minHeight={0}>
+      <Flex ref={splitRowRef} flex="1" minHeight={0}>
         {/* Left: connections + schema tree (+ inspector when a node is selected) */}
         <VStack
           align="stretch"
-          width="300px"
+          width={`${leftWidth}px`}
           flexShrink={0}
           minHeight={0}
           gap={2}
           p={2}
-          borderRightWidth="1px"
-          borderColor="border.default"
           bg="bg.canvas"
         >
           {formOpen ? (
@@ -240,21 +356,39 @@ export const DatabaseClientFeatureView: React.FC = () => {
               />
             </Box>
           ) : (
-            <Box flexShrink={0} maxHeight="45%" minHeight="140px" display="flex">
-              <ConnectionsPanel
-                connections={connections}
-                loading={loadingConnections}
-                error={connectionsError}
-                activeConnectionId={activeId}
-                connectedConnectionId={connectedId}
-                statuses={statuses}
-                onSelect={handleSelect}
-                onNew={openNew}
-                onEdit={openEdit}
-                onDelete={(view) => void handleDelete(view)}
-                onRetry={() => void reload()}
+            <>
+              <Box
+                flexShrink={0}
+                height={`${connHeight}px`}
+                minHeight={0}
+                display="flex"
+              >
+                <ConnectionsPanel
+                  connections={connections}
+                  loading={loadingConnections}
+                  error={connectionsError}
+                  activeConnectionId={activeId}
+                  connectedConnectionId={connectedId}
+                  statuses={statuses}
+                  onSelect={handleSelect}
+                  onNew={openNew}
+                  onEdit={openEdit}
+                  onDelete={(view) => void handleDelete(view)}
+                  onRetry={() => void reload()}
+                />
+              </Box>
+              <ResizableSplitter
+                orientation="horizontal"
+                direction="start"
+                value={connHeight}
+                min={connLimits.min}
+                max={effectiveConnMax}
+                onChange={handleConnChange}
+                onDragChange={setLiveConnHeight}
+                ariaLabel="Resize connections and schema"
+                testId="db-resize-handle-connections-schema"
               />
-            </Box>
+            </>
           )}
 
           <Box flex="1" minHeight={0}>
@@ -278,6 +412,19 @@ export const DatabaseClientFeatureView: React.FC = () => {
           ) : null}
         </VStack>
 
+        {/* Left sidebar ↔ workspace divider */}
+        <ResizableSplitter
+          orientation="vertical"
+          direction="start"
+          value={leftWidth}
+          min={leftLimits.min}
+          max={effectiveLeftMax}
+          onChange={handleLeftChange}
+          onDragChange={setLiveLeft}
+          ariaLabel="Resize left sidebar"
+          testId="db-resize-handle-left-sidebar"
+        />
+
         {/* Centre: query workspace */}
         <Box flex="1" minWidth={0} minHeight={0}>
           <QueryTabs
@@ -289,6 +436,8 @@ export const DatabaseClientFeatureView: React.FC = () => {
             externalSql={externalSql}
             onQueryComplete={handleQueryComplete}
             onActiveSqlChange={setActiveSql}
+            editorHeight={layout.editorResultsHeight}
+            onEditorHeightChange={handleEditorHeightChange}
             renderExport={(activeSet, running) => (
               <ExportMenu
                 columns={activeSet?.columns ?? []}
@@ -299,16 +448,27 @@ export const DatabaseClientFeatureView: React.FC = () => {
           />
         </Box>
 
+        {/* Workspace ↔ right sidebar divider */}
+        <ResizableSplitter
+          orientation="vertical"
+          direction="end"
+          value={rightWidth}
+          min={rightLimits.min}
+          max={effectiveRightMax}
+          onChange={handleRightChange}
+          onDragChange={setLiveRight}
+          ariaLabel="Resize right sidebar"
+          testId="db-resize-handle-right-sidebar"
+        />
+
         {/* Right: history + saved queries */}
         <VStack
           align="stretch"
-          width="280px"
+          width={`${rightWidth}px`}
           flexShrink={0}
           minHeight={0}
           gap={2}
           p={2}
-          borderLeftWidth="1px"
-          borderColor="border.default"
           bg="bg.canvas"
         >
           <Box flex="1" minHeight={0}>
