@@ -4,7 +4,7 @@ Short standardized checks that the app boots and the SQL Studio app's core path 
 this feature's testing phase and as part of any regression-smoke touching the `database-client`
 surface.
 
-> **Verification policy: LIVE** — S-3..S-7 observe the running app.
+> **Verification policy: LIVE** — S-3..S-8 observe the running app.
 
 ## Cases
 
@@ -15,6 +15,12 @@ surface.
 - [ ] **S-5: Badge gone** — `db-access-mode-badge` is absent from the DOM.
 - [ ] **S-6: Connect + disconnect** — clicking the built-in "Fredo" row connects with NO credential prompt (`SELECT 1` → `1`, ≤10 s); the relocated Disconnect affordance is reachable and tears the session down.
 - [ ] **S-7: Screenshot captured** — `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/3048/e2e/smoke.jpeg")` succeeds (screenshot evidence to user-attachments).
+- [ ] **S-8: Layout surface + split drag (#3049)** — open SQL Studio; `db-client-root` renders the
+  3-region layout with the four split dividers present and hit-testable; drag one split (S1, the
+  left sidebar) a few px and confirm the geometry changed (`webview_find_element` before/after) and
+  the app stays interactive with a clean console; capture a screenshot to
+  `.opencode/tmp/3049/e2e/smoke.jpeg`. **FAIL** = a divider is missing/unhittable or the app breaks
+  on drag.
 
 ## Run log
 
