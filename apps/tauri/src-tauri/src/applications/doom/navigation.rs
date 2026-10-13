@@ -370,7 +370,7 @@ pub fn level_walkability(map: &MapData) -> LevelWalkability {
 
     let mut edges: Vec<&DoomPortal> = portals.iter().collect();
     // Stable sort ⇒ equal-clearance ties keep linedef order (deterministic).
-    edges.sort_by(|a, b| b.clearance.cmp(&a.clearance));
+    edges.sort_by_key(|a| Reverse(a.clearance));
 
     for edge in edges {
         if remaining == 0 {
