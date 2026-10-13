@@ -169,3 +169,17 @@ DOM/screenshot evidence. Any user-visible app-identity "PostgreSQL"; a rendered 
 empty gap; a rendered `db-access-mode-badge`; a write executed on the read-only connection; an
 unreachable Disconnect; a card narrower than its column; or a static-only receipt = **FAIL**.
 UNVERIFIED rows (no reachable lever) are not PASS — the verdict fails closed (G-033).
+
+## Run log
+
+### Round 1 — 2026-10-13 (spec/3048 @ bc741d6) — Verdict: **PASS**
+
+All cases PASS except **F-13** (UNVERIFIED-with-blocker #3049, per the plan).
+Live `telemetry_spans` receipt: `SELECT count(*) AS telemetry_spans FROM telemetry_spans`
+through the product's own SQL Studio session → **1863** (app-pool stat `telemetry_get_stats`
+spanCount 1797). Disclosed deviations: **B-1** the plan's `qa-rw` form fixture is unreachable
+(the form's Test-before-Save needs the keychain-only loopback password), so F-9 / F-6 read-write /
+F-11 ≥2 / F-12 long-name used the documented `FREDO_DBCLIENT_STATE_DIR` seam with a hand-authored
+`builtin:true` read-write connection; **B-2** the managed-`psql` read lever could not authenticate,
+so the `telemetry_spans` receipt came through the product session + app-pool stat.
+No new F- cases promoted (no confirmed exploratory defect).
