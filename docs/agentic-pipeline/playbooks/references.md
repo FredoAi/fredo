@@ -63,6 +63,39 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 ---
 ## Known Failure Modes
+
+### G-368: tests_commit_leaves_the_serving_work_tree_dirty
+- **activation_date:** 2026-10-13
+- **observed:** #3035 — the tester's `tests-commit` persisted the feature suite to `main` but left the SAME suite edits staged in the repo-root working tree (which sat on `spec/<N>`). The dirty index then blocked a branch switch (`git checkout main` / `git checkout -B spec/<N>`) until the tree was force-cleaned (`git checkout -f`), and the SI had to reconcile it twice (rounds 1 and 2).
+- **target_failure:** a machine action that commits content to one ref leaves the serving work tree dirty, so the next branch switch or spec-sync is blocked and a serving-currency step silently fails.
+- **guardrail:** A `tests-commit` (or any write that commits to a ref other than the served one) must leave the serving working tree CLEAN — commit through a temporary index/worktree, not the live one — or the SI must clean the tree (`git checkout -f`) before any branch switch/sync. Treat a dirty serving tree at a phase boundary as a machine defect, not agent error.
+- **home:** `.opencode/scripts/pipeline-state.rs` (tests-commit) + `playbooks/self-improver.md` + references.md
+- **effectiveness:** Pending
+
+### G-367: concurrent_planners_share_one_a2a_file
+- **activation_date:** 2026-10-13
+- **observed:** #3035 planning — the three planners each edited the shared `.opencode/tmp/<issue>/triage.md` concurrently; the QA planner's mid-flight read returned a stale snapshot (its section appeared to move line numbers) though the final file was coherent (one section per planner, one `## Discussion`). Low impact this run; a true interleaved write would corrupt a section.
+- **target_failure:** multiple planning agents write the same A2A file at once, so a concurrent read sees a mixed/stale snapshot and an interleaved write can silently lose a section.
+- **guardrail:** Give each planner its OWN staging draft (e.g. `triage-<agent>.md`) that the SI/transition concatenates at assembly, OR require the SI to re-read the CONVERGED file (never trust a planner's local snapshot) before writing the orchestrator sections. Never assume a single-file concurrent-write is atomic.
+- **home:** `.opencode/scripts/pipeline-state.rs` (triage seed/assembly) + `playbooks/self-improver.md` + references.md
+- **effectiveness:** Pending
+
+### G-366: token_level_gate_green_is_not_a_rendered_surface_proof
+- **activation_date:** 2026-10-13
+- **observed:** #3035 — the #3033 `contrast:gate` models contract TOKEN pairs and was GREEN with an emptied ledger while 4 ACs failed live: the gate never reads the rendered button (whose chrome came from a component recipe, not the sampled tokens). Separately, the selected radio-card border had two homes (the component painted the brand fill; the gate validated `accent.border`), so the gate validated a token the component never painted.
+- **target_failure:** a build-blocking gate whose oracle is a model (token pairs) is accepted as proof of a rendered surface's legibility, so a control that never consumes the gated token stays illegible yet green.
+- **guardrail:** A gate that audits a model must not be accepted as a rendered-surface PASS. Every AC about a rendered control's legibility owns a LIVE rendered-surface leg (computed-style ratio on the running app), and the plan must keep ONE home for each pair the gate validates vs the component paints — a component/gate divergence is a plan defect to reconcile at convergence.
+- **home:** `playbooks/qa-expert.md` + `playbooks/tester.md` + `playbooks/self-improver.md` (audit/convergence) + references.md
+- **effectiveness:** Pending
+
+### G-365: framework_emitted_attribute_or_css_layer_assumed_without_verification
+- **activation_date:** 2026-10-13
+- **observed:** #3035 round 1 — the plan fixed app-wide outline/ghost button contrast via a `globalCss` selector on a framework variant attribute. The installed framework emits NO such attribute on a rendered button (the selector matched nothing), and a `globalCss` rule is emitted into a base cascade layer that LOSES to the component's recipe layer by layer order — so the fix was inert and 4 ACs failed live (~1.08:1 labels) while the token-level gate was green. Round 2 replaced it with the framework's own component-recipe override path. Root-cause class: `defect`.
+- **target_failure:** a plan fixes a rendered surface by asserting a framework-emitted attribute selector or a cascade-layer effect the installed version does not actually produce, so the rule never matches (or always loses) and the defect survives to testing.
+- **guardrail:** At convergence/planning, for every fix whose mechanism depends on a framework-emitted attribute, class, or CSS layer, require the plan to CITE the actually-emitted attribute/layer (from the dependency source or a live DOM/computed-style read), never an assumed selector. A global attribute selector must also name the cascade layer it lands in and prove it beats the component recipe; when it cannot, prescribe the framework's own override path (a component recipe/variant override). Extend the QA Plan with a rendered-surface leg for any AC whose observable is a rendered control's legibility.
+- **home:** `playbooks/software-architect.md` + `playbooks/self-improver.md` (convergence) + `playbooks/developer.md` + references.md
+- **effectiveness:** Pending
+
 ### G-364: single_source_module_declares_a_duplicate_home_for_another_modules_values
 - **activation_date:** 2026-10-13
 - **observed:** #3034 — the theme contract (declared the single source of truth) enumerated `life.*` derivation weights, while the engine actually sources them from `lifeConstants.ts` (a pre-existing pinned home) and never consumes the contract's copy. The duplicate was surfaced by the developer as a reported gap; the module was therefore not authoritative for those entries.
@@ -85,7 +118,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** one sub-task changes a rendered/style mechanism while the gate/tool that MODELS that mechanism (owned by a different sub-task) keeps the superseded model, so the gate no longer reflects the shipped product and its ledger/metrics are stale — a same-round ownership split of one coherent behaviour.
 - **guardrail:** When a change alters a mechanism a gate/tool/test also models, assign the model file to the SAME sub-task, or declare the model update as an explicit consumer edge with a single named owner — never split the mechanism and its model across two concurrently-dispatched owners. At convergence, for every declared mechanism change, name the file(s) that model it and their owner (extends the shared-type producer rule to modeling consumers).
 - **home:** playbooks/software-architect.md (decomposition/ownership) + playbooks/developer.md + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed (2026-10-13, #3035) — the pattern recurred twice in one spec and was handled each time because the modelling consumer was a NAMED, dependency-sequenced sub-task (never a concurrent-owner split): (a) ST-1's token re-derivation left the gate's accent lambdas on the raw brand fill until ST-2 resolved them by contract name; (b) round 2's mechanism replacement in the bridge left the suite pins on the deleted selectors until ST-3 re-based them. Declared consumer edge + sequencing held.
 
 ### G-361: build_blocking_gate_needs_a_defect_ledger_per_audited_dimension
 - **activation_date:** 2026-10-13
@@ -95,6 +128,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** playbooks/software-architect.md + playbooks/qa-expert.md + playbooks/self-improver.md + references.md
 - **effectiveness:** Applied (2026-10-13, #3033) — the gap was caught during implementation and settled with a second ledger (raw-colour), keeping both dimensions green-with-ledger and fail-closed on new violations.
 - **re-validated:** 2026-10-13, #3034 — the sibling contract spec drove the raw-colour dimension to literal zero (emptied ledger, cap 0) while the contrast-matrix dimension kept its capped, ratcheting, issue-keyed ledger (184→147, cap 184); both per-dimension negative proofs stayed fail-closed. The per-dimension day-one disposition held.
+- **re-validated:** 2026-10-13, #3035 — the sibling sweep drove the contrast-matrix ledger to literal ZERO (ledger emptied, `BASELINE_MAX = 0`, zero violations, zero stale entries); the stale-entry negative proof is what makes "green + empty ledger" a genuine drain rather than a skip. The per-dimension ledger contract held end-to-end (184 → 147 → 0).
 
 ### G-360: multi_developer_dev_summary_draft_naming_and_round_stamp
 - **activation_date:** 2026-10-13
@@ -105,6 +139,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **effectiveness:** Pending
 - **re-validated:** 2026-10-13, #3033 — a 3-developer spec: the SI assembled a single `dev-summary.md` from the per-developer drafts (`dev-summary-a/-b/-c.md`) BEFORE the `implementation → testing` transition; the transition posted `## Development Summary (round 1)` correctly (no round-2 mis-stamp). Technique confirmed.
 - **re-validated:** 2026-10-13, #3034 — a 3-developer contract spec (plus two same-round follow-up dispatches to the same developers); per-agent drafts `dev-summary-{a,b,c}.md` were assembled into the single `dev-summary.md` before the transition, which posted `## Development Summary (round 1)` correctly.
+- **miss:** 2026-10-13, #3035 — a 3-developer spec whose developer briefs were written ad hoc: the SI did NOT instruct per-agent summary drafts, so NO `## Development Summary` was posted at either transition; the SI assembled and flushed it only at audit (round-2 stamp). The technique is easy to omit when the brief template is not enforced — bake the per-agent draft instruction into EVERY developer dispatch brief.
 
 ### G-359: silent_timeline_post_failure_loses_the_governing_plan
 - **activation_date:** 2026-10-13
