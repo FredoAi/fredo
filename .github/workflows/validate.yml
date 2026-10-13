@@ -73,6 +73,11 @@ jobs:
       - run: pnpm --filter @fredo/ui typecheck
       - run: pnpm --filter @fredo/ui build
       - run: pnpm --filter @fredo/ui test:run
+      # Contrast gate (ST-6): the matrix + raw-colour enforcement, run as a named
+      # step so a low-contrast change fails `ui-validate` legibly (it also runs
+      # inside `test:run`). Never weakens the path filter or the required check.
+      - name: Contrast gate
+        run: pnpm --filter @fredo/ui contrast:gate
       # Served-entry boot guard (ST-13): build the ACTUAL webview the app loads
       # (`apps/tauri` index.html → src/main.tsx via @fredo/ui source). The library
       # legs above cannot see a served-entry-only break (e.g. a `@/…` import or a
