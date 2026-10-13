@@ -63,6 +63,14 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 ---
 ## Known Failure Modes
+### G-361: build_blocking_gate_needs_a_defect_ledger_per_audited_dimension
+- **activation_date:** 2026-10-13
+- **observed:** #3033 round 1 — the contrast-gate plan declared it "green on `main` day one" with a capped, issue-keyed baseline for the contrast MATRIX dimension only. In implementation the gate's SECOND dimension — the raw-colour audit over feature components — genuinely reported 128 known UI-chrome violations (owned by the sibling sweep #3035), so the plan's "0 unallowlisted on the tip" oracle was unachievable and the gate could not be green without a second ledger; caught and settled during implementation, not at testing.
+- **target_failure:** a newly-added build-blocking gate that audits a whole defect CLASS is planned green day-one with a defect ledger for only ONE of its dimensions (or none), so another dimension's known pre-existing violations fail the gate immediately — forcing the gate to be made advisory (defeating enforcement) or leaving its negative-proof oracle unsatisfiable.
+- **guardrail:** For any gate that fails on a defect CLASS, enumerate EVERY dimension it can fail on and give each an explicit day-one disposition: either zero known violations (prove it) or a committed, capped, ratcheting, read-only, issue-keyed defect ledger that the owning sweep removes. Never assume one dimension's ledger covers another; the negative proof (an injected violation FAILS) must hold independently per dimension.
+- **home:** playbooks/software-architect.md + playbooks/qa-expert.md + playbooks/self-improver.md + references.md
+- **effectiveness:** Applied (2026-10-13, #3033) — the gap was caught during implementation and settled with a second ledger (raw-colour), keeping both dimensions green-with-ledger and fail-closed on new violations.
+
 ### G-360: multi_developer_dev_summary_draft_naming_and_round_stamp
 - **activation_date:** 2026-10-13
 - **observed:** #3029 round 1 — a 2-developer spec: the developers authored uniquely-named `dev-summary-a.md` / `dev-summary-b.md` (applying the G-143 status-draft caution), so the `implementation → testing` transition — which consumes exactly `dev-summary.md` — posted NO `## Development Summary`; the SI then assembled a combined `dev-summary.md` and flushed it manually AFTER entering testing, so the machine stamped it `## Development Summary (round 2)` (the stamp is testing-entries + 1, correct only when the draft flushes at the transition, before the destination `phase.started`).
@@ -70,6 +78,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **guardrail:** The SI's developer brief must have each developer write its summary to a per-agent draft (e.g. `dev-summary-<agent>.md`) AND the SI must assemble the single `dev-summary.md` (concatenating the per-agent drafts, ending `*Authored by Developer*`) BEFORE the `implementation → testing` transition, so the transition — not a late manual flush — posts `## Development Summary (round 1)`. A manual flush is acceptable only when it precedes the destination `phase.started` (flush then transition), else the header is one round high.
 - **home:** playbooks/self-improver.md (developer dispatch) + playbooks/developer.md + references.md
 - **effectiveness:** Pending
+- **re-validated:** 2026-10-13, #3033 — a 3-developer spec: the SI assembled a single `dev-summary.md` from the per-developer drafts (`dev-summary-a/-b/-c.md`) BEFORE the `implementation → testing` transition; the transition posted `## Development Summary (round 1)` correctly (no round-2 mis-stamp). Technique confirmed.
 
 ### G-359: silent_timeline_post_failure_loses_the_governing_plan
 - **activation_date:** 2026-10-13

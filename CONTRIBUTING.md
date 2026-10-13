@@ -37,6 +37,7 @@ Continuous integration (`.github/workflows/validate.yml`) runs the following com
 pnpm --filter @fredo/ui typecheck
 pnpm --filter @fredo/ui build
 pnpm --filter @fredo/ui test:run
+pnpm --filter @fredo/ui contrast:gate
 cargo check --manifest-path apps/tauri/src-tauri/Cargo.toml --locked
 cargo test --manifest-path apps/tauri/src-tauri/Cargo.toml --locked
 cargo clippy --manifest-path apps/tauri/src-tauri/Cargo.toml --locked -- -D warnings
