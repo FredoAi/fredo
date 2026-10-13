@@ -15,3 +15,10 @@ surface.
 - [ ] **S-5: Badge gone** — `db-access-mode-badge` is absent from the DOM.
 - [ ] **S-6: Connect + disconnect** — clicking the built-in "Fredo" row connects with NO credential prompt (`SELECT 1` → `1`, ≤10 s); the relocated Disconnect affordance is reachable and tears the session down.
 - [ ] **S-7: Screenshot captured** — `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/3048/e2e/smoke.jpeg")` succeeds (screenshot evidence to user-attachments).
+
+## Run log
+
+### Round 1 — 2026-10-13 (spec/3048 @ bc741d6) — Verdict: **PASS**
+
+S-1..S-7 all PASS. Console clean after all interactions (no `Error:`/`Uncaught`/
+`Maximum update depth exceeded`). Relocated Disconnect reachable; teardown returns the row to `idle`.
