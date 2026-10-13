@@ -18,6 +18,7 @@ import {
   dbResultPage,
   dbSchemaList,
   normalizeDbError,
+  pgSupervisorStatus,
 } from '../api';
 import type {
   DbConnectArgs,
@@ -51,6 +52,7 @@ const view: DbConnectionView = {
   sslMode: 'prefer',
   accessMode: 'readOnly',
   hasPassword: false,
+  builtin: false,
 };
 
 describe('normalizeDbError', () => {
@@ -165,6 +167,12 @@ describe('command mapping', () => {
     });
     await dbResultPage(args);
     expect(invokeSpy).toHaveBeenCalledWith('db_result_page', { args });
+  });
+
+  it('pgSupervisorStatus reuses pg_supervisor_status with no args (Spec #3029 ST-4)', async () => {
+    invokeSpy.mockResolvedValue({ state: 'ready', port: 12345, pid: 1, dataDir: '' });
+    await expect(pgSupervisorStatus()).resolves.toMatchObject({ port: 12345 });
+    expect(invokeSpy).toHaveBeenCalledWith('pg_supervisor_status', undefined);
   });
 });
 

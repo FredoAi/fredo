@@ -14,6 +14,12 @@ import type { DbConnectionView } from '../lib/types';
  * `user@host:port/db`, SSL mode) and a status dot.
  * R-1.7: delete is confirmed inline before the shell removes the connection.
  *
+ * Spec #3029 ST-4: a `builtin` row renders a `db-connection-builtin-badge`
+ * (non-interactive `span`, theming tokens only) and omits the persisted `port=0`
+ * sentinel from its target line (`user@host/database`). Its inline delete
+ * confirm is labelled "Delete Fredo" with one warning line; the row stays
+ * selectable/editable/deletable exactly like any other.
+ *
  * Token-first: semantic tokens only, no hex/rgba literal.
  */
 
@@ -217,6 +223,27 @@ export const ConnectionsPanel: React.FC<ConnectionsPanelProps> = ({
                     >
                       {view.name}
                     </Text>
+                    {view.builtin ? (
+                      <Box
+                        data-testid="db-connection-builtin-badge"
+                        as="span"
+                        flexShrink={0}
+                        px="6px"
+                        py="1px"
+                        borderRadius="full"
+                        bg="accent.default"
+                        color="accent.contrast"
+                        fontSize="2xs"
+                        fontWeight="700"
+                        textTransform="uppercase"
+                        letterSpacing="wide"
+                        userSelect="none"
+                        aria-label="Built-in connection"
+                        title="Built-in connection — the embedded Fredo database. No setup needed."
+                      >
+                        Built-in
+                      </Box>
+                    ) : null}
                     <Text
                       data-testid="db-connection-ssl"
                       flexShrink={0}
@@ -234,10 +261,22 @@ export const ConnectionsPanel: React.FC<ConnectionsPanelProps> = ({
                     overflow="hidden"
                     textOverflow="ellipsis"
                     whiteSpace="nowrap"
-                    title={`${view.user}@${view.host}:${view.port}/${view.database}`}
+                    title={
+                      view.builtin
+                        ? `${view.user}@${view.host}/${view.database} · port resolved automatically when you connect`
+                        : `${view.user}@${view.host}:${view.port}/${view.database}`
+                    }
                   >
-                    {view.user}@{view.host}:{view.port}/{view.database}
+                    {view.builtin
+                      ? `${view.user}@${view.host}/${view.database}`
+                      : `${view.user}@${view.host}:${view.port}/${view.database}`}
                   </Text>
+
+                  {pendingDeleteId === view.id && view.builtin ? (
+                    <Text fontSize="2xs" color="fg.muted" mt={1}>
+                      {"Fredo won't be recreated. You can add it again as a new connection."}
+                    </Text>
+                  ) : null}
 
                   <HStack gap={1} mt={1} justify="flex-end">
                     <Button
@@ -263,7 +302,7 @@ export const ConnectionsPanel: React.FC<ConnectionsPanelProps> = ({
                           onDelete(view);
                         }}
                       >
-                        Confirm
+                        {view.builtin ? 'Delete Fredo' : 'Confirm'}
                       </Button>
                     ) : (
                       <Button

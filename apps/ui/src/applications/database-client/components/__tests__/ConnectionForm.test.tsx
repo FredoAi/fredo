@@ -11,17 +11,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { ConnectionForm, validateConnectionFields } from '../ConnectionForm';
-import { dbConnectionSave, dbConnectionTest } from '../../lib/api';
+import { dbConnectionSave, dbConnectionTest, pgSupervisorStatus } from '../../lib/api';
 import type { DbConnectionView } from '../../lib/types';
 
 vi.mock('../../lib/api', () => ({
   dbConnectionTest: vi.fn(),
   dbConnectionSave: vi.fn(),
+  pgSupervisorStatus: vi.fn(),
   normalizeDbError: (error: unknown) => (error instanceof Error ? error.message : String(error)),
 }));
 
 const testMock = vi.mocked(dbConnectionTest);
 const saveMock = vi.mocked(dbConnectionSave);
+const statusMock = vi.mocked(pgSupervisorStatus);
 
 const savedView: DbConnectionView = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -34,11 +36,27 @@ const savedView: DbConnectionView = {
   sslMode: 'prefer',
   accessMode: 'readOnly',
   hasPassword: true,
+  builtin: false,
+};
+
+const builtinView: DbConnectionView = {
+  id: 'builtin-fredo',
+  name: 'Fredo',
+  engine: 'postgres',
+  host: '127.0.0.1',
+  port: 0,
+  user: 'postgres',
+  database: 'fredo',
+  sslMode: 'disable',
+  accessMode: 'readOnly',
+  hasPassword: true,
+  builtin: true,
 };
 
 beforeEach(() => {
   testMock.mockReset();
   saveMock.mockReset();
+  statusMock.mockReset();
 });
 
 afterEach(() => cleanup());
@@ -162,5 +180,55 @@ describe('ConnectionForm — edit with an unchanged secret (R-1.6)', () => {
     expect(password).toHaveAttribute('placeholder', 'unchanged');
     expect(screen.getByTestId('db-conn-save')).toBeEnabled();
     expect(testMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('ConnectionForm — built-in edit path (Spec #3029 ST-4)', () => {
+  it('starts blank (never the 0 sentinel), prefills the live port and enables Save', async () => {
+    statusMock.mockResolvedValue({ state: 'ready', port: 12345 });
+    renderWithChakra(<ConnectionForm initial={builtinView} onSaved={vi.fn()} />);
+
+    // The `port=0` sentinel must NOT be rendered — it fails validation and
+    // would leave Save disabled the instant the form opens.
+    const port = screen.getByTestId('db-conn-port') as HTMLInputElement;
+    expect(port.value).not.toBe('0');
+    expect(screen.getByTestId('db-connection-form')).toHaveTextContent('Edit built-in connection');
+    expect(screen.getByText(/Fredo is the built-in connection/)).toBeInTheDocument();
+
+    await waitFor(() => expect(port.value).toBe('12345'));
+    expect(statusMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('db-conn-save')).toBeEnabled();
+  });
+
+  it('leaves the port blank and Save disabled when the supervisor reports no bound port', async () => {
+    statusMock.mockResolvedValue({ state: 'disabled', port: null });
+    renderWithChakra(<ConnectionForm initial={builtinView} onSaved={vi.fn()} />);
+
+    await waitFor(() => expect(statusMock).toHaveBeenCalledTimes(1));
+    expect((screen.getByTestId('db-conn-port') as HTMLInputElement).value).toBe('');
+    expect(screen.getByTestId('db-conn-save')).toBeDisabled();
+  });
+
+  it('leaves the port blank when the status call rejects', async () => {
+    statusMock.mockRejectedValue(new Error('supervisor unavailable'));
+    renderWithChakra(<ConnectionForm initial={builtinView} onSaved={vi.fn()} />);
+
+    await waitFor(() => expect(statusMock).toHaveBeenCalledTimes(1));
+    expect((screen.getByTestId('db-conn-port') as HTMLInputElement).value).toBe('');
+    expect(screen.getByTestId('db-conn-save')).toBeDisabled();
+  });
+
+  it('does not consult the supervisor and keeps the stored port for an ordinary edit', () => {
+    renderWithChakra(<ConnectionForm initial={savedView} onSaved={vi.fn()} />);
+    expect((screen.getByTestId('db-conn-port') as HTMLInputElement).value).toBe('5432');
+    expect(screen.getByTestId('db-connection-form')).toHaveTextContent('Edit connection');
+    expect(screen.queryByText(/Fredo is the built-in connection/)).not.toBeInTheDocument();
+    expect(statusMock).not.toHaveBeenCalled();
+  });
+
+  it('does not consult the supervisor for a new connection', () => {
+    renderWithChakra(<ConnectionForm onSaved={vi.fn()} />);
+    expect((screen.getByTestId('db-conn-port') as HTMLInputElement).value).toBe('5432');
+    expect(statusMock).not.toHaveBeenCalled();
   });
 });
