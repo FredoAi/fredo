@@ -13,6 +13,7 @@
 //! Tauri-managed [`DoomEngineState`] via `spawn_blocking`, and teardown is
 //! take-and-drop — so no orphan is constructible (G-263).
 
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -23,7 +24,11 @@ use crate::infrastructure::companion::PerformanceModeState;
 use crate::infrastructure::storage::application_store::ApplicationStore;
 use crate::infrastructure::storage::AppStore;
 
-use super::agent::{run_continuous_loop, AutoplayRun, DoomAutoplayConfig};
+use super::agent::{run_continuous_loop_with_writer, AutoplayControl, AutoplayRun, DoomAutoplayConfig};
+use super::dataset::{
+    self, DoomDatasetConfig, DoomDatasetError, DoomDatasetExportResult, DoomDatasetFormat,
+    DoomDatasetStatus, DoomDatasetWriter, DOOM_DATASET_ENABLED_ENV, DOOM_DATASET_ENABLED_KEY,
+};
 use super::autoplay::{
     DoomAutoplayErrorCode, DoomAutoplayPhase, DoomAutoplayResult, DoomAutoplayStatus,
 };
@@ -90,6 +95,22 @@ impl DoomCommandError {
     /// The typed error for a control call with no live session.
     pub fn not_running() -> Self {
         Self::new(DoomErrorCode::RequestFailed, "the Doom engine is not running")
+    }
+
+    /// Map a typed dataset error onto the command error surface (Spec #3032
+    /// ST-3): an empty dataset is a clear `requestFailed` with a descriptive
+    /// message and no partial file; any other dataset failure carries its detail.
+    pub fn from_dataset(error: DoomDatasetError) -> Self {
+        match error {
+            DoomDatasetError::Empty => Self::new(
+                DoomErrorCode::RequestFailed,
+                "the dataset is empty — there is nothing to export",
+            ),
+            DoomDatasetError::Io(detail) => Self::new(
+                DoomErrorCode::RequestFailed,
+                format!("dataset export failed: {detail}"),
+            ),
+        }
     }
 }
 
@@ -593,6 +614,17 @@ pub async fn start_doom_autoplay(
         return not_ready("no Doom decision source is installed.");
     };
 
+    // Opt-in capture gate (Spec #3032 ST-3, R-5): resolve the persisted KV (the
+    // `FREDO_DOOM_DATASET_ENABLED` env override wins) and, when ON, build the ONE
+    // shared dataset writer and hand it to the loop (ST-2), so the assembler
+    // appends through the SAME instance the export IPC reads — a single
+    // `export_in_progress` guard defers eviction for both (AC3). OFF ⇒ no writer
+    // is built and no dataset file is ever created.
+    let dataset_enabled =
+        dataset_enabled_from_store(app.state::<Arc<AppStore>>().inner().as_ref());
+    let dataset_writer =
+        dataset_enabled.then(|| app.state::<Arc<DoomDatasetState>>().writer());
+
     // Resolve the campaign to play (Spec #2972 R-1/R-5): an explicit fresh start
     // → the campaign initial; otherwise a valid loaded save, else the initial.
     // A `completed:true` save is preserved and reported terminal at start
@@ -632,13 +664,16 @@ pub async fn start_doom_autoplay(
         let source_ref: &dyn crate::infrastructure::companion::doom_decision::DoomDecisionSource =
             source.as_ref();
         let clock = TokioTickClock::new(config.tick_period);
-        run_continuous_loop(
+        run_continuous_loop_with_writer(
             &engine,
             source_ref,
             &config,
             &clock,
             AutoplayRun { campaign, progress },
-            &stop,
+            AutoplayControl {
+                stop: stop.as_ref(),
+                dataset: dataset_writer,
+            },
             move |observed| {
                 let state = observe_app.state::<DoomAutoplayState>();
                 let published = state.apply(observed);
@@ -716,6 +751,213 @@ pub async fn stop_doom_autoplay(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub fn get_doom_autoplay_status(app: AppHandle) -> DoomAutoplayStatus {
     app.state::<DoomAutoplayState>().status()
+}
+
+// ── Fine-tuning dataset opt-in + export (Spec #3032 ST-3) ─────────────────────
+//
+// The capture gate's SINGLE source of truth is the Rust-readable AppStore KV
+// [`DOOM_DATASET_ENABLED_KEY`] (`doom_dataset_enabled`), written by
+// `set_doom_dataset_enabled` and read by the start path; the
+// [`DOOM_DATASET_ENABLED_ENV`] env seam overrides it for tests (G-275, inert when
+// unset). A frontend `usePersistedSetting` localStorage value is NOT readable by
+// the Rust loop, so the opt-in is persisted here (default OFF).
+//
+// The ONE shared [`DoomDatasetWriter`] lives in the Tauri-managed
+// [`DoomDatasetState`] (resolved from the app-data dir via
+// `resolve_app_data_dir` + `resolve_dataset_dir`), so the loop assembler (ST-2)
+// and the export IPC share a single `export_in_progress` guard — an in-flight
+// export DEFERS the writer's retention eviction (AC3). Default OFF builds no
+// writer and creates no dataset file (R-5). The export is LOCAL-ONLY: `std::fs`
+// writes the target file and performs NO network I/O (R-4, no egress).
+
+/// The Tauri-managed dataset state: the resolved dataset directory plus the ONE
+/// shared writer, built lazily (never before capture is enabled or an export is
+/// requested — so a default-off install creates no dataset file; R-5).
+pub struct DoomDatasetState {
+    inner: Mutex<DoomDatasetInner>,
+}
+
+struct DoomDatasetInner {
+    /// The resolved dataset directory (`FREDO_DOOM_DATASET_DIR` override honoured
+    /// once at construction).
+    dir: PathBuf,
+    /// The shared writer, built on first use and cheap to clone (an `Arc`
+    /// interior). `None` until capture is enabled or an export is requested.
+    writer: Option<DoomDatasetWriter>,
+}
+
+impl DoomDatasetState {
+    /// Build the state from the app-data dir, resolving the dataset directory
+    /// once via ST-1's [`resolve_dataset_dir`](super::dataset::resolve_dataset_dir)
+    /// (the `FREDO_DOOM_DATASET_DIR` test override wins). Builds NO writer and
+    /// creates no directory/file (R-5).
+    pub fn new(app_data_dir: &Path) -> Self {
+        Self {
+            inner: Mutex::new(DoomDatasetInner {
+                dir: dataset::resolve_dataset_dir(app_data_dir),
+                writer: None,
+            }),
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, DoomDatasetInner> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The resolved dataset directory.
+    pub fn dir(&self) -> PathBuf {
+        self.lock().dir.clone()
+    }
+
+    /// The ONE shared writer, built on first use. `DoomDatasetWriter::new`
+    /// performs no directory/file I/O (a read-only scan at most), so building it
+    /// never violates R-5. Sharing the instance with the loop (ST-2) and the
+    /// export IPC gives ONE `export_in_progress` guard for both (AC3).
+    pub fn writer(&self) -> DoomDatasetWriter {
+        let mut inner = self.lock();
+        if let Some(writer) = &inner.writer {
+            return writer.clone();
+        }
+        let writer = DoomDatasetWriter::new(DoomDatasetConfig::from_env(inner.dir.clone()));
+        inner.writer = Some(writer.clone());
+        writer
+    }
+
+    /// The status snapshot for the given opt-in `enabled` value. Reads the
+    /// on-disk counts through the shared writer when it exists, else a transient
+    /// read-only writer — a disabled gate never caches a writer.
+    pub fn status(&self, enabled: bool) -> DoomDatasetStatus {
+        let (dir, existing) = {
+            let inner = self.lock();
+            (inner.dir.clone(), inner.writer.clone())
+        };
+        match existing {
+            Some(writer) => writer.status(enabled),
+            None => DoomDatasetWriter::new(DoomDatasetConfig::from_env(dir)).status(enabled),
+        }
+    }
+}
+
+/// Resolve the capture gate: a non-blank [`DOOM_DATASET_ENABLED_ENV`] override
+/// wins (G-275 test seam); otherwise the persisted KV; default OFF. Pure.
+pub fn dataset_enabled_from(kv_value: Option<&str>, env_value: Option<&str>) -> bool {
+    match env_value.filter(|value| !value.trim().is_empty()) {
+        Some(value) => dataset::flag_from_value(Some(value)),
+        None => dataset::flag_from_value(kv_value),
+    }
+}
+
+/// Read the capture gate from the persisted store KV + the process env override.
+pub fn dataset_enabled_from_store(store: &AppStore) -> bool {
+    let kv = store
+        .cached_get(DOOM_DATASET_ENABLED_KEY)
+        .ok()
+        .flatten();
+    let env = std::env::var(DOOM_DATASET_ENABLED_ENV).ok();
+    dataset_enabled_from(kv.as_deref(), env.as_deref())
+}
+
+/// Resolve an export target path: a relative `out` is joined to the dataset dir
+/// (never the process CWD); an absolute `out` is honoured verbatim; `None` uses
+/// ST-1's default `<dir>/exports/…` path. Pure.
+pub fn resolve_export_target(writer: &DoomDatasetWriter, out: Option<&str>) -> Option<PathBuf> {
+    let out = out?;
+    let path = Path::new(out);
+    if path.is_absolute() {
+        Some(path.to_path_buf())
+    } else {
+        Some(writer.dir().join(path))
+    }
+}
+
+/// Drive ST-1's exporter for the command surface (IPC-free so it is unit
+/// testable): resolve a relative `out`, map the typed dataset error onto
+/// [`DoomCommandError`]. Writes ONLY the target file locally (no egress).
+pub fn export_dataset(
+    writer: &DoomDatasetWriter,
+    format: DoomDatasetFormat,
+    out: Option<&str>,
+) -> Result<DoomDatasetExportResult, DoomCommandError> {
+    let target = resolve_export_target(writer, out);
+    writer
+        .export(format, target.as_deref())
+        .map_err(DoomCommandError::from_dataset)
+}
+
+/// Read-only dataset status (the opt-in gate + the on-disk record/byte counts).
+/// The on-disk scan runs off the main thread; it never creates a file.
+#[tauri::command]
+pub async fn get_doom_dataset_status(app: AppHandle) -> DoomDatasetStatus {
+    let enabled = dataset_enabled_from_store(app.state::<Arc<AppStore>>().inner().as_ref());
+    let state = app.state::<Arc<DoomDatasetState>>().inner().clone();
+    let fallback_dir = state.dir().to_string_lossy().into_owned();
+    tauri::async_runtime::spawn_blocking(move || state.status(enabled))
+        .await
+        .unwrap_or(DoomDatasetStatus {
+            enabled,
+            dir: fallback_dir,
+            records: 0,
+            bytes: 0,
+        })
+}
+
+/// Persist the opt-in capture gate ([`DOOM_DATASET_ENABLED_KEY`]) and return the
+/// status. Enabling builds the shared writer; disabling NEVER deletes existing
+/// records (retention is the only deletion path).
+#[tauri::command]
+pub async fn set_doom_dataset_enabled(app: AppHandle, enabled: bool) -> DoomDatasetStatus {
+    let store = app.state::<Arc<AppStore>>().inner().clone();
+    let state = app.state::<Arc<DoomDatasetState>>().inner().clone();
+    let fallback_dir = state.dir().to_string_lossy().into_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        let value = if enabled { "true" } else { "false" };
+        if let Err(error) = store.cached_set(DOOM_DATASET_ENABLED_KEY, value) {
+            tracing::warn!(
+                target: "fredo::doom",
+                %error,
+                "doom dataset opt-in persistence failed"
+            );
+        }
+        if enabled {
+            // R-5: the writer is built ONLY once capture is enabled; the disabled
+            // path leaves it unbuilt, so no dataset file is ever created.
+            state.writer();
+        }
+        state.status(enabled)
+    })
+    .await
+    .unwrap_or(DoomDatasetStatus {
+        enabled,
+        dir: fallback_dir,
+        records: 0,
+        bytes: 0,
+    })
+}
+
+/// Export the dataset locally in `format` (default `raw`) to `out` (default
+/// ST-1's `<dir>/exports/…` path). LOCAL-ONLY: no network I/O; the source files
+/// are never mutated; an empty dataset is a typed error with no partial file
+/// (R-4).
+#[tauri::command]
+pub async fn export_doom_dataset(
+    app: AppHandle,
+    format: Option<DoomDatasetFormat>,
+    out: Option<String>,
+) -> Result<DoomDatasetExportResult, DoomCommandError> {
+    let state = app.state::<Arc<DoomDatasetState>>().inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let writer = state.writer();
+        export_dataset(&writer, format.unwrap_or_default(), out.as_deref())
+    })
+    .await
+    .unwrap_or_else(|join_error| {
+        Err(DoomCommandError::new(
+            DoomErrorCode::RequestFailed,
+            format!("the dataset export task failed: {join_error}"),
+        ))
+    })
 }
 
 // ── Teardown entry points (window close + app exit) ──────────────────────────
@@ -1043,6 +1285,7 @@ pub fn get_doom_mode_status(app: AppHandle) -> DoomModeStatus {
 
 #[cfg(test)]
 mod tests {
+    use super::dataset::{DoomDatasetRecord, DOOM_DATASET_FILE, DOOM_DATASET_SUBDIR};
     use super::*;
     use crate::infrastructure::storage::engine::EngineHandle;
 
@@ -1340,5 +1583,166 @@ mod tests {
         assert_eq!(status.phase, DoomAutoplayPhase::Stopping);
         assert!(status.running);
         assert!(stop.load(Ordering::Relaxed), "the cooperative flag is set");
+    }
+
+    // ── Dataset opt-in + export (Spec #3032 ST-3) ────────────────────────────
+
+    /// One valid reconciled record line for the export tests.
+    fn sample_record_line() -> String {
+        serde_json::json!({
+            "v": 1,
+            "runId": "run-1",
+            "episodeId": "run-1:e1-m1",
+            "decisionId": "run-1:1",
+            "ts": "2026-10-12T00:00:00Z",
+            "tic": 1,
+            "stepIndex": 0,
+            "source": "scripted",
+            "level": { "episode": 1, "map": 1, "skill": 3, "wadId": "DOOM1.WAD" },
+            "model": { "schemaVersion": "doom_plan" },
+            "observation": { "tic": 1 },
+            "decision": { "plan": [ { "op": "move", "bearing": 90, "distance": 256 } ] },
+            "latencyMs": 5,
+            "execution": {
+                "adoptedTic": 1,
+                "exhaustedTic": 2,
+                "plannedSteps": 1,
+                "executedSteps": 1,
+                "steps": [ {
+                    "index": 0,
+                    "controller": "plan",
+                    "actions": [ { "type": "forward", "amount": 1 } ],
+                    "tics": 1
+                } ],
+                "replans": []
+            },
+            "nextState": { "tic": 2 },
+            "reward": {
+                "dKills": 1, "dItems": 0, "dSecrets": 0, "dHealth": 0,
+                "dDistanceToExit": null, "moved": true
+            },
+            "terminal": null
+        })
+        .to_string()
+    }
+
+    fn seeded_writer() -> (tempfile::TempDir, DoomDatasetWriter) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let writer = DoomDatasetWriter::new(DoomDatasetConfig::new(dir.path()));
+        let record = DoomDatasetRecord::from_json_line(&sample_record_line()).expect("record");
+        writer.append(&record).expect("append");
+        (dir, writer)
+    }
+
+    #[test]
+    fn the_dataset_gate_defaults_off_and_the_env_override_flips_it() {
+        // Default OFF: no persisted KV row and no env override.
+        assert!(!dataset_enabled_from(None, None));
+        // The persisted KV (the SINGLE source of truth) drives it.
+        assert!(dataset_enabled_from(Some("true"), None));
+        assert!(dataset_enabled_from(Some("1"), None));
+        assert!(!dataset_enabled_from(Some("false"), None));
+        assert!(!dataset_enabled_from(Some("garbage"), None));
+        // The env override wins in BOTH directions (G-275); a blank env is inert
+        // (it falls through to the persisted KV).
+        assert!(dataset_enabled_from(Some("false"), Some("1")));
+        assert!(!dataset_enabled_from(Some("true"), Some("0")));
+        assert!(!dataset_enabled_from(None, Some("")));
+        assert!(dataset_enabled_from(Some("true"), Some("   ")));
+    }
+
+    #[test]
+    fn the_dataset_enabled_key_is_the_rust_readable_source_of_truth() {
+        assert_eq!(DOOM_DATASET_ENABLED_KEY, "doom_dataset_enabled");
+        assert_eq!(DOOM_DATASET_ENABLED_ENV, "FREDO_DOOM_DATASET_ENABLED");
+    }
+
+    #[test]
+    fn a_disabled_gate_builds_no_writer_and_creates_no_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = DoomDatasetState::new(dir.path());
+        assert!(
+            !dir.path().join(DOOM_DATASET_SUBDIR).join(DOOM_DATASET_FILE).exists(),
+            "constructing the state for a disabled gate creates no dataset file"
+        );
+        // A status read (disabled) reports OFF and zero records.
+        let status = state.status(false);
+        assert!(!status.enabled);
+        assert_eq!(status.records, 0);
+        assert_eq!(status.bytes, 0);
+    }
+
+    #[test]
+    fn export_writes_the_target_file_and_returns_the_typed_result() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let writer = DoomDatasetWriter::new(DoomDatasetConfig::new(dir.path()));
+        let record = DoomDatasetRecord::from_json_line(&sample_record_line()).expect("record");
+        writer.append(&record).expect("append");
+        // The active file is ST-1's canonical re-serialization of the record.
+        let expected = record.json_line().expect("re-serialize");
+        // A relative `out` resolves against the DATASET DIR (never the CWD).
+        let result =
+            export_dataset(&writer, DoomDatasetFormat::Raw, Some("out.jsonl")).expect("export");
+        assert_eq!(result.format, DoomDatasetFormat::Raw);
+        assert_eq!(Path::new(&result.path), dir.path().join("out.jsonl"));
+        assert_eq!(result.records, 1);
+        assert!(result.bytes > 0);
+        let written = std::fs::read_to_string(&result.path).expect("read export");
+        assert_eq!(written.trim_end(), expected);
+    }
+
+    #[test]
+    fn export_of_an_empty_dataset_is_a_typed_error_with_no_partial_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let writer = DoomDatasetWriter::new(DoomDatasetConfig::new(dir.path()));
+        let target = dir.path().join("empty.jsonl");
+        let error = export_dataset(
+            &writer,
+            DoomDatasetFormat::Raw,
+            Some(target.to_str().expect("utf8")),
+        )
+        .expect_err("an empty dataset exports to a typed error");
+        assert_eq!(error.code, DoomErrorCode::RequestFailed);
+        assert!(error.message.contains("empty"));
+        // The empty path never writes a partial file.
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn a_relative_out_never_escapes_to_the_process_cwd() {
+        let (dir, writer) = seeded_writer();
+        assert_eq!(
+            resolve_export_target(&writer, Some("nested/a.jsonl")),
+            Some(dir.path().join("nested/a.jsonl"))
+        );
+        let absolute = dir.path().join("abs.jsonl");
+        assert_eq!(
+            resolve_export_target(&writer, Some(absolute.to_str().expect("utf8"))),
+            Some(absolute)
+        );
+        // No `out` falls through to ST-1's default `<dir>/exports/…` path.
+        assert_eq!(resolve_export_target(&writer, None), None);
+    }
+
+    #[test]
+    fn export_is_local_only_and_never_mutates_the_source() {
+        // NFR-3 (no egress) at the unit level: the export path is `std::fs` only
+        // — it writes the target synchronously and returns; no socket or child
+        // process is constructed. (The live absence-of-socket proof is QA's
+        // netstat / process-inventory leg.) Here we pin that the export writes
+        // ONLY the local target and leaves the source byte-identical.
+        let (dir, writer) = seeded_writer();
+        let source = dir.path().join(DOOM_DATASET_FILE);
+        let before = std::fs::read(&source).expect("read source");
+        let result =
+            export_dataset(&writer, DoomDatasetFormat::Raw, Some("copy.jsonl")).expect("export");
+        let after = std::fs::read(&source).expect("read source");
+        assert_eq!(before, after, "the export never mutates a source file");
+        assert!(Path::new(&result.path).starts_with(dir.path()));
+        assert_eq!(
+            std::fs::read(&result.path).expect("read export"),
+            before,
+            "raw export is the source JSONL verbatim"
+        );
     }
 }

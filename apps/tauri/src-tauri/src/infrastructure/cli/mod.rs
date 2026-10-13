@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand};
 use std::io::IsTerminal;
 
 use crate::infrastructure::ipc::{send_cli_command, CliCommand, CliResponse};
+use commands::doom_export::{DoomArgs, DoomCommand};
 use commands::emit::EmitArgs;
 use commands::ingest::IngestArgs;
 use commands::open_app::OpenAppArgs;
@@ -34,6 +35,8 @@ pub enum Commands {
     OpenApp(OpenAppArgs),
     /// Open the Terminal window, optionally starting a CLI in a folder
     OpenTerminal(OpenTerminalArgs),
+    /// Doom Mode maintenance commands (local only; no egress)
+    Doom(DoomArgs),
     /// Run the headless ingest daemon (embedded PostgreSQL + OTLP receivers)
     ///
     /// Owns the embedded PostgreSQL cluster (shared data dir + shared
@@ -147,6 +150,12 @@ fn build_ipc_command(cmd: Commands) -> CliCommand {
         Commands::OpenTerminal(args) => CliCommand::OpenTerminal {
             cli: args.cli,
             work_dir: args.dir,
+        },
+        Commands::Doom(args) => match args.command {
+            DoomCommand::ExportDataset(export) => CliCommand::DoomExportDataset {
+                format: Some(export.format.as_str().to_string()),
+                out: export.out,
+            },
         },
         Commands::Setup(_) => {
             // Setup commands are handled locally in run_async, not via IPC.
@@ -408,5 +417,99 @@ mod tests {
         assert_eq!(exit_code_for_response(Some(&failed)), 1);
 
         assert_eq!(exit_code_for_response(None), 2);
+    }
+
+    /// ST-5 (R-4): `fredo doom export-dataset --format <fmt> --out <path>` builds
+    /// the `export_doom_dataset` IPC payload — the format token and the out path
+    /// map through unchanged, for every value in the declared value set.
+    #[test]
+    fn build_ipc_command_doom_export_dataset_maps_format_and_out() {
+        for token in ["raw", "sft", "dpo"] {
+            let cli = Cli::try_parse_from([
+                "fredo",
+                "doom",
+                "export-dataset",
+                "--format",
+                token,
+                "--out",
+                "copy.jsonl",
+            ])
+            .unwrap_or_else(|e| panic!("--format {token} must parse: {e}"));
+            match build_ipc_command(cli.command) {
+                CliCommand::DoomExportDataset { format, out } => {
+                    assert_eq!(format.as_deref(), Some(token), "--format {token} payload");
+                    assert_eq!(out.as_deref(), Some("copy.jsonl"), "--out payload");
+                }
+                other => panic!("expected DoomExportDataset, got {other:?}"),
+            }
+        }
+    }
+
+    /// ST-5 (R-4): `--format` defaults to `raw` and `--out` is optional (the
+    /// server then writes to `<dataset_dir>/exports/`).
+    #[test]
+    fn doom_export_dataset_defaults_to_raw_with_no_out() {
+        let cli =
+            Cli::try_parse_from(["fredo", "doom", "export-dataset"]).expect("default form parses");
+        match build_ipc_command(cli.command) {
+            CliCommand::DoomExportDataset { format, out } => {
+                assert_eq!(format.as_deref(), Some("raw"));
+                assert!(out.is_none());
+            }
+            other => panic!("expected DoomExportDataset, got {other:?}"),
+        }
+    }
+
+    /// ST-5 (G-254): an unknown `--format` is rejected by clap (exit 1), never
+    /// forwarded to the app and never mistaken for app-not-running (exit 2).
+    #[test]
+    fn doom_export_dataset_rejects_an_invalid_format() {
+        let err = Cli::try_parse_from(["fredo", "doom", "export-dataset", "--format", "bogus"])
+            .expect_err("an invalid --format is a parse error");
+        assert_eq!(exit_code_for_parse_error(err.kind()), 1);
+    }
+
+    /// ST-5 (G-254): the declared help names `doom` / `export-dataset`, both
+    /// flags, the `raw` default, and the FULL format value set — the shipped help
+    /// is part of the shipped surface.
+    #[test]
+    fn cli_help_lists_doom_export_dataset_and_its_value_set() {
+        use clap::CommandFactory;
+
+        let mut root = Cli::command();
+        let help = root.render_long_help().to_string();
+        assert!(help.contains("doom"), "`fredo --help` must list doom:\n{help}");
+
+        let doom = root
+            .find_subcommand_mut("doom")
+            .expect("doom is a registered subcommand");
+        let doom_help = doom.render_long_help().to_string();
+        assert!(
+            doom_help.contains("export-dataset"),
+            "`fredo doom --help` must list export-dataset:\n{doom_help}"
+        );
+
+        let export = doom
+            .find_subcommand_mut("export-dataset")
+            .expect("export-dataset is a registered subcommand");
+        let export_help = export.render_long_help().to_string();
+        assert!(
+            export_help.contains("--format"),
+            "`fredo doom export-dataset --help` must name --format:\n{export_help}"
+        );
+        assert!(
+            export_help.contains("--out"),
+            "`fredo doom export-dataset --help` must name --out:\n{export_help}"
+        );
+        for value in ["raw", "sft", "dpo"] {
+            assert!(
+                export_help.contains(value),
+                "`fredo doom export-dataset --help` must advertise {value}:\n{export_help}"
+            );
+        }
+        assert!(
+            export_help.contains("[default: raw]"),
+            "`fredo doom export-dataset --help` must name the raw default:\n{export_help}"
+        );
     }
 }

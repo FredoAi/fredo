@@ -18,6 +18,11 @@
 //!   result wire models, bounded budget constants).
 //! * [`decision`] — the deterministic scripted decision lever plus the
 //!   `FREDO_DOOM_AGENT_*` env seam.
+//! * [`dataset`] — the fine-tuning dataset core (Spec #3032 ST-1): the
+//!   per-decision record model, the bounded append-only JSONL writer
+//!   (`<app_data_dir>/doom-dataset/doom-dataset.jsonl`), the rotate/evict
+//!   retention policy (with the export-in-progress eviction deferral), and the
+//!   `raw|sft|dpo` local exporters (no egress).
 //! * [`local_route`] — the deterministic, model-independent local route source
 //!   (Spec #3039 ST-7): a [`DoomDecisionSource`](crate::infrastructure::companion::doom_decision::DoomDecisionSource)
 //!   that plans a route to the nearest non-secret exit from the loaded `MapData`.
@@ -58,6 +63,11 @@ pub mod autoplay;
 // deterministic `FixedTickClock`.
 pub mod clock;
 pub mod commands;
+// Fine-tuning dataset core (Spec #3032 ST-1) — the reconciled per-decision
+// [`dataset::DoomDatasetRecord`] JSONL model, the bounded append-only writer +
+// rotate/evict retention (with the export-in-progress eviction deferral), and the
+// `raw|sft|dpo` local exporters.
+pub mod dataset;
 pub mod decision;
 // Native in-process engine adapter (Spec #3023, ST-1) — the single source of the
 // observation/control surface.
