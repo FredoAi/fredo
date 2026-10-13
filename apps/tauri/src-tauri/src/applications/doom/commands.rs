@@ -1286,7 +1286,15 @@ mod tests {
         let status = running_status(&resumed);
         assert_eq!(status.map, Some(save::DOOM_COMPLETION_TARGET_MAP));
         assert_eq!(status.episode, Some(save::DOOM_CAMPAIGN_FIRST_EPISODE));
-        assert_ne!(status.map, Some(DOOM_DEFAULT_MAP));
+
+        // The resume path uses the PERSISTED map, never the fresh default — a save
+        // at a different map resumes there.
+        let other = save::DoomCampaign {
+            map: save::DOOM_COMPLETION_TARGET_MAP + 1,
+            ..save::completion_target_campaign()
+        };
+        let resumed_other = running_status(&save::resolve_start_campaign(Some(false), Some(other)));
+        assert_eq!(resumed_other.map, Some(save::DOOM_COMPLETION_TARGET_MAP + 1));
 
         let fresh = running_status(&save::resolve_start_campaign(
             Some(true),

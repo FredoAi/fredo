@@ -57,7 +57,9 @@ use serde_json::{json, Value};
 
 use crate::infrastructure::companion::doom_decision::{DoomPlan, DoomPlanStep};
 
-use super::actions::{DOOM_ACTION_FORWARD, DOOM_ACTION_SHOOT, DOOM_ACTION_TURN_TO, DOOM_ACTION_USE};
+use super::actions::{
+    DOOM_ACTION_FORWARD, DOOM_ACTION_RUN, DOOM_ACTION_SHOOT, DOOM_ACTION_TURN_TO, DOOM_ACTION_USE,
+};
 
 // ── Pinned re-plan thresholds (Architect-owned, G-255) ───────────────────────
 
@@ -82,6 +84,13 @@ pub const DOOM_PLAN_FORWARD_AMOUNT: i64 = 1;
 
 /// Per-tick bounded `shoot` hold issued by a `Shoot` step, in tics.
 pub const DOOM_PLAN_SHOOT_AMOUNT: i64 = 1;
+
+/// The half-angle (degrees) of the door-match FOV cone (Spec #3039 ST-3): the
+/// door an `OpenDoor` step / the local follower is waiting on must lie within
+/// this many degrees of the faced bearing — the executor issues `turn-to
+/// bearing`, so the target door sits at relative ≈ 0. Of the doors inside the
+/// cone the NEAREST (smallest distance) is the target.
+pub const DOOM_DOOR_FACING_TOLERANCE_DEGREES: i64 = 12;
 
 /// The `FREDO_DOOR_WAIT_MAX_TICKS` test-only override of
 /// [`DOOM_DOOR_WAIT_MAX_TICKS`] (G-275/G-300). Inert when unset, blank, or
@@ -230,10 +239,12 @@ fn angular_distance(a: i64, b: i64) -> i64 {
 
 /// The state of the door an `OpenDoor` step is waiting on, from an observation.
 ///
-/// Prefers the additive `forward.doorBearings` entry whose relative bearing is
-/// closest to the faced `bearing` (the executor issues `turn-to bearing`, so the
-/// target sits at relative ≈ 0), falling back to the `doors[]` `front` entry.
-/// `None` when no door is visible. Pure.
+/// Prefers the additive `forward.doorBearings` entry inside the FOV cone
+/// ([`DOOM_DOOR_FACING_TOLERANCE_DEGREES`]) whose relative bearing is closest to
+/// the faced `bearing` — and, among those in the cone, the NEAREST by `distance`
+/// (Spec #3039 ST-3: the executor issues `turn-to bearing`, so the target door
+/// sits at relative ≈ 0). Falling back to the `doors[]` `front` entry. `None`
+/// when no door is visible. Pure.
 pub fn target_door_state(observation: &Value, bearing: i64) -> Option<String> {
     let angle = observation
         .pointer("/player/angle")
@@ -245,21 +256,32 @@ pub fn target_door_state(observation: &Value, bearing: i64) -> Option<String> {
         .pointer("/forward/doorBearings")
         .and_then(Value::as_array)
     {
-        let mut best: Option<(i64, String)> = None;
+        // In-cone doors, matched by the NEAREST distance (tie-broken by the
+        // smallest angular delta) — the door the player is actually walking into.
+        let mut best: Option<(i64, i64, String)> = None;
         for door in doors {
             let Some(state) = door.get("state").and_then(Value::as_str) else {
                 continue;
             };
             let door_bearing = door.get("bearing").and_then(Value::as_i64).unwrap_or(0);
             let delta = angular_distance(door_bearing, expected);
+            if delta > DOOM_DOOR_FACING_TOLERANCE_DEGREES {
+                continue;
+            }
+            let distance = door
+                .get("distance")
+                .and_then(Value::as_i64)
+                .unwrap_or(i64::MAX);
             if best
                 .as_ref()
-                .is_none_or(|(best_delta, _)| delta < *best_delta)
+                .is_none_or(|(best_distance, best_delta, _)| {
+                    (distance, delta) < (*best_distance, *best_delta)
+                })
             {
-                best = Some((delta, state.to_string()));
+                best = Some((distance, delta, state.to_string()));
             }
         }
-        if let Some((_, state)) = best {
+        if let Some((_, _, state)) = best {
             return Some(state);
         }
     }
@@ -296,6 +318,14 @@ fn turn_to_action(bearing: i64) -> Value {
 /// One immediate `use` press.
 fn use_action() -> Value {
     json!({ "type": DOOM_ACTION_USE })
+}
+
+/// One bounded `run` modifier hold. The route follower travels at a RUN: the run
+/// modifier doubles the player's speed, so it crosses open ground quickly and
+/// spends less time exposed to enemy fire (a route-follower that WALKED slowly
+/// through E1M1's courtyard died before the exit).
+fn run_action() -> Value {
+    json!({ "type": DOOM_ACTION_RUN, "amount": DOOM_PLAN_FORWARD_AMOUNT })
 }
 
 // ── Executor ─────────────────────────────────────────────────────────────────
@@ -449,6 +479,7 @@ impl ActiveStep {
                 StepOutcome::Continue(PlanAction::Native(vec![
                     turn_to_action(*bearing),
                     forward_action(),
+                    run_action(),
                 ]))
             }
             ActiveStep::OpenDoor { bearing, ticks, .. } => {
@@ -1255,6 +1286,36 @@ mod tests {
         let fallback = json!({ "doors": [{ "direction": "front", "state": "closing" }] });
         assert_eq!(target_door_state(&fallback, 0).as_deref(), Some("closing"));
         assert_eq!(target_door_state(&json!({}), 0), None);
+    }
+
+    #[test]
+    fn target_door_state_matches_by_fov_cone_and_nearest_distance() {
+        assert_eq!(DOOM_DOOR_FACING_TOLERANCE_DEGREES, 12);
+        // Two doors inside the cone: the NEAREST distance wins (regardless of
+        // iteration order).
+        let inside = json!({
+            "player": { "angle": 0 },
+            "forward": { "doorBearings": [
+                { "bearing": 8, "distance": 80, "state": "closing" },
+                { "bearing": -5, "distance": 30, "state": "waiting" },
+            ] },
+        });
+        assert_eq!(target_door_state(&inside, 0).as_deref(), Some("waiting"));
+        // A door OUTSIDE the FOV cone is ignored even when much nearer.
+        let outside = json!({
+            "player": { "angle": 0 },
+            "forward": { "doorBearings": [
+                { "bearing": 40, "distance": 10, "state": "closing" },
+                { "bearing": 3, "distance": 90, "state": "opening" },
+            ] },
+        });
+        assert_eq!(target_door_state(&outside, 0).as_deref(), Some("opening"));
+        // No door inside the cone → no target door.
+        let none = json!({
+            "player": { "angle": 0 },
+            "forward": { "doorBearings": [ { "bearing": 90, "distance": 5, "state": "waiting" } ] },
+        });
+        assert_eq!(target_door_state(&none, 0), None);
     }
 
     // ── Determinism (NFR-DET): two identical driven runs ─────────────────────

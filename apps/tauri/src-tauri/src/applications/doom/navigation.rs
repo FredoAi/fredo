@@ -477,6 +477,42 @@ pub fn is_walk_trigger_door(special: i16) -> bool {
     )
 }
 
+/// The kind of door at a route crossing (Spec #3039 ST-3).
+///
+/// The three behaviours a route executor must distinguish: a `Usable` door is
+/// opened by a bare `use`; a `WalkTrigger` door opens by CROSSING it (a `use`
+/// press must NOT be issued); a `Locked` door needs a key and is never a route
+/// leg (refused).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DoomDoorKind {
+    /// A bare `use` opens it (`is_usable_door`).
+    Usable,
+    /// Opened by crossing it — walk through, never press `use`.
+    WalkTrigger,
+    /// Requires a key — never route through it.
+    Locked,
+}
+
+/// Classify a linedef `special` into its [`DoomDoorKind`], or `None` when the
+/// special is not one of the three door kinds the executor acts on.
+///
+/// Mirrors the existing predicates exactly: [`is_locked_door`] (`*_LOCKED_DOOR`,
+/// 26/27/28), [`is_usable_door`], [`is_walk_trigger_door`]. A key-required
+/// `*_OPEN_STAY` door is deliberately NOT classified here (a bare `use` does not
+/// open it), so the executor neither presses at it nor treats it as
+/// walk-triggered.
+pub fn door_kind(special: i16) -> Option<DoomDoorKind> {
+    if is_locked_door(special) {
+        Some(DoomDoorKind::Locked)
+    } else if is_usable_door(special) {
+        Some(DoomDoorKind::Usable)
+    } else if is_walk_trigger_door(special) {
+        Some(DoomDoorKind::WalkTrigger)
+    } else {
+        None
+    }
+}
+
 /// A sector's floor height in integer map units (`MapData.sectors`).
 fn floor_units(map: &MapData, id: SectorId) -> i64 {
     map.sectors
@@ -1298,6 +1334,39 @@ pub fn door_on_segment(map: &MapData, a: (i64, i64), b: (i64, i64)) -> Option<(i
     None
 }
 
+/// The NEAREST door crossing of the segment `a`–`b`, with its [`DoomDoorKind`]
+/// (Spec #3039 ST-3). Unlike [`door_on_segment`] (which returns the first door in
+/// linedef order), this returns the door whose crossing point is closest to `a`
+/// and the kind the executor must honour. `None` for a non-door or a door special
+/// of no classified kind.
+pub fn nearest_door_crossing(
+    map: &MapData,
+    a: (i64, i64),
+    b: (i64, i64),
+) -> Option<((i64, i64), DoomDoorKind)> {
+    let mut best: Option<(i64, (i64, i64), DoomDoorKind)> = None;
+    for line in &map.lines {
+        if line.back_sector.is_none() {
+            continue;
+        }
+        let Some(kind) = door_kind(line.special) else {
+            continue;
+        };
+        let (Some(p), Some(q)) = (vertex_units(map, line.v1), vertex_units(map, line.v2)) else {
+            continue;
+        };
+        let Some(point) = segment_intersection(a, b, p, q) else {
+            continue;
+        };
+        let (dx, dy) = (point.0 - a.0, point.1 - a.1);
+        let dist_sq = dx * dx + dy * dy;
+        if best.is_none_or(|(best_dist, _, _)| dist_sq < best_dist) {
+            best = Some((dist_sq, point, kind));
+        }
+    }
+    best.map(|(_, point, kind)| (point, kind))
+}
+
 /// The intersection point of segments `a`–`b` and `p`–`q`, when they cross.
 fn segment_intersection(
     a: (i64, i64),
@@ -1673,6 +1742,89 @@ mod tests {
         assert_eq!(waypoints, route_waypoints(map, from));
     }
 
+    /// The HEIGHT-aware route scan over every non-secret level (Spec #3039 ST-4).
+    ///
+    /// Under the engine-accurate passage predicate, a level is routable iff A*
+    /// finds a free-cell path from the player start to a non-secret exit. This is
+    /// the MEASURED basis for [`super::save::DOOM_COMPLETION_TARGET_MAP`]: it
+    /// asserts E1M1 (the selected target) IS routable, and prints every level's
+    /// result — E1M2–E1M7 are statically disconnected, E1M8 has no linedef exit.
+    #[test]
+    fn height_aware_route_scan_over_non_secret_levels() {
+        use neurodoom::engine::ClassicEngine;
+        let mut routable: Vec<i64> = Vec::new();
+        for level in NON_SECRET_LEVELS {
+            let name = format!("E1M{level}");
+            let engine = ClassicEngine::new(SCAN_WAD, &name).expect("level loads");
+            let map = engine.map();
+            let Some((sx, sy)) = spawn_point(map) else {
+                println!("E1M{level}: NO_SPAWN");
+                continue;
+            };
+            let from = (i64::from(sx), i64::from(sy));
+            match route_path(map, from, DOOM_PLAYER_HEIGHT_FALLBACK) {
+                RouteOutcome::Path(waypoints) => {
+                    println!(
+                        "E1M{level}: ROUTABLE waypoints={} doors={} exits={}",
+                        waypoints.len(),
+                        waypoints.iter().filter(|waypoint| waypoint.door).count(),
+                        exit_sectors(map).len(),
+                    );
+                    routable.push(level);
+                }
+                RouteOutcome::LockedDoorOnly => println!("E1M{level}: LOCKED_DOOR_ONLY"),
+                RouteOutcome::NoRoute => println!("E1M{level}: NO_ROUTE"),
+            }
+        }
+        assert!(
+            routable.contains(&1),
+            "E1M1 must be height-aware routable (the measured AC5 target), got {routable:?}"
+        );
+    }
+
+    // ── Door-kind semantics (Spec #3039 ST-3) ────────────────────────────────
+
+    #[test]
+    fn door_kind_classifies_usable_walk_trigger_and_locked() {
+        assert_eq!(door_kind(line_special::MANUAL_DOOR), Some(DoomDoorKind::Usable));
+        assert_eq!(door_kind(line_special::BLAZE_OPEN), Some(DoomDoorKind::Usable));
+        assert_eq!(
+            door_kind(line_special::WALK_OPEN_DOOR),
+            Some(DoomDoorKind::WalkTrigger)
+        );
+        assert_eq!(
+            door_kind(line_special::WALK_CLOSE_DOOR),
+            Some(DoomDoorKind::WalkTrigger)
+        );
+        assert_eq!(
+            door_kind(line_special::RED_LOCKED_DOOR),
+            Some(DoomDoorKind::Locked)
+        );
+        // A non-door special is not a door at all.
+        assert_eq!(door_kind(0), None);
+        assert_eq!(door_kind(line_special::EXIT_NORMAL), None);
+    }
+
+    #[test]
+    fn nearest_door_crossing_picks_the_closest_door_and_its_kind() {
+        // The two-room map's shared portal is a plain (non-door) portal, so no
+        // door crossing exists across it.
+        let plain = two_room_map(64, 0);
+        assert_eq!(nearest_door_crossing(&plain, (32, 16), (96, 16)), None);
+        // A walk-in door on the shared line IS reported, with its kind.
+        let walk = two_room_map(64, line_special::WALK_OPEN_DOOR);
+        assert_eq!(
+            nearest_door_crossing(&walk, (32, 16), (96, 16)),
+            Some(((64, 16), DoomDoorKind::WalkTrigger))
+        );
+        // A locked door is reported as Locked (the follower refuses it).
+        let locked = two_room_map(64, line_special::BLUE_LOCKED_DOOR);
+        assert_eq!(
+            nearest_door_crossing(&locked, (32, 16), (96, 16)),
+            Some(((64, 16), DoomDoorKind::Locked))
+        );
+    }
+
     // ── Engine-accurate passage predicate + walkable grid (Spec #3039 ST-2) ──
 
     /// The index of the synthetic two-room map's shared portal linedef.
@@ -1895,16 +2047,55 @@ mod tests {
             println!("E1M{level}: LOAD_ERROR {error}");
         }
 
-        // ── Selection: the widest non-secret level with a positive margin ─────
-        let selection = rows
+        // ── HEIGHT-aware route scan (the AC5 selection basis, Spec #3039 ST-4) ─
+        // Under the ENGINE-accurate passage predicate, a level is routable iff A*
+        // finds a free-cell path from the player start to a non-secret exit.
+        let mut routes: Vec<(i64, String, usize)> = Vec::new();
+        for level in NON_SECRET_LEVELS {
+            let name = format!("E1M{level}");
+            let engine = match ClassicEngine::new(SCAN_WAD, &name) {
+                Ok(engine) => engine,
+                Err(_) => continue,
+            };
+            let map = engine.map();
+            let Some((sx, sy)) = spawn_point(map) else {
+                routes.push((level, "NO_SPAWN".to_string(), 0));
+                continue;
+            };
+            let from = (i64::from(sx), i64::from(sy));
+            match route_path(map, from, DOOM_PLAYER_HEIGHT_FALLBACK) {
+                RouteOutcome::Path(waypoints) => {
+                    let doors = waypoints.iter().filter(|waypoint| waypoint.door).count();
+                    let label = format!(
+                        "ROUTABLE waypoints={} doors={} exits={}",
+                        waypoints.len(),
+                        doors,
+                        exit_sectors(map).len()
+                    );
+                    println!("E1M{level}: {label}");
+                    routes.push((level, label, waypoints.len()));
+                }
+                RouteOutcome::LockedDoorOnly => {
+                    println!("E1M{level}: LOCKED_DOOR_ONLY");
+                    routes.push((level, "LOCKED_DOOR_ONLY".to_string(), 0));
+                }
+                RouteOutcome::NoRoute => {
+                    println!("E1M{level}: NO_ROUTE");
+                    routes.push((level, "NO_ROUTE".to_string(), 0));
+                }
+            }
+        }
+
+        // ── Selection: the height-aware ROUTABLE level (Spec #3039 ST-4) ──────
+        let selection = routes
             .iter()
-            .filter(|(_, verdict)| verdict.has_margin())
-            .map(|(level, verdict)| (*level, verdict.clearance().unwrap_or(0)))
-            .max_by_key(|(level, clearance)| (*clearance, std::cmp::Reverse(*level)));
+            .filter(|(_, _, waypoints)| *waypoints > 0)
+            .max_by_key(|(level, _, waypoints)| (*waypoints, std::cmp::Reverse(*level)))
+            .map(|(level, _, _)| *level);
 
         // ── Door-open duration (sim-time; the selected target first) ──────────
         let mut measure_order: Vec<i64> = Vec::new();
-        if let Some((level, _)) = selection {
+        if let Some(level) = selection {
             measure_order.push(level);
         }
         for level in NON_SECRET_LEVELS {
@@ -1936,7 +2127,7 @@ mod tests {
         }
         // Determinism (G-316): the SAME script + FixedTickClock reproduce the
         // report field-for-field at the selected target.
-        if let Some((level, _)) = selection {
+        if let Some(level) = selection {
             let first = drive_level(level).await;
             let second = drive_level(level).await;
             assert_eq!(
@@ -1947,18 +2138,34 @@ mod tests {
 
         // ── Report ───────────────────────────────────────────────────────────
         let mut report = String::new();
-        report.push_str("# Spec #3039 ST-1 — deterministic level-walkability feasibility spike\n\n");
+        report.push_str("# Spec #3039 ST-4 — height-aware level-route feasibility (AC5 target)\n\n");
         report.push_str(
             "Generated by `navigation::tests::scan_non_secret_levels_and_write_report` \
-             (`cargo test`) — executed evidence, not a mock.\n\n",
+             (`cargo test`) — executed evidence, not a mock. Rescope #3 re-ran the scan under the \
+             ENGINE-accurate passage predicate.\n\n",
         );
+        report.push_str("## Height-aware route (the AC5 selection basis)\n\n");
         report.push_str(
-            "**Model.** Passability graph over `MapData`: a two-sided linedef is a passable \
-             portal (an opened door is a passable edge); a one-sided linedef is a solid wall. A \
-             portal's clearance is HALF its opening width (integer map units) — the radius of the \
-             largest disc that fits through the gap. A level's clearance is the widest spawn→exit \
-             route's bottleneck (Kruskal max-bottleneck). The player collision radius is 16 units; \
-             `margin = clearance - 16` must be POSITIVE for a real (non-graze) target.\n\n",
+            "A cell is FREE iff its centre is >= the 16-unit player radius from every hard wall \
+             (one-sided / `ML_BLOCKING` / key-locked); a move between cells is allowed only when \
+             the ENGINE's DIRECTIONAL rule holds: `floor(b) - floor(a) <= DOOM_MAX_STEP_HEIGHT` \
+             (=24) and `min(ceil(a), ceil(b)) - floor(a) >= player_height` (=56, the live \
+             `Entity.height`), with a door evaluated at its OPEN clearance. A* then routes from the \
+             player start to the nearest non-secret exit.\n\n",
+        );
+        report.push_str("| Level | Height-aware route |\n|-------|--------------------|\n");
+        for (level, label, _) in &routes {
+            report.push_str(&format!("| E1M{level} | {label} |\n"));
+        }
+        report.push('\n');
+
+        report.push_str("## Clearance model (retained, informational)\n\n");
+        report.push_str(
+            "Passability graph over `MapData`: a two-sided linedef is a passable portal (an opened \
+             door is a passable edge); a one-sided linedef is a solid wall. A portal's clearance is \
+             HALF its opening width (integer map units). This CLEARANCE-ONLY model ignores sector \
+             heights, so it OVERSTATES walkability (ST-1 selected E1M7 by it); the height-aware \
+             route above is authoritative.\n\n",
         );
         report.push_str("| Level | Verdict |\n|-------|---------|\n");
         for (level, verdict) in &rows {
@@ -1971,23 +2178,27 @@ mod tests {
 
         report.push_str("## Selection\n\n");
         match selection {
-            Some((level, clearance)) => {
+            Some(level) => {
+                let label = routes
+                    .iter()
+                    .find(|(l, _, _)| *l == level)
+                    .map(|(_, label, _)| label.clone())
+                    .unwrap_or_default();
                 report.push_str(&format!(
-                    "**DOOM_COMPLETION_TARGET_MAP = E1M{level}** — the widest non-secret level: \
-                     clearance={clearance}, margin={} above the 16-unit collision radius.\n",
-                    clearance - DOOM_PLAYER_RADIUS
+                    "**DOOM_COMPLETION_TARGET_MAP = E1M{level}** — the height-aware ROUTABLE \
+                     non-secret level (`{label}`). Under the engine-accurate passage predicate it \
+                     is the ONLY non-secret level with a reachable spawn->exit route; E1M2-E1M7 are \
+                     STATICALLY DISCONNECTED (their exits need lifts/floor-movers the static model \
+                     cannot represent) and E1M8 has no linedef exit.\n",
                 ));
             }
             None => {
                 report.push_str(
-                    "**ESCALATE a PO decision — no non-secret level has a positive margin.** \
+                    "**ESCALATE a PO decision — NO non-secret level is height-aware routable.** \
                      Every measured non-secret level's failure mode:\n\n",
                 );
-                for (level, verdict) in &rows {
-                    report.push_str(&format!("- E1M{level}: {}\n", describe(verdict)));
-                }
-                for (level, error) in &load_failures {
-                    report.push_str(&format!("- E1M{level}: LOAD_ERROR {error}\n"));
+                for (level, label, _) in &routes {
+                    report.push_str(&format!("- E1M{level}: {label}\n"));
                 }
                 report.push_str(
                     "\nThe secret E1M9 is never the pin. No target is shipped unmeasured.\n",

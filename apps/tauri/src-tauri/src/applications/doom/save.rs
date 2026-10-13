@@ -83,21 +83,40 @@ pub const DOOM_DEFAULT_SKILL: i64 = 3;
 /// The default deterministic seed.
 pub const DOOM_DEFAULT_SEED: i64 = 0;
 /// The **AC5 completion target** — the robustly-walkable NON-secret level the
-/// Companion plays to complete a level (Spec #3039 ST-5).
+/// Companion plays to complete a level (Spec #3039).
 ///
-/// This value is the **ST-1 measured selection**, not a guess: ST-1's
-/// deterministic level-walkability scan (executed evidence in
-/// `.opencode/tmp/3039/level-feasibility.md`) measured every non-secret ship
-/// level and selected the widest — **E1M7**, path clearance `64` with a margin
-/// of `48` above the 16-unit player collision radius (E1M1–E1M6 measure
-/// clearance `32` / margin `16`; E1M8 has no linedef exit). It is **never** the
-/// secret level `E1M9` (map 9).
+/// This value is the **height-aware measured selection**, not a guess. Rescope #3
+/// re-ran the route scan under the ENGINE-ACCURATE passage predicate (opening
+/// `min(ceil(F),ceil(B)) - max(floor(F),floor(B)) >= player_height`; step-up
+/// `<= DOOM_MAX_STEP_HEIGHT`; a door evaluated at its OPEN clearance) over every
+/// non-secret ship level (E1M1–E1M8; E1M8 has no linedef exit). Under that model
+/// **only E1M1 yields a reachable spawn→exit route** (11 waypoints); E1M2–E1M7
+/// are STATICALLY DISCONNECTED (their exits need lifts / floor-movers — linedef
+/// `special` 62/63/70/91 — or key acquisition the static passability model cannot
+/// represent). The committed deterministic completion gate
+/// (`st8_local_route_completes_the_target_level_deterministically`, `engine.rs`)
+/// drives this level with the local route source and reaches
+/// `terminal == Some("exited")`. Evidence (per-level scan + gate trace):
+/// `.opencode/tmp/3039/level-feasibility.md`.
+///
+/// It is **never** the secret level `E1M9` (map 9).
 ///
 /// The target is deliberately NOT the campaign's final level: completing it
 /// reports a terminal SINGLE-LEVEL exit (`outcome == "exited"`), NOT the
 /// campaign's `completed:true` terminal — whose only trigger is the secret
 /// E1M9. Verify AC5 on `outcome == "exited"`, never on `completed:true`.
-pub const DOOM_COMPLETION_TARGET_MAP: i64 = 7;
+pub const DOOM_COMPLETION_TARGET_MAP: i64 = 1;
+
+/// The committed completion gate's step budget, in engine ticks (Spec #3039
+/// ST-1/ST-4).
+///
+/// The MEASURED deterministic local-route completion of
+/// [`DOOM_COMPLETION_TARGET_MAP`] (E1M1) is **444** engine ticks (`st8...`,
+/// printed by the gate). This budget leaves ~4.5× margin so the gate tolerates
+/// incidental re-planning without being able to burn the full run budget, while
+/// still failing fast if the route regresses. The gate asserts the run reaches
+/// `terminal == Some("exited")` within this bound, TWICE, field-for-field equal.
+pub const DOOM_COMPLETION_STEP_BUDGET: u32 = 2000;
 
 /// The valid skill range (inclusive) the engine's `/api/episode` accepts.
 const DOOM_SKILL_MIN: i64 = 0;
@@ -650,7 +669,8 @@ mod tests {
         assert_eq!(DOOM_CAMPAIGN_LAST_MAP, 9);
         assert_eq!(DOOM_DEFAULT_SKILL, 3);
         assert_eq!(DOOM_DEFAULT_SEED, 0);
-        assert_eq!(DOOM_COMPLETION_TARGET_MAP, 7);
+        assert_eq!(DOOM_COMPLETION_TARGET_MAP, 1);
+        assert_eq!(DOOM_COMPLETION_STEP_BUDGET, 2000);
     }
 
     #[test]
@@ -1066,11 +1086,13 @@ mod tests {
 
     #[test]
     fn completion_target_is_the_pinned_non_secret_level() {
-        // ST-1's executed scan (`.opencode/tmp/3039/level-feasibility.md`)
-        // selected E1M7 — the widest non-secret level (clearance 64, margin 48
-        // above the 16-unit collision radius). Pinned so the AC5 target cannot
+        // The height-aware measured scan (`.opencode/tmp/3039/level-feasibility.md`,
+        // `navigation::tests::height_aware_route_scan_over_non_secret_levels`)
+        // found E1M1 the ONLY non-secret level with a reachable spawn->exit route
+        // under the engine-accurate passage predicate (E1M2-E1M7 statically
+        // disconnected; E1M8 has no linedef exit). Pinned so the AC5 target cannot
         // silently drift.
-        assert_eq!(DOOM_COMPLETION_TARGET_MAP, 7);
+        assert_eq!(DOOM_COMPLETION_TARGET_MAP, 1);
         assert!(DOOM_COMPLETION_TARGET_MAP >= DOOM_CAMPAIGN_FIRST_MAP);
         assert_ne!(
             DOOM_COMPLETION_TARGET_MAP, DOOM_CAMPAIGN_LAST_MAP,
@@ -1107,11 +1129,23 @@ mod tests {
         assert_eq!(DoomSave::parse(&save.serialize()), Some(save.clone()));
         assert_eq!(DoomSave::from_row(&save.to_row()), Some(save.clone()));
 
-        // Resuming the persisted target save positions the run at the target —
-        // NOT E1M1 (this is the QA's deterministic AC5 drive).
+        // Resuming the persisted target save positions the run at the target
+        // (the QA's deterministic AC5 drive). The measured target is E1M1, so this
+        // equals the fresh-start map — the resume path is still honoured.
         let resumed = resolve_start_campaign(None, Some(save.to_campaign()));
         assert_eq!(resumed.map, DOOM_COMPLETION_TARGET_MAP);
-        assert_ne!(resumed.map, DOOM_CAMPAIGN_FIRST_MAP);
+        assert!(resumed.map >= DOOM_CAMPAIGN_FIRST_MAP);
+
+        // A saved campaign at a DIFFERENT map resumes THERE — the resume path
+        // uses the persisted map, never the fresh default.
+        let other = DoomCampaign {
+            map: DOOM_COMPLETION_TARGET_MAP + 1,
+            ..DoomCampaign::initial()
+        };
+        assert_eq!(
+            resolve_start_campaign(None, Some(other)).map,
+            DOOM_COMPLETION_TARGET_MAP + 1
+        );
 
         // An explicit fresh start IGNORES the target save and starts at E1M1 —
         // the fresh-run default is unchanged.
