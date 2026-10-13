@@ -31,3 +31,21 @@
 - [ ] F-11 (REQ-AC5b): zero `NativeSelect` component usages under `applications/`; raw-colour scan green (no new `#hex`/`rgba(`/`var(--x)N`).
 - [ ] F-12 (REQ-DRAIN): `pnpm --filter @fredo/ui contrast:gate` green with `CONTRAST_BASELINE.length === 0` (or WCAG-exempt only, mechanism named) and `BASELINE_MAX === 0`; stale-row check passes (the gate fails on any stale entry).
 - [ ] F-13 (REQ-NFR): `pnpm --filter @fredo/ui build` exit 0 (zero TS errors) + gate green.
+
+## Promoted exploratory findings (round 1 — spec/3035 @ 1118d46)
+
+- [ ] F-14 (REQ-AC2.1 / AC2.2 / AC3.1 / AC3.3 — CONFIRMED FAIL, round 1): the global outline rule
+      `button[data-variant="outline"]` (`system.ts:103,114`) is INERT — installed Chakra v3.34.0
+      emits **no** `data-variant` on any rendered button (live `document.querySelectorAll('[data-variant]').length === 0`;
+      the selector text is in the emitted CSS but matches nothing), and the companion
+      `button { color: inherit }` (`system.ts:95`) loses to Chakra's recipe rule by layer order
+      (`@layer reset, base, tokens, recipes`). Expected: enabled outline/ghost labels **≥4.5:1**
+      and outline borders **≥3:1**. Actual (dark `classic`): `layout-new-button` label **1.082**,
+      `db-conn-test` **1.082**, `db-conn-cancel` **1.082**, `db-query-run-all` **1.191**,
+      active-row edit/delete icons **1.135**; (light) outline border **1.194**.
+      Repro: open Settings → Layout and the PostgreSQL app in `classic (base — no preset)` and read
+      the computed `color` / `border-color` of the enabled controls.
+- [ ] F-15 (REQ-AC1.1 — unenumerated pair, round 1): `fg.muted` on the **selected** radio-card tint
+      is not a gate row and is accent-dependent — **4.663** with the classic accent, **4.821** with
+      `light-default`, but **4.45 (< 4.5)** with a custom `#ff5a00` accent. Repro: Settings → Database,
+      read `ItemDescription` computed `color` over the ancestor-composited tint.
