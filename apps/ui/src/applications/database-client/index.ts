@@ -14,7 +14,6 @@ export {
   DatabaseClientFeatureView,
   databaseClientFeature,
 } from './DatabaseClientFeature';
-export { AccessModeBadge } from './components/AccessModeBadge';
 export { ConnectionForm, validateConnectionFields } from './components/ConnectionForm';
 export { ConnectionsPanel } from './components/ConnectionsPanel';
 export { DatabaseClientSettings, clampPref } from './components/DatabaseClientSettings';

@@ -1,8 +1,7 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Box, Button, Flex, HStack, Text, VStack } from '@chakra-ui/react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Box, Button, Flex, VStack } from '@chakra-ui/react';
 import { LuDatabase, LuUnplug } from 'react-icons/lu';
 import { FredoApplicationClass } from '../../shared/classes';
-import { AccessModeBadge } from './components/AccessModeBadge';
 import { ConnectionForm } from './components/ConnectionForm';
 import {
   ConnectionsPanel,
@@ -33,7 +32,6 @@ import type { DbConnectionView, SchemaNode } from './lib/types';
  * * connection management with test-before-save + first-run empty state
  *   (R-1.1/R-1.4, G-265) — connections are read from the backend `db_*`
  *   commands (authoritative for metadata/credentials);
- * * the always-visible access-mode badge (R-5.1/R-5.7);
  * * the lazy schema tree + inspector, whose loaded nodes feed the editor's
  *   completion (R-3.9);
  * * the multi-tab query workspace, with history append (R-4.1), history/
@@ -197,13 +195,6 @@ export const DatabaseClientFeatureView: React.FC = () => {
     setExternalSql({ sql, nonce: Date.now() });
   }, []);
 
-  const activeConnection = useMemo(
-    () => connections.find((view) => view.id === activeId) ?? null,
-    [connections, activeId],
-  );
-
-  const badgeMode = activeConnection?.accessMode ?? null;
-
   const openNew = useCallback(() => {
     setEditing(null);
     setFormOpen(true);
@@ -227,38 +218,6 @@ export const DatabaseClientFeatureView: React.FC = () => {
       minHeight={0}
       bg="bg.canvas"
     >
-      {/* Top bar: identity + always-visible access mode + disconnect */}
-      <Flex
-        align="center"
-        gap={2}
-        px={3}
-        py={2}
-        flexShrink={0}
-        bg="bg.subtle"
-        borderBottomWidth="1px"
-        borderColor="border.default"
-      >
-        <Box color="accent.default" display="flex" flexShrink={0} aria-hidden="true">
-          <LuDatabase size={16} />
-        </Box>
-        <Text fontSize="sm" fontWeight="600" color="fg.default">
-          PostgreSQL
-        </Text>
-        <Box flex="1" />
-        <AccessModeBadge mode={badgeMode} />
-        {connectedId ? (
-          <Button
-            data-testid="db-disconnect"
-            size="xs"
-            variant="outline"
-            onClick={() => void handleDisconnect()}
-          >
-            <LuUnplug size={12} />
-            Disconnect
-          </Button>
-        ) : null}
-      </Flex>
-
       <Flex flex="1" minHeight={0}>
         {/* Left: connections + schema tree (+ inspector when a node is selected) */}
         <VStack
@@ -369,31 +328,53 @@ export const DatabaseClientFeatureView: React.FC = () => {
         </VStack>
       </Flex>
 
-      {/* Persistent status / live region (recognition over recall) */}
-      <Box
-        data-testid="db-status-operation"
-        role="status"
-        aria-live="polite"
-        aria-atomic="true"
+      {/* Persistent status / live region + relocated disconnect (recognition over recall) */}
+      <Flex
+        align="center"
+        gap={2}
         px={3}
         py={1}
         flexShrink={0}
         borderTopWidth="1px"
         borderColor="border.default"
         bg="bg.subtle"
-        fontSize="xs"
-        color="fg.muted"
         minHeight="24px"
       >
-        {statusMessage}
-      </Box>
+        <Box
+          data-testid="db-status-operation"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          flex="1"
+          minWidth={0}
+          fontSize="xs"
+          color="fg.muted"
+          overflow="hidden"
+          textOverflow="ellipsis"
+          whiteSpace="nowrap"
+        >
+          {statusMessage}
+        </Box>
+        {connectedId !== null ? (
+          <Button
+            data-testid="db-disconnect"
+            size="xs"
+            variant="outline"
+            flexShrink={0}
+            onClick={() => void handleDisconnect()}
+          >
+            <LuUnplug size={12} />
+            Disconnect
+          </Button>
+        ) : null}
+      </Flex>
     </Flex>
   );
 };
 
 export class DatabaseClientFeature extends FredoApplicationClass {
   readonly id = 'database-client';
-  readonly name = 'PostgreSQL';
+  readonly name = 'SQL Studio';
   readonly icon = LuDatabase;
   readonly showable = true;
   readonly hasSettings = true;

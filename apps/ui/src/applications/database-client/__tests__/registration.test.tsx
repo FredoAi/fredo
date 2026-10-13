@@ -30,7 +30,7 @@ describe('database-client registration', () => {
     const { databaseClientFeature } = await import('../index');
 
     expect(databaseClientFeature.id).toBe('database-client');
-    expect(databaseClientFeature.name).toBe('PostgreSQL');
+    expect(databaseClientFeature.name).toBe('SQL Studio');
     expect(databaseClientFeature.hasSettings).toBe(true);
     expect(databaseClientFeature.isMultiWindow).toBe(false);
     expect(typeof databaseClientFeature.renderSettings).toBe('function');
