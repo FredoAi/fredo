@@ -125,6 +125,11 @@ extended by every following Postgres store slice.
   `synchronous_commit=off`): PG 168,808,448 B (161.0 MiB) / fredo 55,767,040 B (53.2 MiB).
   Delta ≈ −39.3 MiB PG RSS. Position: **MITIGATE + RE-MEASURE** (vs #2948 8.2× / +232.7 MiB).
   Caveat: steady-state WorkingSet sums (transient client backends included), not full-cycle peaks.
+  **Updated (Spec #3028, 2026-10-13):** the embedded-server knob `max_connections` is now **12**
+  (`PG_SERVER_MAX_CONNECTIONS`) — strictly above the unchanged shared pool cap `PG_POOL_MAX_CONNECTIONS = 8`.
+  The `max_connections=8` in the #2975 round-2 measurement above is the historical pre-#3028 SERVER value
+  (kept verbatim; the pool cap it reports is still 8). The live server value is pinned to 12 by
+  `pg_supervisor::tests::server_knobs_max_connections_matches_the_policy_and_exceeds_the_pool_cap`.
 
 - [ ] **F-15 (AC5, QA-5.2) — carried regression positions (coverage, G-271).**
   Enumerate the §10 rows 2/4/5.

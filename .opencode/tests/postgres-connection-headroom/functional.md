@@ -118,3 +118,14 @@ Any refusal of a second client while the app runs, any `S == pool-cap`, a raised
 unbounded server value, a missing invariant unit pin, a non-loopback bind, a secret in a log, or
 a static-only receipt = **FAIL**. UNVERIFIED rows (no reachable lever) are not PASS — the verdict
 fails closed (G-033).
+
+## Round 1 results (2026-10-13, `spec/3028 @ 44b26e3`)
+
+Live embedded-PostgreSQL connection-headroom run on the isolated env `spec3028`. Server value is
+`max_connections = 12` (strictly > the unchanged pool cap 8); both a managed-`psql` client and the
+built-in PG app's `db_connection_test`/`db_connect`/`db_query_execute` path connected and ran
+`SELECT 1`; the full-occupancy leg (shared pool holding all 8 slots) still admitted a further client
+and the true-capacity leg (12/12 held) refused the next with the structured
+`FATAL: sorry, too many clients already`; the existing-cluster overlay was reconciled from a seeded
+stale `max_connections = 8` to 12 with **no data reset**. Full receipts in the feature issue's
+`## Tests Runs (round 1)` comment.
