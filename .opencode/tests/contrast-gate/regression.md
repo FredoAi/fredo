@@ -4,29 +4,37 @@
 > instrument** — it must NOT alter product behaviour, the theme engine, or the existing focus suite.
 > Run this file alongside `.opencode/tests/theming/regression.md` (overlapping surface) whenever a
 > spec touches theming tokens or the gate.
+>
+> **Round 1 result (spec/3033 @ `beec583`):** all CR-1..CR-6 **PASS**. `git diff origin/main` for the
+> spec touches ONLY `.github/workflows/validate.yml`, `apps/ui/package.json` (the `contrast:gate`
+> script line), the `globalFocusVisible.test.ts` helper extraction, and the new
+> `apps/ui/src/app/theme/contrast/**` modules/tests — no component/token/product change.
 
 ## Invariants (must NOT change)
 
-- [ ] **CR-1 (theme engine untouched):** `ThemeProvider.tsx`, `system.ts`, `theme.ts` (presets/base
+- [x] **CR-1 (theme engine untouched):** `ThemeProvider.tsx`, `system.ts`, `theme.ts` (presets/base
       records) and the `overrides ?? preset ?? base` layering behave exactly as before — the gate
       only READS resolved tokens (via `resolvePresetToken`), it never mutates them. Reference
       `.opencode/tests/theming/regression.md` R-1..R-34.
-- [ ] **CR-2 (existing focus suite byte-identical):** `apps/ui/src/app/theme/__tests__/globalFocusVisible.test.ts`
+- [x] **CR-2 (existing focus suite byte-identical):** `apps/ui/src/app/theme/__tests__/globalFocusVisible.test.ts`
       is unchanged except the ST-1 import swap (its `parseColor`/`luminance`/`contrast`/`mixSrgb`/`round2`
       helpers now imported from `contrast/wcag.ts`). Its `no-worse-than-control` Δ≤0.2 tolerance tier is
-      retained as pre-validation **history**; it is NOT weakened, disabled, deleted, or re-pointed at the
-      new absolute floor. `git diff` shows the import line only.
-- [ ] **CR-3 (read-only gate):** the contrast modules (`wcag.ts`, `matrix.ts`, `evaluate.ts`,
-      `contrastBaseline.ts`, `rawColorScan.ts`, `rawColorAllowlist.ts`) contain no `fs.write*`/
+       retained as pre-validation **history**; it is NOT weakened, disabled, deleted, or re-pointed at the
+       new absolute floor. `git diff` shows the import addition plus the removal of the now-imported helper
+       definitions (`parseColor`/`luminance`/`contrast`/`mixSrgb`/`round2`) — the assertions, table, floors
+       and tolerance tier are byte-identical.
+- [x] **CR-3 (read-only gate):** the contrast modules (`wcag.ts`, `matrix.ts`, `evaluate.ts`,
+      `contrastBaseline.ts`, `rawColorScan.ts`, `rawColorAllowlist.ts`, `rawColorEvaluate.ts`,
+      `rawColorBaseline.ts`) contain no `fs.write*`/
       `writeFile`/`setProperty` — the gate never writes source, baseline, or allowlist. Baseline/
       allowlist additions are PR diffs only.
-- [ ] **CR-4 (no new dependency):** the `apps/ui/package.json` diff adds only the `contrast:gate`
+- [x] **CR-4 (no new dependency):** the `apps/ui/package.json` diff adds only the `contrast:gate`
       script; vitest is reused; no new runtime or test dependency; no new workflow file is added.
-- [ ] **CR-5 (no product-code change):** ST-1..ST-6 own only `apps/ui/src/app/theme/contrast/**`
+- [x] **CR-5 (no product-code change):** ST-1..ST-6 own only `apps/ui/src/app/theme/contrast/**`
       (new), the `globalFocusVisible.test.ts` import swap, `apps/ui/package.json`, and
       `.github/workflows/validate.yml`. Component styles, tokens, and `system.ts` declarations are
       unchanged (ST-2 cites them, never edits them).
-- [ ] **CR-6 (whole suite green):** `pnpm --filter @fredo/ui test:run` green with the gate included;
+- [x] **CR-6 (whole suite green):** `pnpm --filter @fredo/ui test:run` green with the gate included;
       `pnpm --filter @fredo/ui build` exit 0 (zero TS errors); no dangling import from the parseColor
       extraction.
 
