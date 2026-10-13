@@ -43,7 +43,7 @@ const feature = (id: string, name: string): FredoApplicationClass =>
   ({ id, name }) as unknown as FredoApplicationClass;
 
 const TERMINAL = feature('terminal', 'Terminal');
-const QUERY_VIEWER = feature('query-viewer', 'Query Viewer');
+const FACTORY_APP = feature('factory-app', 'Factory App');
 
 let invokeMock: ReturnType<typeof vi.fn>;
 
@@ -142,13 +142,13 @@ describe('appWindows (Spec #2955 ST-4 — native host seam + ONE opener)', () =>
   });
 
   it('defensively opens a factory (isMultiWindow) app in-window even if new-window is stored', async () => {
-    getApplicationsMock.mockReturnValue([{ id: 'query-viewer', isMultiWindow: true }]);
-    stored({ 'query-viewer': 'new-window' });
+    getApplicationsMock.mockReturnValue([{ id: 'factory-app', isMultiWindow: true }]);
+    stored({ 'factory-app': 'new-window' });
     const inWindow = vi.fn();
 
-    createAppOpener(inWindow)('query-viewer', QUERY_VIEWER);
+    createAppOpener(inWindow)('factory-app', FACTORY_APP);
 
-    await vi.waitFor(() => expect(inWindow).toHaveBeenCalledWith('query-viewer', QUERY_VIEWER));
+    await vi.waitFor(() => expect(inWindow).toHaveBeenCalledWith('factory-app', FACTORY_APP));
     expect(invokeMock).not.toHaveBeenCalledWith('open_app_window', expect.anything());
   });
 });

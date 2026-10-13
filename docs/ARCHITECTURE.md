@@ -532,7 +532,6 @@ apps/ui/src/
 |   +-- home/                       — Home panel + AlertHandler + FredoCompanion
 |   +-- diagram/                    — Infrastructure diagram (ReactFlow)
 |   +-- terminal/                   — Ghostty terminal (PTY output)
-|   +-- query-viewer/               — SQL query result display (multi-instance)
 |   +-- my-workitems/               — Azure DevOps work items
 |   +-- settings/                   — Settings persistence service (settingsService + SettingsSaveContext)
 |   +-- settings-app/               — Settings app (first-class application; sidebar nav + auto-discovered application sections + unified Save)
@@ -587,7 +586,6 @@ Shipped defaults: `Ctrl+Space` (launcher) and `Ctrl+Tab` / `Ctrl+Shift+Tab` (win
 | home | ✓ | — | Navigation grid, FredoCompanion |
 | diagram | ✓ | — | Infrastructure visualization (ReactFlow; REST snapshot) |
 | terminal | ✓ | — | Ghostty terminal (PTY output from Rust) |
-| query-viewer | ✓ | (dynamic) | SQL query result display (multi-instance) |
 | my-workitems | ✓ | — | Azure DevOps work items |
 | settings | ✓ | — | Settings app — Companion, Appearance, Fredo Setup, Telemetry + auto-discovered application settings (unified Save) |
 | setup | ✓ | — | OTel configuration, CLI detection — a user-initiated launcher tile / Settings → Fredo Setup entry; never auto-opened |
@@ -695,7 +693,7 @@ Applications read live agent activity through the **RTDB row store** — a Graph
 
 - **`useEventRows(eventType, args, options)`** (`shared/hooks/useEventRows.ts`) — subscribes one typed row query (`'Chat' | 'ToolUse' | 'AgentSession'` root, typed-column args with SQL pushdown). Returns `rows` (the partition map), a monotonic `epoch` (advances only on real mutations — memo/effect off the primitive, never on map identity), `ready` (resolves on the backend's per-query `replayCompleteQueryId` settle marker, never on subscribe resolution alone), and `error`. `options.replay: true` restores the persisted snapshot as full-row inserts before live patches flow.
 - **Merge semantics** (module-scoped store, `StreamContext.tsx`): `insert` = full-row set with spread-merge so init-time fields are never wiped; `update` = `{ ...row, ...patch }` with seq-guarded stale-patch drops; `remove` = delete key (only ever retention eviction). No TTL, no cap on live rows — replay replaces hydration.
-- **Consumer-side filtering**: the backend filters per-query by the declared args, but the partition map is shared per event type — arg-scoped consumers filter their own rows client-side (epoch-keyed memo), the documented extraction pattern (`stepper-probe`).
+- **Consumer-side filtering**: the backend filters per-query by the declared args, but the partition map is shared per event type — arg-scoped consumers filter their own rows client-side (epoch-keyed memo), the documented extraction pattern (`mission-monitor`).
 - **Row subscriptions** — applications consume typed RTDB rows via `useEventRows` (the only application-facing data contract; the v1 contract machinery was deleted).
 
 ### StreamContext — connection status + the row store

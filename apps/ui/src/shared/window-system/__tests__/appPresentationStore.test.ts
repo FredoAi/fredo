@@ -271,11 +271,11 @@ describe('appPresentationStore (Spec #2955 ST-2 — generalized per-app presenta
   });
 
   it('defensively returns same-window for a factory (isMultiWindow) app', async () => {
-    getApplicationsMock.mockReturnValue([{ id: 'query-viewer', isMultiWindow: true }]);
-    stored({ 'query-viewer': 'new-window', terminal: 'new-window' });
+    getApplicationsMock.mockReturnValue([{ id: 'factory-app', isMultiWindow: true }]);
+    stored({ 'factory-app': 'new-window', terminal: 'new-window' });
     await hydrateAppPresentation();
 
-    expect(getAppPresentation('query-viewer')).toBe('same-window');
+    expect(getAppPresentation('factory-app')).toBe('same-window');
     // A non-factory app keeps its stored value.
     expect(getAppPresentation('terminal')).toBe('new-window');
   });

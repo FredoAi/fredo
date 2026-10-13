@@ -52,7 +52,7 @@ class StubFeature extends FredoApplicationClass {
 // Registered once at module load (the registry is immutable after startup).
 registerApplication(new StubFeature('terminal', 'Terminal'));
 registerApplication(new StubFeature('doom', 'Doom'));
-registerApplication(new StubFeature('query-viewer', 'Query Viewer', { isMultiWindow: true }));
+registerApplication(new StubFeature('factory-app', 'Factory App', { isMultiWindow: true }));
 registerApplication(new StubFeature('hidden-app', 'Hidden App', { showable: false }));
 
 let settings: Record<string, string> = {};
@@ -130,7 +130,7 @@ describe('Spec #2955 ST-3 — Settings → Apps section', () => {
     expect(await screen.findByTestId('app-presentation-settings')).toBeTruthy();
     await waitFor(() => expect(screen.getByTestId('app-presentation-row-terminal')).toBeTruthy());
     expect(screen.getByTestId('app-presentation-row-doom')).toBeTruthy();
-    expect(screen.getByTestId('app-presentation-row-query-viewer')).toBeTruthy();
+    expect(screen.getByTestId('app-presentation-row-factory-app')).toBeTruthy();
     expect(screen.queryByTestId('app-presentation-row-hidden-app')).toBeNull();
   });
 
@@ -189,12 +189,12 @@ describe('Spec #2955 ST-3 — Settings → Apps section', () => {
   it('lists the factory app with a disabled "Own window" + note, selected on Main window', async () => {
     renderSection();
     await waitFor(() =>
-      expect(screen.getByTestId('app-presentation-row-query-viewer')).toBeTruthy(),
+      expect(screen.getByTestId('app-presentation-row-factory-app')).toBeTruthy(),
     );
 
-    expect(screen.getByTestId('app-presentation-multi-window-note-query-viewer')).toBeTruthy();
-    expect(radio('query-viewer', 'new-window')).toBeDisabled();
-    expect(radio('query-viewer', 'same-window')).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByTestId('app-presentation-multi-window-note-factory-app')).toBeTruthy();
+    expect(radio('factory-app', 'new-window')).toBeDisabled();
+    expect(radio('factory-app', 'same-window')).toHaveAttribute('aria-checked', 'true');
   });
 
   it('gates the Terminal change behind a confirm when a live host exists; Cancel mutates nothing', async () => {

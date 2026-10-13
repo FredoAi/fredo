@@ -730,9 +730,9 @@ describe('LauncherShell — the live-capture Enter guard (QA-10) + the §7 selec
     name: 'Mission Monitor',
     icon: () => null,
   } as unknown as FredoApplicationClass;
-  const QUERY_VIEWER = {
-    id: 'query-viewer',
-    name: 'Query Viewer',
+  const BROWSER = {
+    id: 'browser-preview',
+    name: 'Browser',
     icon: () => null,
   } as unknown as FredoApplicationClass;
   const TERMINAL = {
@@ -740,13 +740,8 @@ describe('LauncherShell — the live-capture Enter guard (QA-10) + the §7 selec
     name: 'Terminal',
     icon: () => null,
   } as unknown as FredoApplicationClass;
-  const STEPPER_PROBE = {
-    id: 'stepper-probe',
-    name: 'Stepper Probe',
-    icon: () => null,
-  } as unknown as FredoApplicationClass;
 
-  const renderShell = (features: FredoApplicationClass[] = [QUERY_VIEWER, TERMINAL, STEPPER_PROBE]) => {
+  const renderShell = (features: FredoApplicationClass[] = [BROWSER, TERMINAL, SETTINGS]) => {
     const onOpenFeature = vi.fn();
     renderWithChakra(<LauncherShell showableFeatures={features} onOpenFeature={onOpenFeature} />);
     return onOpenFeature;
@@ -855,7 +850,7 @@ describe('LauncherShell — the live-capture Enter guard (QA-10) + the §7 selec
     expect(highlightedTiles()).toEqual(['Terminal']);
 
     pressArrow('ArrowRight');
-    expect(highlightedTiles()).toEqual(['Stepper Probe']);
+    expect(highlightedTiles()).toEqual(['Settings']);
 
     pressArrow('ArrowLeft');
     expect(highlightedTiles()).toEqual(['Terminal']);
@@ -870,7 +865,7 @@ describe('LauncherShell — the live-capture Enter guard (QA-10) + the §7 selec
     const onOpenFirst = renderShell();
     pressEnter();
     expect(onOpenFirst).toHaveBeenCalledTimes(1);
-    expect(onOpenFirst.mock.calls[0][0]).toBe('query-viewer');
+    expect(onOpenFirst.mock.calls[0][0]).toBe('browser-preview');
   });
 });
 
