@@ -296,6 +296,26 @@ fn corrupt_metadata_degrades_to_an_empty_list() {
     assert!(connection_list_with(&state, &credentials).unwrap().is_empty());
 }
 
+/// Spec #3028 (ST-3): the PG app's open-connection cap is DERIVED from the
+/// shared connection-count policy, so it stays consistent with the server limit
+/// and strictly below it. The pre-#3028 literal (`8`) equalled the server's
+/// `max_connections = 8`; this pin fails if that equality is ever reintroduced.
+#[test]
+fn max_open_connections_derives_from_the_policy_and_leaves_headroom() {
+    use crate::infrastructure::storage::engine::{
+        PG_DBCLIENT_MAX_OPEN_CONNECTIONS, PG_SERVER_MAX_CONNECTIONS,
+    };
+    assert_eq!(
+        MAX_OPEN_CONNECTIONS,
+        PG_DBCLIENT_MAX_OPEN_CONNECTIONS as usize,
+        "the PG-app cap must be derived from the policy constant"
+    );
+    assert!(
+        MAX_OPEN_CONNECTIONS < PG_SERVER_MAX_CONNECTIONS as usize,
+        "the PG-app cap must stay strictly below the server limit"
+    );
+}
+
 #[test]
 fn unsafe_connection_ids_are_rejected() {
     let (_dir, state) = test_state();
