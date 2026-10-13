@@ -99,8 +99,14 @@ export const CONTROL_STATE_IDS: readonly ControlState[] = [
 
 /**
  * The derivation weights — the ONE home (collapses `ThemeProvider.tsx:291-295`
- * ↔ `matrix.ts:121-125` ↔ `system.ts:114-115`). Byte-identical to both existing
- * copies: `--accent-strong` 55/45, `--text-subtle` 65/35, `--hover-bg` 6%.
+ * ↔ `matrix.ts:121-125` ↔ `system.ts:114-115`). `--accent-strong` stays 55/45,
+ * `--hover-bg` stays 6%.
+ *
+ * ST-1 (#3035) RAISED `--text-subtle` from 65/35 to 55/45 — the stronger mix of
+ * `--text-secondary` toward `--text-primary` makes `fg.subtle` clear its 4.5:1
+ * body floor on every preset the derivations can reach (solarized is tightened
+ * by the authored preset values in ST-2). The weight is the single home the
+ * engine, the gate and `theme/system.ts` all read.
  */
 export const DERIVATIONS: {
   readonly accentStrong: readonly [number, number];
@@ -108,7 +114,7 @@ export const DERIVATIONS: {
   readonly hoverBgPct: number;
 } = {
   accentStrong: [0.55, 0.45],
-  textSubtle: [0.65, 0.35],
+  textSubtle: [0.55, 0.45],
   hoverBgPct: 0.06,
 };
 

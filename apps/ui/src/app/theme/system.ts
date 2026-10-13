@@ -93,19 +93,27 @@ const config = defineConfig({
    */
   globalCss: {
     button: { color: 'inherit' },
-    'button[data-variant="outline"]': { borderColor: 'var(--border-color)' },
+    /**
+     * ST-1 (#3035) — the outline control boundary is now the ENABLED control
+     * boundary `border.default` (`--border-strong`, ≥3:1 by construction). The
+     * `:hover` shape below stays byte-identical (`var(--accent-primary)`); the
+     * `:disabled` rule repaints the soft `border.subtle` (`--border-color`) so
+     * enabled and disabled are never confused.
+     */
+    'button[data-variant="outline"]': { borderColor: 'var(--border-strong)' },
     'button[data-variant="outline"]:hover': { borderColor: 'var(--accent-primary)' },
     /**
      * Spec #3034 ST-2 (R-4.1) — the ONE structural control-level rule: the
      * implicated control classes (outline buttons, selects, radio cards) resolve
      * their chrome from the contract tokens, so no component needs a local colour
-     * override. The outline border/hover above stay byte-identical; these rules
-     * extend it, and `disabled` is the `fg.subtle` TOKEN (`--text-subtle`), never
-     * an opacity wash (which was the direct source of every composed
-     * `disabled|label` violation).
+     * override. `disabled` is the `border.subtle` boundary (`--border-color`) +
+     * the `fg.subtle` TOKEN (`--text-subtle`), never an opacity wash (which was
+     * the direct source of every composed `disabled|label` violation). This is
+     * the WCAG-exempt disabled treatment: it reads dimmer, it does not reach AA.
      */
     'button[data-variant="outline"]:disabled': {
       color: 'var(--text-subtle)',
+      borderColor: 'var(--border-color)',
       opacity: 1,
     },
     select: {
@@ -138,7 +146,7 @@ const config = defineConfig({
      * `DetailPanel.tsx:292-293`) are preserved, not replaced.
      */
     ':focus-visible': {
-      outline: '2px solid var(--accent-primary)',
+      outline: '2px solid var(--accent-strong)',
       outlineOffset: '2px',
     },
     /**

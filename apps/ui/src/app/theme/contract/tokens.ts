@@ -20,6 +20,16 @@
  * introduced. `status.onSolids` is the one NEW token (declared here; the engine
  * consumes it in ST-2), derived by the same WCAG-max luminance rule already used
  * for `--accent-contrast` (`ThemeProvider.tsx:153-160`).
+ *
+ * ST-1 (#3035) re-derives three chrome tokens so the shared chrome is
+ * contrast-safe BY CONSTRUCTION (no component-local colour decision):
+ *  - `border.default` → the derived `--border-strong` (soft `--border-color`
+ *    mixed 25% toward the strengthened `fg.subtle`) — the ENABLED control
+ *    boundary. `border.subtle` keeps the soft `--border-color` (disabled /
+ *    container chrome);
+ *  - `accent.focusRing` / `accent.border` → the deepened `--accent-strong`;
+ *  - `DERIVATIONS.textSubtle` (in `./surfaces`) raised to 55/45.
+ * All three are still `color-mix()` over authored vars — zero raw colour.
  */
 import { DERIVATIONS } from './surfaces';
 
@@ -95,7 +105,23 @@ export const SEMANTIC_TOKENS: readonly SemanticToken[] = [
   },
 
   // ── Borders ────────────────────────────────────────────────────────────────
-  { name: 'border.default', varName: '--border-color', authored: true },
+  // ST-1 (#3035) — the border TOKEN SPLIT. `border.default` is the ENABLED
+  // control boundary: a DERIVED mid-luminance boundary (`--border-strong`) that
+  // mixes the soft authored `--border-color` 25% toward the strengthened
+  // `fg.subtle` 75%, so it clears the 3:1 UI floor by construction on every
+  // preset the derivation reaches. `border.subtle` keeps the soft authored
+  // `--border-color` for container/divider chrome and the DISABLED control
+  // boundary — the enabled-vs-disabled differentiator the ACs demand.
+  {
+    name: 'border.default',
+    varName: '--border-strong',
+    authored: false,
+    derivation: {
+      fn: 'color-mix',
+      sources: ['--text-subtle', '--border-color'],
+      weights: [0.75, 0.25],
+    },
+  },
   { name: 'border.subtle', varName: '--border-color', authored: true },
 
   // ── Overlay ────────────────────────────────────────────────────────────────
@@ -136,8 +162,34 @@ export const SEMANTIC_TOKENS: readonly SemanticToken[] = [
     authored: false,
     derivation: { fn: 'color-mix', sources: ['--accent-primary'], weights: [0.15] },
   },
-  { name: 'accent.focusRing', varName: '--accent-primary', authored: true },
-  { name: 'accent.border', varName: '--accent-primary', authored: true },
+  {
+    // ST-1 (#3035) — the deepened keyboard focus ring. `accent.focusRing` now
+    // resolves from the already-deepened `accent.strong` (`--accent-strong`,
+    // 55/45 accent + text) instead of the raw brand fill, so a pale accent still
+    // clears the 3:1 focus floor on every preset. The brand fill
+    // (`accent.default` / `accent.solid`) is unchanged.
+    name: 'accent.focusRing',
+    varName: '--accent-strong',
+    authored: false,
+    derivation: {
+      fn: 'color-mix',
+      sources: ['--accent-primary', '--text-primary'],
+      weights: [...DERIVATIONS.accentStrong],
+    },
+  },
+  {
+    // ST-1 (#3035) — the deepened hover/selected control boundary: like
+    // `accent.focusRing`, it resolves from `accent.strong` (never the raw brand
+    // fill) so the hover boundary clears 3:1 where a pale accent would not.
+    name: 'accent.border',
+    varName: '--accent-strong',
+    authored: false,
+    derivation: {
+      fn: 'color-mix',
+      sources: ['--accent-primary', '--text-primary'],
+      weights: [...DERIVATIONS.accentStrong],
+    },
+  },
   { name: 'accent.subagent', varName: '--accent-subagent', authored: true },
   { name: 'accent.nestedSubagent', varName: '--accent-nested-subagent', authored: true },
 
