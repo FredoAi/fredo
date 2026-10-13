@@ -33,13 +33,14 @@ export interface MonitorNodeData {
 }
 
 export const STATUS_COLORS: Record<MonitorNodeStatus, string> = {
-  working:             '#a855f7', // purple
-  error:               '#ef4444', // red
-  permission_required: '#eab308', // yellow
-  permission_granted:  '#22c55e', // green
-  permission_denied:   '#f97316', // orange
-  inactive:            '#334155', // muted — no glow
-  compacted:           '#475569', // slate — compacted
+  // #3034 ST-4 — status hues resolve from the theme contract tokens.
+  working:             'var(--accent-primary)',          // purple
+  error:               'var(--status-error)',            // red
+  permission_required: 'var(--status-warning)',          // yellow
+  permission_granted:  'var(--status-success)',          // green
+  permission_denied:   'var(--accent-nested-subagent)',  // orange
+  inactive:            'var(--text-secondary)',          // muted — no glow
+  compacted:           'var(--border-color)',            // slate — compacted
 };
 
 /**

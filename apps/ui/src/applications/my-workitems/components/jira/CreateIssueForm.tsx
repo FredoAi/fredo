@@ -5,6 +5,7 @@ import { LuMessageCircle, LuCircleCheck, LuRefreshCw } from 'react-icons/lu';
 import { useCreateIssue } from '../../hooks/useCreateIssue';
 import { buildReviewPrompt } from '../../utils/jiraCreatePromptBuilder';
 import type { CreateIssueData, JiraIssueType, JiraPriority, JiraIssueCreated } from '../../types';
+import { tint } from '../../../../shared/utils/colorTint';
 
 interface CreateIssueFormProps {
   initialData?: Partial<CreateIssueData>;
@@ -146,7 +147,7 @@ export const CreateIssueForm: React.FC<CreateIssueFormProps> = ({
     <Box padding={4}>
       <style>{`
         @keyframes fieldUpdate {
-          from { border-color: var(--status-success); box-shadow: 0 0 0 3px rgba(72,187,120,.2); }
+          from { border-color: var(--status-success); box-shadow: 0 0 0 3px ${tint('var(--status-success)', 20)}; }
           to   { border-color: var(--border-color); box-shadow: none; }
         }
         .field-updated input, .field-updated textarea, .field-updated select {

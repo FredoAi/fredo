@@ -45,10 +45,10 @@ const parseInfrastructureGraphToReactFlow = (data: InfrastructureGraph): { nodes
   // Get colors from CSS variables
   const rootStyles = getComputedStyle(document.documentElement);
   const healthColors = {
-    healthy: rootStyles.getPropertyValue('--status-success').trim() || '#10b981',
-    warning: rootStyles.getPropertyValue('--status-warning').trim() || '#f59e0b',
-    error: rootStyles.getPropertyValue('--status-error').trim() || '#ef4444',
-    unknown: '#6b7280',
+    healthy: rootStyles.getPropertyValue('--status-success').trim() || 'var(--status-success)',
+    warning: rootStyles.getPropertyValue('--status-warning').trim() || 'var(--status-warning)',
+    error: rootStyles.getPropertyValue('--status-error').trim() || 'var(--status-error)',
+    unknown: 'var(--text-secondary)',
   };
   
   // Group nodes by type for better organization

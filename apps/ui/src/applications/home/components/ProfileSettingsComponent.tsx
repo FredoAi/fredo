@@ -16,6 +16,7 @@ import {
   Spinner,
 } from '@chakra-ui/react';
 import { LuRefreshCw, LuPencil, LuSave, LuX } from 'react-icons/lu';
+import { tint } from '../../../shared/utils/colorTint';
 import { validatePAT, getUserProfile, isTokenExpiredError, type AzdoUserProfile } from '../../../shared/utils/azdoApi';
 import {
   storePAT,
@@ -270,7 +271,7 @@ export const ProfileSettingsComponent: React.FC<ProfileSettingsComponentProps> =
 
           {error && (
             <Box
-              bg="rgba(239, 68, 68, 0.1)"
+              bg={tint('var(--status-error)', 10)}
               borderColor="var(--status-error)"
               borderWidth="1px"
               padding={3}

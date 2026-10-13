@@ -889,13 +889,13 @@ export const ArchitectureDiagram: React.FC<ArchitectureDiagramProps> = ({ onFocu
         <MiniMap 
           nodeColor={(node) => {
             const data = node.data as any;
-            // Show hidden nodes in gray
-            if (node.hidden) return '#444444';
+            // Show hidden nodes in muted text (theme token)
+            if (node.hidden) return 'var(--text-secondary)';
             if (data.health === 'error') return 'var(--status-error)';
             if (data.health === 'warning') return 'var(--status-warning)';
             return 'var(--status-success)';
           }}
-          maskColor="rgba(10, 15, 25, 0.7)"
+          maskColor="var(--overlay-bg)"
           style={{ backgroundColor: 'var(--card-bg)', border: '1px solid var(--border-color)' }}
           pannable={true}
           zoomable={true}

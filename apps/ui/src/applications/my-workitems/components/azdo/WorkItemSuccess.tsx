@@ -1,6 +1,7 @@
 import React from 'react';
 import { Box, VStack, HStack, Text, Button } from '@chakra-ui/react';
 import { LuCircleCheck, LuExternalLink, LuPlus, LuX } from 'react-icons/lu';
+import { tint } from '../../../../shared/utils/colorTint';
 
 interface WorkItemSuccessProps {
   workItemId: number;
@@ -39,7 +40,7 @@ export const WorkItemSuccess: React.FC<WorkItemSuccessProps> = ({
         borderRadius="lg"
         maxWidth="600px"
         width="100%"
-        boxShadow="0 4px 24px rgba(0, 0, 0, 0.3)"
+        boxShadow={`0 4px 24px ${tint('var(--overlay-bg)', 50)}`}
       >
         <VStack gap={6} align="stretch">
         {/* Success Icon and Message */}

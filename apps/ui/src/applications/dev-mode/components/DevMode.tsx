@@ -16,11 +16,12 @@ import { SpatiotemporalManifold } from './SpatiotemporalManifold';
 // ── State badge colours ───────────────────────────────────────────────────────
 
 const STATE_COLORS: Record<DevModeEventState, string> = {
-  Init: '#3b82f6',
-  Update: '#f59e0b',
-  Response: '#22c55e',
-  Error: '#ef4444',
-  Timeout: '#6b7280',
+  // #3034 ST-4 — state hues resolve from the theme contract tokens.
+  Init: 'var(--status-info)',
+  Update: 'var(--status-warning)',
+  Response: 'var(--status-success)',
+  Error: 'var(--status-error)',
+  Timeout: 'var(--text-secondary)',
 };
 
 // ── OTLP payload viewer (retained for rawJson payload inspection) ─────────────
@@ -82,13 +83,13 @@ const OtlpPayloadView: React.FC<{ attrs: Record<string, any> }> = ({ attrs }) =>
           <Box
             p={2}
             borderRadius="md"
-            background="#ffffff08"
+            background={tint('var(--text-primary)', 3)}
             border="1px solid var(--border-color)"
             maxHeight="240px"
             overflowY="auto"
           >
             <Code display="block" whiteSpace="pre-wrap" wordBreak="break-all" fontSize="10px"
-              color={key.includes('completion') || key.includes('result') ? '#86efac' : 'var(--text-primary)'}
+              color={key.includes('completion') || key.includes('result') ? 'var(--status-success)' : 'var(--text-primary)'}
               background="transparent"
             >
               {renderValue(value)}
@@ -181,10 +182,10 @@ const EventRow: React.FC<EventRowProps> = ({ event, index }) => {
           px={2}
           py="1px"
           borderRadius="full"
-          background={STATE_COLORS[event.state] + '22'}
+          background={tint(STATE_COLORS[event.state], 13)}
           color={STATE_COLORS[event.state]}
           border="1px solid"
-          borderColor={STATE_COLORS[event.state] + '55'}
+          borderColor={tint(STATE_COLORS[event.state], 33)}
           textTransform="uppercase"
           letterSpacing="0.05em"
         >
@@ -570,9 +571,9 @@ export const DevMode: React.FC = () => {
             <Text fontSize="13px" fontWeight="700" color="var(--text-primary)" letterSpacing="0.03em">
               Dev Mode
             </Text>
-            <HStack gap={1} px={2} py="2px" borderRadius="full" background={isConnected ? '#22c55e22' : '#ef444422'} border="1px solid" borderColor={isConnected ? '#22c55e55' : '#ef444455'}>
-              {isConnected ? <LuWifi size={10} color="#22c55e" /> : <LuWifiOff size={10} color="#ef4444" />}
-              <Text fontSize="9px" color={isConnected ? '#22c55e' : '#ef4444'} fontWeight="600" textTransform="uppercase" letterSpacing="0.05em">
+            <HStack gap={1} px={2} py="2px" borderRadius="full" background={isConnected ? tint('var(--status-success)', 13) : tint('var(--status-error)', 13)} border="1px solid" borderColor={isConnected ? tint('var(--status-success)', 33) : tint('var(--status-error)', 33)}>
+              {isConnected ? <LuWifi size={10} color="var(--status-success)" /> : <LuWifiOff size={10} color="var(--status-error)" />}
+              <Text fontSize="9px" color={isConnected ? 'var(--status-success)' : 'var(--status-error)'} fontWeight="600" textTransform="uppercase" letterSpacing="0.05em">
                 {isConnected ? 'live' : 'offline'}
               </Text>
             </HStack>
@@ -586,7 +587,7 @@ export const DevMode: React.FC = () => {
             )}
           </HStack>
           {events.length > 0 && (
-            <Button data-testid="dev-mode-clear-events" data-hotkey="x" size="xs" variant="ghost" color="var(--text-secondary)" _hover={{ color: '#ef4444', background: '#ef444415' }} onClick={clearEvents} aria-label="Clear events" px={2} height="24px">
+            <Button data-testid="dev-mode-clear-events" data-hotkey="x" size="xs" variant="ghost" color="var(--text-secondary)" _hover={{ color: 'var(--status-error)', background: tint('var(--status-error)', 8) }} onClick={clearEvents} aria-label="Clear events" px={2} height="24px">
               <HStack gap={1}>
                 <LuTrash2 size={11} />
                 <Text fontSize="10px">Clear</Text>
@@ -696,10 +697,10 @@ export const DevMode: React.FC = () => {
                 cursor="pointer"
                 border="1px solid"
                 transition="all 0.15s"
-                background={active ? color + '22' : 'transparent'}
+                background={active ? tint(color, 13) : 'transparent'}
                 color={active ? color : 'var(--text-secondary)'}
-                borderColor={active ? color + '55' : 'var(--border-color)'}
-                _hover={{ borderColor: color + '88', color: color }}
+                borderColor={active ? tint(color, 33) : 'var(--border-color)'}
+                _hover={{ borderColor: tint(color, 53), color }}
                 style={{ userSelect: 'none' }}
               >
                 {state}
@@ -772,10 +773,10 @@ export const DevMode: React.FC = () => {
                   cursor="pointer"
                   border="1px solid"
                   transition="all 0.15s"
-                  background={isSelected ? '#3b82f622' : 'transparent'}
-                  color={isSelected ? '#3b82f6' : 'var(--text-secondary)'}
-                  borderColor={isSelected ? '#3b82f655' : 'var(--border-color)'}
-                  _hover={{ borderColor: '#3b82f688', color: '#3b82f6' }}
+                  background={isSelected ? tint('var(--status-info)', 13) : 'transparent'}
+                  color={isSelected ? 'var(--status-info)' : 'var(--text-secondary)'}
+                  borderColor={isSelected ? tint('var(--status-info)', 33) : 'var(--border-color)'}
+                  _hover={{ borderColor: tint('var(--status-info)', 53), color: 'var(--status-info)' }}
                   style={{ userSelect: 'none' }}
                 >
                   {et}

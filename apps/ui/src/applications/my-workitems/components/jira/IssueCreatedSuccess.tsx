@@ -2,6 +2,7 @@ import React from 'react';
 import { Box, VStack, HStack, Text, Button, Badge } from '@chakra-ui/react';
 import { LuCircleCheck, LuExternalLink, LuPlus } from 'react-icons/lu';
 import type { JiraIssueCreated, JiraIssueType } from '../../types';
+import { tint } from '../../../../shared/utils/colorTint';
 
 interface IssueCreatedSuccessProps {
   created: JiraIssueCreated;
@@ -38,7 +39,7 @@ export const IssueCreatedSuccess: React.FC<IssueCreatedSuccessProps> = ({
         borderRadius="lg"
         maxWidth="520px"
         width="100%"
-        boxShadow="0 4px 24px rgba(0,0,0,.3)"
+        boxShadow={`0 4px 24px ${tint('var(--overlay-bg)', 50)}`}
       >
         <VStack gap={6} align="stretch">
           {/* Icon + heading */}

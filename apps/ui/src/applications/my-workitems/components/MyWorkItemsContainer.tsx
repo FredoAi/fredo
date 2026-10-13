@@ -22,6 +22,7 @@ import { AzdoDetailPanel } from './AzdoDetailPanel';
 import { JiraDetailPanel } from './JiraDetailPanel';
 import type { UnifiedWorkItem, SourceFilter, DetailTarget } from '../types';
 import { toaster } from '../../../shared/components/ui/toaster';
+import { tint } from '../../../shared/utils/colorTint';
 
 interface MyWorkItemsContainerProps {
   /** Set by feature class when Agent navigates directly to a specific item */
@@ -178,7 +179,7 @@ export const MyWorkItemsContainer: React.FC<MyWorkItemsContainerProps> = ({
                   px={1.5}
                   py={0.5}
                   borderRadius="full"
-                  background={active ? 'rgba(255,255,255,0.25)' : 'var(--card-hover-bg)'}
+                  background={active ? tint('var(--text-primary)', 25) : 'var(--card-hover-bg)'}
                   color={active ? 'white' : 'var(--text-primary)'}
                 >
                   {count}
@@ -253,7 +254,7 @@ function ErrorBanner({ source, message }: { source: string; message: string }) {
       gap={3}
       padding={3}
       borderRadius="md"
-      background="rgba(var(--status-error-rgb, 239,68,68), 0.08)"
+      background={tint('var(--status-error)', 8)}
       borderWidth="1px"
       borderColor="var(--status-error)"
     >

@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { Box, Text, Flex } from '@chakra-ui/react';
 import { EMPTY_STATE_JOKES } from '../lib/graph';
+import { tint } from '../../../shared/utils/colorTint';
 
 /**
  * Retro-futuristic empty state for Mission Monitor.
@@ -64,7 +65,7 @@ export const EmptyState: React.FC = () => {
           bg="bg.canvas"
           css={{
             backgroundImage:
-              'repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(99,102,241,0.04) 2px, rgba(99,102,241,0.04) 4px)',
+              `repeating-linear-gradient(0deg, transparent, transparent 2px, ${tint('var(--accent-primary)', 4)} 2px, ${tint('var(--accent-primary)', 4)} 4px)`,
           }}
         >
           {/* Agent pulse dot */}

@@ -43,6 +43,7 @@ import {
 } from 'react-icons/lu';
 
 import { tint } from '../../../shared/utils/colorTint';
+import { selectRecipeWith } from '../../../shared/utils/selectStyles';
 import { announce } from '../../../shared/hotkeys/announcer';
 import { resolvePrimaryModifier } from '../../../shared/hotkeys/keys';
 import {
@@ -67,26 +68,12 @@ import { ZoneLayoutEditor } from './ZoneLayoutEditor';
 /** The static Settings sidebar id for the Layout section. */
 export const LAYOUT_NAV_ID = 'layout';
 
-/** The select chrome (CSS vars so it follows the user theme — never NativeSelect). */
-const selectStyles = {
+/** The select chrome — the ONE shared token recipe (`selectStyles.ts`), never NativeSelect. */
+const selectStyles = selectRecipeWith({
   width: 'auto',
   minW: '160px',
   p: 2,
-  borderRadius: 'md',
-  bg: 'var(--card-bg)',
-  border: '1px solid',
-  borderColor: 'var(--border-color)',
-  color: 'var(--text-primary)',
-  fontSize: 'sm',
-  cursor: 'pointer',
-  _hover: { borderColor: 'var(--accent-primary)' },
-  _focus: {
-    outline: 'none',
-    borderColor: 'var(--accent-primary)',
-    boxShadow: '0 0 0 1px var(--accent-primary)',
-  },
-  _disabled: { opacity: 0.5, cursor: 'not-allowed' },
-} as const;
+});
 
 /** The visible label + spelled accessible name for one activation chord. */
 interface ChordPresentation {
