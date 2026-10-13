@@ -14,10 +14,24 @@
 use anyhow::Result;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
-// -- Pool + server tuning constants (Spec #2975, Q-6) -------------------------
+// -- Pool + server tuning constants (Spec #2975 Q-6; Spec #3028 connection policy)
 
-/// Pool sizing: `max_connections` inside the required 5-10 band (REQ-5/EARS-5.1).
+/// Shared-pool sizing: `max_connections` inside the required 5-10 band
+/// (REQ-5/EARS-5.1). **UNCHANGED by Spec #3028** — this is the tuned band. The
+/// embedded server limit ([`PG_SERVER_MAX_CONNECTIONS`]) is raised ABOVE it so
+/// the pool can no longer hold every server slot (the observed 8/8 saturation).
 pub const PG_POOL_MAX_CONNECTIONS: u32 = 8;
+/// Embedded-server `max_connections` (Spec #3028): the single HIGHEST of the
+/// three connection-count values. Budget: 8 (shared pool) + 2 (the built-in PG
+/// app) + 2 spare (an external `psql` + the superuser reserve) = 12. MUST stay
+/// strictly greater than both [`PG_POOL_MAX_CONNECTIONS`] and
+/// [`PG_DBCLIENT_MAX_OPEN_CONNECTIONS`] — the headroom invariant is pinned by
+/// the same-module unit test below (a re-introduced equality fails CI).
+pub const PG_SERVER_MAX_CONNECTIONS: u32 = 12;
+/// Built-in PostgreSQL app open-connection cap (Spec #3028). Each open PG-app
+/// connection is its OWN one-slot pool, so this stays strictly below the server
+/// limit and fits the server's headroom above the shared pool cap.
+pub const PG_DBCLIENT_MAX_OPEN_CONNECTIONS: u32 = 2;
 /// Keep one warm connection; the rest are opened on demand.
 pub const PG_POOL_MIN_CONNECTIONS: u32 = 1;
 /// Bound every pool acquisition (G-263: no unbounded wait).
@@ -676,6 +690,20 @@ pub async fn storage_engine_status(app: tauri::AppHandle) -> StorageEngineStatus
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- connection-count headroom invariant (Spec #3028) ----------------------
+
+    /// The embedded server limit MUST leave headroom above BOTH client caps: the
+    /// shared pool and the built-in PG app. When the server limit equals the pool
+    /// cap (the pre-#3028 `max_connections = 8`), the pool can hold every server
+    /// slot and an extra client is refused `too many clients already`. The
+    /// assertions are const-evaluated, so a re-introduced equality fails to
+    /// COMPILE (and therefore CI), not merely at test runtime.
+    #[test]
+    fn server_max_connections_leaves_headroom_above_the_pool_and_pg_app_caps() {
+        const { assert!(PG_SERVER_MAX_CONNECTIONS > PG_POOL_MAX_CONNECTIONS) };
+        const { assert!(PG_SERVER_MAX_CONNECTIONS > PG_DBCLIENT_MAX_OPEN_CONNECTIONS) };
+    }
 
     /// A lazily-connected pool: enough to build a `PgEngine` for the type/handle
     /// tests without a live server.

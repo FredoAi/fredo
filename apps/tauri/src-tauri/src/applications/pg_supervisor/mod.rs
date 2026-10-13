@@ -225,16 +225,20 @@ pub fn stop_hang_duration() -> Option<Duration> {
 
 // ── Server memory knobs (Spec #2975 ST-2, REQ-5/EARS-5.1) ─────────────────────
 
-/// Server-memory knobs appended to `<data_dir>/postgresql.conf` after `setup()`
+/// Server-memory knobs overlaid onto `<data_dir>/postgresql.conf` after `setup()`
 /// and before `start()` (ST-2), then verified live via `SHOW` (ST-7/QA).
-/// `max_connections = 8` matches the pool-sizing band (`PG_POOL_MAX_CONNECTIONS`);
-/// `synchronous_commit = off` replaces SQLite's `PRAGMA synchronous=NORMAL`
-/// (store-migration.md §3); the memory sizes are the desktop profile.
+/// `max_connections = 12` is the policy value `PG_SERVER_MAX_CONNECTIONS`
+/// (Spec #3028) — strictly above the shared pool cap (`PG_POOL_MAX_CONNECTIONS`
+/// = 8) so a second client still connects while the pool holds its slots; the
+/// overlay is reconciled/superseded on an existing cluster by
+/// [`runtime::PgRuntime::apply_server_knobs`]. `synchronous_commit = off`
+/// replaces SQLite's `PRAGMA synchronous=NORMAL` (store-migration.md §3); the
+/// memory sizes are the desktop profile.
 pub const PG_SERVER_KNOBS: &[(&str, &str)] = &[
     ("shared_buffers", "32MB"),
     ("work_mem", "4MB"),
     ("maintenance_work_mem", "32MB"),
-    ("max_connections", "8"),
+    ("max_connections", "12"),
     ("synchronous_commit", "off"),
 ];
 
@@ -339,5 +343,32 @@ mod tests {
         assert!(force_start_fail_with(Some("1")));
         assert!(force_start_fail_with(Some("true")));
         assert!(force_start_fail_with(Some("yes")));
+    }
+
+    /// ST-2 (#3028): the rendered `PG_SERVER_KNOBS` `max_connections` string MUST
+    /// equal the policy constant `PG_SERVER_MAX_CONNECTIONS` and stay strictly
+    /// above the shared pool cap — the knob string and the policy cannot drift
+    /// (parsing the knob, not a doc comment).
+    #[test]
+    fn server_knobs_max_connections_matches_the_policy_and_exceeds_the_pool_cap() {
+        use crate::infrastructure::storage::engine::{
+            PG_POOL_MAX_CONNECTIONS, PG_SERVER_MAX_CONNECTIONS,
+        };
+        let value = PG_SERVER_KNOBS
+            .iter()
+            .find(|(name, _)| *name == "max_connections")
+            .map(|(_, value)| *value)
+            .expect("PG_SERVER_KNOBS declares max_connections");
+        let parsed: u32 = value
+            .parse()
+            .expect("max_connections must be a bare u32 literal");
+        assert_eq!(
+            parsed, PG_SERVER_MAX_CONNECTIONS,
+            "the knob string must equal PG_SERVER_MAX_CONNECTIONS"
+        );
+        assert!(
+            parsed > PG_POOL_MAX_CONNECTIONS,
+            "the server knob ({parsed}) must strictly exceed the pool cap ({PG_POOL_MAX_CONNECTIONS})"
+        );
     }
 }
