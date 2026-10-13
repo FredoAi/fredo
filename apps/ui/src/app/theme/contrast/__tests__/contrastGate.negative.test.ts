@@ -74,14 +74,19 @@ describe('contrast: a stale baseline entry fails (Q-9)', () => {
 
 describe('contrast: the frozen cap fails closed (Q-10)', () => {
   it('throws when the baseline grows past BASELINE_MAX', () => {
-    const extra: ContrastBaselineEntry = {
-      key: 'light-default|canvas|default|__extra__',
-      ratio: 1,
-      issue: 3035,
-      note: 'injected over-cap entry',
-    };
+    // #3034 follow-up: the ledger ratcheted DOWN below the frozen cap, so exceed
+    // the cap explicitly (intent unchanged: an over-cap baseline must throw).
+    const overCap: ContrastBaselineEntry[] = Array.from(
+      { length: BASELINE_MAX - CONTRAST_BASELINE.length + 1 },
+      (_, index) => ({
+        key: `light-default|canvas|default|__over-cap-${index}__`,
+        ratio: 1,
+        issue: 3035,
+        note: 'injected over-cap entry',
+      }),
+    );
     expect(() =>
-      evaluateContrast(matrix, [...CONTRAST_BASELINE, extra], BASELINE_MAX),
+      evaluateContrast(matrix, [...CONTRAST_BASELINE, ...overCap], BASELINE_MAX),
     ).toThrow();
   });
 

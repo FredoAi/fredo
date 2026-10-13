@@ -256,14 +256,16 @@ function resolveTokens(colors: Record<string, string>): PresetTokens {
   };
 }
 
-// ── Opacity-derived control appearances (H1, no Fredo token) ─────────────────
+// ── Alpha-derived control appearances (H1, no Fredo token) ───────────────────
+//
+// #3034 follow-up (G-299): `disabled` is the `fg.subtle` TOKEN resolved on the
+// surface — matching the shipped structural rule (`system.ts:107-127`,
+// `--text-subtle`, `opacity: 1`) — NEVER an opacity wash. The old composed-opacity
+// model was a stale mechanism and the direct source of every `disabled|label`
+// violation. The only remaining alpha-derived appearances are the solid control's
+// hover and the radio-card selected fill (`tint(--accent-primary, 12)`, still
+// painted by `AppPresentationSettings.tsx:110`).
 
-/** Chakra `Button` `disabled` layer-style opacity (outline button disabled). */
-const OUTLINE_DISABLED_OPACITY = 0.5;
-/** `chakra.select` `_disabled: { opacity: 0.5 }` (LayoutSettings.tsx:88). */
-const SELECT_DISABLED_OPACITY = 0.5;
-/** `RadioCard.ItemControl` `opacity={disabled ? 0.55 : 1}` (AppPresentationSettings.tsx:111). */
-const RADIO_DISABLED_OPACITY = 0.55;
 /** Solid confirm Button `_hover={{ opacity: 0.9 }}` (AppPresentationSettings.tsx:422). */
 const SOLID_HOVER_OPACITY = 0.9;
 /** Radio-card selected fill `tint(--accent-primary, 12)` (AppPresentationSettings.tsx:110). */
@@ -317,21 +319,21 @@ const PAIR_SPECS: readonly PairSpec[] = [
   { surface: 'control-outline', state: 'default', pairId: 'border', kind: 'border', floor: UI_FLOOR, composed: false, fgToken: 'border.default', bgToken: 'bg.surface', fg: (t) => t.borderColor, bg: (t) => t.cardBg },
   { surface: 'control-outline', state: 'hover', pairId: 'border', kind: 'border', floor: UI_FLOOR, composed: false, fgToken: 'accent.border', bgToken: 'bg.surface', fg: (t) => t.accent, bg: (t) => t.cardBg },
   { surface: 'control-outline', state: 'focus', pairId: 'focus-ring', kind: 'focus', floor: UI_FLOOR, composed: false, fgToken: 'accent.focusRing', bgToken: 'bg.surface', fg: (t) => t.accent, bg: (t) => t.cardBg },
-  { surface: 'control-outline', state: 'disabled', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: true, fgToken: 'fg.default', bgToken: 'bg.surface', fg: (t) => composite(t.textPrimary, t.cardBg, OUTLINE_DISABLED_OPACITY), bg: (t) => composite(t.cardBg, t.cardBg, OUTLINE_DISABLED_OPACITY) },
+  { surface: 'control-outline', state: 'disabled', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.subtle', bgToken: 'bg.surface', fg: (t) => t.textSubtle, bg: (t) => t.cardBg },
 
   // ── select (canonical `selectStyles`, LayoutSettings.tsx:71-89) ─────────────
   { surface: 'select', state: 'default', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.default', bgToken: 'bg.surface', fg: (t) => t.textPrimary, bg: (t) => t.cardBg },
   { surface: 'select', state: 'default', pairId: 'border', kind: 'border', floor: UI_FLOOR, composed: false, fgToken: 'border.default', bgToken: 'bg.surface', fg: (t) => t.borderColor, bg: (t) => t.cardBg },
   { surface: 'select', state: 'hover', pairId: 'border', kind: 'border', floor: UI_FLOOR, composed: false, fgToken: 'accent.border', bgToken: 'bg.surface', fg: (t) => t.accent, bg: (t) => t.cardBg },
   { surface: 'select', state: 'focus', pairId: 'focus-ring', kind: 'focus', floor: UI_FLOOR, composed: false, fgToken: 'accent.focusRing', bgToken: 'bg.surface', fg: (t) => t.accent, bg: (t) => t.cardBg },
-  { surface: 'select', state: 'disabled', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: true, fgToken: 'fg.default', bgToken: 'bg.surface', fg: (t) => composite(t.textPrimary, t.cardBg, SELECT_DISABLED_OPACITY), bg: (t) => composite(t.cardBg, t.cardBg, SELECT_DISABLED_OPACITY) },
+  { surface: 'select', state: 'disabled', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.subtle', bgToken: 'bg.surface', fg: (t) => t.textSubtle, bg: (t) => t.cardBg },
 
   // ── radio-card (AppPresentationSettings.tsx:100-124) ────────────────────────
   { surface: 'radio-card', state: 'default', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.default', bgToken: 'bg.surface', fg: (t) => t.textPrimary, bg: (t) => t.cardBg },
   { surface: 'radio-card', state: 'default', pairId: 'border', kind: 'border', floor: UI_FLOOR, composed: false, fgToken: 'border.default', bgToken: 'bg.surface', fg: (t) => t.borderColor, bg: (t) => t.cardBg },
   { surface: 'radio-card', state: 'hover', pairId: 'border', kind: 'border', floor: UI_FLOOR, composed: false, fgToken: 'accent.border', bgToken: 'bg.surface', fg: (t) => t.accent, bg: (t) => t.cardBg },
   { surface: 'radio-card', state: 'focus', pairId: 'focus-ring', kind: 'focus', floor: UI_FLOOR, composed: false, fgToken: 'accent.focusRing', bgToken: 'bg.surface', fg: (t) => t.accent, bg: (t) => t.cardBg },
-  { surface: 'radio-card', state: 'disabled', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: true, fgToken: 'fg.muted', bgToken: 'bg.surface', fg: (t) => composite(t.textSecondary, t.cardBg, RADIO_DISABLED_OPACITY), bg: (t) => composite(t.cardBg, t.cardBg, RADIO_DISABLED_OPACITY) },
+  { surface: 'radio-card', state: 'disabled', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.subtle', bgToken: 'bg.surface', fg: (t) => t.textSubtle, bg: (t) => t.cardBg },
   { surface: 'radio-card', state: 'selected', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: true, fgToken: 'fg.default', bgToken: 'accent.solid', fg: (t) => t.textPrimary, bg: (t) => composite(t.accent, t.cardBg, RADIO_SELECTED_TINT) },
   { surface: 'radio-card', state: 'selected', pairId: 'border', kind: 'border', floor: UI_FLOOR, composed: false, fgToken: 'accent.border', bgToken: 'bg.surface', fg: (t) => t.accent, bg: (t) => t.cardBg },
 

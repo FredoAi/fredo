@@ -161,12 +161,26 @@ describe('AC5 control classes and states (Q-7, R-5)', () => {
     }
   });
 
-  it('records the H1 opacity-derived pairs as explicit composed pairs', () => {
+  it('models disabled as the fg.subtle TOKEN (not opacity), identically across the control classes', () => {
     const disabled = matrix.filter((r) => r.state === 'disabled');
     expect(disabled.length).toBeGreaterThan(0);
     for (const row of disabled) {
-      expect(row.composed, `${row.key} disabled pair must be composed`).toBe(true);
+      expect(row.composed, `${row.key} must be a token read, not an opacity composition`).toBe(false);
+      expect(row.kind, row.key).toBe('body');
+      expect(row.floor, row.key).toBe(BODY_FLOOR);
     }
+    // `fg.subtle` on the surface background is preset-uniform across the three classes.
+    for (const presetId of PRESET_IDS) {
+      const ratios = (['control-outline', 'select', 'radio-card'] as const).map((surface) => {
+        const row = matrix.find(
+          (r) => r.presetId === presetId && r.surface === surface && r.state === 'disabled',
+        );
+        expect(row, `${presetId} ${surface} disabled`).toBeDefined();
+        return row!.ratio;
+      });
+      expect(new Set(ratios).size, `${presetId} disabled ratios must be identical`).toBe(1);
+    }
+    // The only remaining composed pairs are the alpha-derived solid hover / radio selected fill.
     const solidHover = matrix.find(
       (r) => r.surface === 'control-solid' && r.state === 'hover',
     );
@@ -181,7 +195,7 @@ describe('AC5 control classes and states (Q-7, R-5)', () => {
     expect(entry!.issue).toBe(3035);
   });
 
-  it('uses the 4.5 body floor for the radio-card label (fg.muted), not 3', () => {
+  it('uses the 4.5 body floor for the radio-card label (body text), not 3', () => {
     for (const row of matrix) {
       if (row.surface === 'radio-card' && row.pairId === 'label') {
         expect(row.floor).toBe(BODY_FLOOR);
@@ -191,10 +205,11 @@ describe('AC5 control classes and states (Q-7, R-5)', () => {
 });
 
 describe('day-one green on the tip (Q-5 re-bind, AC1 / AC3)', () => {
-  it('contrast matrix evaluates green: no violations, no stale, cap === baseline length', () => {
+  it('contrast matrix evaluates green: no violations, no stale, baseline at or under the frozen cap', () => {
     expect(contrast.violations).toEqual([]);
     expect(contrast.staleBaseline).toEqual([]);
-    expect(BASELINE_MAX).toBe(CONTRAST_BASELINE.length);
+    expect(BASELINE_MAX).toBe(184);
+    expect(CONTRAST_BASELINE.length).toBeLessThanOrEqual(BASELINE_MAX);
   });
 
   it('raw-colour scan evaluates green on the real tree: no violations, no stale, cap === baseline length', () => {
