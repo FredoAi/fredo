@@ -142,3 +142,19 @@ F-12 carries a `telemetry_spans` receipt. Any duplicate/re-seed of the built-in;
 prompts for credentials; a persisted secret or numbered port; a write executed on the read-only
 built-in; or a static-only receipt = **FAIL**. UNVERIFIED rows (no reachable lever) are not PASS —
 the verdict fails closed (G-033).
+
+## Round 1 results (2026-10-13, `spec/3029 @ ae6b73b`)
+
+Live run on the isolated env `spec3029` (in-repo cluster, `FREDO_DBCLIENT_STATE_DIR` fresh-profile
+seam + a known-password `FREDO_PG_PASSWORD_FILE`). **F-1..F-11 PASS:** fresh-profile seed exactly
+one `builtin=true` row (idempotent); badge + `postgres@127.0.0.1/fredo` (no `:0`); edit ⇒
+`builtin=false` (port prefilled from the live supervisor, Save not blocked); delete permanent
+(four stores, no re-seed after a full app restart); live connect + `SELECT 1`; headroom
+(`clients=10 ≤ max_connections=12`); `FREDO_PG_FORCE_START_FAIL=1` ⇒ typed `unreachable`, no prompt;
+every write refused `readOnlyBlocked` with no side effect; restart bound a NEW ephemeral port
+(60508 → 61142) and reconnected with no edit while the persisted `port` stayed `0`; no sentinel /
+secret / numbered port in any scanned surface. **F-12 receipt PASS via a disclosed real-channel
+substitution (G-256):** the Terminal opencode session emitted **0** spans (plugin emission —
+environment blocker), so an OTLP/HTTP trace was posted to the app's own receiver (`:16083`) →
+`telemetry_spans = 1` at both reads; Mission-Monitor-renders-the-live-session was not demonstrated
+(named blocker). Full receipts in the feature issue's `## Tests Runs (round 1)` comment.
