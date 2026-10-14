@@ -95,6 +95,36 @@ stay frozen. Links point at the cases that already cover each invariant.
   zero TS errors, `pnpm test` green; `cargo check` N/A unless Rust touched) and R-IX (no
   cross-application import). **FAIL** = any TS error, failing test, or cross-app import.
 
+## Schema-explorer actions submenu baseline (#3050)
+
+The submenu is **additive**: it must not alter schema-tree navigation, the inspector, the
+query-workspace controls, or the read-only gates. Links point at the cases that already cover each
+invariant.
+
+- [ ] **R-XVI (schema-tree navigation unchanged):** left-click still selects the node
+  (`aria-selected` + inspector update); the `db-schema-toggle` chevron still only
+  expands/collapses via its `event.stopPropagation()` (`SchemaTree.tsx:222-225`) and never opens
+  the actions menu; lazy per-level loading, inline errors and Retry are unchanged. Overlaps
+  `sql-studio F-34/F-46`, `postgres-client` schema cases.
+  **FAIL** = selection broken, or the chevron opening the menu.
+- [ ] **R-XVII (inspector unchanged):** selecting a node still renders
+  `db-schema-inspector[data-inspected-id]` in its `height="35%"` box; "View columns" is
+  behaviour-identical to a plain select (no spurious tab/execute). Overlaps `sql-studio F-40`,
+  `R-XII`.
+  **FAIL** = the inspector box/content changed.
+- [ ] **R-XVIII (query workspace + read-only gates unchanged):** the multi-tab workspace (independent
+  tab text/result state), Run / Run-all, destructive-confirm gate, export menu and history append
+  behave exactly as before; "Open table data" issues ONLY a `SELECT` and the read-only default +
+  `readOnlyBlocked` enforcement are untouched (`DEFAULT_ACCESS_MODE = ReadOnly`). Overlaps
+  `sql-studio F-42`, `R-III`, `postgres-client F-5`.
+  **FAIL** = a broken workspace control, a non-SELECT statement, or a changed read-only gate.
+- [ ] **R-XIX (default row limit preference preserved):** `Fredo_dbclient_prefs` still round-trips
+  `defaultRowLimit` / `pageSize` / `confirmDestructive`; the new SQL uses the stored value with no
+  new hardcoded limit. Overlaps `R-XIII`, `sql-studio F-37`.
+  **FAIL** = a lost/renamed preference or a hardcoded LIMIT.
+- [ ] **R-XX (build gates + no cross-app imports):** re-run `R-VIII` / `R-IX` for the #3050 change.
+  **FAIL** = any TS error, failing test, or cross-app import.
+
 ## Notes
 
 - The rename is a UI-identity change ONLY: every engine, command, id, testid, and enforcement
