@@ -9,10 +9,23 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { DatabaseClientFeatureView } from '../DatabaseClientFeature';
-import { dbConnect, dbConnectionList } from '../lib/api';
-import type { DbConnectionView } from '../lib/types';
+import { dbConnect, dbConnectionList, dbQueryExecute, dbSchemaList } from '../lib/api';
+import type { DbConnectionView, SchemaNode } from '../lib/types';
+
+// jsdom 24 has no ResizeObserver, but the schema-tree Menu's floating-ui
+// autoUpdate reaches for it once a node submenu opens (Spec #3050 ST-B/ST-D). A
+// no-op stub keeps the portalled submenu mountable under test.
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  class ResizeObserverStub {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = ResizeObserverStub;
+}
 
 vi.mock('../lib/api', () => ({
   dbConnectionList: vi.fn(),
@@ -29,6 +42,8 @@ vi.mock('../lib/api', () => ({
 
 const listMock = vi.mocked(dbConnectionList);
 const connectMock = vi.mocked(dbConnect);
+const schemaListMock = vi.mocked(dbSchemaList);
+const queryExecuteMock = vi.mocked(dbQueryExecute);
 
 const view: DbConnectionView = {
   id: 'c1',
@@ -406,3 +421,95 @@ describe('DatabaseClientFeature — tier-2 clamp on the render path (Spec #3049 
     expect(getComputedStyle(leftSidebarEl()).width).toBe('420px');
   });
 });
+
+// ── Spec #3050 (ST-D): schema-explorer node-action wiring ─────────────────────
+//
+// The shell maps a schema-tree node action onto a concrete outcome: `openData`
+// builds the bounded, read-only statement (R-2b/R-2d) and asks QueryTabs to
+// append + run a NEW tab (R-2); `newQuery` opens a blank tab (R-3); `viewColumns`
+// re-selects the node so the inspector shows its columns (R-3). Every path is
+// guarded on an active connection (R-4). The tree here renders a single table
+// node directly at the root so the interaction is deterministic.
+
+const tableNode: SchemaNode = {
+  kind: 'table',
+  id: 'db/QA_3050/t/qa_3050_rows',
+  name: 'qa_3050_rows',
+  detail: null,
+  hasChildren: false,
+};
+
+describe('DatabaseClientFeature — schema-explorer actions (Spec #3050, ST-D)', () => {
+  beforeEach(() => {
+    schemaListMock.mockReset();
+    queryExecuteMock.mockReset();
+    queryExecuteMock.mockResolvedValue({
+      resultSets: [],
+      confirmationRequired: null,
+      error: null,
+    });
+  });
+
+  async function connectWithTable(): Promise<void> {
+    listMock.mockResolvedValue([view]);
+    connectMock.mockResolvedValue({
+      connectionId: 'c1',
+      serverVersion: 'PostgreSQL 16.0',
+      accessMode: 'readOnly',
+    });
+    schemaListMock.mockResolvedValue([tableNode]);
+    renderWithChakra(<DatabaseClientFeatureView />);
+
+    const row = await screen.findByTestId('db-connection-row-c1');
+    fireEvent.click(row);
+    await waitFor(() => expect(connectMock).toHaveBeenCalledWith({ connectionId: 'c1' }));
+    await screen.findByTestId('db-schema-node');
+  }
+
+  it('"Open table data" opens a NEW tab with the bounded SELECT and runs it (R-2)', async () => {
+    const user = userEvent.setup();
+    await connectWithTable();
+
+    fireEvent.click(screen.getByTestId('db-schema-node'));
+    await user.click(await screen.findByTestId('db-schema-action-open-data'));
+
+    await waitFor(() => expect(queryExecuteMock).toHaveBeenCalledTimes(1));
+    expect(queryExecuteMock).toHaveBeenCalledWith({
+      connectionId: 'c1',
+      sql: 'SELECT * FROM "QA_3050"."qa_3050_rows" LIMIT 100',
+      mode: 'all',
+      selection: null,
+      confirmedStatementHashes: [],
+      limit: 100,
+    });
+    expect(screen.getAllByTestId('db-query-tab')).toHaveLength(2);
+    expect((screen.getByTestId('db-query-editor') as HTMLTextAreaElement).value).toBe(
+      'SELECT * FROM "QA_3050"."qa_3050_rows" LIMIT 100',
+    );
+  });
+
+  it('"New query" opens a blank active tab without executing (R-3)', async () => {
+    const user = userEvent.setup();
+    await connectWithTable();
+
+    fireEvent.click(screen.getByTestId('db-schema-node'));
+    await user.click(await screen.findByTestId('db-schema-action-new-query'));
+
+    await waitFor(() => expect(screen.getAllByTestId('db-query-tab')).toHaveLength(2));
+    expect((screen.getByTestId('db-query-editor') as HTMLTextAreaElement).value).toBe('');
+    expect(queryExecuteMock).not.toHaveBeenCalled();
+  });
+
+  it('"View columns" re-selects the node with no new tab and no query (R-3)', async () => {
+    const user = userEvent.setup();
+    await connectWithTable();
+
+    fireEvent.click(screen.getByTestId('db-schema-node'));
+    await user.click(await screen.findByTestId('db-schema-action-view-columns'));
+
+    expect(screen.getByTestId('db-schema-inspector')).toBeInTheDocument();
+    expect(screen.getAllByTestId('db-query-tab')).toHaveLength(1);
+    expect(queryExecuteMock).not.toHaveBeenCalled();
+  });
+});
+

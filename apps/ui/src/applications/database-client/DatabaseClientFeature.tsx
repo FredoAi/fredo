@@ -26,6 +26,7 @@ import {
   dbDisconnect,
   normalizeDbError,
 } from './lib/api';
+import { buildTableDataSql } from './lib/schemaRef';
 import {
   DBCLIENT_LAYOUT_LIMITS,
   EDITOR_MIN,
@@ -35,7 +36,12 @@ import {
   loadPrefs,
 } from './lib/storage';
 import { useDbClientLayout } from './lib/useDbClientLayout';
-import type { DbConnectionView, SchemaNode } from './lib/types';
+import type {
+  DbConnectionView,
+  DbSchemaNodeAction,
+  DbTableDataRequest,
+  SchemaNode,
+} from './lib/types';
 
 /**
  * DatabaseClientFeature — the built-in PostgreSQL client shell
@@ -78,6 +84,8 @@ export const DatabaseClientFeatureView: React.FC = () => {
 
   const [historyRefresh, setHistoryRefresh] = useState(0);
   const [externalSql, setExternalSql] = useState<ExternalSql | null>(null);
+  // Spec #3050: the schema-explorer "open a new tab" request (ST-C consumes it).
+  const [openRequest, setOpenRequest] = useState<DbTableDataRequest | null>(null);
   const [activeSql, setActiveSql] = useState('');
   const [pageSize, setPageSize] = useState(100);
   const [defaultRowLimit, setDefaultRowLimit] = useState(100);
@@ -100,6 +108,10 @@ export const DatabaseClientFeatureView: React.FC = () => {
   const splitRowRef = useRef<HTMLDivElement | null>(null);
   const [rowWidth, setRowWidth] = useState(0);
   const [rowHeight, setRowHeight] = useState(0);
+  // Monotonic nonce for the schema-explorer open-request channel (Spec #3050) —
+  // guarantees a fresh value per action so a repeat "Open table data" on the
+  // same node still retriggers the tab-append effect (never a same-ms collision).
+  const openRequestNonceRef = useRef(0);
 
   useEffect(() => {
     const el = splitRowRef.current;
@@ -313,6 +325,35 @@ export const DatabaseClientFeatureView: React.FC = () => {
     setExternalSql({ sql, nonce: Date.now() });
   }, []);
 
+  // Spec #3050 (ST-D): map a schema-tree node action onto a concrete outcome.
+  // Every path is guarded on an active connection (R-4) — when no session is
+  // live the tree renders no nodes, but the guard keeps the contract explicit.
+  // `openData` builds the bounded, read-only statement (R-2b/R-2d) and asks
+  // QueryTabs to append + run a NEW tab; `viewColumns` re-selects the node so
+  // the existing inspector shows its columns (R-3); `newQuery` opens a blank tab
+  // (R-3). `defaultRowLimit` is the single pref source — never hardcoded.
+  const handleNodeAction = useCallback(
+    (action: DbSchemaNodeAction, node: SchemaNode) => {
+      if (connectedId === null) return;
+      if (action === 'viewColumns') {
+        setSelectedNode(node);
+        return;
+      }
+      openRequestNonceRef.current += 1;
+      if (action === 'openData') {
+        setOpenRequest({
+          sql: buildTableDataSql(node, defaultRowLimit),
+          run: true,
+          nonce: openRequestNonceRef.current,
+        });
+      } else {
+        // 'newQuery'
+        setOpenRequest({ sql: '', run: false, nonce: openRequestNonceRef.current });
+      }
+    },
+    [connectedId, defaultRowLimit],
+  );
+
   const openNew = useCallback(() => {
     setEditing(null);
     setFormOpen(true);
@@ -396,6 +437,7 @@ export const DatabaseClientFeatureView: React.FC = () => {
               connectionId={connectedId}
               onSelect={setSelectedNode}
               onNodesChange={setSchemaNodes}
+              onNodeAction={handleNodeAction}
             />
           </Box>
 
@@ -434,6 +476,7 @@ export const DatabaseClientFeatureView: React.FC = () => {
             defaultRowLimit={defaultRowLimit}
             onConnectionLost={handleConnectionLost}
             externalSql={externalSql}
+            openRequest={openRequest}
             onQueryComplete={handleQueryComplete}
             onActiveSqlChange={setActiveSql}
             editorHeight={layout.editorResultsHeight}
