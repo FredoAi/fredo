@@ -372,6 +372,37 @@ export const DoomWindow: React.FC = () => {
           </Text>
         </VisuallyHidden>
 
+        {/* Spec #3053 ST-5 (F-14/AC2) — the persistent combat-kills HUD. A
+            top-left, absolute `Text` pill, pointerEvents:none so it never
+            reflows the canvas or steals interaction (G-273). Rendered iff a run
+            is not `idle`, so there is never a flash of `Kills: 0`; the text is
+            exactly `Kills: {kills}` and is updated ONLY by the existing
+            `doom-autoplay-changed` flow (no new poll, no new invoke).
+            `engagements` is carry-only and deliberately not rendered. */}
+        {autoplayStatus.phase !== 'idle' && (
+          <Text
+            data-testid="doom-combat-kills"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            position="absolute"
+            top={3}
+            left={3}
+            pointerEvents="none"
+            px={2}
+            py={1}
+            borderRadius="sm"
+            bg="bg.surface"
+            borderWidth="1px"
+            borderColor="border.default"
+            fontSize="xs"
+            color="fg.default"
+            fontFamily="mono"
+          >
+            Kills: {autoplayStatus.kills}
+          </Text>
+        )}
+
         {/* Idle collapses into Starting: the window auto-launches on mount, so
             there is never a start control (AC1) nor a black void (R-1.b). */}
         {(phase === 'idle' || phase === 'starting') && (
