@@ -67,6 +67,13 @@ pub const DOOM_COMBAT_TURN_AMOUNT: i64 = 1;
 /// [`super::agent::DOOM_REFLEX_STEP_BACK_TICKS`]).
 pub const DOOM_COMBAT_RETREAT_TICS: i64 = 2;
 
+/// The driver's test-only "brake off" sentinel (Spec #3053 Option A): a low-health
+/// threshold no realistic health reaches, so the survival brake never fires
+/// (`health <= i64::MIN` is false for every health ≥ 0). Used to prove
+/// deterministic route completion on a brake-inert leg without a process-global
+/// env read (per-run, race-free under parallel `cargo test`).
+pub const DOOM_COMBAT_LOW_HEALTH_OFF: i64 = i64::MIN;
+
 /// The test-only override of [`DOOM_COMBAT_LOW_HEALTH`] (G-275/G-300). Inert
 /// when unset, blank, or invalid — production keeps the pinned threshold.
 pub const DOOM_COMBAT_LOW_HEALTH_ENV: &str = "FREDO_DOOM_COMBAT_LOW_HEALTH";
@@ -106,15 +113,44 @@ pub struct CombatTarget {
 /// The persisted, per-run combat-policy state (mirrors
 /// [`super::agent::DoomLocalPolicy`]): pure data the intent updates once per
 /// tick. No RNG, no clock.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+///
+/// `low_health` is the EFFECTIVE threshold captured **once at loop construction**
+/// (Spec #3053 Option A): the per-run override resolved from
+/// [`DoomAutoplayConfig::combat_low_health`](super::agent::DoomAutoplayConfig::combat_low_health)
+/// or, when `None`, the retained [`combat_low_health`] seam. Capturing it here
+/// makes [`combat_intent`] a pure function of observation + policy — no
+/// process-global env read per tick, no cross-test shared state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DoomCombatPolicy {
     /// Engaged ticks this run (ticks that produced a [`CombatMode::Engage`]
     /// intent). Reset on a level transition via [`DoomCombatPolicy::reset`].
     pub engagements: u32,
+    /// The effective low-health disengage threshold (AC3), captured once per run.
+    pub low_health: i64,
+}
+
+impl Default for DoomCombatPolicy {
+    fn default() -> Self {
+        Self {
+            engagements: 0,
+            low_health: DOOM_COMBAT_LOW_HEALTH,
+        }
+    }
 }
 
 impl DoomCombatPolicy {
-    /// Reset the per-run counters for a level transition.
+    /// A policy with an explicit effective low-health threshold (Spec #3053
+    /// Option A). `DOOM_COMBAT_LOW_HEALTH_OFF` yields a brake-inert leg.
+    pub fn with_low_health(low_health: i64) -> Self {
+        Self {
+            engagements: 0,
+            low_health,
+        }
+    }
+
+    /// Reset the per-run counters for a level transition. The effective
+    /// `low_health` threshold is a config value, not a per-level counter, so it
+    /// is preserved.
     pub fn reset(&mut self) {
         self.engagements = 0;
     }
@@ -204,7 +240,7 @@ pub fn combat_low_health() -> i64 {
 /// Compute the bounded combat intent for one tick, or `None` when there is no
 /// engageable target (R-4 — the retained pipeline drives).
 ///
-/// * low health (`player.health <= combat_low_health()`) ⇒ [`CombatMode::Disengage`]
+/// * low health (`player.health <= policy.low_health`) ⇒ [`CombatMode::Disengage`]
 ///   and exactly ONE bounded `backward` (no `shoot`, even with a `front` target);
 /// * a `front` target ⇒ [`CombatMode::Engage`] and exactly ONE bounded `shoot`;
 /// * an in-range `left`/`right` target ⇒ [`CombatMode::Engage`] and exactly ONE
@@ -221,8 +257,7 @@ pub fn combat_intent(
     let low_health = observation
         .pointer("/player/health")
         .and_then(Value::as_i64)
-        .map(health_disengages)
-        .unwrap_or(false);
+        .is_some_and(|health| health <= policy.low_health);
 
     if low_health {
         return Some(CombatIntent {

@@ -521,6 +521,12 @@ pub struct DoomDriverConfig {
     /// instead of advancing the campaign. Defaults to `false` (inert), so the
     /// shipped advance path is byte-identical.
     pub stop_at_first_exit: bool,
+    /// Test-only per-run low-health threshold override (Spec #3053 Option A),
+    /// threaded into the loop's [`super::agent::DoomAutoplayConfig`] and captured
+    /// into the run's combat policy. `None` (the production default) resolves the
+    /// retained env seam; `Some(DOOM_COMBAT_LOW_HEALTH_OFF)` makes the survival
+    /// brake inert for a brake-inert completion leg.
+    pub combat_low_health: Option<i64>,
 }
 
 impl Default for DoomDriverConfig {
@@ -531,6 +537,7 @@ impl Default for DoomDriverConfig {
             max_steps: DOOM_AUTOPLAY_MAX_STEPS,
             max_failures: DOOM_AUTOPLAY_MAX_FAILURES,
             stop_at_first_exit: false,
+            combat_low_health: None,
         }
     }
 }
@@ -594,6 +601,10 @@ pub struct DoomDriverReport {
     pub last_x: i64,
     /// The last observed player map-unit y.
     pub last_y: i64,
+    /// The exact final `level.kills` of the run (Spec #3053 ST-4, AC2): the
+    /// engine's kill count from the final post-step observation, or `0` when the
+    /// run produced no observation (`/level/kills` is absent/malformed).
+    pub kills: i64,
     /// The terminal kind reached (`"dead"` / `"exited"`), or `None` when the
     /// step/failure budget ended the run first.
     pub terminal: Option<&'static str>,
@@ -660,6 +671,7 @@ pub async fn run_bounded_driver(
         tick_period: Duration::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS),
         degraded_tick_period: Duration::from_millis(DOOM_DEGRADED_TICK_PERIOD_MS),
         stop_on_level_exit: config.stop_at_first_exit,
+        combat_low_health: config.combat_low_health,
         ..DoomAutoplayConfig::default()
     };
 
@@ -692,6 +704,7 @@ pub async fn run_bounded_driver(
     let last_tic = last.map_or(start_tic, observation_tic);
     let (last_x, last_y) = last.map_or((start_x, start_y), observation_position);
     let terminal = last.and_then(super::agent::terminal_kind).map(terminal_label);
+    let kills = last.map_or(0, observation_kills);
     let ticks = result.steps;
     let distinct_frames = counters.distinct_frames;
     let fps_estimate = if ticks == 0 {
@@ -717,6 +730,7 @@ pub async fn run_bounded_driver(
         start_y,
         last_x,
         last_y,
+        kills,
         terminal,
     })
 }
@@ -854,6 +868,17 @@ fn observation_position(observation: &Value) -> (i64, i64) {
         .and_then(Value::as_i64)
         .unwrap_or(0);
     (x, y)
+}
+
+/// The exact `level.kills` of an observation, or `0` when absent/malformed
+/// (Spec #3053 ST-4). The engine builds `level.kills` from its `kill_count`, so
+/// this is the run's live kill total — more accurate than a throttled status
+/// snapshot.
+fn observation_kills(observation: &Value) -> i64 {
+    observation
+        .pointer("/level/kills")
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
 }
 
 /// The stable label for a terminal observation (`"dead"` / `"exited"`).
@@ -2073,6 +2098,7 @@ mod tests {
                 max_steps: 8,
                 max_failures: 3,
                 stop_at_first_exit: false,
+                combat_low_health: None,
             },
             &clock,
         )
@@ -2129,6 +2155,7 @@ mod tests {
                 max_steps: window_ticks + 1,
                 max_failures: 3,
                 stop_at_first_exit: false,
+                combat_low_health: None,
             },
             &clock,
         )
@@ -2176,6 +2203,7 @@ mod tests {
                     max_steps: 40,
                     max_failures: 3,
                     stop_at_first_exit: false,
+                    combat_low_health: None,
                 },
                 &clock,
             )
@@ -2208,6 +2236,7 @@ mod tests {
                     max_steps: steps,
                     max_failures: 3,
                     stop_at_first_exit: false,
+                    combat_low_health: None,
                 },
                 &clock,
             )
@@ -2238,6 +2267,7 @@ mod tests {
                 max_steps: 4,
                 max_failures: 3,
                 stop_at_first_exit: false,
+                combat_low_health: None,
             },
             &clock,
         )
@@ -2262,6 +2292,7 @@ mod tests {
                 max_steps: 600,
                 max_failures: 3,
                 stop_at_first_exit: false,
+                combat_low_health: None,
             },
             &clock,
         )
@@ -2354,6 +2385,7 @@ mod tests {
                     max_steps: 24,
                     max_failures: 3,
                     stop_at_first_exit: false,
+                    combat_low_health: None,
                 },
                 &clock,
             )
@@ -2395,8 +2427,16 @@ mod tests {
     /// field-for-field (G-316). If it under-completes, the failing observation
     /// trace is printed so a re-scope can be judged from data — the assertion is
     /// never loosened.
+    ///
+    /// Per **Option A** (Spec #3053 amendment), the completion guarantee is scoped
+    /// to a run that does **not** enter the survival brake: this leg runs with the
+    /// brake **inert** through the test-only driver seam
+    /// (`combat_low_health: Some(DOOM_COMBAT_LOW_HEALTH_OFF)`). The separate
+    /// bounded-brake pin covers the brake path. `st8` still asserts deterministic
+    /// completion within the committed [`DOOM_COMPLETION_STEP_BUDGET`].
     #[tokio::test]
     async fn st8_local_route_completes_the_target_level_deterministically() {
+        use crate::applications::doom::combat::DOOM_COMBAT_LOW_HEALTH_OFF;
         use crate::applications::doom::local_route::LocalRouteSource;
         use crate::applications::doom::save::{
             DOOM_COMPLETION_STEP_BUDGET, DOOM_COMPLETION_TARGET_MAP, DOOM_DEFAULT_SKILL,
@@ -2415,6 +2455,7 @@ mod tests {
                     max_steps: DOOM_COMPLETION_STEP_BUDGET,
                     max_failures: 3,
                     stop_at_first_exit: true,
+                    combat_low_health: Some(DOOM_COMBAT_LOW_HEALTH_OFF), // Option A: brake inert
                 },
                 &clock,
             )
@@ -2571,6 +2612,7 @@ mod tests {
                 max_steps: 2,
                 max_failures: 3,
                 stop_at_first_exit: false,
+                combat_low_health: None,
             },
             &clock,
         )

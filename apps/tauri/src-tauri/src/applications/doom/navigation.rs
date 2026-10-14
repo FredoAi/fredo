@@ -2298,6 +2298,7 @@ mod tests {
                 max_steps: 64,
                 max_failures: 3,
                 stop_at_first_exit: false,
+                combat_low_health: None,
             },
             &clock,
         )

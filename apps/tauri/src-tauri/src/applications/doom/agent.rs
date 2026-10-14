@@ -224,6 +224,14 @@ pub struct DoomAutoplayConfig {
     /// the campaign — the deterministic AC5 completion surface. Defaults to
     /// `false` (unset/inert), so the shipped advance path is byte-identical.
     pub stop_on_level_exit: bool,
+    /// Test-only per-run low-health threshold override (Spec #3053 Option A): the
+    /// effective AC3 disengage threshold captured once at loop construction into
+    /// [`combat::DoomCombatPolicy`]. `None` (the production default) resolves the
+    /// retained [`combat::combat_low_health`] env seam — the pinned
+    /// [`combat::DOOM_COMBAT_LOW_HEALTH`]; `Some(DOOM_COMBAT_LOW_HEALTH_OFF)`
+    /// makes the survival brake inert for a brake-inert completion leg. Per-run,
+    /// so there is no shared mutable state under parallel `cargo test`.
+    pub combat_low_health: Option<i64>,
 }
 
 impl Default for DoomAutoplayConfig {
@@ -237,6 +245,7 @@ impl Default for DoomAutoplayConfig {
             tick_period: Duration::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS),
             degraded_tick_period: Duration::from_millis(DOOM_DEGRADED_TICK_PERIOD_MS),
             stop_on_level_exit: false,
+            combat_low_health: None,
         }
     }
 }
@@ -1875,7 +1884,14 @@ pub async fn run_continuous_loop_with_writer(
     let mut policy = DoomLocalPolicy::default();
     // The combat-engagement policy state (Spec #3053 ST-3): the per-level
     // engaged-tick count, reset on a level transition alongside the local policy.
-    let mut combat_policy = combat::DoomCombatPolicy::default();
+    // The effective low-health threshold is captured ONCE here (Option A): the
+    // per-run override or the retained `combat_low_health()` seam, never read
+    // per tick from the process-global env (so parallel tests stay independent).
+    let mut combat_policy = combat::DoomCombatPolicy::with_low_health(
+        config
+            .combat_low_health
+            .unwrap_or_else(combat::combat_low_health),
+    );
     // The bounded low-health back-off window counter (Spec #3053 ST-3 addendum):
     // consecutive `Disengage` ticks spent retreating. Bounded so a retreat into
     // geometry cannot wedge the run (G-263); reset on a level transition.
@@ -2634,6 +2650,7 @@ mod tests {
             tick_period: Duration::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS),
             degraded_tick_period: Duration::from_millis(DOOM_DEGRADED_TICK_PERIOD_MS),
             stop_on_level_exit: false,
+            combat_low_health: None,
         }
     }
 
@@ -2648,6 +2665,7 @@ mod tests {
             tick_period: Duration::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS),
             degraded_tick_period: Duration::from_millis(DOOM_DEGRADED_TICK_PERIOD_MS),
             stop_on_level_exit: false,
+            combat_low_health: None,
         }
     }
 
@@ -3245,6 +3263,7 @@ mod tests {
             tick_period: Duration::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS),
             degraded_tick_period: Duration::from_millis(DOOM_DEGRADED_TICK_PERIOD_MS),
             stop_on_level_exit: false,
+            combat_low_health: None,
         };
 
         let result = run_autoplay_loop(
@@ -3378,6 +3397,7 @@ mod tests {
                 max_steps: 1_500,
                 max_failures: 3,
                 stop_at_first_exit: false,
+                combat_low_health: None,
             },
             &clock,
         )
@@ -3418,6 +3438,7 @@ mod tests {
                     max_steps: 600,
                     max_failures: 3,
                     stop_at_first_exit: false,
+                    combat_low_health: None,
                 },
                 &clock,
             )
@@ -4552,6 +4573,109 @@ mod tests {
             actions_contain(last, DOOM_ACTION_FORWARD),
             "past the bounded window the route resumes: {last:?}"
         );
+    }
+
+    /// **Spec #3053 Option A (ST-3 seam).** The driver's `combat_low_health` seam
+    /// toggles the survival brake PER RUN (no process-global env read, so it is
+    /// race-free under parallel `cargo test`). This pin runs
+    /// [`NativeRouteSource`] at the threshold boundary
+    /// (`health == DOOM_COMBAT_LOW_HEALTH`) and asserts BOTH seam arms:
+    /// * brake ON (`None`, the production default): every bounded-window tick is a
+    ///   real back-off (no `shoot`, `net_forward_move < 0`, the route's `turn-to`
+    ///   retained) and the route resumes past the bounded window (no wedge);
+    /// * brake OFF (`Some(DOOM_COMBAT_LOW_HEALTH_OFF)`, the `st8` leg): the brake
+    ///   is removed, the route's `forward` is retained, and `Engage` resumes fire.
+    ///
+    /// It neither duplicates nor contradicts the two pins above (which pin the
+    /// brake at `health == 0` with no seam); this is the only pin exercising the
+    /// seam toggle at the boundary.
+    #[tokio::test]
+    async fn combat_low_health_brake_is_bounded_and_inert_under_the_driver_seam() {
+        /// Run [`NativeRouteSource`] at the low-health boundary for `ticks` with an
+        /// explicit `combat_low_health` seam; return the issued step actions.
+        async fn run_route(ticks: u32, seam: Option<i64>) -> Vec<Value> {
+            let engine = FakeEngine::default();
+            engine.queue_reset(Ok(combat_observation_at(
+                0,
+                0,
+                combat::DOOM_COMBAT_LOW_HEALTH,
+                "front",
+                100,
+                0,
+                0,
+            )));
+            for tic in 1..=u64::from(ticks) {
+                engine.step_queue.lock().unwrap().push_back(Ok(combat_observation_at(
+                    tic,
+                    0,
+                    combat::DOOM_COMBAT_LOW_HEALTH,
+                    "front",
+                    100,
+                    tic as i64,
+                    0,
+                )));
+            }
+            let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+            let stop = AtomicBool::new(false);
+            let mut cfg = continuous_config(ticks + 1, 3, Duration::from_secs(1));
+            cfg.combat_low_health = seam; // SEAM
+            let result = run_continuous_loop(
+                &engine,
+                &NativeRouteSource,
+                &cfg,
+                &clock,
+                AutoplayRun {
+                    campaign: campaign(1, 1),
+                    progress: no_progress(),
+                },
+                &stop,
+                |_| {},
+            )
+            .await;
+            assert!(result.success);
+            step_actions(&engine)
+        }
+
+        // Arm 1 — brake ON (production default, seam None).
+        let on = run_route(DOOM_COMBAT_RETREAT_WINDOW_TICKS + 3, None).await;
+        for actions in &on[..DOOM_COMBAT_RETREAT_WINDOW_TICKS as usize] {
+            assert!(
+                !actions_contain(actions, DOOM_ACTION_SHOOT),
+                "no fire while low: {actions:?}"
+            );
+            assert!(
+                net_forward_move(actions) < 0,
+                "a REAL back-off (forward_move < 0): {actions:?}"
+            );
+            assert!(
+                actions_contain(actions, DOOM_ACTION_TURN_TO),
+                "the route turn-to is retained: {actions:?}"
+            );
+        }
+        let resumed = on.last().expect("a step"); // past the bounded window
+        assert!(
+            !actions_contain(resumed, DOOM_ACTION_BACKWARD)
+                && actions_contain(resumed, DOOM_ACTION_FORWARD),
+            "bounded ⇒ the route resumes (no wedge/freeze): {resumed:?}"
+        );
+
+        // Arm 2 — brake OFF (the st8 driver seam): the SAME low-health steps are
+        // brake-exempt.
+        let off = run_route(3, Some(combat::DOOM_COMBAT_LOW_HEALTH_OFF)).await;
+        for actions in &off {
+            assert!(
+                !actions_contain(actions, DOOM_ACTION_BACKWARD),
+                "the seam removes the brake: {actions:?}"
+            );
+            assert!(
+                actions_contain(actions, DOOM_ACTION_FORWARD),
+                "the route forward is retained: {actions:?}"
+            );
+            assert!(
+                actions_contain(actions, DOOM_ACTION_SHOOT),
+                "seam off ⇒ Engage resumes fire: {actions:?}"
+            );
+        }
     }
 
     // ── Dataset assembly (Spec #3032 ST-2) ───────────────────────────────────

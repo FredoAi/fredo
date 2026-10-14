@@ -553,6 +553,7 @@ fn autoplay_config(max_steps: Option<u32>) -> DoomAutoplayConfig {
         max_steps: ticks,
         max_ticks: ticks,
         max_failures: decision::max_failures_from_env().unwrap_or(base.max_failures),
+        combat_low_health: None,
         ..base
     }
 }
