@@ -259,3 +259,26 @@ Cold-restarted the dev instance so the round-2 Rust fix `b303ba9` was built+serv
   the four settings keys restored.
 - **S-26 now PASS (F-81 fixed).** `fredo open-terminal --help` shows
   `--cli <shell|opencode|copilot>` + the `shell` type in the description.
+
+## #3051 — chip removal (quick paths)
+
+> Seeded at triage for Spec #3051. Quick paths only; full assertions live in the named
+> `functional.md` rows. Evidence is LIVE; the run carries a `telemetry_spans` non-zero receipt.
+
+- [ ] S-27: **No chip (quick path)** — open the `terminal` window with ≥1 running session; query the
+      served DOM focused AND after click-away.
+      EXPECTED: `[data-testid="hotkeys-terminal-passthrough"]` === null and no
+      `Passthrough`/`Hotkeys active` text in EITHER focus state. Full assertions in F-82/F-83.
+- [ ] S-28: **Body hook still works (quick path)** — focus the terminal, then click away.
+      EXPECTED: `document.body` gains then loses `data-fredo-passthrough` (removed, not `"false"`).
+      Full assertions in F-86/R-28.
+- [ ] S-29: **Removed tests gone / retained green (quick path)** — run
+      `TerminalPassthrough.test.tsx` + `terminalMode.test.ts`.
+      EXPECTED: only the `terminal root anchor` suite remains in the former; the latter still passes.
+      Full assertions in F-84.
+
+### C-5 teardown (#3051)
+
+> Full detail: the C-5 recipe above. The #3051 rows spawn sessions rooted in
+> `.opencode\tests\terminal\fixtures\*` only; run the teardown after this section and restore the
+> four settings keys.
