@@ -63,6 +63,11 @@ pub mod autoplay;
 // deterministic `FixedTickClock`.
 pub mod clock;
 pub mod commands;
+// Deterministic engagement policy (Spec #3053 ST-1) — the pure, model-independent
+// combat layer: select the front/side target, emit one bounded aim/fire action,
+// and disengage (bounded `backward`) at low health. Purity mirrors [`plan`]. It
+// reuses the ONE shared front-enemy predicate for reflex reconciliation.
+pub mod combat;
 // Fine-tuning dataset core (Spec #3032 ST-1) — the reconciled per-decision
 // [`dataset::DoomDatasetRecord`] JSONL model, the bounded append-only writer +
 // rotate/evict retention (with the export-in-progress eviction deferral), and the

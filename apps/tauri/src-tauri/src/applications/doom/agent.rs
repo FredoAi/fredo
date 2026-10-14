@@ -67,9 +67,9 @@ use crate::infrastructure::companion::doom_decision::{
 use crate::infrastructure::storage::boot_config::DATA_DIR_ENV;
 
 use super::actions::{
-    DOOM_ACTION_BACKWARD, DOOM_ACTION_FORWARD, DOOM_ACTION_SHOOT, DOOM_ACTION_STRAFE_LEFT,
-    DOOM_ACTION_STRAFE_RIGHT, DOOM_ACTION_TURN_TO, DOOM_ACTION_USE, DOOM_STEP_TICS_MAX,
-    DOOM_STEP_TICS_MIN,
+    DOOM_ACTION_BACKWARD, DOOM_ACTION_FORWARD, DOOM_ACTION_RUN, DOOM_ACTION_SHOOT,
+    DOOM_ACTION_STRAFE_LEFT, DOOM_ACTION_STRAFE_RIGHT, DOOM_ACTION_TURN_TO, DOOM_ACTION_USE,
+    DOOM_STEP_TICS_MAX, DOOM_STEP_TICS_MIN,
 };
 use super::autoplay::{
     DoomAutoplayErrorCode, DoomAutoplayPhase, DoomAutoplayResult, DoomAutoplayStatus,
@@ -81,6 +81,9 @@ use super::clock::{
     DOOM_CONTINUOUS_TICK_PERIOD_MS, DOOM_DEGRADED_AFTER_FAILURES, DOOM_DEGRADED_TICK_PERIOD_MS,
     DOOM_STATUS_EMIT_MS,
 };
+// The combat-engagement layer (Spec #3053 ST-1/ST-3): a pure, deterministic
+// aim/fire/disengage policy consulted once per tick in the continuous loop.
+use super::combat;
 use super::dataset::{
     dataset_dir_from, dataset_enabled_from_env, decision_id_for, episode_id_for,
     plan_steps_to_values, DoomDatasetConfig, DoomDatasetDecision, DoomDatasetDecisionError,
@@ -127,6 +130,15 @@ pub const DOOM_REFLEX_BLOCKED_TICKS: u32 = 4;
 /// The bounded step-back length (held tics) the reflex issues when it drops a
 /// wall-running `forward` (R-3a).
 pub const DOOM_REFLEX_STEP_BACK_TICKS: i64 = 2;
+
+// ── Combat low-health back-off (Spec #3053 ST-3 addendum) ────────────────────
+
+/// The bounded window (engine ticks) for the low-health back-off: a `Disengage`
+/// tick's `backward` SUPERSEDES the route's `forward` for at most this many
+/// consecutive ticks, so a retreat that runs into geometry cannot wedge the run
+/// (G-263 / "no freeze/wedge"). Past the window the base route resumes with fire
+/// still suppressed while health is low. Deterministic — no RNG, no clock.
+pub const DOOM_COMBAT_RETREAT_WINDOW_TICKS: u32 = 24;
 
 // ── Unstick / escape + local-locomotion policy (Spec #3031 ST-3) ─────────────
 
@@ -212,6 +224,14 @@ pub struct DoomAutoplayConfig {
     /// the campaign — the deterministic AC5 completion surface. Defaults to
     /// `false` (unset/inert), so the shipped advance path is byte-identical.
     pub stop_on_level_exit: bool,
+    /// Test-only per-run low-health threshold override (Spec #3053 Option A): the
+    /// effective AC3 disengage threshold captured once at loop construction into
+    /// [`combat::DoomCombatPolicy`]. `None` (the production default) resolves the
+    /// retained [`combat::combat_low_health`] env seam — the pinned
+    /// [`combat::DOOM_COMBAT_LOW_HEALTH`]; `Some(DOOM_COMBAT_LOW_HEALTH_OFF)`
+    /// makes the survival brake inert for a brake-inert completion leg. Per-run,
+    /// so there is no shared mutable state under parallel `cargo test`.
+    pub combat_low_health: Option<i64>,
 }
 
 impl Default for DoomAutoplayConfig {
@@ -225,6 +245,7 @@ impl Default for DoomAutoplayConfig {
             tick_period: Duration::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS),
             degraded_tick_period: Duration::from_millis(DOOM_DEGRADED_TICK_PERIOD_MS),
             stop_on_level_exit: false,
+            combat_low_health: None,
         }
     }
 }
@@ -463,6 +484,11 @@ fn apply_observation(status: &mut DoomAutoplayStatus, observation: &Value) {
     if let Some(map) = observation.pointer("/level/map").and_then(Value::as_i64) {
         status.map = Some(map);
     }
+    // AC2 (Spec #3053 ST-3): a read-only projection of the engine's own kill
+    // counter — never fabricated, never incremented client-side.
+    if let Some(kills) = observation.pointer("/level/kills").and_then(Value::as_i64) {
+        status.kills = kills;
+    }
 }
 
 /// The running status seeded from the resolved campaign (so the resume point is
@@ -489,6 +515,8 @@ fn running_status(campaign: &DoomCampaign) -> DoomAutoplayStatus {
         started_at: Some(chrono::Utc::now().to_rfc3339()),
         last_error: None,
         code: None,
+        kills: 0,
+        engagements: 0,
     }
 }
 
@@ -516,6 +544,8 @@ fn completed_status(campaign: &DoomCampaign) -> DoomAutoplayStatus {
         started_at: Some(chrono::Utc::now().to_rfc3339()),
         last_error: None,
         code: Some(DoomAutoplayErrorCode::CampaignComplete),
+        kills: 0,
+        engagements: 0,
     }
 }
 
@@ -1852,6 +1882,20 @@ pub async fn run_continuous_loop_with_writer(
     let mut blocked_forward_ticks: u32 = 0;
     // The unstick/escape + local-locomotion policy state (Spec #3031 ST-3).
     let mut policy = DoomLocalPolicy::default();
+    // The combat-engagement policy state (Spec #3053 ST-3): the per-level
+    // engaged-tick count, reset on a level transition alongside the local policy.
+    // The effective low-health threshold is captured ONCE here (Option A): the
+    // per-run override or the retained `combat_low_health()` seam, never read
+    // per tick from the process-global env (so parallel tests stay independent).
+    let mut combat_policy = combat::DoomCombatPolicy::with_low_health(
+        config
+            .combat_low_health
+            .unwrap_or_else(combat::combat_low_health),
+    );
+    // The bounded low-health back-off window counter (Spec #3053 ST-3 addendum):
+    // consecutive `Disengage` ticks spent retreating. Bounded so a retreat into
+    // geometry cannot wedge the run (G-263); reset on a level transition.
+    let mut combat_retreat_ticks: u32 = 0;
 
     // The Plan Executor (Spec #3039 ST-4): runs the adopted plan one step per
     // tick and requests a re-plan on divergence (AC2/AC3/AC4). The retained
@@ -1931,6 +1975,8 @@ pub async fn run_continuous_loop_with_writer(
                             previous_position = None;
                             blocked_forward_ticks = 0;
                             policy.reset_detector();
+                            combat_policy.reset();
+                            combat_retreat_ticks = 0;
                             last_intent.clear();
                             executor.reset_positioning();
                             next_plan = None;
@@ -1991,6 +2037,8 @@ pub async fn run_continuous_loop_with_writer(
                             previous_position = None;
                             blocked_forward_ticks = 0;
                             policy.reset_detector();
+                            combat_policy.reset();
+                            combat_retreat_ticks = 0;
                             last_intent.clear();
                             executor.reset_positioning();
                             next_plan = None;
@@ -2204,16 +2252,25 @@ pub async fn run_continuous_loop_with_writer(
         status.replans = executor.replans();
         status.plan_index = plan_tick.index;
 
-        // 3c. Compose the effective intent. A NATIVE plan step is issued directly
-        //     (guarded by the retained safety reflex); the LEGACY `Hold` step and
-        //     the no-step fallback run through the retained reflex + unstick/escape
-        //     + local-locomotion pipeline (composed, never replaced).
+        // 3c. Compose the tick's action set. The retained `match` produces the
+        //     executor/route action (`base`) with all its guards intact; the
+        //     combat-engagement layer (Spec #3053 ST-3, Architect adjudication)
+        //     then APPENDS its bounded action(s): combat COMPOSES WITH the
+        //     route/executor step, it never replaces it. `combat_intent` is
+        //     computed on EVERY tick (so AC1 holds on the native-plan path); when
+        //     it returns `None` the tick is byte-identical to the pre-combat run
+        //     (R-4/R-5). While the #3031 escape window governs the tick, no combat
+        //     action is appended (escape precedence).
         let step_controller = match &plan_tick.action {
             PlanAction::Native(_) => Some("plan"),
             PlanAction::Legacy(_) => Some("legacy"),
             PlanAction::None => None,
         };
-        let effective = match plan_tick.action {
+        // Captured at tick entry — the exact escape conditions `effective_intent`
+        // uses (its step 2 mutates `escape_ticks_remaining`).
+        let escaping =
+            policy.escape_ticks_remaining > 0 || policy.no_move_ticks >= DOOM_ESCAPE_STUCK_TICKS;
+        let base = match plan_tick.action {
             PlanAction::Native(actions) => {
                 last_intent = actions.clone();
                 safety_reflex(&observation, &actions, blocked_forward_ticks)
@@ -2236,9 +2293,45 @@ pub async fn run_continuous_loop_with_writer(
                 status.steps,
             ),
         };
+        // The reflex label is derived from the retained set only (AC5
+        // observability); the append below never affects it.
+        let reflex_fired = base != last_intent;
+        let mut effective = base;
+        if !escaping {
+            if let Some(intent) = combat::combat_intent(&observation, &mut combat_policy) {
+                match intent.mode {
+                    // AC1 (Engage): append the bounded aim/fire action(s).
+                    combat::CombatMode::Engage => {
+                        combat_retreat_ticks = 0;
+                        effective.extend(intent.actions);
+                    }
+                    // AC3 (Disengage): a real, BOUNDED back-off — the retreat
+                    // SUPERSEDES the route's `forward`/`run` for this tick (the
+                    // route's `turn-to`/`use` are retained), so `engine.step` sees
+                    // `forward_move < 0` rather than the defective net-zero. Past
+                    // the bounded window the base route resumes (fire stays
+                    // suppressed while health is low), so a retreat that runs into
+                    // geometry cannot wedge the run (G-263).
+                    combat::CombatMode::Disengage => {
+                        if combat_retreat_ticks < DOOM_COMBAT_RETREAT_WINDOW_TICKS {
+                            effective.retain(|action| {
+                                let kind = action.get("type").and_then(Value::as_str);
+                                kind != Some(DOOM_ACTION_FORWARD) && kind != Some(DOOM_ACTION_RUN)
+                            });
+                            effective.extend(intent.actions);
+                            combat_retreat_ticks = combat_retreat_ticks.saturating_add(1);
+                        }
+                    }
+                }
+            } else {
+                // No engageable target: the low-health episode ends, so the
+                // bounded back-off window resets for a future episode.
+                combat_retreat_ticks = 0;
+            }
+        }
         status.escapes = policy.escapes;
         status.stuck_ticks = policy.no_move_ticks;
-        let reflex_fired = effective != last_intent;
+        status.engagements = combat_policy.engagements;
 
         // 3d. Dataset assembly (Spec #3032 ST-2): append the executed plan step
         //     with its controller; on a no-plan tick the retained reflex/fallback
@@ -2557,6 +2650,7 @@ mod tests {
             tick_period: Duration::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS),
             degraded_tick_period: Duration::from_millis(DOOM_DEGRADED_TICK_PERIOD_MS),
             stop_on_level_exit: false,
+            combat_low_health: None,
         }
     }
 
@@ -2571,6 +2665,7 @@ mod tests {
             tick_period: Duration::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS),
             degraded_tick_period: Duration::from_millis(DOOM_DEGRADED_TICK_PERIOD_MS),
             stop_on_level_exit: false,
+            combat_low_health: None,
         }
     }
 
@@ -3168,6 +3263,7 @@ mod tests {
             tick_period: Duration::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS),
             degraded_tick_period: Duration::from_millis(DOOM_DEGRADED_TICK_PERIOD_MS),
             stop_on_level_exit: false,
+            combat_low_health: None,
         };
 
         let result = run_autoplay_loop(
@@ -3301,6 +3397,7 @@ mod tests {
                 max_steps: 1_500,
                 max_failures: 3,
                 stop_at_first_exit: false,
+                combat_low_health: None,
             },
             &clock,
         )
@@ -3341,6 +3438,7 @@ mod tests {
                     max_steps: 600,
                     max_failures: 3,
                     stop_at_first_exit: false,
+                    combat_low_health: None,
                 },
                 &clock,
             )
@@ -3968,6 +4066,616 @@ mod tests {
         );
         assert_eq!(result.phase, DoomAutoplayPhase::Completed);
         assert_eq!(result.code, Some(DoomAutoplayErrorCode::BudgetExhausted));
+    }
+
+    // ── Combat engagement loop integration (Spec #3053 ST-3) ─────────────────
+
+    /// An alive E1M1 observation carrying ONE `enemies[]` entry, at `(x, y)`.
+    fn combat_observation_at(
+        tic: u64,
+        kills: i64,
+        health: i64,
+        direction: &str,
+        distance: i64,
+        x: i64,
+        y: i64,
+    ) -> Value {
+        json!({
+            "tic": tic,
+            "done": false,
+            "outcome": "alive",
+            "level": { "episode": 1, "map": 1, "skill": 3, "kills": kills, "items": 0 },
+            "player": { "x": x, "y": y, "angle": 0, "health": health },
+            "enemies": [
+                { "kind": "trooper", "hp": 20, "direction": direction, "distance": distance }
+            ],
+        })
+    }
+
+    /// An alive E1M1 observation at the origin with ONE `enemies[]` entry.
+    fn combat_observation(
+        tic: u64,
+        kills: i64,
+        health: i64,
+        direction: &str,
+        distance: i64,
+    ) -> Value {
+        combat_observation_at(tic, kills, health, direction, distance, 0, 0)
+    }
+
+    /// An alive E1M1 observation with NO `enemies[]` — the combat-inert baseline —
+    /// at `(x, y)`.
+    fn plain_observation_at(tic: u64, health: i64, x: i64, y: i64) -> Value {
+        json!({
+            "tic": tic,
+            "done": false,
+            "outcome": "alive",
+            "level": { "episode": 1, "map": 1, "skill": 3, "kills": 0, "items": 0 },
+            "player": { "x": x, "y": y, "angle": 0, "health": health },
+        })
+    }
+
+    /// A decision source returning a fixed NATIVE route plan (a `Move` step) every
+    /// tick — the executor route step the combat intent must COMPOSE with
+    /// (Architect adjudication: compose, never replace).
+    struct NativeRouteSource;
+
+    #[async_trait]
+    impl DoomDecisionSource for NativeRouteSource {
+        async fn decide(&self, _observation: &Value) -> Result<DoomPlan, DoomDecisionError> {
+            Ok(sample_plan())
+        }
+    }
+
+    /// Every `step` call's action array, in order (the loop's issued intents).
+    fn step_actions(engine: &FakeEngine) -> Vec<Value> {
+        engine
+            .calls()
+            .into_iter()
+            .filter_map(|call| {
+                let rest = call.strip_prefix("step ")?;
+                serde_json::from_str::<Value>(rest).ok()
+            })
+            .collect()
+    }
+
+    /// Whether an issued action array contains an action of `kind`.
+    fn actions_contain(actions: &Value, kind: &str) -> bool {
+        actions
+            .as_array()
+            .is_some_and(|array| array.iter().any(|action| action["type"] == kind))
+    }
+
+    /// The net forward-axis command of an issued action array: `+1` per `forward`,
+    /// `-1` per `backward` — the sign `engine.step` scales (`build_player_action`).
+    fn net_forward_move(actions: &Value) -> i64 {
+        actions
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|action| match action["type"].as_str() {
+                Some(DOOM_ACTION_FORWARD) => 1,
+                Some(DOOM_ACTION_BACKWARD) => -1,
+                _ => 0,
+            })
+            .sum()
+    }
+
+    #[tokio::test]
+    async fn combat_a_front_enemy_fires_each_tick_and_advances_kills_and_engagements() {
+        let engine = FakeEngine::default();
+        engine.queue_reset(Ok(combat_observation(0, 0, 100, "front", 100)));
+        for tic in 1..=3u64 {
+            engine
+                .step_queue
+                .lock()
+                .unwrap()
+                .push_back(Ok(combat_observation(tic, tic as i64, 100, "front", 100)));
+        }
+        let source = FakeSource::repeating(Ok(decision(1)));
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(false);
+        let mut statuses: Vec<DoomAutoplayStatus> = Vec::new();
+        // Budget 4 = positioning + 3 ticks (below K=12, so no escape window).
+        let cfg = continuous_config(4, 3, Duration::from_secs(1));
+
+        let result = run_continuous_loop(
+            &engine,
+            &source,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |status| statuses.push(status.clone()),
+        )
+        .await;
+
+        assert!(result.success);
+        let steps = step_actions(&engine);
+        assert_eq!(steps.len(), 3);
+        assert!(
+            steps
+                .iter()
+                .all(|actions| actions_contain(actions, DOOM_ACTION_SHOOT)),
+            "a front enemy fires every tick: {steps:?}"
+        );
+        let last = statuses.last().expect("a terminal status");
+        assert_eq!(last.kills, 3, "kills is the observation's `level.kills`");
+        assert_eq!(last.engagements, 3, "the engagement counter advances per tick");
+    }
+
+    #[tokio::test]
+    async fn combat_without_a_front_enemy_never_fires_and_stays_inert() {
+        // The default FakeEngine serves no `enemies` → the combat layer is inert.
+        let engine = FakeEngine::default();
+        let source = FakeSource::repeating(Ok(decision(1)));
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(false);
+        let mut statuses: Vec<DoomAutoplayStatus> = Vec::new();
+        let cfg = continuous_config(4, 3, Duration::from_secs(1));
+
+        let result = run_continuous_loop(
+            &engine,
+            &source,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |status| statuses.push(status.clone()),
+        )
+        .await;
+
+        assert!(result.success);
+        let steps = step_actions(&engine);
+        assert!(!steps.is_empty());
+        assert!(
+            steps
+                .iter()
+                .all(|actions| !actions_contain(actions, DOOM_ACTION_SHOOT)),
+            "no front enemy ⇒ no shoot: {steps:?}"
+        );
+        let last = statuses.last().expect("a terminal status");
+        assert_eq!(last.kills, 0);
+        assert_eq!(last.engagements, 0, "an inert layer never engages");
+    }
+
+    #[tokio::test]
+    async fn combat_low_health_disengages_without_firing_and_retreats() {
+        let engine = FakeEngine::default();
+        // Health 0 is at/below any positive threshold → the disengage path.
+        engine.queue_reset(Ok(combat_observation(0, 0, 0, "front", 100)));
+        for tic in 1..=3u64 {
+            engine
+                .step_queue
+                .lock()
+                .unwrap()
+                .push_back(Ok(combat_observation(tic, 0, 0, "front", 100)));
+        }
+        let source = FakeSource::repeating(Ok(decision(1)));
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(false);
+        let cfg = continuous_config(4, 3, Duration::from_secs(1));
+
+        let result = run_continuous_loop(
+            &engine,
+            &source,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
+
+        assert!(result.success);
+        let steps = step_actions(&engine);
+        assert_eq!(steps.len(), 3);
+        assert!(
+            steps
+                .iter()
+                .all(|actions| !actions_contain(actions, DOOM_ACTION_SHOOT)),
+            "low health ⇒ no shoot even with a front target: {steps:?}"
+        );
+        assert!(
+            steps
+                .iter()
+                .all(|actions| actions_contain(actions, DOOM_ACTION_BACKWARD)),
+            "low health ⇒ a bounded backward retreat: {steps:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_3031_escape_window_still_overrides_combat_fire_when_stuck() {
+        let engine = FakeEngine::default();
+        // A front enemy every tick, but the player never moves (x=0,y=0) — the
+        // no-move streak reaches K and the #3031 escape window replaces the intent.
+        engine.queue_reset(Ok(combat_observation(0, 0, 100, "front", 100)));
+        for tic in 1..=20u64 {
+            engine
+                .step_queue
+                .lock()
+                .unwrap()
+                .push_back(Ok(combat_observation(tic, 0, 100, "front", 100)));
+        }
+        let source = FakeSource::repeating(Ok(decision(1)));
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(false);
+        let cfg = continuous_config(17, 3, Duration::from_secs(1));
+
+        let result = run_continuous_loop(
+            &engine,
+            &source,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
+
+        assert!(result.success);
+        let steps = step_actions(&engine);
+        assert_eq!(steps.len(), 16);
+        let fired = steps
+            .iter()
+            .filter(|actions| actions_contain(actions, DOOM_ACTION_SHOOT))
+            .count();
+        let escaped = steps
+            .iter()
+            .filter(|actions| !actions_contain(actions, DOOM_ACTION_SHOOT))
+            .count();
+        assert!(fired > 0, "the companion engages while it is not stuck");
+        assert!(
+            escaped > 0,
+            "the escape window still suppresses fire while stuck despite the front target: {steps:?}"
+        );
+        assert!(
+            steps.iter().any(|actions| !actions_contain(actions, DOOM_ACTION_SHOOT)
+                && actions_contain(actions, DOOM_ACTION_TURN_TO)),
+            "an escape tick re-routes (turn-to) rather than firing: {steps:?}"
+        );
+    }
+
+    // ── Combat COMPOSES with the route/executor step (Spec #3053 ST-3) ───────
+    //
+    // Architect adjudication: the combat intent is APPENDED to the retained
+    // route/executor action set — it never replaces it. These pins use a NATIVE
+    // `Move` route step so the route's `forward`/`turn-to` and the combat action
+    // are visible together; the player MOVES each tick so the retained reflex
+    // never drops the route's `forward`.
+
+    #[tokio::test]
+    async fn combat_composes_a_shoot_with_a_native_route_step() {
+        let engine = FakeEngine::default();
+        engine.queue_reset(Ok(combat_observation_at(0, 0, 100, "front", 100, 0, 0)));
+        for tic in 1..=3u64 {
+            engine
+                .step_queue
+                .lock()
+                .unwrap()
+                .push_back(Ok(combat_observation_at(
+                    tic, tic as i64, 100, "front", 100, tic as i64, 0,
+                )));
+        }
+        let source = NativeRouteSource;
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(false);
+        let mut statuses: Vec<DoomAutoplayStatus> = Vec::new();
+        let cfg = continuous_config(4, 3, Duration::from_secs(1));
+
+        let result = run_continuous_loop(
+            &engine,
+            &source,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |status| statuses.push(status.clone()),
+        )
+        .await;
+
+        assert!(result.success);
+        let steps = step_actions(&engine);
+        assert_eq!(steps.len(), 3);
+        for actions in &steps {
+            assert!(
+                actions_contain(actions, DOOM_ACTION_TURN_TO)
+                    && actions_contain(actions, DOOM_ACTION_FORWARD),
+                "the route step is preserved (compose, not replace): {actions:?}"
+            );
+            assert!(
+                actions_contain(actions, DOOM_ACTION_SHOOT),
+                "the combat shoot is APPENDED to the route step: {actions:?}"
+            );
+        }
+        let last = statuses.last().expect("a terminal status");
+        assert_eq!(last.engagements, 3, "the engagement counter advances per tick");
+    }
+
+    #[tokio::test]
+    async fn combat_no_enemy_tick_is_byte_identical_to_the_route_baseline() {
+        let engine = FakeEngine::default();
+        engine.queue_reset(Ok(plain_observation_at(0, 100, 0, 0)));
+        for tic in 1..=3u64 {
+            engine
+                .step_queue
+                .lock()
+                .unwrap()
+                .push_back(Ok(plain_observation_at(tic, 100, tic as i64, 0)));
+        }
+        let source = NativeRouteSource;
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(false);
+        let cfg = continuous_config(4, 3, Duration::from_secs(1));
+
+        let result = run_continuous_loop(
+            &engine,
+            &source,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
+
+        assert!(result.success);
+        let steps = step_actions(&engine);
+        assert_eq!(steps.len(), 3);
+        // The unmodified native `Move` action set: [turn-to 90, forward, run].
+        let baseline = json!([
+            { "type": DOOM_ACTION_TURN_TO, "angle": 90 },
+            { "type": DOOM_ACTION_FORWARD, "amount": 1 },
+            { "type": "run", "amount": 1 },
+        ]);
+        for actions in &steps {
+            assert_eq!(
+                actions, &baseline,
+                "with no enemy the tick is byte-identical to the route baseline: {actions:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn combat_low_health_backoff_supersedes_forward_on_a_route_step() {
+        let engine = FakeEngine::default();
+        // Health 0 is at/below any positive threshold → the disengage path.
+        engine.queue_reset(Ok(combat_observation_at(0, 0, 0, "front", 100, 0, 0)));
+        for tic in 1..=3u64 {
+            engine
+                .step_queue
+                .lock()
+                .unwrap()
+                .push_back(Ok(combat_observation_at(
+                    tic, 0, 0, "front", 100, tic as i64, 0,
+                )));
+        }
+        let source = NativeRouteSource;
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(false);
+        let cfg = continuous_config(4, 3, Duration::from_secs(1));
+
+        let result = run_continuous_loop(
+            &engine,
+            &source,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
+
+        assert!(result.success);
+        let steps = step_actions(&engine);
+        assert_eq!(steps.len(), 3);
+        for actions in &steps {
+            assert!(
+                !actions_contain(actions, DOOM_ACTION_SHOOT),
+                "low health ⇒ no shoot even on a route step: {actions:?}"
+            );
+            assert!(
+                actions_contain(actions, DOOM_ACTION_BACKWARD),
+                "low health ⇒ a bounded backward retreat: {actions:?}"
+            );
+            assert!(
+                actions_contain(actions, DOOM_ACTION_TURN_TO),
+                "the route's turn-to is retained: {actions:?}"
+            );
+            assert!(
+                !actions_contain(actions, DOOM_ACTION_FORWARD),
+                "the retreat SUPERSEDES the route's forward: {actions:?}"
+            );
+            assert!(
+                net_forward_move(actions) < 0,
+                "the tick is a real back-off (forward_move < 0), not a net-zero freeze: {actions:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn combat_low_health_retreat_is_bounded_and_then_resumes_the_route() {
+        let engine = FakeEngine::default();
+        engine.queue_reset(Ok(combat_observation_at(0, 0, 0, "front", 100, 0, 0)));
+        // Enough scripted observations to cross the bounded retreat window.
+        for tic in 1..=30u64 {
+            engine
+                .step_queue
+                .lock()
+                .unwrap()
+                .push_back(Ok(combat_observation_at(
+                    tic, 0, 0, "front", 100, tic as i64, 0,
+                )));
+        }
+        let source = NativeRouteSource;
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(false);
+        // Budget = 1 positioning + 27 ticks (crosses the 24-tick retreat window).
+        let cfg = continuous_config(28, 3, Duration::from_secs(1));
+
+        let result = run_continuous_loop(
+            &engine,
+            &source,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
+
+        assert!(result.success);
+        let steps = step_actions(&engine);
+        assert_eq!(steps.len(), 27);
+        // Every tick within the bounded window is a real back-off.
+        for actions in &steps[..DOOM_COMBAT_RETREAT_WINDOW_TICKS as usize] {
+            assert!(
+                !actions_contain(actions, DOOM_ACTION_SHOOT) && net_forward_move(actions) < 0,
+                "a bounded-window tick is a real back-off: {actions:?}"
+            );
+        }
+        // Past the window the bounded retreat closes and the route resumes (fire
+        // stays suppressed while low), so a retreat into geometry cannot wedge.
+        let last = steps.last().expect("a step");
+        assert!(
+            !actions_contain(last, DOOM_ACTION_SHOOT),
+            "fire stays suppressed while low: {last:?}"
+        );
+        assert!(
+            !actions_contain(last, DOOM_ACTION_BACKWARD),
+            "the retreat is bounded and no longer applies: {last:?}"
+        );
+        assert!(
+            actions_contain(last, DOOM_ACTION_FORWARD),
+            "past the bounded window the route resumes: {last:?}"
+        );
+    }
+
+    /// **Spec #3053 Option A (ST-3 seam).** The driver's `combat_low_health` seam
+    /// toggles the survival brake PER RUN (no process-global env read, so it is
+    /// race-free under parallel `cargo test`). This pin runs
+    /// [`NativeRouteSource`] at the threshold boundary
+    /// (`health == DOOM_COMBAT_LOW_HEALTH`) and asserts BOTH seam arms:
+    /// * brake ON (`None`, the production default): every bounded-window tick is a
+    ///   real back-off (no `shoot`, `net_forward_move < 0`, the route's `turn-to`
+    ///   retained) and the route resumes past the bounded window (no wedge);
+    /// * brake OFF (`Some(DOOM_COMBAT_LOW_HEALTH_OFF)`, the `st8` leg): the brake
+    ///   is removed, the route's `forward` is retained, and `Engage` resumes fire.
+    ///
+    /// It neither duplicates nor contradicts the two pins above (which pin the
+    /// brake at `health == 0` with no seam); this is the only pin exercising the
+    /// seam toggle at the boundary.
+    #[tokio::test]
+    async fn combat_low_health_brake_is_bounded_and_inert_under_the_driver_seam() {
+        /// Run [`NativeRouteSource`] at the low-health boundary for `ticks` with an
+        /// explicit `combat_low_health` seam; return the issued step actions.
+        async fn run_route(ticks: u32, seam: Option<i64>) -> Vec<Value> {
+            let engine = FakeEngine::default();
+            engine.queue_reset(Ok(combat_observation_at(
+                0,
+                0,
+                combat::DOOM_COMBAT_LOW_HEALTH,
+                "front",
+                100,
+                0,
+                0,
+            )));
+            for tic in 1..=u64::from(ticks) {
+                engine.step_queue.lock().unwrap().push_back(Ok(combat_observation_at(
+                    tic,
+                    0,
+                    combat::DOOM_COMBAT_LOW_HEALTH,
+                    "front",
+                    100,
+                    tic as i64,
+                    0,
+                )));
+            }
+            let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+            let stop = AtomicBool::new(false);
+            let mut cfg = continuous_config(ticks + 1, 3, Duration::from_secs(1));
+            cfg.combat_low_health = seam; // SEAM
+            let result = run_continuous_loop(
+                &engine,
+                &NativeRouteSource,
+                &cfg,
+                &clock,
+                AutoplayRun {
+                    campaign: campaign(1, 1),
+                    progress: no_progress(),
+                },
+                &stop,
+                |_| {},
+            )
+            .await;
+            assert!(result.success);
+            step_actions(&engine)
+        }
+
+        // Arm 1 — brake ON (production default, seam None).
+        let on = run_route(DOOM_COMBAT_RETREAT_WINDOW_TICKS + 3, None).await;
+        for actions in &on[..DOOM_COMBAT_RETREAT_WINDOW_TICKS as usize] {
+            assert!(
+                !actions_contain(actions, DOOM_ACTION_SHOOT),
+                "no fire while low: {actions:?}"
+            );
+            assert!(
+                net_forward_move(actions) < 0,
+                "a REAL back-off (forward_move < 0): {actions:?}"
+            );
+            assert!(
+                actions_contain(actions, DOOM_ACTION_TURN_TO),
+                "the route turn-to is retained: {actions:?}"
+            );
+        }
+        let resumed = on.last().expect("a step"); // past the bounded window
+        assert!(
+            !actions_contain(resumed, DOOM_ACTION_BACKWARD)
+                && actions_contain(resumed, DOOM_ACTION_FORWARD),
+            "bounded ⇒ the route resumes (no wedge/freeze): {resumed:?}"
+        );
+
+        // Arm 2 — brake OFF (the st8 driver seam): the SAME low-health steps are
+        // brake-exempt.
+        let off = run_route(3, Some(combat::DOOM_COMBAT_LOW_HEALTH_OFF)).await;
+        for actions in &off {
+            assert!(
+                !actions_contain(actions, DOOM_ACTION_BACKWARD),
+                "the seam removes the brake: {actions:?}"
+            );
+            assert!(
+                actions_contain(actions, DOOM_ACTION_FORWARD),
+                "the route forward is retained: {actions:?}"
+            );
+            assert!(
+                actions_contain(actions, DOOM_ACTION_SHOOT),
+                "seam off ⇒ Engage resumes fire: {actions:?}"
+            );
+        }
     }
 
     // ── Dataset assembly (Spec #3032 ST-2) ───────────────────────────────────

@@ -505,6 +505,8 @@ fn idle_status() -> DoomAutoplayStatus {
         started_at: None,
         last_error: None,
         code: None,
+        kills: 0,
+        engagements: 0,
     }
 }
 
@@ -533,6 +535,8 @@ fn running_status(campaign: &DoomCampaign) -> DoomAutoplayStatus {
         started_at: Some(chrono::Utc::now().to_rfc3339()),
         last_error: None,
         code: None,
+        kills: 0,
+        engagements: 0,
     }
 }
 
@@ -549,6 +553,7 @@ fn autoplay_config(max_steps: Option<u32>) -> DoomAutoplayConfig {
         max_steps: ticks,
         max_ticks: ticks,
         max_failures: decision::max_failures_from_env().unwrap_or(base.max_failures),
+        combat_low_health: None,
         ..base
     }
 }

@@ -521,6 +521,12 @@ pub struct DoomDriverConfig {
     /// instead of advancing the campaign. Defaults to `false` (inert), so the
     /// shipped advance path is byte-identical.
     pub stop_at_first_exit: bool,
+    /// Test-only per-run low-health threshold override (Spec #3053 Option A),
+    /// threaded into the loop's [`super::agent::DoomAutoplayConfig`] and captured
+    /// into the run's combat policy. `None` (the production default) resolves the
+    /// retained env seam; `Some(DOOM_COMBAT_LOW_HEALTH_OFF)` makes the survival
+    /// brake inert for a brake-inert completion leg.
+    pub combat_low_health: Option<i64>,
 }
 
 impl Default for DoomDriverConfig {
@@ -531,6 +537,7 @@ impl Default for DoomDriverConfig {
             max_steps: DOOM_AUTOPLAY_MAX_STEPS,
             max_failures: DOOM_AUTOPLAY_MAX_FAILURES,
             stop_at_first_exit: false,
+            combat_low_health: None,
         }
     }
 }
@@ -594,6 +601,21 @@ pub struct DoomDriverReport {
     pub last_x: i64,
     /// The last observed player map-unit y.
     pub last_y: i64,
+    /// The exact final `level.kills` of the run (Spec #3053 ST-4).
+    ///
+    /// DEAD OBSERVABLE (Spec #3053 AC2 amendment, Option D): the pinned
+    /// `neurodoom 0.6.7` never increments `PlayerState.kill_count`, so this is
+    /// permanently `0`. Kept additive for observability; NOT an AC observable —
+    /// never assert it non-zero and never re-target it in a later cycle.
+    pub kills: i64,
+    /// The engaged front enemy's hp on the first observation that had a `front`
+    /// enemy (Spec #3053 AC2, re-scoped by the Option-D amendment), or `None`
+    /// when the run never observed one.
+    pub front_enemy_hp_start: Option<i64>,
+    /// The minimum engaged front-enemy hp observed across the run (Spec #3053
+    /// AC2, re-scoped), or `None` when the run never observed a `front` enemy.
+    /// `floor < start` proves the companion's fire landed damage.
+    pub front_enemy_hp_floor: Option<i64>,
     /// The terminal kind reached (`"dead"` / `"exited"`), or `None` when the
     /// step/failure budget ended the run first.
     pub terminal: Option<&'static str>,
@@ -660,6 +682,7 @@ pub async fn run_bounded_driver(
         tick_period: Duration::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS),
         degraded_tick_period: Duration::from_millis(DOOM_DEGRADED_TICK_PERIOD_MS),
         stop_on_level_exit: config.stop_at_first_exit,
+        combat_low_health: config.combat_low_health,
         ..DoomAutoplayConfig::default()
     };
 
@@ -692,6 +715,7 @@ pub async fn run_bounded_driver(
     let last_tic = last.map_or(start_tic, observation_tic);
     let (last_x, last_y) = last.map_or((start_x, start_y), observation_position);
     let terminal = last.and_then(super::agent::terminal_kind).map(terminal_label);
+    let kills = last.map_or(0, observation_kills);
     let ticks = result.steps;
     let distinct_frames = counters.distinct_frames;
     let fps_estimate = if ticks == 0 {
@@ -717,6 +741,9 @@ pub async fn run_bounded_driver(
         start_y,
         last_x,
         last_y,
+        kills,
+        front_enemy_hp_start: counters.front_enemy_hp_start,
+        front_enemy_hp_floor: counters.front_enemy_hp_floor,
         terminal,
     })
 }
@@ -741,6 +768,12 @@ struct FrameCounters {
     first: Option<Value>,
     /// The most recent observation produced.
     last: Option<Value>,
+    /// The engaged front enemy's hp on the first observation that had a `front`
+    /// enemy (Spec #3053 AC2, re-scoped) — `None` when the run never observed one.
+    front_enemy_hp_start: Option<i64>,
+    /// The minimum engaged front-enemy hp observed across the run (Spec #3053 AC2,
+    /// re-scoped) — `None` when the run never observed a `front` enemy.
+    front_enemy_hp_floor: Option<i64>,
 }
 
 impl FrameCountingEngine {
@@ -763,6 +796,7 @@ impl FrameCountingEngine {
             counters.first = Some(observation.clone());
         }
         counters.last = Some(observation.clone());
+        record_front_enemy_hp(&mut counters, observation);
     }
 
     fn record_frame(&self, observation: &Value, frame: &[u8]) {
@@ -779,7 +813,31 @@ impl FrameCountingEngine {
             counters.first = Some(observation.clone());
         }
         counters.last = Some(observation.clone());
+        record_front_enemy_hp(&mut counters, observation);
     }
+}
+
+/// Fold the engaged front enemy's hp into the run tracker (Spec #3053 AC2,
+/// re-scoped). The tracked entry is the FIRST-listed `enemies[]` element with
+/// `direction == "front"` — the SAME rule `combat::combat_target` uses to fire
+/// (`combat.rs:187-198`). `enemies[]` carries no id (`engine.rs:1260-1280`), so
+/// identity is per-observation by `(kind, direction)`.
+fn record_front_enemy_hp(counters: &mut FrameCounters, observation: &Value) {
+    let Some(hp) = observation
+        .get("enemies")
+        .and_then(Value::as_array)
+        .and_then(|enemies| {
+            enemies.iter().find(|enemy| {
+                enemy.get("direction").and_then(Value::as_str) == Some("front")
+            })
+        })
+        .and_then(|front| front.get("hp"))
+        .and_then(Value::as_i64)
+    else {
+        return;
+    };
+    counters.front_enemy_hp_start.get_or_insert(hp);
+    counters.front_enemy_hp_floor = Some(counters.front_enemy_hp_floor.map_or(hp, |floor| floor.min(hp)));
 }
 
 #[async_trait]
@@ -854,6 +912,17 @@ fn observation_position(observation: &Value) -> (i64, i64) {
         .and_then(Value::as_i64)
         .unwrap_or(0);
     (x, y)
+}
+
+/// The exact `level.kills` of an observation, or `0` when absent/malformed
+/// (Spec #3053 ST-4). The engine builds `level.kills` from its `kill_count`,
+/// which the pinned `neurodoom 0.6.7` never increments — so this is permanently
+/// `0` (DEAD OBSERVABLE, Spec #3053 AC2 amendment, Option D).
+fn observation_kills(observation: &Value) -> i64 {
+    observation
+        .pointer("/level/kills")
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
 }
 
 /// The stable label for a terminal observation (`"dead"` / `"exited"`).
@@ -2073,6 +2142,7 @@ mod tests {
                 max_steps: 8,
                 max_failures: 3,
                 stop_at_first_exit: false,
+                combat_low_health: None,
             },
             &clock,
         )
@@ -2129,6 +2199,7 @@ mod tests {
                 max_steps: window_ticks + 1,
                 max_failures: 3,
                 stop_at_first_exit: false,
+                combat_low_health: None,
             },
             &clock,
         )
@@ -2176,6 +2247,7 @@ mod tests {
                     max_steps: 40,
                     max_failures: 3,
                     stop_at_first_exit: false,
+                    combat_low_health: None,
                 },
                 &clock,
             )
@@ -2208,6 +2280,7 @@ mod tests {
                     max_steps: steps,
                     max_failures: 3,
                     stop_at_first_exit: false,
+                    combat_low_health: None,
                 },
                 &clock,
             )
@@ -2238,6 +2311,7 @@ mod tests {
                 max_steps: 4,
                 max_failures: 3,
                 stop_at_first_exit: false,
+                combat_low_health: None,
             },
             &clock,
         )
@@ -2262,6 +2336,7 @@ mod tests {
                 max_steps: 600,
                 max_failures: 3,
                 stop_at_first_exit: false,
+                combat_low_health: None,
             },
             &clock,
         )
@@ -2354,6 +2429,7 @@ mod tests {
                     max_steps: 24,
                     max_failures: 3,
                     stop_at_first_exit: false,
+                    combat_low_health: None,
                 },
                 &clock,
             )
@@ -2385,18 +2461,15 @@ mod tests {
         assert!(first.ticks > 0, "the step-driven run advanced");
     }
 
-    // ── Spec #3039 ST-8: committed deterministic target-level completion (AC5) ──
-
-    /// **ST-8 (AC5, F-5a).** The committed, model-independent, deterministic
-    /// completion leg: [`run_bounded_driver`] + [`FixedTickClock`] at
-    /// [`DOOM_COMPLETION_TARGET_MAP`] (E1M1), `stop_at_first_exit: true`, driven by
-    /// the [`LocalRouteSource`] reaches the target level's exit
-    /// (`terminal == Some("exited")`), and the SAME run reproduces the report
-    /// field-for-field (G-316). If it under-completes, the failing observation
-    /// trace is printed so a re-scope can be judged from data — the assertion is
-    /// never loosened.
+    /// **ST-4 (AC2, re-scoped by the Option-D amendment).** A bounded real E1M1
+    /// `run_bounded_driver` + `LocalRouteSource` run with the real product
+    /// `combat::combat_intent` proves the re-scoped AC2 observable: the engaged
+    /// front enemy's observed `hp` strictly decreases (aimed sustained fire lands
+    /// damage). Runs TWICE and compares field-for-field (NFR-DET / G-316). No `kills`
+    /// assertion — `kills` is a DEAD observable in the pinned engine.
     #[tokio::test]
-    async fn st8_local_route_completes_the_target_level_deterministically() {
+    async fn st4_local_route_engagement_records_live_damage() {
+        use crate::applications::doom::combat::DOOM_COMBAT_LOW_HEALTH_OFF;
         use crate::applications::doom::local_route::LocalRouteSource;
         use crate::applications::doom::save::{
             DOOM_COMPLETION_STEP_BUDGET, DOOM_COMPLETION_TARGET_MAP, DOOM_DEFAULT_SKILL,
@@ -2415,6 +2488,78 @@ mod tests {
                     max_steps: DOOM_COMPLETION_STEP_BUDGET,
                     max_failures: 3,
                     stop_at_first_exit: true,
+                    combat_low_health: Some(DOOM_COMBAT_LOW_HEALTH_OFF), // Option A: brake inert
+                },
+                &clock,
+            )
+            .await
+            .expect("the local-route driven run")
+        }
+
+        let first = run().await;
+        let second = run().await;
+
+        // The recorded floor for the tester — the assertion is the strict
+        // decrease, never a magic number.
+        println!("{first:?}");
+
+        let start = first
+            .front_enemy_hp_start
+            .expect("the run must engage a front enemy (front_enemy_hp_start)");
+        let floor = first
+            .front_enemy_hp_floor
+            .expect("the run must engage a front enemy (front_enemy_hp_floor)");
+        assert!(floor >= 0, "never a fabricated hp: {first:?}");
+        assert!(
+            start > floor,
+            "aimed sustained fire must land damage on the engaged front enemy \
+             (start {start} → floor {floor}): {first:?}"
+        );
+        assert_eq!(
+            first, second,
+            "step-driven ⇒ field-for-field deterministic (G-316)"
+        );
+    }
+
+    // ── Spec #3039 ST-8: committed deterministic target-level completion (AC5) ──
+
+    /// **ST-8 (AC5, F-5a).** The committed, model-independent, deterministic
+    /// completion leg: [`run_bounded_driver`] + [`FixedTickClock`] at
+    /// [`DOOM_COMPLETION_TARGET_MAP`] (E1M1), `stop_at_first_exit: true`, driven by
+    /// the [`LocalRouteSource`] reaches the target level's exit
+    /// (`terminal == Some("exited")`), and the SAME run reproduces the report
+    /// field-for-field (G-316). If it under-completes, the failing observation
+    /// trace is printed so a re-scope can be judged from data — the assertion is
+    /// never loosened.
+    ///
+    /// Per **Option A** (Spec #3053 amendment), the completion guarantee is scoped
+    /// to a run that does **not** enter the survival brake: this leg runs with the
+    /// brake **inert** through the test-only driver seam
+    /// (`combat_low_health: Some(DOOM_COMBAT_LOW_HEALTH_OFF)`). The separate
+    /// bounded-brake pin covers the brake path. `st8` still asserts deterministic
+    /// completion within the committed [`DOOM_COMPLETION_STEP_BUDGET`].
+    #[tokio::test]
+    async fn st8_local_route_completes_the_target_level_deterministically() {
+        use crate::applications::doom::combat::DOOM_COMBAT_LOW_HEALTH_OFF;
+        use crate::applications::doom::local_route::LocalRouteSource;
+        use crate::applications::doom::save::{
+            DOOM_COMPLETION_STEP_BUDGET, DOOM_COMPLETION_TARGET_MAP, DOOM_DEFAULT_SKILL,
+        };
+
+        async fn run() -> DoomDriverReport {
+            let state = DoomEngineState::default();
+            let source = LocalRouteSource::new();
+            let clock = driver_clock();
+            run_bounded_driver(
+                &state,
+                &source,
+                DoomDriverConfig {
+                    map: DOOM_COMPLETION_TARGET_MAP,
+                    skill: DOOM_DEFAULT_SKILL,
+                    max_steps: DOOM_COMPLETION_STEP_BUDGET,
+                    max_failures: 3,
+                    stop_at_first_exit: true,
+                    combat_low_health: Some(DOOM_COMBAT_LOW_HEALTH_OFF), // Option A: brake inert
                 },
                 &clock,
             )
@@ -2571,6 +2716,7 @@ mod tests {
                 max_steps: 2,
                 max_failures: 3,
                 stop_at_first_exit: false,
+                combat_low_health: None,
             },
             &clock,
         )
