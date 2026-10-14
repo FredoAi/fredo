@@ -429,3 +429,93 @@ describe('QueryTabs — tier-2 clamp on the render path (Spec #3049 round 2)', (
     expect(602 - 474 - 8).toBeGreaterThanOrEqual(120);
   });
 });
+
+// ── Spec #3050 (ST-C): the openRequest channel (new tab + optional auto-run) ──
+//
+// `openRequest` is the schema-explorer "Open table data" / "New query" seam.
+// Distinct from `externalSql`: it ALWAYS appends a fresh tab (never loads the
+// active one), activates it, and only runs it when `run && connectionId`. The
+// auto-run uses the whole-buffer scope (`mode: 'all'`, `selection: null`,
+// `confirmedStatementHashes: []`) with the stored default row limit.
+
+describe('QueryTabs — openRequest channel (Spec #3050, ST-C)', () => {
+  it('opens a NEW active tab with the SQL and runs it with the whole-buffer scope (R-2a/R-2c)', async () => {
+    const sql = 'SELECT * FROM "public"."users" LIMIT 100';
+    renderWithChakra(
+      <QueryTabs
+        connectionId="c1"
+        defaultRowLimit={100}
+        openRequest={{ sql, run: true, nonce: 1 }}
+      />,
+    );
+
+    const tabs = screen.getAllByTestId('db-query-tab');
+    expect(tabs).toHaveLength(2);
+    // The NEW tab is active and carries the generated SQL (the first is untouched).
+    expect(tabs[1]).toHaveAttribute('aria-selected', 'true');
+    expect(editor().value).toBe(sql);
+
+    await waitFor(() => expect(dbQueryExecuteMock).toHaveBeenCalledTimes(1));
+    expect(dbQueryExecuteMock).toHaveBeenCalledWith({
+      connectionId: 'c1',
+      sql,
+      mode: 'all',
+      selection: null,
+      confirmedStatementHashes: [],
+      limit: 100,
+    });
+  });
+
+  it('opens a blank active tab and never executes for a run:false request (R-3 "New query")', () => {
+    renderWithChakra(
+      <QueryTabs connectionId="c1" openRequest={{ sql: '', run: false, nonce: 1 }} />,
+    );
+
+    const tabs = screen.getAllByTestId('db-query-tab');
+    expect(tabs).toHaveLength(2);
+    expect(tabs[1]).toHaveAttribute('aria-selected', 'true');
+    expect(editor().value).toBe('');
+    expect(dbQueryExecuteMock).not.toHaveBeenCalled();
+  });
+
+  it('never executes when no connection is active, but still opens the tab (R-4)', () => {
+    const sql = 'SELECT * FROM "public"."users" LIMIT 100';
+    renderWithChakra(
+      <QueryTabs connectionId={null} openRequest={{ sql, run: true, nonce: 1 }} />,
+    );
+
+    expect(screen.getAllByTestId('db-query-tab')).toHaveLength(2);
+    expect(editor().value).toBe(sql);
+    expect(dbQueryExecuteMock).not.toHaveBeenCalled();
+  });
+
+  it('appends another tab when the nonce advances (two invocations → two tabs)', async () => {
+    const first = 'SELECT * FROM "public"."a" LIMIT 100';
+    const second = 'SELECT * FROM "public"."b" LIMIT 100';
+    const { rerender } = renderWithChakra(
+      <QueryTabs connectionId="c1" openRequest={{ sql: first, run: true, nonce: 1 }} />,
+    );
+    expect(screen.getAllByTestId('db-query-tab')).toHaveLength(2);
+
+    rerender(<QueryTabs connectionId="c1" openRequest={{ sql: second, run: true, nonce: 2 }} />);
+
+    const tabs = screen.getAllByTestId('db-query-tab');
+    expect(tabs).toHaveLength(3);
+    expect(tabs[2]).toHaveAttribute('aria-selected', 'true');
+    expect(editor().value).toBe(second);
+    await waitFor(() => expect(dbQueryExecuteMock).toHaveBeenCalledTimes(2));
+  });
+
+  it('the existing externalSql channel still loads the ACTIVE tab and never runs (regression)', () => {
+    const { rerender } = renderWithChakra(<QueryTabs connectionId="c1" />);
+    fireEvent.change(editor(), { target: { value: 'SELECT 1' } });
+
+    rerender(<QueryTabs connectionId="c1" externalSql={{ sql: 'SELECT 2', nonce: 1 }} />);
+
+    // No new tab — the active tab's text is replaced and nothing executes.
+    expect(screen.getAllByTestId('db-query-tab')).toHaveLength(1);
+    expect(editor().value).toBe('SELECT 2');
+    expect(dbQueryExecuteMock).not.toHaveBeenCalled();
+  });
+});
+
