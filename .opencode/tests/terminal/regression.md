@@ -491,3 +491,39 @@ Served commit `spec/2940 @ a4b4dfa1` (cold restart built+served the round-2 fix 
   the round-1 23 px). **F-81 now PASS** (`--cli <shell|opencode|copilot>`).
 - C-5 + #2942-delta teardown: run 1 deleted 7 fixture-root records / run 2 deleted 0 (idempotent) → 0;
   the four settings keys restored to their captured pre-run values.
+
+## #3051 no-change baseline — the chip removal must not regress focus-derived passthrough
+
+> Seeded at triage for Spec #3051 (revises #3009). The removal is DELETION-ONLY on the view layer.
+> These rows pin the invariants that MUST stay byte-unchanged. Evidence policy: LIVE (same as the
+> parent suite; the run carries a `telemetry_spans` non-zero receipt).
+
+- [ ] R-28 (**AC3 — the `data-fredo-passthrough` body hook**): in the `terminal` window focus the
+      terminal root, then click away; read `document.body`.
+      EXPECTED: the attribute is SET `"true"` on terminal focus and REMOVED on click-away/focus
+      change (`hasAttribute` === false, not `"false"`). See `functional.md` F-86.
+      Edge: re-focus; window blur; a state surface showing.
+- [ ] R-29 (**AC3 — the retained mechanism symbols survive**): `rg` over `apps/ui/src`.
+      EXPECTED: `syncTerminalPassthrough`, `isTerminalFocused`, `isPassthroughActive`,
+      `TERMINAL_ROOT_SELECTOR`, `BODY_PASSTHROUGH_ATTR`, `PASSTHROUGH_ANNOUNCEMENT_PREFIX`,
+      `installTerminalPassthrough`, `uninstallTerminalPassthrough`, `isTerminalPassthroughInstalled`,
+      `resetTerminalModeForTests`, `computeFocusContext` all still present; the install effect
+      (`TerminalWindow.tsx:433`) still mounts `installTerminalPassthrough`; the
+      `data-fredo-terminal-root="true"` host still present.
+      Edge: a removed retained symbol = FAIL (the removal is view-layer-deletion-only).
+- [ ] R-30 (**AC4 — the one-time announcement retained**): `rg 'PASSTHROUGH_ANNOUNCEMENT_PREFIX'
+      apps/ui/src` and inspect `setPassthrough`.
+      EXPECTED: the prefix constant + the `announce(PASSTHROUGH_ANNOUNCEMENT_PREFIX)` call are
+      unchanged — the ONE remaining keyboard-mode affordance.
+      Edge: the shared `hotkeys-announcer` region still mounts (`announcer.tsx`).
+- [ ] R-31 (**AC3 — keyboard ownership / keystroke routing**): run `functional.md` F-87.
+      EXPECTED: a sentinel round-trips to the PTY; the engine's ONE keydown path is unchanged
+      (`rg 'addEventListener\(.keydown' src/shared/hotkeys/terminalMode.ts` = 0); the `HotkeyBar`
+      (`hotkeys-keybar*`) is untouched.
+      Edge: a keystroke while the HotkeyBar has focus; the retired exit chord stays retired.
+
+### C-5 teardown (#3051 rows)
+
+> The #3051 rows spawn sessions rooted in `.opencode\tests\terminal\fixtures\*` only. Run the C-5
+> teardown recipe above after these rows and restore the four settings keys; the rows add no new
+> settings key and mutate no pre-existing record.
