@@ -12,8 +12,8 @@
   sleep can still poll safely.
 
   Pipeline state is served by the embedded PostgreSQL cluster (the only store
-  since Spec #3005). Reads go through the managed `psql` (database `postgres`)
-  at the env's ephemeral PG port. Resolve the port with -PgPort, or -Manifest
+  since Spec #3005). Reads go through the managed `psql` (database `fredo`, the
+  Fredo application database since Spec #3036) at the env's ephemeral PG port. Resolve the port with -PgPort, or -Manifest
   (which records ports.pg); when the port reads 0 a re-resolve is required
   (G-307) - re-run dev-env.ps1 -Action Up (or Status) and pass the fresh port.
 
@@ -62,7 +62,7 @@
   PostgreSQL user. Default: postgres.
 
 .PARAMETER PgDatabase
-  PostgreSQL database. Default: postgres.
+  PostgreSQL database. Default: fredo (the Fredo application database, Spec #3036).
 
 .PARAMETER PgPassword
   PostgreSQL password. Default: $env:PGPASSWORD (then FREDO_PG_PASSWORD_FILE,
@@ -92,7 +92,7 @@ param(
 
   [string]$PgHost = "127.0.0.1",
   [string]$PgUser = "postgres",
-  [string]$PgDatabase = "postgres",
+  [string]$PgDatabase = "fredo",
   [string]$PgPassword = $env:PGPASSWORD
 )
 

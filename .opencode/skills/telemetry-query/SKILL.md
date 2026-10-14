@@ -27,7 +27,7 @@ The store is the managed embedded PostgreSQL cluster. It has **no fixed file pat
 
 1. **Port:** read it from the app's `pg_supervisor_status` (the `port` field). For an isolated dev env, the manifest records it as `ports.pg` (`-Manifest`).
 2. **Database / user:** database `fredo` (the Fredo application database, Spec #3036), user `postgres` (the unchanged bootstrap superuser role), host `127.0.0.1`.
-3. **Password:** the generated loopback password lives in the **OS keychain** (service `fredo.postgres`, account `loopback:password`). Supply it with `-PgPassword` (or `$env:PGPASSWORD`); the wrapper also reads `$env:FREDO_PG_PASSWORD_FILE` (first non-blank line), then the documented loopback-only fallback. The password is never printed or logged.
+3. **Password:** the generated loopback password lives in the **OS keychain** (service `fredo.postgres`, account `loopback:password`). Supply it with `-PgPassword` (or `$env:PGPASSWORD`); the wrapper also reads `$env:FREDO_PG_PASSWORD_FILE` (first non-blank line), then the documented loopback-only fallback. The password is never printed or logged. **Isolated-env gap (G-375):** in an isolated per-issue env the keychain credential can be unreachable through a sandbox and the documented fallback rejected; that is a TOOLING GAP to report (env id/slot + the exact failed command) — do NOT hand-roll credential/P-Invoke code.
 
 > **G-307:** the ephemeral port can read `0` on a stale manifest/status. When it does, a re-resolve is required — re-run `dev-env.ps1 -Action Up` (or `-Action Status`) and pass the fresh `-PgPort`. Never guess a port.
 

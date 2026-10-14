@@ -64,6 +64,22 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 ---
 ## Known Failure Modes
 
+### G-375: isolated_env_sanctioned_telemetry_read_helper_cannot_authenticate
+- **activation_date:** 2026-10-13
+- **observed:** #3051 testing (isolated env, slot 3) — the tester needed a `telemetry_spans` receipt but the sanctioned read helpers could not authenticate against the isolated cluster: the credential is a random UUID in the OS keychain (documented service/account) with no documentable read seam for the agent, and the documented loopback fallback is rejected by the isolated cluster. The tester hand-rolled throwaway keychain P/Invoke helpers to win its receipt. A second, unambiguous half was fixed this run: `wait-telemetry.ps1` defaulted its database to the bootstrap `postgres` instead of the app database `fredo` (the telemetry read helper and the skill both use `fredo`), so a caller that omitted `-PgDatabase` queried an empty database. Root-cause class: `environment` (tooling).
+- **target_failure:** a sanctioned live/telemetry read helper cannot authenticate against an isolated env's keychain-held PostgreSQL credential (no documentable read path for the agent; the documented fallback is rejected), so a live-policy round cannot obtain its required receipt through the sanctioned tool and the agent improvises ad-hoc credential code.
+- **guardrail:** A sanctioned read helper must resolve the isolated env's credential itself — read the OS keychain entry by its documented service/account, or an app-written password-file seam — and default to the app database, so an agent never has to hand-roll credential/P-Invoke code. When a helper cannot authenticate against a live env, that is a TOOLING GAP to report (env id/slot + the exact failed command) and fix in the helper — never a workaround to keep.
+- **home:** `.opencode/skills/telemetry-query/SKILL.md` + `.opencode/scripts/wait-telemetry.ps1` (database default aligned this run) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-374: qa_row_contradicts_the_subtask_that_satisfies_it
+- **activation_date:** 2026-10-13
+- **observed:** #3051 planning — a QA Plan row required a ZERO-match search for a removed symbol across the UI source while the architect's decomposition sub-task required a negative regression pin that must NAME that same symbol (an absence test has to name what it asserts absent); a second QA row asserted a test file still held "ONLY" an anchor suite while that same sub-task required ADDING a negative-pin suite. Neither row was satisfiable alongside its own sub-task. The developer implemented the sub-task as written and scoped the search to production source; the SI adjudicated both rows with a `Status` comment (the G-248 publish route) and inlined the scoping in the tester brief. No rework was burned, but the contradiction was authored at convergence and only caught at implementation. Root-cause class: `scope`.
+- **target_failure:** a QA Plan row contradicts the implementation sub-task it is meant to exercise — most often an absence/zero-match check over an artifact that same sub-task must CREATE (a negative pin that must name the removed token; an added suite while the row claims only a pre-existing suite remains) — so the plan is internally unsatisfiable and the developer must improvise a scoping the plan never authorised.
+- **guardrail:** At convergence, cross-check each QA row against the sub-task(s) it exercises. When a sub-task CREATES an artifact (a negative pin naming a removed symbol, an added suite), any QA row asserting that symbol/suite is absent must scope its check to the surface the sub-task does NOT author (e.g. production source, excluding test files) or to the removed artifacts only. A row that contradicts its own sub-task's deliverable is a plan defect returned to the QA Expert in the same convergence pass. Extends the interaction-spec contradiction check (G-321) to sub-task deliverables.
+- **home:** playbooks/self-improver.md (convergence guardrails) + playbooks/qa-expert.md + references.md (this record)
+- **effectiveness:** Pending
+
 ### G-373: container_derived_bound_applied_only_on_the_interaction_path
 - **activation_date:** 2026-10-13
 - **observed:** #3049 round 1 (live FAIL) — the plan required a container-aware clamp so a sidebar can never hide the workspace (the stored limits alone are unsatisfiable at a narrow window). The implementation applied that bound only to the live DRAG path (the handle's max prop) while the RENDERED size came straight from the persisted value, so shrinking the window under a persisted layout left the sidebars at their stored widths, collapsed the centre workspace to 0 px and overflowed the root (`scrollWidth 1096 > clientWidth 863`). The drag path at the same window clamped correctly — the defect was the render/restore path. Round 2 derived the rendered value through the container-aware clamp and PASSed. Root-cause class: `defect`.
@@ -123,6 +139,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** `.opencode/scripts/pipeline-state.rs` (triage seed/assembly) + `playbooks/self-improver.md` + references.md
 - **effectiveness:** Pending
 - **re-validated:** 2026-10-13, #3048 — the three planners again shared the one A2A file; the UI/UX planner observed the QA section appearing between its reads and re-read the CONVERGED file before finalizing (the guardrail's second arm), and the SI reviewed the fully-converged file before writing the orchestrator sections. Low impact, final file coherent — the durable fix (per-planner staging drafts concatenated at assembly) remains the open follow-up.
+- **re-validated:** 2026-10-13, #3051 — RECURRED with a real loss: following the two-wave dispatch, the UI/UX and QA planners ran concurrently on the one A2A file; the QA planner's agent-tagged `## Discussion` point never landed (the UI/UX planner's read-modify-write clobbered it after QA's read), though the QA planner's report truthfully claimed it had written the point — the file, not the report, is the record. The SI re-added the point agent-tagged and recorded the loss in the observations log. The durable fix (per-planner staging drafts concatenated at assembly, or a serialized/locked write) is now the priority follow-up for this guardrail.
 
 ### G-366: token_level_gate_green_is_not_a_rendered_surface_proof
 - **activation_date:** 2026-10-13
@@ -309,7 +326,8 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** in an isolated dev env, the app/session inherits a persistent OS User-level OTLP endpoint that shadows the env's own receiver port, so a live opencode session emits OTLP to the wrong port and the mandatory `telemetry_spans` receipt is empty.
 - **guardrail:** Before a live-policy round, compare the OTLP endpoint the plugin/session actually uses against the env's OTLP receiver port; when a stale User-level endpoint shadows the env receiver, do NOT burn the round — obtain the receipt on the env's REAL receiver (a disclosed real-channel fixture injected into the env's OTLP gRPC port) and record the shadowing as an environment caveat. The durable fix (make env mode authoritative over a stale User-level endpoint) is a dev-env follow-up.
 - **home:** .opencode/skills/dev-environment/SKILL.md + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed
+- **re-validated:** 2026-10-13, #3051 — CONFIRMED: in the isolated env (slot 3, OTLP gRPC receiver on the env's own port) the Terminal-spawned opencode still resolved the stale OS User-level endpoint (proven by the plugin's own PTY banner resolving the legacy port while the env receiver was on the slot port), so the genuine turn produced zero spans; the tester applied the guardrail exactly — obtained the non-zero receipt on the env's REAL gRPC receiver via the sanctioned real-channel OTLP fixture (never the CLI emit path), and disclosed the shadowing as an environment caveat. No round burned.
 
 ### G-344: retry_leg_guard_requires_a_pre_posted_verdict_chicken_and_egg
 - **activation_date:** 2026-10-10
@@ -449,6 +467,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** .opencode/skills/dev-environment/SKILL.md + playbooks/self-improver.md (tester brief) + references.md (this record)
 - **effectiveness:** Applied (2026-10-09, #3012) — every env restart used the explicit `Down -EnvId <id>` → `Up -EnvId <id> -EnvSlot <n>` form (never the `Restart` verb); the isolated env booted on its own slot each round and the legacy shared path was never entered.
 - **re-validated:** 2026-10-13, #3049 — APPLIED: with the SI's brief naming the isolated restart form, the tester drove the GA-8 full-relaunch leg with an explicit `-Action Down -EnvId spec3049b` then `-Action Up -Spec 3049 -EnvId spec3049b -EnvSlot 2` (never the `Restart` verb); the layout restored with 0 px delta and the round PASSed.
+- **re-validated:** 2026-10-13, #3051 — APPLIED: the SI's tester brief named the isolated boot form; slots 1 and 2 failed closed on port collisions and the tester recovered with an explicit `-Action Down -EnvId spec3051` then `-Action Up -Spec 3051 -EnvId spec3051 -EnvSlot 3` (never the `Restart` verb), booting the env on its own slot while the legacy shared ports stayed untouched.
 
 ### G-327: plan_interaction_flow_step_not_owned_by_a_subtask_line
 - **activation_date:** 2026-10-08
