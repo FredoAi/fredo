@@ -11,20 +11,20 @@
 > (`https://github.com/user-attachments/...` URL). **The Doom native loop emits no OTLP span —
 > DISCLOSE.**
 
-- [ ] S-1: App window renders — `tauri_webview_dom_snapshot(type="structure")` returns a non-empty
+- [x] S-1: App window renders — `tauri_webview_dom_snapshot(type="structure")` returns a non-empty
   `<body>`.
-- [ ] S-2: No console errors — `tauri_read_logs(source="console", lines=50)` shows no `Error:`/
+- [x] S-2: No console errors — `tauri_read_logs(source="console", lines=50)` shows no `Error:`/
   `Uncaught`/`Maximum update depth exceeded`.
-- [ ] S-3: Feature surface reachable — entering Doom Mode (`iddqd` or the companion
+- [x] S-3: Feature surface reachable — entering Doom Mode (`iddqd` or the companion
   `doom_mode {action:enter}` call) opens the `doom` window and the `doom-root` +
   `doom-frame-canvas` elements render.
-- [ ] S-4: Loot path is live — `get_doom_status` reports the engine ready; a `start_doom_autoplay`
+- [x] S-4: Loot path is live — `get_doom_status` reports the engine ready; a `start_doom_autoplay`
   run advances (`get_doom_autoplay_status.steps`/`lastTic` climbing, step-driven G-316); a
   `doom_read_state` IPC call returns a parseable observation carrying additive `level.itemsCollected`
   (integer) and `player.weapons` (array, baseline `["fist","pistol"]`); `get_doom_autoplay_status`
   carries `itemsCollected` (camelCase); with an in-range `items[]` injected
   (`FREDO_DOOM_INJECT_OBSERVATION`) the run issues the loot `turn-to`+`forward`.
-- [ ] S-5: Screenshot captured — `tauri_webview_screenshot(format="jpeg", quality=80,
+- [x] S-5: Screenshot captured — `tauri_webview_screenshot(format="jpeg", quality=80,
   filePath=".opencode/tmp/3054/e2e/smoke.jpeg")` succeeds and shows the `doom` window status area;
   upload the status-area frame via `upload-evidence`.
 
