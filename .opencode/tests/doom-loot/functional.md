@@ -53,7 +53,7 @@ Status: wire `itemsCollected`; Rust `DoomAutoplayStatus.items_collected`; TS
 
 ## R-1 / AC1 — reachable pickup ⇒ steer + collect + resume
 
-- [ ] F-1 (R-1, AC1, REQUIRED, pure) **An in-range pickup yields a deterministic loot target and
+- [x] F-1 (R-1, AC1, REQUIRED, pure) **An in-range pickup yields a deterministic loot target and
   a bounded, route-aligned deflection (`turn-to` at `H_route + bucket_deflection` + `forward`).**
   - EXPECTED: `loot_target(<obs with items:[{direction:"front",distance:100}]>, policy) ==
     Some(LootTarget{kind, direction:"front", distance:100})`; `loot_intent(...)` returns `Some`
@@ -67,7 +67,7 @@ Status: wire `itemsCollected`; Rust `DoomAutoplayStatus.items_collected`; TS
     in-range entries → first-listed wins; each of the four buckets; a bogus `direction` ⇒
     `bucket_deflection` `None`.
 
-- [ ] F-2 (R-1, AC1, live, decision/steer leg) **An injected in-range `items[]` makes the real run
+- [x] F-2 (R-1, AC1, live, decision/steer leg) **An injected in-range `items[]` makes the real run
   carry a route-aligned loot `turn-to` (route steering retained as the effective bearing) every
   tick a target is in range.** Recipe **L1**.
   - EXPECTED: with `FREDO_DOOM_INJECT_OBSERVATION={"items":[{"kind":"health","direction":"front",
@@ -86,7 +86,7 @@ Status: wire `itemsCollected`; Rust `DoomAutoplayStatus.items_collected`; TS
     escaping or a combat target is present (F-10); a `back` bucket ⇒ `bucket_deflection` `None` ⇒
     no loot `turn-to`. **This validates the DECISION, not the counter.**
 
-- [ ] F-3 (R-1, AC1, REQUIRED, live) **A real pickup is walked over and the route resumes.**
+- [x] F-3 (R-1, AC1, REQUIRED, live) **A real pickup is walked over and the route resumes.**
   Recipe **L2**.
   - EXPECTED: a deterministic scripted drive walks the player over a real E1M1 `MobjFlag::Special`
     (its bearing read live from `items[]` via `doom_read_state`) ⇒ that entity vanishes from
@@ -96,7 +96,7 @@ Status: wire `itemsCollected`; Rust `DoomAutoplayStatus.items_collected`; TS
 
 ## R-2 / AC2 — the run status `itemsCollected` counter climbs 0 → ≥1
 
-- [ ] F-4 (R-2, AC2, REQUIRED, **live — AC2 LIVE PROOF**) **A real collection increments
+- [x] F-4 (R-2, AC2, REQUIRED, **live — AC2 LIVE PROOF**) **A real collection increments
   `itemsCollected`.** Recipe **L2**.
   - EXPECTED: on a real bounded run that collects a Special, `doom_read_state`
     `/level/itemsCollected` climbs `0 → ≥1` (per-world cumulative, monotonic) AND
@@ -111,7 +111,7 @@ Status: wire `itemsCollected`; Rust `DoomAutoplayStatus.items_collected`; TS
     sandbox, mark F-4 as a named blocker (G-172/G-275) with F-5 as the only corroboration — do NOT
     pass it on injection alone.
 
-- [ ] F-5 (R-2, AC2, unit pin — **CORROBORATION ONLY, never the AC2 live proof**) **The adapter
+- [x] F-5 (R-2, AC2, unit pin — **CORROBORATION ONLY, never the AC2 live proof**) **The adapter
   diff state counts vanished `Special` ids.**
   - EXPECTED: `DoomSession.observe_collection` (or its pure helper) given a prior
     `last_special_ids = {A,B}` and a current live set `{A}` ⇒ `items_collected += 1` and the set
@@ -123,7 +123,7 @@ Status: wire `itemsCollected`; Rust `DoomAutoplayStatus.items_collected`; TS
 
 ## R-3 / AC3 — the weapon set reflects acquisition
 
-- [ ] F-6 (R-3, AC3, REQUIRED, live/unit) **`player.weapons` reflects a collected weapon pickup.**
+- [x] F-6 (R-3, AC3, REQUIRED, live/unit) **`player.weapons` reflects a collected weapon pickup.**
   Recipe **L2**.
   - EXPECTED: baseline `player.weapons == ["fist","pistol"]` (slot order); after a real weapon
     pickup (e.g. the E1M1 `shotgun`) is collected, `doom_read_state` `player.weapons` contains
@@ -133,7 +133,7 @@ Status: wire `itemsCollected`; Rust `DoomAutoplayStatus.items_collected`; TS
     ⇒ set unchanged (idempotent); `false` slots omitted; collecting a weapon also increments
     `itemsCollected` (F-4).
 
-- [ ] F-7 (R-3, AC3, REQUIRED, unit pin) **The `player.weapons` projection is pure and
+- [x] F-7 (R-3, AC3, REQUIRED, unit pin) **The `player.weapons` projection is pure and
   slot-ordered.**
   - EXPECTED: the projection iterates `weapon_owned` in slot order via the existing `weapon_name`
     (`engine.rs:1576-1588`); baseline `[true,true,false×7]` ⇒ `["fist","pistol"]`; flipping one
@@ -144,7 +144,7 @@ Status: wire `itemsCollected`; Rust `DoomAutoplayStatus.items_collected`; TS
 
 ## R-4 / AC4 — opportunistic: never abandon the route to the exit
 
-- [ ] F-8 (R-4, AC4, REQUIRED, pure) **The loot policy is opportunistic and bounded (no thrash).**
+- [x] F-8 (R-4, AC4, REQUIRED, pure) **The loot policy is opportunistic and bounded (no thrash).**
   - EXPECTED: `loot_target` returns `None` when no `items[]` entry is ≤ `DOOM_LOOT_ACQUIRE_RANGE`;
     `loot_intent` increments `seek_ticks` and at `DOOM_LOOT_SEEK_WINDOW_TICKS` records
     `blocked_signature = loot_signature(obs)` and returns `None` (route resumes); the SAME item
@@ -152,7 +152,7 @@ Status: wire `itemsCollected`; Rust `DoomAutoplayStatus.items_collected`; TS
   - Edge: a far item (> acquire range) → `None`; a target that becomes unreachable mid-seek;
     `loot_signature` stable across ticks with identical `items`; FNV-1a deterministic.
 
-- [ ] F-9 (R-4, AC4, REQUIRED, live) **Loot never re-plans and never abandons the route.**
+- [x] F-9 (R-4, AC4, REQUIRED, live) **Loot never re-plans and never abandons the route.**
   Recipe **L2**.
   - EXPECTED: with loot active, `status.replans` and `dataset.execution.replans[]` are identical to
     a loot-blocked control run; the loot actions are **PREPENDED before** the route action
@@ -165,7 +165,7 @@ Status: wire `itemsCollected`; Rust `DoomAutoplayStatus.items_collected`; TS
     directly on the route (collected with no detour); an off-route pickup within range (bounded
     detour then route resumes).
 
-- [ ] F-10 (R-4/R-5, AC4/AC5, REQUIRED, pure/live) **Precedence — loot yields to escape (#3031)
+- [x] F-10 (R-4/R-5, AC4/AC5, REQUIRED, pure/live) **Precedence — loot yields to escape (#3031)
   and combat (#3053).**
   - EXPECTED: while escaping (escape window active OR `no_move_ticks >= DOOM_ESCAPE_STUCK_TICKS`=12)
     no loot action is composed; when `combat::combat_target(observation).is_some()` loot is not
@@ -175,7 +175,7 @@ Status: wire `itemsCollected`; Rust `DoomAutoplayStatus.items_collected`; TS
 
 ## R-5 / AC5 — determinism, purity, boundedness, observability unchanged
 
-- [ ] F-11 (R-5, AC5, REQUIRED, determinism pin) **Two identical invocations/runs are
+- [x] F-11 (R-5, AC5, REQUIRED, determinism pin) **Two identical invocations/runs are
   byte-identical.**
   - EXPECTED: two identical `loot_intent` calls on the same observation produce byte-identical
     action sequences; two identical `run_bounded_driver` + `FixedTickClock` runs produce
@@ -184,13 +184,13 @@ Status: wire `itemsCollected`; Rust `DoomAutoplayStatus.items_collected`; TS
   - Edge: N repeated runs stable; a different item set changes the sequence (sanity — not a
     constant); a different map changes the report.
 
-- [ ] F-12 (R-5, AC5, REQUIRED, static pin) **`loot.rs` is pure and every action is bounded.**
+- [x] F-12 (R-5, AC5, REQUIRED, static pin) **`loot.rs` is pure and every action is bounded.**
   - EXPECTED: no `rand`, no `Instant`, no `SystemTime`, no thread, no I/O on the hot path; the ONLY
     env read (if any) is inert when unset; every emitted action carries a pinned bounded `amount`
     (`DOOM_LOOT_FORWARD_AMOUNT` / the seek window); no `#[allow(...)]` suppression serves as a fix.
   - Edge: the enumerated purity grep is the pin.
 
-- [ ] F-13 (R-5, AC5, REQUIRED, live/static) **Existing observability unchanged; the retired
+- [x] F-13 (R-5, AC5, REQUIRED, live/static) **Existing observability unchanged; the retired
   per-tick JSONL is NOT reintroduced.**
   - EXPECTED: status counters (`plans`/`replans`/`escapes`/`stuckTicks`/`engagements`/`kills`) carry
     their existing values; `dataset.execution.replans[]` unchanged; `doom-agent-actions.jsonl` stays
@@ -201,7 +201,7 @@ Status: wire `itemsCollected`; Rust `DoomAutoplayStatus.items_collected`; TS
 
 ## R-2 / AC2 (UI, ST-5) — run-status surfacing
 
-- [ ] F-16 (R-2, AC2(UI), REQUIRED, live/unit) **The RENDERED loot HUD shows
+- [x] F-16 (R-2, AC2(UI), REQUIRED, live/unit) **The RENDERED loot HUD shows
   `Loot: {itemsCollected}` under the bound testid `doom-loot-hud` (the status-line append is a
   SECONDARY assertion, not the rendered proof).**
   - EXPECTED (UI/UX S1a/S5/S6/S7, binding): the top-left loot pill (absolute `Text` stacked below
@@ -220,14 +220,14 @@ Status: wire `itemsCollected`; Rust `DoomAutoplayStatus.items_collected`; TS
 
 ## Non-functional
 
-- [ ] F-14 (NFR, build) **CI-parity build hygiene.** EXPECTED: `cargo check` from
+- [x] F-14 (NFR, build) **CI-parity build hygiene.** EXPECTED: `cargo check` from
   `apps/tauri/src-tauri/` → ZERO warnings; `pnpm --filter @fredo/ui build` green after the ST-5
   mirror; no `#[allow(...)]` suppressions.
-- [ ] F-15 (NFR, teardown/orphan, G-263) **Close the `doom` window mid-loot.** EXPECTED:
+- [x] F-15 (NFR, teardown/orphan, G-263) **Close the `doom` window mid-loot.** EXPECTED:
   `get_doom_autoplay_status.phase != running`; teardown bounded; no orphan thread/process; no new
   listener (single critical section, no new thread). Edge: close mid-seek; mid-collect; rapid
   open/close.
-- [ ] F-LIVE (live-evidence receipt) `upload-evidence` a screenshot of the LIVE `doom` window
+- [x] F-LIVE (live-evidence receipt) `upload-evidence` a screenshot of the LIVE `doom` window
   showing the loot readout (→ `https://github.com/user-attachments/...` URL), AND query
   `telemetry_spans`. EXPECTED: the `## Tests Runs` comment references the `user-attachments` URL;
   the `telemetry_spans` query returns a NON-ZERO count + recent `max(ingested_at)`. **DISCLOSE that
