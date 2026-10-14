@@ -17,8 +17,8 @@
 ## Must-not-change baseline (from the plan's non-goals / regression invariants)
 
 - [ ] R-1: **#3031 escape-window precedence** — while the escape window governs the tick
-  (`escape_ticks_remaining > 0` OR `no_move_ticks >= DOOM_ESCAPE_STUCK_TICKS`=12), NO loot action is
-  appended; the escape/unstick window still takes precedence and the route resumes after it. The
+  (`escape_ticks_remaining > 0` OR `no_move_ticks >= DOOM_ESCAPE_STUCK_TICKS`=12), no loot action is
+  composed; the escape/unstick window still takes precedence and the route resumes after it. The
   loot intent flows through the retained `effective_intent` chain and does not replace it.
   (Links: `doom-companion-progress/functional.md` F-1, `doom-companion-progress/regression.md`
   R-2/R-3.)
@@ -46,7 +46,8 @@
   policy, and the plan executor are PURE functions of the observation + counters (no RNG, no
   clock). `run_bounded_driver` + `FixedTickClock` reproduces a run byte-for-byte; temporal
   assertions stay tick/step-driven, never wall-clock (G-316). `loot_signature` is deterministic
-  (FNV-1a over the sorted `(kind,distance)` of `items[]`). (Links: `doom-native/`,
+  (FNV-1a over the sorted **multiset of `items[].kind`** — position/distance-invariant; B.7.3).
+  (Links: `doom-native/`,
   `doom-companion-combat/regression.md` R-6.)
 - [ ] R-7: **Dead observables untouched** — `level.items` / `PlayerState.item_count` stays `0` and
   no code path binds to it; the pinned `neurodoom 0.6.7` dependency is not modified

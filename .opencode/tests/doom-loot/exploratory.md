@@ -8,8 +8,9 @@
 ## Prompt lines (probe, do not script)
 
 - [ ] E-1: Steer direction sign — inject an in-range item in the `left`/`right` bucket; does
-  `loot_heading` actually rotate the facing TOWARD the item (bucket flips to `front`) rather than
-  away (flips to `back`) over successive ticks?
+  `bucket_deflection` (`+DOOM_LOOT_NUDGE_DEGREES` left / `−DOOM_LOOT_NUDGE_DEGREES` right, relative
+  to `H_route`) actually curve the path TOWARD the item over successive ticks (the off-route
+  deflection shrinking), rather than away?
 - [ ] E-2: Bucket-boundary oscillation — an item sitting near the ±45° `front` boundary while the
   player turns: does the policy settle onto a heading, or does it oscillate without ever reaching
   the item? Is any thrash possible, or is it bounded per tick by the seek window?

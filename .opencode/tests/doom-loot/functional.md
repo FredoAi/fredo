@@ -36,12 +36,15 @@
 >
 > **Scratch:** `.opencode/tmp/3054/`. Env overrides via the `dev-environment` skill.
 
-## Named constants / literals (from the Architect's BINDING NAMES BLOCK, B.4 — do not rename)
+## Named constants / literals (from the Architect's BINDING NAMES BLOCK, B.4; **B.7.2 supersedes B.4 on the ST-3/ST-4 surface** — do not rename)
 
 `DOOM_LOOT_ACQUIRE_RANGE` (=512), `DOOM_LOOT_SEEK_WINDOW_TICKS` (=24), `DOOM_LOOT_FORWARD_AMOUNT`
-(=10). Types: `DoomLootPolicy{seek_ticks:u32, blocked_signature:Option<u64>}`, `LootTarget{kind,
-direction,distance}`, `LootIntent{target,actions}`. Functions: `loot_target`, `loot_intent`,
-`loot_signature` (FNV-1a over sorted `(kind,distance)`), `loot_heading`. Observation:
+(=10), `DOOM_LOOT_NUDGE_DEGREES` (=30). Types: `DoomLootPolicy{seek_ticks:u32,
+blocked_signature:Option<u64>}`, `LootTarget{kind, direction,distance}`, `LootIntent{target,actions}`.
+Functions: `loot_target`, `loot_intent`, `loot_signature` (FNV-1a over the sorted `items[].kind`
+**multiset** — position/distance-invariant; B.7.3), `bucket_deflection(direction) -> Option<i64>`
+(`0` front / `+DOOM_LOOT_NUDGE_DEGREES` left / `−DOOM_LOOT_NUDGE_DEGREES` right / `None` back ⇒ loot
+suppressed — **supersedes `loot_heading`**, B.7.2). Observation:
 `level.itemsCollected` (int, per-world cumulative), `player.weapons` (string[], slot order).
 Status: wire `itemsCollected`; Rust `DoomAutoplayStatus.items_collected`; TS
 `DoomAutoplayStatus.itemsCollected`. Weapon vocabulary (kebab): `fist`, `pistol`, `shotgun`,
@@ -51,24 +54,37 @@ Status: wire `itemsCollected`; Rust `DoomAutoplayStatus.items_collected`; TS
 ## R-1 / AC1 — reachable pickup ⇒ steer + collect + resume
 
 - [ ] F-1 (R-1, AC1, REQUIRED, pure) **An in-range pickup yields a deterministic loot target and
-  a bounded steer (`turn-to` + `forward`).**
+  a bounded, route-aligned deflection (`turn-to` at `H_route + bucket_deflection` + `forward`).**
   - EXPECTED: `loot_target(<obs with items:[{direction:"front",distance:100}]>, policy) ==
     Some(LootTarget{kind, direction:"front", distance:100})`; `loot_intent(...)` returns `Some`
-    with `actions` = one `turn-to` (heading from `loot_heading`) + one `forward` whose `amount ==
-    DOOM_LOOT_FORWARD_AMOUNT`. `loot_heading("front",angle)==angle`, `"left"→+90`, `"right"→+270`,
-    `"back"→+180`.
+    with `actions` = one `turn-to` at `H_route + bucket_deflection(dir)` + one `forward` whose
+    `amount == DOOM_LOOT_FORWARD_AMOUNT`. `bucket_deflection("front")==Some(0)`,
+    `"left"→Some(+DOOM_LOOT_NUDGE_DEGREES)`(=+30), `"right"→Some(−DOOM_LOOT_NUDGE_DEGREES)`(=−30),
+    `"back"→None` (loot suppressed). A `front` target ⇒ the composed `turn-to` angle is
+    `H_route + 0` ⇒ the route's own turn is retained, never cancelled (B.8).
   - Edge: `distance == DOOM_LOOT_ACQUIRE_RANGE`=512 accepted vs `513` → `None`; absent/non-array
     `items` → `None`; malformed entry (missing `direction`/`distance`) skipped without panic; two
-    in-range entries → first-listed wins; each of the four buckets.
+    in-range entries → first-listed wins; each of the four buckets; a bogus `direction` ⇒
+    `bucket_deflection` `None`.
 
 - [ ] F-2 (R-1, AC1, live, decision/steer leg) **An injected in-range `items[]` makes the real run
-  steer.** Recipe **L1**.
+  carry a route-aligned loot `turn-to` (route steering retained as the effective bearing) every
+  tick a target is in range.** Recipe **L1**.
   - EXPECTED: with `FREDO_DOOM_INJECT_OBSERVATION={"items":[{"kind":"health","direction":"front",
-    "distance":100}]}` the step-3c action set carries the loot `turn-to`+`forward` each tick while
-    the entry is present; an unset-env control issues none.
+    "distance":100}]}` the step-3c composed action set is `loot_actions ++ base` (the loot actions
+    are **PREPENDED before `base`**; B.8.1) and CARRIES a loot `turn-to` at
+    `H_route + bucket_deflection(dir)` (`H_route` = the angle of the LAST base `turn-to`; fallback
+    `/player/angle`) plus a bounded `forward` (`DOOM_LOOT_FORWARD_AMOUNT`); the base route's own
+    `turn-to`/`forward` is RETAINED and — because `build_player_action` takes the LAST `turn-to` —
+    the route's `turn-to` REMAINS THE EFFECTIVE BEARING (the deflection is ADVISORY on a steering
+    route; a `front` target ⇒ angle `H_route + 0` ⇒ the route turn is applied unchanged, never
+    cancelled), while the loot `turn-to` is EFFECTIVE only when `base` has no `turn-to`
+    (legacy/local `Hold`). It fires EVERY tick a target is in range (NOT only when `base` has no
+    `turn-to`). An unset-env control issues none.
   - Edge: the lever top-level-merges ⇒ **replaces the WHOLE `items` key** (no real Specials visible
     on this leg); `items:[]`; lever unset ⇒ byte-identical production; loot suppressed while
-    escaping or a combat target is present (F-10). **This validates the DECISION, not the counter.**
+    escaping or a combat target is present (F-10); a `back` bucket ⇒ `bucket_deflection` `None` ⇒
+    no loot `turn-to`. **This validates the DECISION, not the counter.**
 
 - [ ] F-3 (R-1, AC1, REQUIRED, live) **A real pickup is walked over and the route resumes.**
   Recipe **L2**.
@@ -139,8 +155,11 @@ Status: wire `itemsCollected`; Rust `DoomAutoplayStatus.items_collected`; TS
 - [ ] F-9 (R-4, AC4, REQUIRED, live) **Loot never re-plans and never abandons the route.**
   Recipe **L2**.
   - EXPECTED: with loot active, `status.replans` and `dataset.execution.replans[]` are identical to
-    a loot-blocked control run; the loot actions are APPENDED to the route action (the route's
-    `turn-to`/`use` retained); `plan_index` still advances; `outcome`/`level.map` progression
+    a loot-blocked control run; the loot actions are **PREPENDED before** the route action
+    (`effective = loot_actions ++ base`, B.8.1), so the route's `turn-to`/`use` is RETAINED and
+    remains the **effective bearing** — the loot deflection is ADVISORY on a steering route and
+    EFFECTIVE only when `base` has no `turn-to` — and the route bearing is never perturbed
+    (`st8`/`#3039` unregressed); `plan_index` still advances; `outcome`/`level.map` progression
     unaffected.
   - Edge: a route with no pickups (loot inert ⇒ tick sequence byte-identical, F-13); a pickup
     directly on the route (collected with no detour); an off-route pickup within range (bounded
@@ -149,7 +168,7 @@ Status: wire `itemsCollected`; Rust `DoomAutoplayStatus.items_collected`; TS
 - [ ] F-10 (R-4/R-5, AC4/AC5, REQUIRED, pure/live) **Precedence — loot yields to escape (#3031)
   and combat (#3053).**
   - EXPECTED: while escaping (escape window active OR `no_move_ticks >= DOOM_ESCAPE_STUCK_TICKS`=12)
-    NO loot action is appended; when `combat::combat_target(observation).is_some()` loot is not
+    no loot action is composed; when `combat::combat_target(observation).is_some()` loot is not
     consulted; loot is composed AFTER combat so combat's action order is never changed.
   - Edge: escaping + in-range item ⇒ no loot; front enemy + in-range item ⇒ combat only;
     `loot_policy` is reset on every level transition (alongside `combat_policy.reset()`).
