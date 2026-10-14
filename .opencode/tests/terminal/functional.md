@@ -1617,3 +1617,98 @@ settings keys restored; G-242: no non-fixture title mutated.
 Round-8 frame names: `ac1-default-live`, `ac1-f80-16rec-min`, `ac2-rename-prevrow`,
 `ac3-new-session-dialog`, `ac4-settings-terminal`, `ac5-persisted-mixed`, `f76-opencode-cold`,
 `f76-opencode-resized`.
+
+## #3051 — remove the terminal keyboard-mode chip (AC1–AC4)
+
+> Seeded at triage for Spec #3051 (revises #3009). The floating keyboard-mode pill
+> (`hotkeys-terminal-passthrough`, "Passthrough"/"Hotkeys active") is REMOVED; the
+> Passthrough↔Hotkeys transition is invisible; keyboard behaviour is UNCHANGED. The retained
+> mechanism is the focus-derived passthrough from #3009 ST-4.
+>
+> **Evidence policy: LIVE.** AC1/AC3 can only be observed on a running system (rendered DOM + the
+> `data-fredo-passthrough` body hook). The Tester's Evidence MUST reference `telemetry_spans` (a
+> live-query result, non-zero) — a static-only PASS is a FALSE PASS. Frames are named WITHOUT an
+> image extension (G-104); a `.png` token appears only on a line carrying an `https://` URL.
+
+### Prerequisites (all #3051 rows)
+
+- Dev instance up on the spec branch (`dev-env.ps1 -Action Up -Spec 3051`); MCP bridge connected
+  (`tauri_driver_session start`); the `terminal` window OPEN with ≥1 running session (toolbar
+  **Terminal** item, or `fredo open-terminal --cli opencode --dir …\fixtures\workdir-a`).
+- Focus is moved with `tauri_webview_interact(action="click")` (terminal canvas ↔ a non-terminal
+  element).
+
+### AC1 — no chip in any focus state
+
+- [ ] F-82 (**R-1/AC1 — chip absent, terminal FOCUSED**): click into the terminal canvas (terminal
+      root focused), then in the `terminal` window query
+      `document.querySelector('[data-testid="hotkeys-terminal-passthrough"]')` and scan
+      `document.body.innerText`.
+      EXPECTED: the testid query returns `null`; `Passthrough` and `Hotkeys active` occur ZERO times
+      in the terminal-window body text; no `data-passthrough` element exists.
+      Edge: before AND after the first PTY byte; with a `starting`/`resume`/`error` state surface
+      showing; 1 vs 2 sessions.
+- [ ] F-83 (**R-1/AC1 — chip absent, focus ELSEWHERE / click-away**): from F-82 click a non-terminal
+      element (a session-sidebar row / the main window), then re-query.
+      EXPECTED: identical to F-82 (`null` testid; zero `Passthrough`/`Hotkeys active` text) — the
+      chip is absent in BOTH focus states.
+      Edge: rapid focus in→out→in (no chip flash); click-away to the main window; switch sessions
+      while unfocused.
+- [ ] F-84 (**R-2/AC2 — the removed tests are gone; the retained suites stay green**):
+      `pnpm --filter @fredo/ui test:run src/applications/terminal/components/__tests__/TerminalPassthrough.test.tsx`
+      and `pnpm --filter @fredo/ui test:run src/shared/hotkeys/__tests__/terminalMode.test.ts`.
+      EXPECTED: `TerminalPassthrough.test.tsx` defines ONLY the `terminal root anchor` suite (the
+      `TerminalPassthroughIndicator`, `TerminalWindow — persistent indicator`, and
+      `terminalMode hook contract` suites are removed) and passes; the retained `terminalMode.test.ts`
+      passes unchanged (R-3).
+      Edge: a kept test importing a removed symbol fails = FAIL; a deleted retained-mechanism row =
+      FAIL.
+- [ ] F-85 (**R-4/AC4 — the supersession is recorded + the one-time announcement retained**): read
+      the spec PR description; and after entering passthrough read
+      `[data-testid="hotkeys-announcer"]` in the window under test.
+      EXPECTED: the PR/plan records the intentional, human-approved supersession of #3009's
+      non-colour-only indicator criterion AND the retention of the ONE-time announcement
+      (`PASSTHROUGH_ANNOUNCEMENT_PREFIX` + the `announce(…)` call retained); when the shared live
+      region is mounted, its text equals the prefix on entry.
+      Edge: announcement removed = FAIL; supersession note absent from the PR = FAIL.
+
+### AC3 — focus-derived passthrough unchanged (regression)
+
+- [ ] F-86 (**R-3/AC3 — the `data-fredo-passthrough` body hook still flips; LIVE**): in the
+      `terminal` window, focus `[data-fredo-terminal-root="true"]`; read
+      `document.body.getAttribute('data-fredo-passthrough')`; click away; re-read.
+      EXPECTED: focused → `'true'`; click-away / focus change → the attribute is REMOVED
+      (`document.body.hasAttribute('data-fredo-passthrough')` === false, NOT `'false'`).
+      Edge: focus a terminal then a non-terminal element; re-focus (no flap); window blur.
+- [ ] F-87 (**R-3/AC3 — keyboard routing unaffected; LIVE**): `write_pty_input{sessionId,
+      data:"SENTINEL_CHIP_<guid8>\r"}` on the active session; read `get_pty_buffer`; for the OpenCode
+      leg drive one bounded turn.
+      EXPECTED: the sentinel round-trips and the session stays `running`; the ONE keydown path is
+      byte-unchanged (`rg 'addEventListener\(.keydown' src/shared/hotkeys/terminalMode.ts` = 0); the
+      OpenCode turn emits live `telemetry_spans`.
+      Edge: sentinel while passthrough active AND inactive; the `hotkeys-keybar*` HotkeyBar untouched.
+
+### LIVE receipt (the `live`-policy gate)
+
+- [ ] F-88 (**R-3/AC3, LIVE receipt — `telemetry_spans` non-zero**): after F-87, query
+      `telemetry_spans` via the `.opencode/skills/telemetry-query` skill.
+      EXPECTED: non-zero (`SELECT count(*) FROM telemetry_spans` through the live skill, or the
+      OTLP-ingested rows for the F-87 OpenCode turn); never `fredo emit` (G-256). A static-only
+      receipt = FALSE PASS.
+
+### Non-functional (#3051)
+
+- [ ] N-30: **Build clean** — `pnpm --filter @fredo/ui build` exit 0, zero TS errors.
+- [ ] N-31: **No new colour** — the removal deletes the `accent.fg`/`status.success` usages; no new
+      hex/rgba in `features/terminal/**` (allowlisted `GHOSTTY_THEME` ANSI palette excepted); no
+      `var(--token)NN` alpha-append.
+- [ ] N-32: **Console hygiene (both windows)** — no `Error:`/`Uncaught`/`Maximum update depth
+      exceeded` across focus in/out.
+- [ ] N-33: **No keyboard/PTY path change** — the diff touches no `infrastructure/rtdb/**` /
+      `infrastructure/otlp/**` and adds no `addEventListener` to `terminalMode.ts`.
+
+### Round notes (#3051)
+
+> (Tester appends per-round results here — keep `- [ ]` on FAIL/UNVERIFIED, mark PASS with live
+> evidence.) The #3051 rows spawn sessions rooted in `.opencode\tests\terminal\fixtures\*` only; run
+> the C-5 teardown (above) after the suite and restore the four settings keys.
