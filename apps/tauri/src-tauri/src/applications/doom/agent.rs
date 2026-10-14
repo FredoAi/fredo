@@ -81,6 +81,9 @@ use super::clock::{
     DOOM_CONTINUOUS_TICK_PERIOD_MS, DOOM_DEGRADED_AFTER_FAILURES, DOOM_DEGRADED_TICK_PERIOD_MS,
     DOOM_STATUS_EMIT_MS,
 };
+// The combat-engagement layer (Spec #3053 ST-1/ST-3): a pure, deterministic
+// aim/fire/disengage policy consulted once per tick in the continuous loop.
+use super::combat;
 use super::dataset::{
     dataset_dir_from, dataset_enabled_from_env, decision_id_for, episode_id_for,
     plan_steps_to_values, DoomDatasetConfig, DoomDatasetDecision, DoomDatasetDecisionError,
@@ -463,6 +466,11 @@ fn apply_observation(status: &mut DoomAutoplayStatus, observation: &Value) {
     if let Some(map) = observation.pointer("/level/map").and_then(Value::as_i64) {
         status.map = Some(map);
     }
+    // AC2 (Spec #3053 ST-3): a read-only projection of the engine's own kill
+    // counter — never fabricated, never incremented client-side.
+    if let Some(kills) = observation.pointer("/level/kills").and_then(Value::as_i64) {
+        status.kills = kills;
+    }
 }
 
 /// The running status seeded from the resolved campaign (so the resume point is
@@ -489,6 +497,8 @@ fn running_status(campaign: &DoomCampaign) -> DoomAutoplayStatus {
         started_at: Some(chrono::Utc::now().to_rfc3339()),
         last_error: None,
         code: None,
+        kills: 0,
+        engagements: 0,
     }
 }
 
@@ -516,6 +526,8 @@ fn completed_status(campaign: &DoomCampaign) -> DoomAutoplayStatus {
         started_at: Some(chrono::Utc::now().to_rfc3339()),
         last_error: None,
         code: Some(DoomAutoplayErrorCode::CampaignComplete),
+        kills: 0,
+        engagements: 0,
     }
 }
 
@@ -1852,6 +1864,9 @@ pub async fn run_continuous_loop_with_writer(
     let mut blocked_forward_ticks: u32 = 0;
     // The unstick/escape + local-locomotion policy state (Spec #3031 ST-3).
     let mut policy = DoomLocalPolicy::default();
+    // The combat-engagement policy state (Spec #3053 ST-3): the per-level
+    // engaged-tick count, reset on a level transition alongside the local policy.
+    let mut combat_policy = combat::DoomCombatPolicy::default();
 
     // The Plan Executor (Spec #3039 ST-4): runs the adopted plan one step per
     // tick and requests a re-plan on divergence (AC2/AC3/AC4). The retained
@@ -1931,6 +1946,7 @@ pub async fn run_continuous_loop_with_writer(
                             previous_position = None;
                             blocked_forward_ticks = 0;
                             policy.reset_detector();
+                            combat_policy.reset();
                             last_intent.clear();
                             executor.reset_positioning();
                             next_plan = None;
@@ -1991,6 +2007,7 @@ pub async fn run_continuous_loop_with_writer(
                             previous_position = None;
                             blocked_forward_ticks = 0;
                             policy.reset_detector();
+                            combat_policy.reset();
                             last_intent.clear();
                             executor.reset_positioning();
                             next_plan = None;
@@ -2204,22 +2221,21 @@ pub async fn run_continuous_loop_with_writer(
         status.replans = executor.replans();
         status.plan_index = plan_tick.index;
 
-        // 3c. Compose the effective intent. A NATIVE plan step is issued directly
-        //     (guarded by the retained safety reflex); the LEGACY `Hold` step and
-        //     the no-step fallback run through the retained reflex + unstick/escape
-        //     + local-locomotion pipeline (composed, never replaced).
+        // 3c. Compose the effective intent. The combat-engagement layer (Spec
+        //     #3053 ST-3) is consulted FIRST: when an engagement target is present
+        //     its bounded action set becomes the tick's intent and is composed
+        //     through the SAME retained reflex + unstick/escape + local-locomotion
+        //     pipeline, so `safety_reflex` and the #3031 escape window still run and
+        //     still take precedence. When there is no target (`None`) the retained
+        //     plan/legacy/fallback path runs byte-identically (combat inert, R-4).
         let step_controller = match &plan_tick.action {
             PlanAction::Native(_) => Some("plan"),
             PlanAction::Legacy(_) => Some("legacy"),
             PlanAction::None => None,
         };
-        let effective = match plan_tick.action {
-            PlanAction::Native(actions) => {
-                last_intent = actions.clone();
-                safety_reflex(&observation, &actions, blocked_forward_ticks)
-            }
-            PlanAction::Legacy(actions) => {
-                last_intent = actions;
+        let effective = match combat::combat_intent(&observation, &mut combat_policy) {
+            Some(intent) => {
+                last_intent = intent.actions;
                 effective_intent(
                     &observation,
                     &last_intent,
@@ -2228,16 +2244,33 @@ pub async fn run_continuous_loop_with_writer(
                     status.steps,
                 )
             }
-            PlanAction::None => effective_intent(
-                &observation,
-                &last_intent,
-                blocked_forward_ticks,
-                &mut policy,
-                status.steps,
-            ),
+            None => match plan_tick.action {
+                PlanAction::Native(actions) => {
+                    last_intent = actions.clone();
+                    safety_reflex(&observation, &actions, blocked_forward_ticks)
+                }
+                PlanAction::Legacy(actions) => {
+                    last_intent = actions;
+                    effective_intent(
+                        &observation,
+                        &last_intent,
+                        blocked_forward_ticks,
+                        &mut policy,
+                        status.steps,
+                    )
+                }
+                PlanAction::None => effective_intent(
+                    &observation,
+                    &last_intent,
+                    blocked_forward_ticks,
+                    &mut policy,
+                    status.steps,
+                ),
+            },
         };
         status.escapes = policy.escapes;
         status.stuck_ticks = policy.no_move_ticks;
+        status.engagements = combat_policy.engagements;
         let reflex_fired = effective != last_intent;
 
         // 3d. Dataset assembly (Spec #3032 ST-2): append the executed plan step
@@ -3968,6 +4001,234 @@ mod tests {
         );
         assert_eq!(result.phase, DoomAutoplayPhase::Completed);
         assert_eq!(result.code, Some(DoomAutoplayErrorCode::BudgetExhausted));
+    }
+
+    // ── Combat engagement loop integration (Spec #3053 ST-3) ─────────────────
+
+    /// An alive E1M1 observation carrying ONE `enemies[]` entry at `direction`.
+    fn combat_observation(
+        tic: u64,
+        kills: i64,
+        health: i64,
+        direction: &str,
+        distance: i64,
+    ) -> Value {
+        json!({
+            "tic": tic,
+            "done": false,
+            "outcome": "alive",
+            "level": { "episode": 1, "map": 1, "skill": 3, "kills": kills, "items": 0 },
+            "player": { "x": 0, "y": 0, "angle": 0, "health": health },
+            "enemies": [
+                { "kind": "trooper", "hp": 20, "direction": direction, "distance": distance }
+            ],
+        })
+    }
+
+    /// Every `step` call's action array, in order (the loop's issued intents).
+    fn step_actions(engine: &FakeEngine) -> Vec<Value> {
+        engine
+            .calls()
+            .into_iter()
+            .filter_map(|call| {
+                let rest = call.strip_prefix("step ")?;
+                serde_json::from_str::<Value>(rest).ok()
+            })
+            .collect()
+    }
+
+    /// Whether an issued action array contains an action of `kind`.
+    fn actions_contain(actions: &Value, kind: &str) -> bool {
+        actions
+            .as_array()
+            .is_some_and(|array| array.iter().any(|action| action["type"] == kind))
+    }
+
+    #[tokio::test]
+    async fn combat_a_front_enemy_fires_each_tick_and_advances_kills_and_engagements() {
+        let engine = FakeEngine::default();
+        engine.queue_reset(Ok(combat_observation(0, 0, 100, "front", 100)));
+        for tic in 1..=3u64 {
+            engine
+                .step_queue
+                .lock()
+                .unwrap()
+                .push_back(Ok(combat_observation(tic, tic as i64, 100, "front", 100)));
+        }
+        let source = FakeSource::repeating(Ok(decision(1)));
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(false);
+        let mut statuses: Vec<DoomAutoplayStatus> = Vec::new();
+        // Budget 4 = positioning + 3 ticks (below K=12, so no escape window).
+        let cfg = continuous_config(4, 3, Duration::from_secs(1));
+
+        let result = run_continuous_loop(
+            &engine,
+            &source,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |status| statuses.push(status.clone()),
+        )
+        .await;
+
+        assert!(result.success);
+        let steps = step_actions(&engine);
+        assert_eq!(steps.len(), 3);
+        assert!(
+            steps
+                .iter()
+                .all(|actions| actions_contain(actions, DOOM_ACTION_SHOOT)),
+            "a front enemy fires every tick: {steps:?}"
+        );
+        let last = statuses.last().expect("a terminal status");
+        assert_eq!(last.kills, 3, "kills is the observation's `level.kills`");
+        assert_eq!(last.engagements, 3, "the engagement counter advances per tick");
+    }
+
+    #[tokio::test]
+    async fn combat_without_a_front_enemy_never_fires_and_stays_inert() {
+        // The default FakeEngine serves no `enemies` → the combat layer is inert.
+        let engine = FakeEngine::default();
+        let source = FakeSource::repeating(Ok(decision(1)));
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(false);
+        let mut statuses: Vec<DoomAutoplayStatus> = Vec::new();
+        let cfg = continuous_config(4, 3, Duration::from_secs(1));
+
+        let result = run_continuous_loop(
+            &engine,
+            &source,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |status| statuses.push(status.clone()),
+        )
+        .await;
+
+        assert!(result.success);
+        let steps = step_actions(&engine);
+        assert!(!steps.is_empty());
+        assert!(
+            steps
+                .iter()
+                .all(|actions| !actions_contain(actions, DOOM_ACTION_SHOOT)),
+            "no front enemy ⇒ no shoot: {steps:?}"
+        );
+        let last = statuses.last().expect("a terminal status");
+        assert_eq!(last.kills, 0);
+        assert_eq!(last.engagements, 0, "an inert layer never engages");
+    }
+
+    #[tokio::test]
+    async fn combat_low_health_disengages_without_firing_and_retreats() {
+        let engine = FakeEngine::default();
+        // Health 0 is at/below any positive threshold → the disengage path.
+        engine.queue_reset(Ok(combat_observation(0, 0, 0, "front", 100)));
+        for tic in 1..=3u64 {
+            engine
+                .step_queue
+                .lock()
+                .unwrap()
+                .push_back(Ok(combat_observation(tic, 0, 0, "front", 100)));
+        }
+        let source = FakeSource::repeating(Ok(decision(1)));
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(false);
+        let cfg = continuous_config(4, 3, Duration::from_secs(1));
+
+        let result = run_continuous_loop(
+            &engine,
+            &source,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
+
+        assert!(result.success);
+        let steps = step_actions(&engine);
+        assert_eq!(steps.len(), 3);
+        assert!(
+            steps
+                .iter()
+                .all(|actions| !actions_contain(actions, DOOM_ACTION_SHOOT)),
+            "low health ⇒ no shoot even with a front target: {steps:?}"
+        );
+        assert!(
+            steps
+                .iter()
+                .all(|actions| actions_contain(actions, DOOM_ACTION_BACKWARD)),
+            "low health ⇒ a bounded backward retreat: {steps:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_3031_escape_window_still_overrides_combat_fire_when_stuck() {
+        let engine = FakeEngine::default();
+        // A front enemy every tick, but the player never moves (x=0,y=0) — the
+        // no-move streak reaches K and the #3031 escape window replaces the intent.
+        engine.queue_reset(Ok(combat_observation(0, 0, 100, "front", 100)));
+        for tic in 1..=20u64 {
+            engine
+                .step_queue
+                .lock()
+                .unwrap()
+                .push_back(Ok(combat_observation(tic, 0, 100, "front", 100)));
+        }
+        let source = FakeSource::repeating(Ok(decision(1)));
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(false);
+        let cfg = continuous_config(17, 3, Duration::from_secs(1));
+
+        let result = run_continuous_loop(
+            &engine,
+            &source,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
+
+        assert!(result.success);
+        let steps = step_actions(&engine);
+        assert_eq!(steps.len(), 16);
+        let fired = steps
+            .iter()
+            .filter(|actions| actions_contain(actions, DOOM_ACTION_SHOOT))
+            .count();
+        let escaped = steps
+            .iter()
+            .filter(|actions| !actions_contain(actions, DOOM_ACTION_SHOOT))
+            .count();
+        assert!(fired > 0, "the companion engages while it is not stuck");
+        assert!(
+            escaped > 0,
+            "the escape window still suppresses fire while stuck despite the front target: {steps:?}"
+        );
+        assert!(
+            steps.iter().any(|actions| !actions_contain(actions, DOOM_ACTION_SHOOT)
+                && actions_contain(actions, DOOM_ACTION_TURN_TO)),
+            "an escape tick re-routes (turn-to) rather than firing: {steps:?}"
+        );
     }
 
     // ── Dataset assembly (Spec #3032 ST-2) ───────────────────────────────────
