@@ -123,9 +123,14 @@ pub struct DoomAutoplayStatus {
     pub last_error: Option<String>,
     /// The typed failure code, when the run failed.
     pub code: Option<DoomAutoplayErrorCode>,
-    /// Total enemy kills observed this run (Spec #3053 ST-2, AC2): a read-only
-    /// projection of the engine observation's `level.kills`. Additive field —
-    /// existing fields keep their order and serde names.
+    /// Total enemy kills observed this run: a read-only projection of the engine
+    /// observation's `level.kills`. Additive field — existing fields keep their
+    /// order and serde names.
+    ///
+    /// DEAD OBSERVABLE (Spec #3053 AC2 amendment, Option D): the pinned
+    /// `neurodoom 0.6.7` never increments `PlayerState.kill_count`, so this is
+    /// permanently `0`. It is an additive/always-`0` telemetry signal, **not** an
+    /// AC — never assert it non-zero and never re-target it in a later cycle.
     pub kills: i64,
     /// Total engaged ticks this run (Spec #3053 ST-2): the combat policy's
     /// per-run engagement count. An observability signal carried on the wire.
