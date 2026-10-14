@@ -1,8 +1,9 @@
 /**
- * Spec #3009 ST-4 — terminal passthrough indicator + the terminal root anchor.
+ * Spec #3009 ST-4 — the terminal root anchor; Spec #3051 removed the chip.
  *
- * The dedicated exit chord + release button are retired: the pill is
- * informational only and passthrough is released by click-away / focus change.
+ * Spec #3051 removed the keyboard-mode passthrough indicator: the terminal
+ * renders NO chip in any focus state, while focus-derived passthrough (the
+ * `data-fredo-passthrough` body hook) is retained unchanged.
  */
 
 import React from 'react';
@@ -10,11 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, screen, waitFor } from '@testing-library/react';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
-import {
-  BODY_PASSTHROUGH_ATTR,
-  resetTerminalModeForTests,
-  useTerminalPassthrough,
-} from '@/shared/hotkeys/terminalMode';
+import { BODY_PASSTHROUGH_ATTR, resetTerminalModeForTests } from '@/shared/hotkeys/terminalMode';
 import { resetHotkeyStatusForTests } from '@/shared/hotkeys/store';
 import { resetRegistryForTests } from '@/shared/hotkeys/registry';
 import type { PersistedTerminalSession, TerminalSessionInfo } from '../../sessionModel';
@@ -44,7 +41,7 @@ vi.mock('ghostty-web', () => {
 });
 
 import { SessionTerminal } from '../SessionTerminal';
-import { TerminalPassthroughIndicator, TerminalWindow } from '../TerminalWindow';
+import { TerminalWindow } from '../TerminalWindow';
 
 let sessions: TerminalSessionInfo[] = [];
 let persisted: PersistedTerminalSession[] = [];
@@ -111,55 +108,30 @@ describe('terminal root anchor', () => {
   });
 });
 
-describe('TerminalPassthroughIndicator', () => {
-  it('conveys the state by icon + text (never colour alone)', () => {
-    const { rerender } = renderWithChakra(<TerminalPassthroughIndicator active />);
-
-    const pill = screen.getByTestId('hotkeys-terminal-passthrough');
-    expect(pill).toHaveAttribute('data-passthrough', 'true');
-    expect(pill).toHaveTextContent('Passthrough');
-
-    rerender(<TerminalPassthroughIndicator active={false} />);
-    const inactive = screen.getByTestId('hotkeys-terminal-passthrough');
-    expect(inactive).toHaveAttribute('data-passthrough', 'false');
-    expect(inactive).toHaveTextContent('Hotkeys active');
-    expect(inactive).not.toHaveTextContent('Passthrough');
-  });
-});
-
-describe('TerminalWindow — persistent indicator + passthrough state', () => {
-  it('mounts the pill for a live session and reflects focus in/out of the terminal', async () => {
+describe('TerminalWindow — no keyboard-mode chip (Spec #3051)', () => {
+  it('renders no passthrough chip in any focus state', async () => {
     sessions = [session({ id: 'a', status: 'running' })];
     renderWithChakra(<TerminalWindow />);
 
     const host = await screen.findByTestId('terminal-canvas-host-a');
     expect(host).toHaveAttribute('data-fredo-terminal-root', 'true');
-    const pill = await screen.findByTestId('hotkeys-terminal-passthrough');
-    expect(pill).toHaveAttribute('data-passthrough', 'false');
 
-    // Focusing the session enters passthrough (indicator + body hook flip).
+    // Unfocused: no chip element and no "Passthrough" / "Hotkeys active" copy.
+    expect(screen.queryByTestId('hotkeys-terminal-passthrough')).toBeNull();
+    expect(screen.queryByText('Passthrough')).toBeNull();
+    expect(screen.queryByText('Hotkeys active')).toBeNull();
+
+    // Focusing the session still enters focus-derived passthrough (the body hook
+    // flips) — but STILL renders no chip.
     act(() => {
       host.tabIndex = -1;
       host.focus();
     });
     await waitFor(() =>
-      expect(screen.getByTestId('hotkeys-terminal-passthrough')).toHaveAttribute(
-        'data-passthrough',
-        'true',
-      ),
+      expect(document.body.getAttribute(BODY_PASSTHROUGH_ATTR)).toBe('true'),
     );
-    expect(document.body.getAttribute(BODY_PASSTHROUGH_ATTR)).toBe('true');
-  });
-});
-
-describe('terminalMode hook contract', () => {
-  it('useTerminalPassthrough reports the live state', () => {
-    function Probe() {
-      const state = useTerminalPassthrough();
-      return <span data-testid="probe" data-active={String(state.active)} />;
-    }
-    renderWithChakra(<Probe />);
-    const probe = screen.getByTestId('probe');
-    expect(probe).toHaveAttribute('data-active', 'false');
+    expect(screen.queryByTestId('hotkeys-terminal-passthrough')).toBeNull();
+    expect(screen.queryByText('Passthrough')).toBeNull();
+    expect(screen.queryByText('Hotkeys active')).toBeNull();
   });
 });
