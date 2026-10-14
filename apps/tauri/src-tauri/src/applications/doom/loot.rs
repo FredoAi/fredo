@@ -2,12 +2,13 @@
 //!
 //! The **loot layer** gives the Doom Companion an opportunistic reflex: when a
 //! reachable pickup (`MobjFlag::Special`) sits within the bounded observation's
-//! `items[]` list and within [`DOOM_LOOT_ACQUIRE_RANGE`], the companion steers
-//! toward it (a bounded `turn-to` bearing toward the pickup's coarse bucket plus
-//! a bounded `forward` hold) so it walks over the pickup and collects it, then
-//! resumes its route. It is a **pure function of the observation + the persisted
-//! [`DoomLootPolicy`]** — no RNG, no wall clock, no I/O — mirroring the purity
-//! contract of [`super::combat`] and [`super::plan`] (NFR-DET / AC5).
+//! `items[]` list and within [`DOOM_LOOT_ACQUIRE_RANGE`], the companion **nudges**
+//! its route heading toward it — a bounded [`DOOM_LOOT_NUDGE_DEGREES`] deflection
+//! off the route's own heading plus a bounded `forward` hold — so it walks near
+//! the pickup and collects it, then resumes its route. It is a **pure function of
+//! the observation + the persisted [`DoomLootPolicy`]** — no RNG, no wall clock,
+//! no I/O — mirroring the purity contract of [`super::combat`] and
+//! [`super::plan`] (NFR-DET / AC5).
 //!
 //! # Vocabulary
 //!
@@ -15,6 +16,17 @@
 //! where `direction` is a coarse bearing bucket (`front`/`left`/`right`/`back`)
 //! produced by the engine's `relative_direction` rule. This layer consumes that
 //! vocabulary **as-is** — it never changes the perception contract.
+//!
+//! # Route-aligned bounded deflection (Architect B.7.2 — R-1 / R-4 / AC1 / AC4)
+//!
+//! The route's steering is **retained and only DEFLECTED, never replaced**: the
+//! intent's `turn-to` is `H_route + bucket_deflection(direction)` where `H_route`
+//! is the route's own heading (supplied by the caller) — `front` ⇒ `+0`
+//! (the route turn is applied unchanged), `left` ⇒ `+DOOM_LOOT_NUDGE_DEGREES`,
+//! `right` ⇒ `-DOOM_LOOT_NUDGE_DEGREES`, and `back`/unknown ⇒ no intent at all
+//! (loot suppressed). A small, bounded deflection cannot cancel the route the way
+//! the retired absolute-bucket `turn-to` did (which overrode the route bearing and
+//! regressed the #3039 exit run).
 //!
 //! # Opportunism + boundedness (R-1 / R-4 / AC1 / AC4)
 //!
@@ -57,6 +69,12 @@ pub const DOOM_LOOT_SEEK_WINDOW_TICKS: u32 = 24;
 /// The per-tick bounded `forward` hold (in tics) appended with the loot bearing
 /// (AC5 — every emitted action stays bounded).
 pub const DOOM_LOOT_FORWARD_AMOUNT: i64 = 10;
+
+/// The maximum deflection (degrees) the loot nudge may apply OFF the route's own
+/// heading (Architect B.7.2). A `left`/`right` pickup deflects the route heading
+/// by `±DOOM_LOOT_NUDGE_DEGREES`; a `front` pickup deflects by `0` (the route
+/// turn is applied unchanged). Bounded so the nudge can never cancel the route.
+pub const DOOM_LOOT_NUDGE_DEGREES: i64 = 30;
 
 // ── FNV-1a (deterministic signature, no randomly-seeded hasher) ──────────────
 
@@ -162,24 +180,24 @@ pub fn loot_signature(observation: &Value) -> u64 {
     hash
 }
 
-/// The absolute map heading (0-359) for a direction bucket and the current
-/// facing — the corrected #3031 mapping (see
-/// [`super::agent::escape_heading`]), extended with the `back` bucket:
+/// The bounded heading deflection (degrees) the loot nudge applies OFF the route's
+/// heading for a pickup's direction bucket (Architect B.7.2):
 ///
-/// * `front` → `current_angle`
-/// * `left`  → `(current_angle + 90).rem_euclid(360)`
-/// * `right` → `(current_angle + 270).rem_euclid(360)`
-/// * `back`  → `(current_angle + 180).rem_euclid(360)`
+/// * `front` → `Some(0)` — the route turn is applied unchanged;
+/// * `left`  → `Some(+DOOM_LOOT_NUDGE_DEGREES)`;
+/// * `right` → `Some(-DOOM_LOOT_NUDGE_DEGREES)`;
+/// * `back` (and any unknown bucket) → `None` — loot is suppressed (a rear pickup
+///   cannot be nudged toward without abandoning the route).
 ///
-/// An unknown bucket maps to `front` (`current_angle`). Pure.
-pub fn loot_heading(direction: &str, current_angle: i64) -> i64 {
-    let delta = match direction {
-        "left" => 90,
-        "right" => 270,
-        "back" => 180,
-        _ => 0,
-    };
-    (current_angle + delta).rem_euclid(360)
+/// The sign follows the retained #3031 convention (`left` = positive, `right` =
+/// negative). Pure — no RNG, no clock.
+pub fn bucket_deflection(direction: &str) -> Option<i64> {
+    match direction {
+        "front" => Some(0),
+        "left" => Some(DOOM_LOOT_NUDGE_DEGREES),
+        "right" => Some(-DOOM_LOOT_NUDGE_DEGREES),
+        _ => None,
+    }
 }
 
 /// Select the loot target from the observation's `items[]`, or `None` when there
@@ -226,15 +244,24 @@ pub fn loot_target(observation: &Value, policy: &DoomLootPolicy) -> Option<LootT
 /// Compute the bounded loot intent for one tick, or `None` when the companion
 /// should keep to its route (R-4 — the retained pipeline drives; AC1/AC4/AC5).
 ///
+/// `route_heading` is the route's own heading (`H_route`) — the caller derives it
+/// from the base action set's LAST `turn-to`, falling back to the player's facing.
+///
 /// Behaviour (pure + bounded, no RNG/clock/I-O):
 /// * a recorded `blocked_signature` that no longer matches the current item set
 ///   is released and the seek counter restarts;
+/// * a `back`/unknown-bucket target is suppressed (`bucket_deflection` = `None`);
 /// * with a target, `seek_ticks` increments once; on reaching
 ///   [`DOOM_LOOT_SEEK_WINDOW_TICKS`] the current set is recorded blocked and the
 ///   tick yields (`None`) so the route resumes;
-/// * otherwise it emits exactly `[{turn-to heading}, {forward amount}]` — a
-///   bounded steer toward the pickup.
-pub fn loot_intent(observation: &Value, policy: &mut DoomLootPolicy) -> Option<LootIntent> {
+/// * otherwise it emits exactly
+///   `[{turn-to (H_route + bucket_deflection)}, {forward amount}]` — the route
+///   heading DEFLECTED by at most [`DOOM_LOOT_NUDGE_DEGREES`], never replaced.
+pub fn loot_intent(
+    observation: &Value,
+    policy: &mut DoomLootPolicy,
+    route_heading: i64,
+) -> Option<LootIntent> {
     // Release a stale block when the item set has changed (a pickup was
     // collected/added) so a fresh bounded seek is allowed.
     if let Some(blocked) = policy.blocked_signature {
@@ -246,6 +273,10 @@ pub fn loot_intent(observation: &Value, policy: &mut DoomLootPolicy) -> Option<L
 
     let target = loot_target(observation, policy)?;
 
+    // A rear/unknown pickup has no bounded deflection that keeps the route — the
+    // tick is inert (loot suppressed).
+    let deflection = bucket_deflection(target.direction)?;
+
     policy.seek_ticks = policy.seek_ticks.saturating_add(1);
     if policy.seek_ticks >= DOOM_LOOT_SEEK_WINDOW_TICKS {
         // The bounded window is exhausted without collecting: stop chasing this
@@ -255,11 +286,7 @@ pub fn loot_intent(observation: &Value, policy: &mut DoomLootPolicy) -> Option<L
         return None;
     }
 
-    let current_angle = observation
-        .pointer("/player/angle")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    let heading = loot_heading(target.direction, current_angle);
+    let heading = (route_heading + deflection).rem_euclid(360);
     let actions = vec![
         json!({ "type": DOOM_ACTION_TURN_TO, "angle": heading }),
         json!({ "type": DOOM_ACTION_FORWARD, "amount": DOOM_LOOT_FORWARD_AMOUNT }),
@@ -297,6 +324,7 @@ mod tests {
         assert_eq!(DOOM_LOOT_ACQUIRE_RANGE, 512);
         assert_eq!(DOOM_LOOT_SEEK_WINDOW_TICKS, 24);
         assert_eq!(DOOM_LOOT_FORWARD_AMOUNT, 10);
+        assert_eq!(DOOM_LOOT_NUDGE_DEGREES, 30);
     }
 
     // 1. An in-range pickup yields a deterministic target + bounded steer (F-1).
@@ -310,7 +338,7 @@ mod tests {
         );
 
         let mut policy = DoomLootPolicy::default();
-        let intent = loot_intent(&obs, &mut policy).expect("loot intent");
+        let intent = loot_intent(&obs, &mut policy, 0).expect("loot intent");
         assert_eq!(intent.target, target("health", "front", 100));
         assert_eq!(
             intent.actions,
@@ -332,11 +360,11 @@ mod tests {
             loot_target(&at_bound, &policy),
             Some(target("health", "left", DOOM_LOOT_ACQUIRE_RANGE))
         );
-        assert!(loot_intent(&at_bound, &mut policy).is_some());
+        assert!(loot_intent(&at_bound, &mut policy, 0).is_some());
 
         let beyond = observation(json!([item("health", "left", DOOM_LOOT_ACQUIRE_RANGE + 1)]), 0);
         assert_eq!(loot_target(&beyond, &policy), None);
-        assert_eq!(loot_intent(&beyond, &mut policy), None);
+        assert_eq!(loot_intent(&beyond, &mut policy, 0), None);
     }
 
     // 1c. Empty/absent/non-array items and malformed entries are inert, no panic.
@@ -353,14 +381,14 @@ mod tests {
         ] {
             let obs = observation(items, 0);
             assert_eq!(loot_target(&obs, &policy), None);
-            assert_eq!(loot_intent(&obs, &mut policy), None);
+            assert_eq!(loot_intent(&obs, &mut policy, 0), None);
         }
         for obs in [
             json!({ "player": { "angle": 0 } }),
             json!({ "player": { "angle": 0 }, "items": "nonsense" }),
         ] {
             assert_eq!(loot_target(&obs, &policy), None);
-            assert_eq!(loot_intent(&obs, &mut policy), None);
+            assert_eq!(loot_intent(&obs, &mut policy, 0), None);
         }
     }
 
@@ -378,26 +406,48 @@ mod tests {
         );
     }
 
-    // 1e. loot_heading maps the four buckets and agrees with the #3031 mapping.
+    // 1e. bucket_deflection maps the four buckets; back/unknown are suppressed.
     #[test]
-    fn loot_heading_maps_the_four_buckets() {
-        assert_eq!(loot_heading("front", 40), 40);
-        assert_eq!(loot_heading("left", 0), 90);
-        assert_eq!(loot_heading("right", 0), 270);
-        assert_eq!(loot_heading("back", 0), 180);
-        // Wraps into 0-359 for an arbitrary facing.
-        assert_eq!(loot_heading("right", 300), 210);
-        assert_eq!(loot_heading("left", 300), 30);
-        // Agrees with the retained #3031 mapping for the three shared buckets.
-        for angle in [0, 40, 90, 179, 270, 359] {
-            for bucket in ["front", "left", "right"] {
-                assert_eq!(
-                    loot_heading(bucket, angle),
-                    crate::applications::doom::agent::escape_heading(bucket, angle),
-                    "{bucket} at {angle}"
-                );
-            }
+    fn bucket_deflection_maps_the_four_buckets_and_suppresses_others() {
+        assert_eq!(bucket_deflection("front"), Some(0));
+        assert_eq!(bucket_deflection("left"), Some(DOOM_LOOT_NUDGE_DEGREES));
+        assert_eq!(bucket_deflection("right"), Some(-DOOM_LOOT_NUDGE_DEGREES));
+        assert_eq!(bucket_deflection("back"), None, "a rear pickup is suppressed");
+        assert_eq!(bucket_deflection("sideways"), None, "an unknown bucket is suppressed");
+    }
+
+    // 1f. The intent's turn-to is H_route DEFLECTED by the bucket (never replaced).
+    #[test]
+    fn loot_intent_deflects_the_route_heading_by_the_bucket() {
+        let cases = [
+            ("front", 0, 90),   // unchanged route heading
+            ("left", 30, 120),  // +nudge
+            ("right", -30, 60), // -nudge
+        ];
+        for (bucket, deflection, expected) in cases {
+            let obs = observation(json!([item("health", bucket, 100)]), 0);
+            let mut policy = DoomLootPolicy::default();
+            let intent = loot_intent(&obs, &mut policy, 90).expect("loot intent");
+            assert_eq!(
+                intent.actions[0],
+                json!({ "type": DOOM_ACTION_TURN_TO, "angle": expected }),
+                "{bucket}: H_route 90 + {deflection}"
+            );
+            assert_eq!(
+                intent.actions[1],
+                json!({ "type": DOOM_ACTION_FORWARD, "amount": DOOM_LOOT_FORWARD_AMOUNT })
+            );
         }
+    }
+
+    // 1g. A rear pickup yields no intent (loot suppressed) and never seeks.
+    #[test]
+    fn a_back_target_is_suppressed() {
+        let obs = observation(json!([item("health", "back", 100)]), 0);
+        let mut policy = DoomLootPolicy::default();
+        assert_eq!(loot_intent(&obs, &mut policy, 90), None);
+        assert_eq!(policy.seek_ticks, 0, "a suppressed target never seeks");
+        assert_eq!(policy.blocked_signature, None);
     }
 
     // 2. The seek window bounds the chase; the item set is then blocked (F-8).
@@ -410,12 +460,12 @@ mod tests {
         // window-exhaustion tick returns None.
         let mut emitted = 0;
         for _ in 0..DOOM_LOOT_SEEK_WINDOW_TICKS - 1 {
-            assert!(loot_intent(&obs, &mut policy).is_some());
+            assert!(loot_intent(&obs, &mut policy, 0).is_some());
             emitted += 1;
         }
         assert_eq!(emitted, DOOM_LOOT_SEEK_WINDOW_TICKS - 1);
         assert_eq!(
-            loot_intent(&obs, &mut policy),
+            loot_intent(&obs, &mut policy, 0),
             None,
             "the window is exhausted and the route resumes"
         );
@@ -427,7 +477,7 @@ mod tests {
 
         // The SAME item set (same signature) is never re-chased while blocked.
         for _ in 0..5 {
-            assert_eq!(loot_intent(&obs, &mut policy), None);
+            assert_eq!(loot_intent(&obs, &mut policy, 0), None);
             assert_eq!(loot_target(&obs, &policy), None);
         }
     }
@@ -438,14 +488,14 @@ mod tests {
         let obs = observation(json!([item("health", "front", 100)]), 0);
         let mut policy = DoomLootPolicy::default();
         for _ in 0..DOOM_LOOT_SEEK_WINDOW_TICKS {
-            let _ = loot_intent(&obs, &mut policy);
+            let _ = loot_intent(&obs, &mut policy, 0);
         }
         assert!(policy.blocked_signature.is_some());
-        assert!(loot_intent(&obs, &mut policy).is_none(), "still blocked");
+        assert!(loot_intent(&obs, &mut policy, 0).is_none(), "still blocked");
 
         // The item set changed (a pickup was collected / a new one appeared).
         let changed = observation(json!([item("shotgun", "right", 200)]), 0);
-        let intent = loot_intent(&changed, &mut policy).expect("released");
+        let intent = loot_intent(&changed, &mut policy, 0).expect("released");
         assert_eq!(intent.target, target("shotgun", "right", 200));
         assert!(policy.blocked_signature.is_none(), "the block is released");
     }
@@ -495,8 +545,8 @@ mod tests {
         first_policy.seek_ticks = 3;
         second_policy.seek_ticks = 3;
         assert_eq!(
-            loot_intent(&obs, &mut first_policy),
-            loot_intent(&obs, &mut second_policy)
+            loot_intent(&obs, &mut first_policy, 45),
+            loot_intent(&obs, &mut second_policy, 45)
         );
     }
 

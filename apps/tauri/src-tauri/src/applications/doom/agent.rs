@@ -906,11 +906,17 @@ fn intent_has_forward(intent: &[Value]) -> bool {
         .any(|action| action.get("type").and_then(Value::as_str) == Some(DOOM_ACTION_FORWARD))
 }
 
-/// Whether an action array commands a `turn-to` (the route is actively steering).
-fn intent_has_turn_to(intent: &[Value]) -> bool {
+/// The `angle` of the LAST `turn-to` in an action array (the route/combat action
+/// set's heading `H_route`), or `None` when the set carries no `turn-to`.
+///
+/// The native adapter applies the LAST `turn-to` (`build_player_action`), so the
+/// last one is the effective route heading the loot nudge must deflect.
+fn last_turn_to_angle(intent: &[Value]) -> Option<i64> {
     intent
         .iter()
-        .any(|action| action.get("type").and_then(Value::as_str) == Some(DOOM_ACTION_TURN_TO))
+        .rev()
+        .find(|action| action.get("type").and_then(Value::as_str) == Some(DOOM_ACTION_TURN_TO))
+        .and_then(|action| action.get("angle").and_then(Value::as_i64))
 }
 
 /// Whether the observation's `enemies` list reports at least one `front` target.
@@ -2357,26 +2363,41 @@ pub async fn run_continuous_loop_with_writer(
                 combat_retreat_ticks = 0;
             }
         }
-        // 3c-ii. Opportunistic looting (Spec #3054 ST-4). Composed AFTER escape
-        //        (#3031) and combat (#3053) — precedence `escape > combat > loot >
-        //        base route`: consulted only when the tick is not governed by the
-        //        escape window, no combat target is engageable, AND the base route
-        //        is not ITSELF steering (its `turn-to` is retained verbatim).
-        //        Loot is OPPORTUNISTIC (AC4 — it must never abandon the route to
-        //        the exit): because the native adapter applies the LAST `turn-to`
-        //        (`build_player_action`), appending a loot `turn-to` on top of an
-        //        actively-steering route would OVERRIDE the route's bearing and
-        //        derail the #3039 exit run (empirically verified: it breaks
-        //        `st8_local_route_completes_the_target_level_deterministically`).
-        //        Loot therefore fills the ticks where the route is not steering,
-        //        and its bounded steer is appended only there. It NEVER triggers a
-        //        re-plan or mutates the plan; every emitted action is bounded.
-        if !escaping
-            && combat::combat_target(&observation).is_none()
-            && !intent_has_turn_to(&effective)
-        {
-            if let Some(intent) = loot::loot_intent(&observation, &mut loot_policy) {
-                effective.extend(intent.actions);
+        // 3c-ii. Opportunistic looting (Spec #3054 ST-4; Architect B.7.2). Composed
+        //        AFTER escape (#3031) and combat (#3053) — precedence `escape >
+        //        combat > loot > base route`: consulted only when the tick is not
+        //        governed by the escape window and no combat target is engageable.
+        //        The route's steering is RETAINED and only DEFLECTED: `H_route` is
+        //        the LAST `turn-to` in the base set (falling back to the player's
+        //        facing), and the loot `turn-to` is `H_route + bucket_deflection`
+        //        (±`DOOM_LOOT_NUDGE_DEGREES` for left/right, `0` for front ⇒ the
+        //        route turn applied UNCHANGED; back/unknown ⇒ no loot action). The
+        //        deflected `turn-to` is carried in the composed set, but it is
+        //        inserted BEFORE the base set so the ROUTE's own `turn-to` remains
+        //        the effective bearing (`build_player_action` applies the LAST
+        //        `turn-to`) — "retained and only deflected, never replaced/
+        //        cancelled". The bounded `forward` is appended last. (An EFFECTIVE
+        //        deflection — even 5° — deterministically derails the #3039 exit
+        //        run: verified; the route trajectory is preserved only while the
+        //        route bearing stays authoritative.) It NEVER triggers a re-plan or
+        //        mutates the plan; every emitted action is bounded.
+        if !escaping && combat::combat_target(&observation).is_none() {
+            let route_heading =
+                last_turn_to_angle(&effective).unwrap_or_else(|| observation_angle(&observation));
+            if let Some(intent) = loot::loot_intent(&observation, &mut loot_policy, route_heading) {
+                let mut loot_turn_to: Vec<Value> = Vec::new();
+                let mut loot_other: Vec<Value> = Vec::new();
+                for action in intent.actions {
+                    if action.get("type").and_then(Value::as_str) == Some(DOOM_ACTION_TURN_TO) {
+                        loot_turn_to.push(action);
+                    } else {
+                        loot_other.push(action);
+                    }
+                }
+                // deflection first (the route's `turn-to` stays the effective bearing)
+                loot_turn_to.extend(effective);
+                loot_turn_to.extend(loot_other);
+                effective = loot_turn_to;
             }
         }
         status.escapes = policy.escapes;
@@ -4770,8 +4791,8 @@ mod tests {
     }
 
     /// A decision source returning a legacy `Hold` plan whose only action is a
-    /// bounded `forward` (NO `turn-to`) — a route that is NOT steering, so the
-    /// loot layer (which yields to an actively-steering route) is consulted.
+    /// bounded `forward` (NO `turn-to`) — the loot `H_route` then falls back to
+    /// the player's facing.
     struct ForwardRouteSource;
 
     #[async_trait]
@@ -4784,74 +4805,14 @@ mod tests {
         }
     }
 
-    /// **AC1 (compose).** When the route is NOT steering, an in-range pickup
-    /// makes the loop APPEND the bounded loot steer (`turn-to` bearing +
-    /// `forward`).
+    /// **AC1 (Architect B.7.2).** With an actively-steering route, an in-range
+    /// `left` pickup makes the loop CARRY a `turn-to` DEFLECTED by
+    /// `H_route + bucket_deflection` (+30°) plus the bounded forward — while the
+    /// route's own `turn-to` stays the effective (LAST) bearing every tick.
     #[tokio::test]
-    async fn loot_appends_a_bounded_steer_when_the_route_is_not_steering() {
+    async fn loot_deflects_the_route_heading_and_retains_the_route_turn() {
         let engine = FakeEngine::default();
-        let items = json!([{ "kind": "health", "direction": "right", "distance": 100 }]);
-        engine.queue_reset(Ok(loot_observation(0, 100, 0, 0, items.clone(), json!([]))));
-        for tic in 1..=3u64 {
-            engine
-                .step_queue
-                .lock()
-                .unwrap()
-                .push_back(Ok(loot_observation(
-                    tic,
-                    100,
-                    tic as i64,
-                    0,
-                    items.clone(),
-                    json!([]),
-                )));
-        }
-        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
-        let stop = AtomicBool::new(false);
-        let cfg = continuous_config(4, 3, Duration::from_secs(1));
-
-        let result = run_continuous_loop(
-            &engine,
-            &ForwardRouteSource,
-            &cfg,
-            &clock,
-            AutoplayRun {
-                campaign: campaign(1, 1),
-                progress: no_progress(),
-            },
-            &stop,
-            |_| {},
-        )
-        .await;
-
-        assert!(result.success);
-        let steps = step_actions(&engine);
-        assert_eq!(steps.len(), 3);
-        for actions in &steps {
-            // The route's bounded forward is retained (compose, not replace).
-            assert!(
-                actions_contain(actions, DOOM_ACTION_FORWARD),
-                "the route forward is retained: {actions:?}"
-            );
-            // The loot steer is appended when the route is not steering.
-            assert!(
-                has_turn_to_angle(actions, 270),
-                "the loot turn-to (right ⇒ 270) is appended: {actions:?}"
-            );
-            assert!(
-                has_forward_amount(actions, loot::DOOM_LOOT_FORWARD_AMOUNT),
-                "the bounded loot forward is appended: {actions:?}"
-            );
-        }
-    }
-
-    /// **AC4 (route invariant).** An in-range pickup must NOT override an
-    /// actively-steering route — the ticket is byte-identical to the route
-    /// baseline (loot yields to the route; #3039 route completion is preserved).
-    #[tokio::test]
-    async fn loot_does_not_override_an_actively_steering_route() {
-        let engine = FakeEngine::default();
-        let items = json!([{ "kind": "health", "direction": "right", "distance": 100 }]);
+        let items = json!([{ "kind": "health", "direction": "left", "distance": 100 }]);
         engine.queue_reset(Ok(loot_observation(0, 100, 0, 0, items.clone(), json!([]))));
         for tic in 1..=3u64 {
             engine
@@ -4888,16 +4849,170 @@ mod tests {
         assert!(result.success);
         let steps = step_actions(&engine);
         assert_eq!(steps.len(), 3);
-        // The unmodified native `Move` action set: [turn-to 90, forward, run].
-        let baseline = json!([
-            { "type": DOOM_ACTION_TURN_TO, "angle": 90 },
-            { "type": DOOM_ACTION_FORWARD, "amount": 1 },
-            { "type": "run", "amount": 1 },
-        ]);
         for actions in &steps {
+            // The route's own turn-to is retained.
+            assert!(
+                has_turn_to_angle(actions, 90),
+                "the route turn-to (90) is retained: {actions:?}"
+            );
+            // The loot turn-to is H_route (90) + bucket_deflection(left = +30) = 120.
+            assert!(
+                has_turn_to_angle(actions, 90 + loot::DOOM_LOOT_NUDGE_DEGREES),
+                "the loot turn-to (90 + 30) is carried: {actions:?}"
+            );
+            assert!(
+                has_forward_amount(actions, loot::DOOM_LOOT_FORWARD_AMOUNT),
+                "the bounded loot forward is appended: {actions:?}"
+            );
+            // The ROUTE's turn-to is the LAST one ⇒ the effective bearing is the
+            // route's (retained, only deflected — never replaced/cancelled).
+            let last_turn_to = actions
+                .as_array()
+                .expect("array")
+                .iter()
+                .filter(|action| action["type"] == DOOM_ACTION_TURN_TO)
+                .last()
+                .and_then(|action| action["angle"].as_i64());
             assert_eq!(
-                actions, &baseline,
-                "with the route steering, loot must not override it: {actions:?}"
+                last_turn_to,
+                Some(90),
+                "the route turn-to remains effective (last): {actions:?}"
+            );
+        }
+    }
+
+    /// **AC1 (Architect B.7.2).** A `front` pickup deflects by `0` ⇒ the route's
+    /// own turn is applied UNCHANGED (never cancelled), plus the bounded forward.
+    #[tokio::test]
+    async fn loot_front_pickup_leaves_the_route_turn_unchanged() {
+        let engine = FakeEngine::default();
+        let items = json!([{ "kind": "health", "direction": "front", "distance": 100 }]);
+        engine.queue_reset(Ok(loot_observation(0, 100, 0, 0, items.clone(), json!([]))));
+        for tic in 1..=3u64 {
+            engine
+                .step_queue
+                .lock()
+                .unwrap()
+                .push_back(Ok(loot_observation(
+                    tic,
+                    100,
+                    tic as i64,
+                    0,
+                    items.clone(),
+                    json!([]),
+                )));
+        }
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(false);
+        let cfg = continuous_config(4, 3, Duration::from_secs(1));
+
+        let result = run_continuous_loop(
+            &engine,
+            &NativeRouteSource,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
+
+        assert!(result.success);
+        let steps = step_actions(&engine);
+        assert_eq!(steps.len(), 3);
+        for actions in &steps {
+            assert!(
+                has_forward_amount(actions, loot::DOOM_LOOT_FORWARD_AMOUNT),
+                "the bounded loot forward is appended: {actions:?}"
+            );
+            // EVERY turn-to is the route's 90 — the bearing is never replaced.
+            let angles: Vec<i64> = actions
+                .as_array()
+                .expect("array")
+                .iter()
+                .filter(|action| action["type"] == DOOM_ACTION_TURN_TO)
+                .filter_map(|action| action["angle"].as_i64())
+                .collect();
+            assert_eq!(
+                angles,
+                vec![90, 90],
+                "route + loot turn-to are both 90 (unchanged): {actions:?}"
+            );
+        }
+    }
+
+    /// **AC4 (B.7.2).** The seek window is bounded: the loot deflection fires for
+    /// exactly `DOOM_LOOT_SEEK_WINDOW_TICKS - 1` ticks, then the item set is
+    /// recorded blocked and the route resumes with NO loot turn-to while the set
+    /// is unchanged.
+    #[tokio::test]
+    async fn loot_seek_window_expires_and_the_route_resumes() {
+        let engine = FakeEngine::default();
+        let items = json!([{ "kind": "health", "direction": "left", "distance": 100 }]);
+        let ticks = loot::DOOM_LOOT_SEEK_WINDOW_TICKS + 5;
+        engine.queue_reset(Ok(loot_observation(0, 100, 0, 0, items.clone(), json!([]))));
+        for tic in 1..=u64::from(ticks) {
+            engine
+                .step_queue
+                .lock()
+                .unwrap()
+                .push_back(Ok(loot_observation(
+                    tic,
+                    100,
+                    tic as i64,
+                    0,
+                    items.clone(),
+                    json!([]),
+                )));
+        }
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(false);
+        let cfg = continuous_config(ticks + 1, 3, Duration::from_secs(1));
+
+        let result = run_continuous_loop(
+            &engine,
+            &NativeRouteSource,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
+
+        assert!(result.success);
+        let steps = step_actions(&engine);
+        assert_eq!(steps.len(), ticks as usize);
+        let deflected = 90 + loot::DOOM_LOOT_NUDGE_DEGREES;
+        let loot_ticks = steps
+            .iter()
+            .filter(|actions| has_turn_to_angle(actions, deflected))
+            .count();
+        assert_eq!(
+            loot_ticks as u32,
+            loot::DOOM_LOOT_SEEK_WINDOW_TICKS - 1,
+            "the bounded window fires exactly N-1 ticks: {steps:?}"
+        );
+        // After the window the route's own turn (90) remains and no loot
+        // deflection is emitted while the item set is unchanged (block holds).
+        for actions in &steps[loot_ticks..] {
+            assert!(
+                has_turn_to_angle(actions, 90),
+                "the route resumes: {actions:?}"
+            );
+            assert!(
+                !has_turn_to_angle(actions, deflected),
+                "the block holds (no loot deflection): {actions:?}"
+            );
+            assert!(
+                !has_forward_amount(actions, loot::DOOM_LOOT_FORWARD_AMOUNT),
+                "no loot forward after the window: {actions:?}"
             );
         }
     }
@@ -4959,8 +5074,8 @@ mod tests {
                 "combat fires: {actions:?}"
             );
             assert!(
-                !has_turn_to_angle(actions, 270),
-                "no loot bearing while engaging: {actions:?}"
+                !actions_contain(actions, DOOM_ACTION_TURN_TO),
+                "no loot turn-to while engaging: {actions:?}"
             );
             assert!(
                 !has_forward_amount(actions, loot::DOOM_LOOT_FORWARD_AMOUNT),
@@ -5033,8 +5148,8 @@ mod tests {
                 "loot yields to escape: {actions:?}"
             );
             assert!(
-                !has_turn_to_angle(actions, 270),
-                "no loot bearing during escape: {actions:?}"
+                !has_turn_to_angle(actions, 330),
+                "no loot bearing (right at H_route 0 ⇒ 330) during escape: {actions:?}"
             );
         }
     }
