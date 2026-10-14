@@ -15,6 +15,7 @@ import type {
   DbConfirmationRequired,
   DbQueryError,
   DbResultSet,
+  DbTableDataRequest,
   QueryMode,
   SchemaNode,
   TextRange,
@@ -97,6 +98,15 @@ export interface QueryTabsProps {
    * when the nonce changes. Never auto-executes (R-4.2/R-4.3, ST-7 integration).
    */
   externalSql?: { sql: string; nonce: number } | null;
+  /**
+   * Open a NEW query tab (blank, or pre-filled with `sql`) when the nonce
+   * changes and make it active; when `run && connectionId` execute it at once
+   * with the whole-buffer scope (R-2a/R-2c, Spec #3050). This is deliberately
+   * DISTINCT from `externalSql` (which loads the ACTIVE tab and never
+   * auto-executes): `openRequest` always appends a fresh tab. `ST-D` produces
+   * this request; `ST-C` consumes it.
+   */
+  openRequest?: DbTableDataRequest | null;
   /** Called after a query completes so the shell can append history (R-4.1). */
   onQueryComplete?: (entry: {
     sql: string;
@@ -130,6 +140,7 @@ export const QueryTabs: React.FC<QueryTabsProps> = ({
   defaultRowLimit = 100,
   onConnectionLost,
   externalSql = null,
+  openRequest = null,
   onQueryComplete,
   onActiveSqlChange,
   renderExport,
@@ -192,6 +203,9 @@ export const QueryTabs: React.FC<QueryTabsProps> = ({
   const activeTab = tabs.find((tab) => tab.id === activeId) ?? tabs[0] ?? null;
   const activeTabIdRef = useRef<string | null>(activeTab?.id ?? null);
   const onActiveSqlChangeRef = useRef(onActiveSqlChange);
+  // Last consumed `openRequest.nonce` — guards the append+run effect against a
+  // re-render replay (including StrictMode's double effect invocation).
+  const openRequestNonceRef = useRef<number | null>(null);
 
   useEffect(() => {
     activeTabIdRef.current = activeTab?.id ?? null;
@@ -285,6 +299,25 @@ export const QueryTabs: React.FC<QueryTabsProps> = ({
     },
     [connectionId, defaultRowLimit, updateTab, onQueryComplete, onConnectionLost],
   );
+
+  // Open a NEW tab from the schema-explorer actions (R-2a/R-2c/R-3, Spec #3050)
+  // when the request nonce changes. Always appends a fresh tab (never reuses the
+  // active one) and activates it; only when `run` is set AND a connection is
+  // live does it execute — with the whole-buffer scope (`mode: 'all'`,
+  // `selection: null`, no pre-confirmed hashes). `connectionId === null` never
+  // executes (R-4): the tab is still created (a blank "New query" needs no
+  // session).
+  useEffect(() => {
+    if (!openRequest) return;
+    if (openRequestNonceRef.current === openRequest.nonce) return;
+    openRequestNonceRef.current = openRequest.nonce;
+    const tab = newTab(tabs.length + 1, openRequest.sql);
+    setTabs((previous) => [...previous, tab]);
+    setActiveId(tab.id);
+    if (openRequest.run && connectionId) {
+      void execute(tab.id, openRequest.sql, 'all', null, []);
+    }
+  }, [openRequest, connectionId, execute, tabs.length]);
 
   const handleRun = useCallback(
     (request: SqlRunRequest) => {
