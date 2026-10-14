@@ -53,6 +53,27 @@ Tester probes beyond the script.
 - Probe (zoomed content): zoom the webview / change font scaling — do the persisted pixel sizes and
   the min/max clamps still behave, or does content clip?
 
+## Prompt lines — schema-explorer actions submenu (#3050)
+
+- Probe (submenu placement): open the submenu on the last visible node with the tree scrolled to the
+  bottom / on a node at the pane's right edge — does the menu clip against the tree's
+  `overflow-y:auto`/`overflow-x:hidden`, flip position, or land off-screen?
+- Probe (selection + menu interplay): after "Open table data", does the previously active tab keep
+  its text and its result set, or is it overwritten? Does the new tab become active with the caret
+  placed sensibly?
+- Probe (identifier hazards): create a table named with a reserved word / a leading digit / an
+  embedded double-quote and open its data — is the generated SQL correctly quoted and does it run?
+- Probe (session drop while the menu is open): open the submenu, then disconnect (or force
+  `FREDO_DBCLIENT_FORCE_FAIL=connect` and reconnect) — is "Open table data" disabled/absent, or does
+  it issue a query / throw?
+- Probe (keyboard-only): can the whole flow (open submenu, choose an item, execute) be completed with
+  the keyboard alone, with a visible focus ring, in both light and dark themes?
+- Probe (Grand re-open): open the submenu twice in a row on the same node, and open it on a node
+  whose level failed to load (`db-schema-error`) — any stuck/duplicated menu, console warning, or
+  stale node reference?
+- Probe (view nodes): does a `view` node offer "Open table data" and does `SELECT * FROM <view>`
+  return rows — or a materialized-view surprise?
+
 ## Run log
 
 ### Round 1 — 2026-10-13 (spec/3048 @ bc741d6)
