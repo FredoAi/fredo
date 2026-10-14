@@ -498,12 +498,12 @@ Served commit `spec/2940 @ a4b4dfa1` (cold restart built+served the round-2 fix 
 > These rows pin the invariants that MUST stay byte-unchanged. Evidence policy: LIVE (same as the
 > parent suite; the run carries a `telemetry_spans` non-zero receipt).
 
-- [ ] R-28 (**AC3 — the `data-fredo-passthrough` body hook**): in the `terminal` window focus the
+- [x] R-28 (**AC3 — the `data-fredo-passthrough` body hook**): in the `terminal` window focus the
       terminal root, then click away; read `document.body`.
       EXPECTED: the attribute is SET `"true"` on terminal focus and REMOVED on click-away/focus
       change (`hasAttribute` === false, not `"false"`). See `functional.md` F-86.
       Edge: re-focus; window blur; a state surface showing.
-- [ ] R-29 (**AC3 — the retained mechanism symbols survive**): `rg` over `apps/ui/src`.
+- [x] R-29 (**AC3 — the retained mechanism symbols survive**): `rg` over `apps/ui/src`.
       EXPECTED: `syncTerminalPassthrough`, `isTerminalFocused`, `isPassthroughActive`,
       `TERMINAL_ROOT_SELECTOR`, `BODY_PASSTHROUGH_ATTR`, `PASSTHROUGH_ANNOUNCEMENT_PREFIX`,
       `installTerminalPassthrough`, `uninstallTerminalPassthrough`, `isTerminalPassthroughInstalled`,
@@ -511,12 +511,12 @@ Served commit `spec/2940 @ a4b4dfa1` (cold restart built+served the round-2 fix 
       (`TerminalWindow.tsx:433`) still mounts `installTerminalPassthrough`; the
       `data-fredo-terminal-root="true"` host still present.
       Edge: a removed retained symbol = FAIL (the removal is view-layer-deletion-only).
-- [ ] R-30 (**AC4 — the one-time announcement retained**): `rg 'PASSTHROUGH_ANNOUNCEMENT_PREFIX'
+- [x] R-30 (**AC4 — the one-time announcement retained**): `rg 'PASSTHROUGH_ANNOUNCEMENT_PREFIX'
       apps/ui/src` and inspect `setPassthrough`.
       EXPECTED: the prefix constant + the `announce(PASSTHROUGH_ANNOUNCEMENT_PREFIX)` call are
       unchanged — the ONE remaining keyboard-mode affordance.
       Edge: the shared `hotkeys-announcer` region still mounts (`announcer.tsx`).
-- [ ] R-31 (**AC3 — keyboard ownership / keystroke routing**): run `functional.md` F-87.
+- [x] R-31 (**AC3 — keyboard ownership / keystroke routing**): run `functional.md` F-87.
       EXPECTED: a sentinel round-trips to the PTY; the engine's ONE keydown path is unchanged
       (`rg 'addEventListener\(.keydown' src/shared/hotkeys/terminalMode.ts` = 0); the `HotkeyBar`
       (`hotkeys-keybar*`) is untouched.
@@ -527,3 +527,19 @@ Served commit `spec/2940 @ a4b4dfa1` (cold restart built+served the round-2 fix 
 > The #3051 rows spawn sessions rooted in `.opencode\tests\terminal\fixtures\*` only. Run the C-5
 > teardown recipe above after these rows and restore the four settings keys; the rows add no new
 > settings key and mutate no pre-existing record.
+
+### #3051 testing round 1 (spec/3051 @ cfbbb23) — results
+
+- **R-28 PASS.** Focus terminal root → `data-fredo-passthrough="true"`; click-away → attribute REMOVED
+  (`hasAttribute` false).
+- **R-29 PASS.** `syncTerminalPassthrough`, `isTerminalFocused`, `isPassthroughActive`,
+  `TERMINAL_ROOT_SELECTOR`, `BODY_PASSTHROUGH_ATTR`, `PASSTHROUGH_ANNOUNCEMENT_PREFIX`,
+  `installTerminalPassthrough`, `uninstallTerminalPassthrough`, `resetTerminalModeForTests` unchanged
+  in `terminalMode.ts`; `installTerminalPassthrough` import + effect present in `TerminalWindow.tsx`;
+  the `data-fredo-terminal-root="true"` host still renders.
+- **R-30 PASS.** Prefix constant + `announce(PASSTHROUGH_ANNOUNCEMENT_PREFIX)` retained; live
+  `[data-testid="hotkeys-announcer"]` text === the prefix on entry.
+- **R-31 PASS.** Sentinel `SENTINEL_CHIP_1f6cd051` round-trips to the PTY; `terminalMode.ts` has ZERO
+  keydown listeners; the `hotkeys-keybar*` surface is untouched.
+- **Live receipt:** `SELECT count(*) FROM telemetry_spans` = 1 (env store :55730/fredo); see the G-345
+  shadowing caveat recorded in `functional.md` F-88.
