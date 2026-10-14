@@ -278,6 +278,12 @@ export interface DoomAutoplayStatus {
   episode: number | null;
   map: number | null;
   completed: boolean;
+  // Spec #3053 ST-2 — additive combat observables (serde camelCase over IPC).
+  // `kills` is the run's headline progress, a read-only projection of the
+  // observation's `level.kills`; `engagements` is the combat policy's per-run
+  // engagement count — carried on the wire (UI: carry-only, never rendered).
+  kills: number;
+  engagements: number;
 }
 
 /** `start_doom_autoplay` result — always returned, never a hang. */
@@ -305,6 +311,8 @@ export const DOOM_AUTOPLAY_IDLE_STATUS: DoomAutoplayStatus = {
   episode: null,
   map: null,
   completed: false,
+  kills: 0,
+  engagements: 0,
 };
 
 /** The human-facing failure copy per `DoomAutoplayErrorCode` (UI/UX error table). */
@@ -354,19 +362,25 @@ export function formatAutoplayTic(lastTic: number | null): string {
   return lastTic === null ? '—' : String(lastTic);
 }
 
-/** The single-line status text per phase (the UI/UX state table). */
+/**
+ * The single-line status text per phase (the UI/UX state table).
+ *
+ * Spec #3053 ST-5 — `running`/`completed` additionally carry `Kills {n}` (e.g.
+ * `Kills 3`), the run's headline combat progress. The `idle`/`stopping`/`failed`
+ * lines are byte-identical to their pre-combat form.
+ */
 export function doomAutoplayStatusLine(status: DoomAutoplayStatus): string {
   switch (status.phase) {
     case 'running':
       return `Autoplay · step ${String(status.steps)} · tic ${formatAutoplayTic(
         status.lastTic,
-      )} · ${status.outcome ?? 'alive'}`;
+      )} · ${status.outcome ?? 'alive'} · Kills ${String(status.kills)}`;
     case 'stopping':
       return 'Stopping autoplay…';
     case 'completed':
       return `Autoplay complete · ${String(status.steps)} steps${
         status.outcome ? ` · ${status.outcome}` : ''
-      }`;
+      } · Kills ${String(status.kills)}`;
     case 'failed':
       return `Autoplay failed · ${String(status.steps)} steps`;
     case 'idle':

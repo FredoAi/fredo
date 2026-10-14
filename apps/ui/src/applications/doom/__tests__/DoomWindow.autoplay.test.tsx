@@ -124,6 +124,8 @@ function autoplayStatus(overrides: Partial<DoomAutoplayStatus>): DoomAutoplaySta
     episode: null,
     map: null,
     completed: false,
+    kills: 0,
+    engagements: 0,
     ...overrides,
   };
 }
@@ -370,11 +372,18 @@ describe('Spec #3007 ST-1 — minimal doom-autoplay-note (AC5/R-5)', () => {
 
 describe('Spec #3007 ST-1 — theme tokens', () => {
   it('the ST-1 UI code contains no hardcoded hex or rgba()', () => {
-    const source = readUiSource('src/applications/doom/DoomWindow.tsx');
-    expect(source, 'DoomWindow.tsx must not hardcode a hex color').not.toMatch(
-      /#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b/,
-    );
-    expect(source, 'DoomWindow.tsx must not hardcode rgba()').not.toMatch(/\brgba\(/);
+    // Spec #3053 ST-5 extends the pin across the new combat-kills HUD markup
+    // (DoomWindow.tsx) AND the additive contract/status-line helpers (types.ts).
+    for (const relative of [
+      'src/applications/doom/DoomWindow.tsx',
+      'src/applications/doom/types.ts',
+    ]) {
+      const source = readUiSource(relative);
+      expect(source, `${relative} must not hardcode a hex color`).not.toMatch(
+        /#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b/,
+      );
+      expect(source, `${relative} must not hardcode rgba()`).not.toMatch(/\brgba\(/);
+    }
   });
 });
 
@@ -408,5 +417,90 @@ describe('Spec #3026 ST-6 — raw-RGBA draw path', () => {
   it('retires DOOM_FRAME_POLL_MS and pins DOOM_FRAME_DRAW_MS (~30 fps)', () => {
     expect(DOOM_FRAME_DRAW_MS).toBe(33);
     expect('DOOM_FRAME_POLL_MS' in doomTypes).toBe(false);
+  });
+});
+
+describe('Spec #3053 ST-5 — combat-kills HUD (F-14/AC2)', () => {
+  /** The complete set of Tauri commands the Doom window is allowed to invoke. */
+  const KNOWN_COMMANDS = [
+    'launch_doom_runtime',
+    'doom_read_state',
+    'doom_frame_raw',
+    'get_doom_mode_status',
+    'get_doom_autoplay_status',
+    'start_doom_autoplay',
+  ];
+
+  it('is DOM-absent in the idle empty state (no flash of `Kills: 0`)', async () => {
+    // A direct route with the mode inactive keeps the run idle end-to-end.
+    renderWithChakra(<DoomWindow />);
+    expect(screen.queryByTestId('doom-combat-kills')).toBeNull();
+    await waitFor(() => expect(listeners['doom-status-changed']).toBeTypeOf('function'));
+    await waitFor(() => expect(frameCalls).toBeGreaterThan(0));
+    expect(screen.queryByTestId('doom-combat-kills')).toBeNull();
+  });
+
+  it('renders exactly `Kills: {n}` with role=status + aria-live/atomic once a run starts', async () => {
+    await renderReady();
+    emitAutoplay(autoplayStatus({ phase: 'running', running: true, steps: 1, kills: 3 }));
+
+    const hud = screen.getByTestId('doom-combat-kills');
+    expect(hud).toHaveAttribute('role', 'status');
+    expect(hud).toHaveAttribute('aria-live', 'polite');
+    expect(hud).toHaveAttribute('aria-atomic', 'true');
+    expect(hud.textContent).toBe('Kills: 3');
+    // It is NOT the frame description hook.
+    expect(hud).not.toBe(screen.getByTestId('doom-frame-desc'));
+  });
+
+  it('updates event-driven via doom-autoplay-changed (0 → >0), adding no new poll/invoke', async () => {
+    await renderReady();
+    emitAutoplay(autoplayStatus({ phase: 'running', running: true, kills: 0 }));
+    expect(screen.getByTestId('doom-combat-kills').textContent).toBe('Kills: 0');
+    emitAutoplay(autoplayStatus({ phase: 'running', running: true, kills: 7 }));
+    expect(screen.getByTestId('doom-combat-kills').textContent).toBe('Kills: 7');
+
+    // The HUD introduces no new backend command — the invoked set is unchanged.
+    const commands = new Set(invoke.mock.calls.map(([command]) => command));
+    for (const command of commands) {
+      expect(KNOWN_COMMANDS, `unexpected invoke: ${command}`).toContain(command);
+    }
+  });
+
+  it('persists across non-idle phases and never renders the carry-only engagements', async () => {
+    await renderReady();
+    for (const next of [
+      autoplayStatus({ phase: 'stopping', steps: 2, kills: 1 }),
+      autoplayStatus({ phase: 'failed', steps: 2, code: 'decisionFailed', kills: 1 }),
+      autoplayStatus({ phase: 'completed', steps: 9, kills: 4, engagements: 12 }),
+    ]) {
+      emitAutoplay(next);
+      const hud = screen.getByTestId('doom-combat-kills');
+      expect(hud.textContent).toBe(`Kills: ${String(next.kills)}`);
+      expect(hud.textContent).not.toContain('Engagements');
+    }
+    expect(screen.queryByText(/Engagements/)).toBeNull();
+    // The #3007-removed status hook stays DOM-absent.
+    expect(screen.queryByTestId('doom-autoplay-status')).toBeNull();
+  });
+
+  it('doomAutoplayStatusLine carries `Kills {n}` for running/completed, byte-identical otherwise', () => {
+    const running = doomTypes.doomAutoplayStatusLine(
+      autoplayStatus({ phase: 'running', steps: 5, lastTic: 42, outcome: 'alive', kills: 3 }),
+    );
+    expect(running).toContain('Kills 3');
+    const completed = doomTypes.doomAutoplayStatusLine(
+      autoplayStatus({ phase: 'completed', steps: 9, outcome: 'exited', kills: 4 }),
+    );
+    expect(completed).toContain('Kills 4');
+
+    // The idle / stopping / failed lines are byte-identical to the pre-combat form.
+    expect(doomTypes.doomAutoplayStatusLine(autoplayStatus({ phase: 'idle' }))).toBe('Autoplay off');
+    expect(doomTypes.doomAutoplayStatusLine(autoplayStatus({ phase: 'stopping' }))).toBe(
+      'Stopping autoplay…',
+    );
+    expect(doomTypes.doomAutoplayStatusLine(autoplayStatus({ phase: 'failed', steps: 3 }))).toBe(
+      'Autoplay failed · 3 steps',
+    );
   });
 });
