@@ -10,11 +10,8 @@
  * Scope discipline:
  *  - This module adds NO `document` keydown listener (the engine owns the ONE).
  *  - It adds ONLY focus tracking (`focusin`/`focusout`), the `data-fredo-passthrough`
- *    body hook, the one-time announcement, and the React binding the passthrough
- *    indicator consumes.
+ *    body hook, and the one-time announcement.
  */
-
-import { useSyncExternalStore } from 'react';
 
 import { announce } from './announcer';
 import { computeFocusContext } from './engine';
@@ -24,9 +21,6 @@ export const TERMINAL_ROOT_SELECTOR = '[data-fredo-terminal-root="true"]';
 
 /** `document.body` — terminal passthrough is active. */
 export const BODY_PASSTHROUGH_ATTR = 'data-fredo-passthrough';
-
-/** The persistent indicator's testid. */
-export const TERMINAL_PASSTHROUGH_TESTID = 'hotkeys-terminal-passthrough';
 
 /** The one-time announcement copy on entry. */
 export const PASSTHROUGH_ANNOUNCEMENT_PREFIX =
@@ -40,19 +34,6 @@ let focusInListener: (() => void) | null = null;
 let focusOutListener: (() => void) | null = null;
 let syncScheduled = false;
 
-const listeners = new Set<() => void>();
-
-function notify(): void {
-  for (const listener of [...listeners]) listener();
-}
-
-function subscribePassthrough(listener: () => void): () => void {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
-}
-
 /** True while terminal passthrough is active. */
 export function isPassthroughActive(): boolean {
   return passthroughActive;
@@ -61,7 +42,6 @@ export function isPassthroughActive(): boolean {
 function setPassthrough(active: boolean): void {
   if (passthroughActive === active) return;
   passthroughActive = active;
-  notify();
   if (active) announce(PASSTHROUGH_ANNOUNCEMENT_PREFIX);
 }
 
@@ -155,18 +135,4 @@ export function resetTerminalModeForTests(): void {
   uninstallTerminalPassthrough();
   setPassthrough(false);
   syncBodyHook(false);
-  listeners.clear();
-}
-
-// ── React binding for the persistent indicator ───────────────────────────────
-
-/** The indicator's live state. */
-export interface TerminalPassthroughState {
-  readonly active: boolean;
-}
-
-/** Subscribe the persistent indicator to the passthrough state. */
-export function useTerminalPassthrough(): TerminalPassthroughState {
-  const active = useSyncExternalStore(subscribePassthrough, isPassthroughActive, isPassthroughActive);
-  return { active };
 }

@@ -81,7 +81,6 @@ export type {
 // ── Hotkeys: terminal passthrough (focus-derived) ────────────────────────────
 export {
   TERMINAL_ROOT_SELECTOR,
-  TERMINAL_PASSTHROUGH_TESTID,
   BODY_PASSTHROUGH_ATTR,
   PASSTHROUGH_ANNOUNCEMENT_PREFIX,
   isTerminalFocused,
@@ -91,9 +90,7 @@ export {
   uninstallTerminalPassthrough,
   isTerminalPassthroughInstalled,
   resetTerminalModeForTests,
-  useTerminalPassthrough,
 } from './shared/hotkeys/terminalMode';
-export type { TerminalPassthroughState } from './shared/hotkeys/terminalMode';
 
 // ── Shared FREDO avatar (canonical mascot, Spec #2850) ───────────────────────
 export { FredoAvatar } from './shared/components/fredo-avatar';

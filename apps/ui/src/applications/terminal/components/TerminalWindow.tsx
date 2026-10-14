@@ -1,11 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Flex, Icon, Text, VisuallyHidden } from '@chakra-ui/react';
-import { LuCircleCheck, LuKeyboard } from 'react-icons/lu';
-import {
-  TERMINAL_PASSTHROUGH_TESTID,
-  installTerminalPassthrough,
-  useTerminalPassthrough,
-} from '../../../shared/hotkeys/terminalMode';
+import { Flex, VisuallyHidden } from '@chakra-ui/react';
+import { installTerminalPassthrough } from '../../../shared/hotkeys/terminalMode';
 import { adapterBridge } from '../../../shared/utils/adapterBridge';
 import { ensureTerminalSettingsMigrated } from '../settings';
 import { TERMINAL_INTENT_AVAILABLE_EVENT } from '../presentation';
@@ -110,10 +105,6 @@ export const TerminalWindow: React.FC = () => {
   // corrected on a CHANGED grid). A ref — not state — so a fit receipt never
   // re-renders the window; `null` on a cold mount keeps the backend default.
   const lastGridRef = useRef<{ cols: number; rows: number } | null>(null);
-
-  // Spec #2946 ST-12 — the continuous terminal-passthrough state (R-5.7/R-5.8).
-  // Focus tracking + the exit-chord handler; NO second keydown listener.
-  const passthrough = useTerminalPassthrough();
 
   // ── Derived model ──────────────────────────────────────────────────────────
   const allSessions = useMemo(() => [...sessions, ...pending], [sessions, pending]);
@@ -633,12 +624,6 @@ export const TerminalWindow: React.FC = () => {
         onDelete={handleDeleteRequest}
         onAdd={() => openDialog()}
       />
-      {/* Spec #3009: the passthrough indicator is now informational only — the
-          release chord + release button are removed; the keyboard is released
-          by click-away / focus change (focus-derived passthrough). */}
-      {selected && (
-        <TerminalPassthroughIndicator active={passthrough.active} />
-      )}
       <NewSessionDialog
         open={dialogOpen}
         onOpenChange={setDialogOpen}
@@ -655,56 +640,6 @@ export const TerminalWindow: React.FC = () => {
         onConfirm={() => void handleDeleteConfirm()}
       />
       <VisuallyHidden aria-live="polite">{announcement}</VisuallyHidden>
-    </Flex>
-  );
-};
-
-export interface TerminalPassthroughIndicatorProps {
-  /** Passthrough is active — the terminal session owns the keyboard. */
-  readonly active: boolean;
-}
-
-/**
- * Spec #3009 — the persistent, non-colour-only passthrough indicator.
- *
- * A terminal-chrome pill conveying the state by an icon + a text swap
- * (`Passthrough` → `Hotkeys active`), never by colour alone. The dedicated
- * exit chord + release button are removed; clicking away releases the keyboard.
- */
-export const TerminalPassthroughIndicator: React.FC<TerminalPassthroughIndicatorProps> = ({
-  active,
-}) => {
-  const StateIcon = active ? LuKeyboard : LuCircleCheck;
-  const stateLabel = active ? 'Passthrough' : 'Hotkeys active';
-  return (
-    <Flex
-      data-testid={TERMINAL_PASSTHROUGH_TESTID}
-      data-passthrough={active ? 'true' : 'false'}
-      role="group"
-      aria-label={`Terminal keyboard mode: ${stateLabel}`}
-      position="absolute"
-      top="3"
-      right="3"
-      zIndex={20}
-      align="center"
-      gap="2"
-      px="2"
-      py="1"
-      bg="bg.surface"
-      borderWidth="1px"
-      borderColor="border.subtle"
-      borderRadius="md"
-      boxShadow="var(--shadow-dialog)"
-    >
-      <Icon
-        as={StateIcon}
-        aria-hidden="true"
-        boxSize="14px"
-        color={active ? 'accent.fg' : 'status.success'}
-      />
-      <Text fontSize="xs" fontWeight="medium" color="fg.default" whiteSpace="nowrap">
-        {stateLabel}
-      </Text>
     </Flex>
   );
 };
