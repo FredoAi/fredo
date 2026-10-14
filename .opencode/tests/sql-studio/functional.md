@@ -280,6 +280,109 @@ the tester binds GA-5/GA-6/GA-8 to whatever the plan names.
   **Non-AC** — never contributes AC PASS. **FAIL** = the helper/deserializer throws or returns an
   out-of-range value.
 
+## Schema-explorer actions submenu (#3050)
+
+Slice on top of #3048/#3049. Left-clicking a schema node opens an actions submenu and selects the
+node; items are **Open table data** (new query tab with a bounded read-only `SELECT * FROM
+<qualified table> LIMIT <n>`, executed), **View columns** (existing inspector behaviour) and **New
+query** (blank tab). `n` is the stored "Default row limit" (default 100).
+
+> **Testids** `db-schema-actions-menu`, `db-schema-action-open-data`, `db-schema-action-view-columns`,
+> `db-schema-action-new-query` are PROPOSED — confirm against the UI/UX section (G-187).
+
+> **INDUCTION LEVERS (G-275/G-300):** `FREDO_DBCLIENT_FORCE_FAIL=connect` reaches the no-session
+> state (plus mid-session `db-disconnect`); `tauri_ipc_monitor` audits the issued statements;
+> `FREDO_DBCLIENT_STATE_DIR=<seeded dir>` supplies a read-write connection. Fixture SQL:
+> `.opencode/tests/sql-studio/fixtures/3050.sql` (schema `"QA_3050"`, `qa_3050_rows` ≥500 rows,
+> `"QA_3050"."Mixed Case"`, view `qa_3050_view`).
+
+- [ ] **F-34 (AC1) — left-click opens the submenu AND selects the node.**
+  Connect the built-in "Fredo" row; expand to a `table` node; left-click it.
+  **Expected:** `aria-selected="true"` on the node; `db-schema-inspector[data-inspected-id=<id>]`
+  renders; `db-schema-actions-menu` opens with exactly the three items.
+  **Edge:** a `view` node (also offers "Open table data"); repeat-click. **FAIL** = no submenu or
+  node not selected.
+
+- [ ] **F-35 (AC1 / G-273) — submenu not clipped by the tree pane.**
+  Open the submenu near the pane's bottom and right edges (scroll the tree first).
+  **Expected:** the menu rect is inside the viewport (escapes the tree's
+  `overflow-y:auto`/`overflow-x:hidden`), scrolls when taller, items hit-testable.
+  **Edge:** last visible node; narrow left sidebar. **FAIL** = clipped/off-screen menu.
+
+- [ ] **F-36 (AC2) — "Open table data" opens a NEW tab, runs a bounded SELECT, shows rows.**
+  On `qa_3050_rows` click "Open table data".
+  **Expected:** tabs +1 (previous tab unchanged) and the new tab active; `db-query-editor` =
+  `SELECT * FROM "QA_3050"."qa_3050_rows" LIMIT n`; one `ok` history entry; `db-grid-row` renders.
+  **Edge:** 0-row table (`db-results-empty`); fewer rows than `n`; two invocations → two tabs.
+  **FAIL** = no new tab / unchanged editor / no execute / no rows.
+
+- [ ] **F-37 (AC2) — `n` comes from the "Default row limit" preference.**
+  Set `db-settings-default-row-limit` to 7, Save; repeat F-36.
+  **Expected:** generated `LIMIT` = 7 and ≤ 7 rows shown; default run = 100.
+  **FAIL** = a hardcoded 100 when the preference differs.
+
+- [ ] **F-38 (AC2) — schema-qualified, quoted identifiers.**
+  Use `"QA_3050"."Mixed Case"`.
+  **Expected:** `SELECT * FROM "QA_3050"."Mixed Case" LIMIT n`; executes without a syntax error.
+  **Edge:** reserved-word name; embedded `"` escaped as `""`. **FAIL** = unquoted/unqualified SQL.
+
+- [ ] **F-39 (AC2 support — unit pin, NON-AC) — SQL generator.**
+  Unit-test the pure generator: exactly one `SELECT * FROM <quoted qualified> LIMIT <n>`,
+  `"`→`""` escaping, `n` from the prefs arg, never a non-`SELECT`. **Non-AC.**
+
+- [ ] **F-40 (AC3) — "View columns" = existing inspector behaviour.**
+  On a `table` node click "View columns".
+  **Expected:** inspector renders the definition as a plain select does; NO new tab; no execute.
+  **Edge:** leaf node → `db-schema-inspector-detail`. **FAIL** = a new tab / execute / changed
+  inspector.
+
+- [ ] **F-41 (AC3) — "New query" adds a blank tab.**
+  **Expected:** a NEW active `db-query-tab` with empty `db-query-editor`; no execution; no history
+  entry; existing tabs unchanged. **FAIL** = non-empty text, an execute, or no new tab.
+
+- [ ] **F-42 (AC4) — read-only: only a SELECT is issued.**
+  On the built-in read-only session invoke "Open table data"; `tauri_ipc_monitor` start/stop.
+  **Expected:** the only `db_query_execute` is a bare `SELECT` (no DML/DDL); no `readOnlyBlocked`;
+  managed-`psql` write probe shows no side effect. **FAIL** = any non-SELECT.
+
+- [ ] **F-43 (AC4, G-275/G-300) — no active connection ⇒ unavailable, no query.**
+  Reach the no-session state (`FREDO_DBCLIENT_FORCE_FAIL=connect`), and separately open the submenu
+  then click `db-disconnect`.
+  **Expected:** no session → tree shows `db-schema-disconnected`, no nodes, no `db_query_execute`;
+  if the menu is open when the session drops, the item is disabled/absent and issues no query.
+  **FAIL** = a query with no session, or an enabled no-op item.
+
+- [ ] **F-44 (AC5) — non-table/view nodes do not offer "Open table data".**
+  Open the submenu on `database`, `schema`, `column`, `index`, `key`, `function` nodes.
+  **Expected:** `db-schema-action-open-data` absent (only the applicable actions render — "New
+  query" remains); node still selects + inspector updates.
+  Positive control: `table` AND `view` DO render it. **FAIL** = present on a non-table/view node.
+
+- [ ] **F-45 (NFR) — keyboard-reachable submenu.**
+  Tab to `db-schema-node`; open by keyboard; ArrowDown; Enter; Escape.
+  **Expected:** items focusable with a visible focus ring + keyboard-activatable; Escape closes and
+  restores focus; accessible role/name. **FAIL** = pointer-only.
+
+- [ ] **F-46 (NFR) — dismissal does not break navigation.**
+  Escape, outside-click, then click `db-schema-toggle`.
+  **Expected:** menu closes; the chevron only expands/collapses (never opens the menu); left-click
+  still selects; console clean. **FAIL** = stuck menu or chevron opening the menu.
+
+- [ ] **F-47 (NFR) — theme tokens / Chakra v3 only.**
+  Inspect the tree + menu markup/styles.
+  **Expected:** no hex/rgba; menu uses `bg.*`/`fg.*`/`border.*`/`accent.*` tokens (or `tint()`);
+  light + dark + a user accent. **FAIL** = a hardcoded colour.
+
+- [ ] **F-48 (NFR) — zero-warning build.**
+  `pnpm --filter @fredo/ui build` + `pnpm test`.
+  **Expected:** 0 TS errors; vitest green incl. F-39 and the F-43 guard pin; `cargo check` N/A
+  unless Rust touched. **FAIL** = any TS error / failing test.
+
+- [ ] **F-49 (NFR, LIVE receipt) — `telemetry_spans` non-zero.**
+  Drive a live OTLP-ingested action (never `fredo emit`, G-256); query `telemetry_spans`.
+  **Expected:** non-zero with the lever disclosed; DOM/screenshot evidence for F-34..F-44.
+  **FAIL** = a static-only receipt.
+
 ## Suite-level pass/fail
 
 PASS = F-1..F-12, F-14..F-33 all green, F-13 verified via F-19 (no longer recorded UNVERIFIED),
@@ -291,6 +394,14 @@ exceeds its max, clips/overflows at an allowed size, or fails to restore after r
 selected during a drag or a stuck capture/listener/cursor; a re-render loop; a hardcoded colour or
 alpha-append on a `var()`; or a static-only receipt = **FAIL**. UNVERIFIED rows (no reachable
 lever) are not PASS — the verdict fails closed (G-033). **F-33 is a pin and never an AC FAIL row.**
+
+For the **#3050 slice**, PASS additionally requires **F-34..F-49** all green — no submenu on
+left-click / node not selected (F-34); a clipped or unhittable menu (F-35); no NEW tab, unchanged
+editor, no execute, or no rows (F-36); a wrong/hardcoded `LIMIT` (F-37); unquoted/unqualified SQL
+(F-38); a changed inspector or spurious tab from "View columns" (F-40); a non-empty "New query" tab
+(F-41); any non-SELECT statement or a write (F-42); a query with no session (F-43); "Open table
+data" on a non-table/view node (F-44); an unreachable menu item (F-45); a hardcoded colour (F-47) =
+**FAIL**. **F-39 (SQL-generator pin) is non-AC and never contributes AC PASS.**
 
 ## Run log
 
