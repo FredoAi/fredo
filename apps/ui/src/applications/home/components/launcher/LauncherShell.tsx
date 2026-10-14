@@ -14,8 +14,10 @@ import {
   isPerformanceGateActive,
   subscribePerformanceGate,
 } from '../../../../shared/doom-mode';
-// Live stream/connection flag — mirrors StreamStatus.tsx (ONLINE dot).
-import { useConnectionStatus } from '../../../../shared/contexts/StreamContext';
+// Spec #3052 — the whole-system health aggregator (Agent telemetry + Llama
+// server + Companion model + Postgres, worst-wins). The chrome LED consumes its
+// `FredoHealth`; the stream connection flag is read INSIDE the hook.
+import { useFredoHealth } from '../../../../shared/hooks/useFredoHealth';
 // Companion designated presence — gates the launcher mascot (#2853 ST-4).
 import { useCompanion } from '../../../../shared/contexts/CompanionContext';
 import type { FredoApplicationClass } from '../../../../shared/classes/FredoApplicationClass';
@@ -425,7 +427,8 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // (see `surfaceCss` below): `none` keeps today's exact texture, any procedural
   // background yields a token-derived scrim over the z=0 backdrop.
   const backgroundId = useBackgroundId();
-  const { isConnected } = useConnectionStatus();
+  // Spec #3052 — aggregate whole-system health for the consolidated top-right LED.
+  const health = useFredoHealth();
   const {
     state: companion,
     voiceEnabled,
@@ -1824,7 +1827,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
           never paints over a feature window or its titlebar controls (R-1/2/3). */}
       <LauncherChrome
         entryCount={entryCount}
-        isOnline={isConnected}
+        health={health}
         engaged={engaged}
         selectedIndex={safeSelectedIndex}
         onToggle={toggleOpen}

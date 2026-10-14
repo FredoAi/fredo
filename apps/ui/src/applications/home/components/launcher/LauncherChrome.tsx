@@ -1,6 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { Box, Text, Tooltip, Portal } from '@chakra-ui/react';
 import { tint } from '../../../../shared/utils/colorTint';
+// Spec #3052 — the aggregate whole-system health readout. The type is imported
+// from `shared/` ONLY (no cross-application import). The trigger keeps its
+// existing `desktop-status-led` testid; the LED now reflects `health.overall`
+// (all enabled subsystems, worst-wins) instead of the telemetry stream alone.
+import type { FredoHealth, FredoHealthState, SubsystemHealth } from '../../../../shared/hooks/fredoHealth';
 
 /**
  * Launcher chrome frame — the fixed chrome around the launcher grid.
@@ -31,19 +36,27 @@ import { tint } from '../../../../shared/utils/colorTint';
  * notch trigger). `entryCount` gates the navigational hints so an empty
  * feature set (AC4) never shows nav hints for tiles that do not exist.
  *
- * The top-right status LED (Spec #2830) is the SINGLE consolidated connection
- * readout: a 12px visual dot inside a 16px focusable trigger that carries the
- * accessible state (`role="status"` / `aria-label`) and reveals a Chakra v3
- * tooltip (`Connected` / `Disconnected` + detail) on hover/focus. The former
- * bottom-center `StreamStatus` LED pair is removed, so this is the only status
- * LED on the desktop.
+ * The top-right status LED (Spec #2830, widened in Spec #3052) is the SINGLE
+ * consolidated WHOLE-SYSTEM health readout: a 12px visual dot inside a 16px
+ * focusable trigger that carries the accessible state (`role="status"` /
+ * composed `aria-label`) and reveals a Chakra v3 tooltip on hover/focus. The
+ * tooltip enumerates the overall state plus each of the four subsystems (Agent
+ * telemetry, Llama server, Companion model, Postgres) in a FIXED order, each
+ * with its own state word + detail. State is conveyed by TEXT, never colour
+ * alone. The former bottom-center `StreamStatus` LED pair is removed, so this is
+ * the only status LED on the desktop.
  */
 
 export interface LauncherChromeProps {
   /** Number of grid entries — gates the ↑↓ NAVIGATE / ←→ SELECT hints (AC4: no nav hints when empty). */
   entryCount: number;
-  /** Live stream/connection flag from the host — drives the ONLINE label + dot state. */
-  isOnline: boolean;
+  /**
+   * Aggregate whole-system health from the host (Spec #3052) — the LED dot
+   * colour + tooltip + composed `aria-label` all derive from this. Replaces the
+   * former stream-only `isOnline` flag: `overall` is the worst-wins fold over all
+   * enabled subsystems (Agent telemetry, Llama server, Companion model, Postgres).
+   */
+  health: FredoHealth;
   /** Host-owned engaged state (#2819) — grid + hints revealed; drives the hint row + the dot-grid accent thumb. */
   engaged?: boolean;
   /** Host-owned selected tile index — positions the engaged dot-grid accent scroll-thumb. */
@@ -70,6 +83,40 @@ const CLOCK_CORNER_INSET_TOP_PX = 20;
 const CLOCK_CORNER_INSET_RIGHT_PX = 24;
 
 const formatTime = (date: Date): string => `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+
+/** Overall state → user-facing word (spec #3052). 3-valued: there is NO overall "Checking". */
+const OVERALL_STATE_WORD: Record<FredoHealthState, string> = {
+  healthy: 'Healthy',
+  degraded: 'Degraded',
+  down: 'Down',
+};
+
+/** Per-subsystem state → user-facing word (spec #3052). `unknown` reads "Checking". */
+const SUBSYSTEM_STATE_WORD: Record<SubsystemHealth, string> = {
+  healthy: 'Healthy',
+  down: 'Down',
+  notSetUp: 'Not set up',
+  unknown: 'Checking',
+};
+
+/**
+ * The single source-state → colour-token map for the LED (spec #3052): `healthy`
+ * accent, `degraded` warning, `down` error, neutral (`notSetUp`/`unknown`) muted.
+ * Only the four named tokens are used; every tint/halo goes through `tint()`
+ * (`color-mix`) — never a `var(--x)NN` alpha-append (banned #2770).
+ */
+function healthToken(state: FredoHealthState | SubsystemHealth): string {
+  switch (state) {
+    case 'healthy':
+      return 'var(--accent-primary)';
+    case 'degraded':
+      return 'var(--status-warning)';
+    case 'down':
+      return 'var(--status-error)';
+    default:
+      return 'var(--text-secondary)';
+  }
+}
 
 /** Monoweight SVG glyphs — all `currentColor`, decorative (`aria-hidden`). */
 const UpDownGlyph: React.FC = () => (
@@ -213,7 +260,7 @@ const FREDO_NOTCH_CLIP =
 
 export const LauncherChrome: React.FC<LauncherChromeProps> = ({
   entryCount,
-  isOnline,
+  health,
   engaged = false,
   selectedIndex = 0,
   onToggle,
@@ -226,6 +273,16 @@ export const LauncherChrome: React.FC<LauncherChromeProps> = ({
     return () => window.clearInterval(id);
   }, []);
   const time = formatTime(now);
+
+  // Spec #3052 — the overall state word + the composed accessible label, both
+  // pure derivations of the passed-in `health` (AC5: the full state is carried in
+  // TEXT, never colour alone). The subsystem lines render in the EXACT order the
+  // aggregate provides (`telemetry → llamaServer → companionModel → postgres`);
+  // the UI never re-sorts them.
+  const overallWord = OVERALL_STATE_WORD[health.overall];
+  const healthLabel = `Fredo health: ${overallWord} — ${health.subsystems
+    .map((line) => `${line.label}: ${SUBSYSTEM_STATE_WORD[line.state]}`)
+    .join('; ')}`;
 
   // Keyboard-hints row + the dot-grid accent thumb reveal ONLY in the engaged state.
   const showNavHints = entryCount > 0 && engaged;
@@ -378,7 +435,7 @@ export const LauncherChrome: React.FC<LauncherChromeProps> = ({
         textAlign="center"
         pointerEvents="none"
       >
-        <time aria-label={`${time}, ${isOnline ? 'online' : 'offline'}`}>
+        <time aria-label={`${time}, ${overallWord}`}>
           <Box display="flex" flexDirection="column" alignItems="center" gap="6px">
             <Text
               fontFamily="var(--font-base)"
@@ -396,7 +453,7 @@ export const LauncherChrome: React.FC<LauncherChromeProps> = ({
                   role="status"
                   aria-live="polite"
                   aria-atomic="true"
-                  aria-label={isOnline ? 'Online' : 'Offline'}
+                  aria-label={healthLabel}
                   tabIndex={0}
                   data-testid="desktop-status-led"
                   width="16px"
@@ -407,20 +464,24 @@ export const LauncherChrome: React.FC<LauncherChromeProps> = ({
                   pointerEvents="auto"
                   cursor="default"
                 >
+                  {/* The dot colour is the ONLY colour channel; the state word in
+                      the tooltip + the composed aria-label carry the same state as
+                      TEXT (AC5 — never colour alone). */}
                   <Box
                     as="span"
                     width="12px"
                     height="12px"
                     borderRadius="50%"
                     aria-hidden="true"
-                    bg={isOnline ? 'var(--accent-primary)' : 'var(--status-error)'}
-                    boxShadow={`0 0 0 4px ${tint(isOnline ? 'var(--accent-primary)' : 'var(--status-error)', 22)}`}
+                    bg={healthToken(health.overall)}
+                    boxShadow={`0 0 0 4px ${tint(healthToken(health.overall), 22)}`}
                   />
                 </Box>
               </Tooltip.Trigger>
               <Portal>
                 <Tooltip.Positioner>
                   <Tooltip.Content
+                    data-testid="desktop-status-led-tooltip"
                     padding="8px"
                     borderRadius="6px"
                     fontFamily="var(--font-base)"
@@ -434,12 +495,68 @@ export const LauncherChrome: React.FC<LauncherChromeProps> = ({
                     <Tooltip.Arrow>
                       <Tooltip.ArrowTip />
                     </Tooltip.Arrow>
-                    <Text color="var(--text-primary)" fontWeight={500}>
-                      {isOnline ? 'Connected' : 'Disconnected'}
-                    </Text>
-                    <Text color="var(--text-secondary)" fontWeight={300} mt="2px">
-                      {isOnline ? 'Agent telemetry streaming' : 'Waiting for stream to reconnect'}
-                    </Text>
+                    {/* Five rows in a FIXED order: one overall line + exactly the
+                        four subsystem lines the aggregate provides. Rows wrap
+                        (`minWidth="0"` + normal white-space) so a long detail
+                        never clips or overflows; no fixed tooltip width. */}
+                    <Box display="flex" flexDirection="column" gap="6px" minWidth="0">
+                      <Box
+                        data-testid="desktop-status-led-overall"
+                        data-health-state={health.overall}
+                        display="flex"
+                        alignItems="center"
+                        gap="6px"
+                        flexWrap="wrap"
+                        minWidth="0"
+                      >
+                        <Box
+                          as="span"
+                          aria-hidden="true"
+                          width="8px"
+                          height="8px"
+                          borderRadius="50%"
+                          flexShrink={0}
+                          bg={healthToken(health.overall)}
+                        />
+                        <Text color="var(--text-primary)" fontWeight={600} whiteSpace="normal">
+                          Fredo health
+                        </Text>
+                        <Text color="var(--text-secondary)" fontWeight={300} whiteSpace="normal">
+                          {overallWord}
+                        </Text>
+                      </Box>
+                      {health.subsystems.map((line) => (
+                        <Box
+                          key={line.id}
+                          data-testid={`health-line-${line.id}`}
+                          data-health-state={line.state}
+                          display="flex"
+                          alignItems="center"
+                          gap="6px"
+                          flexWrap="wrap"
+                          minWidth="0"
+                        >
+                          <Box
+                            as="span"
+                            aria-hidden="true"
+                            width="8px"
+                            height="8px"
+                            borderRadius="50%"
+                            flexShrink={0}
+                            bg={healthToken(line.state)}
+                          />
+                          <Text color="var(--text-primary)" fontWeight={500} whiteSpace="normal">
+                            {line.label}
+                          </Text>
+                          <Text color="var(--text-secondary)" fontWeight={300} whiteSpace="normal">
+                            {SUBSYSTEM_STATE_WORD[line.state]}
+                          </Text>
+                          <Text color="var(--text-secondary)" fontWeight={300} whiteSpace="normal">
+                            {line.detail}
+                          </Text>
+                        </Box>
+                      ))}
+                    </Box>
                   </Tooltip.Content>
                 </Tooltip.Positioner>
               </Portal>
