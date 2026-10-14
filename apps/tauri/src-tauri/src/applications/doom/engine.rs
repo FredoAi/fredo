@@ -30,6 +30,7 @@
 //! autoplay loop invokes these through `tauri::async_runtime::spawn_blocking`).
 //! A **dedicated engine thread is never spawned** — no orphan is constructible.
 
+use std::collections::HashSet;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -45,7 +46,7 @@ use neurodoom::map::{point_to_angle, MapData, SectorId};
 use neurodoom::math::{Angle, Fixed, FRACBITS};
 use neurodoom::specials::{is_exit_line, DoorDirection, SpecialThinker};
 use neurodoom::types::{AmmoType, Button, Buttons, WeaponType};
-use neurodoom::world::{Entity, PeerId};
+use neurodoom::world::{Entity, EntityId, PeerId};
 use neurodoom::{ClassicEngine, DoomError, PlayerAction, SCREENHEIGHT, SCREENWIDTH};
 
 use super::actions::{
@@ -298,6 +299,16 @@ pub struct DoomSession {
     /// The requested skill (engine parity note: `ClassicDoomRules` exposes no
     /// skill — see the module report; the value is carried for persistence).
     skill: i64,
+    /// The live `MobjFlag::Special` entity-id set as of the last
+    /// [`DoomSession::observe_collection`] (Spec #3054 ST-1). Held on the session
+    /// (not the bounded observation) so it survives every tick for the session's
+    /// lifetime; cleared ONLY on [`reset`](DoomEngineState::reset) — a world
+    /// reload starts a fresh id namespace.
+    last_special_ids: HashSet<EntityId>,
+    /// Per-world cumulative count of `MobjFlag::Special` ids that VANISHED since
+    /// the previous observation (Spec #3054 ST-1) — the producer of the additive
+    /// `level.itemsCollected`. Projected read-only by [`observation_with`].
+    items_collected: i64,
 }
 
 impl DoomSession {
@@ -311,6 +322,41 @@ impl DoomSession {
     fn player_angle(&self) -> Angle {
         self.player_entity().map(|e| e.angle).unwrap_or(0)
     }
+
+    /// Post-simulation collection observer (Spec #3054 ST-1).
+    ///
+    /// Builds the CURRENT live `MobjFlag::Special` entity-id set over the FULL
+    /// world (never the bounded observation list), counts the ids present in the
+    /// previous set but absent now — the pickup path removes the mobj from the
+    /// world (`check_pickups` → `world.remove`) — adds that delta to the
+    /// per-world cumulative counter, and stores the new set. Deterministic (a set
+    /// diff, no RNG, no clock); called AFTER the world is current by
+    /// [`DoomEngineState::step`] / [`DoomEngineState::reset`] /
+    /// [`DoomEngineState::read_state`].
+    fn observe_collection(&mut self) -> i64 {
+        let current: HashSet<EntityId> = self
+            .engine
+            .world()
+            .iter()
+            .filter(|entity| entity.flags.contains(MobjFlag::Special))
+            .map(|entity| entity.id)
+            .collect();
+        self.items_collected = self
+            .items_collected
+            .saturating_add(special_diff(&self.last_special_ids, &current));
+        self.last_special_ids = current;
+        self.items_collected
+    }
+}
+
+/// The number of ids present in `previous` but absent from `current` (Spec #3054
+/// ST-1) — the collection delta. Pure, so the diff is unit-testable without an
+/// engine (F-5).
+fn special_diff(previous: &HashSet<EntityId>, current: &HashSet<EntityId>) -> i64 {
+    previous
+        .iter()
+        .filter(|id| !current.contains(id))
+        .count() as i64
 }
 
 /// Session coordinates returned by [`DoomEngineState::launch`].
@@ -397,6 +443,8 @@ impl DoomEngineState {
             episode: 1,
             map,
             skill,
+            last_special_ids: HashSet::new(),
+            items_collected: 0,
         });
         Ok(DoomSessionInfo {
             episode: 1,
@@ -418,8 +466,9 @@ impl DoomEngineState {
 
     /// The parity observation (see the module-level observation contract).
     pub fn read_state(&self) -> Result<Value, DoomEngineError> {
-        let guard = self.lock();
-        let session = guard.as_ref().ok_or_else(DoomEngineError::no_session)?;
+        let mut guard = self.lock();
+        let session = guard.as_mut().ok_or_else(DoomEngineError::no_session)?;
+        session.observe_collection();
         Ok(observation(session))
     }
 
@@ -439,6 +488,7 @@ impl DoomEngineState {
             session.engine.simulate(&[(LOCAL_PEER, action)], &[]);
         }
         session.engine.render_for(LOCAL_PEER);
+        session.observe_collection();
         Ok(observation(session))
     }
 
@@ -458,6 +508,12 @@ impl DoomEngineState {
         session.episode = episode;
         session.map = map;
         session.skill = skill;
+        // A world reload starts a fresh entity-id namespace: clear the collection
+        // diff state (Spec #3054 ST-1) so no cross-map counting occurs, then seed
+        // the new world's live set.
+        session.last_special_ids.clear();
+        session.items_collected = 0;
+        session.observe_collection();
         session.engine.render_for(LOCAL_PEER);
         Ok(observation(session))
     }
@@ -1169,6 +1225,12 @@ fn observation_with(session: &DoomSession, force_exit: bool, inject: Option<&Val
     let weapon = player_state
         .map(|ps| weapon_name(ps.ready_weapon))
         .unwrap_or("none");
+    // Additive weapon-set projection (Spec #3054 ST-1 / AC3): the owned-weapon
+    // flags in slot order, via the retained `weapon_name` vocabulary. Baseline
+    // `["fist","pistol"]`. `player.weapon` (the ready weapon) is untouched.
+    let weapons = player_state
+        .map(|ps| weapon_set(&ps.weapon_owned))
+        .unwrap_or_default();
     let ammo = |kind: AmmoType| {
         player_state
             .and_then(|ps| ps.ammo.get(kind as usize).copied())
@@ -1206,6 +1268,7 @@ fn observation_with(session: &DoomSession, force_exit: bool, inject: Option<&Val
             "kills": kills,
             "items": items,
             "secrets": secrets,
+            "itemsCollected": session.items_collected,
         },
         "player": {
             "x": fixed_to_units(px),
@@ -1220,6 +1283,7 @@ fn observation_with(session: &DoomSession, force_exit: bool, inject: Option<&Val
                 "cells": ammo(AmmoType::Cells),
             },
             "weapon": weapon,
+            "weapons": weapons,
         },
         "enemies": enemies(world, map, px, py, eye_z, angle, player_id),
         "items": items_observation(world, px, py, angle, player_id),
@@ -1570,6 +1634,35 @@ fn relative_bearing_degrees(px: Fixed, py: Fixed, angle: Angle, tx: Fixed, ty: F
     } else {
         degrees
     }
+}
+
+/// The weapon types in CLASSIC SLOT ORDER (Spec #3054 ST-1), paired index-for-
+/// index with `PlayerState.weapon_owned` (slot `i` ⇒ `weapon_owned[i]`). The
+/// wire names come from [`weapon_name`]; baseline `[true,true,false×7]` ⇒
+/// `["fist","pistol"]`.
+const WEAPON_SLOTS: [WeaponType; 9] = [
+    WeaponType::Fist,
+    WeaponType::Pistol,
+    WeaponType::Shotgun,
+    WeaponType::Chaingun,
+    WeaponType::RocketLauncher,
+    WeaponType::PlasmaRifle,
+    WeaponType::Bfg,
+    WeaponType::Chainsaw,
+    WeaponType::SuperShotgun,
+];
+
+/// Project the owned-weapon flags to the wire vocabulary, in slot order
+/// (Spec #3054 ST-1 / AC3). Slot `i` ⇒ `owned[i]` ⇒ `WEAPON_SLOTS[i]`; a `false`
+/// slot is omitted. Pure — the only source is the owned flags.
+fn weapon_set(owned: &[bool]) -> Vec<&'static str> {
+    owned
+        .iter()
+        .enumerate()
+        .filter(|(_, held)| **held)
+        .filter_map(|(slot, _)| WEAPON_SLOTS.get(slot).copied())
+        .map(weapon_name)
+        .collect()
 }
 
 /// The stable wire name for a weapon type.
@@ -2934,5 +3027,140 @@ mod tests {
         assert_eq!(injected["tic"], inert["tic"]);
         assert_eq!(injected["player"], inert["player"]);
         assert_eq!(injected["forward"], inert["forward"]);
+    }
+
+    // ── Spec #3054 ST-1: the additive collection + weapon-set observation ────
+
+    /// **F-5 (unit pin).** The pure `Special`-id diff counts ONLY ids that
+    /// vanished from the previous set (the pickup path's `world.remove`); new ids
+    /// and unchanged ids never count.
+    #[test]
+    fn the_special_id_diff_counts_only_vanished_ids() {
+        let ids = |values: &[u32]| values.iter().copied().map(EntityId).collect::<HashSet<_>>();
+        assert_eq!(special_diff(&ids(&[1, 2]), &ids(&[1])), 1, "one vanished");
+        assert_eq!(special_diff(&ids(&[1, 2]), &ids(&[1, 2])), 0, "no change");
+        assert_eq!(special_diff(&ids(&[]), &ids(&[1, 2])), 0, "a fresh world");
+        assert_eq!(special_diff(&ids(&[1, 2, 3]), &ids(&[])), 3, "all vanished");
+        assert_eq!(special_diff(&ids(&[1]), &ids(&[1, 2])), 0, "a new id is not a vanish");
+    }
+
+    /// **F-7 (unit pin).** The `player.weapons` projection is pure, slot-ordered,
+    /// and omits `false` slots.
+    #[test]
+    fn the_weapon_set_projection_is_pure_and_slot_ordered() {
+        assert_eq!(
+            weapon_set(&[true, true, false, false, false, false, false, false, false]),
+            vec!["fist", "pistol"],
+            "the baseline weapon set"
+        );
+        assert_eq!(weapon_set(&[false; 9]), Vec::<&str>::new(), "all-false ⇒ empty");
+        assert_eq!(
+            weapon_set(&[true; 9]),
+            vec![
+                "fist",
+                "pistol",
+                "shotgun",
+                "chaingun",
+                "rocket-launcher",
+                "plasma-rifle",
+                "bfg",
+                "chainsaw",
+                "super-shotgun",
+            ],
+            "all-true ⇒ all nine in slot order"
+        );
+        assert_eq!(
+            weapon_set(&[false, false, true, false, false, false, false, false, false]),
+            vec!["shotgun"],
+            "a flipped slot appears at its slot index"
+        );
+    }
+
+    /// **AC2/AC3 (additive).** The observation carries the additive
+    /// `level.itemsCollected` and `player.weapons`, leaves `player.weapon` and the
+    /// dead `level.items` untouched.
+    #[test]
+    fn the_observation_carries_the_additive_collection_and_weapon_keys() {
+        let state = DoomEngineState::default();
+        state.launch(1, 3).expect("launch");
+        let observation = state.read_state().expect("read_state");
+
+        assert_eq!(
+            observation
+                .pointer("/level/itemsCollected")
+                .and_then(Value::as_i64),
+            Some(0),
+            "the per-world cumulative counter is present and starts at 0"
+        );
+        assert_eq!(
+            observation.pointer("/player/weapons"),
+            Some(&json!(["fist", "pistol"])),
+            "the weapon set is projected in slot order"
+        );
+        assert!(
+            observation.pointer("/player/weapon").and_then(Value::as_str).is_some(),
+            "the ready weapon is retained unchanged"
+        );
+        // The DEAD observable (`level.items` / `item_count`) stays untouched.
+        assert_eq!(observation.pointer("/level/items"), Some(&json!(0)));
+    }
+
+    /// **F-5 (reset edge).** A world reload clears the collection diff state so no
+    /// cross-map counting occurs, and seeds the fresh world's live set.
+    #[test]
+    fn reset_clears_the_collection_diff_state() {
+        let state = DoomEngineState::default();
+        state.launch(1, 3).expect("launch");
+        // Simulate prior collection state on the live session.
+        {
+            let mut guard = state.0.lock().expect("session lock");
+            let session = guard.as_mut().expect("live session");
+            session.items_collected = 7;
+            session.last_special_ids.insert(EntityId(9_999_999));
+        }
+
+        let observation = state.reset(1, 2, 3).expect("reset");
+        assert_eq!(
+            observation.pointer("/level/itemsCollected"),
+            Some(&json!(0)),
+            "a world reload starts the counter at 0"
+        );
+
+        let guard = state.0.lock().expect("session lock");
+        let session = guard.as_ref().expect("live session");
+        assert_eq!(session.items_collected, 0);
+        assert!(
+            !session.last_special_ids.contains(&EntityId(9_999_999)),
+            "the stale world's id is dropped (fresh id namespace)"
+        );
+    }
+
+    /// **NFR-1 (additive-only).** The collection observer reads the FULL world,
+    /// not the bounded observation list: the stored set matches every live
+    /// `MobjFlag::Special` id and is never smaller than the observation's list.
+    #[test]
+    fn observe_collection_reads_the_full_world_not_the_bounded_list() {
+        let state = DoomEngineState::default();
+        state.launch(1, 3).expect("launch");
+        let observation = state.read_state().expect("read_state");
+
+        let guard = state.0.lock().expect("session lock");
+        let session = guard.as_ref().expect("live session");
+        let live = session
+            .engine
+            .world()
+            .iter()
+            .filter(|entity| entity.flags.contains(MobjFlag::Special))
+            .count();
+        assert_eq!(
+            session.last_special_ids.len(),
+            live,
+            "the FULL world's Special-id set is stored"
+        );
+        assert!(
+            session.last_special_ids.len()
+                >= observation["items"].as_array().map_or(0, Vec::len),
+            "the stored set is never smaller than the bounded observation list"
+        );
     }
 }

@@ -82,6 +82,13 @@ pub mod failure_seam;
 // `local` decision source: plans a route to the nearest non-secret exit from
 // the loaded `MapData`, so AC5 completion needs no model.
 pub mod local_route;
+// Deterministic opportunistic-looting policy (Spec #3054 ST-3) — the pure,
+// model-independent loot layer: select an in-range pickup from the bounded
+// observation's `items[]`, steer to it (bounded `turn-to` + `forward`), and
+// self-bound via a seek window so a pickup it cannot reach never causes route
+// thrash. Purity mirrors [`combat`] / [`plan`]; the loop composes it AFTER
+// escape and combat (`escape > combat > loot > route`).
+pub mod loot;
 pub mod mode;
 // Deterministic level-walkability model (Spec #3039 ST-1) — the AC5 feasibility
 // gate: a coarse passability/clearance graph over the loaded `MapData` plus the

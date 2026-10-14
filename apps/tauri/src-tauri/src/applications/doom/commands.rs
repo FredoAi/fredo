@@ -507,6 +507,7 @@ fn idle_status() -> DoomAutoplayStatus {
         code: None,
         kills: 0,
         engagements: 0,
+        items_collected: 0,
     }
 }
 
@@ -537,6 +538,7 @@ fn running_status(campaign: &DoomCampaign) -> DoomAutoplayStatus {
         code: None,
         kills: 0,
         engagements: 0,
+        items_collected: 0,
     }
 }
 

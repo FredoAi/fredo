@@ -135,6 +135,11 @@ pub struct DoomAutoplayStatus {
     /// Total engaged ticks this run (Spec #3053 ST-2): the combat policy's
     /// per-run engagement count. An observability signal carried on the wire.
     pub engagements: u32,
+    /// The per-world cumulative count of pickups collected this run (Spec #3054
+    /// ST-2 / AC2): a read-only projection of the engine observation's
+    /// `level.itemsCollected`. Additive field — existing fields keep their order
+    /// and serde names; there is NO client-side increment.
+    pub items_collected: i64,
 }
 
 /// Result of `start_doom_autoplay` — always returned, never a hang.
@@ -227,6 +232,7 @@ mod tests {
             code: Some(DoomAutoplayErrorCode::DecisionFailed),
             kills: 9,
             engagements: 4,
+            items_collected: 6,
         };
         let value = serde_json::to_value(&status).expect("serialize");
         assert_eq!(value["phase"], "running");
@@ -251,6 +257,7 @@ mod tests {
         assert_eq!(value["code"], "decisionFailed");
         assert_eq!(value["kills"], 9);
         assert_eq!(value["engagements"], 4);
+        assert_eq!(value["itemsCollected"], 6);
     }
 
     #[test]

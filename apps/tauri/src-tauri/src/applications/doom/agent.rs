@@ -92,6 +92,9 @@ use super::dataset::{
     DoomDatasetWriter, DOOM_DATASET_DIR_ENV, DOOM_DATASET_SCHEMA_VERSION,
 };
 use super::engine::{DoomEngineError, DoomEngineErrorCode, DoomEngineState};
+// The opportunistic-looting layer (Spec #3054 ST-3/ST-4): a pure, deterministic
+// pickup-seeking policy composed once per tick AFTER escape and combat.
+use super::loot;
 use super::plan::{
     observation_has_front_enemy, PlanAction, PlanExecutor, ReplanCounters,
 };
@@ -489,6 +492,15 @@ fn apply_observation(status: &mut DoomAutoplayStatus, observation: &Value) {
     if let Some(kills) = observation.pointer("/level/kills").and_then(Value::as_i64) {
         status.kills = kills;
     }
+    // AC2 (Spec #3054 ST-2): a read-only projection of the adapter's own
+    // per-world collection counter (`level.itemsCollected`) — never fabricated,
+    // never incremented client-side.
+    if let Some(collected) = observation
+        .pointer("/level/itemsCollected")
+        .and_then(Value::as_i64)
+    {
+        status.items_collected = collected;
+    }
 }
 
 /// The running status seeded from the resolved campaign (so the resume point is
@@ -517,6 +529,7 @@ fn running_status(campaign: &DoomCampaign) -> DoomAutoplayStatus {
         code: None,
         kills: 0,
         engagements: 0,
+        items_collected: 0,
     }
 }
 
@@ -546,6 +559,7 @@ fn completed_status(campaign: &DoomCampaign) -> DoomAutoplayStatus {
         code: Some(DoomAutoplayErrorCode::CampaignComplete),
         kills: 0,
         engagements: 0,
+        items_collected: 0,
     }
 }
 
@@ -890,6 +904,13 @@ fn intent_has_forward(intent: &[Value]) -> bool {
     intent
         .iter()
         .any(|action| action.get("type").and_then(Value::as_str) == Some(DOOM_ACTION_FORWARD))
+}
+
+/// Whether an action array commands a `turn-to` (the route is actively steering).
+fn intent_has_turn_to(intent: &[Value]) -> bool {
+    intent
+        .iter()
+        .any(|action| action.get("type").and_then(Value::as_str) == Some(DOOM_ACTION_TURN_TO))
 }
 
 /// Whether the observation's `enemies` list reports at least one `front` target.
@@ -1897,6 +1918,11 @@ pub async fn run_continuous_loop_with_writer(
     // geometry cannot wedge the run (G-263); reset on a level transition.
     let mut combat_retreat_ticks: u32 = 0;
 
+    // The opportunistic-looting policy state (Spec #3054 ST-4): the per-level
+    // seek window + blocked item-set signature, reset on a level transition
+    // alongside the local + combat policies. Deterministic — no RNG, no clock.
+    let mut loot_policy = loot::DoomLootPolicy::default();
+
     // The Plan Executor (Spec #3039 ST-4): runs the adopted plan one step per
     // tick and requests a re-plan on divergence (AC2/AC3/AC4). The retained
     // reflex + escape/local-locomotion policy above is its FALLBACK when no plan
@@ -1977,6 +2003,7 @@ pub async fn run_continuous_loop_with_writer(
                             policy.reset_detector();
                             combat_policy.reset();
                             combat_retreat_ticks = 0;
+                            loot_policy.reset();
                             last_intent.clear();
                             executor.reset_positioning();
                             next_plan = None;
@@ -2039,6 +2066,7 @@ pub async fn run_continuous_loop_with_writer(
                             policy.reset_detector();
                             combat_policy.reset();
                             combat_retreat_ticks = 0;
+                            loot_policy.reset();
                             last_intent.clear();
                             executor.reset_positioning();
                             next_plan = None;
@@ -2327,6 +2355,28 @@ pub async fn run_continuous_loop_with_writer(
                 // No engageable target: the low-health episode ends, so the
                 // bounded back-off window resets for a future episode.
                 combat_retreat_ticks = 0;
+            }
+        }
+        // 3c-ii. Opportunistic looting (Spec #3054 ST-4). Composed AFTER escape
+        //        (#3031) and combat (#3053) — precedence `escape > combat > loot >
+        //        base route`: consulted only when the tick is not governed by the
+        //        escape window, no combat target is engageable, AND the base route
+        //        is not ITSELF steering (its `turn-to` is retained verbatim).
+        //        Loot is OPPORTUNISTIC (AC4 — it must never abandon the route to
+        //        the exit): because the native adapter applies the LAST `turn-to`
+        //        (`build_player_action`), appending a loot `turn-to` on top of an
+        //        actively-steering route would OVERRIDE the route's bearing and
+        //        derail the #3039 exit run (empirically verified: it breaks
+        //        `st8_local_route_completes_the_target_level_deterministically`).
+        //        Loot therefore fills the ticks where the route is not steering,
+        //        and its bounded steer is appended only there. It NEVER triggers a
+        //        re-plan or mutates the plan; every emitted action is bounded.
+        if !escaping
+            && combat::combat_target(&observation).is_none()
+            && !intent_has_turn_to(&effective)
+        {
+            if let Some(intent) = loot::loot_intent(&observation, &mut loot_policy) {
+                effective.extend(intent.actions);
             }
         }
         status.escapes = policy.escapes;
@@ -4674,6 +4724,317 @@ mod tests {
             assert!(
                 actions_contain(actions, DOOM_ACTION_SHOOT),
                 "seam off ⇒ Engage resumes fire: {actions:?}"
+            );
+        }
+    }
+
+    // ── Loot loop integration + precedence (Spec #3054 ST-4) ─────────────────
+
+    /// An alive E1M1 observation carrying `items[]` (and optional `enemies[]`)
+    /// at `(x, y)` — the loot-layer compose fixture.
+    fn loot_observation(
+        tic: u64,
+        health: i64,
+        x: i64,
+        y: i64,
+        items: Value,
+        enemies: Value,
+    ) -> Value {
+        json!({
+            "tic": tic,
+            "done": false,
+            "outcome": "alive",
+            "level": { "episode": 1, "map": 1, "skill": 3, "kills": 0, "items": 0, "itemsCollected": 0 },
+            "player": { "x": x, "y": y, "angle": 0, "health": health },
+            "items": items,
+            "enemies": enemies,
+        })
+    }
+
+    /// Whether an issued action array carries a `forward` of exactly `amount`.
+    fn has_forward_amount(actions: &Value, amount: i64) -> bool {
+        actions.as_array().is_some_and(|array| {
+            array
+                .iter()
+                .any(|action| action["type"] == DOOM_ACTION_FORWARD && action["amount"] == amount)
+        })
+    }
+
+    /// Whether an issued action array carries a `turn-to` of exactly `angle`.
+    fn has_turn_to_angle(actions: &Value, angle: i64) -> bool {
+        actions.as_array().is_some_and(|array| {
+            array
+                .iter()
+                .any(|action| action["type"] == DOOM_ACTION_TURN_TO && action["angle"] == angle)
+        })
+    }
+
+    /// A decision source returning a legacy `Hold` plan whose only action is a
+    /// bounded `forward` (NO `turn-to`) — a route that is NOT steering, so the
+    /// loot layer (which yields to an actively-steering route) is consulted.
+    struct ForwardRouteSource;
+
+    #[async_trait]
+    impl DoomDecisionSource for ForwardRouteSource {
+        async fn decide(&self, _observation: &Value) -> Result<DoomPlan, DoomDecisionError> {
+            Ok(DoomPlan::from(DoomDecision {
+                tics: 1,
+                actions: vec![json!({ "type": DOOM_ACTION_FORWARD, "amount": 1 })],
+            }))
+        }
+    }
+
+    /// **AC1 (compose).** When the route is NOT steering, an in-range pickup
+    /// makes the loop APPEND the bounded loot steer (`turn-to` bearing +
+    /// `forward`).
+    #[tokio::test]
+    async fn loot_appends_a_bounded_steer_when_the_route_is_not_steering() {
+        let engine = FakeEngine::default();
+        let items = json!([{ "kind": "health", "direction": "right", "distance": 100 }]);
+        engine.queue_reset(Ok(loot_observation(0, 100, 0, 0, items.clone(), json!([]))));
+        for tic in 1..=3u64 {
+            engine
+                .step_queue
+                .lock()
+                .unwrap()
+                .push_back(Ok(loot_observation(
+                    tic,
+                    100,
+                    tic as i64,
+                    0,
+                    items.clone(),
+                    json!([]),
+                )));
+        }
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(false);
+        let cfg = continuous_config(4, 3, Duration::from_secs(1));
+
+        let result = run_continuous_loop(
+            &engine,
+            &ForwardRouteSource,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
+
+        assert!(result.success);
+        let steps = step_actions(&engine);
+        assert_eq!(steps.len(), 3);
+        for actions in &steps {
+            // The route's bounded forward is retained (compose, not replace).
+            assert!(
+                actions_contain(actions, DOOM_ACTION_FORWARD),
+                "the route forward is retained: {actions:?}"
+            );
+            // The loot steer is appended when the route is not steering.
+            assert!(
+                has_turn_to_angle(actions, 270),
+                "the loot turn-to (right ⇒ 270) is appended: {actions:?}"
+            );
+            assert!(
+                has_forward_amount(actions, loot::DOOM_LOOT_FORWARD_AMOUNT),
+                "the bounded loot forward is appended: {actions:?}"
+            );
+        }
+    }
+
+    /// **AC4 (route invariant).** An in-range pickup must NOT override an
+    /// actively-steering route — the ticket is byte-identical to the route
+    /// baseline (loot yields to the route; #3039 route completion is preserved).
+    #[tokio::test]
+    async fn loot_does_not_override_an_actively_steering_route() {
+        let engine = FakeEngine::default();
+        let items = json!([{ "kind": "health", "direction": "right", "distance": 100 }]);
+        engine.queue_reset(Ok(loot_observation(0, 100, 0, 0, items.clone(), json!([]))));
+        for tic in 1..=3u64 {
+            engine
+                .step_queue
+                .lock()
+                .unwrap()
+                .push_back(Ok(loot_observation(
+                    tic,
+                    100,
+                    tic as i64,
+                    0,
+                    items.clone(),
+                    json!([]),
+                )));
+        }
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(false);
+        let cfg = continuous_config(4, 3, Duration::from_secs(1));
+
+        let result = run_continuous_loop(
+            &engine,
+            &NativeRouteSource,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
+
+        assert!(result.success);
+        let steps = step_actions(&engine);
+        assert_eq!(steps.len(), 3);
+        // The unmodified native `Move` action set: [turn-to 90, forward, run].
+        let baseline = json!([
+            { "type": DOOM_ACTION_TURN_TO, "angle": 90 },
+            { "type": DOOM_ACTION_FORWARD, "amount": 1 },
+            { "type": "run", "amount": 1 },
+        ]);
+        for actions in &steps {
+            assert_eq!(
+                actions, &baseline,
+                "with the route steering, loot must not override it: {actions:?}"
+            );
+        }
+    }
+
+    /// **AC4 (precedence).** While a combat target is engageable, loot is NOT
+    /// consulted — the tick is combat-only (plus the retained route).
+    #[tokio::test]
+    async fn loot_yields_to_a_combat_target() {
+        let engine = FakeEngine::default();
+        let items = json!([{ "kind": "health", "direction": "right", "distance": 100 }]);
+        let enemies =
+            json!([{ "kind": "trooper", "hp": 20, "direction": "front", "distance": 100 }]);
+        engine.queue_reset(Ok(loot_observation(
+            0,
+            100,
+            0,
+            0,
+            items.clone(),
+            enemies.clone(),
+        )));
+        for tic in 1..=3u64 {
+            engine
+                .step_queue
+                .lock()
+                .unwrap()
+                .push_back(Ok(loot_observation(
+                    tic,
+                    100,
+                    tic as i64,
+                    0,
+                    items.clone(),
+                    enemies.clone(),
+                )));
+        }
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(false);
+        let cfg = continuous_config(4, 3, Duration::from_secs(1));
+
+        let result = run_continuous_loop(
+            &engine,
+            &ForwardRouteSource,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
+
+        assert!(result.success);
+        let steps = step_actions(&engine);
+        assert_eq!(steps.len(), 3);
+        for actions in &steps {
+            assert!(
+                actions_contain(actions, DOOM_ACTION_SHOOT),
+                "combat fires: {actions:?}"
+            );
+            assert!(
+                !has_turn_to_angle(actions, 270),
+                "no loot bearing while engaging: {actions:?}"
+            );
+            assert!(
+                !has_forward_amount(actions, loot::DOOM_LOOT_FORWARD_AMOUNT),
+                "no loot forward while engaging: {actions:?}"
+            );
+        }
+    }
+
+    /// **AC4 (precedence).** Once the #3031 escape window governs the tick
+    /// (stuck ≥ K), loot is NOT consulted — the loot steer fires beforehand and
+    /// stops while escaping.
+    #[tokio::test]
+    async fn loot_yields_to_the_escape_window_when_stuck() {
+        let engine = FakeEngine::default();
+        let items = json!([{ "kind": "health", "direction": "right", "distance": 100 }]);
+        engine.queue_reset(Ok(loot_observation(0, 100, 0, 0, items.clone(), json!([]))));
+        // The player never moves (x=y=0) ⇒ the no-move streak reaches K.
+        for tic in 1..=20u64 {
+            engine
+                .step_queue
+                .lock()
+                .unwrap()
+                .push_back(Ok(loot_observation(tic, 100, 0, 0, items.clone(), json!([]))));
+        }
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(false);
+        let cfg = continuous_config(17, 3, Duration::from_secs(1));
+
+        let result = run_continuous_loop(
+            &engine,
+            &ForwardRouteSource,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
+
+        assert!(result.success);
+        let steps = step_actions(&engine);
+        assert_eq!(steps.len(), 16);
+
+        let loot_ticks = steps
+            .iter()
+            .filter(|actions| has_forward_amount(actions, loot::DOOM_LOOT_FORWARD_AMOUNT))
+            .count();
+        let escape_ticks = steps
+            .iter()
+            .filter(|actions| has_forward_amount(actions, DOOM_ESCAPE_FORWARD_AMOUNT))
+            .count();
+        assert!(
+            loot_ticks > 0,
+            "the loot steer fires before the escape window: {steps:?}"
+        );
+        assert!(
+            escape_ticks > 0,
+            "the escape window engages once stuck: {steps:?}"
+        );
+        // While escaping, the loot steer is not appended (escape precedence).
+        for actions in steps
+            .iter()
+            .filter(|actions| has_forward_amount(actions, DOOM_ESCAPE_FORWARD_AMOUNT))
+        {
+            assert!(
+                !has_forward_amount(actions, loot::DOOM_LOOT_FORWARD_AMOUNT),
+                "loot yields to escape: {actions:?}"
+            );
+            assert!(
+                !has_turn_to_angle(actions, 270),
+                "no loot bearing during escape: {actions:?}"
             );
         }
     }
