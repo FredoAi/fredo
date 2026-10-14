@@ -22,6 +22,13 @@ surface.
   `.opencode/tmp/3049/e2e/smoke.jpeg`. **FAIL** = a divider is missing/unhittable or the app breaks
   on drag.
 
+- [ ] **S-9: Schema-node actions submenu (#3050)** — connect the built-in "Fredo" row; expand to a
+  table node; left-click it. **Expected:** the node selects AND `db-schema-actions-menu` opens with the
+  three items (`db-schema-action-open-data`, `-view-columns`, `-new-query`); "Open table data" adds
+  a new tab whose `db-query-editor` holds `SELECT * FROM "<schema>"."<table>" LIMIT n` and the grid
+  shows rows. Capture a screenshot to `.opencode/tmp/3050/e2e/smoke.jpeg`. **FAIL** = no submenu, no
+  selection, or no new tab/rows.
+
 ## Run log
 
 ### Round 1 — 2026-10-13 (spec/3048 @ bc741d6) — Verdict: **PASS**
