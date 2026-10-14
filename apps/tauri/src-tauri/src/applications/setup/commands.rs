@@ -1052,6 +1052,17 @@ const WINGET_BIN: &str = "winget";
 #[cfg(target_os = "windows")]
 const WINGET_APP_ID: &str = "ggml.llamacpp";
 
+/// **FS-2** test-only induction seam (Spec #3052 round 2): when set to a
+/// non-blank value other than `0`/`false`, [`check_companion_readiness`] reports
+/// BOTH companion prerequisites (`llamaServer`, `modelFiles`) as `Missing`, so
+/// the never-installed companion state becomes live-drivable in-repo without
+/// touching the machine-global install paths the probe resolves (G-275; mirrors
+/// the sanctioned [`crate::applications::pg_supervisor::PG_FORCE_START_FAIL_ENV`]
+/// precedent). The flag is scoped to the READINESS PROBE ONLY — it never affects
+/// `resolve_llama_server` or the managed-server launch path. Inert when unset —
+/// the default probe is byte-identical.
+pub const COMPANION_FORCE_NOT_INSTALLED_ENV: &str = "FREDO_COMPANION_FORCE_NOT_INSTALLED";
+
 /// Per-prerequisite state. `Error` = could not determine; `Missing` = determined absent.
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -1128,9 +1139,48 @@ fn model_files_prerequisite(
     }
 }
 
+/// The pure **FS-2** forced-not-installed rule: `true` when
+/// [`COMPANION_FORCE_NOT_INSTALLED_ENV`] is set to a non-blank value other than
+/// `0`/`false`, else `false`. Split out so the lever contract is unit-testable
+/// without mutating process-global environment state (G-222). Inert by default.
+fn force_not_installed_with(value: Option<&str>) -> bool {
+    match value {
+        Some(value) => {
+            let raw = value.trim();
+            !raw.is_empty() && !raw.eq_ignore_ascii_case("0") && !raw.eq_ignore_ascii_case("false")
+        }
+        None => false,
+    }
+}
+
+/// The **FS-2** forced `Missing` readiness report. Both prerequisites report
+/// `Missing` with the seam named in `detail`, so the tester can confirm the seam
+/// is active and the frontend derives both companion lines `notSetUp`. Pure so
+/// the report shape is unit-pinned without an `AppHandle` (G-222).
+fn forced_not_installed_readiness() -> CompanionReadiness {
+    let detail = format!("{COMPANION_FORCE_NOT_INSTALLED_ENV} is set: forced Missing (test seam)");
+    let prerequisite = |id: &str| PrerequisiteReport {
+        id: id.to_string(),
+        state: PrerequisiteState::Missing,
+        detail: detail.clone(),
+        resolved_path: None,
+    };
+    CompanionReadiness {
+        ready: false,
+        prerequisites: vec![prerequisite("llamaServer"), prerequisite("modelFiles")],
+    }
+}
+
 /// The two prerequisites the companion needs before it can run. Read-only.
 #[tauri::command]
 pub fn check_companion_readiness(app: AppHandle) -> CompanionReadiness {
+    // **FS-2** test-only seam (round 2), scoped to this READINESS PROBE ONLY:
+    // force both prerequisites `Missing` so the never-installed companion state
+    // is live-drivable (G-275). Inert when unset.
+    if force_not_installed_with(std::env::var(COMPANION_FORCE_NOT_INSTALLED_ENV).ok().as_deref()) {
+        return forced_not_installed_readiness();
+    }
+
     let mut prerequisites = Vec::with_capacity(2);
 
     // Prerequisite 1 — a usable llama-server executable.
@@ -1558,6 +1608,56 @@ mod tests {
         };
         let json = serde_json::to_string(&install).unwrap();
         assert!(json.contains("\"wingetUnavailable\""));
+    }
+
+    // ── Spec #3052 round 2 FS-2: forced-not-installed readiness seam ──────
+
+    /// FS-2: the forced-not-installed lever is inert unless explicitly set, and a
+    /// `0`/`false` value leaves it off. The pure rule is pinned so the contract is
+    /// tested without mutating process-global env (G-222).
+    #[test]
+    fn force_not_installed_rule_is_inert_by_default_and_reads_the_lever() {
+        assert!(!force_not_installed_with(None), "unset is inert");
+        assert!(!force_not_installed_with(Some("")), "blank is inert");
+        assert!(!force_not_installed_with(Some("   ")), "blank is inert");
+        assert!(!force_not_installed_with(Some("0")), "0 is inert");
+        assert!(!force_not_installed_with(Some("false")), "false is inert");
+        assert!(!force_not_installed_with(Some("FALSE")), "false is case-insensitive");
+        assert!(force_not_installed_with(Some("1")));
+        assert!(force_not_installed_with(Some("true")));
+        assert!(force_not_installed_with(Some("yes")));
+    }
+
+    /// FS-2: the seam env name matches the QA-facing contract.
+    #[test]
+    fn companion_force_not_installed_env_name_matches_the_contract() {
+        assert_eq!(
+            COMPANION_FORCE_NOT_INSTALLED_ENV,
+            "FREDO_COMPANION_FORCE_NOT_INSTALLED"
+        );
+    }
+
+    /// FS-2: the forced readiness report marks BOTH companion prerequisites
+    /// `Missing` (never `ready`), so the frontend derives both companion lines
+    /// `notSetUp` and the aggregate stays `healthy`.
+    #[test]
+    fn forced_not_installed_readiness_reports_both_prerequisites_missing() {
+        let report = forced_not_installed_readiness();
+        assert!(!report.ready, "forced readiness is never ready");
+        assert_eq!(report.prerequisites.len(), 2);
+        assert_eq!(report.prerequisites[0].id, "llamaServer");
+        assert_eq!(report.prerequisites[0].state, PrerequisiteState::Missing);
+        assert!(report.prerequisites[0].resolved_path.is_none());
+        assert_eq!(report.prerequisites[1].id, "modelFiles");
+        assert_eq!(report.prerequisites[1].state, PrerequisiteState::Missing);
+        assert!(report.prerequisites[1].resolved_path.is_none());
+        // Every prerequisite is non-Installed, which keeps `ready` false.
+        assert!(
+            report
+                .prerequisites
+                .iter()
+                .all(|p| p.state != PrerequisiteState::Installed)
+        );
     }
 
     #[test]

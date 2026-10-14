@@ -46,6 +46,31 @@ function stateOf(health: FredoHealth, id: FredoSubsystemId): SubsystemHealth {
   return line.state;
 }
 
+/** The test-injectable `window` keys the FS-1 / FS-4 seams read and write. */
+type HealthTestWindow = Window & {
+  __FREDO_HEALTH_FORCE_TELEMETRY_DOWN__?: unknown;
+  __FREDO_HEALTH_INSTRUMENT_PROBES__?: unknown;
+  __FREDO_HEALTH_PROBE_COUNT__?: number;
+};
+
+function testWindow(): HealthTestWindow {
+  return window as HealthTestWindow;
+}
+
+function probeCount(): number | undefined {
+  return testWindow().__FREDO_HEALTH_PROBE_COUNT__;
+}
+
+/** Remove every test-only seam signal so each test starts inert. */
+function clearSeams(): void {
+  const w = testWindow();
+  delete w.__FREDO_HEALTH_FORCE_TELEMETRY_DOWN__;
+  delete w.__FREDO_HEALTH_INSTRUMENT_PROBES__;
+  delete w.__FREDO_HEALTH_PROBE_COUNT__;
+  window.sessionStorage.clear();
+  vi.unstubAllEnvs();
+}
+
 /** An invoke mock answering the three read-only health commands. */
 function makeInvoke(
   overrides: Partial<Record<string, () => Promise<unknown> | unknown>> = {},
@@ -71,6 +96,7 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.useRealTimers();
+  clearSeams();
   adapterBridge.setInvoke(undefined as never);
   adapterBridge.setListen(undefined as never);
 });
@@ -243,5 +269,115 @@ describe('useFredoHealth — llama-server-status push event', () => {
       handler?.({ running: 'yes', healthy: null });
     });
     expect(stateOf(result.current, 'llamaServer')).toBe('healthy');
+  });
+});
+
+describe('useFredoHealth — FS-1 forced telemetry-down seam (test-only)', () => {
+  async function mountAndSettle() {
+    const { result, rerender } = renderHook(() => useFredoHealth());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    return { result, rerender };
+  }
+
+  it('is inert when no seam signal is set — telemetry stays healthy', async () => {
+    stream.connected = true;
+    adapterBridge.setInvoke(makeInvoke());
+    adapterBridge.setListen(async () => () => {});
+
+    const { result } = await mountAndSettle();
+    expect(stateOf(result.current, 'telemetry')).toBe('healthy');
+    expect(result.current.overall).toBe('healthy');
+  });
+
+  it('forces telemetry down => overall down from the Vite flag (other lines unaffected)', async () => {
+    vi.stubEnv('VITE_FREDO_HEALTH_FORCE_TELEMETRY_DOWN', '1');
+    stream.connected = true; // the connection flag itself is still true
+    adapterBridge.setInvoke(makeInvoke());
+    adapterBridge.setListen(async () => () => {});
+
+    const { result } = await mountAndSettle();
+    expect(stateOf(result.current, 'telemetry')).toBe('down');
+    expect(result.current.overall).toBe('down'); // telemetry is mandatory
+    expect(stateOf(result.current, 'llamaServer')).toBe('healthy');
+    expect(stateOf(result.current, 'companionModel')).toBe('healthy');
+    expect(stateOf(result.current, 'postgres')).toBe('healthy');
+  });
+
+  it('forces telemetry down from the runtime window key', async () => {
+    testWindow().__FREDO_HEALTH_FORCE_TELEMETRY_DOWN__ = true;
+    stream.connected = true;
+    adapterBridge.setInvoke(makeInvoke());
+    adapterBridge.setListen(async () => () => {});
+
+    const { result } = await mountAndSettle();
+    expect(stateOf(result.current, 'telemetry')).toBe('down');
+    expect(result.current.overall).toBe('down');
+  });
+
+  it('re-derives on a mid-session sessionStorage toggle at the next bounded tick', async () => {
+    stream.connected = true;
+    adapterBridge.setInvoke(makeInvoke());
+    adapterBridge.setListen(async () => () => {});
+
+    const { result } = await mountAndSettle();
+    expect(stateOf(result.current, 'telemetry')).toBe('healthy'); // inert so far
+
+    act(() => {
+      window.sessionStorage.setItem('fredoHealthForceTelemetryDown', '1');
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(HEALTH_POLL_INTERVAL_MS);
+    });
+    expect(stateOf(result.current, 'telemetry')).toBe('down');
+    expect(result.current.overall).toBe('down');
+  });
+});
+
+describe('useFredoHealth — FS-4 probe-set counter (test-only)', () => {
+  it('leaves the window counter absent when instrumentation is unset', async () => {
+    adapterBridge.setInvoke(makeInvoke());
+    adapterBridge.setListen(async () => () => {});
+
+    const { rerender } = renderHook(() => useFredoHealth());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    rerender();
+    expect(probeCount()).toBeUndefined();
+  });
+
+  it('counts one probe-set per interval and zero on a re-render when instrumented', async () => {
+    testWindow().__FREDO_HEALTH_INSTRUMENT_PROBES__ = true;
+    const invoke = makeInvoke();
+    adapterBridge.setInvoke(invoke);
+    adapterBridge.setListen(async () => () => {});
+
+    const { rerender } = renderHook(() => useFredoHealth());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(probeCount()).toBe(1); // exactly one probe-set on the first tick
+    const callsAfterFirstTick = invoke.mock.calls.length;
+    expect(callsAfterFirstTick).toBe(3);
+
+    // A re-render issues NO probe-set and NO IPC.
+    rerender();
+    rerender();
+    expect(probeCount()).toBe(1);
+    expect(invoke.mock.calls.length).toBe(callsAfterFirstTick);
+
+    // Crossing one interval => exactly one more probe-set.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(HEALTH_POLL_INTERVAL_MS);
+    });
+    expect(probeCount()).toBe(2);
+
+    // A second interval => one more (≤1 set per interval).
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(HEALTH_POLL_INTERVAL_MS);
+    });
+    expect(probeCount()).toBe(3);
   });
 });
