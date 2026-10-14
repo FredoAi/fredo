@@ -67,9 +67,9 @@ use crate::infrastructure::companion::doom_decision::{
 use crate::infrastructure::storage::boot_config::DATA_DIR_ENV;
 
 use super::actions::{
-    DOOM_ACTION_BACKWARD, DOOM_ACTION_FORWARD, DOOM_ACTION_SHOOT, DOOM_ACTION_STRAFE_LEFT,
-    DOOM_ACTION_STRAFE_RIGHT, DOOM_ACTION_TURN_TO, DOOM_ACTION_USE, DOOM_STEP_TICS_MAX,
-    DOOM_STEP_TICS_MIN,
+    DOOM_ACTION_BACKWARD, DOOM_ACTION_FORWARD, DOOM_ACTION_RUN, DOOM_ACTION_SHOOT,
+    DOOM_ACTION_STRAFE_LEFT, DOOM_ACTION_STRAFE_RIGHT, DOOM_ACTION_TURN_TO, DOOM_ACTION_USE,
+    DOOM_STEP_TICS_MAX, DOOM_STEP_TICS_MIN,
 };
 use super::autoplay::{
     DoomAutoplayErrorCode, DoomAutoplayPhase, DoomAutoplayResult, DoomAutoplayStatus,
@@ -130,6 +130,15 @@ pub const DOOM_REFLEX_BLOCKED_TICKS: u32 = 4;
 /// The bounded step-back length (held tics) the reflex issues when it drops a
 /// wall-running `forward` (R-3a).
 pub const DOOM_REFLEX_STEP_BACK_TICKS: i64 = 2;
+
+// ── Combat low-health back-off (Spec #3053 ST-3 addendum) ────────────────────
+
+/// The bounded window (engine ticks) for the low-health back-off: a `Disengage`
+/// tick's `backward` SUPERSEDES the route's `forward` for at most this many
+/// consecutive ticks, so a retreat that runs into geometry cannot wedge the run
+/// (G-263 / "no freeze/wedge"). Past the window the base route resumes with fire
+/// still suppressed while health is low. Deterministic — no RNG, no clock.
+pub const DOOM_COMBAT_RETREAT_WINDOW_TICKS: u32 = 24;
 
 // ── Unstick / escape + local-locomotion policy (Spec #3031 ST-3) ─────────────
 
@@ -1867,6 +1876,10 @@ pub async fn run_continuous_loop_with_writer(
     // The combat-engagement policy state (Spec #3053 ST-3): the per-level
     // engaged-tick count, reset on a level transition alongside the local policy.
     let mut combat_policy = combat::DoomCombatPolicy::default();
+    // The bounded low-health back-off window counter (Spec #3053 ST-3 addendum):
+    // consecutive `Disengage` ticks spent retreating. Bounded so a retreat into
+    // geometry cannot wedge the run (G-263); reset on a level transition.
+    let mut combat_retreat_ticks: u32 = 0;
 
     // The Plan Executor (Spec #3039 ST-4): runs the adopted plan one step per
     // tick and requests a re-plan on divergence (AC2/AC3/AC4). The retained
@@ -1947,6 +1960,7 @@ pub async fn run_continuous_loop_with_writer(
                             blocked_forward_ticks = 0;
                             policy.reset_detector();
                             combat_policy.reset();
+                            combat_retreat_ticks = 0;
                             last_intent.clear();
                             executor.reset_positioning();
                             next_plan = None;
@@ -2008,6 +2022,7 @@ pub async fn run_continuous_loop_with_writer(
                             blocked_forward_ticks = 0;
                             policy.reset_detector();
                             combat_policy.reset();
+                            combat_retreat_ticks = 0;
                             last_intent.clear();
                             executor.reset_positioning();
                             next_plan = None;
@@ -2268,7 +2283,34 @@ pub async fn run_continuous_loop_with_writer(
         let mut effective = base;
         if !escaping {
             if let Some(intent) = combat::combat_intent(&observation, &mut combat_policy) {
-                effective.extend(intent.actions);
+                match intent.mode {
+                    // AC1 (Engage): append the bounded aim/fire action(s).
+                    combat::CombatMode::Engage => {
+                        combat_retreat_ticks = 0;
+                        effective.extend(intent.actions);
+                    }
+                    // AC3 (Disengage): a real, BOUNDED back-off — the retreat
+                    // SUPERSEDES the route's `forward`/`run` for this tick (the
+                    // route's `turn-to`/`use` are retained), so `engine.step` sees
+                    // `forward_move < 0` rather than the defective net-zero. Past
+                    // the bounded window the base route resumes (fire stays
+                    // suppressed while health is low), so a retreat that runs into
+                    // geometry cannot wedge the run (G-263).
+                    combat::CombatMode::Disengage => {
+                        if combat_retreat_ticks < DOOM_COMBAT_RETREAT_WINDOW_TICKS {
+                            effective.retain(|action| {
+                                let kind = action.get("type").and_then(Value::as_str);
+                                kind != Some(DOOM_ACTION_FORWARD) && kind != Some(DOOM_ACTION_RUN)
+                            });
+                            effective.extend(intent.actions);
+                            combat_retreat_ticks = combat_retreat_ticks.saturating_add(1);
+                        }
+                    }
+                }
+            } else {
+                // No engageable target: the low-health episode ends, so the
+                // bounded back-off window resets for a future episode.
+                combat_retreat_ticks = 0;
             }
         }
         status.escapes = policy.escapes;
@@ -4083,6 +4125,21 @@ mod tests {
             .is_some_and(|array| array.iter().any(|action| action["type"] == kind))
     }
 
+    /// The net forward-axis command of an issued action array: `+1` per `forward`,
+    /// `-1` per `backward` — the sign `engine.step` scales (`build_player_action`).
+    fn net_forward_move(actions: &Value) -> i64 {
+        actions
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|action| match action["type"].as_str() {
+                Some(DOOM_ACTION_FORWARD) => 1,
+                Some(DOOM_ACTION_BACKWARD) => -1,
+                _ => 0,
+            })
+            .sum()
+    }
+
     #[tokio::test]
     async fn combat_a_front_enemy_fires_each_tick_and_advances_kills_and_engagements() {
         let engine = FakeEngine::default();
@@ -4377,7 +4434,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn combat_low_health_composes_a_backward_on_a_route_step() {
+    async fn combat_low_health_backoff_supersedes_forward_on_a_route_step() {
         let engine = FakeEngine::default();
         // Health 0 is at/below any positive threshold → the disengage path.
         engine.queue_reset(Ok(combat_observation_at(0, 0, 0, "front", 100, 0, 0)));
@@ -4419,13 +4476,82 @@ mod tests {
             );
             assert!(
                 actions_contain(actions, DOOM_ACTION_BACKWARD),
-                "low health ⇒ a bounded backward is APPENDED: {actions:?}"
+                "low health ⇒ a bounded backward retreat: {actions:?}"
             );
             assert!(
-                actions_contain(actions, DOOM_ACTION_FORWARD),
-                "the route step is preserved: {actions:?}"
+                actions_contain(actions, DOOM_ACTION_TURN_TO),
+                "the route's turn-to is retained: {actions:?}"
+            );
+            assert!(
+                !actions_contain(actions, DOOM_ACTION_FORWARD),
+                "the retreat SUPERSEDES the route's forward: {actions:?}"
+            );
+            assert!(
+                net_forward_move(actions) < 0,
+                "the tick is a real back-off (forward_move < 0), not a net-zero freeze: {actions:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn combat_low_health_retreat_is_bounded_and_then_resumes_the_route() {
+        let engine = FakeEngine::default();
+        engine.queue_reset(Ok(combat_observation_at(0, 0, 0, "front", 100, 0, 0)));
+        // Enough scripted observations to cross the bounded retreat window.
+        for tic in 1..=30u64 {
+            engine
+                .step_queue
+                .lock()
+                .unwrap()
+                .push_back(Ok(combat_observation_at(
+                    tic, 0, 0, "front", 100, tic as i64, 0,
+                )));
+        }
+        let source = NativeRouteSource;
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(false);
+        // Budget = 1 positioning + 27 ticks (crosses the 24-tick retreat window).
+        let cfg = continuous_config(28, 3, Duration::from_secs(1));
+
+        let result = run_continuous_loop(
+            &engine,
+            &source,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
+
+        assert!(result.success);
+        let steps = step_actions(&engine);
+        assert_eq!(steps.len(), 27);
+        // Every tick within the bounded window is a real back-off.
+        for actions in &steps[..DOOM_COMBAT_RETREAT_WINDOW_TICKS as usize] {
+            assert!(
+                !actions_contain(actions, DOOM_ACTION_SHOOT) && net_forward_move(actions) < 0,
+                "a bounded-window tick is a real back-off: {actions:?}"
+            );
+        }
+        // Past the window the bounded retreat closes and the route resumes (fire
+        // stays suppressed while low), so a retreat into geometry cannot wedge.
+        let last = steps.last().expect("a step");
+        assert!(
+            !actions_contain(last, DOOM_ACTION_SHOOT),
+            "fire stays suppressed while low: {last:?}"
+        );
+        assert!(
+            !actions_contain(last, DOOM_ACTION_BACKWARD),
+            "the retreat is bounded and no longer applies: {last:?}"
+        );
+        assert!(
+            actions_contain(last, DOOM_ACTION_FORWARD),
+            "past the bounded window the route resumes: {last:?}"
+        );
     }
 
     // ── Dataset assembly (Spec #3032 ST-2) ───────────────────────────────────
