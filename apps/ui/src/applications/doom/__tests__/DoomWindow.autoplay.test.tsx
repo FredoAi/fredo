@@ -126,6 +126,7 @@ function autoplayStatus(overrides: Partial<DoomAutoplayStatus>): DoomAutoplaySta
     completed: false,
     kills: 0,
     engagements: 0,
+    itemsCollected: 0,
     ...overrides,
   };
 }
@@ -495,6 +496,104 @@ describe('Spec #3053 ST-5 — combat-kills HUD (F-14/AC2)', () => {
     expect(completed).toContain('Kills 4');
 
     // The idle / stopping / failed lines are byte-identical to the pre-combat form.
+    expect(doomTypes.doomAutoplayStatusLine(autoplayStatus({ phase: 'idle' }))).toBe('Autoplay off');
+    expect(doomTypes.doomAutoplayStatusLine(autoplayStatus({ phase: 'stopping' }))).toBe(
+      'Stopping autoplay…',
+    );
+    expect(doomTypes.doomAutoplayStatusLine(autoplayStatus({ phase: 'failed', steps: 3 }))).toBe(
+      'Autoplay failed · 3 steps',
+    );
+  });
+});
+
+describe('Spec #3054 ST-5 — loot HUD (F-16/AC2-UI)', () => {
+  /** The complete set of Tauri commands the Doom window is allowed to invoke. */
+  const KNOWN_COMMANDS = [
+    'launch_doom_runtime',
+    'doom_read_state',
+    'doom_frame_raw',
+    'get_doom_mode_status',
+    'get_doom_autoplay_status',
+    'start_doom_autoplay',
+  ];
+
+  it('is DOM-absent in the idle empty state (no flash of `Loot: 0`)', async () => {
+    // A direct route with the mode inactive keeps the run idle end-to-end.
+    renderWithChakra(<DoomWindow />);
+    expect(screen.queryByTestId('doom-loot-hud')).toBeNull();
+    await waitFor(() => expect(listeners['doom-status-changed']).toBeTypeOf('function'));
+    await waitFor(() => expect(frameCalls).toBeGreaterThan(0));
+    expect(screen.queryByTestId('doom-loot-hud')).toBeNull();
+  });
+
+  it('renders exactly `Loot: {n}` with role=status + aria-live/atomic once a run starts', async () => {
+    await renderReady();
+    emitAutoplay(autoplayStatus({ phase: 'running', running: true, steps: 1, itemsCollected: 0 }));
+
+    const hud = screen.getByTestId('doom-loot-hud');
+    expect(hud).toHaveAttribute('role', 'status');
+    expect(hud).toHaveAttribute('aria-live', 'polite');
+    expect(hud).toHaveAttribute('aria-atomic', 'true');
+    // `Loot: 0` at zero collected is a meaningful baseline, not an empty state.
+    expect(hud.textContent).toBe('Loot: 0');
+    // It is NOT the frame description hook.
+    expect(hud).not.toBe(screen.getByTestId('doom-frame-desc'));
+  });
+
+  it('stacks directly below doom-combat-kills inside the SAME top-left column', async () => {
+    await renderReady();
+    emitAutoplay(autoplayStatus({ phase: 'running', running: true, steps: 1, kills: 2 }));
+
+    const hud = screen.getByTestId('doom-loot-hud');
+    const kills = screen.getByTestId('doom-combat-kills');
+    // Both pills share the one absolute top-left flex column (the wrapper).
+    expect(hud.parentElement).toBe(kills.parentElement);
+    expect(kills.nextElementSibling).toBe(hud);
+    // The kills pill keeps its byte-identical text.
+    expect(kills.textContent).toBe('Kills: 2');
+  });
+
+  it('updates event-driven via doom-autoplay-changed (0 → 5), adding no new poll/invoke', async () => {
+    await renderReady();
+    emitAutoplay(autoplayStatus({ phase: 'running', running: true, itemsCollected: 0 }));
+    expect(screen.getByTestId('doom-loot-hud').textContent).toBe('Loot: 0');
+    emitAutoplay(autoplayStatus({ phase: 'running', running: true, itemsCollected: 5 }));
+    // Updated in place — same element identity, no remount.
+    expect(screen.getByTestId('doom-loot-hud').textContent).toBe('Loot: 5');
+
+    // The HUD introduces no new backend command — the invoked set is unchanged.
+    const commands = new Set(invoke.mock.calls.map(([command]) => command));
+    for (const command of commands) {
+      expect(KNOWN_COMMANDS, `unexpected invoke: ${command}`).toContain(command);
+    }
+  });
+
+  it('persists across non-idle phases', async () => {
+    await renderReady();
+    for (const next of [
+      autoplayStatus({ phase: 'stopping', steps: 2, itemsCollected: 1 }),
+      autoplayStatus({ phase: 'failed', steps: 2, code: 'decisionFailed', itemsCollected: 1 }),
+      autoplayStatus({ phase: 'completed', steps: 9, itemsCollected: 4 }),
+    ]) {
+      emitAutoplay(next);
+      const hud = screen.getByTestId('doom-loot-hud');
+      expect(hud.textContent).toBe(`Loot: ${String(next.itemsCollected)}`);
+    }
+  });
+
+  it('doomAutoplayStatusLine carries `Loot {n}` for running/completed, byte-identical otherwise', () => {
+    const running = doomTypes.doomAutoplayStatusLine(
+      autoplayStatus({ phase: 'running', steps: 5, lastTic: 42, outcome: 'alive', kills: 3, itemsCollected: 2 }),
+    );
+    expect(running).toContain('Kills 3');
+    expect(running).toContain('Loot 2');
+    const completed = doomTypes.doomAutoplayStatusLine(
+      autoplayStatus({ phase: 'completed', steps: 9, outcome: 'exited', kills: 4, itemsCollected: 7 }),
+    );
+    expect(completed).toContain('Kills 4');
+    expect(completed).toContain('Loot 7');
+
+    // The idle / stopping / failed lines are byte-identical to the pre-loot form.
     expect(doomTypes.doomAutoplayStatusLine(autoplayStatus({ phase: 'idle' }))).toBe('Autoplay off');
     expect(doomTypes.doomAutoplayStatusLine(autoplayStatus({ phase: 'stopping' }))).toBe(
       'Stopping autoplay…',

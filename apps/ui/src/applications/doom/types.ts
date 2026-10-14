@@ -284,6 +284,12 @@ export interface DoomAutoplayStatus {
   // engagement count — carried on the wire (UI: carry-only, never rendered).
   kills: number;
   engagements: number;
+  // Spec #3054 ST-5 — additive loot observable (serde camelCase over IPC).
+  // `itemsCollected` is the run's per-world cumulative pickup count, a read-only
+  // projection of the observation's `level.itemsCollected` (ST-2). Appended after
+  // `engagements` to mirror the Rust additive append; seeded to `0` in the idle
+  // status so the field is always present (Contract-Trust — no `?? 0` fallback).
+  itemsCollected: number;
 }
 
 /** `start_doom_autoplay` result — always returned, never a hang. */
@@ -313,6 +319,7 @@ export const DOOM_AUTOPLAY_IDLE_STATUS: DoomAutoplayStatus = {
   completed: false,
   kills: 0,
   engagements: 0,
+  itemsCollected: 0,
 };
 
 /** The human-facing failure copy per `DoomAutoplayErrorCode` (UI/UX error table). */
@@ -368,19 +375,25 @@ export function formatAutoplayTic(lastTic: number | null): string {
  * Spec #3053 ST-5 — `running`/`completed` additionally carry `Kills {n}` (e.g.
  * `Kills 3`), the run's headline combat progress. The `idle`/`stopping`/`failed`
  * lines are byte-identical to their pre-combat form.
+ *
+ * Spec #3054 ST-5 — `running`/`completed` also carry `Loot {n}` (the run's
+ * per-world cumulative pickup count) after `Kills {n}`; `idle`/`stopping`/`failed`
+ * stay byte-identical.
  */
 export function doomAutoplayStatusLine(status: DoomAutoplayStatus): string {
   switch (status.phase) {
     case 'running':
       return `Autoplay · step ${String(status.steps)} · tic ${formatAutoplayTic(
         status.lastTic,
-      )} · ${status.outcome ?? 'alive'} · Kills ${String(status.kills)}`;
+      )} · ${status.outcome ?? 'alive'} · Kills ${String(status.kills)} · Loot ${String(
+        status.itemsCollected,
+      )}`;
     case 'stopping':
       return 'Stopping autoplay…';
     case 'completed':
       return `Autoplay complete · ${String(status.steps)} steps${
         status.outcome ? ` · ${status.outcome}` : ''
-      } · Kills ${String(status.kills)}`;
+      } · Kills ${String(status.kills)} · Loot ${String(status.itemsCollected)}`;
     case 'failed':
       return `Autoplay failed · ${String(status.steps)} steps`;
     case 'idle':
