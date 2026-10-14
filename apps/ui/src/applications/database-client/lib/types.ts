@@ -229,3 +229,26 @@ export interface DbClientLayoutPrefs {
   /** Height of the connections region; the schema tree fills the remainder. */
   connectionsSchemaHeight: number;
 }
+
+// ── Schema-explorer node actions (Spec #3050, ST-A) ──────────────────────────
+//
+// Binding names block (G-255). The schema tree emits one of these actions for
+// the node the user acted on; the shell maps the action onto a concrete
+// outcome. ST-A owns these types; ST-B emits them, ST-D handles them.
+
+/** The actions offered by the schema-explorer node actions submenu. */
+export type DbSchemaNodeAction = 'openData' | 'viewColumns' | 'newQuery';
+
+/**
+ * Request to open a NEW query tab (`ST-C` consumes; `ST-D` produces). Distinct
+ * from the existing `externalSql` channel: this one appends a fresh tab and
+ * optionally auto-runs it.
+ */
+export interface DbTableDataRequest {
+  /** The SQL the new tab is pre-filled with. */
+  sql: string;
+  /** Execute immediately after the new tab becomes active. */
+  run: boolean;
+  /** Retriggers the consumer effect on repeat for the same sql. */
+  nonce: number;
+}
