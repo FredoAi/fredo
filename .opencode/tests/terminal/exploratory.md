@@ -289,3 +289,21 @@ is wrong.
   cosmetic observation, not asserted by any AC.
 - **Environment observation (no promotion).** `tauri_manage_window resize` needs no `terminal` re-focus;
   the Ghostty grid tracks the pane on the next frame (no manual `resize_pty`).
+
+## #3051 probes — chip removal
+
+> Seeded at triage for Spec #3051. Unscripted probes beyond the F-82..F-88 rows. A confirmed finding
+> PROMOTES to `functional.md` (keep the origin note). Evidence is LIVE + MEASURED.
+
+- [ ] E-41: **Chip flash during the transition.** Rapidly toggle focus in→out of the terminal
+      (keyboard Tab / repeated clicks) and sample the terminal-window body text at each step. Does a
+      `Passthrough`/`Hotkeys active` string or the testid ever appear for a frame (a re-render
+      regression)? Any appearance promotes to F-82/F-83.
+- [ ] E-42: **Body-hook flap under churn.** Move focus repeatedly inside the terminal root (between
+      child elements) then quickly out; watch for `data-fredo-passthrough` flapping false→true, or a
+      stale attribute left behind after blur. A flap / stale attribute promotes to F-86/R-28.
+- [ ] E-43: **Dead-code residue outside the verified reference set.** `rg` the removed symbols
+      (`TerminalPassthroughIndicator`, `useTerminalPassthrough`, `TerminalPassthroughState`,
+      `TERMINAL_PASSTHROUGH_TESTID`, `hotkeys-terminal-passthrough`, `subscribePassthrough`) under
+      `apps/ui`, `apps/tauri`, and `docs` (e.g. a stale doc/comment naming the chip). A dangling
+      reference promotes to F-84 / the QA Plan's Q-3 grep row.
