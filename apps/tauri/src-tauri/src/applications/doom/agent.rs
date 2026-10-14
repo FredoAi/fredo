@@ -2221,21 +2221,31 @@ pub async fn run_continuous_loop_with_writer(
         status.replans = executor.replans();
         status.plan_index = plan_tick.index;
 
-        // 3c. Compose the effective intent. The combat-engagement layer (Spec
-        //     #3053 ST-3) is consulted FIRST: when an engagement target is present
-        //     its bounded action set becomes the tick's intent and is composed
-        //     through the SAME retained reflex + unstick/escape + local-locomotion
-        //     pipeline, so `safety_reflex` and the #3031 escape window still run and
-        //     still take precedence. When there is no target (`None`) the retained
-        //     plan/legacy/fallback path runs byte-identically (combat inert, R-4).
+        // 3c. Compose the tick's action set. The retained `match` produces the
+        //     executor/route action (`base`) with all its guards intact; the
+        //     combat-engagement layer (Spec #3053 ST-3, Architect adjudication)
+        //     then APPENDS its bounded action(s): combat COMPOSES WITH the
+        //     route/executor step, it never replaces it. `combat_intent` is
+        //     computed on EVERY tick (so AC1 holds on the native-plan path); when
+        //     it returns `None` the tick is byte-identical to the pre-combat run
+        //     (R-4/R-5). While the #3031 escape window governs the tick, no combat
+        //     action is appended (escape precedence).
         let step_controller = match &plan_tick.action {
             PlanAction::Native(_) => Some("plan"),
             PlanAction::Legacy(_) => Some("legacy"),
             PlanAction::None => None,
         };
-        let effective = match combat::combat_intent(&observation, &mut combat_policy) {
-            Some(intent) => {
-                last_intent = intent.actions;
+        // Captured at tick entry — the exact escape conditions `effective_intent`
+        // uses (its step 2 mutates `escape_ticks_remaining`).
+        let escaping =
+            policy.escape_ticks_remaining > 0 || policy.no_move_ticks >= DOOM_ESCAPE_STUCK_TICKS;
+        let base = match plan_tick.action {
+            PlanAction::Native(actions) => {
+                last_intent = actions.clone();
+                safety_reflex(&observation, &actions, blocked_forward_ticks)
+            }
+            PlanAction::Legacy(actions) => {
+                last_intent = actions;
                 effective_intent(
                     &observation,
                     &last_intent,
@@ -2244,34 +2254,26 @@ pub async fn run_continuous_loop_with_writer(
                     status.steps,
                 )
             }
-            None => match plan_tick.action {
-                PlanAction::Native(actions) => {
-                    last_intent = actions.clone();
-                    safety_reflex(&observation, &actions, blocked_forward_ticks)
-                }
-                PlanAction::Legacy(actions) => {
-                    last_intent = actions;
-                    effective_intent(
-                        &observation,
-                        &last_intent,
-                        blocked_forward_ticks,
-                        &mut policy,
-                        status.steps,
-                    )
-                }
-                PlanAction::None => effective_intent(
-                    &observation,
-                    &last_intent,
-                    blocked_forward_ticks,
-                    &mut policy,
-                    status.steps,
-                ),
-            },
+            PlanAction::None => effective_intent(
+                &observation,
+                &last_intent,
+                blocked_forward_ticks,
+                &mut policy,
+                status.steps,
+            ),
         };
+        // The reflex label is derived from the retained set only (AC5
+        // observability); the append below never affects it.
+        let reflex_fired = base != last_intent;
+        let mut effective = base;
+        if !escaping {
+            if let Some(intent) = combat::combat_intent(&observation, &mut combat_policy) {
+                effective.extend(intent.actions);
+            }
+        }
         status.escapes = policy.escapes;
         status.stuck_ticks = policy.no_move_ticks;
         status.engagements = combat_policy.engagements;
-        let reflex_fired = effective != last_intent;
 
         // 3d. Dataset assembly (Spec #3032 ST-2): append the executed plan step
         //     with its controller; on a no-plan tick the retained reflex/fallback
@@ -4005,7 +4007,29 @@ mod tests {
 
     // ── Combat engagement loop integration (Spec #3053 ST-3) ─────────────────
 
-    /// An alive E1M1 observation carrying ONE `enemies[]` entry at `direction`.
+    /// An alive E1M1 observation carrying ONE `enemies[]` entry, at `(x, y)`.
+    fn combat_observation_at(
+        tic: u64,
+        kills: i64,
+        health: i64,
+        direction: &str,
+        distance: i64,
+        x: i64,
+        y: i64,
+    ) -> Value {
+        json!({
+            "tic": tic,
+            "done": false,
+            "outcome": "alive",
+            "level": { "episode": 1, "map": 1, "skill": 3, "kills": kills, "items": 0 },
+            "player": { "x": x, "y": y, "angle": 0, "health": health },
+            "enemies": [
+                { "kind": "trooper", "hp": 20, "direction": direction, "distance": distance }
+            ],
+        })
+    }
+
+    /// An alive E1M1 observation at the origin with ONE `enemies[]` entry.
     fn combat_observation(
         tic: u64,
         kills: i64,
@@ -4013,16 +4037,31 @@ mod tests {
         direction: &str,
         distance: i64,
     ) -> Value {
+        combat_observation_at(tic, kills, health, direction, distance, 0, 0)
+    }
+
+    /// An alive E1M1 observation with NO `enemies[]` — the combat-inert baseline —
+    /// at `(x, y)`.
+    fn plain_observation_at(tic: u64, health: i64, x: i64, y: i64) -> Value {
         json!({
             "tic": tic,
             "done": false,
             "outcome": "alive",
-            "level": { "episode": 1, "map": 1, "skill": 3, "kills": kills, "items": 0 },
-            "player": { "x": 0, "y": 0, "angle": 0, "health": health },
-            "enemies": [
-                { "kind": "trooper", "hp": 20, "direction": direction, "distance": distance }
-            ],
+            "level": { "episode": 1, "map": 1, "skill": 3, "kills": 0, "items": 0 },
+            "player": { "x": x, "y": y, "angle": 0, "health": health },
         })
+    }
+
+    /// A decision source returning a fixed NATIVE route plan (a `Move` step) every
+    /// tick — the executor route step the combat intent must COMPOSE with
+    /// (Architect adjudication: compose, never replace).
+    struct NativeRouteSource;
+
+    #[async_trait]
+    impl DoomDecisionSource for NativeRouteSource {
+        async fn decide(&self, _observation: &Value) -> Result<DoomPlan, DoomDecisionError> {
+            Ok(sample_plan())
+        }
     }
 
     /// Every `step` call's action array, in order (the loop's issued intents).
@@ -4229,6 +4268,164 @@ mod tests {
                 && actions_contain(actions, DOOM_ACTION_TURN_TO)),
             "an escape tick re-routes (turn-to) rather than firing: {steps:?}"
         );
+    }
+
+    // ── Combat COMPOSES with the route/executor step (Spec #3053 ST-3) ───────
+    //
+    // Architect adjudication: the combat intent is APPENDED to the retained
+    // route/executor action set — it never replaces it. These pins use a NATIVE
+    // `Move` route step so the route's `forward`/`turn-to` and the combat action
+    // are visible together; the player MOVES each tick so the retained reflex
+    // never drops the route's `forward`.
+
+    #[tokio::test]
+    async fn combat_composes_a_shoot_with_a_native_route_step() {
+        let engine = FakeEngine::default();
+        engine.queue_reset(Ok(combat_observation_at(0, 0, 100, "front", 100, 0, 0)));
+        for tic in 1..=3u64 {
+            engine
+                .step_queue
+                .lock()
+                .unwrap()
+                .push_back(Ok(combat_observation_at(
+                    tic, tic as i64, 100, "front", 100, tic as i64, 0,
+                )));
+        }
+        let source = NativeRouteSource;
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(false);
+        let mut statuses: Vec<DoomAutoplayStatus> = Vec::new();
+        let cfg = continuous_config(4, 3, Duration::from_secs(1));
+
+        let result = run_continuous_loop(
+            &engine,
+            &source,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |status| statuses.push(status.clone()),
+        )
+        .await;
+
+        assert!(result.success);
+        let steps = step_actions(&engine);
+        assert_eq!(steps.len(), 3);
+        for actions in &steps {
+            assert!(
+                actions_contain(actions, DOOM_ACTION_TURN_TO)
+                    && actions_contain(actions, DOOM_ACTION_FORWARD),
+                "the route step is preserved (compose, not replace): {actions:?}"
+            );
+            assert!(
+                actions_contain(actions, DOOM_ACTION_SHOOT),
+                "the combat shoot is APPENDED to the route step: {actions:?}"
+            );
+        }
+        let last = statuses.last().expect("a terminal status");
+        assert_eq!(last.engagements, 3, "the engagement counter advances per tick");
+    }
+
+    #[tokio::test]
+    async fn combat_no_enemy_tick_is_byte_identical_to_the_route_baseline() {
+        let engine = FakeEngine::default();
+        engine.queue_reset(Ok(plain_observation_at(0, 100, 0, 0)));
+        for tic in 1..=3u64 {
+            engine
+                .step_queue
+                .lock()
+                .unwrap()
+                .push_back(Ok(plain_observation_at(tic, 100, tic as i64, 0)));
+        }
+        let source = NativeRouteSource;
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(false);
+        let cfg = continuous_config(4, 3, Duration::from_secs(1));
+
+        let result = run_continuous_loop(
+            &engine,
+            &source,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
+
+        assert!(result.success);
+        let steps = step_actions(&engine);
+        assert_eq!(steps.len(), 3);
+        // The unmodified native `Move` action set: [turn-to 90, forward, run].
+        let baseline = json!([
+            { "type": DOOM_ACTION_TURN_TO, "angle": 90 },
+            { "type": DOOM_ACTION_FORWARD, "amount": 1 },
+            { "type": "run", "amount": 1 },
+        ]);
+        for actions in &steps {
+            assert_eq!(
+                actions, &baseline,
+                "with no enemy the tick is byte-identical to the route baseline: {actions:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn combat_low_health_composes_a_backward_on_a_route_step() {
+        let engine = FakeEngine::default();
+        // Health 0 is at/below any positive threshold → the disengage path.
+        engine.queue_reset(Ok(combat_observation_at(0, 0, 0, "front", 100, 0, 0)));
+        for tic in 1..=3u64 {
+            engine
+                .step_queue
+                .lock()
+                .unwrap()
+                .push_back(Ok(combat_observation_at(
+                    tic, 0, 0, "front", 100, tic as i64, 0,
+                )));
+        }
+        let source = NativeRouteSource;
+        let clock = FixedTickClock::from_millis(DOOM_CONTINUOUS_TICK_PERIOD_MS);
+        let stop = AtomicBool::new(false);
+        let cfg = continuous_config(4, 3, Duration::from_secs(1));
+
+        let result = run_continuous_loop(
+            &engine,
+            &source,
+            &cfg,
+            &clock,
+            AutoplayRun {
+                campaign: campaign(1, 1),
+                progress: no_progress(),
+            },
+            &stop,
+            |_| {},
+        )
+        .await;
+
+        assert!(result.success);
+        let steps = step_actions(&engine);
+        assert_eq!(steps.len(), 3);
+        for actions in &steps {
+            assert!(
+                !actions_contain(actions, DOOM_ACTION_SHOOT),
+                "low health ⇒ no shoot even on a route step: {actions:?}"
+            );
+            assert!(
+                actions_contain(actions, DOOM_ACTION_BACKWARD),
+                "low health ⇒ a bounded backward is APPENDED: {actions:?}"
+            );
+            assert!(
+                actions_contain(actions, DOOM_ACTION_FORWARD),
+                "the route step is preserved: {actions:?}"
+            );
+        }
     }
 
     // ── Dataset assembly (Spec #3032 ST-2) ───────────────────────────────────
