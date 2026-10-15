@@ -19,6 +19,13 @@ adds probes below beyond the script.
   (`…\com.fredo.app-other`) get falsely refused? (Must NOT.)
 - [ ] **E-3:** Does a JUNCTION / symlink / 8.3 short name pointing at the fixture shared dir
   resolve to the same identity, or can a round escape the guard through it?
+  **Round-2 result (2026-10-15):** 8.3 short name → REFUSED (`GetFullPath` canonicalizes the
+  short-name alias; `E-3b_sharedLong_resolvedShort EXITCODE=3`). **Junction → NOT refused**
+  (`E-3a_junctionToShared EXITCODE=0 REFUSED=False`): `[IO.Path]::GetFullPath` is LEXICAL and
+  does not follow reparse points, so a junction alias of the shared dir escapes the guard.
+  The Software Architect scoped the path-identity question OUT (Fix Plan round 2: "a contract
+  question, not a FAIL"); resolving junctions needs `GetFinalPathNameByHandle` (P/Invoke).
+  Recorded as a boundary, not an AC FAIL — a durable `F-` case is an Architect decision.
 - [ ] **E-4:** With BOTH `FREDO_PG_PASSWORD_FILE` and `FREDO_PG_KEYCHAIN_DISABLED` set and the
   dir isolated, does `AssertIsolation` exit 0 (seams allowed)? Does the audit record list
   both seams?
