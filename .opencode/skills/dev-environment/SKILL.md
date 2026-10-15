@@ -49,8 +49,18 @@ Single read-only script: `.opencode/scripts/verify-env-isolation.ps1`. While two
 
 Notes:
 - **Exit code:** `0` = OK (or trivially OK for a single/zero env); `1` = at least one isolation violation (shared data root, duplicate port, duplicate env id, cross-env PID, or a live env's non-optional endpoint bound by an unrecorded/foreign owner). Optional endpoints (the companion `llama` port) not bound are a warning, not a violation.
+- **Shared-root violation (Spec #3066 ST-3):** an ACTIVE env whose data root equals or is nested under the shared `%APPDATA%\com.fredo.app` cluster dir is a violation (`... is the SHARED cluster dir ...`, exit `1`) — the checker now surfaces a round that landed on the shared cluster. The shared identity is overridable via `FREDO_SHARED_APPDATA_DIR` (test seam).
 - `-TimeoutSecs <n>` bounds each native query (default 5 s, G-263) — no unbounded wait.
 - Read-only: safe to run repeatedly while envs are live; it never alters `Status` semantics.
+
+### Round isolation (Spec #3066)
+
+Every dev/test/pipeline round MUST run against its own isolated env slot — never the legacy shared path.
+
+- **Mandated round form:** `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec <N> -EnvId <id> -EnvSlot <n> -RequireIsolation`. `-RequireIsolation` (or the env flag `FREDO_REQUIRE_ENV_ISOLATION`) arms the guard; env mode arms it regardless of the marker.
+- **The legacy shared path is FORBIDDEN for rounds.** A round that resolves to the shared `%APPDATA%\com.fredo.app` PostgreSQL cluster dir fails closed with `ISOLATION REFUSED (shared-dir)` and exits `3` BEFORE PostgreSQL starts; the credential sentinel seams (`FREDO_PG_PASSWORD_FILE` / `FREDO_PG_KEYCHAIN_DISABLED`) are refused there too (`ISOLATION REFUSED (sentinel-seam)`), so `initdb` can never re-password the shared cluster. The human's manual legacy run WITHOUT the marker is intentionally left unchanged.
+- **`Restart` is forbidden for isolated envs** (it drops `-EnvSlot`, G-328) — recover with an explicit `powershell -File .opencode/scripts/dev-env.ps1 -Action Down -EnvId <id>` then `... -Action Up -Spec <N> -EnvId <id> -EnvSlot <n>`.
+- **Audit trace:** every isolation/refusal is appended to `.opencode/state/env-isolation.jsonl` (one JSON object per line, `decision` in {`refused`,`isolated`}). `dev-env.ps1 -Action Status` surfaces the read-only isolation check, and `verify-env-isolation.ps1` flags an active env whose data root IS the shared cluster dir.
 
 ### Error-path induction levers (Spec #2944 ST-14, G-275)
 
