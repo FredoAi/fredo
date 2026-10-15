@@ -194,7 +194,12 @@ function Invoke-GuardLeg {
   $before = Get-AuditLineCount
   $beforePids = @(Get-PostgresPids)
   Set-LeverEnv -Vars $LegEnv
-  $childArgs = @("-NoProfile", "-NonInteractive", "-File", "`"$script:DevEnv`"", "-Action", "AssertIsolation") + $ExtraArgs
+  # Spec #3066 round 2 (F-1): every guard leg MUST arm the guard. In legacy mode
+  # (no -EnvId/-EnvSlot/-ServingCheckout) ONLY the -RequireIsolation switch arms it
+  # -- without it a refusal leg runs un-armed and never refuses (the round-1 defect).
+  # Env-mode legs (IsolatedControl) are armed by $IsEnvMode as well, and still
+  # resolve to their own env root (isolated) rather than refusing (F-3).
+  $childArgs = @("-NoProfile", "-NonInteractive", "-File", "`"$script:DevEnv`"", "-Action", "AssertIsolation", "-RequireIsolation") + $ExtraArgs
   $res = Invoke-BoundedChild -FilePath $script:PowerShellExe -Arguments $childArgs -BoundSecs ($TimeoutSecs + 15) -WorkingDirectory $script:RepoRoot
   Clear-LeverEnv -Names @($LegEnv.Keys)
   $after = Get-AuditLineCount

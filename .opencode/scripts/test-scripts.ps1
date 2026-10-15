@@ -3435,6 +3435,29 @@ Test-Script "dev-env.ps1: no /IM on the env teardown path (Spec #3066)" {
   return "IMAGE_KILL_PRESENT=False; MANIFEST_TEARDOWN_PRESENT=True; IMAGE_GUARD_PRESENT=True"
 }
 
+# F-1/F-6 (Spec #3066 round 2): the ST-5 induction lever MUST arm the guard on
+# every refusal leg. In legacy mode (no -EnvId/-EnvSlot/-ServingCheckout) ONLY the
+# -RequireIsolation switch arms it; a refusal leg that omits it runs un-armed and
+# never refuses -- the exact round-1 defect AC2/AC3 failed on (the developer could
+# not execute PowerShell in the sandbox, so the un-armed invocation was never
+# caught before the tester ran it). Pin the arming token so it cannot regress.
+Test-Script "error-path-levers.ps1: refusal legs arm the guard (Spec #3066 F-6)" {
+  $leverPath = ".opencode/tests/env-isolation/error-path-levers.ps1"
+  if (-not (Test-Path $leverPath)) { throw "ST-5 induction lever missing: $leverPath" }
+  $leverSrc = Get-Content $leverPath -Raw
+  # Any of the three contract-equivalent arming forms is acceptable.
+  $armsBase  = $leverSrc -match '"AssertIsolation"\s*,\s*"-RequireIsolation"'
+  $armsExtra = $leverSrc -match '-ExtraArgs\s+@\(\s*"-RequireIsolation"'
+  $armsEnv   = $leverSrc -match 'FREDO_REQUIRE_ENV_ISOLATION\s*='
+  if (-not ($armsBase -or $armsExtra -or $armsEnv)) {
+    throw "the ST-5 lever does not arm the guard: expected -RequireIsolation in the AssertIsolation base args (or per-leg -ExtraArgs, or FREDO_REQUIRE_ENV_ISOLATION in -LegEnv)"
+  }
+  foreach ($leg in @('"SharedDirRefusal"', '"SentinelRefusal"', '"NoGlobalImageKill"')) {
+    if ($leverSrc -notmatch [regex]::Escape($leg)) { throw "refusal leg missing from the lever: $leg" }
+  }
+  return "AssertIsolation guard invocation arms -RequireIsolation; SharedDirRefusal/SentinelRefusal/NoGlobalImageKill present"
+}
+
 # --- Remaining PowerShell scripts (syntax check) ---
 Write-Host "Other scripts:" -ForegroundColor Cyan
 $scripts = @(
