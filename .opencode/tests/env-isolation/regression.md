@@ -41,6 +41,7 @@
 - [ ] **R-5 (`Stop-EnvManifest` unchanged).** `dev-env.ps1:885-962` — PID-scoped,
   image-guarded (`Test-RoleImageMatch`), tree-killed (`taskkill /PID <pid> /T [/F]`), bounded
   (G-263), NO `/IM`. **FAIL:** any teardown hunk, a global image kill, or a lost image guard.
+  (Lever: `.opencode/tests/env-isolation/error-path-levers.ps1 -Lever NoGlobalImageKill`.)
 
 - [ ] **R-6 (`verify-env-isolation.ps1` cross-env checks unchanged).** The cross-env
   data-root/port/PID checks (`:316-344`), the exit-code contract (0 OK / 1 violation), and
