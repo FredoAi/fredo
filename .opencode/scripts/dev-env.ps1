@@ -38,6 +38,22 @@
              -Spec is given. Prints which copy was invoked and its exit code;
              a non-zero child exit becomes this script's exit code; a clear
              error + exit 1 when no copy is found.
+  AssertIsolation -- Guard-only (Spec #3066). Resolves the effective app-data /
+             PG data dirs (env + -EnvVar aware) and asserts they are NOT the
+             shared %APPDATA%\com.fredo.app cluster. Prints
+             `ISOLATION REFUSED (<code>): ...` and exits 3 when they are; exits 0
+             when isolated. NEVER starts PostgreSQL or the app, and does NOT run
+             the G-052 root-currency check (it serves nothing). Records the
+             decision in .opencode/state/env-isolation.jsonl.
+
+.PARAMETER RequireIsolation
+  Arms the env-isolation guard (Spec #3066) on the Up path: refuse (exit 3,
+  `ISOLATION REFUSED (shared-dir)` / `ISOLATION REFUSED (sentinel-seam)`) when the
+  resolved app-data OR PG data dir equals-or-is-under the shared cluster dir, and
+  refuse the FREDO_PG_PASSWORD_FILE / FREDO_PG_KEYCHAIN_DISABLED seams there.
+  Default OFF -- a legacy Up without the marker is byte-identical to today.
+  Env equivalent: FREDO_REQUIRE_ENV_ISOLATION (non-blank, not 0/false). Env mode
+  arms the guard regardless of the marker.
 
 .PARAMETER Kill
   Hygiene only. When set, the passthrough invokes process-hygiene.ps1
@@ -125,7 +141,7 @@
 
 param(
   [Parameter(Mandatory = $true)]
-  [ValidateSet("Up", "Down", "Status", "Restart", "Logs", "Clean", "Hygiene")]
+  [ValidateSet("Up", "Down", "Status", "Restart", "Logs", "Clean", "Hygiene", "AssertIsolation")]
   [string]$Action,
 
   [ValidateRange(1, [uint64]::MaxValue)]
@@ -159,6 +175,11 @@ param(
 
   # Hygiene passthrough: forward -Kill as process-hygiene.ps1 -KillOrphans.
   [switch]$Kill,
+
+  # Spec #3066: env-isolation guard. Arms the shared-cluster refusal on the Up
+  # path (default OFF => byte-identical legacy behavior). Env equivalent:
+  # FREDO_REQUIRE_ENV_ISOLATION (non-blank, not 0/false); env mode arms it too.
+  [switch]$RequireIsolation,
 
   # Extra environment variables for the LAUNCHED dev instance (Up only).
   # PREFERRED form — repeatable `NAME=value` strings; this is the form that
@@ -1284,6 +1305,179 @@ function Invoke-EnvLogs {
   }
 }
 
+# -- Env-isolation guard (Spec #3066) -----------------------------------------
+#
+# The shared app-data cluster lives at %APPDATA%\com.fredo.app, with its PG data
+# dir at <shared>\postgres. A dev/test/pipeline ROUND must never resolve onto it:
+# a legacy Up injects no FREDO_DATA_DIR, so the launched app resolves the shared
+# dir; the FREDO_PG_PASSWORD_FILE sentinel is consulted FIRST by
+# PgCredential::resolve() (credentials.rs) and feeds initdb, so a RESET there
+# would re-password the shared cluster with a password the keychain does not hold
+# -- the persistent 28P01 boot failure this guard prevents.
+#
+# The guard is a PRECONDITION on the round's launcher, not a product seam. It
+# reads path STRINGS only (canonicalized, case-insensitive), NEVER the shared
+# cluster, and refuses BEFORE any PostgreSQL/app start.
+
+# True when $Candidate is equal-to-or-under $Base (canonicalized,
+# case-insensitive). GetFullPath normalizes `..` and trailing separators; the
+# separator-suffixed prefix check makes a lookalike sibling
+# (`...\com.fredo.app-other`) NOT match (R-NF-5). A blank candidate/base is never
+# a match.
+function Test-PathUnderOrEqual {
+  param([string]$Candidate, [string]$Base)
+  if ([string]::IsNullOrWhiteSpace($Candidate) -or [string]::IsNullOrWhiteSpace($Base)) { return $false }
+  try { $c = [System.IO.Path]::GetFullPath($Candidate) } catch { return $false }
+  try { $b = [System.IO.Path]::GetFullPath($Base) } catch { return $false }
+  $c = $c.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+  $b = $b.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+  if ($c -ieq $b) { return $true }
+  $prefix = $b + [System.IO.Path]::DirectorySeparatorChar
+  return $c.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+# Pure decision: does the resolved app-data OR PG data dir land on the shared
+# cluster? Returns a hashtable so the caller can name the offending dimension.
+function Test-SharedClusterTarget {
+  param([string]$EffAppDataDir, [string]$EffPgDataDir, [string]$SharedAppDataDir)
+  $appHit = Test-PathUnderOrEqual -Candidate $EffAppDataDir -Base $SharedAppDataDir
+  $pgHit  = Test-PathUnderOrEqual -Candidate $EffPgDataDir  -Base $SharedAppDataDir
+  $dimension = ""
+  if ($appHit) { $dimension = "app-data dir" } elseif ($pgHit) { $dimension = "pg-data dir" }
+  return @{
+    Refuse     = ($appHit -or $pgHit)
+    AppDataHit = $appHit
+    PgDataHit  = $pgHit
+    Dimension  = $dimension
+  }
+}
+
+# Append ONE JSON line (append-only, never rewritten/truncated) recording an
+# isolation decision to .opencode/state/env-isolation.jsonl (R-NF-6).
+function Write-EnvIsolationAudit {
+  param(
+    [string]$Decision, [string]$Code, [string]$Reason, [string]$EnvId,
+    [string]$ResolvedAppDataDir, [string]$ResolvedPgDataDir, [string]$SharedAppDataDir,
+    [object[]]$Seams, [string]$ActionName
+  )
+  try {
+    $dir = Join-Path $script:RepoRoot ".opencode\state"
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $path = Join-Path $dir "env-isolation.jsonl"
+    $obj = [ordered]@{
+      ts                 = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+      decision           = $Decision
+      code               = $Code
+      reason             = $Reason
+      envId              = $EnvId
+      resolvedAppDataDir = $ResolvedAppDataDir
+      resolvedPgDataDir  = $ResolvedPgDataDir
+      sharedAppDataDir   = $SharedAppDataDir
+      seams              = @($Seams)
+      action             = $ActionName
+    }
+    $json = $obj | ConvertTo-Json -Compress -Depth 4
+    [System.IO.File]::AppendAllText($path, $json + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding($false)))
+  } catch {
+    Write-Log "WARNING: could not append the env-isolation audit line: $($_.Exception.Message)" -Level WARN
+  }
+}
+
+# The env-isolation guard. Called on the Up path (when armed) and on the
+# AssertIsolation action. Refuses -- printing `ISOLATION REFUSED (<code>): ...`
+# and exiting 3 -- BEFORE any PostgreSQL/app start; otherwise records an
+# `isolated` audit line and returns.
+#
+# ARMED IFF the -RequireIsolation switch, FREDO_REQUIRE_ENV_ISOLATION (non-blank,
+# not 0/false), or env mode (env mode arms it regardless of the marker). With the
+# guard OFF and legacy mode the function returns before any resolution, output,
+# or audit -- byte-identical legacy behavior (R-NF-1).
+function Assert-NoSharedClusterTarget {
+  param([string]$ActionName = "")
+
+  if (-not $ActionName) { $ActionName = $Action }
+
+  $envFlagRaw = [Environment]::GetEnvironmentVariable("FREDO_REQUIRE_ENV_ISOLATION", "Process")
+  $envFlagOn = $false
+  if (-not [string]::IsNullOrWhiteSpace($envFlagRaw)) {
+    $flagVal = ([string]$envFlagRaw).Trim().ToLowerInvariant()
+    if ($flagVal -ne "0" -and $flagVal -ne "false") { $envFlagOn = $true }
+  }
+  $armed = $RequireIsolation.IsPresent -or $envFlagOn -or $IsEnvMode
+  if (-not $armed) { return }
+
+  # Shared-cluster identity (canonicalized). FREDO_SHARED_APPDATA_DIR is a test
+  # seam; the default is the real OS app-data dir.
+  $sharedRaw = [Environment]::GetEnvironmentVariable("FREDO_SHARED_APPDATA_DIR", "Process")
+  if ([string]::IsNullOrWhiteSpace($sharedRaw)) {
+    $appDataRoot = $env:APPDATA
+    if ([string]::IsNullOrWhiteSpace($appDataRoot)) { $appDataRoot = [Environment]::GetFolderPath("ApplicationData") }
+    $sharedRaw = Join-Path $appDataRoot "com.fredo.app"
+  }
+  try { $sharedAppDataDir = [System.IO.Path]::GetFullPath($sharedRaw) } catch { $sharedAppDataDir = $sharedRaw }
+  # SharedPgDataDir is the PG-data identity (<shared>\postgres, PG_DATA_SUBDIR);
+  # the refusal rule compares each resolved dir against SharedAppDataDir
+  # (equal-or-under), which subsumes the PG subdir.
+  $sharedPgDataDir = Join-Path $sharedAppDataDir "postgres"
+
+  # Effective resolved dirs the launched app WILL use (env + -EnvVar aware).
+  $effAppDataDir = ""
+  if ($EnvVars -and $EnvVars.ContainsKey("FREDO_DATA_DIR")) { $effAppDataDir = [string]$EnvVars["FREDO_DATA_DIR"] }
+  if (-not $effAppDataDir) { $effAppDataDir = [Environment]::GetEnvironmentVariable("FREDO_DATA_DIR", "Process") }
+  if (-not $effAppDataDir) {
+    if ($IsEnvMode) { $effAppDataDir = $DataDir } else { $effAppDataDir = $sharedAppDataDir }
+  }
+  $effPgDataDir = ""
+  if ($EnvVars -and $EnvVars.ContainsKey("FREDO_PG_DATA_DIR")) { $effPgDataDir = [string]$EnvVars["FREDO_PG_DATA_DIR"] }
+  if (-not $effPgDataDir) { $effPgDataDir = [Environment]::GetEnvironmentVariable("FREDO_PG_DATA_DIR", "Process") }
+  if (-not $effPgDataDir) {
+    if ($IsEnvMode) { $effPgDataDir = $PgDataDir } else { $effPgDataDir = (Join-Path $effAppDataDir "postgres") }
+  }
+
+  $verdict = Test-SharedClusterTarget -EffAppDataDir $effAppDataDir -EffPgDataDir $effPgDataDir -SharedAppDataDir $sharedAppDataDir
+
+  # Credential sentinel/fallback seams set NON-BLANK (via -EnvVar or process env).
+  # A blank value is NOT "set" (matches credentials.rs's non-blank sentinel rule).
+  $seams = @()
+  foreach ($seamName in @("FREDO_PG_PASSWORD_FILE", "FREDO_PG_KEYCHAIN_DISABLED")) {
+    $seamVal = ""
+    if ($EnvVars -and $EnvVars.ContainsKey($seamName)) { $seamVal = [string]$EnvVars[$seamName] }
+    if (-not $seamVal) { $seamVal = [Environment]::GetEnvironmentVariable($seamName, "Process") }
+    if (-not [string]::IsNullOrWhiteSpace($seamVal)) { $seams += $seamName }
+  }
+
+  if ($verdict.Refuse) {
+    $offending = if ($verdict.AppDataHit) { $effAppDataDir } else { $effPgDataDir }
+    if ($seams.Count -gt 0) {
+      $seamHeader = ($seams -join ", ")
+      Write-Host "ISOLATION REFUSED (sentinel-seam): $seamHeader is set while the resolved data dir is the shared cluster dir"
+      Write-Host "  seam     : $seamHeader"
+      Write-Host "  shared   : $sharedAppDataDir"
+      Write-Host "The credential sentinel/fallback seam must never run against the shared cluster"
+      Write-Host "(it seeds initdb with a password the keychain does not hold). Refusing (fail-closed, R-3)."
+      Write-EnvIsolationAudit -Decision "refused" -Code "sentinel-seam" -Reason "$($seams -join ', ') set" `
+        -EnvId $EnvId -ResolvedAppDataDir $effAppDataDir -ResolvedPgDataDir $effPgDataDir `
+        -SharedAppDataDir $sharedAppDataDir -Seams $seams -ActionName $ActionName
+      exit 3
+    }
+    $specArg = if ($Spec -gt 0) { "$Spec" } else { "<N>" }
+    Write-Host "ISOLATION REFUSED (shared-dir): $($verdict.Dimension) resolves to the shared cluster dir"
+    Write-Host "  resolved : $offending"
+    Write-Host "  shared   : $sharedAppDataDir"
+    Write-Host "A dev/test/pipeline round MUST run against its own isolated env slot. Re-run with:"
+    Write-Host "  powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec $specArg -EnvId <id> -EnvSlot <n> -RequireIsolation"
+    Write-Host "Refusing to start PostgreSQL (fail-closed, R-2)."
+    Write-EnvIsolationAudit -Decision "refused" -Code "shared-dir" -Reason "$($verdict.Dimension) resolves to the shared cluster dir" `
+      -EnvId $EnvId -ResolvedAppDataDir $effAppDataDir -ResolvedPgDataDir $effPgDataDir `
+      -SharedAppDataDir $sharedAppDataDir -Seams $seams -ActionName $ActionName
+    exit 3
+  }
+
+  Write-EnvIsolationAudit -Decision "isolated" -Code "" -Reason "resolved dirs are isolated" `
+    -EnvId $EnvId -ResolvedAppDataDir $effAppDataDir -ResolvedPgDataDir $effPgDataDir `
+    -SharedAppDataDir $sharedAppDataDir -Seams $seams -ActionName $ActionName
+}
+
 # -- Environment resolution (continues) ---------------------------------------
 
 $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
@@ -1398,6 +1592,11 @@ switch ($Action) {
 
   # -- Up ----------------------------------------------------------------------
   "Up" {
+    # Spec #3066: fail closed BEFORE anything (env resolution already ran, but no
+    # PostgreSQL/app start and no G-052 check yet) when the round resolves onto
+    # the shared cluster. Guard OFF + legacy mode => returns immediately
+    # (byte-identical legacy behavior, R-NF-1).
+    Assert-NoSharedClusterTarget -ActionName "Up"
     if ($IsEnvMode) {
       # Spec #2944 ST-4: env-aware cold start (per-env ports/data/manifest/logs,
       # devUrl --config override, fail-closed collision gate, recorded-MCP-port
@@ -1541,6 +1740,15 @@ switch ($Action) {
     if ($proc -and $proc.Id) { Invoke-NativeQuiet taskkill /PID $proc.Id /T /F | Out-Null }
     Write-Log "Check logs: powershell -File .opencode/scripts/dev-env.ps1 -Action Logs" -Level WARN
     exit 1
+  }
+
+  # -- AssertIsolation (Spec #3066) --------------------------------------------
+  # Guard-only: resolve the effective dirs + assert they are NOT the shared
+  # cluster. NO PostgreSQL/app launch and NO G-052 root-currency check (it serves
+  # nothing). The guard exits 3 on a refusal; otherwise this arm exits 0.
+  "AssertIsolation" {
+    Assert-NoSharedClusterTarget -ActionName "AssertIsolation"
+    exit 0
   }
 
   # -- Down --------------------------------------------------------------------
