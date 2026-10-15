@@ -64,6 +64,14 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 ---
 ## Known Failure Modes
 
+### G-382: in_repo_lever_value_domain_misses_a_mapped_state_input_path
+- **activation_date:** 2026-10-15
+- **observed:** #3064 planning — the stream-health state mapping routed TWO input paths to the gated `degraded` state (heartbeat staleness AND an ingest-not-connected flag), but the inert-by-default outage lever exposed only two tokens, so the architect-added ingest-not-connected path (outside the backlog ACs) had only an environmental lever (occupy the OTLP port). The QA Expert flagged it; the SI's convergence pass routed the Architect to add a third lever token, making the path deterministically drivable in-repo with a paired unset control. No round was burned; round 1 PASSed. Root-cause class: `defect` (planning).
+- **target_failure:** a plan's state mapping routes an AC-asserted (or AC-relevant) state from more than one input path, and the inert-by-default in-repo lever's value domain covers only the primary path — so an architect-added path ships with an environmental/fragile lever or an UNVERIFIED row, even though the state itself is gated.
+- **guardrail:** At convergence, when a plan's state mapping has multiple input paths to a gated state, verify the inert-by-default in-repo lever's value domain covers EVERY such path (not just the primary one), each drivable with a paired unset control; an architect-added path that maps to a gated state must either be covered by the lever or explicitly scoped as a non-AC static pin. Extends G-376/G-300 from "the lever exists / matches semantics" to "the lever's value domain covers every mapped input path".
+- **home:** playbooks/self-improver.md (convergence) + playbooks/software-architect.md + playbooks/qa-expert.md + references.md (this record)
+- **effectiveness:** Pending
+
 ### G-377: ac_observable_sourced_from_a_dependency_that_never_produces_it
 - **activation_date:** 2026-10-14
 - **observed:** #3053 — AC2 bound the run's success to "the `kills` counter increases", read from the observation's `level.kills`, which Fredo projects VERBATIM from the pinned engine dependency's per-player kill counter. The dependency (a pinned crates.io engine, source not vendored) only DECLARES and zero-initialises that counter and never increments it, so the counter is permanently `0` by construction and AC2 was unsatisfiable from intake. The fact surfaced only in round 3, after FOUR architect-designed action-layer fixes (shoot-only; an aim turn; a bounded stop-and-aim takeover; a test-only diagnostic probe) were implemented exactly, measured, and reverted; the spec escalated to the human, who amended AC2's observable to a deterministically demonstrable hp-reduction on the engaged target and declared the counter a dead observable. Root-cause class: `scope`.
@@ -102,7 +110,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** two or more planners write the SAME shared A2A scratch file concurrently under a "read once, write once" model, so each writes from a stale snapshot; without anchored edits a write can clobber another planner's section, and any cross-section consistency check runs against stale content.
 - **guardrail:** When a wave dispatches planners in PARALLEL to one shared A2A scratch file, require each planner to RE-READ its own section (or the whole file) immediately before its edit, and to edit ONLY its own `## <Agent>` section with anchored unique-string edits. Where the wave's sections interlock, publish the binding names block in wave 1 (architect-first) so wave-2 writers never reconcile against each other's in-flight text. The SI re-reads the file before convergence and treats a planner's stale-read report as a signal, not noise.
 - **home:** playbooks/self-improver.md (dispatch briefs/convergence) + docs/agentic-pipeline/pipeline.md + references.md (this record)
-- **effectiveness:** Pending — created 2026-10-15 from #3054 (concurrent wave-2 A2A writers; no corruption thanks to anchored edits).
+- **effectiveness:** Confirmed (2026-10-15, #3064) — the wave-2 planners wrote the shared A2A file in parallel with anchored unique-string edits and a re-read of their own section; no corruption and no stale-clobber. Created 2026-10-15 from #3054 (concurrent wave-2 A2A writers).
 
 ### G-376: ac_distinctive_leg_state_unreachable_by_any_named_lever
 - **activation_date:** 2026-10-13
@@ -110,7 +118,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** an AC-distinctive leg (an error path OR a neutral/not-set-up state) names a verification lever for a runtime state the shipped product cannot produce, so the leg ships UNVERIFIED under a live policy and the audit must reject the PASS (G-033/G-275/G-300).
 - **guardrail:** At convergence, for every AC leg that names a runtime state, trace that state's PRODUCER/SETTER (`file:line`) — never the flag's NAME, a stale comment, or a plan domain-model assertion — and confirm the state is reachable by a lever the tester role can actually drive. A lever that assumes a listener/stream/lifecycle writer the code does not have, or that assumes a machine-global resource is env-scoped ("a fresh env"), is a plan defect returned in the same pass. When the runtime genuinely cannot produce the state, the plan MUST own an inert-by-default in-repo test seam (an env/runtime key, mirroring `FREDO_PG_FORCE_START_FAIL`) that makes the AC's observable drivable, paired with an unset control boot — AND disclose that the seam verifies the mapping/render, not real detection; a genuinely-absent product capability is a PO scope decision, never a silent substitution. The SI cannot research code to validate the producer, so the plan AUTHOR (architect/QA) must cite the producer and the seam by `file:line`. Extends G-275/G-300/G-316 (lever exists / matches semantics) to UNREACHABLE states and names the seam remedy.
 - **home:** playbooks/self-improver.md (convergence) + playbooks/software-architect.md + playbooks/qa-expert.md + references.md (this record)
-- **effectiveness:** Pending — created 2026-10-13 from #3052 round 1 (SI rejected a PASS with two unverified AC-distinctive legs); the round-2 seams (`FS-1`/`FS-2`) passed live with paired unset controls.
+- **effectiveness:** Confirmed (2026-10-15, #3064) — the plan owned the inert-by-default outage lever with paired unset controls and the tester drove all three states live; the SI's convergence scan caught that the lever's value domain missed one mapped input path and extended it (see G-382). Created 2026-10-13 from #3052 round 1 (SI rejected a PASS with two unverified AC-distinctive legs).
 
 ### G-375: isolated_env_sanctioned_telemetry_read_helper_cannot_authenticate
 - **activation_date:** 2026-10-13
@@ -118,7 +126,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** a sanctioned live/telemetry read helper cannot authenticate against an isolated env's keychain-held PostgreSQL credential (no documentable read path for the agent; the documented fallback is rejected), so a live-policy round cannot obtain its required receipt through the sanctioned tool and the agent improvises ad-hoc credential code.
 - **guardrail:** A sanctioned read helper must resolve the isolated env's credential itself — read the OS keychain entry by its documented service/account, or an app-written password-file seam — and default to the app database, so an agent never has to hand-roll credential/P-Invoke code. When a helper cannot authenticate against a live env, that is a TOOLING GAP to report (env id/slot + the exact failed command) and fix in the helper — never a workaround to keep.
 - **home:** `.opencode/skills/telemetry-query/SKILL.md` + `.opencode/scripts/wait-telemetry.ps1` (database default aligned this run) + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Recurred (2026-10-15, #3064) — on the shared legacy dev machine the sanctioned psql telemetry read still could not authenticate (keychain-only loopback password); the tester degraded to the documented app-pool fallback and disclosed it. The helper fix (resolve the credential itself, default to the app database) is still owed. Created 2026-10-13 from #3051.
 
 ### G-374: qa_row_contradicts_the_subtask_that_satisfies_it
 - **activation_date:** 2026-10-13
@@ -552,7 +560,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** a planner proposes a new DOM/testid hook (or other shared seam) that is not in the binding names block and not required by an acceptance criterion; convergence leaves the request unresolved, so the implementation either ships an unowned hook (violating single-owner hook discipline) or silently drops it, and the omission surfaces only at testing.
 - **guardrail:** At convergence, any planner-proposed hook/seam outside the binding names block and not required by an AC must be adjudicated to ONE outcome — accepted (added to the names block with a single named owner and matching QA rows) or declined (recorded as a documented limitation in the plan's Risks). An unadjudicated new hook is a plan defect.
 - **home:** playbooks/self-improver.md (convergence) + playbooks/ui-ux-expert.md + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed (2026-10-15, #3064) — an architect-proposed seam extension (a new value on the in-repo outage lever) was adjudicated at convergence, accepted, and added to the binding names block with a single owner. Created 2026-10-05 from #2971.
 
 ### G-323: stage_script_exit_zero_does_not_prove_fixture_dir_runtime_readiness
 - **activation_date:** 2026-10-05
@@ -781,6 +789,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** playbooks/qa-expert.md + playbooks/self-improver.md (convergence) + references.md (this record)
 - **effectiveness:** Confirmed (2026-10-03, #2968) — the SI's convergence pass caught a `requestFailed` QA edge whose induction lever was only "requested from ST-8"; the Architect added `FREDO_DOOM_STUB_FAIL=<state|step|frame>` to the stub engine (and the binding env-override list), and F-14 passed live via that lever. Confirmed.
 - **counter (2026-10-13, #3052 round 1):** recurred — the QA F-5 edge ("a fresh env with no companion config") named an induction lever that does not hold for a machine-global readiness probe, so the edge shipped UNVERIFIED; fixed in round 2 with an in-repo seam. Effectiveness → Partial; see G-376.
+- **confirm (2026-10-15, #3064):** the QA plan's state-input edge (outside the backlog ACs) named a lever plus a non-AC static fallback, and the SI's convergence pass upgraded the fragile environmental lever to a deterministic in-repo token (see G-382) — the guardrail was followed and the edge shipped PASS, not UNVERIFIED.
 
 ### G-298: viewport_fixed_overlay_ships_without_a_collision_contract
 - **activation_date:** 2026-10-02
