@@ -202,6 +202,36 @@ fn force_start_fail_with(value: Option<&str>) -> bool {
     }
 }
 
+/// **ST-1** (Spec #3067) injectable fault seam (mirrors [`PG_FORCE_START_FAIL_ENV`]):
+/// when set to a non-blank value other than `0`/`false`,
+/// [`runtime::PgRuntime::probe_ready`] returns a credential-rejection error
+/// (`SQLSTATE 28P01`) so the supervisor's `Failed`/`AuthMismatch` recovery path is
+/// live-drivable in ONE app launch — no two-launch credential drift needed. The
+/// text carries the marker [`state::classify_failure_text`] already recognises, so
+/// NO classifier change is required. The lever is **persistent** — read on EVERY
+/// `probe_ready` call (deliberate: a reset under it re-probes and still fails).
+/// Test-only; inert when unset — the default probe is byte-identical.
+pub const PG_FORCE_AUTH_MISMATCH_ENV: &str = "FREDO_PG_FORCE_AUTH_MISMATCH";
+
+/// Resolve the **ST-1** forced-auth-mismatch lever (mirrors [`force_start_fail`]):
+/// `true` when [`PG_FORCE_AUTH_MISMATCH_ENV`] is set to a non-blank value other
+/// than `0`/`false`, else `false`. Inert by default.
+pub fn force_auth_mismatch() -> bool {
+    force_auth_mismatch_with(std::env::var(PG_FORCE_AUTH_MISMATCH_ENV).ok().as_deref())
+}
+
+/// The pure forced-auth-mismatch rule, split out so the lever contract is
+/// unit-testable without mutating process-global environment state (G-222).
+fn force_auth_mismatch_with(value: Option<&str>) -> bool {
+    match value {
+        Some(value) => {
+            let raw = value.trim();
+            !raw.is_empty() && !raw.eq_ignore_ascii_case("0") && !raw.eq_ignore_ascii_case("false")
+        }
+        None => false,
+    }
+}
+
 /// Resolve the **FS-5** untuned-baseline lever (mirrors [`stop_hang_duration`]):
 /// `true` when [`PG_SKIP_SERVER_KNOBS_ENV`] is set to a non-blank value other
 /// than `0`/`false`, else `false`. One shared rule so `apply_server_knobs` and
@@ -394,6 +424,29 @@ mod tests {
         assert!(force_start_fail_with(Some("1")));
         assert!(force_start_fail_with(Some("true")));
         assert!(force_start_fail_with(Some("yes")));
+    }
+
+    /// ST-1 (#3067): the forced-auth-mismatch lever is inert unless explicitly
+    /// set, and a `0`/`false` value leaves it off. The pure rule is tested so the
+    /// contract is pinned without mutating process-global env (G-222).
+    #[test]
+    fn force_auth_mismatch_rule_is_inert_by_default_and_reads_the_lever() {
+        assert_eq!(
+            PG_FORCE_AUTH_MISMATCH_ENV, "FREDO_PG_FORCE_AUTH_MISMATCH",
+            "the seam env name is the QA-facing contract"
+        );
+        assert!(!force_auth_mismatch_with(None), "unset is inert");
+        assert!(!force_auth_mismatch_with(Some("")), "blank is inert");
+        assert!(!force_auth_mismatch_with(Some("   ")), "blank is inert");
+        assert!(!force_auth_mismatch_with(Some("0")), "0 is inert");
+        assert!(!force_auth_mismatch_with(Some("false")), "false is inert");
+        assert!(
+            !force_auth_mismatch_with(Some("FALSE")),
+            "false is case-insensitive"
+        );
+        assert!(force_auth_mismatch_with(Some("1")));
+        assert!(force_auth_mismatch_with(Some("true")));
+        assert!(force_auth_mismatch_with(Some("yes")));
     }
 
     /// ST-1 (#3036): the database-identity constants pin the DECISION OF RECORD —

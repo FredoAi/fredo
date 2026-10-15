@@ -615,7 +615,20 @@ impl PgRuntime {
     /// each attempt capped by `PG_CONNECT_TIMEOUT`, the whole poll wrapped in
     /// `run_bounded(PG_READY_BOUND + 2 s)`. This proves the exact URL/credentials
     /// later slices' pools will use — deliberately not the crate's `is_ready`.
+    ///
+    /// **ST-1** (Spec #3067) injectable fault seam: when
+    /// [`super::PG_FORCE_AUTH_MISMATCH_ENV`] is set, this returns a
+    /// credential-rejection error (`SQLSTATE 28P01`) so the supervisor's
+    /// `Failed`/`AuthMismatch` recovery path is live-drivable in ONE app launch.
+    /// The lever is **persistent** — read on EVERY call (deliberate: a reset under
+    /// it re-probes and still fails). Inert when unset — the default probe is
+    /// byte-identical.
     pub async fn probe_ready(&self) -> Result<()> {
+        if super::force_auth_mismatch() {
+            return Err(anyhow!(
+                "password authentication failed for user \"postgres\" (SQLSTATE 28P01)"
+            ));
+        }
         let url = self.connection_url();
         run_bounded(
             PG_READY_BOUND + Duration::from_secs(2),
