@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, act, waitFor } from '@testing-library/react';
+import { render, act, waitFor, cleanup, screen } from '@testing-library/react';
 import React from 'react';
 
 import { AppProvider } from '../AppProvider';
@@ -89,7 +89,7 @@ const ROW_DELIVERY: RowDelivery = {
 };
 
 function healthOf(): string | null {
-  return document.querySelector('[data-testid="health"]')?.getAttribute('data-health') ?? null;
+  return screen.queryByTestId('health')?.getAttribute('data-health') ?? null;
 }
 
 /** Narrow view of the test-injectable `window` key (no global augmentation). */
@@ -157,6 +157,7 @@ describe('AppProvider — streamHealth routing + producer (Spec #3064 ST-3)', ()
   });
 
   afterEach(() => {
+    cleanup();
     window.sessionStorage.clear();
     delete testWindow().__FREDO_STREAM_HEALTH_FORCE__;
   });
