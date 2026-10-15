@@ -11,7 +11,11 @@
     * no port is recorded by two environments (R-1.3);
     * each recorded endpoint is bound ONLY by a PID recorded in that
       environment's own process manifest -- never by a sibling environment's
-      PID and never by an unrecorded/foreign owner (R-1.3).
+      PID and never by an unrecorded/foreign owner (R-1.3);
+    * no ACTIVE environment's data root equals or is nested under the shared
+      cluster dir (%APPDATA%\com.fredo.app) -- an env there would read, write,
+      or reset the shared PostgreSQL cluster (Spec #3066 ST-3, R-1b). The shared
+      identity is overridable via FREDO_SHARED_APPDATA_DIR (a test seam).
 
   It NEVER kills a process, NEVER binds a port, and NEVER starts/stops an
   environment. It reads manifests, the process table and listening sockets only,
@@ -149,6 +153,33 @@ function Get-CanonicalPath {
     if (-not [System.IO.Path]::IsPathRooted($p)) { $p = Join-Path $script:RepoRoot $p }
     return ([System.IO.Path]::GetFullPath($p)).TrimEnd('\', '/')
   } catch { return $Path }
+}
+
+# -- Shared-cluster identity (Spec #3066 ST-3) --------------------------------
+# The OS app-data dir the legacy single-env path resolves to; the app identifier
+# is com.fredo.app. FREDO_SHARED_APPDATA_DIR overrides it (test seam). Returns a
+# canonicalized path, or "" when the identity cannot be resolved (then the
+# shared-root check is a no-op rather than a false violation).
+function Get-SharedAppDataDir {
+  $raw = $env:FREDO_SHARED_APPDATA_DIR
+  if ([string]::IsNullOrWhiteSpace($raw)) {
+    $base = $env:APPDATA
+    if ([string]::IsNullOrWhiteSpace($base)) { return "" }
+    $raw = Join-Path $base "com.fredo.app"
+  }
+  return (Get-CanonicalPath $raw)
+}
+
+# True when $Candidate is equal to or nested under $Root (case-insensitive).
+# A sibling whose name merely shares a string prefix (e.g. com.fredo.app-other)
+# is NOT under the root (R-NF-5). Empty inputs are never "under".
+function Test-PathEqualOrUnder {
+  param([string]$Candidate, [string]$Root)
+  if ([string]::IsNullOrWhiteSpace($Candidate) -or [string]::IsNullOrWhiteSpace($Root)) { return $false }
+  $c = $Candidate.Replace('/', '\').TrimEnd('\').ToLowerInvariant()
+  $r = $Root.Replace('/', '\').TrimEnd('\').ToLowerInvariant()
+  if ($c -eq $r) { return $true }
+  return $c.StartsWith($r + '\')
 }
 
 # Role -> acceptable live image base names (without .exe), mirroring dev-env.ps1's
@@ -340,6 +371,20 @@ for ($i = 0; $i -lt $active.Count; $i++) {
         Add-Violation "PID $pidA recorded in both env '$($a.EnvId)' and env '$($b.EnvId)' (process bleed)"
       }
     }
+  }
+}
+
+# -- Invariant 4 (ADDITIVE, Spec #3066 ST-3): no active env resolves to the ----
+# -- shared cluster dir. An env whose data root equals or is nested under the  --
+# -- shared %APPDATA%\com.fredo.app dir would read/write/reset the shared       --
+# -- PostgreSQL cluster; a round must never do that (R-1b). Evaluated over the  --
+# -- ACTIVE set (live envs plus explicitly named manifests, e.g. -ManifestPath) --
+# -- so a fixture manifest induces the violation without a live shared-root env. --
+
+$sharedAppDataDir = Get-SharedAppDataDir
+foreach ($e in $active) {
+  if (Test-PathEqualOrUnder -Candidate $e.DataRoot -Root $sharedAppDataDir) {
+    Add-Violation "env '$($e.EnvId)' data root '$($e.DataRoot)' is the SHARED cluster dir '$sharedAppDataDir' (R-1.1)"
   }
 }
 

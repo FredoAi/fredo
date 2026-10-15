@@ -3390,6 +3390,74 @@ Test-Script "same-issue env lease path + schema present (dev-env.ps1 + pipeline-
   return "env lease (.opencode/state/env-leases/<issue>.json) path + schema pinned"
 }
 
+# --- Spec #3066 env-isolation guard pins (ST-2) ---
+# Static pins over the fail-closed shared-cluster guard. They pin STABLE
+# contracts (action name, param names, function names, refusal codes, kill
+# posture) -- never line numbers -- so concurrent edits stay green as long as the
+# contract holds. Fully offline (plain file reads; no GitHub/branch writes).
+Write-Host "Env-isolation guard pins (Spec #3066):" -ForegroundColor Cyan
+
+# R-1a/R-2a: the guard-only AssertIsolation action is declared in the -Action
+# ValidateSet and dispatched (no PostgreSQL/app launch, no G-052 check).
+Test-Script "dev-env.ps1: AssertIsolation action declared in ValidateSet + dispatched" {
+  if ($devEnvSrc -notmatch '\[ValidateSet\([^)]*"Up"[^)]*"AssertIsolation"') { throw "AssertIsolation missing from the -Action ValidateSet" }
+  if ($devEnvSrc -notmatch '(?m)^\s*"AssertIsolation"\s*\{') { throw "AssertIsolation dispatch arm missing from the Action switch" }
+  if ($devEnvSrc -notmatch 'Assert-NoSharedClusterTarget -ActionName "AssertIsolation"') { throw "AssertIsolation arm does not invoke the guard" }
+  return "AssertIsolation in ValidateSet + dispatch calls the guard"
+}
+
+# R-2/R-3: the guard surface (functions, marker, env flag, seam, refusal codes,
+# exit 3, audit file) is present and wired into the Up path.
+Test-Script "dev-env.ps1: env-isolation guard surface present (Spec #3066)" {
+  foreach ($needle in @(
+    'function Test-SharedClusterTarget\b',
+    'function Assert-NoSharedClusterTarget\b',
+    '\[switch\]\$RequireIsolation\b',
+    'FREDO_REQUIRE_ENV_ISOLATION',
+    'FREDO_SHARED_APPDATA_DIR',
+    'env-isolation\.jsonl',
+    'ISOLATION REFUSED \(shared-dir\)',
+    'ISOLATION REFUSED \(sentinel-seam\)',
+    'Assert-NoSharedClusterTarget -ActionName "Up"'
+  )) {
+    if ($devEnvSrc -notmatch $needle) { throw "guard surface missing: $needle" }
+  }
+  if ($devEnvSrc -notmatch 'exit 3\b') { throw "guard has no exit 3 refusal" }
+  return "guard functions + marker + env flag + seam + codes + exit 3 + Up wiring present"
+}
+
+# R-5b/R-NF-2: the env teardown path carries no global image-name kill (/IM);
+# the manifest-scoped, image-guarded teardown is present.
+Test-Script "dev-env.ps1: no /IM on the env teardown path (Spec #3066)" {
+  if ($devEnvSrc -match '(?i)/IM\b') { throw "dev-env.ps1 contains a global image-name kill (/IM)" }
+  if ($devEnvSrc -notmatch 'function Stop-EnvManifest\b') { throw "manifest-scoped teardown Stop-EnvManifest missing" }
+  if ($devEnvSrc -notmatch 'Test-RoleImageMatch') { throw "manifest kill is not image-guarded" }
+  return "IMAGE_KILL_PRESENT=False; MANIFEST_TEARDOWN_PRESENT=True; IMAGE_GUARD_PRESENT=True"
+}
+
+# F-1/F-6 (Spec #3066 round 2): the ST-5 induction lever MUST arm the guard on
+# every refusal leg. In legacy mode (no -EnvId/-EnvSlot/-ServingCheckout) ONLY the
+# -RequireIsolation switch arms it; a refusal leg that omits it runs un-armed and
+# never refuses -- the exact round-1 defect AC2/AC3 failed on (the developer could
+# not execute PowerShell in the sandbox, so the un-armed invocation was never
+# caught before the tester ran it). Pin the arming token so it cannot regress.
+Test-Script "error-path-levers.ps1: refusal legs arm the guard (Spec #3066 F-6)" {
+  $leverPath = ".opencode/tests/env-isolation/error-path-levers.ps1"
+  if (-not (Test-Path $leverPath)) { throw "ST-5 induction lever missing: $leverPath" }
+  $leverSrc = Get-Content $leverPath -Raw
+  # Any of the three contract-equivalent arming forms is acceptable.
+  $armsBase  = $leverSrc -match '"AssertIsolation"\s*,\s*"-RequireIsolation"'
+  $armsExtra = $leverSrc -match '-ExtraArgs\s+@\(\s*"-RequireIsolation"'
+  $armsEnv   = $leverSrc -match 'FREDO_REQUIRE_ENV_ISOLATION\s*='
+  if (-not ($armsBase -or $armsExtra -or $armsEnv)) {
+    throw "the ST-5 lever does not arm the guard: expected -RequireIsolation in the AssertIsolation base args (or per-leg -ExtraArgs, or FREDO_REQUIRE_ENV_ISOLATION in -LegEnv)"
+  }
+  foreach ($leg in @('"SharedDirRefusal"', '"SentinelRefusal"', '"NoGlobalImageKill"')) {
+    if ($leverSrc -notmatch [regex]::Escape($leg)) { throw "refusal leg missing from the lever: $leg" }
+  }
+  return "AssertIsolation guard invocation arms -RequireIsolation; SharedDirRefusal/SentinelRefusal/NoGlobalImageKill present"
+}
+
 # --- Remaining PowerShell scripts (syntax check) ---
 Write-Host "Other scripts:" -ForegroundColor Cyan
 $scripts = @(
