@@ -18,3 +18,19 @@ The "must not change" baseline. Run on every testing phase that touches the laun
 - `apps/ui/src/applications/home/components/launcher/__tests__/` — launcher surfaces (palette, open-apps, resting, command bar).
 - `apps/ui/src/shared/components/companion/__tests__/` — companion readiness + `deriveServerLaunchState`.
 - `apps/ui/src/shared/hooks/__tests__/` — shared hooks.
+
+---
+
+# fredo-health-led — Regression Re-scope (Spec #3064 — real stream health)
+
+> The telemetry subsystem line changes from a two-valued `healthy`/`down` mount constant to the
+> three-valued `StreamHealth` (`healthy` | `degraded` | `down`). Two of the invariants above are
+> affected and MUST be re-scoped for #3064. Everything else in this file still holds.
+
+- [ ] **R-8 (RE-SCOPED #3064):** `useConnectionStatus()` keeps its `{ isConnected }` signature (still holds), BUT `isConnected` is now DERIVED (`health === 'healthy'`) rather than a mount constant, and `StreamContext` carries a three-valued `health`. The observable contract is preserved: `isConnected === true` ⟺ `health === 'healthy'`. The OLD assertion "`isConnected` remains the connection flag" is superseded — assert the DERIVED equivalence instead.
+- [ ] **R-7 (RETAINED #3064):** `notSetUp`/`unknown` stay NEUTRAL and never degrade the aggregate — the new `degraded` member must NOT alter this. (Unchanged invariant; re-run against the widened `SubsystemHealth` union.)
+- [ ] **R-1..R-6, R-9, R-10 (UNCHANGED #3064):** the LED trigger contract, tooltip open behaviour, z-sink, pointer-events, clock, hover/focus-only slice, `useCompanionReadiness` non-mount, token-only colours, and the single-LED header invariant all still hold — the #3064 change is ADDITIVE to the telemetry line only (no new DOM/testid).
+
+## Overlapping suite for #3064
+
+- `.opencode/tests/stream-health/` — the feature's own suite (functional F-1..F-9 + N-1..N-4, regression, exploratory, smoke). Run it alongside this file's re-scoped invariants.
