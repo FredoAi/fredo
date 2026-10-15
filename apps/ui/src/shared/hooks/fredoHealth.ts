@@ -16,10 +16,11 @@
  * Worst-wins precedence:
  *   1. any MANDATORY subsystem (`telemetry`, `postgres`) `down` → overall `down`;
  *   2. else any non-neutral subsystem `down`                  → overall `degraded`;
- *   3. else                                                     → overall `healthy`.
+ *   3. else any non-neutral subsystem `degraded`              → overall `degraded`;
+ *   4. else                                                     → overall `healthy`.
  *
  * State-source → state mapping (frozen by the plan's Binding Names Block):
- *   - telemetry     : `isConnected ? healthy : down` (event-driven; never polled).
+ *   - telemetry     : `StreamHealth` 1:1 → `healthy`/`degraded`/`down` (event-driven; never polled).
  *   - postgres      : `ready`/`attached` → healthy; `starting` → unknown; `failed`/`disabled` → down.
  *   - llamaServer   : `healthy` → healthy; otherwise (installed but stopped/unhealthy) → down;
  *                     companion not installed/configured → notSetUp.
@@ -33,14 +34,18 @@
 
 // ── Aggregate (worst-wins over enabled subsystems) ───────────────────────────
 
+import type { StreamHealth } from './streamHealth';
+
 /** The three-valued overall health. There is deliberately NO `unknown`/`checking` value. */
 export type FredoHealthState = 'healthy' | 'degraded' | 'down';
 
 /**
  * Per-subsystem health. `notSetUp` and `unknown` are NEUTRAL: neither by itself
- * changes the aggregate (AC4 / R-7); only `down` degrades.
+ * changes the aggregate (AC4 / R-7); only `down` (and, since #3064, a non-neutral
+ * `degraded`) degrades. `degraded` is the #3064 addition — a stalled telemetry
+ * pipeline reads `degraded` (not fully healthy, but the IPC is alive).
  */
-export type SubsystemHealth = 'healthy' | 'down' | 'notSetUp' | 'unknown';
+export type SubsystemHealth = 'healthy' | 'degraded' | 'down' | 'notSetUp' | 'unknown';
 
 /**
  * Stable subsystem ids. The frozen tooltip/array order is
@@ -75,7 +80,8 @@ const SUBSYSTEM_LABELS: Record<FredoSubsystemId, string> = {
 
 /**
  * Fold the four lines into the overall state by worst-wins precedence.
- * Mandatory `down` → `down`; else any non-neutral `down` → `degraded`; else `healthy`.
+ * Mandatory `down` → `down`; else any non-neutral `down` → `degraded`; else any
+ * non-neutral `degraded` → `degraded`; else `healthy`.
  * `notSetUp`/`unknown` are neutral and never degrade the aggregate (AC4 / R-7).
  */
 export function aggregateFredoHealth(lines: FredoHealthLine[]): FredoHealthState {
@@ -86,6 +92,7 @@ export function aggregateFredoHealth(lines: FredoHealthLine[]): FredoHealthState
     if (stateById.get(id) === 'down') return 'down';
   }
   if (lines.some((line) => line.state === 'down')) return 'degraded';
+  if (lines.some((line) => line.state === 'degraded')) return 'degraded';
   return 'healthy';
 }
 
@@ -117,8 +124,8 @@ export interface FredoLlamaServerSnapshot {
  * never degrade — R-7). Telemetry is event-driven and therefore always known.
  */
 export interface FredoHealthSnapshots {
-  /** The StreamContext connection flag (event-driven; never polled). */
-  telemetryConnected: boolean;
+  /** The three-valued stream health (Spec #3064; event-driven; never polled). */
+  telemetry: StreamHealth;
   /** Companion readiness probe; `null` while unresolved/unavailable. */
   companion: FredoCompanionSnapshot | null;
   /** Llama-server status probe; `null` while unresolved/unavailable. */
@@ -127,13 +134,21 @@ export interface FredoHealthSnapshots {
   postgres: { state: FredoPgState } | null;
 }
 
-function telemetryLine(connected: boolean): FredoHealthLine {
-  return {
-    id: 'telemetry',
-    label: SUBSYSTEM_LABELS.telemetry,
-    state: connected ? 'healthy' : 'down',
-    detail: connected ? 'Streaming' : 'Stream stopped',
-  };
+/**
+ * Map the three-valued `StreamHealth` 1:1 onto the telemetry subsystem line
+ * (Spec #3064 ST-4). Binding copy: `Streaming` (healthy) / `Telemetry stalled`
+ * (degraded) / `Stream stopped` (down). The telemetry line is MANDATORY, so a
+ * `down` escalates the aggregate to `down` and a `degraded` to `degraded`.
+ */
+function telemetryLine(health: StreamHealth): FredoHealthLine {
+  switch (health) {
+    case 'healthy':
+      return { id: 'telemetry', label: SUBSYSTEM_LABELS.telemetry, state: 'healthy', detail: 'Streaming' };
+    case 'degraded':
+      return { id: 'telemetry', label: SUBSYSTEM_LABELS.telemetry, state: 'degraded', detail: 'Telemetry stalled' };
+    case 'down':
+      return { id: 'telemetry', label: SUBSYSTEM_LABELS.telemetry, state: 'down', detail: 'Stream stopped' };
+  }
 }
 
 function llamaServerLine(snapshots: FredoHealthSnapshots): FredoHealthLine {
@@ -196,7 +211,7 @@ function postgresLine(snapshots: FredoHealthSnapshots): FredoHealthLine {
  */
 export function deriveSubsystemLines(snapshots: FredoHealthSnapshots): FredoHealthLine[] {
   return [
-    telemetryLine(snapshots.telemetryConnected),
+    telemetryLine(snapshots.telemetry),
     llamaServerLine(snapshots),
     companionModelLine(snapshots),
     postgresLine(snapshots),

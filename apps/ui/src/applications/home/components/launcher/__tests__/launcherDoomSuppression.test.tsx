@@ -22,6 +22,7 @@ import { LauncherShell } from '../LauncherShell';
 
 vi.mock('@/shared/contexts/StreamContext', () => ({
   useConnectionStatus: () => ({ isConnected: true }),
+  useStreamHealth: () => ({ health: 'healthy', isConnected: true }),
 }));
 
 const companionMock = vi.hoisted(() => ({

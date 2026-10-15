@@ -1,9 +1,9 @@
 /**
  * useFredoHealth — the whole-system health aggregator (Spec #3052 ST-2).
  *
- * Consumes the event-driven telemetry flag (`useConnectionStatus`, never
- * polled) and probes THREE read-only backend commands on ONE bounded interval
- * (`HEALTH_POLL_INTERVAL_MS`) — `check_companion_readiness`,
+ * Consumes the event-driven three-valued stream health (`useStreamHealth`,
+ * never polled) and probes THREE read-only backend commands on ONE bounded
+ * interval (`HEALTH_POLL_INTERVAL_MS`) — `check_companion_readiness`,
  * `get_llama_server_status`, `pg_supervisor_status` — then derives `FredoHealth`
  * via the pure ST-1 helpers.
  *
@@ -35,7 +35,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { adapterBridge } from '../utils/adapterBridge';
-import { useConnectionStatus } from '../contexts/StreamContext';
+import { useStreamHealth } from '../contexts/StreamContext';
 import {
   aggregateFredoHealth,
   deriveSubsystemLines,
@@ -98,8 +98,8 @@ function storedFlag(key: string): boolean {
 
 /**
  * Resolve the test-only forced-telemetry-down signal (FS-1). Either the Vite
- * flag or a runtime key (window / sessionStorage) forces `telemetryConnected:
- * false`. Inert when unset. Read on the bounded tick so a mid-session toggle
+ * flag or a runtime key (window / sessionStorage) forces the telemetry line
+ * `down`. Inert when unset. Read on the bounded tick so a mid-session toggle
  * re-derives on the next poll.
  */
 export function resolveForceTelemetryDown(): boolean {
@@ -201,7 +201,7 @@ function normalizePostgres(raw: unknown): { state: FredoPgState } | null {
 }
 
 export function useFredoHealth(): FredoHealth {
-  const { isConnected } = useConnectionStatus();
+  const { health } = useStreamHealth();
   const [probeState, setProbeState] = useState<HealthProbeState>(EMPTY_PROBE_STATE);
   // Monotonic request sequence — a response whose seq is no longer current is
   // a stale/out-of-order probe and is dropped.
@@ -270,13 +270,13 @@ export function useFredoHealth(): FredoHealth {
   const snapshots = useMemo<FredoHealthSnapshots>(
     () => ({
       // FS-1: the seam forces the telemetry line `down`; otherwise the
-      // event-driven connection flag is used unchanged.
-      telemetryConnected: !probeState.forceTelemetryDown && isConnected,
+      // event-driven three-valued stream health is used unchanged.
+      telemetry: probeState.forceTelemetryDown ? 'down' : health,
       companion: probeState.companion,
       llamaServer: probeState.llamaServer,
       postgres: probeState.postgres,
     }),
-    [isConnected, probeState],
+    [health, probeState],
   );
 
   return useMemo<FredoHealth>(() => {
