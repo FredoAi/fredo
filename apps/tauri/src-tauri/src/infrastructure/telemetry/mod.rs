@@ -29,8 +29,16 @@ use crate::infrastructure::comm::event::{EventState, FredoEvent};
 use crate::infrastructure::storage::span_store::SpanStore;
 use crate::infrastructure::storage::AppStore;
 
+pub mod backoff;
 pub mod log;
 pub mod metrics_collector;
+
+use backoff::ErrorBackoff;
+
+/// R-5 (Spec #3067): per-site back-off gating the span-store flush error
+/// emissions, so a fail-closed engine does not flood the log with identical
+/// `span flush error` / `sweep flush error` lines.
+static SPAN_FLUSH_BACKOFF: ErrorBackoff = ErrorBackoff::new();
 
 // ── Span data types ────────────────────────────────────────────────────────────
 
@@ -375,8 +383,13 @@ impl SpanCollector {
         };
 
         if let Some(spans) = flush_batch {
-            if let Err(e) = self.store.insert_spans(&spans).await {
-                tracing::error!(target: "fredo::telemetry", error = %e, "span flush error");
+            match self.store.insert_spans(&spans).await {
+                Ok(_) => SPAN_FLUSH_BACKOFF.reset(),
+                Err(e) => {
+                    if let Some(suppressed) = SPAN_FLUSH_BACKOFF.due(Instant::now()) {
+                        tracing::error!(target: "fredo::telemetry", error = %e, suppressed = suppressed, "span flush error");
+                    }
+                }
             }
         }
     }
@@ -397,9 +410,12 @@ impl SpanCollector {
 
         let count = spans_to_flush.len() as u64;
         if let Err(e) = self.store.insert_spans(&spans_to_flush).await {
-            tracing::error!(target: "fredo::telemetry", error = %e, "span flush error");
+            if let Some(suppressed) = SPAN_FLUSH_BACKOFF.due(Instant::now()) {
+                tracing::error!(target: "fredo::telemetry", error = %e, suppressed = suppressed, "span flush error");
+            }
             return 0;
         }
+        SPAN_FLUSH_BACKOFF.reset();
         count
     }
 
@@ -418,9 +434,12 @@ impl SpanCollector {
 
         let count = spans_to_flush.len() as u64;
         if let Err(e) = self.store.insert_spans(&spans_to_flush).await {
-            tracing::error!(target: "fredo::telemetry", error = %e, "span flush error");
+            if let Some(suppressed) = SPAN_FLUSH_BACKOFF.due(Instant::now()) {
+                tracing::error!(target: "fredo::telemetry", error = %e, suppressed = suppressed, "span flush error");
+            }
             return 0;
         }
+        SPAN_FLUSH_BACKOFF.reset();
         count
     }
 
@@ -468,8 +487,13 @@ impl SpanCollector {
         };
 
         if let Some(spans) = flush_batch {
-            if let Err(e) = self.store.insert_spans(&spans).await {
-                tracing::error!(target: "fredo::telemetry", error = %e, "sweep flush error");
+            match self.store.insert_spans(&spans).await {
+                Ok(_) => SPAN_FLUSH_BACKOFF.reset(),
+                Err(e) => {
+                    if let Some(suppressed) = SPAN_FLUSH_BACKOFF.due(Instant::now()) {
+                        tracing::error!(target: "fredo::telemetry", error = %e, suppressed = suppressed, "sweep flush error");
+                    }
+                }
             }
         }
 

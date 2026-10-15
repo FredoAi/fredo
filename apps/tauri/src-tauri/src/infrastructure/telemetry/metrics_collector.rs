@@ -18,6 +18,12 @@ use crate::infrastructure::comm::event::EventState;
 pub use crate::infrastructure::comm::event::FredoEvent;
 pub use crate::infrastructure::storage::span_store::SpanStore;
 pub use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::telemetry::backoff::ErrorBackoff;
+
+/// R-5 (Spec #3067): per-site back-off gating the metric-store flush error
+/// emission, so a fail-closed engine does not flood the log with identical
+/// `metrics flush error` lines.
+static METRICS_FLUSH_BACKOFF: ErrorBackoff = ErrorBackoff::new();
 
 // ── MetricPoint ────────────────────────────────────────────────────────────────
 
@@ -346,10 +352,13 @@ impl MetricCollector {
                 inner.counters.clear();
                 inner.histograms.clear();
                 inner.last_flush = Instant::now();
+                METRICS_FLUSH_BACKOFF.reset();
                 count
             }
             Err(e) => {
-                tracing::error!(target: "fredo::telemetry", error = %e, "metrics flush error");
+                if let Some(suppressed) = METRICS_FLUSH_BACKOFF.due(Instant::now()) {
+                    tracing::error!(target: "fredo::telemetry", error = %e, suppressed = suppressed, "metrics flush error");
+                }
                 0
             }
         }
