@@ -91,9 +91,10 @@ const OVERALL_STATE_WORD: Record<FredoHealthState, string> = {
   down: 'Down',
 };
 
-/** Per-subsystem state → user-facing word (spec #3052). `unknown` reads "Checking". */
+/** Per-subsystem state → user-facing word (spec #3052, `degraded` added #3064). `unknown` reads "Checking". */
 const SUBSYSTEM_STATE_WORD: Record<SubsystemHealth, string> = {
   healthy: 'Healthy',
+  degraded: 'Degraded',
   down: 'Down',
   notSetUp: 'Not set up',
   unknown: 'Checking',

@@ -31,6 +31,7 @@ import { LauncherShell } from '../LauncherShell';
 // StreamProvider in this isolated harness) — stub the one consumer.
 vi.mock('@/shared/contexts/StreamContext', () => ({
   useConnectionStatus: () => ({ isConnected: true }),
+  useStreamHealth: () => ({ health: 'healthy', isConnected: true }),
 }));
 
 const companionMock = vi.hoisted(() => ({
