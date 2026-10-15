@@ -68,3 +68,29 @@ Durable suite for the whole-system health LED (feature #3052). One `- [ ]` case 
 ## Round-2 results (serving commit `c5a7602`)
 
 All of F-1 … F-9 PASS live; F-3 and F-5 (UNVERIFIED in round 1) are now live-proven via FS-1 / FS-2, and F-6's second leg (model-missing) is live-proven via FS-3. F-8 is PASS on the poll leg with R-6's event clause **re-scoped to poll-only** (FS-5: `llama-server-status` has no Rust `emit` site). Evidence: the round-2 `## Tests Runs` verdict on the feature issue (live receipt via the app-pool `telemetry_spans` stat — the managed `psql` read lever is keychain-blocked in an isolated env, G-375).
+
+---
+
+## Spec #3064 — the telemetry line gains the `degraded` state (live stream health)
+
+> The telemetry subsystem line stops being a two-valued `healthy`/`down` mount constant and
+> becomes the three-valued `StreamHealth` (`healthy` | `degraded` | `down`) from the ingest
+> liveness heartbeat (#3064). The LED surface, tokens, DOM and composed label are UNCHANGED —
+> only the telemetry line's state/word/detail gain `degraded`. Verification policy: LIVE.
+
+- [ ] **F-10 (#3064 REQ-2) — telemetry line `degraded` + "Telemetry stalled".**
+  - Data: `FREDO_STREAM_HEALTH_FORCE=degraded` (suppresses the heartbeat; REAL staleness path).
+  - Steps: wait > `STREAM_HEARTBEAT_STALE_MS` (15 s); hover `desktop-status-led`; read `health-line-telemetry` + `desktop-status-led-overall`.
+  - Expected: `health-line-telemetry` `data-health-state="degraded"` + text contains `Degraded` AND `Telemetry stalled`; `desktop-status-led-overall` NOT `healthy`. Control: unset lever → telemetry `healthy`.
+- [ ] **F-11 (#3064 REQ-3) — telemetry line `down` + "Stream stopped".**
+  - Data: `FREDO_STREAM_HEALTH_FORCE=down` (the `stream_health` probe returns `Err`).
+  - Expected: `health-line-telemetry` `data-health-state="down"` + text contains `Down` AND `Stream stopped`; overall `data-health-state="down"` (telemetry MANDATORY — `fredoHealth.ts:66`). Disclosure (G-376): mapping/render only.
+- [ ] **F-12 (#3064 REQ-8) — per-state `data-health-state` + distinct text + aria-label segment.**
+  - Data: drive `healthy` (no lever), `degraded`, `down`.
+  - Expected: `health-line-telemetry` `data-health-state` ∈ {`healthy`,`degraded`,`down`} with a DISTINCT on-screen text per state (`Streaming`/`Telemetry stalled`/`Stream stopped`); the composed `aria-label` on `desktop-status-led` contains `Agent telemetry: Healthy`/`Agent telemetry: Degraded`/`Agent telemetry: Down`; trigger stays `tabIndex={0}`; no state conveyed by colour alone.
+- [ ] **F-13 (#3064 REQ-9 / regression) — inert unset control + neutral states unchanged.**
+  - Data: launch WITHOUT the lever; and the `notSetUp`/`unknown` companion/postgres lines (fresh env / in-flight probe).
+  - Expected: telemetry `healthy` with no lever (byte-identical to pre-#3064); `notSetUp`/`unknown` lines still NEUTRAL — they never degrade the aggregate (`fredo-health-led` R-7/AC4); the new `degraded` member does not alter that.
+- [ ] **F-14 (#3064 ST-4, static/unit pin — NON-AC) — the `degraded` member + aggregate raise.**
+  - Data: `apps/ui/src/shared/hooks/__tests__/fredoHealth.test.ts` + `launcherHealthLed.test.tsx`.
+  - Expected: `SubsystemHealth` includes `degraded`; `telemetryLine` maps each `StreamHealth` 1:1 (`healthy`→`healthy`/`Streaming`, `degraded`→`degraded`/`Telemetry stalled`, `down`→`down`/`Stream stopped`); `aggregateFredoHealth` raises the overall to `degraded` on a non-neutral `degraded` telemetry line and to `down` on telemetry `down`; `SUBSYSTEM_STATE_WORD.degraded === 'Degraded'`. (`degraded` IS live-reachable via F-10; this pin covers the pure mapping.)
