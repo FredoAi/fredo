@@ -199,7 +199,7 @@ src-tauri/src/
 |   +-- telemetry/              — Telemetry Tauri commands
 |       +-- mod.rs              — TelemetryApplication (DesktopCapable)
 |       +-- commands.rs         — telemetry_get_stats, telemetry_purge, telemetry_toggle, telemetry_metrics_toggle, telemetry_logging_toggle, telemetry_logging_set_level
-|   +-- pg_supervisor/          — Embedded-PostgreSQL lifecycle supervisor + shared-pool installer (PostgreSQL is the ONLY engine — the KV/application family AND the RTDB/Span stores run on the shared pool; the build-time acquisition mode + SHA-256-pinned archive acquisition and the managed-server lifecycle are unchanged; since Spec #3022 the owner edits the cluster's password/port/log verbosity from Settings → **Database**, applied through a bounded restart that re-points the shared engine via `EngineHandle::swap`)
+|   +-- pg_supervisor/          — Embedded-PostgreSQL lifecycle supervisor + shared-pool installer (PostgreSQL is the ONLY engine — the KV/application family AND the RTDB/Span stores run on the shared pool; the build-time acquisition mode + SHA-256-pinned archive acquisition and the managed-server lifecycle are unchanged; since Spec #3022 the owner edits the cluster's password/port/log verbosity from Settings → **Database**, applied through a bounded restart that re-points the shared engine via `EngineHandle::swap`; since Spec #3067 an `authMismatch` boot failure — the stored credential drifted from the cluster — also surfaces a prominent, non-modal, consent-gated one-click recovery banner in the app shell, visible WITHOUT opening Settings and never auto-healing because a reset destroys local data, and the storage-unavailable flush-error emitters back off so a failed boot does not flood the log)
 |       +-- mod.rs              — constants (wall-clock bounds, AppStore KV keys, env-gated test overrides) + module tree
 |       +-- runtime.rs          — bounded `PgRuntime` (setup/start/readiness/stop) + synchronous watchdog hard-kill + RAII `Drop` teardown
 |       +-- sweep.rs            — PID-marker + `postmaster.pid` image-guarded orphan sweep (kill only a live `postgres.exe`)
@@ -295,6 +295,7 @@ src-tauri/src/
     |   +-- mod.rs              — SpanCollector + SpanBuffer
     |   +-- metrics_collector.rs — MetricCollector
     |   +-- log.rs              — LogCollector + LogBuffer + LogBridgeLayer
+    |   +-- backoff.rs          — per-site `ErrorBackoff` (bounded exponential back-off, base 1 s / ×2 / cap 60 s) gating the repeated storage-unavailable flush-error emissions while the engine is fail-closed; reset on a successful write (Spec #3067)
     +-- ipc.rs                  — local socket server + CliCommand dispatch
     +-- cli/                    — clap CLI parser
     |   +-- mod.rs              — Cli root; run() + build_ipc_command()
