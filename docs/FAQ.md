@@ -186,10 +186,10 @@ No — dictation is model audio only, so there is no dictated transcript and no 
 The `comm` module (`infrastructure/comm/`) holds the canonical wire types and the single IPC emitter. Since the RTDB row pipeline became the only delivery path it is deliberately small:
 
 - **`FredoEvent`** — the CLI wire format (`fredo emit`) and classifier input: id, eventType, state, provider, transport, sessionId, correlationId, toolName, payload, error, metadata, timestamp. Serialized as camelCase. It is the CLI wire format and classifier input — it never crosses IPC to the webview.
-- **`EventBus`** — the single emitter for the `"fredo-stream-event"` Tauri IPC channel: RTDB `RowDeliveryBatch` envelopes via `emit_row_delivery_batch` and application-data `ApplicationDeliveryBatch` envelopes (`{"applicationBatch": …}`) via `emit_application_delivery_batch`.
+- **`EventBus`** — the single emitter for the `"fredo-stream-event"` Tauri IPC channel: RTDB `RowDeliveryBatch` envelopes via `emit_row_delivery_batch`, application-data `ApplicationDeliveryBatch` envelopes (`{"applicationBatch": …}`) via `emit_application_delivery_batch`, and the stream-health liveness heartbeat (`{"streamHealth": …}`) via `emit_stream_health` (Spec #3064).
 - **`CommAdapter`** trait — implemented by `InternalAdapter` (the `fredo emit` enrichment).
 
-Raw `FredoEvent` never crosses IPC; the channel carries only projected envelope families (`RowDelivery`/`RowDeliveryBatch`, `ApplicationDeliveryBatch`).
+Raw `FredoEvent` never crosses IPC; the channel carries only projected envelope families (`RowDelivery`/`RowDeliveryBatch`, `ApplicationDeliveryBatch`, `StreamHealthEnvelope`).
 
 ### What is the RTDB row pipeline?
 
@@ -228,7 +228,7 @@ A global `Map<string, FredoApplicationClass>` populated at app startup via side-
 
 ### What is `StreamContext`?
 
-StreamContext carries the Tauri IPC connection flag plus the module-scoped RTDB row store. It is the single source of truth for application data. Row deliveries are applied with these semantics:
+StreamContext carries the real three-state stream-health status — `healthy` / `degraded` (IPC alive, telemetry ingest silent past the bounded window) / `down` (IPC unavailable), produced by a backend ingest-pipeline liveness heartbeat and exposed via `useStreamHealth()` (Spec #3064; not a mount constant) — plus the module-scoped RTDB row store. It is the single source of truth for application data. Row deliveries are applied with these semantics:
 
 - **`insert`** — full-row set with spread-merge so init-time fields survive
 - **`update`** — `{ ...row, ...patch }` with seq-guarded stale-patch drops
