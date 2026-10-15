@@ -12,6 +12,7 @@ use tauri::{AppHandle, Emitter};
 use crate::infrastructure::application_data::envelope::{
     ApplicationDeliveryBatch, ApplicationRowNotification,
 };
+use crate::infrastructure::rtdb::health::StreamHealthHeartbeat;
 use crate::infrastructure::rtdb::project::{RowDelivery, RowDeliveryBatch};
 
 /// EventBus emits RTDB row batches on the "fredo-stream-event" Tauri channel.
@@ -66,6 +67,29 @@ impl EventBus {
         let envelope = ApplicationDeliveryBatch::new(notifications.to_vec());
         if let Err(e) = self.app.emit("fredo-stream-event", &envelope) {
             tracing::error!(target: "fredo::comm", error = %e, "emit applicationBatch failed");
+        }
+    }
+
+    /// Emit ONE stream-health heartbeat on the SAME "fredo-stream-event" channel
+    /// (Spec #3064 ST-1): the wire envelope is the camelCase
+    /// `{"streamHealth": StreamHealthHeartbeat}` payload, discriminated by the
+    /// `streamHealth` field in AppProvider BEFORE the application/row validators
+    /// so it can never be mis-routed into the row store.
+    ///
+    /// This is the ONLY sanctioned stream-health emission path — the liveness
+    /// publisher never calls `app_handle.emit` directly. The RTDB `rowBatch`
+    /// contract and its emission path are unchanged.
+    pub fn emit_stream_health(&self, heartbeat: &StreamHealthHeartbeat) {
+        #[derive(Serialize)]
+        struct StreamHealthEnvelope<'a> {
+            #[serde(rename = "streamHealth")]
+            stream_health: &'a StreamHealthHeartbeat,
+        }
+        let envelope = StreamHealthEnvelope {
+            stream_health: heartbeat,
+        };
+        if let Err(e) = self.app.emit("fredo-stream-event", &envelope) {
+            tracing::error!(target: "fredo::comm", error = %e, "emit streamHealth failed");
         }
     }
 
