@@ -372,35 +372,64 @@ export const DoomWindow: React.FC = () => {
           </Text>
         </VisuallyHidden>
 
-        {/* Spec #3053 ST-5 (F-14/AC2) — the persistent combat-kills HUD. A
-            top-left, absolute `Text` pill, pointerEvents:none so it never
-            reflows the canvas or steals interaction (G-273). Rendered iff a run
-            is not `idle`, so there is never a flash of `Kills: 0`; the text is
-            exactly `Kills: {kills}` and is updated ONLY by the existing
-            `doom-autoplay-changed` flow (no new poll, no new invoke).
-            `engagements` is carry-only and deliberately not rendered. */}
+        {/* Spec #3053 ST-5 (F-14/AC2) + Spec #3054 ST-5 (F-16/AC2-UI) — the
+            persistent combat-kills + loot HUD. ONE absolute top-left column
+            (mirrors the top-right note column) holding two `Text` pills,
+            pointerEvents:none so it never reflows the canvas or steals
+            interaction (G-273). Rendered iff a run is not `idle`, so there is
+            never a flash of `Kills: 0`/`Loot: 0`. The kills text is exactly
+            `Kills: {kills}` (byte-identical to #3053) and the loot text exactly
+            `Loot: {itemsCollected}` (a read-only projection, no `?? 0` fallback).
+            Both are updated ONLY by the existing `doom-autoplay-changed` flow
+            (no new poll, no new invoke). `engagements` is carry-only and
+            deliberately not rendered. */}
         {autoplayStatus.phase !== 'idle' && (
-          <Text
-            data-testid="doom-combat-kills"
-            role="status"
-            aria-live="polite"
-            aria-atomic="true"
+          <Flex
             position="absolute"
             top={3}
             left={3}
+            direction="column"
+            align="flex-start"
+            gap={2}
             pointerEvents="none"
-            px={2}
-            py={1}
-            borderRadius="sm"
-            bg="bg.surface"
-            borderWidth="1px"
-            borderColor="border.default"
-            fontSize="xs"
-            color="fg.default"
-            fontFamily="mono"
           >
-            Kills: {autoplayStatus.kills}
-          </Text>
+            <Text
+              data-testid="doom-combat-kills"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+              pointerEvents="none"
+              px={2}
+              py={1}
+              borderRadius="sm"
+              bg="bg.surface"
+              borderWidth="1px"
+              borderColor="border.default"
+              fontSize="xs"
+              color="fg.default"
+              fontFamily="mono"
+            >
+              Kills: {autoplayStatus.kills}
+            </Text>
+            <Text
+              data-testid="doom-loot-hud"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+              pointerEvents="none"
+              px={2}
+              py={1}
+              borderRadius="sm"
+              bg="bg.surface"
+              borderWidth="1px"
+              borderColor="border.default"
+              fontSize="xs"
+              color="fg.default"
+              fontFamily="mono"
+            >
+              Loot: {autoplayStatus.itemsCollected}
+            </Text>
+          </Flex>
         )}
 
         {/* Idle collapses into Starting: the window auto-launches on mount, so
