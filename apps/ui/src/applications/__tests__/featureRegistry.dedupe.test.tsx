@@ -32,6 +32,7 @@ import { LauncherShell } from '../home/components/launcher/LauncherShell';
 // Mock the (only) StreamContext consumer it uses so the shell renders standalone.
 vi.mock('@/shared/contexts/StreamContext', () => ({
   useConnectionStatus: () => ({ isConnected: true }),
+  useStreamHealth: () => ({ health: 'healthy', isConnected: true }),
 }));
 
 // #2853 ST-4: LauncherShell also consumes useCompanion to gate the desktop

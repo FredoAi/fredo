@@ -10,6 +10,8 @@
  * serde shape, never re-keyed.
  */
 
+import type { StreamHealthHeartbeat } from '../hooks/streamHealth';
+
 /**
  * @deprecated v1 ECE delivery envelope — the contract engine was deleted in
  * Spec #2788 P5.1. RETAINED ONLY because the historical test fixtures
@@ -381,4 +383,41 @@ export function isApplicationDeliveryBatch(msg: unknown): msg is ApplicationDeli
   const m = msg as Record<string, unknown>;
   if (!Array.isArray(m.applicationBatch)) return false;
   return m.applicationBatch.every((element) => isApplicationRowNotification(element));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STREAM-HEALTH HEARTBEAT ENVELOPE — Spec #3064 (ST-3)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The backend liveness publisher (ST-1) emits ONE `{"streamHealth": …}`
+// envelope per heartbeat on the EXISTING "fredo-stream-event" channel
+// (backend: `infrastructure/comm/bus.rs` `EventBus::emit_stream_health`). The
+// `streamHealth` field discriminates it from the RTDB `{"rowBatch": …}` and the
+// application `{"applicationBatch": …}` envelopes; AppProvider checks it FIRST
+// so a heartbeat can never be mis-routed into the row store.
+
+/**
+ * The `{"streamHealth": …}` envelope on "fredo-stream-event". The heartbeat
+ * body is the shared contract type from the pure `streamHealth` module (ST-2) —
+ * there is ONE definition, never a parallel copy.
+ */
+export interface StreamHealthEnvelope {
+  streamHealth: StreamHealthHeartbeat;
+}
+
+/**
+ * Discriminate ONE incoming "fredo-stream-event" payload as a heartbeat
+ * envelope. Single extraction path — no heuristic fallbacks: the envelope MUST
+ * carry the full pinned heartbeat field set.
+ */
+export function isStreamHealthEnvelope(msg: unknown): msg is StreamHealthEnvelope {
+  if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return false;
+  const heartbeat = (msg as Record<string, unknown>).streamHealth;
+  if (!heartbeat || typeof heartbeat !== 'object' || Array.isArray(heartbeat)) return false;
+  const hb = heartbeat as Record<string, unknown>;
+  if (typeof hb.seq !== 'number' || !Number.isFinite(hb.seq)) return false;
+  if (typeof hb.ingestConnected !== 'boolean') return false;
+  if (typeof hb.ageMs !== 'number' || !Number.isFinite(hb.ageMs)) return false;
+  if (typeof hb.emittedAtMs !== 'number' || !Number.isFinite(hb.emittedAtMs)) return false;
+  return true;
 }

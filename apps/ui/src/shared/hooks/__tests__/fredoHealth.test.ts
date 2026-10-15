@@ -21,7 +21,7 @@ import {
 /** All-neutral base: nothing to degrade, everything settled healthy where possible. */
 function snapshots(overrides: Partial<FredoHealthSnapshots> = {}): FredoHealthSnapshots {
   return {
-    telemetryConnected: true,
+    telemetry: 'healthy',
     companion: { llamaServerInstalled: true, modelFilesComplete: true },
     llamaServer: { running: true, healthy: true },
     postgres: { state: 'ready' },
@@ -72,11 +72,14 @@ describe('deriveSubsystemLines — order, ids, labels', () => {
 });
 
 describe('deriveSubsystemLines — frozen source → state mapping', () => {
-  it('telemetry: connected → healthy / disconnected → down', () => {
-    expect(lineOf(deriveSubsystemLines(snapshots({ telemetryConnected: true })), 'telemetry')).toMatchObject(
+  it('telemetry: StreamHealth maps 1:1 (healthy/degraded/down) with binding copy', () => {
+    expect(lineOf(deriveSubsystemLines(snapshots({ telemetry: 'healthy' })), 'telemetry')).toMatchObject(
       { state: 'healthy', detail: 'Streaming' },
     );
-    expect(lineOf(deriveSubsystemLines(snapshots({ telemetryConnected: false })), 'telemetry')).toMatchObject(
+    expect(lineOf(deriveSubsystemLines(snapshots({ telemetry: 'degraded' })), 'telemetry')).toMatchObject(
+      { state: 'degraded', detail: 'Telemetry stalled' },
+    );
+    expect(lineOf(deriveSubsystemLines(snapshots({ telemetry: 'down' })), 'telemetry')).toMatchObject(
       { state: 'down', detail: 'Stream stopped' },
     );
   });
@@ -157,7 +160,7 @@ describe('aggregateFredoHealth — worst-wins with neutral handling', () => {
   });
 
   it('a mandatory subsystem down ⇒ overall down', () => {
-    const telemetryDown = deriveSubsystemLines(snapshots({ telemetryConnected: false }));
+    const telemetryDown = deriveSubsystemLines(snapshots({ telemetry: 'down' }));
     expect(aggregateFredoHealth(telemetryDown)).toBe('down');
 
     const postgresDown = deriveSubsystemLines(snapshots({ postgres: { state: 'failed' } }));
@@ -165,6 +168,13 @@ describe('aggregateFredoHealth — worst-wins with neutral handling', () => {
 
     const postgresDisabled = deriveSubsystemLines(snapshots({ postgres: { state: 'disabled' } }));
     expect(aggregateFredoHealth(postgresDisabled)).toBe('down');
+  });
+
+  it('a non-neutral `degraded` line raises the overall to `degraded` (never healthy)', () => {
+    const telemetryDegraded = deriveSubsystemLines(snapshots({ telemetry: 'degraded' }));
+    expect(aggregateFredoHealth(telemetryDegraded)).toBe('degraded');
+    // The mandatory telemetry line is `degraded` (not `down`) → overall `degraded`, not `down`.
+    expect(telemetryDegraded.some((l) => l.state === 'down')).toBe(false);
   });
 
   it('only an OPTIONAL subsystem down ⇒ overall degraded (never down)', () => {
@@ -199,7 +209,7 @@ describe('aggregateFredoHealth — worst-wins with neutral handling', () => {
   it('mandatory down outranks an optional down (down wins over degraded)', () => {
     const lines = deriveSubsystemLines(
       snapshots({
-        telemetryConnected: false,
+        telemetry: 'down',
         llamaServer: { running: false, healthy: false },
       }),
     );

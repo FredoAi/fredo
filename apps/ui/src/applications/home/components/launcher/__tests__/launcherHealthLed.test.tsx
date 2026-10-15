@@ -50,7 +50,7 @@ function healthFrom(snapshots: FredoHealthSnapshots): FredoHealth {
 }
 
 const ALL_HEALTHY: FredoHealthSnapshots = {
-  telemetryConnected: true,
+  telemetry: 'healthy',
   companion: { llamaServerInstalled: true, modelFilesComplete: true },
   llamaServer: { running: true, healthy: true },
   postgres: { state: 'ready' },
@@ -232,5 +232,58 @@ describe('Spec #3052 ST-3 — consolidated LED reads the aggregate health', () =
     expect(trigger).toHaveAttribute('aria-live', 'polite');
     expect(trigger).toHaveAttribute('aria-atomic', 'true');
     expect(trigger).toHaveAttribute('tabindex', '0');
+  });
+});
+
+describe('Spec #3064 ST-4 — the telemetry line gains the `degraded` state (text + label)', () => {
+  it('a `degraded` telemetry stream renders "Degraded / Telemetry stalled" and raises the overall to `degraded`', async () => {
+    renderLed(healthFrom({ ...ALL_HEALTHY, telemetry: 'degraded' }));
+    const trigger = await triggerLed();
+
+    const line = screen.getByTestId('health-line-telemetry');
+    expect(line).toHaveAttribute('data-health-state', 'degraded');
+    // State word + binding detail, both as TEXT (never colour alone).
+    expect(line).toHaveTextContent('Degraded');
+    expect(line).toHaveTextContent('Telemetry stalled');
+
+    // Telemetry is MANDATORY and non-neutral → the overall is `degraded` (never healthy).
+    expect(screen.getByTestId('desktop-status-led-overall')).toHaveAttribute(
+      'data-health-state',
+      'degraded',
+    );
+    expect(trigger).toHaveAttribute(
+      'aria-label',
+      'Fredo health: Degraded — Agent telemetry: Degraded; Llama server: Healthy; Companion model: Healthy; Postgres: Healthy',
+    );
+  });
+
+  it('a `down` telemetry stream renders "Down / Stream stopped" and folds the overall to `down`', async () => {
+    renderLed(healthFrom({ ...ALL_HEALTHY, telemetry: 'down' }));
+    const trigger = await triggerLed();
+
+    const line = screen.getByTestId('health-line-telemetry');
+    expect(line).toHaveAttribute('data-health-state', 'down');
+    expect(line).toHaveTextContent('Down');
+    expect(line).toHaveTextContent('Stream stopped');
+
+    // Telemetry is a MANDATORY subsystem → overall `down`.
+    expect(screen.getByTestId('desktop-status-led-overall')).toHaveAttribute(
+      'data-health-state',
+      'down',
+    );
+    expect(trigger).toHaveAttribute(
+      'aria-label',
+      'Fredo health: Down — Agent telemetry: Down; Llama server: Healthy; Companion model: Healthy; Postgres: Healthy',
+    );
+  });
+
+  it('the `healthy` telemetry line still reads "Healthy / Streaming"', async () => {
+    renderLed(healthFrom(ALL_HEALTHY));
+    await triggerLed();
+
+    const line = screen.getByTestId('health-line-telemetry');
+    expect(line).toHaveAttribute('data-health-state', 'healthy');
+    expect(line).toHaveTextContent('Healthy');
+    expect(line).toHaveTextContent('Streaming');
   });
 });

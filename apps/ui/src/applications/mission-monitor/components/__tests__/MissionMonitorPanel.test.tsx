@@ -13,11 +13,17 @@ import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { MissionMonitorPanel } from '../MissionMonitorPanel';
 import type { ContractDelivery } from '../../../../shared/classes/EventSubscription';
 import type { MonitorNodeData } from '../../types';
+import type { StreamHealth } from '@/shared/hooks/streamHealth';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
 
 afterEach(() => cleanup());
 
 let mockDeliveries: ContractDelivery[] = [];
+
+// Spec #3064 ST-2: the panel reads the derived `isConnected` from StreamContext.
+// Drive it from a mutable three-valued health so `degraded`/`down` can be
+// exercised (the derivation itself lives in StreamContext, unchanged here).
+let mockStreamHealth: StreamHealth = 'down';
 
 // Spec #2896 ST-6: the session list comes from the declared `sessions` table
 // (`useApplicationRead` + `useApplicationWatch`). Mock both hooks over a mutable row set.
@@ -92,7 +98,8 @@ vi.mock('../../hooks/useSessionActivityWatch', async () => {
 vi.mock('@/shared/contexts/StreamContext', () => ({
   useStream: vi.fn().mockImplementation(() => ({
     deliveries: mockDeliveries,
-    isConnected: false,
+    health: mockStreamHealth,
+    isConnected: mockStreamHealth === 'healthy',
     clearEvents: vi.fn(),
   })),
 }));
@@ -267,6 +274,7 @@ describe('MissionMonitorPanel', () => {
     mockSessionsError = null;
     graphState.nodes = [];
     graphState.edges = [];
+    mockStreamHealth = 'down';
   });
 
   it('#2748 AC4 / R-4.1: does NOT render the "Mission Monitor" header strip AND neutralizes the window/dialog identity', () => {
@@ -340,6 +348,33 @@ describe('MissionMonitorPanel', () => {
     expect(status.textContent).toContain('Live updates disconnected');
     expect(screen.queryByTestId('mm-watch-error')).toBeNull();
     expect(screen.getAllByTitle('Delete session').length).toBeGreaterThanOrEqual(1);
+  });
+
+  // Spec #3064 ST-2 / REQ-7: the SAME derived flag drives the banner — a
+  // `degraded` or `down` stream health (both non-`healthy`) renders it, and a
+  // `healthy` health does not (negative control). The panel component itself is
+  // UNCHANGED; only the derivation moved into StreamContext.
+  it('Spec #3064 ST-2: a `degraded` stream health renders the disconnected banner', () => {
+    mockStreamHealth = 'degraded';
+    renderWithChakra(<MissionMonitorPanel />);
+
+    const status = screen.getByTestId('mm-watch-disconnected');
+    expect(status.getAttribute('role')).toBe('status');
+    expect(status.textContent).toContain('Live updates disconnected');
+  });
+
+  it('Spec #3064 ST-2: a `down` stream health renders the disconnected banner', () => {
+    mockStreamHealth = 'down';
+    renderWithChakra(<MissionMonitorPanel />);
+
+    expect(screen.getByTestId('mm-watch-disconnected')).toBeInTheDocument();
+  });
+
+  it('Spec #3064 ST-2: a `healthy` stream health does NOT render the disconnected banner', () => {
+    mockStreamHealth = 'healthy';
+    renderWithChakra(<MissionMonitorPanel />);
+
+    expect(screen.queryByTestId('mm-watch-disconnected')).toBeNull();
   });
 
   it('#2748 AC3/AC4 (R-3.1, R-3.2, R-4.2): the bar is the TOP row and shows the wired SUBAGENTS figure', async () => {

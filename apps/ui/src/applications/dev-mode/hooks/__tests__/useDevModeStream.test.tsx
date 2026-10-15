@@ -22,6 +22,7 @@ import { StreamProvider } from '../../../../shared/contexts/StreamContext';
 import {
   applyRowDelivery,
   resetRowStoreForTests,
+  useStream,
 } from '../../../../shared/contexts/StreamContext';
 import type { RowDelivery, RowChangeKind } from '../../../../shared/classes/EventSubscription';
 import { useDevModeStream } from '../useDevModeStream';
@@ -147,5 +148,36 @@ describe('useDevModeStream — viewer recomputes on row-store version change (FM
       result.current.clearEvents();
     });
     expect(result.current.events).toHaveLength(0);
+  });
+});
+
+// ── Spec #3064 ST-2: the derived connection flag drives `live`/`offline` ─────
+
+describe('useDevModeStream — stream health → `live`/`offline` (Spec #3064 ST-2)', () => {
+  beforeEach(() => {
+    resetRowStoreForTests();
+  });
+
+  it('reads not-connected (⇒ `offline`) for `degraded` and `down`, connected (⇒ `live`) for `healthy`', () => {
+    // Drive the REAL StreamProvider (no mock) — the derivation `isConnected =
+    // health === 'healthy'` lives in StreamContext, and `useDevModeStream`
+    // consumes it via `useConnectionStatus` unchanged (REQ-7).
+    const { result } = renderHook(
+      () => ({ dev: useDevModeStream(), stream: useStream() }),
+      { wrapper },
+    );
+
+    // Cold start is `degraded` (not `down`) → not connected.
+    expect(result.current.stream.health).toBe('degraded');
+    expect(result.current.dev.isConnected).toBe(false); // badge reads `offline`
+
+    act(() => result.current.stream.setStreamHealth('degraded'));
+    expect(result.current.dev.isConnected).toBe(false); // badge reads `offline`
+
+    act(() => result.current.stream.setStreamHealth('down'));
+    expect(result.current.dev.isConnected).toBe(false); // badge reads `offline`
+
+    act(() => result.current.stream.setStreamHealth('healthy'));
+    expect(result.current.dev.isConnected).toBe(true); // badge reads `live`
   });
 });

@@ -72,6 +72,10 @@ use infrastructure::rtdb::cache::{
 use infrastructure::rtdb::commands::{Rtdb, RtdbState};
 use infrastructure::rtdb::ingest::{IngestClassifier, IngestClassifierState};
 use infrastructure::rtdb::flush::{run_flush_task, FlushLoop};
+use infrastructure::rtdb::health::{
+    spawn_publisher as spawn_stream_health_publisher, stream_health_force, StreamHealthMonitor,
+    StreamHealthState,
+};
 use infrastructure::rtdb::project::RowDelivery;
 use infrastructure::rtdb::store::{
     RtdbStore, RTDB_DEFAULT_MAX_ROWS, RTDB_DEFAULT_RETENTION_DAYS, RTDB_MAX_ROWS_KEY,
@@ -829,6 +833,19 @@ pub fn run() {
             }
             app.manage(db_client_state);
 
+            // -- Stream-health liveness producer (Spec #3064 ST-1) -------------
+            // A backend-owned timer that ticks independently of agent activity
+            // (idle ≠ outage): every STREAM_HEARTBEAT_INTERVAL_MS it emits a
+            // `{"streamHealth": ...}` envelope via EventBus::emit_stream_health,
+            // and the read-only `stream_health` probe proves IPC liveness. The
+            // inert-by-default outage lever (`FREDO_STREAM_HEALTH_FORCE`) is
+            // resolved ONCE here (G-376).
+            let stream_health_monitor = Arc::new(StreamHealthMonitor::new(stream_health_force()));
+            app.manage(StreamHealthState(Arc::clone(&stream_health_monitor)));
+            spawn_stream_health_publisher(
+                app.handle().clone(),
+                Arc::clone(&stream_health_monitor),
+            );
 
             // -- OTLP receiver (Spec #2944 ST-2: env-resolved loopback ports) --
             // Each environment's receivers bind its OWN loopback ports (R-1.2);
@@ -842,6 +859,10 @@ pub fn run() {
             });
             let otlp_grpc_port = env_config.ingest_grpc_port;
             let otlp_http_port = env_config.ingest_http_port;
+            // Spec #3064 ST-1: a receiver bind/start failure marks the ingest
+            // pipeline not-connected on the health monitor, so the heartbeat and
+            // the probe report `ingestConnected: false` (the REQ-5 path).
+            let otlp_health = Arc::clone(&stream_health_monitor);
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = infrastructure::otlp::start_with_ports(
                     otlp_ctx,
@@ -850,6 +871,7 @@ pub fn run() {
                 )
                 .await
                 {
+                    otlp_health.set_ingest_connected(false);
                     tracing::error!(target: "fredo::otlp", error = %e, "OTLP receiver error");
                 }
             });
@@ -860,6 +882,9 @@ pub fn run() {
             // RTDB (Spec #2788 P2.3)
             infrastructure::rtdb::commands::subscribe_events,
             infrastructure::rtdb::commands::unsubscribe_events,
+            // Stream-health IPC-liveness probe (Spec #3064 ST-1): read-only,
+            // no args; `Err` under the inert-by-default `down` lever.
+            infrastructure::rtdb::health::stream_health,
             // Application-owned data layer (Spec #2896 ST-4): read/watch/unwatch +
             // write/delete/declare over declared and canonical tables.
             infrastructure::application_data::commands::application_data_read,

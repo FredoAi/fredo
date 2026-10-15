@@ -15,11 +15,12 @@ import { renderHook, act, cleanup } from '@testing-library/react';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
 import { useFredoHealth, HEALTH_POLL_INTERVAL_MS } from '@/shared/hooks/useFredoHealth';
 import type { FredoHealth, FredoSubsystemId, SubsystemHealth } from '@/shared/hooks/fredoHealth';
+import type { StreamHealth } from '@/shared/hooks/streamHealth';
 
-const stream = vi.hoisted(() => ({ connected: true }));
+const stream = vi.hoisted(() => ({ health: 'healthy' as StreamHealth }));
 
 vi.mock('@/shared/contexts/StreamContext', () => ({
-  useConnectionStatus: () => ({ isConnected: stream.connected }),
+  useStreamHealth: () => ({ health: stream.health, isConnected: stream.health === 'healthy' }),
 }));
 
 const COMPANION_READY = {
@@ -86,7 +87,7 @@ function makeInvoke(
 }
 
 beforeEach(() => {
-  stream.connected = true;
+  stream.health = 'healthy';
   vi.useFakeTimers();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -161,7 +162,7 @@ describe('useFredoHealth — bounded polling', () => {
     adapterBridge.setInvoke(invoke);
     adapterBridge.setListen(async () => () => {});
 
-    stream.connected = false;
+    stream.health = 'down';
     const { result, rerender } = renderHook(() => useFredoHealth());
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
@@ -171,9 +172,17 @@ describe('useFredoHealth — bounded polling', () => {
     expect(result.current.overall).toBe('down'); // telemetry is mandatory
     const callsBefore = invoke.mock.calls.length;
 
-    stream.connected = true;
+    // #3064: a `degraded` stream health maps 1:1 to the telemetry line.
+    stream.health = 'degraded';
+    rerender();
+    expect(stateOf(result.current, 'telemetry')).toBe('degraded');
+    expect(result.current.overall).toBe('degraded');
+    expect(invoke.mock.calls.length).toBe(callsBefore); // no IPC for the flag flip
+
+    stream.health = 'healthy';
     rerender();
     expect(stateOf(result.current, 'telemetry')).toBe('healthy');
+    expect(result.current.overall).toBe('healthy');
     expect(invoke.mock.calls.length).toBe(callsBefore); // no IPC for the flag flip
   });
 });
@@ -282,7 +291,7 @@ describe('useFredoHealth — FS-1 forced telemetry-down seam (test-only)', () =>
   }
 
   it('is inert when no seam signal is set — telemetry stays healthy', async () => {
-    stream.connected = true;
+    stream.health = 'healthy';
     adapterBridge.setInvoke(makeInvoke());
     adapterBridge.setListen(async () => () => {});
 
@@ -293,7 +302,7 @@ describe('useFredoHealth — FS-1 forced telemetry-down seam (test-only)', () =>
 
   it('forces telemetry down => overall down from the Vite flag (other lines unaffected)', async () => {
     vi.stubEnv('VITE_FREDO_HEALTH_FORCE_TELEMETRY_DOWN', '1');
-    stream.connected = true; // the connection flag itself is still true
+    stream.health = 'healthy'; // the stream health itself is still healthy
     adapterBridge.setInvoke(makeInvoke());
     adapterBridge.setListen(async () => () => {});
 
@@ -307,7 +316,7 @@ describe('useFredoHealth — FS-1 forced telemetry-down seam (test-only)', () =>
 
   it('forces telemetry down from the runtime window key', async () => {
     testWindow().__FREDO_HEALTH_FORCE_TELEMETRY_DOWN__ = true;
-    stream.connected = true;
+    stream.health = 'healthy';
     adapterBridge.setInvoke(makeInvoke());
     adapterBridge.setListen(async () => () => {});
 
@@ -317,7 +326,7 @@ describe('useFredoHealth — FS-1 forced telemetry-down seam (test-only)', () =>
   });
 
   it('re-derives on a mid-session sessionStorage toggle at the next bounded tick', async () => {
-    stream.connected = true;
+    stream.health = 'healthy';
     adapterBridge.setInvoke(makeInvoke());
     adapterBridge.setListen(async () => () => {});
 
