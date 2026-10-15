@@ -89,6 +89,14 @@ export interface PgSupervisorStatusView {
   failureKind?: PgFailureKind | null;
 }
 
+/**
+ * The three-way classification every supervisor consumer renders from
+ * (Spec #3067 ST-4). `'drifted'` is the ONE condition the recovery banner acts
+ * on (EARS R-1/R-4); `'unavailable'` covers every other non-ready state
+ * (fail-closed engine-not-ready).
+ */
+export type PgSupervisorKind = 'ready' | 'drifted' | 'unavailable';
+
 /** The one-way apply input: persisted units + an OPTIONAL new password. */
 export interface PgApplyInput {
   /** `null` = OS-assigned (auto); an integer 1–65535 = pinned. */
@@ -227,4 +235,18 @@ export async function getPgSupervisorStatus(): Promise<PgSupervisorStatusView> {
     };
   }
   return DEFAULT_STATUS;
+}
+
+/**
+ * The single supervisor→kind classification (Spec #3067 ST-4), mirroring the
+ * Settings pane's private `classifySupervisor` (`PostgresSettings.tsx:110-115`).
+ * `'drifted'` iff `state === 'failed' && failureKind === 'authMismatch'` — the
+ * credential mismatch the recovery banner recovers from; every other non-ready
+ * state is `'unavailable'` (fail-closed). Never throws on a null snapshot.
+ */
+export function classifySupervisorStatus(status: PgSupervisorStatusView | null): PgSupervisorKind {
+  if (!status) return 'unavailable';
+  if (status.state === 'ready') return 'ready';
+  if (status.state === 'failed' && status.failureKind === 'authMismatch') return 'drifted';
+  return 'unavailable';
 }

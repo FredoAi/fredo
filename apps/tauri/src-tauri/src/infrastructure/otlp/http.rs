@@ -19,6 +19,7 @@ use axum::{
     Router,
 };
 use prost::Message;
+use std::time::Instant;
 
 use opentelemetry_proto::tonic::collector::{
     logs::v1::ExportLogsServiceRequest,
@@ -27,10 +28,18 @@ use opentelemetry_proto::tonic::collector::{
 };
 
 use crate::infrastructure::comm::event::Transport;
+use crate::infrastructure::telemetry::backoff::ErrorBackoff;
 use crate::infrastructure::telemetry::metrics_collector::SpanStoreMetricsExt;
 use crate::infrastructure::otlp::grpc::{otlp_logs_to_records, otlp_metrics_to_points};
 use crate::infrastructure::otlp::raw::raw_spans_from_export;
 use crate::infrastructure::otlp::ReceiverContext;
+
+/// R-5 (Spec #3067): per-site back-off gating the HTTP OTLP persist error
+/// emissions, so a fail-closed engine does not flood the log with identical
+/// insert-failure lines. Spans, metrics, and logs keep distinct keys.
+static OTLP_SPANS_BACKOFF: ErrorBackoff = ErrorBackoff::new();
+static OTLP_METRICS_BACKOFF: ErrorBackoff = ErrorBackoff::new();
+static OTLP_LOGS_BACKOFF: ErrorBackoff = ErrorBackoff::new();
 
 /// Shared state for the OTLP HTTP server.
 #[derive(Clone)]
@@ -56,8 +65,15 @@ async fn persist_raw_spans(ctx: &ReceiverContext, request: &ExportTraceServiceRe
     let store = &ctx.span_store;
     let raw_spans = raw_spans_from_export(request, transport);
     match store.insert_raw_spans(&raw_spans).await {
-        Ok(n) => tracing::info!(target: "fredo::otlp", inserted = n, "raw OTLP spans persisted"),
-        Err(e) => tracing::error!(target: "fredo::otlp", error = %e, "raw OTLP span insert failed"),
+        Ok(n) => {
+            tracing::info!(target: "fredo::otlp", inserted = n, "raw OTLP spans persisted");
+            OTLP_SPANS_BACKOFF.reset();
+        }
+        Err(e) => {
+            if let Some(suppressed) = OTLP_SPANS_BACKOFF.due(Instant::now()) {
+                tracing::error!(target: "fredo::otlp", error = %e, suppressed = suppressed, "raw OTLP span insert failed");
+            }
+        }
     }
 }
 
@@ -67,8 +83,15 @@ async fn persist_metrics(ctx: &ReceiverContext, request: &ExportMetricsServiceRe
     if !points.is_empty() {
         let store = &ctx.span_store;
         match store.insert_metrics(&points).await {
-            Ok(n) => tracing::info!(target: "fredo::otlp", inserted = n, "OTLP HTTP metrics persisted"),
-            Err(e) => tracing::error!(target: "fredo::otlp", error = %e, "OTLP HTTP metrics insert failed"),
+            Ok(n) => {
+                tracing::info!(target: "fredo::otlp", inserted = n, "OTLP HTTP metrics persisted");
+                OTLP_METRICS_BACKOFF.reset();
+            }
+            Err(e) => {
+                if let Some(suppressed) = OTLP_METRICS_BACKOFF.due(Instant::now()) {
+                    tracing::error!(target: "fredo::otlp", error = %e, suppressed = suppressed, "OTLP HTTP metrics insert failed");
+                }
+            }
         }
     }
 }
@@ -79,8 +102,15 @@ async fn persist_logs(ctx: &ReceiverContext, request: &ExportLogsServiceRequest)
     if !records.is_empty() {
         let store = &ctx.span_store;
         match store.insert_logs(&records).await {
-            Ok(n) => tracing::info!(target: "fredo::otlp", inserted = n, "OTLP HTTP log records persisted"),
-            Err(e) => tracing::error!(target: "fredo::otlp", error = %e, "OTLP HTTP log insert failed"),
+            Ok(n) => {
+                tracing::info!(target: "fredo::otlp", inserted = n, "OTLP HTTP log records persisted");
+                OTLP_LOGS_BACKOFF.reset();
+            }
+            Err(e) => {
+                if let Some(suppressed) = OTLP_LOGS_BACKOFF.due(Instant::now()) {
+                    tracing::error!(target: "fredo::otlp", error = %e, suppressed = suppressed, "OTLP HTTP log insert failed");
+                }
+            }
         }
     }
 }

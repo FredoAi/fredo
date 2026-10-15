@@ -20,6 +20,7 @@ import { useKonamiCode } from '../../../shared/hooks/useKonamiCode';
 import { useSecretCode } from '../../../shared/hooks/useSecretCode';
 import { DOOM_SECRET_CODE, useDoomMode, useDoomModeSkill } from '../../../shared/doom-mode';
 import { useAppOpenRequests } from '../hooks/useAppOpenRequests';
+import { PgRecoveryBanner } from '../../postgres/components/PgRecoveryBanner';
 import type { FredoApplicationClass } from '../../../shared/classes/FredoApplicationClass';
 
 // Features self-register via allApplications.ts — no manual list needed.
@@ -280,6 +281,13 @@ export const Home: React.FC = () => {
       overflow="hidden"
       position="relative"
     >
+      {/* Spec #3067 ST-6 — the embedded-PostgreSQL AuthMismatch recovery banner.
+          FIRST child of the outer Box (before the desktop row) so it is visible
+          without opening Settings or any window. An in-flow `flexShrink={0}`
+          child, NOT fixed/absolute: it never overlays or intercepts desktop
+          interaction outside its own box, and the desktop row (`flex="1"`)
+          absorbs the remainder. */}
+      <PgRecoveryBanner />
       {/* Row: Desktop (full width). The v1 SideStepper sidebar was deleted with
           the v1 event pipeline (Spec #2788 P5.1). */}
       <Box flex="1" display="flex" flexDirection="row" overflow="hidden" minHeight="0">

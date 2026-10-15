@@ -31,6 +31,12 @@ use tracing_subscriber::Layer;
 
 use crate::infrastructure::storage::span_store::SpanStore;
 use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::telemetry::backoff::ErrorBackoff;
+
+/// R-5 (Spec #3067): per-site back-off gating the log-store flush error
+/// emissions, so a fail-closed engine does not flood the log with identical
+/// `log flush error` lines.
+static LOG_FLUSH_BACKOFF: ErrorBackoff = ErrorBackoff::new();
 
 // ── LogRecord ─────────────────────────────────────────────────────────────────
 
@@ -160,8 +166,13 @@ impl LogCollector {
         };
 
         if let Some(records) = records {
-            if let Err(e) = self.store.insert_logs(&records).await {
-                tracing::error!(target: "fredo::telemetry", error = %e, "log flush error");
+            match self.store.insert_logs(&records).await {
+                Ok(_) => LOG_FLUSH_BACKOFF.reset(),
+                Err(e) => {
+                    if let Some(suppressed) = LOG_FLUSH_BACKOFF.due(Instant::now()) {
+                        tracing::error!(target: "fredo::telemetry", error = %e, suppressed = suppressed, "log flush error");
+                    }
+                }
             }
         }
     }
@@ -182,9 +193,12 @@ impl LogCollector {
 
         let count = records_to_flush.len() as u64;
         if let Err(e) = self.store.insert_logs(&records_to_flush).await {
-            tracing::error!(target: "fredo::telemetry", error = %e, "log flush error");
+            if let Some(suppressed) = LOG_FLUSH_BACKOFF.due(Instant::now()) {
+                tracing::error!(target: "fredo::telemetry", error = %e, suppressed = suppressed, "log flush error");
+            }
             return 0;
         }
+        LOG_FLUSH_BACKOFF.reset();
         count
     }
 
@@ -203,9 +217,12 @@ impl LogCollector {
 
         let count = records_to_flush.len() as u64;
         if let Err(e) = self.store.insert_logs(&records_to_flush).await {
-            tracing::error!(target: "fredo::telemetry", error = %e, "log flush error");
+            if let Some(suppressed) = LOG_FLUSH_BACKOFF.due(Instant::now()) {
+                tracing::error!(target: "fredo::telemetry", error = %e, suppressed = suppressed, "log flush error");
+            }
             return 0;
         }
+        LOG_FLUSH_BACKOFF.reset();
         count
     }
 
