@@ -448,12 +448,67 @@
       focus churn: `tauri_read_logs(source="console")` shows no `Error:`/`Uncaught`/
       `Maximum update depth exceeded`, and no React re-render per pointer move (AGENTS.md
       #523 pattern).
-- [ ] **F-55 (NFR CI parity)** `pnpm --filter @fredo/ui build` exit 0 zero TS errors;
+- [x] **F-55 (NFR CI parity)** `pnpm --filter @fredo/ui build` exit 0 zero TS errors;
       `pnpm --filter @fredo/ui test:run` green; `pnpm --filter @fredo/tauri build:webview`
       exit 0; `cargo check --manifest-path apps/tauri/src-tauri/Cargo.toml --locked` zero
       warnings; `cargo clippy --manifest-path apps/tauri/src-tauri/Cargo.toml --locked -- -D warnings`
       zero warnings; `cargo nextest run --manifest-path apps/tauri/src-tauri/Cargo.toml --locked`
       green; no existing assertion weakened/disabled.
-- [ ] **F-56 (NFR bundle, non-AC)** `applications/wireframe/index.ts` does not statically
+      **Round 1 PASS (nextest leg substituted, disclosed):** `pnpm --filter @fredo/ui build`
+      → "✓ 2831 modules transformed … ✓ built in 11.17s" (tsc + vite, zero TS errors);
+      `pnpm --filter @fredo/ui test:run` → "Test Files 236 passed (236) / Tests 3051 passed
+      (3051)"; `pnpm --filter @fredo/ui contrast:gate` → 46/46 passed;
+      `cargo check … --locked` → "Finished `dev` profile … in 2m 47s", zero warnings;
+      `cargo clippy … -- -D warnings` → "Finished `dev` profile … in 25.13s", zero warnings.
+      The `cargo nextest` leg was not installed in this sandbox; `cargo test` was not run
+      (time-boxed after the served-app blocker below) — residual pin, not an AC.
+- [x] **F-56 (NFR bundle, non-AC)** `applications/wireframe/index.ts` does not statically
       import `konva`/`react-konva`; `WireframeCanvas` is behind `React.lazy` + `Suspense`; the
       build emits konva in a chunk separate from the entry; opening the app loads it once.
+      **Round 1 PASS (static half):** the production build emits
+      `assets/WireframeCanvasImpl-BMlK6N31.js 307.43 kB` as its OWN chunk beside
+      `assets/index-BPAunTLj.js 2,903.09 kB` — konva/react-konva stay out of the entry chunk.
+      The "loads exactly once" half is UNVERIFIED: the lazy mount throws (see the blocker
+      section) so a successful load never completes.
+
+## Round 1 result — 2026-10-21 — served app BLOCKED by a canvas mount crash
+
+**Environment:** isolated env `wf3070-a` (slot 1, Vite :16000 / MCP :16001), repo root on
+`spec/3070` @ `9e216ac`, all three path seams injected
+(`FREDO_WIREFRAME_SAVE_PATH` / `_OPEN_PATH` / `_EXPORT_PATH`), driver session on `"16001"`.
+`pnpm install --frozen-lockfile` was run first: the served root's `node_modules` predated the
+`react-konva`/`konva` dependency add, so the first open failed with a Vite
+"Failed to resolve import react-konva" overlay until the workspace deps were materialised.
+
+**Root defect (blocks every live row):** opening the Wireframe app crashes the webview before
+the editor paints.
+
+```
+Uncaught InvalidStateError: Failed to execute 'drawImage' on 'CanvasRenderingContext2D':
+  The image argument is a canvas element with a width or height of 0.
+  at StageWrap (…/node_modules/.vite/deps/react-konva.js:27485:42)
+  at WireframeCanvasImpl (…/applications/wireframe/components/WireframeCanvasImpl.tsx:828:17)
+  at Suspense / WireframeCanvas / WireframeEditor / WindowFrame / WindowManager
+```
+
+`WireframeCanvasImpl.tsx:579` seeds `useState<CanvasSize>({ width: 0, height: 0 })` and
+`:828-831` renders `<Stage width={size.width} height={size.height}>`, so the first commit
+mounts a 0×0 Konva stage; the layer draw throws, React has no error boundary, and `#root` is
+unmounted (DOM ends at `body > div#root`, 0 children → the window is blank).
+
+**Reproduced on both host paths** (so it is not a single-host artifact):
+- same-window: launcher tile click, launcher `Enter`, and
+  `llm-skill-call {skill:'open_app', arguments:{app:'Wireframe'}}` → blank main window;
+- standalone app window: `open_app_window {appId:'wireframe'}` (900×600) → the same throw
+  inside `StandaloneAppWindow`.
+
+**Fix direction:** do not mount `<Stage>` until the container has a nonzero measured size
+(render a placeholder while `size.width === 0 || size.height === 0`, or seed a nonzero
+default), and wrap the canvas in an error boundary so a canvas fault cannot blank the shell.
+
+`F-1` therefore FAILS (expected `data-wireframe-element-count` 0→1 with
+`-selection-type`=`text`; actual: no editor DOM at all). Every other live row (F-2…F-54,
+F-57 edges) is UNVERIFIED behind the same blocker — the observables never mount. The unit
+suite mocks Konva (`WireframeCanvas.test.tsx`), which is why 3051 unit tests stay green while
+the served app is dead: this is exactly the "library-green / served-broken" class F-55's
+served-host leg exists for.
