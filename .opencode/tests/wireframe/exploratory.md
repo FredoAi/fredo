@@ -54,6 +54,25 @@ behaviour is wrong.
       wireframe") and something unsupported ("add a chart to the wireframe"). Does it refuse
       honestly (no page change, explicit reply), or does it invent elements/actions?
 
+- [x] **E-13 (promoted from round 1) Cold mount on a zero-measured container.** Open the
+      Wireframe app from the launcher (or via `open_app`/`open_app_window`) in an isolated env
+      at the spec tip. **Expected:** the editor renders (toolbar + artboard + panel). **Actual:**
+      the app crashes and the webview goes blank —
+      `Uncaught InvalidStateError: Failed to execute 'drawImage' on 'CanvasRenderingContext2D':
+      The image argument is a canvas element with a width or height of 0.` in `react-konva`
+      `StageWrap`, mounted from `WireframeCanvasImpl.tsx:828`; `#root` unmounts (DOM is
+      `body > div#root`, 0 children). Reproduces in BOTH hosts (same-window `WindowFrame` and
+      the standalone `app-wireframe` window). Root cause candidate: `useState({width:0,height:0})`
+      at `WireframeCanvasImpl.tsx:579` feeds `<Stage width={0} height={0}>` on the first commit;
+      Konva throws before the `ResizeObserver` measurement round-trips. **This is the round-1
+      blocker for every live row.**
+- [ ] **E-14 (new) Missing workspace dependency in the served tree.** Before `pnpm install`,
+      opening the app produced a Vite overlay
+      `Failed to resolve import "react-konva" from …/WireframeCanvasImpl.tsx`. Recorded as an
+      environment-prep finding (the dependency is declared in `apps/ui/package.json` +
+      `pnpm-lock.yaml`, but the served root's `node_modules` had not been installed since the
+      add). Re-test after every dependency change: is the served root install current?
+
 ## Teardown (run after this suite)
 
 - [ ] Close every Wireframe window, delete the probe fixtures under
