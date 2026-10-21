@@ -52,3 +52,25 @@
       @fredo/ui test:run` green, `pnpm --filter @fredo/tauri build:webview` exit 0, and the
       Rust gates (`cargo check` / `cargo clippy -D warnings` / `cargo nextest run`, all
       `--locked`) green. No weakened/disabled assertion. Cross-ref `functional.md` F-55.
+
+## Round 1 result — 2026-10-21
+
+- **S-1 PASS (shell only):** the Fredo launcher renders (`FREDO` heading, launcher dialog,
+  `[data-testid="launcher-command-input"]`, hotkey-count `0`); the shell is healthy.
+- **S-2 FAIL:** opening the Wireframe app raises an uncaught
+  `InvalidStateError: … drawImage … width or height of 0` in `react-konva` `StageWrap`
+  (`WireframeCanvasImpl.tsx:828`) and unmounts `#root`. Console is NOT clean.
+- **S-3 PASS:** the launcher grid exposes `gridcell Wireframe` → `button Wireframe` (found via
+  `tauri_webview_dom_snapshot(accessibility)`), and activating it opens the app window (which
+  then crashes — see S-2).
+- **S-4 not reached** (no need to enter Settings while the feature is dead).
+- **S-5 PASS:** capture taken and uploaded (blank editor after the crash).
+- **S-6 / S-7 / S-7b / S-8 / S-9 UNVERIFIED** — blocked by the S-2 crash: the editor, its
+  hotkeys, its toolbar and its file actions never mount.
+- **S-10 PASS (with one disclosed substitution):** `pnpm --filter @fredo/ui build` ✓ (2831
+  modules, 11.17 s, zero TS errors), `test:run` ✓ (236 files / 3051 tests),
+  `contrast:gate` ✓ (46/46), `cargo check --locked` ✓ zero warnings,
+  `cargo clippy --locked -- -D warnings` ✓ zero warnings. `cargo nextest` is not installed in
+  this sandbox and `cargo test` was not run (time-boxed behind the blocker) — residual pin.
+
+Root defect detail + repro: see `functional.md` → "Round 1 result — served app BLOCKED".
