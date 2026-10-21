@@ -63,6 +63,14 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 ---
 ## Known Failure Modes
+### G-393: acoustic_leg_expectation_not_derived_from_the_non_intelligible_fixture
+- **activation_date:** 2026-10-21
+- **observed:** #3073 round 1 — the QA plan's shipped-dictation liveness row expected a settled model-audio turn with NO intermediate status beat. The only sanctioned in-repo audio fixture is explicitly non-intelligible, so a fed turn is necessarily a PROSE turn, and the shipped content path legitimately emits one bounded status beat before settling. The tester observed it, disclosed it as a deviation with its root cause, and scored the row on its liveness substance (one terminal completion, no error, app responsive) — but a literal executor would have returned a false FAIL against an expectation the named fixture can never satisfy. Root-cause class: `scope` (plan expectation, caught only at test time).
+- **target_failure:** a QA row's expectation for a speech/audio leg is derived from the intelligible interaction the AC describes, while the only sanctioned in-repo fixture is explicitly non-intelligible — so the row demands a behaviour the fixture cannot produce and a literal tester returns a false FAIL.
+- **guardrail:** When an AC describes an intelligible-speech interaction but the sanctioned in-repo fixture is non-intelligible (or otherwise content-poor), the row's expectation MUST be derived from what that fixture actually produces on the shipped path, and every content-dependent clause MUST be scoped to the substitute lever that carries the content — not to the acoustic leg. State the fixture's real capability in the row itself, and declare the acoustic-content clause a named blocker rather than an assertion the row will fail on.
+- **home:** playbooks/qa-expert.md + references.md (this record)
+- **effectiveness:** Pending
+
 ### G-392: on_the_go_improvement
 - **activation_date:** 2026-10-21
 - **observed:** #3070 round 4
