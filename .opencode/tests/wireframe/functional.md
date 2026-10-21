@@ -512,3 +512,42 @@ F-57 edges) is UNVERIFIED behind the same blocker — the observables never moun
 suite mocks Konva (`WireframeCanvas.test.tsx`), which is why 3051 unit tests stay green while
 the served app is dead: this is exactly the "library-green / served-broken" class F-55's
 served-host leg exists for.
+
+## Round 2 result — 2026-10-21 — crash fixed; 52/58 rows pass, 3 fail, 3 unverified
+
+**Verdict: FAIL** (full detail in `.opencode/tmp/3070/tests-runs.md`). The round-1 mount crash
+is gone in all three hosts (launcher `Enter`, `open_app`, standalone `app-wireframe`), the
+stage is never committed at 0×0, and a shrink/restore cycle repaints without a throw.
+
+**Row results:** F-1 PASS · F-2 PASS · F-3 PASS (presets applied; four distinct frames) ·
+F-4 UNVERIFIED (heading style applies; the ≥1.5× ink measurement is confounded by the
+selection outline; no save-capable env left) · F-5 UNVERIFIED (12-icon picker + selection
+change; glyph pixel-diff inconclusive at 94 % zoom; no save oracle) · F-6 PASS (12 categories
+on one page) · F-7 PASS (theme repaint; caveat: page follows `--card-bg`, 8/255 from the
+±6-vs-`--body-bg` oracle) · F-8 PASS · F-9…F-26 PASS · **F-27 FAIL** · F-28…F-32 PASS ·
+**F-33 FAIL** · F-34…F-46 PASS (F-37 all 22 keys, F-38 22 bar rows, F-39 suppression,
+F-40 unfocused drop, F-41/F-42 clean; F-43/F-46 replies via a skills-generation emit) ·
+**F-47 FAIL** · F-48 UNVERIFIED · F-49 PASS · F-50/F-51/F-52 PASS (banner copy exact, no page
+change) · F-53 PASS (30→400 / 9→10 clamps; 32→64 / 99999→4096) · F-54 PASS · F-55 PASS
+(build 2832 modules, 3056 tests, contrast 46/46, cargo check zero warnings; clippy/nextest/
+build:webview not re-run) · F-56 PASS (own 307.81 kB chunk, loads and paints).
+
+**Failures (live, reproducible):**
+- **F-27 — pan on empty canvas is a no-op.** `h` sets `-pan-mode=true`, but a drag on an empty
+  area of the artboard/backdrop leaves the page rect at stage x=175; a drag that starts on an
+  element translates the view (+40,+40). An empty document cannot be panned.
+- **F-33 — Export PNG is blank.** 2560×1600 at 100 %, 400 % + panned and 10 %, byte-identical
+  (SHA256 `F916CC96…`) for 20-element, 1-element and 0-element documents — the capture never
+  includes page content.
+- **F-47 — binding Gherkin not performed.** The exact sentence produced a prose reply and zero
+  performed actions; Wireframe never opened. Model-level: gemma-4-E2B chose not to call the
+  skill.
+
+**New Exploratory finding E-15** (promoted below): the `NumberInput` stepper buttons do not
+change the value — the slider (which does) carries R-3.6.
+
+**Technique notes:** Companion replies only apply while a skill-capable generation is in flight
+(`generationUsesSkillsRef` gate), so F-43/F-46 were emitted ~250 ms after a launcher send;
+`interact` swipe does not deliver Konva's gesture shape — DOM MouseEvent sequences were used;
+the CDP `press` helper does not drive Zag sliders — a synthetic keydown on the thumb was used.
+
