@@ -73,6 +73,33 @@ behaviour is wrong.
       `pnpm-lock.yaml`, but the served root's `node_modules` had not been installed since the
       add). Re-test after every dependency change: is the served root install current?
 
+## Round 2 — resolved and new probes (2026-10-21)
+
+- **E-13 RESOLVED (round 2).** The zero-size-stage crash is fixed: `<Stage>` renders only when
+  the measured size is non-zero, a shrink-to-zero unmounts it, and the canvas error boundary
+  contains any throw. Verified live in all three hosts (launcher, `open_app`, standalone) plus a
+  collapse/restore cycle — no `InvalidStateError`, canvas 1630×861 / 900×201 with real pixels.
+- **[ ] E-15 (new) Numeric stepper buttons are a no-op.** Select any element, click the
+  `NumberInput` increment or decrease chevron on Width: the displayed value and
+  `-selection-geometry` never change (two clicks each, 300 ms apart). The slider and the number
+  field both work (R-3.6 still satisfied). Repro: shape selected → Width steppers → geometry
+  stays `560,628,161,120`.
+- **[ ] E-16 (new) Pan mode cannot pan an empty canvas.** With `-pan-mode=true`, a drag starting
+  on empty artboard/backdrop leaves the view unchanged; a drag starting on an element translates
+  it. Same finding as F-27 — promoted there.
+- **[ ] E-17 (new) Export capture ignores page content.** The exported PNG is the correct 2×
+  size but a flat blank page at every zoom/pan and for any element count (identical SHA256).
+  Same as F-33 — promoted there. Likely the page group/transform used by
+  `stage.toDataURL({x: view.x, y: view.y, …})` does not include the rendered content.
+- **[ ] E-18 (new) Raw `llm-skill-call` replies are dropped unless a skills generation is in
+  flight.** `pushAppOpenReply` reaches the entity, but `applyAppOpenReply` returns early on
+  `generationUsesSkillsRef === false`, so a direct emit shows no bubble and the caller cannot
+  tell (`pushAppOpenReply` still returns `true`). Worth a product decision; the round-2 tester
+  emitted during a launcher send to obtain the F-43/F-46 receipts.
+- **[ ] E-19 (new) Companion ignores an explicit wireframe request.** The binding Gherkin
+  sentence yields a prose reply; the model never selects the `wireframe` skill (F-47). Recorded
+  as a model-behaviour/AC6 failure, not a wiring failure (the executor works via F-44a–c).
+
 ## Teardown (run after this suite)
 
 - [ ] Close every Wireframe window, delete the probe fixtures under
