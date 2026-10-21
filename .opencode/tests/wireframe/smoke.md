@@ -74,3 +74,28 @@
   this sandbox and `cargo test` was not run (time-boxed behind the blocker) — residual pin.
 
 Root defect detail + repro: see `functional.md` → "Round 1 result — served app BLOCKED".
+
+## Round 2 result — 2026-10-21
+
+- **S-1 PASS:** `wireframe-root` + canvas (1630×861) + toolbar + panel + status bar render on
+  the launcher `Enter` path, the `open_app` emit and the standalone `app-wireframe` window.
+- **S-2 PASS:** console free of `Error:` / `Uncaught` / `Maximum update depth exceeded` across
+  the whole drive (no `InvalidStateError`).
+- **S-3 PASS:** launcher tile + `Enter` opens the editor with `data-wireframe-page="1280x800"`,
+  `-element-count="0"`, `-dirty="true"`.
+- **S-4 PASS (round 1, carried):** the Settings surface renders Companion/Appearance/Fredo
+  Setup/Telemetry with no Wireframe section (`hasSettings=false`).
+- **S-5 PASS:** captures uploaded (editor open, nine types, twelve categories, light theme,
+  hidden shape, Companion reply, standalone host).
+- **S-6 PASS:** key `1` from the `default` gate → count 0→1, `-selection-type=text`, rendered.
+- **S-7 PASS:** save → `-dirty=false`, `Saved`, path = the seam; `document.new` + Open restores
+  count/page/history in the SAME env.
+- **S-7b PASS:** `CANCEL=1` launch — `w` leaves document/path/dirty unchanged, no banner, no
+  write.
+- **S-8 FAIL (same root as F-47):** the Gherkin sentence produced prose, no draft, no window.
+  `listActions` / `add.*` / `draftApp`'s executor are proven by F-43/F-44a; the model simply
+  does not select the skill.
+- **S-9 PASS:** 22 keybar rows while focused; the wireframe rows and `data-hotkey` attributes
+  disappear when the host is unfocused.
+- **S-10 PASS:** build 2832 modules, 3056 tests, contrast 46/46, cargo check zero warnings
+  (clippy/nextest/build:webview disclosed as not re-run; no Rust change in the fix commit).
