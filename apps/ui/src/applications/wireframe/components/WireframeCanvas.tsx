@@ -1,13 +1,50 @@
 /**
- * Wireframe canvas host (placeholder body — Spec #3070, ST-2 owns this file).
+ * Wireframe canvas host (Spec #3070, ST-2, C8).
  *
- * ST-1 ships a null shell so the editor shell builds and composes. ST-2
- * replaces this body with the lazy Konva canvas (`wireframe-canvas` testid)
- * without editing `WireframeEditor.tsx` (C8).
+ * Thin lazy wrapper: the editor shell imports `WireframeCanvas` (no props) and
+ * this file keeps `konva` / `react-konva` out of the eager startup chunk
+ * (`allApplications.ts` is an eager glob — F-56). The implementation lives in
+ * `WireframeCanvasImpl.tsx` and is only loaded behind `Suspense`.
+ *
+ * Fallback (UI/UX section 2.3/4): the viewport backdrop + an artboard-shaped
+ * skeleton + "Loading canvas…".
  */
 
-import type { ReactElement } from 'react';
+import { Suspense, lazy, type ReactElement } from 'react';
+import { Box, Skeleton, Text } from '@chakra-ui/react';
 
-export function WireframeCanvas(): ReactElement | null {
-  return null;
+const WireframeCanvasImpl = lazy(() => import('./WireframeCanvasImpl'));
+
+function CanvasFallback(): ReactElement {
+  return (
+    <Box
+      data-testid="wireframe-canvas-loading"
+      position="relative"
+      flex="1"
+      minW={0}
+      minH={0}
+      overflow="hidden"
+      bg="bg.muted"
+      display="flex"
+      flexDirection="column"
+      alignItems="center"
+      justifyContent="center"
+      gap={3}
+    >
+      <Skeleton width="70%" height="70%" maxW="960px" maxH="640px" />
+      <Text fontSize="sm" color="fg.muted">
+        Loading canvas…
+      </Text>
+    </Box>
+  );
 }
+
+export function WireframeCanvas(): ReactElement {
+  return (
+    <Suspense fallback={<CanvasFallback />}>
+      <WireframeCanvasImpl />
+    </Suspense>
+  );
+}
+
+export default WireframeCanvas;
