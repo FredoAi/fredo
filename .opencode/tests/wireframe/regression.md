@@ -153,3 +153,45 @@
   test:run ✓ (3056), contrast:gate ✓ (46), cargo check ✓ zero warnings; clippy/nextest/
   build:webview not re-run this round (round 1 green; no Rust change in the fix commit).
 - **R-12 (no new platform surface) PASS (static)** — unchanged from round 1.
+
+## Round 3 result — 2026-10-21 (env `wf3070-r3`, served `c045877`)
+
+- **R-1 (duplicate guard) PASS (live)** — `data-fredo-hotkey-duplicate` absent and
+  `hotkeys-duplicate-error` absent with the focused standalone `app-wireframe` host (22 mounted
+  keys) and with the main host unfocused (`data-fredo-hotkey-count=0`, 0 toolbar
+  `data-hotkey` attributes); no console `DuplicateHotkeyError`.
+- **R-2 (pre-existing bare-key dispatch) PASS (live)** — the unfocused main host carried 0
+  `data-hotkey` attributes and a bare key produced no editor action (the view stayed put while
+  the host was unfocused); the focused standalone host carried all 22 and every key fired.
+- **R-3 (bar contract) PASS (live)** — 22 `hotkeys-keybar-row` entries while focused, 22-key
+  `data-fredo-hotkey-count`; the bar never takes focus (typing in the launcher/panel was never
+  diverted). The unfocused reading was 0 rows (consistent with the count).
+- **R-4 (launcher grid) PASS** — the Wireframe tile opens the editor through the eager glob in
+  both presentations (`same-window` tile and `app-wireframe` own window).
+- **R-5 (Companion skills) PARTIAL** — `wireframe.add.card` invoked through the real
+  `llm-skill-call` channel in BOTH presentations (own window: exactly one card; main-window
+  contrast leg: +1 card), and the `wireframe` skill is now genuinely offered on the live
+  transport (F-47 completes). `open_app`/`close_app`/`doom_mode` were not re-driven this round.
+- **R-6 (theme contract) PASS (live)** — dark → `light-default` repainted the canvas
+  (page pixel 45,45,45 → 247,248,250 = `--card-bg` `#f7f8fa`); zero colour literals /
+  alpha-append in the new sources (round-2 static scan unchanged; the round-3 diff adds only a
+  transparent hit surface).
+- **R-7 (settings shell) PASS** — the app has no settings section; Settings → Apps gained the
+  per-app presentation control (existing shell, no wireframe-specific nav).
+- **R-8 (persistence medium) PASS** — the only writes were the three file seams
+  (`doc-a.wireframe.json`, `page-export`); no DB/settings/RTDB write from the editor.
+- **R-9 (startup bundle) PASS (round 2 build receipt)** — the lazy chunk is unchanged this round
+  (no canvas import was added); the canvas painted in both hosts.
+- **R-10 (console / loops) PASS** — `tauri_read_logs(source="console", level="error")` returned
+  no rows after the full drive (drags, pans, 30 zoom steps, property edits, theme switch,
+  Companion traffic).
+- **R-11 (build + CI parity) NOT RE-RUN by the tester this round** — disclosed: the round-3
+  commits are the developer's; build/test/clippy evidence for `c045877` is the developer's gate
+  output, not a tester receipt. Tester-side static checks (source scan, i18n/copy strings,
+  catalog ids) were re-read, not re-run.
+- **R-12 (no new platform surface) PASS (static)** — no capability/plugin/dependency change in
+  the round-3 diff; the pan surface is a Konva node, not a DOM hook.
+- **NEW regression pin (E-16):** an element drag must NOT move the view — see
+  `functional.md` E-16 (currently FAILING; add it to R-1-class monitoring until fixed).
+- **NEW regression pin (E-21):** an export must be viewport-invariant — see `functional.md`
+  F-33 / `exploratory.md` E-21 (currently FAILING at zoom > fit).
