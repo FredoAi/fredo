@@ -570,7 +570,9 @@ export function WireframeCanvasImpl(): ReactElement {
   const palette = useCanvasPalette();
 
   const containerRef = useRef<HTMLDivElement>(null);
-  const stageRef = useRef<Konva.Stage>(null);
+  // Mutable: the capture registry is bound from the same ref callback the
+  // Stage's forwarded ref uses (see `bindStage`).
+  const stageRef = useRef<Konva.Stage | null>(null);
   const transformerRef = useRef<Konva.Transformer>(null);
   const elementNodes = useRef<Map<string, Konva.Group>>(new Map());
   const measuredRef = useRef<CanvasSize>({ width: 0, height: 0 });
@@ -635,14 +637,16 @@ export function WireframeCanvasImpl(): ReactElement {
   }, []);
 
   // ── Stage registry (export capture seam) ─────────────────────────────────
-  // Re-keyed on `stageReady`: the ref is only populated in the commit where the
-  // Stage actually mounts, so registering on mount alone would store `null`
-  // (PNG export would then return `null`). The key also covers a later
-  // shrink-to-zero, which unmounts the Stage and re-registers `null`.
-  useEffect(() => {
-    registerWireframeStage(stageRef.current);
-    return () => registerWireframeStage(null);
-  }, [stageReady]);
+  // Bound as a ref CALLBACK, not by an effect that reads `stageRef`. react-konva
+  // re-assigns the forwarded ref on every Stage create/destroy (StrictMode's dev
+  // mount → unmount → mount, HMR, shrink-to-zero), so the registry follows the
+  // instance the same way the React ref does. An effect keyed on `stageReady`
+  // stored the FIRST (already destroyed) StrictMode instance and the export
+  // captured a dead stage (round 2, F-33).
+  const bindStage = useCallback((node: Konva.Stage | null): void => {
+    stageRef.current = node;
+    registerWireframeStage(node);
+  }, []);
 
   // ── Stage cursor (pan mode) ──────────────────────────────────────────────
   useEffect(() => {
@@ -838,7 +842,7 @@ export function WireframeCanvasImpl(): ReactElement {
 
       {stageReady ? (
         <Stage
-          ref={stageRef}
+          ref={bindStage}
           width={size.width}
           height={size.height}
           onClick={handleStageClick}
@@ -846,6 +850,7 @@ export function WireframeCanvasImpl(): ReactElement {
         >
           <Layer>
             <Group
+              name="wireframe-view"
               x={view.x}
               y={view.y}
               scaleX={scale}
@@ -854,6 +859,27 @@ export function WireframeCanvasImpl(): ReactElement {
               onDragStart={() => setStageCursor('grabbing')}
               onDragEnd={handlePanDragEnd}
             >
+              {/*
+               * Pan hit surface (F-27): Konva only starts a drag from a
+               * pointerdown that hits a LISTENING shape, and the empty page has
+               * none. The group transform is (view.x, view.y, scale), so this
+               * rect's local coordinates cover exactly the stage viewport and it
+               * stays under the pointer for the whole gesture. `transparent`
+               * paints nothing (the same idiom as the element hit rects), so the
+               * export is unaffected. `listening={panMode}` keeps it inert when
+               * not panning, so an empty-canvas click still reaches the Stage and
+               * clears the selection.
+               */}
+              <Rect
+                name="wireframe-pan-surface"
+                x={-view.x / scale}
+                y={-view.y / scale}
+                width={size.width / scale}
+                height={size.height / scale}
+                fill="transparent"
+                listening={panMode}
+              />
+
               {/* Everything inside the artboard is clipped to it: what you see is
                   what exports (UI/UX section 2.3). */}
               <Group

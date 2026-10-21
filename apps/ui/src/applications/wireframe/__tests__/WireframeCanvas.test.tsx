@@ -35,6 +35,8 @@ import {
   loadDocument,
   resetWireframeStoreForTests,
   select,
+  setPanMode,
+  setView,
   undo,
 } from '../store/wireframeDocumentStore';
 
@@ -129,6 +131,12 @@ vi.mock('react-konva', async () => {
         'data-mock-stroke': props.stroke ?? '',
         'data-mock-name': props.name ?? '',
         'data-mock-dash': props.dash ? JSON.stringify(props.dash) : '',
+        // Konva listens by default; the hit-surface pins read this explicitly.
+        'data-mock-listening': String(props.listening ?? true),
+        'data-mock-x': props.x === undefined ? '' : String(props.x),
+        'data-mock-y': props.y === undefined ? '' : String(props.y),
+        'data-mock-width': props.width === undefined ? '' : String(props.width),
+        'data-mock-height': props.height === undefined ? '' : String(props.height),
       },
       typeof props.text === 'string' ? props.text : null,
     );
@@ -494,6 +502,86 @@ describe('hidden elements', () => {
     expect(outlines).toHaveLength(1);
     expect(outlines[0]).toHaveAttribute('data-mock-stroke', 'token-focus-ring');
     expect(outlines[0]).toHaveAttribute('data-mock-dash', '');
+  });
+});
+
+describe('pan mode hit surface (F-27)', () => {
+  function panSurface(): HTMLElement {
+    const element = document.querySelector<HTMLElement>(
+      '[data-mock-name="wireframe-pan-surface"]',
+    );
+    if (!element) throw new Error('pan hit surface not mounted');
+    return element;
+  }
+
+  function numberAttr(element: Element, name: string): number {
+    return Number(element.getAttribute(name));
+  }
+
+  it('covers the stage viewport and listens only while pan mode is on', () => {
+    seedDocument([]);
+    act(() => setPanMode(true));
+    renderWithChakra(<WireframeCanvasImpl />);
+
+    // The first commit fits the page; drive the transform under test explicitly.
+    act(() => setView({ scale: 2, x: -120, y: -80 }));
+
+    const surface = panSurface();
+    const viewGroup = document.querySelector('[data-mock-group="wireframe-view"]');
+    expect(viewGroup).not.toBeNull();
+    // FIRST child of the pan group, ahead of the clipped artboard.
+    expect(viewGroup!.firstElementChild).toBe(surface);
+
+    expect(surface).toHaveAttribute('data-mock-listening', 'true');
+
+    const stage = screen.getByTestId('mock-stage');
+    const stageWidth = Number(stage.getAttribute('data-stage-width'));
+    const stageHeight = Number(stage.getAttribute('data-stage-height'));
+
+    // Local rect -> stage space through the group transform (view, scale).
+    const { scale, x, y } = getSnapshot().view;
+    const localX = numberAttr(surface, 'data-mock-x');
+    const localY = numberAttr(surface, 'data-mock-y');
+    const localWidth = numberAttr(surface, 'data-mock-width');
+    const localHeight = numberAttr(surface, 'data-mock-height');
+
+    expect(localX).toBe(60);
+    expect(localY).toBe(40);
+    expect(localWidth).toBe(stageWidth / scale);
+    expect(localHeight).toBe(stageHeight / scale);
+    expect(localX * scale + x).toBe(0);
+    expect(localY * scale + y).toBe(0);
+    expect(localWidth * scale).toBe(stageWidth);
+    expect(localHeight * scale).toBe(stageHeight);
+
+    act(() => setPanMode(false));
+    expect(panSurface()).toHaveAttribute('data-mock-listening', 'false');
+  });
+
+  it('commits ONE view step on a pan release and never touches the document', () => {
+    seedDocument([]);
+    act(() => setPanMode(true));
+    renderWithChakra(<WireframeCanvasImpl />);
+    act(() => setView({ scale: 1, x: -120, y: -80 }));
+
+    const before = getSnapshot();
+    const documentBefore = before.document;
+    const documentJsonBefore = JSON.stringify(before.document);
+
+    const viewGroup = konvaMock.groups.get('wireframe-view');
+    expect(viewGroup).toBeDefined();
+    act(() => {
+      viewGroup!.props.onDragEnd({
+        target: { x: () => -80, y: () => -40 },
+      });
+    });
+
+    const after = getSnapshot();
+    expect(after.view).toMatchObject({ x: -80, y: -40 });
+    expect(after.document).toBe(documentBefore);
+    expect(JSON.stringify(after.document)).toBe(documentJsonBefore);
+    expect(after.canUndo).toBe(false);
+    expect(after.dirty).toBe(before.dirty);
   });
 });
 

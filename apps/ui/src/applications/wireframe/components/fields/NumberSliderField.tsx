@@ -9,7 +9,7 @@
  * churns the undo history.
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   HStack,
   NumberInput,
@@ -43,10 +43,17 @@ export function NumberSliderField({
   onChange,
 }: NumberSliderFieldProps): React.ReactElement {
   const [draft, setDraft] = useState(String(value));
+  // The stepper's click handler must read the value Zag has ALREADY stepped:
+  // Zag increments on pointerdown, so by the time `onClick` fires the machine
+  // holds the new value while this render's `draft` state is still stale. The
+  // ref is written synchronously in `onValueChange` (shipped
+  // CompanionSettingsPanel convention).
+  const draftRef = useRef(String(value));
 
   // Re-sync the displayed draft whenever the store value changes (undo, preset,
   // slider, stepper). `value` is a scalar — no re-render loop.
   useEffect(() => {
+    draftRef.current = String(value);
     setDraft(String(value));
   }, [value]);
 
@@ -65,7 +72,10 @@ export function NumberSliderField({
         <NumberInput.Root
           data-testid={`${testId}-number`}
           value={draft}
-          onValueChange={(details) => setDraft(details.value)}
+          onValueChange={(details) => {
+            draftRef.current = details.value;
+            setDraft(details.value);
+          }}
           onValueCommit={(details) => commit(details.value)}
           min={min}
           max={max}
@@ -73,9 +83,10 @@ export function NumberSliderField({
           size="sm"
           width="110px"
         >
-          {/* Zag only commits on blur/Enter; a stepper click persists the
-              stepped draft explicitly (shipped Companion panel convention). */}
-          <NumberInput.Control onClick={() => commit(draft)} />
+          {/* Zag only commits on blur/Enter, and it steps on pointerdown — so
+              the click handler must commit the REF (the stepped value written by
+              `onValueChange`), never this render's stale `draft` state. */}
+          <NumberInput.Control onClick={() => commit(draftRef.current)} />
           <NumberInput.Input
             aria-label={label}
             bg="bg.surface"

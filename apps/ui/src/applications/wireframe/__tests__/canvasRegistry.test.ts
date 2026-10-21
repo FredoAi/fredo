@@ -157,6 +157,37 @@ describe('captureWireframePagePng', () => {
     expect(fake.batchDraw).toHaveBeenCalledTimes(1);
   });
 
+  it('refuses to emit a blank capture for a stage with no children', () => {
+    // A destroyed (or never-mounted) Stage has no Layer at all: Konva's
+    // `_toKonvaCanvas` then returns an untouched canvas — a transparent bitmap
+    // at the requested size (F-33). The registry must refuse it.
+    const toDataURL = vi.fn(() => 'data:image/png;base64,QkxBTks=');
+    const stage = {
+      toDataURL,
+      find: vi.fn(() => []),
+      batchDraw: vi.fn(),
+      getChildren: vi.fn(() => []),
+    } as WireframeCaptureStage;
+    registerWireframeStage(stage);
+
+    expect(captureWireframePagePng()).toBeNull();
+    expect(toDataURL).not.toHaveBeenCalled();
+  });
+
+  it('captures when the stage holds at least its Layer', () => {
+    const toDataURL = vi.fn(() => 'data:image/png;base64,UE5HQllURVM=');
+    const stage = {
+      toDataURL,
+      find: vi.fn(() => []),
+      batchDraw: vi.fn(),
+      getChildren: vi.fn(() => [{}]),
+    } as WireframeCaptureStage;
+    registerWireframeStage(stage);
+
+    expect(captureWireframePagePng()).toBe('UE5HQllURVM=');
+    expect(toDataURL).toHaveBeenCalledTimes(1);
+  });
+
   it('registers and clears the stage', () => {
     const fake = createStage();
     registerWireframeStage(fake.stage);

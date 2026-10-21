@@ -42,6 +42,8 @@ export interface WireframeCaptureStage {
   toDataURL(config?: WireframeCaptureConfig): string;
   find?(selector: string): WireframeCaptureNode[];
   batchDraw?(): void;
+  /** Konva `Stage.getChildren()` — a live stage always holds at least its Layer. */
+  getChildren?(): unknown[];
 }
 
 let captureStage: WireframeCaptureStage | null = null;
@@ -91,10 +93,19 @@ export function stripPngDataUrl(dataUrl: string): string | null {
  * The capture is derived from the page + view transform in the store, so it is
  * independent of the current pan/zoom: `pixelRatio = 2 / view.scale` yields
  * exactly `2 * page.width x 2 * page.height` pixels.
+ *
+ * A stage with no children is destroyed (or never mounted): Konva's
+ * `_toKonvaCanvas` then returns an untouched canvas, so the export would be a
+ * blank transparent bitmap (round 2, F-33). Refuse it — `exportPng()` surfaces
+ * the declared not-ready banner instead of writing an empty PNG.
  */
 export function captureWireframePagePng(): string | null {
   const stage = captureStage;
   if (!stage) return null;
+
+  if (typeof stage.getChildren === 'function' && stage.getChildren().length === 0) {
+    return null;
+  }
 
   const { document: wireframe, view } = getSnapshot();
   const scale = view.scale > 0 ? view.scale : 1;
