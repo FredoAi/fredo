@@ -192,6 +192,46 @@
 - **R-12 (no new platform surface) PASS (static)** — no capability/plugin/dependency change in
   the round-3 diff; the pan surface is a Konva node, not a DOM hook.
 - **NEW regression pin (E-16):** an element drag must NOT move the view — see
-  `functional.md` E-16 (currently FAILING; add it to R-1-class monitoring until fixed).
+  `functional.md` E-16 (**PASSED in round 4**).
 - **NEW regression pin (E-21):** an export must be viewport-invariant — see `functional.md`
-  F-33 / `exploratory.md` E-21 (currently FAILING at zoom > fit).
+  F-33 / `exploratory.md` E-21 (**PASSED in round 4**: byte-identical at 100 % / 400 % / 10 %).
+
+## Round 4 result — 2026-10-21 (env `wf3070-r4`, served `7d03f3c`)
+
+- **R-1 (duplicate guard) PASS (live)** — `data-fredo-hotkey-duplicate` and
+  `hotkeys-duplicate-error` absent in the focused editor (22 mounted keys); no console
+  duplicate throw.
+- **R-2 (pre-existing bare-key dispatch) PASS (live)** — a bare `KeyboardEvent` dispatch does
+  NOT reach the engine (9 synthetic keydowns → count 0); the driver's real key events do, and
+  with a panel input focused the engine correctly suppresses them
+  (`data-fredo-hotkeys-disabled=true`, `focus-context=text-entry`) while the character lands in
+  the field.
+- **R-3 (bar contract) PASS (live)** — 22 `hotkeys-keybar-row` entries, 22-key
+  `data-fredo-hotkey-count`, 22 toolbar `data-hotkey` attributes, identical key list.
+- **R-4 (launcher grid) PASS** — the app opened from the launcher (`Wireframe` + Enter), from
+  `open_app` skill emits in three separate envs, and from the Companion Gherkin.
+- **R-5 (Companion skills) PASS (live, partial coverage)** — `wireframe.add.section` /
+  `.add.text` / `.add.card` performed through the real `llm-skill-call` path via the Gherkin
+  draft; the four file ids performed through the same channel (F-44c). `open_app` re-driven;
+  `close_app`/`doom_mode` carried from round 3.
+- **R-6 (theme contract) PASS (static, round-4 diff)** — the round-4 commit adds no colour: the
+  capture view is a paint override and the page-node capture introduces no token. Round-3 live
+  theme receipt stands (`useCanvasPalette` untouched).
+- **R-7 (settings shell) PASS** — the app has no settings section; Settings → Companion was used
+  (shipped surface) to turn the Companion on.
+- **R-8 (persistence medium) PASS (live)** — the only writes were the file seams
+  (`doc-a.wireframe.json`, `page-export`); the three denied/optional launches wrote **nothing**
+  (Test-Path false for every cancelled/failed seam).
+- **R-9 (startup bundle) PASS (round-4 build receipt)** — `WireframeCanvasImpl-CjRUbVOx.js`
+  (308.18 kB) is its own chunk beside the 2,914.16 kB entry; `flushSync` comes from the entry's
+  existing react-dom, so no chunk change was introduced.
+- **R-10 (console / loops) PASS** — `tauri_read_logs(source="console", level="error")` returned
+  no rows after the full round-4 drive, and **no `flushSync` warning** appeared during the
+  export matrix.
+- **R-11 (build + CI parity) PASS (tester-run)** — typecheck ✓ · build 2832 modules ✓ ·
+  test:run 239 files / 3077 tests ✓ · contrast:gate 46/46 ✓ · build:webview 2834 modules ✓ ·
+  `cargo check --locked` zero warnings ✓ · `cargo clippy --locked -- -D warnings` zero
+  warnings ✓ · `cargo test --locked` 1451 lib tests + integration suites ✓.
+- **R-12 (no new platform surface) PASS (static)** — no capability/plugin/dependency/manifest
+  change in `481a590`; the capture view is a store field, not a DOM hook, and is explicitly
+  excluded from `data-wireframe-*`, undo and the saved JSON (round-4 pins).
