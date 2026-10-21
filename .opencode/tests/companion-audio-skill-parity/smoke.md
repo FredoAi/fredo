@@ -28,4 +28,4 @@
 
 ### Run log
 
-- (fill per round: serving SHA, date, per-row PASS/FAIL, the env form used, any named blocker.)
+- **Round 1 — 2026-10-21 — serving `spec/3073` @ `24e8bbcd780b8848a754ea3d6346b98b8e62620f`.** Env form: legacy shared path (`dev-env.ps1 -Action Up -Spec 3073 -EnvVar "FREDO_STT_FEED_WAV=<in-repo dictation-phrase-16k-mono.wav>"`, comma form); BEFORE column via `-At 69a0e69`. **PASS 13/13 QA rows (F-1..F-13), 4/4 ACs.** S-1 PASS (launcher renders, console clean); S-2 PASS (feed branch `{deviceName:"stt-feed", sampleRate:16000}`, ONE settled model-audio turn — `llm-done` ×1, no `llm-error`; one `llm-status` on the prose turn, disclosed); S-3 PASS (typed turn selects `wireframe`); S-4 PASS (3 `user-attachments` URLs embedded, `telemetry_spans` receipt via app-pool `telemetry_get_stats`). **Named blocker:** no intelligible audio in-repo ⇒ the acoustic spoken-wireframe selection is undrivable live; the selection leg is evidenced by the L3 lever (F-1/F-2/F-6). psql `telemetry_spans` read refused (keychain-only password, G-375/#3055) ⇒ app-pool fallback used (disclosed).
