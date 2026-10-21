@@ -420,7 +420,11 @@ async fn run_skill_chat(app: &AppHandle, messages: Vec<LlmMessage>) -> Result<()
     // Spec #3070 ST-7: the Wireframe skill is offered additively — offer order
     // `open_app`, `close_app`, `doom_mode`, `wireframe` (C9). The other three
     // declarations and their behaviour are unchanged.
-    let registry = SkillRegistry::with_app_control_doom_and_wireframe();
+    //
+    // Spec #3073 ST-2 (R-2): the registry SOURCE is the ONE shared accessor, so
+    // this second same-content construction site can never drift from the live
+    // companion offer. The content/order is unchanged.
+    let registry = super::status::companion_skill_registry();
     let body = build_skill_request_body(&messages, &registry);
     run_skill_stream(app, &registry, &body).await
 }
