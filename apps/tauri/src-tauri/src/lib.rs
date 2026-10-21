@@ -806,6 +806,14 @@ pub fn run() {
             // the frontend owns the one resolution rule.
             app.manage(infrastructure::app_open::AppOpenRegistry::new());
 
+            // -- Wireframe companion intent relay (Spec #3070 ST-7) -----------
+            // `llm-skill-call` reaches the main window ONCE; the editor may
+            // mount later (open-first) or live in another webview (new-window).
+            // The bounded host queue holds the intent until the editor drains
+            // it on mount (`wireframe_intent_take`), so no draft is ever lost
+            // (G-124).
+            app.manage(applications::wireframe::intent::WireframeIntentState::new());
+
             // -- Built-in PostgreSQL client state (Spec #2950 ST-1) ------------
             // The single managed state every `db_*` command takes. ST-1 resolves
             // only the G-275 seams and opens NO pool; ST-2 populates the
@@ -1008,6 +1016,19 @@ pub fn run() {
             // Storage engine seam (Spec #2975 ST-2): the live-observable,
             // read-only engine status (dialect + fail-closed reason).
             infrastructure::storage::engine::storage_engine_status,
+            // Wireframe file I/O (Spec #3070 ST-6): native Save As / Open /
+            // Export PNG. `rfd` (already declared) owns the OS picker from the
+            // blocking pool; the C6 env seams make every branch drivable and
+            // no plugin/capability/lockfile change is involved.
+            applications::wireframe::commands::wireframe_save_as,
+            applications::wireframe::commands::wireframe_open_document,
+            applications::wireframe::commands::wireframe_export_png,
+            // Wireframe Companion intent relay (Spec #3070 ST-7): persist +
+            // broadcast an intent, drain the queue on editor mount, and report
+            // the performed subset (`wireframe-intent` / `-result`, C5).
+            applications::wireframe::intent::wireframe_intent,
+            applications::wireframe::intent::wireframe_intent_take,
+            applications::wireframe::intent::wireframe_intent_result,
             // ApplicationStore (Spec #339)
             application_store::application_store_ensure_table,
             application_store::application_store_insert,

@@ -19,6 +19,10 @@
 
 use serde_json::{json, Value};
 
+use super::wireframe_catalog::{
+    wireframe_parameters, wireframe_skill_description, WIREFRAME_SKILL,
+};
+
 /// The name of the first registered companion skill (R-3.2).
 pub const OPEN_APP_SKILL: &str = "open_app";
 
@@ -186,6 +190,23 @@ impl SkillRegistry {
             DOOM_MODE_SKILL,
             DOOM_MODE_DESCRIPTION,
             doom_mode_parameters(),
+        ));
+        registry
+    }
+
+    /// The Wireframe registry (Spec #3070, ST-7): the shipped app-control pair
+    /// and `doom_mode` PLUS the `wireframe` skill. Offer order is `open_app`,
+    /// `close_app`, `doom_mode`, `wireframe`.
+    ///
+    /// Additive: every shipped constructor keeps its declaration (and pins)
+    /// untouched, so `open_app`/`close_app`/`doom_mode` behave identically with
+    /// the new skill registered (F-49).
+    pub fn with_app_control_doom_and_wireframe() -> Self {
+        let mut registry = Self::with_app_control_and_doom();
+        registry.register(CompanionSkill::new(
+            WIREFRAME_SKILL,
+            wireframe_skill_description(),
+            wireframe_parameters(),
         ));
         registry
     }
@@ -510,6 +531,90 @@ mod tests {
         assert_eq!(DOOM_MODE_ACTION_ARG, "action");
         assert_eq!(DOOM_MODE_ENTER, "enter");
         assert_eq!(DOOM_MODE_EXIT, "exit");
+    }
+
+    #[test]
+    fn wireframe_registry_registers_the_four_skills_in_offer_order() {
+        let registry = SkillRegistry::with_app_control_doom_and_wireframe();
+        assert_eq!(registry.len(), 4);
+        let names: Vec<&str> = registry.list().map(|skill| skill.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![OPEN_APP_SKILL, CLOSE_APP_SKILL, DOOM_MODE_SKILL, WIREFRAME_SKILL],
+            "offer order is open_app, close_app, doom_mode, wireframe"
+        );
+
+        let wireframe = registry.get(WIREFRAME_SKILL).expect("registered under its name");
+        assert_eq!(wireframe.description, wireframe_skill_description());
+        assert_eq!(wireframe.parameters, wireframe_parameters());
+
+        // The shipped constructors are untouched by the addition (F-49).
+        assert_eq!(SkillRegistry::with_open_app().len(), 1);
+        assert_eq!(SkillRegistry::with_app_control().len(), 2);
+        assert_eq!(SkillRegistry::with_app_control_and_doom().len(), 3);
+        assert_eq!(
+            validate(
+                &SkillRegistry::with_app_control_and_doom(),
+                WIREFRAME_SKILL,
+                &json!({ "action": "wireframe.add.text" })
+            ),
+            Err(SkillValidationError::UnknownSkill(WIREFRAME_SKILL.to_string())),
+            "the wireframe skill is additive, never present in the shipped registries"
+        );
+    }
+
+    #[test]
+    fn wireframe_validates_declared_arguments_and_fails_closed_on_undeclared_ones() {
+        let registry = SkillRegistry::with_app_control_doom_and_wireframe();
+
+        let list = validate(
+            &registry,
+            WIREFRAME_SKILL,
+            &json!({ "action": "wireframe.companion.listActions" }),
+        )
+        .expect("a declared action is valid");
+        assert_eq!(list.skill, WIREFRAME_SKILL);
+        assert_eq!(list.arguments, json!({ "action": "wireframe.companion.listActions" }));
+
+        let draft = validate(
+            &registry,
+            WIREFRAME_SKILL,
+            &json!({
+                "action": "wireframe.companion.draftApp",
+                "app_name": "Reporter",
+                "summary": "visualize reports"
+            }),
+        )
+        .expect("the optional app_name/summary arguments are declared");
+        assert_eq!(draft.arguments["app_name"], "Reporter");
+
+        assert_eq!(
+            validate(&registry, WIREFRAME_SKILL, &json!({})),
+            Err(SkillValidationError::MissingArgument("action".to_string()))
+        );
+        assert_eq!(
+            validate(&registry, WIREFRAME_SKILL, &json!({ "action": "   " })),
+            Err(SkillValidationError::InvalidArgument(
+                "argument 'action' must not be empty".to_string()
+            ))
+        );
+        assert_eq!(
+            validate(&registry, WIREFRAME_SKILL, &json!({ "action": 7 })),
+            Err(SkillValidationError::InvalidArgument(
+                "argument 'action' must be a string".to_string()
+            ))
+        );
+        assert_eq!(
+            validate(
+                &registry,
+                WIREFRAME_SKILL,
+                &json!({ "action": "wireframe.add.text", "force": true })
+            ),
+            Err(SkillValidationError::InvalidArgument(
+                "unexpected argument 'force'".to_string()
+            )),
+            "an undeclared argument key fails closed (R-6.4)"
+        );
     }
 
     #[test]

@@ -12,6 +12,7 @@ pub mod models;
 pub mod performance_mode;
 pub mod resolver;
 pub mod skills;
+pub mod wireframe_catalog;
 
 pub use doom_decision::{
     DoomDecision, DoomDecisionError, DoomDecisionSource, DoomDecisionSourceState,

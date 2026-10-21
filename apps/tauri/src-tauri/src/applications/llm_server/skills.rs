@@ -417,7 +417,10 @@ pub(crate) async fn run_plain_stream(app: &AppHandle, body: &Value) -> Result<()
 /// Stream one skill-aware generation: content deltas → `llm-token`; tool-call
 /// fragments buffered; at the finish the selection is validated and routed.
 async fn run_skill_chat(app: &AppHandle, messages: Vec<LlmMessage>) -> Result<(), String> {
-    let registry = SkillRegistry::with_app_control_and_doom();
+    // Spec #3070 ST-7: the Wireframe skill is offered additively — offer order
+    // `open_app`, `close_app`, `doom_mode`, `wireframe` (C9). The other three
+    // declarations and their behaviour are unchanged.
+    let registry = SkillRegistry::with_app_control_doom_and_wireframe();
     let body = build_skill_request_body(&messages, &registry);
     run_skill_stream(app, &registry, &body).await
 }
