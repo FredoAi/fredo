@@ -100,8 +100,63 @@ behaviour is wrong.
   sentence yields a prose reply; the model never selects the `wireframe` skill (F-47). Recorded
   as a model-behaviour/AC6 failure, not a wiring failure (the executor works via F-44a–c).
 
-## Teardown (run after this suite)
+## Round 3 — re-probes after the pan / export / stepper / skill-offer fixes (2026-10-21)
 
+- **E-13 RESOLVED, holding.** No zero-size stage, no blank window, canvas paints in both hosts.
+- **E-15 PARTLY RESOLVED.** The stepper now commits the stepped value: element width 300→301,
+  element height 48→49, page width 1280→1281, page height 800→801 with a realistic pointer
+  sequence (`pointerdown` → 120 ms → `pointerup` → 80 ms → `click`). A zero-delay synthetic burst
+  still shows the old symptom — that is a TECHNIQUE artifact (Zag's `onValueChange` lands after
+  the synchronous click), not the defect.
+  **Residual (new, FAIL on the undo clause):** one stepper interaction pushes TWO history
+  entries. The click focuses the number input; the next blur fires Zag's `onValueCommit` with the
+  already-committed value, and `dispatch('element.update')` has no no-op guard. Observed: width
+  302 → click → 303 → blur → `u` (no change) → `u` (302). Same on page width (1281 → undo →
+  undo → 1280). Fix direction: skip a patch that equals the current element (or skip
+  `onValueCommit` when the machine value is unchanged).
+- **E-16 RESOLVED (pan).** `wireframe-pan-surface` (a viewport-covering transparent hit rect,
+  `listening={panMode}`, first child of `wireframe-view`) makes every drag origin pan by exactly
+  the pointer delta: backdrop (50,40), page interior (−60,−25), over an element (35,−30) at
+  100 %; page interior (80,50) and over an element (−45,25) at 400 %; an EMPTY document pans
+  (count 0). `h` off restores the empty-canvas deselect, and count / selection / geometry /
+  `dirty` / undo-depth / the saved JSON stay identical across all of it.
+  **However — see the new E-20.**
+- **E-17 PARTLY RESOLVED (export content).** The export is no longer blank: 20 elements ⇒
+  3.295 % non-background pixels, 0 % transparent; SHA256 distinct for 20/1/0 elements; a selected
+  export is byte-identical to a deselected one; `phone` ⇒ 780×1688. **Not viewport-invariant:**
+  at 400 % the PNG is 44.096 % transparent (the crop region lies outside the rendered stage
+  canvas) — F-33 stays FAIL on the invariance clause. See E-21.
+- **E-18 unchanged.** A raw `llm-skill-call` reply still needs an in-flight skills generation.
+- **E-19 RESOLVED (offer).** The exact Gherkin sentence now opens the app from closed and drafts
+  `section{preset:'navbar'}` + `text{textStyle:'heading', text:'Reporter'}` +
+  `card{label:'Reporter reports'}` (count 3) via the REAL model path, and the reply names only
+  the performed steps. The live transport now offers the 4-skill registry
+  (`companion_skill_registry()`), so the offer was the whole defect.
+- **[ ] E-20 (new, regression) An element drag pans the view.** `handlePanDragEnd`
+  (`WireframeCanvasImpl.tsx:745-752`) is bound to the pan group and does not check
+  `event.target === event.currentTarget`; Konva bubbles the element's `dragend` to it, so the
+  view is set to the element's absolute stage position. Measured: text at page (510,396) dragged
+  +30,+20 → element (540,416) ✓ but view (175,30.5) → (715,446.5) ⇒ the page jumps. This also
+  explains every "mysterious pan" a tester sees while measuring: read the view before/after each
+  drag in any future round.
+- **[ ] E-21 (new) `Stage.toDataURL({x,y,width,height})` crops the viewport, not the page.**
+  At 400 % the requested crop origin is far outside the stage-sized layer canvas, so 44 % of the
+  bitmap is never painted (transparent). Fix direction: capture the page GROUP
+  (`pageGroup.toDataURL({pixelRatio: PAGE_EXPORT_PIXEL_RATIO})`) or temporarily reset the view
+  before the capture — not the stage crop.
+- **Technique findings (round 3):** `tauri_webview_interact` is a synthetic `.click()`
+  (`detail === 0`, no `pointerdown`) — it cannot drive Zag steppers and does not trigger the
+  pointer-activation blur; `tauri_webview_keyboard press` delivers `isTrusted === false` key
+  events (fine for the engine, but Zag's typed-commit path needs the host to be OS-focused —
+  on an unfocused host the typed value stays in the input and never reaches the store);
+  `tauri_manage_window focus` and `window.setFocus()` are both unavailable (bridge plugin 0.12 /
+  capability), so once the main window loses OS focus the only reliable way back to a
+  hotkey-capable host is to open the app in its OWN window (a new window gets focus).
+  `import('/@fs/C:/Code/fredo/apps/ui/src/applications/wireframe/…')` resolves the live modules
+  (Vite dev graph) and exposes the Konva stage, the document store and the undo flags — the most
+  precise live oracle available.
+
+## Teardown (run after this suite)
 - [ ] Close every Wireframe window, delete the probe fixtures under
       `.opencode/tmp/3070/e2e/` that are not part of the functional plan, restore the appearance
       preset to the served default, and `Down` the isolated env. Confirm no settings key, DB row
