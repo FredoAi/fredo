@@ -156,6 +156,36 @@ behaviour is wrong.
   (Vite dev graph) and exposes the Konva stage, the document store and the undo flags — the most
   precise live oracle available.
 
+## Round 4 — closures and new technique findings (2026-10-21)
+
+- **E-15 RESOLVED (undo clause).** The store's `commitDocument` is a no-op for a value-equal
+  document, so the blur re-commit cannot push a second history entry. Live: element width
+  160→161, element height 44→45, page width 1280→1281, page height 800→801, corner radius m→l —
+  each reverted by exactly ONE `u` with `canRedo` set. The owner decision (the store, not the
+  field) is the one that shipped; do not add a field-level guard.
+- **E-20 RESOLVED.** The pan handlers ignore bubbled drags (`target !== currentTarget`). Live:
+  element drag +30,+20 at 100 % and +7.5,+5 page px at 400 %, the view transform byte-identical
+  at both zooms, the document diff = that element's `x/y` only, one undo each.
+- **E-21 RESOLVED.** Export captures the `.wireframe-page` node under a transient
+  `captureView {scale:1,x:0,y:0}`, so no view value reaches the config. All three legs of one
+  document (100 %, 400 % panned, 10 %) are **byte-identical** (`SHA256 7AC12AA6…`), 0
+  transparent, and the phone leg exports 780×1688.
+- **E-18 unchanged (still true).** A raw `llm-skill-call` reply needs an in-flight skills
+  generation; the pushed bubble's retention is shorter than one driver round-trip, so F-43/F-46
+  text cannot be read reliably by polling. Prefer reading the reply text inside the same
+  `execute_js` that triggers it, or capture a screencast.
+- **E-22 (new, technique) A synthetic `KeyboardEvent` does not reach the hotkey engine.** Nine
+  dispatched `keydown`s for `1…9` produced `-element-count` 0; the driver's real key events
+  produced 1…9 correctly. Never conclude "the hotkey is broken" from a synthetic dispatch.
+- **E-23 (new, environment) A fresh boot can look dead for 3-5 minutes.** `about:blank` from
+  `manage_window`, `execute_js` "Request timeout after 2000ms", and a `dom_snapshot` of
+  `body > div#root` with no children = still transforming the dev graph. `Down`/`Up` ×5, a
+  `Clean`, driver stop/start ×5, `taskkill msedgewebview2` and `Hygiene -Kill` all failed to
+  shorten it; waiting did. Budget the wait before declaring an environment wedge.
+- **E-24 (new, environment) `cargo test` cannot run while the env is up** — `fredo.exe` is
+  locked (`Access is denied (os error 5)` removing `target/debug/fredo.exe`). `Down` the env
+  first, or accept an incremental rebuild.
+
 ## Teardown (run after this suite)
 - [ ] Close every Wireframe window, delete the probe fixtures under
       `.opencode/tmp/3070/e2e/` that are not part of the functional plan, restore the appearance
