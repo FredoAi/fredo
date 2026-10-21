@@ -1008,6 +1008,13 @@ pub fn run() {
             // Storage engine seam (Spec #2975 ST-2): the live-observable,
             // read-only engine status (dialect + fail-closed reason).
             infrastructure::storage::engine::storage_engine_status,
+            // Wireframe file I/O (Spec #3070 ST-6): native Save As / Open /
+            // Export PNG. `rfd` (already declared) owns the OS picker from the
+            // blocking pool; the C6 env seams make every branch drivable and
+            // no plugin/capability/lockfile change is involved.
+            applications::wireframe::commands::wireframe_save_as,
+            applications::wireframe::commands::wireframe_open_document,
+            applications::wireframe::commands::wireframe_export_png,
             // ApplicationStore (Spec #339)
             application_store::application_store_ensure_table,
             application_store::application_store_insert,

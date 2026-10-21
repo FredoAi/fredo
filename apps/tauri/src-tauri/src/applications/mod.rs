@@ -7,3 +7,4 @@ pub mod settings;
 pub mod setup;
 pub mod telemetry;
 pub mod terminal;
+pub mod wireframe;
