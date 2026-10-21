@@ -695,6 +695,20 @@ async fn run_status_pass(
         .map(str::to_string)
 }
 
+/// The ONE skill offer of the live companion transport (Spec #3070, ST-7b).
+///
+/// Every live offer site — [`run_tools_attempt`] and the offer-skills branch of
+/// [`run_plain_retry`] — obtains its registry from here, so the offer SET is
+/// chosen in exactly ONE place. Round 2's defect (F-47) was two divergent
+/// copies that both registered `open_app`/`close_app`/`doom_mode` only, so the
+/// `wireframe` skill was never in any request body the model saw and a
+/// Wireframe request could only be answered with prose.
+///
+/// Offer order is `open_app`, `close_app`, `doom_mode`, `wireframe`.
+pub(crate) fn companion_skill_registry() -> SkillRegistry {
+    SkillRegistry::with_app_control_doom_and_wireframe()
+}
+
 /// Run ONE skill-capable turn through the SHIPPED tools path (ST-6).
 ///
 /// The body is the SHIPPED [`build_skill_request_body`] /
@@ -709,7 +723,7 @@ async fn run_tools_attempt(
     messages: &[LlmMessage],
     audio_base64: Option<&str>,
 ) -> Result<(), String> {
-    let registry = SkillRegistry::with_app_control_and_doom();
+    let registry = companion_skill_registry();
     let body = match audio_base64 {
         Some(audio) => build_audio_skill_request_body(messages, audio, &registry),
         None => build_skill_request_body(messages, &registry),
@@ -778,7 +792,7 @@ async fn run_plain_retry(
     audio_base64: Option<&str>,
 ) -> Result<(), String> {
     if offer_skills {
-        let registry = SkillRegistry::with_app_control_and_doom();
+        let registry = companion_skill_registry();
         let body = match audio_base64 {
             Some(audio) => build_audio_skill_request_body(messages, audio, &registry),
             None => build_skill_request_body(messages, &registry),
@@ -1309,6 +1323,116 @@ mod tests {
                 }),
                 TerminalEvent::Done,
             ]
+        );
+    }
+
+    // ── Spec #3070 ST-7b: the ONE live offer carries the wireframe skill ──────
+
+    /// F-47 regression pin — the LIVE transport's offer set.
+    ///
+    /// The Companion's typed send reaches the model through `run_tools_attempt`
+    /// (and its retry through the offer-skills branch of `run_plain_retry`), so
+    /// THIS offer must be the four-skill registry: `open_app`, `close_app`,
+    /// `doom_mode`, `wireframe` — in that order — with a `wireframe`
+    /// declaration that declares the three C4 arguments and a DIRECTIVE
+    /// description naming the request class (draft/sketch/visualize) and every
+    /// catalog id, so "let's create a new wireframe for <app>" is callable.
+    ///
+    /// Round-2 code fails this on the first assertion: the live path offered
+    /// `SkillRegistry::with_app_control_and_doom()` — three tools, no
+    /// `wireframe` function at all, which is why the model could only reply in
+    /// prose.
+    #[test]
+    fn the_live_offer_carries_the_wireframe_skill_with_its_directive_description() {
+        use crate::infrastructure::companion::wireframe_catalog::{
+            WIREFRAME_ACTIONS, WIREFRAME_ACTION_ARG, WIREFRAME_APP_NAME_ARG, WIREFRAME_SUMMARY_ARG,
+        };
+
+        let registry = companion_skill_registry();
+        let tools = skills::render_tools(&registry);
+        let tools = tools.as_array().expect("the offer renders a tools array");
+
+        // The four offered functions, in offer order.
+        let names: Vec<&str> = tools
+            .iter()
+            .filter_map(|tool| tool["function"]["name"].as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["open_app", "close_app", "doom_mode", "wireframe"],
+            "the live offer must register the wireframe skill last (F-47)"
+        );
+
+        let wireframe = tools
+            .iter()
+            .find(|tool| tool["function"]["name"] == "wireframe")
+            .expect("the wireframe function is offered to the model");
+
+        // The three C4 arguments are declared; `action` is the only required one.
+        let parameters = &wireframe["function"]["parameters"];
+        assert_eq!(parameters["type"], "object");
+        assert_eq!(parameters["required"], json!([WIREFRAME_ACTION_ARG]));
+        let properties = parameters["properties"]
+            .as_object()
+            .expect("the declared properties object");
+        let mut keys: Vec<&str> = properties.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        let mut expected = vec![
+            WIREFRAME_ACTION_ARG,
+            WIREFRAME_APP_NAME_ARG,
+            WIREFRAME_SUMMARY_ARG,
+        ];
+        expected.sort_unstable();
+        assert_eq!(keys, expected, "the C4 arguments are action/app_name/summary");
+        for key in expected {
+            assert_eq!(properties[key]["type"], "string", "{key} must be a string");
+        }
+
+        // The description is a DIRECTIVE: the request class + the draft action +
+        // every catalog id (an offer that only lists ids is a passive sentence).
+        let description = wireframe["function"]["description"]
+            .as_str()
+            .expect("the description is a string");
+        assert!(description.contains("Fredo Wireframe"));
+        for word in ["create", "draft", "sketch", "visualize"] {
+            assert!(
+                description.contains(word),
+                "the description must name the request class ({word}): {description}"
+            );
+        }
+        assert!(
+            description.contains("wireframe.companion.draftApp"),
+            "the description must name the draft action: {description}"
+        );
+        for (id, _) in WIREFRAME_ACTIONS {
+            assert!(description.contains(id), "description is missing {id}");
+        }
+
+        // The body keeps the shipped tools contract: the model decides (`auto`),
+        // parallel calls stay off, and NO `response_format` — the schema grammar
+        // must never displace the native tool path (ST-6).
+        let body = build_skill_request_body(
+            &[message(
+                "user",
+                "let's create a new wireframe for our new Reporter app",
+            )],
+            &companion_skill_registry(),
+        );
+        assert_eq!(body["tool_choice"], "auto");
+        assert_eq!(body["parallel_tool_calls"], false);
+        assert!(
+            body.get("response_format").is_none(),
+            "the tools body must never carry response_format: {body}"
+        );
+        let body_names: Vec<&str> = body["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .filter_map(|tool| tool["function"]["name"].as_str())
+            .collect();
+        assert_eq!(
+            body_names, names,
+            "the request body offers the same four tools in offer order"
         );
     }
 

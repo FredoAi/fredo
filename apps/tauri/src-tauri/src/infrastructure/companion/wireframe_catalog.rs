@@ -83,11 +83,20 @@ pub fn wireframe_action_ids() -> String {
 
 /// The capability sentence offered to the model, ending with the id list.
 ///
+/// A DIRECTIVE, not a passive capability sentence (Spec #3070, ST-7b / F-47):
+/// round 2's wording described what the app can do but never told the model
+/// WHEN to call the skill, and the live model answered the binding request
+/// ("let's create a new wireframe for our new Reporter app…") with prose and
+/// zero actions. The offer now names the request class — "create, draft,
+/// sketch, mock up or visualize" an app/screen/page/dashboard — and the action
+/// that satisfies it (`wireframe.companion.draftApp` with `app_name`), so the
+/// routing hint travels with the tool declaration itself.
+///
 /// Ids (not descriptions) keep the offer compact; the list reply carries the
 /// human descriptions (R-6.1).
 pub fn wireframe_skill_description() -> String {
     format!(
-        "Control the Fredo Wireframe app: list its actions, run one action, or draft a starter wireframe for a named app. Use ONLY for an explicit Wireframe request. Actions: {}.",
+        "Create or edit a wireframe in the Fredo Wireframe app. Call this whenever the user asks to create, draft, sketch, mock up or visualize an app/screen/page/dashboard — including \"let's create a new wireframe for <app>\" or \"I would like a way to visualize <thing>\": use action=wireframe.companion.draftApp with app_name set to the app the user named, then the page is drafted for you. Use ONLY for Wireframe requests. Actions: {}.",
         wireframe_action_ids()
     )
 }
@@ -142,6 +151,21 @@ mod tests {
     fn the_description_names_the_capability_and_every_action_id() {
         let description = wireframe_skill_description();
         assert!(description.contains("Fredo Wireframe"));
+        // A DIRECTIVE, not a passive capability sentence (ST-7b / F-47): the
+        // offer must name the REQUEST CLASS the model has to recognise — a live
+        // model that only reads "Control the app: list, run, or draft" answers
+        // in prose. `sketch` + `visualize` are the words the round-2 wording
+        // lacked, so this pin fails on it.
+        for word in ["create", "draft", "sketch", "visualize"] {
+            assert!(
+                description.contains(word),
+                "the description must name the request class ({word}): {description}"
+            );
+        }
+        assert!(
+            description.contains("wireframe.companion.draftApp"),
+            "the description must name the draft action: {description}"
+        );
         for (id, _) in WIREFRAME_ACTIONS {
             assert!(description.contains(id), "description is missing {id}");
         }
