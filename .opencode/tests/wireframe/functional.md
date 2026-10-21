@@ -436,8 +436,9 @@
       **Edge:** `schemaVersion:0`; MISSING `schemaVersion`; a string `"1"`.
 - [ ] **F-53 (R-4.2 + R-4.6)** Export/clamp edges.
       **Expected:** exporting a ZERO-element page still writes a valid 2× blank page (empty is
-      not an error); page width `32` clamps to `64`, `99999` clamps to `4096`; 20 zoom-ins hit
-      `-zoom`=`400`, 20 zoom-outs hit `10`.
+      not an error); page width `32` clamps to `64`, `99999` clamps to `4096`; with the declared
+      ±10 percentage-point zoom step, **30** zoom-ins from 100 % reach `-zoom`=`400` and a 31st
+      stays `400`; **9** zoom-outs from 100 % reach `10` and a 10th stays `10`.
       **Edge:** both clamps hit exactly (no off-by-one); dims typed while a preset is active
       (becomes `custom`); zoom at the clamp then Fit.
 
