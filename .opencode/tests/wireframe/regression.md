@@ -123,3 +123,33 @@
   test:run ✓ (3051), contrast:gate ✓, cargo check ✓, cargo clippy ✓ (all zero warnings).
 - **R-12 (no new platform surface) PASS (static)** — no new capability/plugin, no
   `global-shortcut` registration; `Cargo.lock` unchanged (canvas deps are UI-side only).
+
+## Round 2 result — 2026-10-21
+
+- **R-1 (duplicate guard) PASS (live)** — `data-fredo-hotkey-duplicate` and
+  `hotkeys-duplicate-error` absent with Wireframe focused, unfocused and with the standalone
+  `app-wireframe` window open; 22 mounted keys; no console `DuplicateHotkeyError`.
+- **R-2 (pre-existing bare-key dispatch) PASS (live)** — with Wireframe unfocused its 22
+  `data-hotkey` attributes are gone (`data-fredo-hotkey-count` 22→0) so a bare key cannot reach
+  it; the toolbar controls stay visible/clickable (height 53 px unchanged).
+- **R-3 (bar contract) PASS (live)** — 22 `hotkeys-keybar-row` entries with
+  `data-hotkey-key`/`-action`; rows disappear on unfocus; the bar never takes focus.
+- **R-4 (launcher grid) PASS** — the Wireframe tile renders/opens through the eager glob with
+  no `Home.tsx` edit; `Enter`/tile activation open the editor.
+- **R-5 (Companion skills) PASS** — `open_app` opened Wireframe three ways, `close_app_window`
+  returned `true` for the standalone window, one reply per request; all 25 wireframe ids are
+  invocable through the one `llm-skill-call` path (F-43/F-44a–c). `doom_mode` not re-run.
+- **R-6 (theme contract) PASS** — zero colour literals / alpha-append in the new sources
+  (including the boundary + placeholder); no `allowlist.ts` entry; palette re-resolved on the
+  theme switch (accent + page pixels changed).
+- **R-7 (settings shell) PASS** — `SettingsSurface.tsx` untouched; no Wireframe section.
+- **R-8 (persistence medium) PASS** — the only writes are the three file seams; no DB/settings/
+  RTDB write; CANCEL wrote nothing; FAIL_FILE wrote nothing.
+- **R-9 (startup bundle) PASS** — `WireframeCanvasImpl-wT5Qv7JC.js` (307.81 kB) is its own
+  chunk; the lazy chunk loaded and painted in every host.
+- **R-10 (console / loops) PASS** — no `Maximum update depth exceeded`/`Uncaught`/`Error:`
+  after drags, resizes, 30 zooms, a theme switch and Companion traffic.
+- **R-11 (build + CI parity) PASS (with disclosed omissions)** — build ✓ (2832 modules),
+  test:run ✓ (3056), contrast:gate ✓ (46), cargo check ✓ zero warnings; clippy/nextest/
+  build:webview not re-run this round (round 1 green; no Rust change in the fix commit).
+- **R-12 (no new platform surface) PASS (static)** — unchanged from round 1.
