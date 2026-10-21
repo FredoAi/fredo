@@ -8,10 +8,15 @@
  *
  * Fallback (UI/UX section 2.3/4): the viewport backdrop + an artboard-shaped
  * skeleton + "Loading canvas…".
+ *
+ * The lazy canvas is wrapped in a canvas-scoped error boundary (round 2): a
+ * throw inside the Konva subtree must never unmount the editor shell.
  */
 
 import { Suspense, lazy, type ReactElement } from 'react';
 import { Box, Skeleton, Text } from '@chakra-ui/react';
+
+import { WireframeCanvasBoundary } from './WireframeCanvasBoundary';
 
 const WireframeCanvasImpl = lazy(() => import('./WireframeCanvasImpl'));
 
@@ -41,9 +46,11 @@ function CanvasFallback(): ReactElement {
 
 export function WireframeCanvas(): ReactElement {
   return (
-    <Suspense fallback={<CanvasFallback />}>
-      <WireframeCanvasImpl />
-    </Suspense>
+    <WireframeCanvasBoundary>
+      <Suspense fallback={<CanvasFallback />}>
+        <WireframeCanvasImpl />
+      </Suspense>
+    </WireframeCanvasBoundary>
   );
 }
 

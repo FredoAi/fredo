@@ -9,7 +9,17 @@
  *  - one store step per drag and per resize,
  *  - locked inertness (no Transformer, body drag refused),
  *  - hidden elements paint no ink (group invisible) and show a dashed outline,
- *  - theme-true artboard colours from the palette.
+ *  - theme-true artboard colours from the palette,
+ *  - ZERO-SIZE STAGE GUARD (round 2): the Stage is never committed with a zero
+ *    width/height, which is the invariant behind the round-1 crash.
+ *
+ * Why the guard is pinned here and not by reproducing the throw: jsdom has no
+ * canvas and `react-konva` is mocked in this file, so no `Stage`/layer buffer
+ * canvas is ever allocated and the real `InvalidStateError` from
+ * `drawImage` cannot fire. The unit pin therefore asserts the CAUSE — no Stage
+ * render may carry a zero dimension, and the first render must already be the
+ * measured size. The live app (real Konva, real canvas) is the fault-level
+ * proof that the invariant removes the throw.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -32,12 +42,16 @@ const konvaMock = vi.hoisted(() => ({
   groups: new Map<string, { props: Record<string, any>; node: Record<string, any> }>(),
   transformer: null as null | { props: Record<string, any>; api: Record<string, any> },
   transformerNodes: [] as Array<Record<string, any>>,
+  /** Every Stage render's committed size, in render order. */
+  stageHistory: [] as Array<{ width: number; height: number }>,
 }));
 
 vi.mock('react-konva', async () => {
   const React = await import('react');
 
   const Stage = React.forwardRef(function MockStage(props: any, ref: any) {
+    konvaMock.stageHistory.push({ width: props.width, height: props.height });
+
     React.useImperativeHandle(ref, () => ({
       toDataURL: () => 'data:image/png;base64,U1RBR0U=',
       find: () => [],
@@ -211,6 +225,7 @@ beforeEach(() => {
   konvaMock.groups.clear();
   konvaMock.transformer = null;
   konvaMock.transformerNodes = [];
+  konvaMock.stageHistory = [];
 
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
     x: 0,
@@ -479,5 +494,107 @@ describe('hidden elements', () => {
     expect(outlines).toHaveLength(1);
     expect(outlines[0]).toHaveAttribute('data-mock-stroke', 'token-focus-ring');
     expect(outlines[0]).toHaveAttribute('data-mock-dash', '');
+  });
+});
+
+describe('zero-size stage guard', () => {
+  let measured: { width: number; height: number };
+  let observerCallback: (() => void) | null;
+
+  beforeEach(() => {
+    measured = { width: 0, height: 0 };
+    observerCallback = null;
+
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(
+      () =>
+        ({
+          x: 0,
+          y: 0,
+          top: 0,
+          left: 0,
+          right: measured.width,
+          bottom: measured.height,
+          width: measured.width,
+          height: measured.height,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    );
+
+    // Manual drive: `observe()` must NOT fire, so the test decides when the
+    // host gains a size (the first commit stays 0x0 until the assertion
+    // drives the observer).
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(private readonly callback: () => void) {
+          observerCallback = callback;
+        }
+        observe(): void {}
+        unobserve(): void {}
+        disconnect(): void {}
+      },
+    );
+  });
+
+  it('commits no Stage while the host measures 0x0, then mounts it at the measured size', () => {
+    seedDocument([]);
+    renderWithChakra(<WireframeCanvasImpl />);
+
+    // First commit: host mounted (measurement + empty-state overlay keep their
+    // node), no Stage at all, and the loading placeholder owns the viewport.
+    expect(screen.getByTestId('wireframe-canvas')).toBeInTheDocument();
+    expect(screen.getByTestId('wireframe-canvas-loading')).toBeInTheDocument();
+    expect(screen.queryByTestId('mock-stage')).toBeNull();
+    expect(konvaMock.stageHistory).toHaveLength(0);
+
+    act(() => {
+      measured = { width: 900, height: 640 };
+      observerCallback?.();
+    });
+
+    const stage = screen.getByTestId('mock-stage');
+    expect(stage).toHaveAttribute('data-stage-width', '900');
+    expect(stage).toHaveAttribute('data-stage-height', '640');
+    expect(screen.queryByTestId('wireframe-canvas-loading')).toBeNull();
+  });
+
+  it('commits the Stage first at the measured size and never at a zero dimension', () => {
+    seedDocument([]);
+    renderWithChakra(<WireframeCanvasImpl />);
+
+    act(() => {
+      measured = { width: 900, height: 640 };
+      observerCallback?.();
+    });
+
+    expect(konvaMock.stageHistory.length).toBeGreaterThan(0);
+    expect(konvaMock.stageHistory[0]).toEqual({ width: 900, height: 640 });
+    for (const entry of konvaMock.stageHistory) {
+      expect(entry.width).toBeGreaterThan(0);
+      expect(entry.height).toBeGreaterThan(0);
+    }
+  });
+
+  it('unmounts the Stage when the host shrinks to zero instead of re-committing at 0x0', () => {
+    seedDocument([textElement()]);
+    renderWithChakra(<WireframeCanvasImpl />);
+
+    act(() => {
+      measured = { width: 900, height: 640 };
+      observerCallback?.();
+    });
+    expect(screen.getByTestId('mock-stage')).toBeInTheDocument();
+
+    act(() => {
+      measured = { width: 0, height: 0 };
+      observerCallback?.();
+    });
+
+    expect(screen.queryByTestId('mock-stage')).toBeNull();
+    expect(screen.getByTestId('wireframe-canvas')).toBeInTheDocument();
+    expect(screen.getByTestId('wireframe-canvas-loading')).toBeInTheDocument();
+    expect(
+      konvaMock.stageHistory.every((entry) => entry.width > 0 && entry.height > 0),
+    ).toBe(true);
   });
 });

@@ -25,7 +25,7 @@ import {
   type ReactElement,
   type ReactNode,
 } from 'react';
-import { Box, Text, VisuallyHidden } from '@chakra-ui/react';
+import { Box, Skeleton, Text, VisuallyHidden } from '@chakra-ui/react';
 import {
   Circle,
   Ellipse,
@@ -578,6 +578,13 @@ export function WireframeCanvasImpl(): ReactElement {
 
   const [size, setSize] = useState<CanvasSize>({ width: 0, height: 0 });
 
+  // The Konva Stage must never be committed at a zero width/height: its first
+  // draw composites the artboard through a 0x0 buffer canvas, and Chromium
+  // throws `InvalidStateError` from `drawImage` when the source canvas has a
+  // zero dimension (round 1 crash, Spec #3070). The seed state stays `{0,0}`;
+  // the stage is only mounted once the host has measured a real size.
+  const stageReady = size.width > 0 && size.height > 0;
+
   const selectedElement =
     selectedId === null
       ? null
@@ -628,10 +635,14 @@ export function WireframeCanvasImpl(): ReactElement {
   }, []);
 
   // ── Stage registry (export capture seam) ─────────────────────────────────
+  // Re-keyed on `stageReady`: the ref is only populated in the commit where the
+  // Stage actually mounts, so registering on mount alone would store `null`
+  // (PNG export would then return `null`). The key also covers a later
+  // shrink-to-zero, which unmounts the Stage and re-registers `null`.
   useEffect(() => {
     registerWireframeStage(stageRef.current);
     return () => registerWireframeStage(null);
-  }, []);
+  }, [stageReady]);
 
   // ── Stage cursor (pan mode) ──────────────────────────────────────────────
   useEffect(() => {
@@ -825,97 +836,124 @@ export function WireframeCanvasImpl(): ReactElement {
         {CANVAS_INSTRUCTIONS}
       </VisuallyHidden>
 
-      <Stage
-        ref={stageRef}
-        width={size.width}
-        height={size.height}
-        onClick={handleStageClick}
-        onTap={handleStageClick}
-      >
-        <Layer>
-          <Group
-            x={view.x}
-            y={view.y}
-            scaleX={scale}
-            scaleY={scale}
-            draggable={panMode}
-            onDragStart={() => setStageCursor('grabbing')}
-            onDragEnd={handlePanDragEnd}
-          >
-            {/* Everything inside the artboard is clipped to it: what you see is
-                what exports (UI/UX section 2.3). */}
+      {stageReady ? (
+        <Stage
+          ref={stageRef}
+          width={size.width}
+          height={size.height}
+          onClick={handleStageClick}
+          onTap={handleStageClick}
+        >
+          <Layer>
             <Group
-              clipX={0}
-              clipY={0}
-              clipWidth={wireframe.page.width}
-              clipHeight={wireframe.page.height}
+              x={view.x}
+              y={view.y}
+              scaleX={scale}
+              scaleY={scale}
+              draggable={panMode}
+              onDragStart={() => setStageCursor('grabbing')}
+              onDragEnd={handlePanDragEnd}
             >
-              <Rect
-                width={wireframe.page.width}
-                height={wireframe.page.height}
-                fill={palette.surface}
-                stroke={palette.border}
-                strokeWidth={1 / scale}
-                shadowColor={palette.text}
-                shadowOpacity={0.08}
-                shadowBlur={16}
-                shadowOffsetY={2}
-                listening={false}
-              />
-              {wireframe.elements.map(renderElement)}
+              {/* Everything inside the artboard is clipped to it: what you see is
+                  what exports (UI/UX section 2.3). */}
+              <Group
+                clipX={0}
+                clipY={0}
+                clipWidth={wireframe.page.width}
+                clipHeight={wireframe.page.height}
+              >
+                <Rect
+                  width={wireframe.page.width}
+                  height={wireframe.page.height}
+                  fill={palette.surface}
+                  stroke={palette.border}
+                  strokeWidth={1 / scale}
+                  shadowColor={palette.text}
+                  shadowOpacity={0.08}
+                  shadowBlur={16}
+                  shadowOffsetY={2}
+                  listening={false}
+                />
+                {wireframe.elements.map(renderElement)}
+              </Group>
+
+              {/* Selection chrome lives above the artboard and outside its clip,
+                  so handles at the page edge stay reachable. */}
+              {selectedElement ? (
+                <Rect
+                  name={CAPTURE_HIDDEN_NAME}
+                  x={selectedElement.x}
+                  y={selectedElement.y}
+                  width={selectedElement.width}
+                  height={selectedElement.height}
+                  stroke={
+                    selectedElement.locked || !selectedElement.visible
+                      ? palette.textMuted
+                      : palette.focusRing
+                  }
+                  strokeWidth={2 / scale}
+                  dash={
+                    selectedElement.locked || !selectedElement.visible
+                      ? [6 / scale, 4 / scale]
+                      : undefined
+                  }
+                  listening={false}
+                />
+              ) : null}
+
+              {showTransformer ? (
+                <Transformer
+                  ref={transformerRef}
+                  name={CAPTURE_HIDDEN_NAME}
+                  rotateEnabled={false}
+                  flipEnabled={false}
+                  keepRatio={false}
+                  ignoreStroke
+                  enabledAnchors={[...TRANSFORMER_ANCHORS]}
+                  anchorSize={8 / scale}
+                  anchorStrokeWidth={1.5 / scale}
+                  anchorStroke={palette.focusRing}
+                  anchorFill={palette.surface}
+                  anchorCornerRadius={0}
+                  borderStroke={palette.focusRing}
+                  borderStrokeWidth={1.5 / scale}
+                  boundBoxFunc={(oldBox, newBox) =>
+                    newBox.width < ELEMENT_MIN_SIZE * scale ||
+                    newBox.height < ELEMENT_MIN_SIZE * scale
+                      ? oldBox
+                      : newBox
+                  }
+                />
+              ) : null}
             </Group>
-
-            {/* Selection chrome lives above the artboard and outside its clip,
-                so handles at the page edge stay reachable. */}
-            {selectedElement ? (
-              <Rect
-                name={CAPTURE_HIDDEN_NAME}
-                x={selectedElement.x}
-                y={selectedElement.y}
-                width={selectedElement.width}
-                height={selectedElement.height}
-                stroke={
-                  selectedElement.locked || !selectedElement.visible
-                    ? palette.textMuted
-                    : palette.focusRing
-                }
-                strokeWidth={2 / scale}
-                dash={
-                  selectedElement.locked || !selectedElement.visible
-                    ? [6 / scale, 4 / scale]
-                    : undefined
-                }
-                listening={false}
-              />
-            ) : null}
-
-            {showTransformer ? (
-              <Transformer
-                ref={transformerRef}
-                name={CAPTURE_HIDDEN_NAME}
-                rotateEnabled={false}
-                flipEnabled={false}
-                keepRatio={false}
-                ignoreStroke
-                enabledAnchors={[...TRANSFORMER_ANCHORS]}
-                anchorSize={8 / scale}
-                anchorStrokeWidth={1.5 / scale}
-                anchorStroke={palette.focusRing}
-                anchorFill={palette.surface}
-                anchorCornerRadius={0}
-                borderStroke={palette.focusRing}
-                borderStrokeWidth={1.5 / scale}
-                boundBoxFunc={(oldBox, newBox) =>
-                  newBox.width < ELEMENT_MIN_SIZE * scale ||
-                  newBox.height < ELEMENT_MIN_SIZE * scale
-                    ? oldBox
-                    : newBox
-                }
-              />
-            ) : null}
-          </Group>
-        </Layer>
-      </Stage>
+          </Layer>
+        </Stage>
+      ) : (
+        /*
+         * Not ready: the host has not measured a non-zero size yet (first
+         * commit, or a later minimize/collapse). The host itself stays mounted
+         * so measurement keeps running and the empty-state overlay below still
+         * renders. This is the same backdrop + artboard skeleton + "Loading
+         * canvas…" shape as the Suspense fallback; the two are mutually
+         * exclusive (the fallback replaces the whole host).
+         */
+        <Box
+          data-testid="wireframe-canvas-loading"
+          position="absolute"
+          inset={0}
+          display="flex"
+          flexDirection="column"
+          alignItems="center"
+          justifyContent="center"
+          gap={3}
+          pointerEvents="none"
+        >
+          <Skeleton width="70%" height="70%" maxW="960px" maxH="640px" />
+          <Text fontSize="sm" color="fg.muted">
+            Loading canvas…
+          </Text>
+        </Box>
+      )}
 
       {wireframe.elements.length === 0 ? (
         <Box
