@@ -214,7 +214,7 @@
       **Edge:** a numeric property offering both a slider and a number field (both work); each
       control operated by keyboard; the 4-stop radius slider and the radius chips write the
       same enum.
-- [ ] **E-15 (R-3.6, found in F-22 — stepper)** The numeric STEPPER must commit the stepped value.
+- [x] **E-15 (R-3.6, found in F-22 — stepper)** The numeric STEPPER must commit the stepped value.
       **Expected:** one click on the increment/decrement trigger of element width, element
       height, page width and page height changes the value by the declared step (and the
       displayed number matches); ONE undo reverts exactly one step.
@@ -223,7 +223,11 @@
       `[data-testid="<field>-number"] [data-part="increment-trigger"]`. A zero-delay burst
       under-reads the committed ref (Zag's `onValueChange` lands in a microtask after the click)
       and is a TECHNIQUE artifact, not a product defect.
-      **Round 3 residual (FAIL on the undo clause):** the stepper click focuses the number
+      **Round 3 residual (FAIL on the undo clause)** — **FIXED in round 4**: the store's
+      `commitDocument` is now a no-op for a value-equal document, so the blur re-commit pushes
+      no history entry. Round-4 live: width 160→161, height 44→45, page 1280→1281 / 800→801 and
+      radius m→l each revert with exactly ONE `u` (`canRedo` set).
+      **Historical (round 3):** the stepper click focuses the number
       input; the following blur fires Zag's `onValueCommit` with the SAME value, and
       `dispatch('element.update')` has no no-op guard, so every stepper interaction pushes TWO
       history entries — one undo produces no visible change, the second reverts the step.
@@ -269,16 +273,19 @@
       origin (a) is unreachable there (record as N/A, not a pass).
       **Edge:** pan an EMPTY document (count 0); pan with a selection; pan beyond the page edge;
       pan then Fit.
-- [ ] **E-16 (new, R-2.2/R-4.2 — regression) An element drag must not move the view.**
+- [x] **E-16 (new, R-2.2/R-4.2 — regression) An element drag must not move the view.**
       **Expected:** dragging an element changes only that element's geometry; the view
       transform is untouched by a document gesture.
-      **Actual (round 3, FAIL):** the element's `dragend` bubbles to the pan group, whose
-      `onDragEnd` (`handlePanDragEnd`, `WireframeCanvasImpl.tsx:745-752`) commits the ELEMENT's
-      absolute stage position as the view — dragging a text element by (+30,+20) moved the view
-      from (175, 30.5) to (715, 446.5). The handler must ignore bubbled drags
-      (`event.target !== event.currentTarget`) or read `event.currentTarget`.
-      **Recipe:** read the view before/after a drag; assert `view` unchanged and the element
-      delta correct.
+      **Round-4 result (FIXED):** the pan handlers ignore bubbled drags (`target !==
+      currentTarget`). Live at 100 %: element `560,426`→`590.1,446.1` with the view
+      **byte-identical** `{scale:0.99625,x:177.4,y:32}`, full document JSON diff = only that
+      element's `x/y`, one `u` restores; at 400 %: element `+7.5,+5` page px with the view
+      byte-identical `{scale:4,x:-1745,y:-1362}`, one `u` restores.
+      **Round-3 signature (for recognition):** the element's `dragend` bubbled to the pan group
+      and `handlePanDragEnd` committed the ELEMENT's absolute stage position as the view
+      (+30,+20 moved the view from (175,30.5) to (715,446.5)).
+      **Recipe:** read the view before/after a drag; assert `view` byte-identical and the element
+      delta = pointer delta / scale.
 - [ ] **F-28 (R-4.4)** Fit page (`n`).
       **Expected:** the entire page rect is inside `[data-testid="wireframe-canvas"]` on all
       four edges (zero clipping) and centred within ±2 px.
@@ -306,7 +313,7 @@
       one. Save and open run in the SAME env — no relaunch needed.
       **Edge:** a document saved at `phone` dims; a 12-element document; open then undo
       (history cleared ⇒ no-op).
-- [ ] **F-33 (R-4.9)** Export PNG (`t`) of the PAGE at 2×.
+- [x] **F-33 (R-4.9)** Export PNG (`t`) of the PAGE at 2×.
       **Expected:** the image is written at `FREDO_WIREFRAME_EXPORT_PATH` (own seam; the
       document path is untouched — no relaunch); its IHDR dimensions equal exactly 2× the page
       width and 2× the height (`desktop` ⇒ 2560×1600); a second export after changing zoom AND
@@ -322,6 +329,14 @@
       **Edge:** export at 400 % and at 10 %; export panned to a corner; export a `phone` page;
       export then immediately Save (no clobber).
       **Data gap:** if the sandbox has no raster decoder, the row is UNVERIFIED, not PASS.
+      **Round-4 result (FIXED, page-space by construction):** the capture paints under a
+      transient `captureView {scale:1,x:0,y:0}` and captures the `.wireframe-page` node, so no
+      view value reaches the config. Live: 100 %, **400 % panned** and **10 %** of one
+      9-element document are **byte-identical** (`SHA256 7AC12AA6…8D2F87`, 0 transparent,
+      3.296 % ink, 2560×1600); 1-element `F4513CC7…` ≠ empty `0F68F8B7…` ≠ 9-element; selected ≡
+      deselected byte-identical; `phone` → 780×1688, 0 transparent; no `flushSync` warning in
+      the console. **Recipe:** export, then `png-stats.ps1 -Mode stats|alpha|header|diff`
+      (System.Drawing decoder) for ink/alpha/dims/SHA/dense diff.
 - [ ] **F-34 (R-4.10)** Saved/unsaved state visible.
       **Expected:** the declared rule is `dirty ? 'Unsaved' : 'Saved'` with a fresh document
       `dirty=true` (single input), so the status text never disagrees with the root `-dirty`
@@ -422,7 +437,7 @@
       recorded NO-OPS (nothing changes; reply stays honest).
       **Edge:** no selection (recorded no-op); duplicate then undo; `edit.redo` with an empty
       redo stack; `zoom.out` at the 10 % clamp; `togglePan` emitted twice.
-- [ ] **F-44c (R-6.2)** Invoke the 3 file actions + `document.new`.
+- [x] **F-44c (R-6.2)** Invoke the 3 file actions + `document.new`.
       **Expected:** a direct emit for `file.saveAs`, `file.open`, `file.exportPng` (each
       resolved through its own path seam) and `document.new` performs exactly its action: the
       save path receives the document, the open path restores it, the export path receives the
@@ -469,17 +484,17 @@
 
 ## Error / edge rows
 
-- [ ] **F-50 (R-4.13)** Unreadable document.
+- [x] **F-50 (R-4.13)** Unreadable document.
       **Expected:** with `FREDO_WIREFRAME_OPEN_PATH` pointing at
       `fixtures/invalid.wireframe.json` (`{ not json`) in its own launch, `o` shows
       `wireframe-file-error` (in the shell); count/geometry/document unchanged; dirty
       unchanged. Fixture `fixtures/invalid.wireframe.json`.
       **Edge:** empty file; zero-byte file; truncated-with-valid-prefix JSON.
-- [ ] **F-51 (R-4.13)** Foreign `app` tag.
+- [x] **F-51 (R-4.13)** Foreign `app` tag.
       **Expected:** rejected with an error naming the problem; no page change. Fixture
       `fixtures/foreign-app.wireframe.json` (`app:"other.app"`).
       **Edge:** foreign tag with otherwise valid content; foreign tag + wrong `schemaVersion`.
-- [ ] **F-52 (R-4.13)** Unknown or missing `schemaVersion`.
+- [x] **F-52 (R-4.13)** Unknown or missing `schemaVersion`.
       **Expected:** rejected with an error naming the version problem; no page change. Fixture
       `fixtures/v2.wireframe.json` (`schemaVersion:2`).
       **Edge:** `schemaVersion:0`; MISSING `schemaVersion`; a string `"1"`.
@@ -639,5 +654,52 @@ DOM `MouseEvent` with `detail: 1` for the latter. Konva drag/press needs DOM `Mo
 sequences on `.konvajs-content`; the stage/view/figure state is readable through
 `import('/@fs/…/canvas/wireframeCanvasRegistry.ts')` + `store/wireframeDocumentStore.ts`, which
 is the most precise live oracle for the view transform, the document and the undo flags.
+
+## Round 4 result — 2026-10-21 — export page-space, one-undo stepper, bubbled-drag guard
+
+**Verdict: PASS** (full detail in `.opencode/tmp/3070/tests-runs.md`). Env `wf3070-r4`
+(slot 3, Vite :16020 / MCP :16021), served `7d03f3c` (fix `481a590`); seam envs `wf3070-r4c`
+(CANCEL), `-r4d` (FAIL_FILE), `-r4e` (both).
+
+**Fixed and confirmed live:**
+- **F-33** — the export is **byte-identical** at 100 %, 400 % panned and 10 %
+  (`SHA256 7AC12AA6…8D2F87`, 0 transparent, 3.296 % ink); 1-element/empty SHAs distinct;
+  selected ≡ deselected; `phone` 780×1688; no `flushSync` warning.
+- **E-15** — one stepper click = one step = ONE undo (element width/height, page width/height,
+  corner radius); the blur re-commit is a store-level no-op.
+- **E-16** — an element drag moves only that element: the view transform is byte-identical at
+  100 % and 400 %, the document diff is that element's `x/y` only, one undo reverts.
+- **F-35** — CANCEL: `w`/`o`/`t` no-op, no banner, no file; FAIL_FILE: banner
+  `wireframe file operation failed (FREDO_WIREFRAME_FAIL_FILE=1)` with the document intact;
+  CANCEL+FAIL_FILE: cancel wins, no banner, no file.
+- **F-50/F-51/F-52** — one `OPEN_PATH` launch, the same scratch file overwritten three times:
+  `This file is not readable JSON. Nothing changed.` /
+  `This file isn't a Wireframe document (app tag "other.app"). Nothing changed.` /
+  `Unsupported Wireframe document version "2". Nothing changed.` — document unchanged each time.
+- **F-44c** — `file.saveAs` / `document.new` / `file.open` / `file.exportPng` all performed
+  through the real `llm-skill-call` channel.
+- **F-47/F-45** — the binding Gherkin re-ran live (Companion ON, app closed): navbar section +
+  heading "Reporter" + card "Reporter reports", reply names only the performed steps.
+- **F-55** — gates run by the tester on `7d03f3c`: typecheck ✓ · build 2832 modules ✓ ·
+  test:run 239 files / 3077 tests ✓ · contrast 46/46 ✓ · build:webview 2834 modules ✓ ·
+  `cargo check --locked` ✓ zero warnings · `cargo clippy --locked -- -D warnings` ✓ zero
+  warnings · `cargo test --locked` 1451 lib tests + all integration suites ✓ (`nextest` is not
+  installed; `cargo test` covers the same set).
+
+**Carried with a named blocker:** F-43 (listActions reply) and the reply-string half of F-46 —
+the pushed bubble was observed (`data-reply-kind="reply"`) but auto-dismissed inside one driver
+round-trip; the reply source (`wireframeReply.ts`, `useWireframeSkill.ts`, `skillBridge.ts`,
+`useWireframeIntent.ts`) is **byte-unchanged** since round 3 (`git diff --stat` empty), so the
+round-2/3 live receipts stand.
+
+**Environment note for the next round:** a fresh boot can spend **3-5 minutes** on
+`about:blank` / an empty `#root` with `execute_js` timing out (Vite dev-graph transform). A
+`dom_snapshot` returning `body > div#root` with no children is a BOOTING webview — wait, do not
+`Down`/`Up` (five cycles did not help; waiting did).
+
+**Technique notes (round 4):** a bare `KeyboardEvent` dispatch does NOT reach the hotkey engine
+(9 synthetic keydowns → count 0); use the driver's real key events. Every panel interaction
+focuses a hidden radio/number input (`focus-context=text-entry`, hotkeys disabled) — a canvas
+pointer-down (the shipped explicit blur) restores `default` before any bare key.
 
 
