@@ -83,8 +83,16 @@
       all four present as four separate section elements.
 - [ ] **F-4 (R-1.4)** Add both text styles (`body`, `heading`).
       **Expected:** the document's `textStyle` set contains both; the heading's rendered ink
-      bounding-box height ≥ 1.5× the body's at the same `size` preset (measured off the page
-      capture).
+      bounding-box height is **1.25 ± 0.07 ×** the body's at the same `size` preset (measured
+      off the page capture).
+      > **Oracle correction (round 3, recorded plan defect):** the original "≥ 1.5×" floor was
+      > unsatisfiable — heading is body × `HEADING_SCALE` = 1.25 by design
+      > (`WireframeCanvasImpl.tsx:79`). AC1's wording ("distinct type scale + weight") is
+      > unaffected; only the measurement oracle changed.
+      **Recipe:** one text element, `size = m`; deselect (empty-canvas click — Escape only
+      reaches the canvas `onKeyDown` while the canvas host holds DOM focus) before EVERY
+      capture so the selection outline cannot fill the rect; ink = rows inside the element rect
+      containing a pixel ≥ 8/255 different from the page background.
       **Edge:** body→heading→body (no stale paint); heading with a long string (wraps inside
       the page).
 - [ ] **F-5 (R-1.5)** Add an icon and change `iconId`.
@@ -206,6 +214,21 @@
       **Edge:** a numeric property offering both a slider and a number field (both work); each
       control operated by keyboard; the 4-stop radius slider and the radius chips write the
       same enum.
+- [ ] **E-15 (R-3.6, found in F-22 — stepper)** The numeric STEPPER must commit the stepped value.
+      **Expected:** one click on the increment/decrement trigger of element width, element
+      height, page width and page height changes the value by the declared step (and the
+      displayed number matches); ONE undo reverts exactly one step.
+      **Recipe (round 3):** Zag increments on `pointerdown`, so the click must be driven as a
+      realistic sequence — `pointerdown` → ~120 ms → `pointerup` → ~80 ms → `click` on
+      `[data-testid="<field>-number"] [data-part="increment-trigger"]`. A zero-delay burst
+      under-reads the committed ref (Zag's `onValueChange` lands in a microtask after the click)
+      and is a TECHNIQUE artifact, not a product defect.
+      **Round 3 residual (FAIL on the undo clause):** the stepper click focuses the number
+      input; the following blur fires Zag's `onValueCommit` with the SAME value, and
+      `dispatch('element.update')` has no no-op guard, so every stepper interaction pushes TWO
+      history entries — one undo produces no visible change, the second reverts the step.
+      **Note:** corner radius has NO stepper (chips + 4-stop slider); drive it with one
+      `ArrowRight` on `[data-testid="wireframe-corner-radius"] [role="slider"]`.
 - [ ] **F-23 (R-3.1…R-3.5)** Panel variant switching.
       **Expected:** only the selected type's fields plus the shared width/height/visibility
       render; switching selection swaps the panel with no stale field; deselecting shows page
@@ -232,10 +255,30 @@
       **Edge:** at 100 %; with a selection (handles scale, selection kept); alternate g/m back
       to 100.
 - [ ] **F-27 (R-4.3)** Pan mode translates the VIEW only.
-      **Expected:** `h` sets `-pan-mode`=`true`; dragging the empty canvas shifts the rendered
-      page while `-element-count`, `-selection-id` and the document are IDENTICAL; `h`
-      restores `false`.
-      **Edge:** pan with a selection; pan beyond the page edge; pan then Fit.
+      **Expected:** `h` sets `-pan-mode`=`true`; dragging **anywhere** on the canvas shifts the
+      rendered page by the pointer delta while `-element-count`, `-selection-id`,
+      `-selection-geometry`, `-dirty`, the undo depth and the saved document are IDENTICAL; `h`
+      restores `false` and an empty-canvas click then clears the selection again.
+      **Recipe (round 3):** the pan hit surface is a Konva node named `wireframe-pan-surface`
+      inside the group `wireframe-view`; read the view transform through the canvas registry
+      (`import('/@fs/.../canvas/wireframeCanvasRegistry.ts').getWireframeStage()` →
+      `findOne('.wireframe-view')`) and drive drags with DOM `MouseEvent` sequences on
+      `.konvajs-content` (`interact` clicks do not deliver Konva's drag shape). Three drag
+      origins: (a) the backdrop outside the page, (b) the empty page interior, (c) over an
+      element — at 100 % and again at 400 %. At 400 % the page covers the whole viewport, so
+      origin (a) is unreachable there (record as N/A, not a pass).
+      **Edge:** pan an EMPTY document (count 0); pan with a selection; pan beyond the page edge;
+      pan then Fit.
+- [ ] **E-16 (new, R-2.2/R-4.2 — regression) An element drag must not move the view.**
+      **Expected:** dragging an element changes only that element's geometry; the view
+      transform is untouched by a document gesture.
+      **Actual (round 3, FAIL):** the element's `dragend` bubbles to the pan group, whose
+      `onDragEnd` (`handlePanDragEnd`, `WireframeCanvasImpl.tsx:745-752`) commits the ELEMENT's
+      absolute stage position as the view — dragging a text element by (+30,+20) moved the view
+      from (175, 30.5) to (715, 446.5). The handler must ignore bubbled drags
+      (`event.target !== event.currentTarget`) or read `event.currentTarget`.
+      **Recipe:** read the view before/after a drag; assert `view` unchanged and the element
+      delta correct.
 - [ ] **F-28 (R-4.4)** Fit page (`n`).
       **Expected:** the entire page rect is inside `[data-testid="wireframe-canvas"]` on all
       four edges (zero clipping) and centred within ±2 px.
@@ -267,12 +310,18 @@
       **Expected:** the image is written at `FREDO_WIREFRAME_EXPORT_PATH` (own seam; the
       document path is untouched — no relaunch); its IHDR dimensions equal exactly 2× the page
       width and 2× the height (`desktop` ⇒ 2560×1600); a second export after changing zoom AND
-      pan yields the SAME dimensions (proves page-space, not viewport, capture); the image
-      shows every element and no editor chrome.
+      pan yields the SAME dimensions AND the SAME INK LAYOUT (proves page-space, not viewport,
+      capture); the image shows every element and no editor chrome.
+      **Content assertions (round 3, binding — the dimension half alone let a blank file pass
+      twice):** decode each PNG and assert (i) ≥ 1 % of pixels differ from the page background,
+      (ii) SHA256(20 elements) ≠ SHA256(1 element) ≠ SHA256(empty), (iii) 100 % / 400 % panned /
+      10 % of the SAME document produce the same ink layout (dense diff below a small
+      tolerance; 100 %↔10 % ≈ 1 % AA difference is acceptable, a transparent quadrant is not),
+      (iv) an export taken with an element SELECTED is byte-identical to the same export with
+      nothing selected, (v) a `phone` page exports 780×1688.
       **Edge:** export at 400 % and at 10 %; export panned to a corner; export a `phone` page;
       export then immediately Save (no clobber).
-      **Data gap:** if the sandbox has no byte reader for the IHDR, the row is UNVERIFIED, not
-      PASS; the zoom-invariance leg must still hold.
+      **Data gap:** if the sandbox has no raster decoder, the row is UNVERIFIED, not PASS.
 - [ ] **F-34 (R-4.10)** Saved/unsaved state visible.
       **Expected:** the declared rule is `dirty ? 'Unsaved' : 'Saved'` with a fresh document
       `dirty=true` (single input), so the status text never disagrees with the root `-dirty`
@@ -550,4 +599,45 @@ change the value — the slider (which does) carries R-3.6.
 (`generationUsesSkillsRef` gate), so F-43/F-46 were emitted ~250 ms after a launcher send;
 `interact` swipe does not deliver Konva's gesture shape — DOM MouseEvent sequences were used;
 the CDP `press` helper does not drive Zag sliders — a synthetic keydown on the thumb was used.
+
+## Round 3 result — 2026-10-21 — pan / export / stepper / skill-offer fixes re-verified
+
+**Verdict: FAIL** (full detail in `.opencode/tmp/3070/tests-runs.md`). Env `wf3070-r3`
+(slot 2, Vite :16010 / MCP :16011), served `c045877`.
+
+**Fixed and confirmed live:** F-27 (a `wireframe-pan-surface` inside `wireframe-view` makes
+every drag origin pan by the exact pointer delta — backdrop, page interior, over an element, at
+100 % and 400 %; an empty document pans; `h` off restores empty-canvas deselect) · F-33's content
+half (the export is no longer blank: 3.295 % ink at 100 %, distinct SHAs for 20/1/0 elements,
+selected ≡ deselected byte-identical, `phone` ⇒ 780×1688) · **F-47** (the exact Gherkin sentence
+now opens the app from closed and drafts `navbar` + heading "Reporter" + card "Reporter reports",
+reply names only performed actions) · F-48 (new-window relay: intent emitted while
+`app-wireframe` is unmounted yields exactly one card; reopen replays nothing; main-window contrast
+leg +1) · E-15's value half (every stepper steps by +1 with a realistic pointer sequence).
+
+**Still failing (live, reproducible):**
+- **F-33 (viewport invariance) — the export is not page-space.** At 400 % the PNG is
+  **44.096 % transparent** (1,806,173 px) and 44.1 % of its pixels differ from the 100 % export:
+  `Stage.toDataURL({x: view.x, y: view.y, …})` crops the *rendered stage canvas* (viewport-sized),
+  so any crop region outside the visible stage is empty. Export artefacts linked in the report.
+- **E-15 (undo clause) — one stepper click pushes two history entries.** The click focuses the
+  number input; the following blur fires `onValueCommit` with the same value and
+  `dispatch('element.update')` has no no-op guard ⇒ undo #1 changes nothing, undo #2 reverts.
+- **E-16 (new, regression) — an element drag pans the view.** The element's `dragend` bubbles to
+  the pan group; `handlePanDragEnd` commits the element's absolute stage position as the view
+  (text drag +30,+20 ⇒ view 175,30.5 → 715,446.5).
+
+**Unverified in round 3 (named blockers):** F-43/F-46 (the main window had no OS focus and the
+connected MCP bridge plugin (0.12) exposes no window-focus action; the reply surface only accepts
+a pushed reply inside an active skill generation — one plain generation did surface a bubble and
+was captured) · F-30 typed-dimension commits on the unfocused host (the identical technique
+commits on the focused host, so the row is environment-blocked, not failing).
+
+**Technique notes (round 3):** `tauri_webview_interact` clicks are synthetic `.click()` (no
+`pointerdown`, `detail === 0`) — they cannot drive Zag steppers or a pointer-activation blur; use
+DOM `MouseEvent` with `detail: 1` for the latter. Konva drag/press needs DOM `MouseEvent`
+sequences on `.konvajs-content`; the stage/view/figure state is readable through
+`import('/@fs/…/canvas/wireframeCanvasRegistry.ts')` + `store/wireframeDocumentStore.ts`, which
+is the most precise live oracle for the view transform, the document and the undo flags.
+
 
