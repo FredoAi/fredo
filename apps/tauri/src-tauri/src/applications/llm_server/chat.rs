@@ -27,7 +27,6 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::infrastructure::companion::skills::SkillRegistry;
 use crate::infrastructure::storage::AppStore;
 
 use super::commands::launch_llama_server;
@@ -459,7 +458,11 @@ async fn run_audio_chat(
     messages: Vec<LlmMessage>,
     audio_base64: String,
 ) -> Result<(), String> {
-    let registry = SkillRegistry::with_app_control_and_doom();
+    // Spec #3073 ST-1 (R-1/R-2): the audio path obtains its offer from the ONE
+    // shared accessor, so the spoken and typed offers can never drift. It used
+    // to construct `SkillRegistry::with_app_control_and_doom()` here — three
+    // skills, no `wireframe` — which silently diverged from the typed offer.
+    let registry = super::status::companion_skill_registry();
     let body = super::skills::build_audio_skill_request_body(&messages, &audio_base64, &registry);
     super::skills::run_skill_stream(app, &registry, &body).await
 }
@@ -1110,5 +1113,104 @@ mod tests {
             parse_sse_data(r#"{"choices":[{"delta":{"content":"x"}}]}"#),
             Some(ChatStreamEvent::Delta("x".to_string()))
         );
+    }
+
+    // ── Spec #3073 ST-3 (R-3): the audio offer's typed-parity pin ────────────
+
+    /// F-4 — the model-audio path's offer is the typed offer, in content AND
+    /// order (the audio analogue of F-47 in `status.rs`).
+    ///
+    /// `run_audio_chat` sources its registry from the ONE shared accessor
+    /// (`companion_skill_registry()`, #3073 ST-1), so the audio body must offer
+    /// the four skills — `open_app`, `close_app`, `doom_mode`, `wireframe`, in
+    /// that order — with a `wireframe` declaration carrying the three C4
+    /// arguments and a DIRECTIVE description naming the request class and every
+    /// catalog id. It must be EQUAL to the typed offer: a drift (drop
+    /// `wireframe`, reorder, drop an argument) fails here.
+    #[test]
+    fn the_audio_path_offer_carries_the_wireframe_skill_at_typed_parity() {
+        use crate::applications::llm_server::skills::{
+            build_audio_skill_request_body, build_skill_request_body,
+        };
+        use crate::applications::llm_server::status::companion_skill_registry;
+        use crate::infrastructure::companion::wireframe_catalog::{
+            WIREFRAME_ACTIONS, WIREFRAME_ACTION_ARG, WIREFRAME_APP_NAME_ARG, WIREFRAME_SUMMARY_ARG,
+        };
+
+        let messages = vec![text_message("user", "")];
+        let audio_body =
+            build_audio_skill_request_body(&messages, "UklGRg==", &companion_skill_registry());
+
+        let tools = audio_body["tools"]
+            .as_array()
+            .expect("the audio body offers a tools array");
+        let names: Vec<&str> = tools
+            .iter()
+            .filter_map(|tool| tool["function"]["name"].as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["open_app", "close_app", "doom_mode", "wireframe"],
+            "the audio offer must register the wireframe skill last (R-3)"
+        );
+
+        let wireframe = tools
+            .iter()
+            .find(|tool| tool["function"]["name"] == "wireframe")
+            .expect("the wireframe function is offered on the audio turn");
+        let parameters = &wireframe["function"]["parameters"];
+        assert_eq!(parameters["type"], "object");
+        assert_eq!(
+            parameters["required"],
+            serde_json::json!([WIREFRAME_ACTION_ARG])
+        );
+        let properties = parameters["properties"]
+            .as_object()
+            .expect("the declared properties object");
+        let mut keys: Vec<&str> = properties.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        let mut expected = vec![
+            WIREFRAME_ACTION_ARG,
+            WIREFRAME_APP_NAME_ARG,
+            WIREFRAME_SUMMARY_ARG,
+        ];
+        expected.sort_unstable();
+        assert_eq!(keys, expected, "the C4 arguments are action/app_name/summary");
+        for key in expected {
+            assert_eq!(properties[key]["type"], "string", "{key} must be a string");
+        }
+
+        let description = wireframe["function"]["description"]
+            .as_str()
+            .expect("the description is a string");
+        assert!(description.contains("Fredo Wireframe"));
+        for word in ["create", "draft", "sketch", "visualize"] {
+            assert!(
+                description.contains(word),
+                "the description must name the request class ({word}): {description}"
+            );
+        }
+        assert!(
+            description.contains("wireframe.companion.draftApp"),
+            "the description must name the draft action: {description}"
+        );
+        for (id, _) in WIREFRAME_ACTIONS {
+            assert!(description.contains(id), "description is missing {id}");
+        }
+
+        // EQUALITY with the typed offer — the audio and typed bodies differ ONLY
+        // in the last user message's content, never in their `tools`.
+        let typed_body = build_skill_request_body(&messages, &companion_skill_registry());
+        assert_eq!(
+            audio_body["tools"], typed_body["tools"],
+            "the audio offer must be byte-equal to the typed offer (R-3)"
+        );
+
+        // The audio body keeps the shipped tools contract: the model decides
+        // (`auto`), parallel calls stay off, and NO `response_format` displaces
+        // the native tool path.
+        assert_eq!(audio_body["tool_choice"], "auto");
+        assert_eq!(audio_body["parallel_tool_calls"], false);
+        assert!(audio_body.get("response_format").is_none());
     }
 }

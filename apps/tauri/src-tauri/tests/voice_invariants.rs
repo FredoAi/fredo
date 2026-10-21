@@ -655,6 +655,89 @@ fn model_audio_surfaces_stay_on_their_ipc_side_of_the_boundary() {
     }
 }
 
+/// Spec #3073 ST-3 (R-2 structural) — the model-audio path obtains its offer from
+/// the ONE shared accessor, and no other production site builds a companion
+/// offer registry.
+///
+/// The audio defect was `run_audio_chat` constructing its own
+/// `SkillRegistry::with_app_control_and_doom()` (three skills, no `wireframe`).
+/// This scan pins the audio path's registry SOURCE to `companion_skill_registry()`
+/// and asserts the companion-offer constructors live only in their definitions
+/// file and the ONE shared accessor. Positive-controlled: the scan must SEE the
+/// shipped constructor definitions, so a scan matching nothing can never pass.
+#[test]
+fn the_model_audio_path_obtains_its_offer_from_the_one_shared_registry() {
+    // (1) The audio path's registry source is the ONE shared accessor.
+    let chat = source_code("applications/llm_server/chat.rs");
+    let audio = item_span(&chat, "async fn run_audio_chat(");
+    assert!(
+        audio.contains("companion_skill_registry()"),
+        "run_audio_chat must obtain its offer from the ONE shared accessor (R-2): {audio}"
+    );
+    assert!(
+        !audio.contains("SkillRegistry::with_"),
+        "run_audio_chat must not build its own companion offer (R-2): {audio}"
+    );
+
+    // (2) The shared accessor is the ONE production home of the four-skill offer.
+    //     `status.rs` production carries `'"'` / `'{'` char literals that `mask()`
+    //     does not handle, so this file is read RAW and sliced at its first test
+    //     module rather than through the masked helpers.
+    let status = source_text("applications/llm_server/status.rs");
+    let status_production = status.split(TEST_ATTR).next().unwrap_or(&status);
+    assert!(
+        status_production.contains("fn companion_skill_registry("),
+        "status.rs must define the ONE shared companion offer accessor (R-2)"
+    );
+    assert!(
+        status_production.contains("SkillRegistry::with_app_control_doom_and_wireframe()"),
+        "companion_skill_registry must build the four-skill offer (R-2)"
+    );
+    assert_eq!(
+        occurrences(status_production, "SkillRegistry::with_app_control_and_doom("),
+        0,
+        "status.rs production must not build the 3-skill offer registry directly (R-2)"
+    );
+    assert_eq!(
+        occurrences(
+            status_production,
+            "SkillRegistry::with_app_control_doom_and_wireframe("
+        ),
+        1,
+        "the 4-skill offer must be constructed in exactly ONE status.rs place — the accessor (R-2)"
+    );
+
+    // (3) No OTHER production file builds a companion offer registry. The offer
+    //     constructors (`with_app_control_and_doom` / `with_app_control_doom_and_
+    //     wireframe`) may live ONLY in the definitions file (they chain there);
+    //     status.rs is covered by (2).
+    let mut offer_files: Vec<String> = Vec::new();
+    for (file, production) in crate_production_sources() {
+        if file == "applications/llm_server/status.rs" {
+            continue;
+        }
+        if production.contains("with_app_control_and_doom(")
+            || production.contains("with_app_control_doom_and_wireframe(")
+        {
+            offer_files.push(file.clone());
+        }
+    }
+
+    // Positive control (mirrors `model_audio_surfaces_stay_on_their_ipc_side_of_the_boundary`):
+    // the scan must SEE the shipped constructor definitions, so a scan that
+    // matches nothing can never pass.
+    assert!(
+        offer_files.contains(&"infrastructure/companion/skills.rs".to_string()),
+        "the offer scan must see the shipped companion-offer constructors: {offer_files:?}"
+    );
+    for file in &offer_files {
+        assert_eq!(
+            file, "infrastructure/companion/skills.rs",
+            "{file} must not build a companion offer registry — the companion offer is built in ONE place (R-2)"
+        );
+    }
+}
+
 // ── ONE MODEL-AUDIO PATH (#2914) ─────────────────────────────────────────────
 //
 // #2914 deletes the on-device engine and the `local` transcription mode. Every
