@@ -16,6 +16,15 @@ import { getSnapshot } from '../store/wireframeDocumentStore';
 /** Exported PNG is 2x the logical page size (R-4.9). */
 export const PAGE_EXPORT_PIXEL_RATIO = 2;
 
+/**
+ * Node name of the clipped artboard group. The export captures THIS node (not
+ * the stage), so the bitmap is the page at 100 % regardless of the live
+ * pan/zoom (F-33).
+ */
+export const WIREFRAME_PAGE_NAME = 'wireframe-page';
+
+const WIREFRAME_PAGE_SELECTOR = `.${WIREFRAME_PAGE_NAME}`;
+
 /** Node name applied to every editor-only node that must not appear in an export. */
 export const CAPTURE_HIDDEN_NAME = 'wireframe-capture-hidden';
 
@@ -37,10 +46,17 @@ export interface WireframeCaptureConfig {
   mimeType?: string;
 }
 
+/** The page group the export captures (duck-typed Konva `Group`). */
+export interface WireframeCapturePage {
+  toDataURL(config?: WireframeCaptureConfig): string;
+}
+
 /** Minimal Konva stage surface the registry needs (duck-typed). */
 export interface WireframeCaptureStage {
   toDataURL(config?: WireframeCaptureConfig): string;
   find?(selector: string): WireframeCaptureNode[];
+  /** Konva `Stage.findOne(selector)` — resolves the page group. */
+  findOne?(selector: string): WireframeCapturePage | undefined;
   batchDraw?(): void;
   /** Konva `Stage.getChildren()` — a live stage always holds at least its Layer. */
   getChildren?(): unknown[];
@@ -87,12 +103,14 @@ export function stripPngDataUrl(dataUrl: string): string | null {
 }
 
 /**
- * Capture the page rect as a base64 PNG (no `data:` prefix) at 2x the logical
- * page size. Returns `null` when no stage is mounted.
+ * Capture the page as a base64 PNG (no `data:` prefix) at 2x the logical page
+ * size. Returns `null` when no stage (or no page group) is mounted.
  *
- * The capture is derived from the page + view transform in the store, so it is
- * independent of the current pan/zoom: `pixelRatio = 2 / view.scale` yields
- * exactly `2 * page.width x 2 * page.height` pixels.
+ * The capture is the PAGE NODE, requested in the page group's OWN coordinate
+ * space: `x: 0, y: 0, width/height = page` with the fixed
+ * `PAGE_EXPORT_PIXEL_RATIO`. No live-view value (pan offset or zoom) enters the
+ * config, so the bitmap is the 100 % rendering by construction — the canvas
+ * paints `captureView` (the identity frame) around the capture (F-33).
  *
  * A stage with no children is destroyed (or never mounted): Konva's
  * `_toKonvaCanvas` then returns an untouched canvas, so the export would be a
@@ -107,20 +125,23 @@ export function captureWireframePagePng(): string | null {
     return null;
   }
 
-  const { document: wireframe, view } = getSnapshot();
-  const scale = view.scale > 0 ? view.scale : 1;
-  const width = wireframe.page.width * scale;
-  const height = wireframe.page.height * scale;
+  if (typeof stage.findOne !== 'function') return null;
+  const pageNode = stage.findOne(WIREFRAME_PAGE_SELECTOR);
+  if (!pageNode) return null;
+
+  const { document: wireframe } = getSnapshot();
+  const width = wireframe.page.width;
+  const height = wireframe.page.height;
   if (!(width > 0) || !(height > 0)) return null;
 
   const hidden = hideCaptureChrome(stage);
   try {
-    const dataUrl = stage.toDataURL({
-      x: view.x,
-      y: view.y,
+    const dataUrl = pageNode.toDataURL({
+      x: 0,
+      y: 0,
       width,
       height,
-      pixelRatio: PAGE_EXPORT_PIXEL_RATIO / scale,
+      pixelRatio: PAGE_EXPORT_PIXEL_RATIO,
       mimeType: 'image/png',
     });
     return stripPngDataUrl(dataUrl);

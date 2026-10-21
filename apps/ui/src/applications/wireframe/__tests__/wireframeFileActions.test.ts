@@ -328,3 +328,48 @@ describe('exportPng (R-4.9)', () => {
     expect(getSnapshot().status).toBe('idle');
   });
 });
+
+describe('exportPng capture view (F-33)', () => {
+  it('paints the identity capture view while capturing and clears it afterwards', async () => {
+    addText();
+    invoke.mockResolvedValue('C:/tmp/board.png');
+    let captureViewDuringCapture: unknown = 'not-called';
+    capture.mockImplementation(() => {
+      captureViewDuringCapture = getSnapshot().captureView;
+      return 'UE5HMjQ=';
+    });
+
+    await exportPng();
+
+    // The override was set BEFORE the capture and the live view was untouched.
+    expect(captureViewDuringCapture).toEqual({ scale: 1, x: 0, y: 0 });
+    expect(getSnapshot().captureView).toBeNull();
+    expect(getSnapshot().view).toEqual({ scale: 1, x: 0, y: 0 });
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(getSnapshot().status).toBe('idle');
+  });
+
+  it('clears the capture view on the null-capture banner path', async () => {
+    capture.mockReturnValue(null);
+
+    await exportPng();
+
+    expect(getSnapshot().captureView).toBeNull();
+    expect(getSnapshot().error).toMatch(/not ready to export/);
+    expect(getSnapshot().status).toBe('idle');
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('clears the capture view when the capture throws', async () => {
+    capture.mockImplementation(() => {
+      throw new Error('canvas unavailable');
+    });
+
+    await exportPng();
+
+    expect(getSnapshot().captureView).toBeNull();
+    expect(getSnapshot().error).toBe('canvas unavailable');
+    expect(getSnapshot().status).toBe('idle');
+    expect(invoke).not.toHaveBeenCalled();
+  });
+});

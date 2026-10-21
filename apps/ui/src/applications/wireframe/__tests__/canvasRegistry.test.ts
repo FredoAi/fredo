@@ -1,25 +1,30 @@
 /**
  * Page-capture seam (Spec #3070, ST-2, R-4.9 / F-33).
  *
- * Pins the 2x logical-page capture geometry, the chrome hide/restore cycle
- * (including on failure), and the base64 prefix strip. The stage is a duck-typed
- * fake — the registry never imports Konva.
+ * Pins the page-node capture contract: the export is the PAGE at 100 % with a
+ * FIXED 2x ratio, so no live-view value (pan offset or zoom) can reach the
+ * capture config. Also pins the chrome hide/restore cycle (including on
+ * failure), the base64 prefix strip and the not-ready guards. The stage and page
+ * are duck-typed fakes — the registry never imports Konva.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   PAGE_EXPORT_PIXEL_RATIO,
+  WIREFRAME_PAGE_NAME,
   captureWireframePagePng,
   getWireframeStage,
   registerWireframeStage,
   stripPngDataUrl,
   type WireframeCaptureConfig,
   type WireframeCaptureNode,
+  type WireframeCapturePage,
   type WireframeCaptureStage,
 } from '../canvas/wireframeCanvasRegistry';
 import { createNewWireframeDocument } from '../model/document';
 import {
+  dispatch,
   loadDocument,
   resetWireframeStoreForTests,
   setView,
@@ -48,24 +53,38 @@ class FakeNode implements WireframeCaptureNode {
 interface FakeStage {
   stage: WireframeCaptureStage;
   chrome: FakeNode[];
-  toDataURL: ReturnType<typeof vi.fn>;
+  pageNode: WireframeCapturePage;
+  pageToDataURL: ReturnType<typeof vi.fn>;
+  stageToDataURL: ReturnType<typeof vi.fn>;
   batchDraw: ReturnType<typeof vi.fn>;
 }
 
-function createStage(
+const PNG_BASE64 = 'UE5HQllURVM=';
+
+function createPage(
   toDataURL: (config?: WireframeCaptureConfig) => string = () =>
-    'data:image/png;base64,UE5HQllURVM=',
-): FakeStage {
+    `data:image/png;base64,${PNG_BASE64}`,
+): { pageNode: WireframeCapturePage; pageToDataURL: ReturnType<typeof vi.fn> } {
+  const pageToDataURL = vi.fn(toDataURL);
+  return { pageNode: { toDataURL: pageToDataURL }, pageToDataURL };
+}
+
+function createStage(toDataURL?: (config?: WireframeCaptureConfig) => string): FakeStage {
   const chrome = [new FakeNode(true), new FakeNode(false)];
-  const toDataURLMock = vi.fn(toDataURL);
+  const { pageNode, pageToDataURL } = createPage(toDataURL);
+  const stageToDataURL = vi.fn(() => 'data:image/png;base64,U1RBR0U=');
   const batchDraw = vi.fn();
   const stage = {
-    toDataURL: toDataURLMock,
+    toDataURL: stageToDataURL,
     find: vi.fn(() => chrome),
+    findOne: vi.fn((selector: string) =>
+      selector === `.${WIREFRAME_PAGE_NAME}` ? pageNode : undefined,
+    ),
     batchDraw,
+    getChildren: vi.fn(() => [{}]),
   } as WireframeCaptureStage;
 
-  return { stage, chrome, toDataURL: toDataURLMock, batchDraw };
+  return { stage, chrome, pageNode, pageToDataURL, stageToDataURL, batchDraw };
 }
 
 beforeEach(() => {
@@ -88,57 +107,99 @@ describe('captureWireframePagePng', () => {
     expect(PAGE_EXPORT_PIXEL_RATIO).toBe(2);
   });
 
-  it('captures the page rect at 2x the logical page size regardless of zoom', () => {
+  it('captures the PAGE node at identity + ratio 2, never the stage or the live view', () => {
     const fake = createStage();
     registerWireframeStage(fake.stage);
-    setView({ scale: 0.5, x: 40, y: 20 });
+    // 400 % panned — the configuration that used to crop the export (F-33).
+    setView({ scale: 4, x: -300, y: -200 });
 
-    expect(captureWireframePagePng()).toBe('UE5HQllURVM=');
+    expect(captureWireframePagePng()).toBe(PNG_BASE64);
 
-    const call = fake.toDataURL.mock.calls[0]?.[0] as WireframeCaptureConfig;
-    expect(call).toMatchObject({
-      x: 40,
-      y: 20,
-      width: 640,
-      height: 400,
-      pixelRatio: 4,
+    expect(fake.stage.findOne).toHaveBeenCalledWith(`.${WIREFRAME_PAGE_NAME}`);
+    expect(fake.pageToDataURL).toHaveBeenCalledTimes(1);
+    expect(fake.stageToDataURL).not.toHaveBeenCalled();
+
+    const config = fake.pageToDataURL.mock.calls[0]?.[0] as WireframeCaptureConfig;
+    // Page-space origin and logical page dimensions: the 100 % rendering.
+    expect(config).toEqual({
+      x: 0,
+      y: 0,
+      width: 1280,
+      height: 800,
+      pixelRatio: PAGE_EXPORT_PIXEL_RATIO,
       mimeType: 'image/png',
     });
-    // The rendered bitmap is exactly 2x the logical page.
-    expect((call.width ?? 0) * (call.pixelRatio ?? 0)).toBe(2 * 1280);
-    expect((call.height ?? 0) * (call.pixelRatio ?? 0)).toBe(2 * 800);
+    // No live-view value may survive into the capture config.
+    expect(config).not.toMatchObject({ x: -300, y: -200 });
+    expect(config.width).not.toBe(1280 * 4);
+    expect(config.height).not.toBe(800 * 4);
+    expect(config.pixelRatio).toBe(2);
   });
 
-  it('tracks the page size and pan offset through the view transform', () => {
+  it('captures the current page dimensions at ratio 2 regardless of zoom', () => {
     const fake = createStage();
     registerWireframeStage(fake.stage);
-    setView({ scale: 2, x: -120, y: -80 });
+    dispatch('page.update', { page: { preset: 'phone' } });
+    setView({ scale: 0.5, x: 40, y: 20 });
 
-    captureWireframePagePng();
+    expect(captureWireframePagePng()).toBe(PNG_BASE64);
 
-    expect(fake.toDataURL.mock.calls[0]?.[0]).toMatchObject({
-      x: -120,
-      y: -80,
-      width: 2560,
-      height: 1600,
-      pixelRatio: 1,
+    expect(fake.pageToDataURL.mock.calls[0]?.[0]).toEqual({
+      x: 0,
+      y: 0,
+      width: 390,
+      height: 844,
+      pixelRatio: 2,
+      mimeType: 'image/png',
     });
+  });
+
+  it('returns null when the page group is missing (not-ready banner, never a blank PNG)', () => {
+    const stageToDataURL = vi.fn(() => 'data:image/png;base64,U1RBR0U=');
+    const stage = {
+      toDataURL: stageToDataURL,
+      find: vi.fn(() => []),
+      findOne: vi.fn(() => undefined),
+      batchDraw: vi.fn(),
+      getChildren: vi.fn(() => [{}]),
+    } as WireframeCaptureStage;
+    registerWireframeStage(stage);
+
+    expect(captureWireframePagePng()).toBeNull();
+    expect(stageToDataURL).not.toHaveBeenCalled();
+  });
+
+  it('returns null for a stage that cannot resolve nodes', () => {
+    const stageToDataURL = vi.fn(() => 'data:image/png;base64,U1RBR0U=');
+    const stage = {
+      toDataURL: stageToDataURL,
+      find: vi.fn(() => []),
+      batchDraw: vi.fn(),
+      getChildren: vi.fn(() => [{}]),
+    } as WireframeCaptureStage;
+    registerWireframeStage(stage);
+
+    expect(captureWireframePagePng()).toBeNull();
+    expect(stageToDataURL).not.toHaveBeenCalled();
   });
 
   it('hides selection chrome during capture and restores it afterwards', () => {
     const chrome = [new FakeNode(true), new FakeNode(false)];
     let visibilityDuringCapture: boolean[] = [];
+    const { pageNode } = createPage(() => {
+      visibilityDuringCapture = chrome.map((node) => node.isVisible);
+      return `data:image/png;base64,${PNG_BASE64}`;
+    });
     const stage = {
-      toDataURL: vi.fn(() => {
-        visibilityDuringCapture = chrome.map((node) => node.isVisible);
-        return 'data:image/png;base64,UE5H';
-      }),
+      toDataURL: vi.fn(() => 'data:image/png;base64,U1RBR0U='),
       find: vi.fn(() => chrome),
+      findOne: vi.fn(() => pageNode),
       batchDraw: vi.fn(),
+      getChildren: vi.fn(() => [{}]),
     } as WireframeCaptureStage;
     registerWireframeStage(stage);
 
-    expect(captureWireframePagePng()).toBe('UE5H');
+    expect(captureWireframePagePng()).toBe(PNG_BASE64);
 
     expect(stage.find).toHaveBeenCalledWith('.wireframe-capture-hidden');
     expect(visibilityDuringCapture).toEqual([false, false]);
@@ -161,31 +222,18 @@ describe('captureWireframePagePng', () => {
     // A destroyed (or never-mounted) Stage has no Layer at all: Konva's
     // `_toKonvaCanvas` then returns an untouched canvas — a transparent bitmap
     // at the requested size (F-33). The registry must refuse it.
-    const toDataURL = vi.fn(() => 'data:image/png;base64,QkxBTks=');
+    const { pageNode, pageToDataURL } = createPage();
     const stage = {
-      toDataURL,
+      toDataURL: vi.fn(() => 'data:image/png;base64,QkxBTks='),
       find: vi.fn(() => []),
+      findOne: vi.fn(() => pageNode),
       batchDraw: vi.fn(),
       getChildren: vi.fn(() => []),
     } as WireframeCaptureStage;
     registerWireframeStage(stage);
 
     expect(captureWireframePagePng()).toBeNull();
-    expect(toDataURL).not.toHaveBeenCalled();
-  });
-
-  it('captures when the stage holds at least its Layer', () => {
-    const toDataURL = vi.fn(() => 'data:image/png;base64,UE5HQllURVM=');
-    const stage = {
-      toDataURL,
-      find: vi.fn(() => []),
-      batchDraw: vi.fn(),
-      getChildren: vi.fn(() => [{}]),
-    } as WireframeCaptureStage;
-    registerWireframeStage(stage);
-
-    expect(captureWireframePagePng()).toBe('UE5HQllURVM=');
-    expect(toDataURL).toHaveBeenCalledTimes(1);
+    expect(pageToDataURL).not.toHaveBeenCalled();
   });
 
   it('registers and clears the stage', () => {

@@ -31,6 +31,8 @@ import type { WireframeElement } from '../model/elements';
 import type { WireframeDocument } from '../model/document';
 import { createNewWireframeDocument } from '../model/document';
 import {
+  beginCaptureView,
+  endCaptureView,
   getSnapshot,
   loadDocument,
   resetWireframeStoreForTests,
@@ -98,6 +100,10 @@ vi.mock('react-konva', async () => {
         'data-mock-group': props.name ?? 'group',
         'data-visible': String(props.visible ?? true),
         'data-draggable': String(props.draggable ?? false),
+        'data-mock-x': props.x === undefined ? '' : String(props.x),
+        'data-mock-y': props.y === undefined ? '' : String(props.y),
+        'data-mock-scale-x': props.scaleX === undefined ? '' : String(props.scaleX),
+        'data-mock-scale-y': props.scaleY === undefined ? '' : String(props.scaleY),
         onClick: props.onClick
           ? (event: any) => {
               event.stopPropagation();
@@ -137,6 +143,8 @@ vi.mock('react-konva', async () => {
         'data-mock-y': props.y === undefined ? '' : String(props.y),
         'data-mock-width': props.width === undefined ? '' : String(props.width),
         'data-mock-height': props.height === undefined ? '' : String(props.height),
+        'data-mock-stroke-width':
+          props.strokeWidth === undefined ? '' : String(props.strokeWidth),
       },
       typeof props.text === 'string' ? props.text : null,
     );
@@ -570,9 +578,12 @@ describe('pan mode hit surface (F-27)', () => {
 
     const viewGroup = konvaMock.groups.get('wireframe-view');
     expect(viewGroup).toBeDefined();
+    // A real Konva pan sets `currentTarget` to the listener's node.
+    const panNode = { x: () => -80, y: () => -40 };
     act(() => {
       viewGroup!.props.onDragEnd({
-        target: { x: () => -80, y: () => -40 },
+        target: panNode,
+        currentTarget: panNode,
       });
     });
 
@@ -582,6 +593,95 @@ describe('pan mode hit surface (F-27)', () => {
     expect(JSON.stringify(after.document)).toBe(documentJsonBefore);
     expect(after.canUndo).toBe(false);
     expect(after.dirty).toBe(before.dirty);
+  });
+});
+
+describe('capture paint override (F-33)', () => {
+  const LIVE_VIEW = { scale: 4, x: -300, y: -200 };
+
+  function viewGroup(): Element {
+    const element = document.querySelector('[data-mock-group="wireframe-view"]');
+    if (!element) throw new Error('view group not mounted');
+    return element;
+  }
+
+  function pageRect(): Element {
+    const element = document.querySelector(
+      '[data-mock-shape="rect"][data-mock-width="1280"]',
+    );
+    if (!element) throw new Error('page rect not mounted');
+    return element;
+  }
+
+  function expectLiveFrame(): void {
+    const group = viewGroup();
+    expect(group).toHaveAttribute('data-mock-x', '-300');
+    expect(group).toHaveAttribute('data-mock-y', '-200');
+    expect(group).toHaveAttribute('data-mock-scale-x', '4');
+    expect(group).toHaveAttribute('data-mock-scale-y', '4');
+    // The page border stays 1 device px at the live zoom.
+    expect(pageRect()).toHaveAttribute('data-mock-stroke-width', '0.25');
+  }
+
+  function expectIdentityFrame(): void {
+    const group = viewGroup();
+    expect(group).toHaveAttribute('data-mock-x', '0');
+    expect(group).toHaveAttribute('data-mock-y', '0');
+    expect(group).toHaveAttribute('data-mock-scale-x', '1');
+    expect(group).toHaveAttribute('data-mock-scale-y', '1');
+    // 100 % rendering: the page border is 1 logical px.
+    expect(pageRect()).toHaveAttribute('data-mock-stroke-width', '1');
+  }
+
+  it('paints the 100 % identity frame while capturing and returns to the live view after', () => {
+    seedDocument([]);
+    renderWithChakra(<WireframeCanvasImpl />);
+    // The first commit fits the page; drive the live transform under test.
+    act(() => setView(LIVE_VIEW));
+
+    expectLiveFrame();
+
+    act(() => beginCaptureView());
+    expectIdentityFrame();
+    // The live view is untouched: it is a paint override only.
+    expect(getSnapshot().view).toEqual(LIVE_VIEW);
+
+    act(() => endCaptureView());
+    expectLiveFrame();
+    expect(getSnapshot().captureView).toBeNull();
+    expect(getSnapshot().view).toEqual(LIVE_VIEW);
+  });
+});
+
+describe('bubbled element drag (E-16)', () => {
+  it('leaves the view untouched and still commits exactly one element move', () => {
+    seedDocument([textElement()]);
+    renderWithChakra(<WireframeCanvasImpl />);
+    act(() => setView({ scale: 1, x: 175, y: 30.5 }));
+
+    const viewGroup = konvaMock.groups.get('wireframe-view');
+    expect(viewGroup).toBeDefined();
+
+    const viewBefore = JSON.stringify(getSnapshot().view);
+    const elementNode = { x: () => 520, y: () => 406 };
+    const panNode = { x: () => 175, y: () => 30.5 };
+
+    act(() => {
+      // The element's own drag commits its geometry...
+      elementGroup().props.onDragEnd({ target: elementNode });
+      // ...then Konva bubbles dragstart/dragend to the pan group, where the
+      // target is the element and the currentTarget is the pan group (E-16).
+      viewGroup!.props.onDragStart({ target: elementNode, currentTarget: panNode });
+      viewGroup!.props.onDragEnd({ target: elementNode, currentTarget: panNode });
+    });
+
+    expect(JSON.stringify(getSnapshot().view)).toBe(viewBefore);
+    expect(getSnapshot().document.elements[0]).toMatchObject({ x: 520, y: 406 });
+    expect(getSnapshot().canUndo).toBe(true);
+
+    act(() => undo());
+    expect(getSnapshot().document.elements[0]).toMatchObject({ x: 480, y: 376 });
+    expect(getSnapshot().canUndo).toBe(false);
   });
 });
 

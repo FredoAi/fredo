@@ -63,6 +63,7 @@ import {
 } from '../store/wireframeDocumentStore';
 import {
   CAPTURE_HIDDEN_NAME,
+  WIREFRAME_PAGE_NAME,
   registerWireframeStage,
 } from '../canvas/wireframeCanvasRegistry';
 import { useCanvasPalette, type CanvasPalette } from '../theme/useCanvasPalette';
@@ -566,7 +567,7 @@ function roundPositive(value: number): number {
 
 export function WireframeCanvasImpl(): ReactElement {
   const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-  const { document: wireframe, selectedId, view, panMode } = state;
+  const { document: wireframe, selectedId, view, panMode, captureView } = state;
   const palette = useCanvasPalette();
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -593,6 +594,14 @@ export function WireframeCanvasImpl(): ReactElement {
       : wireframe.elements.find((element) => element.id === selectedId) ?? null;
 
   const scale = view.scale > 0 ? view.scale : 1;
+
+  // ── Paint transform (capture override, F-33) ─────────────────────────────
+  // While `exportPng()` holds a capture view, the canvas paints the 100 %
+  // identity frame so the page-node capture is exact by construction. With no
+  // override (`captureView === null`) these are the live-view values, so the
+  // rendered props are byte-identical to the normal canvas.
+  const paintView = captureView ?? view;
+  const paintScale = paintView.scale > 0 ? paintView.scale : 1;
 
   // ── Measurement + fit-on-open ─────────────────────────────────────────────
   useLayoutEffect(() => {
@@ -742,9 +751,24 @@ export function WireframeCanvasImpl(): ReactElement {
     [panMode],
   );
 
+  const handlePanDragStart = useCallback(
+    (event: Konva.KonvaEventObject<DragEvent>) => {
+      // Konva bubbles an element's drag events up to this ancestor group. Only
+      // the pan group's OWN drag is a pan — a bubbled element dragstart must not
+      // touch the cursor (E-16).
+      if (event.target !== event.currentTarget) return;
+      setStageCursor('grabbing');
+    },
+    [setStageCursor],
+  );
+
   const handlePanDragEnd = useCallback(
     (event: Konva.KonvaEventObject<DragEvent>) => {
-      const node = event.target as Konva.Group;
+      // An element's `dragend` bubbles here; its target is the element, not the
+      // pan group. Committing the element's absolute position as the view made
+      // the page jump on every element drag (E-16).
+      if (event.target !== event.currentTarget) return;
+      const node = event.currentTarget as Konva.Group;
       setStageCursor('grab');
       setView({ scale, x: roundTo1dp(node.x()), y: roundTo1dp(node.y()) });
     },
@@ -851,12 +875,12 @@ export function WireframeCanvasImpl(): ReactElement {
           <Layer>
             <Group
               name="wireframe-view"
-              x={view.x}
-              y={view.y}
-              scaleX={scale}
-              scaleY={scale}
+              x={paintView.x}
+              y={paintView.y}
+              scaleX={paintScale}
+              scaleY={paintScale}
               draggable={panMode}
-              onDragStart={() => setStageCursor('grabbing')}
+              onDragStart={handlePanDragStart}
               onDragEnd={handlePanDragEnd}
             >
               {/*
@@ -872,10 +896,10 @@ export function WireframeCanvasImpl(): ReactElement {
                */}
               <Rect
                 name="wireframe-pan-surface"
-                x={-view.x / scale}
-                y={-view.y / scale}
-                width={size.width / scale}
-                height={size.height / scale}
+                x={-paintView.x / paintScale}
+                y={-paintView.y / paintScale}
+                width={size.width / paintScale}
+                height={size.height / paintScale}
                 fill="transparent"
                 listening={panMode}
               />
@@ -883,6 +907,7 @@ export function WireframeCanvasImpl(): ReactElement {
               {/* Everything inside the artboard is clipped to it: what you see is
                   what exports (UI/UX section 2.3). */}
               <Group
+                name={WIREFRAME_PAGE_NAME}
                 clipX={0}
                 clipY={0}
                 clipWidth={wireframe.page.width}
@@ -893,7 +918,7 @@ export function WireframeCanvasImpl(): ReactElement {
                   height={wireframe.page.height}
                   fill={palette.surface}
                   stroke={palette.border}
-                  strokeWidth={1 / scale}
+                  strokeWidth={1 / paintScale}
                   shadowColor={palette.text}
                   shadowOpacity={0.08}
                   shadowBlur={16}
@@ -917,10 +942,10 @@ export function WireframeCanvasImpl(): ReactElement {
                       ? palette.textMuted
                       : palette.focusRing
                   }
-                  strokeWidth={2 / scale}
+                  strokeWidth={2 / paintScale}
                   dash={
                     selectedElement.locked || !selectedElement.visible
-                      ? [6 / scale, 4 / scale]
+                      ? [6 / paintScale, 4 / paintScale]
                       : undefined
                   }
                   listening={false}
@@ -936,16 +961,16 @@ export function WireframeCanvasImpl(): ReactElement {
                   keepRatio={false}
                   ignoreStroke
                   enabledAnchors={[...TRANSFORMER_ANCHORS]}
-                  anchorSize={8 / scale}
-                  anchorStrokeWidth={1.5 / scale}
+                  anchorSize={8 / paintScale}
+                  anchorStrokeWidth={1.5 / paintScale}
                   anchorStroke={palette.focusRing}
                   anchorFill={palette.surface}
                   anchorCornerRadius={0}
                   borderStroke={palette.focusRing}
-                  borderStrokeWidth={1.5 / scale}
+                  borderStrokeWidth={1.5 / paintScale}
                   boundBoxFunc={(oldBox, newBox) =>
-                    newBox.width < ELEMENT_MIN_SIZE * scale ||
-                    newBox.height < ELEMENT_MIN_SIZE * scale
+                    newBox.width < ELEMENT_MIN_SIZE * paintScale ||
+                    newBox.height < ELEMENT_MIN_SIZE * paintScale
                       ? oldBox
                       : newBox
                   }

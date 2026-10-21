@@ -16,6 +16,8 @@
  *     dirty state untouched. Nothing is ever thrown at the UI.
  */
 
+import { flushSync } from 'react-dom';
+
 import { adapterBridge } from '../../../shared/utils/adapterBridge';
 import { captureWireframePagePng } from '../canvas/wireframeCanvasRegistry';
 import {
@@ -25,6 +27,8 @@ import {
   serializeWireframeDocument,
 } from '../model/document';
 import {
+  beginCaptureView,
+  endCaptureView,
   getSnapshot,
   loadDocument,
   markSaved,
@@ -141,12 +145,25 @@ export async function openDocument(): Promise<void> {
 }
 
 /**
- * Export PNG (R-4.9): capture the page rect at 2x, then let Rust write the
- * bytes. Export never changes the document, the path or the dirty flag.
+ * Export PNG (R-4.9): capture the page at 2x, then let Rust write the bytes.
+ * Export never changes the document, the path or the dirty flag.
+ *
+ * The capture is the 100 % rendering by construction (F-33): the store's
+ * transient `captureView` repaints the canvas at the identity transform, the
+ * page node is captured, and the override is cleared again. Both store commits
+ * are flushed synchronously, so no intermediate frame is painted and a throwing
+ * (or null) capture can never leave the app in capture mode.
  */
 export async function exportPng(): Promise<void> {
   await runFileOperation('exporting', async () => {
-    const pngBase64 = captureWireframePagePng();
+    let pngBase64: string | null = null;
+    flushSync(() => beginCaptureView());
+    try {
+      pngBase64 = captureWireframePagePng();
+    } finally {
+      flushSync(() => endCaptureView());
+    }
+
     if (pngBase64 === null) {
       setError(NOT_READY_DETAIL);
       setStatus('idle');

@@ -48,6 +48,17 @@ export interface WireframeEditorState {
   document: WireframeDocument;
   selectedId: string | null;
   view: WireframeView;
+  /**
+   * Transient capture override (F-33). While non-null the canvas paints the
+   * document through this view instead of `view`, so an export renders the
+   * 100 % identity frame no matter where the user has panned/zoomed to.
+   *
+   * It is a PAINT OVERRIDE ONLY: never persisted, never part of an undo
+   * snapshot, never flips `dirty`, never changes the selection and never shows
+   * up in the `data-wireframe-*` root attributes. `exportPng()` sets it around
+   * the capture and always clears it again.
+   */
+  captureView: WireframeView | null;
   filePath: string | null;
   dirty: boolean;
   canUndo: boolean;
@@ -99,6 +110,7 @@ function createInitialState(): WireframeEditorState {
     document: createNewWireframeDocument(),
     selectedId: null,
     view: { scale: 1, x: 0, y: 0 },
+    captureView: null,
     filePath: null,
     // A brand-new document has never been written to a file (C3 binding).
     dirty: true,
@@ -152,8 +164,53 @@ function replaceState(patch: Partial<WireframeEditorState>): void {
   notify();
 }
 
-/** Commit a document mutation as exactly ONE undo step. */
+/**
+ * Value equality for the saved unit. Every `WireframeElement` union member
+ * carries only primitives (see `model/elements.ts`), so a stable per-key compare
+ * is exact — reference identity is not usable because the update path always
+ * builds a new document object.
+ */
+function documentsEqual(left: WireframeDocument, right: WireframeDocument): boolean {
+  if (left === right) return true;
+  if (
+    left.page.preset !== right.page.preset ||
+    left.page.width !== right.page.width ||
+    left.page.height !== right.page.height
+  ) {
+    return false;
+  }
+  if (left.elements.length !== right.elements.length) return false;
+  for (let index = 0; index < left.elements.length; index += 1) {
+    if (!elementsEqual(left.elements[index], right.elements[index])) return false;
+  }
+  return true;
+}
+
+function elementsEqual(left: WireframeElement, right: WireframeElement): boolean {
+  if (left === right) return true;
+  const leftFields = left as unknown as Record<string, unknown>;
+  const rightFields = right as unknown as Record<string, unknown>;
+  const leftKeys = Object.keys(leftFields);
+  if (leftKeys.length !== Object.keys(rightFields).length) return false;
+  for (const key of leftKeys) {
+    if (leftFields[key] !== rightFields[key]) return false;
+  }
+  return true;
+}
+
+/**
+ * Commit a document mutation as exactly ONE undo step.
+ *
+ * A candidate that is value-equal to the current document is not a mutation and
+ * is skipped entirely — no snapshot, no `dirty` flip, no notify (E-15: a
+ * stepper click focuses the number field and the following blur re-commits the
+ * value the store already holds, which must not buy a second history entry).
+ * History is the store's invariant, so the guard lives here and every caller
+ * benefits. Selection-only changes go through `select()`, never through this
+ * function, so skipping a value-equal commit can never lose a selection change.
+ */
 function commitDocument(next: WireframeDocument, selectedId?: string | null): void {
+  if (documentsEqual(state.document, next)) return;
   past.push(state.document);
   if (past.length > UNDO_DEPTH) past.shift();
   future = [];
@@ -341,6 +398,21 @@ export function setView(view: WireframeView): void {
   });
 }
 
+/**
+ * Paint the document at 100 % identity for one synchronous capture (F-33).
+ * Editor state only — the live `view`, the document, the selection, `dirty` and
+ * the undo history are untouched.
+ */
+export function beginCaptureView(): void {
+  replaceState({ captureView: { scale: 1, x: 0, y: 0 } });
+}
+
+/** Drop the capture override and return to the live view (F-33). */
+export function endCaptureView(): void {
+  if (state.captureView === null) return;
+  replaceState({ captureView: null });
+}
+
 /** Fit the current page into the registered canvas stage (or 100% fallback). */
 export function fitPageToViewport(): void {
   replaceState({ view: fitViewForPage(state.document.page) });
@@ -382,6 +454,7 @@ export function resetForNewDocument(preset: WireframePagePreset = 'desktop'): vo
     document,
     selectedId: null,
     view: fitViewForPage(document.page),
+    captureView: null,
     filePath: null,
     dirty: true,
     canUndo: false,
@@ -405,6 +478,7 @@ export function loadDocument(document: WireframeDocument, path: string): void {
     document,
     selectedId: null,
     view: fitViewForPage(document.page),
+    captureView: null,
     filePath: path,
     dirty: false,
     canUndo: false,

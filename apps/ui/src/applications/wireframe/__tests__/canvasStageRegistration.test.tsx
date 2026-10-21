@@ -32,6 +32,8 @@ interface StageInstance {
   id: number;
   toDataURL: (config?: unknown) => string;
   find: () => unknown[];
+  /** The page group the export captures (F-33); scoped to THIS instance. */
+  findOne: (selector: string) => { toDataURL: () => string } | undefined;
   getChildren: () => unknown[];
   batchDraw: () => void;
   width: () => number;
@@ -56,6 +58,7 @@ vi.mock('react-konva', async () => {
         id: konvaMock.nextId++,
         toDataURL: () => 'data:image/png;base64,U1RBR0U=',
         find: () => [],
+        findOne: () => undefined,
         // A live Stage always holds at least its Layer (Konva `Stage.add`).
         getChildren: () => [{}],
         batchDraw: () => undefined,
@@ -68,6 +71,15 @@ vi.mock('react-konva', async () => {
         instance.captures += 1;
         return 'data:image/png;base64,U1RBR0U=';
       };
+      // The export captures the page group resolved through this instance.
+      const page = {
+        toDataURL: () => {
+          instance.captures += 1;
+          return 'data:image/png;base64,U1RBR0U=';
+        },
+      };
+      instance.findOne = (selector: string) =>
+        selector === '.wireframe-page' ? page : undefined;
       konvaMock.instances.push(instance);
       return instance;
     });

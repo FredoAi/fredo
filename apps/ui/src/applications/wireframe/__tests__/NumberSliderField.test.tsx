@@ -14,11 +14,20 @@
  */
 
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ChakraProvider, createSystem, defaultBaseConfig } from '@chakra-ui/react';
 
 import { NumberSliderField } from '../components/fields/NumberSliderField';
+import { createNewWireframeDocument } from '../model/document';
+import { createDefaultElement } from '../model/elements';
+import {
+  dispatch,
+  getSnapshot,
+  loadDocument,
+  resetWireframeStoreForTests,
+  undo,
+} from '../store/wireframeDocumentStore';
 
 beforeAll(() => {
   // jsdom 24 ships no `PointerEvent`; without one the pointer sequence degrades
@@ -87,6 +96,7 @@ async function pressTrigger(button: HTMLElement): Promise<void> {
 
 afterEach(() => {
   cleanup();
+  resetWireframeStoreForTests();
 });
 
 describe('NumberSliderField stepper', () => {
@@ -129,5 +139,79 @@ describe('NumberSliderField stepper', () => {
     staleClick();
 
     expect(onChange).toHaveBeenCalledWith(105);
+  });
+});
+
+describe('stepper history granularity (E-15)', () => {
+  /**
+   * Store-bound consumer: the field commits into the REAL document store, so the
+   * pin sees the history, not just the callback value. A realistic click
+   * (pointerdown -> pointerup -> click) steps and commits; the number field the
+   * click focused is then blurred, which makes Zag re-commit the value the store
+   * already holds. The store's value-equal no-op must keep that re-commit out of
+   * the undo history.
+   */
+  function renderStoreBoundField(): { startWidth: number; commits: number[] } {
+    resetWireframeStoreForTests();
+    const base = createNewWireframeDocument('desktop');
+    const element = createDefaultElement('card', {
+      page: base.page,
+      elements: [],
+      id: 'el-card',
+    });
+    loadDocument({ ...base, elements: [element] }, 'C:/tmp/doc.wireframe.json');
+
+    const commits: number[] = [];
+    render(
+      <ChakraProvider value={testSystem}>
+        <NumberSliderField
+          label="Width"
+          value={element.width}
+          min={64}
+          max={4096}
+          testId="wireframe-width"
+          onChange={(next) => {
+            commits.push(next);
+            dispatch('element.update', { id: element.id, patch: { width: next } });
+          }}
+        />
+      </ChakraProvider>,
+    );
+    return { startWidth: element.width, commits };
+  }
+
+  function documentWidth(): number {
+    return getSnapshot().document.elements[0].width;
+  }
+
+  it('one stepper click + its blur re-commit costs exactly one undo entry', async () => {
+    const { startWidth, commits } = renderStoreBoundField();
+    const button = trigger('increment');
+    const user = userEvent.setup();
+
+    // pointerdown (Zag steps) -> pointerup -> click (commit of the stepped value).
+    await user.pointer({ keys: '[MouseLeft]', target: button });
+    // The click focused the number input; leaving it is Zag's blur commit. (jsdom's
+    // pointer press does not land the focus itself, so the focus/blur pair is driven
+    // explicitly — the same machine path the live interaction takes. Zag defers the
+    // commit for a frame, so the blur is awaited.)
+    act(() => {
+      spinbutton().focus();
+    });
+    await act(async () => {
+      spinbutton().blur();
+      await new Promise((resolve) => setTimeout(resolve, 32));
+    });
+
+    // The defect window is real: the SAME value is committed twice — once by the
+    // click and once by the blur's onValueCommit.
+    expect(commits).toEqual([startWidth + 1, startWidth + 1]);
+    expect(documentWidth()).toBe(startWidth + 1);
+
+    // Exactly ONE history entry: a single undo returns the pre-click value.
+    expect(getSnapshot().canUndo).toBe(true);
+    act(() => undo());
+    expect(documentWidth()).toBe(startWidth);
+    expect(getSnapshot().canUndo).toBe(false);
   });
 });

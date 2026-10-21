@@ -8,11 +8,15 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { createDefaultElement, type WireframeElementType } from '../model/elements';
+import { createDefaultElement, type WireframeElement, type WireframeElementType } from '../model/elements';
+import { createNewWireframeDocument } from '../model/document';
 import {
   UNDO_DEPTH,
+  beginCaptureView,
   dispatch,
+  endCaptureView,
   getSnapshot,
+  loadDocument,
   redo,
   resetWireframeStoreForTests,
   undo,
@@ -29,6 +33,18 @@ function add(type: WireframeElementType = 'text') {
     id: `element-${counter}`,
   });
   dispatch('element.add', { element });
+  return element;
+}
+
+/** A loaded (saved, history-free) document holding exactly one element. */
+function loadOne(type: WireframeElementType = 'card'): WireframeElement {
+  const base = createNewWireframeDocument('desktop');
+  const element = createDefaultElement(type, {
+    page: base.page,
+    elements: [],
+    id: 'loaded-1',
+  });
+  loadDocument({ ...base, elements: [element] }, 'C:/tmp/doc.wireframe.json');
   return element;
 }
 
@@ -220,5 +236,83 @@ describe('safe no-ops', () => {
 
     expect(getSnapshot().document.elements).toHaveLength(0);
     expect(getSnapshot().canUndo).toBe(false);
+  });
+});
+
+describe('value-equal commits are not mutations (E-15)', () => {
+  it('skips an element.update that repeats the current values', () => {
+    const element = loadOne('card');
+    const before = getSnapshot();
+    expect(before.canUndo).toBe(false);
+    expect(before.dirty).toBe(false);
+
+    dispatch('element.update', {
+      id: element.id,
+      patch: { x: element.x, y: element.y, width: element.width, height: element.height },
+    });
+
+    const after = getSnapshot();
+    expect(after.document).toBe(before.document);
+    expect(after.canUndo).toBe(false);
+    expect(after.canRedo).toBe(false);
+    expect(after.dirty).toBe(false);
+  });
+
+  it('a duplicate commit does not buy a history entry', () => {
+    const element = loadOne('card');
+    dispatch('element.update', { id: element.id, patch: { x: element.x + 24 } });
+    const afterMove = getSnapshot();
+    expect(afterMove.document.elements[0]).toMatchObject({ x: element.x + 24 });
+
+    // The blur re-commit of the value the store already holds.
+    dispatch('element.update', { id: element.id, patch: { x: element.x + 24 } });
+    expect(getSnapshot().document).toBe(afterMove.document);
+
+    undo();
+    expect(getSnapshot().document.elements[0]).toMatchObject({ x: element.x });
+    expect(getSnapshot().canUndo).toBe(false);
+  });
+
+  it('skips a page.update that repeats the current page and keeps one step per real change', () => {
+    loadOne('card');
+    const before = getSnapshot();
+    const pageBefore = JSON.stringify(before.document.page);
+
+    // Same named preset resolves to the dimensions the page already has.
+    dispatch('page.update', { page: { preset: 'desktop' } });
+    expect(getSnapshot().document).toBe(before.document);
+    expect(getSnapshot().canUndo).toBe(false);
+    expect(getSnapshot().dirty).toBe(false);
+    expect(JSON.stringify(getSnapshot().document.page)).toBe(pageBefore);
+
+    dispatch('page.update', { page: { width: 640 } });
+    const afterResize = getSnapshot();
+    expect(afterResize.document.page).toMatchObject({ preset: 'custom', width: 640 });
+
+    // Blur re-commits the same width.
+    dispatch('page.update', { page: { width: 640 } });
+    expect(getSnapshot().document).toBe(afterResize.document);
+
+    undo();
+    expect(getSnapshot().document.page).toMatchObject({ preset: 'desktop', width: 1280 });
+    expect(getSnapshot().canUndo).toBe(false);
+  });
+
+  it('the capture view is paint-only: no history, no dirty, no document change', () => {
+    loadOne('card');
+    const before = getSnapshot();
+
+    beginCaptureView();
+    expect(getSnapshot().captureView).toEqual({ scale: 1, x: 0, y: 0 });
+    endCaptureView();
+
+    const after = getSnapshot();
+    expect(after.captureView).toBeNull();
+    expect(after.document).toBe(before.document);
+    expect(after.canUndo).toBe(false);
+    expect(after.canRedo).toBe(false);
+    expect(after.dirty).toBe(false);
+    expect(after.view).toEqual(before.view);
+    expect(after.selectedId).toBe(before.selectedId);
   });
 });
