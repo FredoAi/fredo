@@ -15,6 +15,7 @@ import { Flex } from '@chakra-ui/react';
 
 import { HOTKEY_BAR_HEIGHT_PX } from '../../../shared/hotkeys/HotkeyBar';
 import { formatGeometry } from '../model/geometry';
+import { useWireframeIntent } from '../hooks/useWireframeIntent';
 import { getSnapshot, subscribe } from '../store/wireframeDocumentStore';
 import { WireframeCanvas } from './WireframeCanvas';
 import { WireframeFileError } from './WireframeFileError';
@@ -23,6 +24,9 @@ import { WireframeStatusBar } from './WireframeStatusBar';
 import { WireframeToolbar } from './WireframeToolbar';
 
 export function WireframeEditor(): React.ReactElement {
+  // Spec #3070 ST-7 — the Companion relay: one `wireframe-intent` listener plus
+  // the take-on-mount drain (the app may have been opened by the request).
+  useWireframeIntent();
   const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const { document, selectedId, view, filePath, dirty, panMode } = state;
 
