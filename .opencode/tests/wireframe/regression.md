@@ -90,3 +90,36 @@
 - `.opencode/tests/settings/` — the settings shell and its section contract.
 - `.opencode/tests/theming/` + `.opencode/tests/theme-contract/` — token → CSS var → theme.
 - `.opencode/tests/doom-mode/` — the `doom_mode` skill that shares the registry.
+
+## Round 1 result — 2026-10-21
+
+- **R-1 (duplicate guard) UNVERIFIED** — the 22 wireframe `data-hotkey` attributes never mount
+  (the app crashes at canvas mount), so the collision surface cannot be observed live. The
+  unit pin (`featureHotkeyKeys.test.ts`, 5 tests) is green.
+- **R-2 (pre-existing bare-key dispatch) UNVERIFIED** — no driver pass this round; the
+  wireframe keys are absent so a bare-key pass-through cannot be contrasted.
+- **R-3 (bar contract) UNVERIFIED** — same cause (editor never mounts).
+- **R-4 (launcher grid) PASS (partial)** — the launcher renders `gridcell Wireframe` →
+  `button Wireframe` through the eager glob with no `Home.tsx` edit; the grid set is intact.
+  Keyboard-nav/aria rows of `.opencode/tests/launcher/` were not re-run.
+- **R-5 (Companion skills) UNVERIFIED** — the `open_app` skill resolves `Wireframe` and opens
+  the window (live receipt: `window.__TAURI__.event.emit('llm-skill-call', …)` → the app
+  window opened), but the round trip cannot complete because the editor crashes.
+- **R-6 (theme contract) PASS (static)** — zero `#rrggbb` / `rgb(` / `rgba(` / `hsl(` literals
+  and zero `var(--x)NN` alpha-append in `apps/ui/src/applications/wireframe/**`;
+  `allowlist.ts` contains no wireframe entry; `canvasPalette.test.ts` + `rawColorScan.test.ts`
+  green.
+- **R-7 (settings shell) PASS (static)** — `SettingsSurface.tsx` untouched; the app declares
+  `hasSettings=false`; no wireframe nav item in the settings surface.
+- **R-8 (persistence medium) PASS (static)** — the document is a user FILE; no
+  `application_store_*` call and no RTDB row in the wireframe sources.
+- **R-9 (startup bundle) PASS (build receipt)** — `konva`/`react-konva` land in
+  `assets/WireframeCanvasImpl-BMlK6N31.js` (307.43 kB), separate from the entry
+  `assets/index-BPAunTLj.js` (2,903.09 kB). The "opens fine when that chunk loads" half is
+  FAILED by the mount crash.
+- **R-10 (console) FAIL** — the open raises `Uncaught InvalidStateError` (see
+  `functional.md` → Round 1 result).
+- **R-11 (build + CI parity) PASS with the nextest substitution disclosed** — build ✓,
+  test:run ✓ (3051), contrast:gate ✓, cargo check ✓, cargo clippy ✓ (all zero warnings).
+- **R-12 (no new platform surface) PASS (static)** — no new capability/plugin, no
+  `global-shortcut` registration; `Cargo.lock` unchanged (canvas deps are UI-side only).
