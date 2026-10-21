@@ -99,3 +99,30 @@ Root defect detail + repro: see `functional.md` → "Round 1 result — served a
   disappear when the host is unfocused.
 - **S-10 PASS:** build 2832 modules, 3056 tests, contrast 46/46, cargo check zero warnings
   (clippy/nextest/build:webview disclosed as not re-run; no Rust change in the fix commit).
+
+## Round 4 result — 2026-10-21 (env `wf3070-r4`, served `7d03f3c`)
+
+- **S-1 PASS:** the editor paints (`wireframe-root`, `wireframe-canvas` 1630×861, toolbar,
+  panel, status bar, 22-key bar) after the launcher `Enter` and `open_app` paths.
+  **Boot caveat:** a fresh boot can take **3-5 minutes** with `about:blank` / an empty
+  `#root` and `execute_js` returning `Request timeout after 2000ms`. That is a BOOTING
+  webview — `dom_snapshot` shows `body > div#root` with no children. Wait it out; the
+  `Down`/`Up` ladder does not shorten it (5 cycles tried).
+- **S-2 PASS:** `tauri_read_logs(source="console", level="error")` returned no rows after the
+  full drive; no `Maximum update depth exceeded`, no `flushSync` warning during exports.
+- **S-3 PASS:** `data-wireframe-page="1280x800"`, `-element-count="0"`, `-dirty="true"`,
+  `-zoom="100"`, `-pan-mode="false"` on open.
+- **S-4 PASS (carried):** Settings surfaces render; the app has no settings section.
+- **S-5 PASS:** six AC captures uploaded (AC1 twelve elements, AC2 section selection, AC3 shape
+  panel, AC4 zoomed/panned + status, AC5 hotkey bar, AC6 Gherkin draft).
+- **S-6 PASS:** key `1` from the `default` gate → count 0→1, `-selection-type=text`.
+- **S-7 PASS:** save wrote the seam path (`Saved`, `-dirty=false`); `w`/`o`/`t` in the CANCEL
+  env left everything unchanged with no banner and wrote nothing; FAIL_FILE showed the banner;
+  CANCEL+FAIL_FILE showed no banner (cancel wins).
+- **S-8 PASS:** the binding Gherkin opens the app from closed and drafts navbar + "Reporter"
+  heading + "Reporter reports" card through the real model path (Companion ON at home).
+- **S-9 PASS:** 22 keybar rows + 22 toolbar `data-hotkey` attributes while focused; typed keys
+  are suppressed in text entry.
+- **S-10 PASS (tester-run):** typecheck ✓ · build 2832 modules ✓ · test:run 3077 ✓ ·
+  contrast 46/46 ✓ · build:webview 2834 modules ✓ · cargo check/clippy zero warnings ✓ ·
+  cargo test 1451 lib tests + integration suites ✓.
