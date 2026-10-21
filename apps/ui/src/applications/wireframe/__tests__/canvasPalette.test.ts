@@ -42,6 +42,42 @@ function installComputedStyleStub(): void {
   );
 }
 
+/**
+ * The offscreen probe used to concretise derived `color-mix(...)` tokens emits a
+ * resolved colour from its `color` computed style (jsdom does not resolve
+ * color-mix itself, so the test stubs the resolved value).
+ */
+function stubProbeColor(): void {
+  const original = window.getComputedStyle.bind(window);
+  vi.spyOn(window, 'getComputedStyle').mockImplementation(
+    ((element: Element, pseudo?: string | null) => {
+      const real = original(element, pseudo ?? undefined);
+      if (
+        element !== document.documentElement &&
+        element.getAttribute('data-canvas-color-probe') !== null
+      ) {
+        return new Proxy(real, {
+          get(target, property, receiver) {
+            if (property === 'color') return 'resolved-probe-color';
+            const value = Reflect.get(target, property, receiver);
+            return typeof value === 'function' ? value.bind(target) : value;
+          },
+        }) as CSSStyleDeclaration;
+      }
+      if (element !== document.documentElement) return real;
+      return new Proxy(real, {
+        get(target, property, receiver) {
+          if (property === 'getPropertyValue') {
+            return (name: string) => variables[name] ?? '';
+          }
+          const value = Reflect.get(target, property, receiver);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      }) as CSSStyleDeclaration;
+    }) as typeof window.getComputedStyle,
+  );
+}
+
 beforeEach(() => {
   variables = {
     '--card-bg': 'token-surface',
@@ -108,6 +144,18 @@ describe('palette contract', () => {
   it('falls back to the CSS keyword when a variable is missing', () => {
     delete variables['--card-bg'];
     expect(resolveCanvasPalette().surface).toBe('transparent');
+  });
+
+  it('concretises derived color-mix tokens through an offscreen probe', () => {
+    variables['--accent-strong'] =
+      'color-mix(in srgb, var(--accent-primary) 55%, var(--text-primary) 45%)';
+    stubProbeColor();
+
+    expect(resolveCanvasPalette().focusRing).toBe('resolved-probe-color');
+
+    const probe = document.querySelector('[data-canvas-color-probe]');
+    expect(probe).not.toBeNull();
+    expect(probe).toHaveAttribute('aria-hidden', 'true');
   });
 
   it('compares palette value identity', () => {

@@ -86,12 +86,52 @@ function readVariable(styles: CSSStyleDeclaration, name: string): string {
   return value.length > 0 ? value : CANVAS_PALETTE_FALLBACK;
 }
 
+/**
+ * Derived theme tokens are stored as LIVE `color-mix(... var(--x) ...)`
+ * expressions (e.g. `--accent-strong`). Canvas accepts only concrete colours, so
+ * such values are resolved through an offscreen element's `color` computed
+ * style. Values that are already concrete (authored presets/overrides) pass
+ * through untouched — no DOM round trip for the common case.
+ */
+const COLOR_FUNCTION_PATTERN = /(?:var|color-mix)\(/i;
+
+let colorProbe: HTMLSpanElement | null = null;
+
+function getColorProbe(): HTMLSpanElement | null {
+  if (typeof document === 'undefined' || !document.body) return null;
+  if (!colorProbe || !colorProbe.isConnected) {
+    colorProbe = document.createElement('span');
+    colorProbe.setAttribute('aria-hidden', 'true');
+    colorProbe.setAttribute('data-canvas-color-probe', '');
+    colorProbe.style.position = 'absolute';
+    colorProbe.style.width = '0';
+    colorProbe.style.height = '0';
+    colorProbe.style.visibility = 'hidden';
+    colorProbe.style.pointerEvents = 'none';
+    document.body.appendChild(colorProbe);
+  }
+  return colorProbe;
+}
+
+function resolveConcreteColor(raw: string): string {
+  if (!COLOR_FUNCTION_PATTERN.test(raw)) return raw;
+  const probe = getColorProbe();
+  if (!probe) return raw;
+
+  probe.style.color = '';
+  probe.style.color = raw;
+
+  const resolved = getComputedStyle(probe).color.trim();
+  probe.style.color = '';
+  return resolved.length > 0 ? resolved : raw;
+}
+
 /** Resolve the 12 palette colours from the live theme variables. */
 export function resolveCanvasPalette(): CanvasPalette {
   const styles = getComputedStyle(document.documentElement);
   const palette = {} as Record<CanvasPaletteKey, string>;
   for (const key of CANVAS_PALETTE_KEYS) {
-    palette[key] = readVariable(styles, CANVAS_PALETTE_VARS[key]);
+    palette[key] = resolveConcreteColor(readVariable(styles, CANVAS_PALETTE_VARS[key]));
   }
   return palette;
 }
