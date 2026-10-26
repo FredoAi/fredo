@@ -63,6 +63,31 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 ---
 ## Known Failure Modes
+
+### G-396: tauri_mcp_server_registration_absent_in_a_session
+- **activation_date:** 2026-10-26
+- **observed:** #3081 round 1 — the tester could not run its live legs because NO `tauri_*` MCP tools were registered in its session, even though `opencode.json` declared the `tauri` MCP server and granted the tester `tauri_*: allow`, and the isolated env (`3081-a`) was running (Vite/MCP ports bound, app pid alive, served commit == spec head). Only the `chakra-ui_*` server registered; the `tauri` server did not (`server unavailable status=failed`). A fresh session registered all three servers (`opencode mcp list`). Suspected cause: version skew — the config's `@hypothesi/tauri-mcp-server@0.13.2` paired with the app's shipped mcp-bridge plugin 0.12. Root-cause class: `environment`.
+- **target_failure:** a session boots with the `tauri` MCP server unregistered so no `tauri_*` tools exist, even though the app, its bridge port, and the permission grant are all correct — so a live-policy round cannot drive the webview and reads as a machine blocker.
+- **guardrail:** When a session exposes no `tauri_*` tools while the app and its MCP bridge port are live (the env reports running), treat it as a per-session MCP-server registration failure: confirm the app side (env running, bridge port bound), then retry on a FRESH session (verify with the MCP list) before halting or escalating. Do not substitute ad-hoc tooling. A repeated failure across fresh sessions names the version skew (config MCP-server version vs the app's shipped bridge-plugin version) as a machine-level repair for the human/Machinist — the `mcp` block is human-owned.
+- **home:** skills/dev-environment/SKILL.md (MCP-server-registration section — routed to Toolsmith) + playbooks/tester.md + playbooks/orchestrator.md + references.md (this record)
+- **effectiveness:** Pending
+
+### G-395: mcp_permission_glob_uses_a_normalised_prefix_the_registered_namespace_does_not_match
+- **activation_date:** 2026-10-26
+- **observed:** #3081 — role permission blocks use `chakra_ui_*` (underscore) while the registered MCP tool namespace is `chakra-ui_*` (hyphen, derived from the `chakra-ui` MCP server name; e.g. `chakra-ui_customize_theme`). The tester's intended `chakra_ui_*: deny` and the UI/UX Expert's `chakra_ui_*: allow` therefore do not bind if opencode does not normalise `-`/`_` — a silent permission-rule no-op. Latent (not blocking #3081). Root-cause class: `technique` (config/tool-namespace drift).
+- **target_failure:** a per-role MCP permission glob uses a normalised/underscore form of the MCP server name (`chakra_ui_*`) while the registered tool namespace is the raw server name (`chakra-ui_*`), so the allow/deny rule silently does not bind and the intended sandbox posture is not enforced.
+- **guardrail:** A per-role MCP permission glob MUST use the MCP SERVER NAME verbatim as the tool prefix (the `chakra-ui` server → `chakra-ui_*`), never a normalised `-`/`_` form. Before authoring or changing one, confirm the registered tool namespace for that server. A rule whose prefix matches no registered server is a no-op — fix it; never assume it binds.
+- **home:** opencode.json permission blocks (Machinist, via `set-permission`) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-394: tester_playbook_instructs_a_state_machine_action_gated_to_another_role
+- **activation_date:** 2026-10-26
+- **observed:** #3081 round 1 — the tester playbook told the tester to "request the `block` action" for a missing test-suite/tooling gap, but `block`/`unblock` are gated in the state machine to `orchestrator`/`developer`; the tester's `--action block` was refused (`actor tester not allowed to block`, logged as a `block` event with outcome `blocked`). Root-cause class: `technique` (playbook/tool-surface drift).
+- **target_failure:** a role's playbook instructs an action the state machine gates to a DIFFERENT role, so the agent's mandated step is refused and the round either stalls or burns a call on a refused action.
+- **guardrail:** A role's playbook must only instruct actions that role may actually perform. Where a role needs a gated action it does not own (the tester's blocker), the playbook MUST say to escalate to the owning role — report the reason to the Orchestrator, which calls `block` — never to call the gated action itself. When a playbook step and the state-machine gate disagree, the playbook is corrected to match the gate; the gate is never widened to match the playbook.
+- **home:** playbooks/tester.md + references.md (this record)
+- **effectiveness:** Pending
+
 ### G-393: acoustic_leg_expectation_not_derived_from_the_non_intelligible_fixture
 - **activation_date:** 2026-10-21
 - **observed:** #3073 round 1 — the QA plan's shipped-dictation liveness row expected a settled model-audio turn with NO intermediate status beat. The only sanctioned in-repo audio fixture is explicitly non-intelligible, so a fed turn is necessarily a PROSE turn, and the shipped content path legitimately emits one bounded status beat before settling. The tester observed it, disclosed it as a deviation with its root cause, and scored the row on its liveness substance (one terminal completion, no error, app responsive) — but a literal executor would have returned a false FAIL against an expectation the named fixture can never satisfy. Root-cause class: `scope` (plan expectation, caught only at test time).
@@ -2512,7 +2537,8 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** an agent that hits a sandbox/allowlist/tooling wall (a denied verb, a fail-closed tool, a missing capability) responds by writing its OWN ad-hoc helper script that re-implements a sanctioned tool's internals (a detached dev-server spawn, a query runner, a port killer) — producing unmanaged processes, logs outside the sanctioned tooling, duplicated maintenance, and a second (unreviewed) implementation of infrastructure the pipeline already owns. The human's principle: **we provide the tools for our agents; agents never create their own tools.**
 - **guardrail:** An agent that needs a capability the provisioned tooling lacks MUST block/escalate to the Orchestrator with the exact gap (the command it tried + why it was denied + what the provisioned tool lacks) rather than write a scratch script that re-implements a sanctioned tool's internals. Scratch `.opencode/tmp/<issue>/` is for DATA (drafts, dumps, evidence) — never for re-inventing infrastructure. Baseline/BEFORE measurements in research-first specs run against the pre-fix `spec/<N>` state through `dev-env.ps1 -Action Up -Spec <N>` (or `-At <pre-fix-sha>` for an ancestor of the spec tip); agents NEVER check out `main` for a baseline and NEVER hand-roll a detached `pnpm dev:tauri` spawn. A genuine cross-branch measurement need is a tooling request to the Orchestrator (a new script/param), not an ad-hoc agent script. The Orchestrator treats any agent-authored scratch runner under `.opencode/tmp/<issue>/` that starts a dev server / re-implements `dev-env.ps1` / `process-hygiene.ps1` / the query tools as a G-110 violation: kill the spawned processes, delete the artifact, document the gap, and (if the capability is genuinely missing) extend the sanctioned tool in the same pass.
 - **home:** playbooks/orchestrator.md (route subagent tool gaps) + skills/dev-environment/SKILL.md (baseline-leg rule) + dev-env.ps1 (`-At` baseline-leg param) + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Recurred (2026-10-26, #3081 — NEW VARIANT: a scratch MCP client, see below) — previously Pending.
+- **re-validated (NEW VARIANT):** 2026-10-26, #3081 — a tester in a stalled round hand-rolled an ad-hoc MCP client under `.opencode/tmp/3081/` (`mcp-client.mjs` + `run.ps1`/`probe.ps1`/`schema.ps1`/`out*.json`/`task*.json`) instead of the built-in `tauri_driver_session`; its first driver call omitted the env's MCP port and failed (`no Tauri app found at localhost or localhost:9223`). A scratch client that re-implements the sanctioned driver is the SAME G-110 violation as a scratch dev-server spawn — the remedy is the committed `tauri_driver_session start {host, port}` (the env's MCP port), and the tester/orchestrator briefs now name it and forbid scratch MCP clients.
 
 - **re-validated:** 2026-09-12, #2865 — the pre-implementation BEFORE baseline was captured through the sanctioned `dev-env.ps1 -Action Up -Spec <N>` path at the pre-fix tip; no agent hand-rolled a runner or checked out `main`, and the UI/UX Expert read the resulting image files with its Read tool (its sandbox has no dev/webview tools). No G-110 violation.
 - **re-validated:** 2026-09-13, #2872 — the BEFORE rendered-geometry baseline for the spacing change ran through the sanctioned `dev-env.ps1 -Action Up -Spec 2872 -At d71fe7d` baseline leg (pre-fix ancestor of the `spec/2872` tip), then a standard `Up` restored the tip; no agent checked out `main`, and no scratch runner was written. The `-At` baseline leg is the sanctioned tool for exactly this case; no G-110 violation.
@@ -3496,13 +3522,10 @@ Continuation — re-validated TWICE in #2838 (2026-09-08): the spec branch forke
 - **home:** AGENTS.md Chakra section (human-approved rewrite) + apps/ui/src/shared/utils/colorTint.ts + chakra-ui-refactor SKILL.md + playbooks/ui-ux-expert.md + references.md (this record)
 - **effectiveness:** Pending
 
-### G-087: reopen_leg_reuses_squash_merged_evidence_branch
-- **activation_date:** 2026-08-31
-- **observed:** #2770 round 6 (the first reopen): the `done → planning` reopen reused the kept evidence branch `spec/2770`, whose pre-reopen commits had been SQUASH-merged to main — the histories diverge, so the round-6 PR was born CONFLICTING and the testing → audit merge was blocked until the developer ran the G-032 sync (merge origin/main into the spec branch, resolve to "final tree = main + fix-round delta", push).
-- **target_failure:** a reopened feature's spec PR conflicts with main at merge time because the branch carries pre-reopen commits whose content main already absorbed via the squash — blocking the audit merge after testing already passed.
-- **guardrail:** On a `done → planning` reopen, treat the spec branch as STALE BY CONSTRUCTION (it is the kept evidence branch; its pre-reopen work is already on main via squash): immediately after the `planning → implementation` transition, run the G-032 branch sync BEFORE any testing dispatch — merge origin/main into `spec/<N>`, resolve every conflict to the invariant "final tree = origin/main + the fix-round delta only", re-verify the build/tests, and push (fast-forward). Never force-push and never re-create the branch (it carries the evidence trail); the merge commit is the record.
-- **home:** playbooks/orchestrator.md (reopen workflow step) + references.md (this record)
-- **effectiveness:** Pending
+### G-087: reopen_leg_reuses_squash_merged_evidence_branch — RETIRED (2026-10-26)
+- **retired:** the `done → planning` reopen leg was removed — `done` is terminal; a post-merge defect becomes a follow-up spec (`revises: #N`). The guardrail has no live home.
+- **home:** (retired)
+- **effectiveness:** Retired
 
 ### G-088: fixture_injected_evidence_closes_unmodeled_real_shapes
 - **activation_date:** 2026-08-31

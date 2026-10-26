@@ -3767,14 +3767,10 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // planning cluster re-converges the new scope). All other transitions
             // keep their normal exit guard.
             //
-            // A REOPEN (`done → planning`) is the human-review rework leg: a defect
-            // reported after the feature was labeled done (the issue stays OPEN for
-            // manual human close) loops the feature back to planning so the triage
-            // cluster re-converges a fix round. Its exit guard (Done's) always
-            // passes, and entering planning re-seeds the A2A fresh like the
-            // rescope/restart legs (the retry round advances from the testing-entry
-            // count, so the fix round is machine-stamped). The reopenCount /
-            // reopenRate metrics derive from these transition events.
+            // There is NO `done → planning` reopen leg: a post-merge defect is
+            // handled by a follow-up spec linked to the finished one via the PO's
+            // `revises: #N` (`feature.revised`) — the revised issue is never
+            // reopened. `done` is terminal in the machine; only the human closes it.
             // Serving-currency guard (G-052): entering testing requires the repo
             // root (the serving checkout) to sit on spec/<N> at the origin tip.
             // Checked BEFORE the exit gate — a wrong-branch/stale root is the most
@@ -3845,13 +3841,12 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 Phase::Planning => {
                     // Auto-seed the A2A deliberation file (idempotent) so the planning
                     // cluster has a place to draft before the SI dispatches it.
-                    // On an `audit → planning` restart, an `implementation →
-                    // planning` rescope, OR a `done → planning` reopen, back up
-                    // the stale converged file and re-seed fresh — the retry/
-                    // rescope/reopen cluster must not inherit the previous
-                    // round's converged drafts (the fix round re-converges a
-                    // new plan from scratch).
-                    if phase == Phase::Audit || phase == Phase::Implementation || phase == Phase::Done {
+                    // On an `audit → planning` restart or an `implementation →
+                    // planning` rescope, back up the stale converged file and
+                    // re-seed fresh — the retry/rescope cluster must not inherit
+                    // the previous round's converged drafts (the fix round
+                    // re-converges a new plan from scratch).
+                    if phase == Phase::Audit || phase == Phase::Implementation {
                         let p = triage_a2a_path(issue)?;
                         if p.exists() {
                             let ts = chrono::Utc::now().format("%Y%m%d%H%M%S");
@@ -4581,7 +4576,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
         }
         "improvement" => {
             // The honest self-improvement signal: acceptance rate (specs not later
-            // revised/reopened) with an interval + a half-vs-half change test.
+            // revised) with an interval + a half-vs-half change test.
             improvement_report(a.json)?;
         }
         "verify" => {
@@ -6119,7 +6114,7 @@ fn health_report(json: bool) -> anyhow::Result<()> {
 // ── Self-improvement: "are we improving?" ────────────────────────────────────
 //
 // The primary honest signal: the share of shipped specs that were ACCEPTED —
-// i.e. NOT later revised by a linked follow-up (`feature.revised`) or reopened.
+// i.e. NOT later revised by a linked follow-up (`feature.revised`).
 // Acceptance is the complement of the operator's revealed rejection, so the
 // human reports only what went wrong; silence (no link) is acceptance-so-far.
 // Reported with a Wilson interval and half-vs-half change test; raw counts are
@@ -6158,19 +6153,15 @@ fn improvement_report(json: bool) -> anyhow::Result<()> {
         .filter(|e| e.event_name == "create-issue")
         .filter_map(|e| e.entity.as_ref().and_then(|x| x.issue_id.clone())).collect();
 
-    // A spec is REVISED if any later spec declares `feature.revised{revises == id}`
-    // or the spec itself was reopened (`done -> planning`). This is the revealed
-    // rejection signal; the link lives forward on the follow-up.
+    // A spec is REVISED if any later spec declares `feature.revised{revises == id}`.
+    // This is the revealed rejection signal; the link lives forward on the follow-up.
+    // (There is no `done -> planning` reopen to fold in — a post-merge defect is a
+    // follow-up spec, not a reopened one.)
     let mut revised_targets: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for e in &all {
         if e.event_name == "feature.revised" {
             if let Some(rev) = e.attributes.get("revises") {
                 if spec_issues.contains(rev) { revised_targets.insert(rev.clone()); }
-            }
-        }
-        if e.event_name == "transition" && e.message.contains("done -> planning") {
-            if let Some(id) = e.entity.as_ref().and_then(|x| x.issue_id.clone()) {
-                if spec_issues.contains(&id) { revised_targets.insert(id); }
             }
         }
     }

@@ -53,7 +53,7 @@ The label set models the workflow state. An issue's label is its pipeline state;
 | `audit` | Auditor is auditing the issue | Auditor | `cleanup` (success) or restart |
 | `cleanup` | Teardown-only phase — Orchestrator removes worktrees, prunes stale branches (spec/* kept), cleans scratch, retains evidence | Auditor (auto via `audit-record --verdict success`) | `done` (via `close-issue`) |
 | `blocked` | Work is stalled on a dependency | Orchestrator or Developer (with `Status` comment) | `ready-for-dev` after unblock |
-| `done` | Work passed testing + cleanup | Orchestrator (auto via cleanup close) | `planning` (reopen leg — post-merge defect reported while the issue is still OPEN); otherwise the human closes it manually |
+| `done` | Work passed testing + cleanup | Orchestrator (auto via cleanup close) | **Terminal** — the human closes it manually; a post-merge defect becomes a follow-up spec (`revises: #N`), never a reopen |
 
 **Label transitions** are executed by the state machine via the `transition` action — never by an agent calling `gh issue edit` directly. The state machine rejects transitions that skip phases or whose guards aren't met.
 

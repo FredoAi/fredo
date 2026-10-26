@@ -2733,8 +2733,8 @@ Test-Script "Cleanup phase: done-close gated to cleanup" {
 # Reopen leg: done → planning (human-review rework). A feature labeled done (left OPEN for
 # manual human close) loops back to planning when the human reports a post-merge defect; the
 # stale converged A2A is backed up and re-seeded fresh so the fix round re-converges.
-Test-Script "Reopen: done -> planning re-seeds A2A" {
-  $url = Mock-IssueCreate "temp: reopen leg" "reopen scratch" "audit"
+Test-Script "Reopen removed: done -> planning is refused (terminal)" {
+  $url = Mock-IssueCreate "temp: no-reopen leg" "no-reopen scratch" "audit"
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
@@ -2752,25 +2752,14 @@ Test-Script "Reopen: done -> planning re-seeds A2A" {
     $close = & rust-script $ps --issue $issueNum --agent orchestrator --action close-issue --to-phase done 2>&1
     $closeStr = if ($close -is [array]) { $close -join "`n" } else { "$close" }
     if ($closeStr -notmatch "labeled done") { throw "Expected labeled-done, got: $closeStr" }
-    # Plant a stale converged A2A the reopen must back up and re-seed.
-    [System.IO.File]::WriteAllText("$draftDir/triage.md", "## Convergence: agreed`nstale round-5 draft", [System.Text.UTF8Encoding]::new($false))
-    # Transition to done is still refused (reopen goes to planning, not done).
-    $bad = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase done 2>&1
-    $badStr = if ($bad -is [array]) { $bad -join "`n" } else { "$bad" }
-    if ($badStr -notmatch "illegal transition done -> done|transition to done is not allowed") { throw "Expected done-block, got: $badStr" }
-    # The reopen leg: done → planning.
+    # The reopen leg was REMOVED: `done` is terminal — the transition is illegal.
     $out = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase planning 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
-    if ($LASTEXITCODE -ne 0) { throw "reopen transition failed: $outStr" }
-    if ($outStr -notmatch "TRANSITIONED: done -> planning") { throw "Expected done->planning, got: $outStr" }
-    if ($outStr -notmatch "A2A re-seeded") { throw "Expected A2A re-seed note, got: $outStr" }
-    if (-not (Test-Path "$draftDir/triage.md")) { throw "Expected fresh A2A file after reopen" }
-    $fresh = Get-Content "$draftDir/triage.md" -Raw
-    if ($fresh -match "stale round-5 draft") { throw "A2A not re-seeded fresh (stale content survived)" }
-    $st3 = Mock-IssueState $issueNum
-    if ($st3.Labels -notcontains "planning") { throw "Expected planning label, got: $($st3.Labels)" }
-    if ($st3.Labels -contains "done") { throw "done label should have been swapped off, got: $($st3.Labels)" }
-    return "reopen leg: done→planning legal, label swapped, stale A2A backed up + re-seeded (#$issueNum)"
+    if ($outStr -notmatch "illegal transition done -> planning") { throw "Expected the removed reopen leg to be refused, got: $outStr" }
+    $st = Mock-IssueState $issueNum
+    if ($st.Labels -notcontains "done") { throw "done label must remain after the refused transition, got: $($st.Labels)" }
+    if ($st.Labels -contains "planning") { throw "planning label must NOT be applied, got: $($st.Labels)" }
+    return "reopen removed: done -> planning refused, done label intact (#$issueNum)"
   } finally {
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0

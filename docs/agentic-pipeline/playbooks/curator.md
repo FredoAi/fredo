@@ -9,6 +9,7 @@ The Curator owns the pipeline's **durable lessons (text)** — its guardrails an
 ## When dispatched
 
 - By the Orchestrator after an audit **restart** — the audit verdict names a failure; the Curator distills the durable lesson before the re-run (principle 6).
+- At **EVERY audit gate** (success too) — the Orchestrator dispatches the Curator after the Auditor's verdict, so a *passing* run's captured `observations.md` (pipeline friction) is distilled and the guardrail store is curated, not only on failure.
 - On a **recurring failure** — a failure class the pipeline has seen before (an unguarded pattern, or a guardrail that did not reduce recurrence) that needs a new durable rule or a stronger one.
 - At a curation pass even when no new lesson is needed — to dedup, retire stale rules, and re-validate `effectiveness:` across the guardrail store.
 
@@ -37,12 +38,12 @@ Pick the lever from the recorded class — never from habit. This is the Curator
 | Recorded class | Primary lever (home) | Secondary |
 |---|---|---|
 | `defect` | Workflow playbook (architect/developer) or a convergence guardrail | pipeline doc |
-| `technique` | `playbooks/tester.md` + `playbooks/qa-expert.md` | `dev-environment` skill recipe; seeded-suite rows |
-| `environment` | `dev-environment` skill recipe | Curator pre-dispatch checks |
+| `technique` | `playbooks/tester.md` + `playbooks/qa-expert.md` | seeded-suite rows; a **skill recipe** → route to the Toolsmith |
+| `environment` | a `### G-` record + the tester/orchestrator briefs | a **skill recipe** (e.g. `dev-environment`) → route to the Toolsmith |
 | `scope` | convergence guardrails + `playbooks/qa-expert.md` | AC amendment → PO/human |
 | doc drift | Product docs | Pipeline docs |
 
-Boundary: a **script/machine** lever is the Toolsmith's/Machinist's; a **permission** gap is the Orchestrator's `set-permission`; `principles.md`, `AGENTS.md`, non-permission `opencode.json`, and agent identity are **proposed**, never applied.
+Boundary: a **script/machine** lever is the Machinist's; a **skill/script** lever is the **Toolsmith's** (route it — the Curator cannot edit `.opencode/skills/**`, so a skill recipe is never the Curator's to write); a **permission** gap is the Machinist's `set-permission`; `principles.md`, `AGENTS.md`, non-permission `opencode.json`, and agent identity are **proposed**, never applied.
 
 ## Artifacts produced
 
@@ -83,7 +84,7 @@ Boundary: a **script/machine** lever is the Toolsmith's/Machinist's; a **permiss
 - docs/agentic-pipeline/principles.md (rule 6 — durable lessons (text); rules 4, 5, 8)
 - docs/agentic-pipeline/common-rules.md (references are a shared, agent-editable knowledge base; document in the same pass)
 - docs/agentic-pipeline/playbooks/references.md (the `### G-` guardrail records under `Known Failure Modes`)
-- docs/agentic-pipeline/playbooks/orchestrator.md (the orchestration + retry/reopen flow the lessons derive from)
+- docs/agentic-pipeline/playbooks/orchestrator.md (the orchestration + retry flow the lessons derive from)
 - docs/agentic-pipeline/playbooks/auditor.md (the audit verdict the lesson derives from)
 - docs/agentic-pipeline/state-machine.md (the `record-improvement` action)
 - .opencode/skills/retro-analysis/SKILL.md (Recipes 1–6 — effectiveness, patterns, grounded verification, ACE curation, auto-persist)

@@ -240,7 +240,7 @@ Failing work goes back through Implementation (Phase 3) and, once pushed again, 
 1. Confirm the spec PR was merged and the tester verdict passed.
 2. The feature is already labeled `done` and left OPEN — `close-issue --to-phase done` from cleanup labeled it; **the human closes it manually** after review.
 3. Post a final `Status` summary: what shipped, test results, remaining risks (if any).
-4. **Human review + close** — the human validates the finished feature manually, then closes the issue. If the human reports a defect in the merged work while the issue is still OPEN, the Orchestrator **reopens the issue** (`transition --to-phase planning` — the reopen leg): the defect is verified against telemetry, the stale plan is re-converged for a fix round, and the loop re-runs (architect → developer → tester → audit). Only a defect **outside** the spec's scope becomes a follow-up backlog item (labeled `backlog`, with the bug variant of the PO template).
+4. **Human review + close** — the human validates the finished feature manually, then closes the issue. `done` is **terminal**: a defect in the merged work is **not reopened** — it becomes a **follow-up backlog issue** (the PO links it with `revises: #N`; the `feature.revised` metric tracks it), which runs the pipeline normally.
 
 ---
 
