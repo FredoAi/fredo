@@ -188,7 +188,12 @@ behaviour is wrong.
 
 ## Spec #3081 — new probes (Discard label colour)
 
-- [ ] **E-25 (new) `resolveOnSolids` is min-over-all-four, not per-colour.** Override ONLY
+- [x] **E-25 (new) `resolveOnSolids` is min-over-all-four, not per-colour.** Override ONLY
+      **Round 1 (2026-10-26) — exercised.** `monochrome` (`--status-error:"#ffffff"`) → resolved
+      `--status-on-solids` `#0c1117` (dark), label `rgb(12,17,23)`, ratio 18.95 — the min-over-four
+      rule flipped to dark, never white-on-light. Per-preset sweep: `solarized` 4.10 / `paper` 4.49
+      are the only sub-4.5 ratios (recorded as a PO scope question, not a defect); no preset is
+      white-on-light. Full table in `.opencode/tmp/3081/tests-runs.md`.
       `--status-error` to a very light red (keep success/warning/info dark) via the per-token
       override, then open the Discard dialog. Does `--status-on-solids` flip to the dark
       foreground (correct) or stay white because the other three hues outvote the light error
