@@ -238,7 +238,10 @@
 
 ## Spec #3081 — added regression pin
 
-- [ ] **R-13 (colour-literal pin — extends R-6).** No raw-colour literal may enter
+- [x] **R-13 (colour-literal pin — extends R-6).** No raw-colour literal may enter
+      **Round 1 (2026-10-26) — PASS.** `contrast:gate` 46/46 (no wireframe hit); named-colour
+      source scan → zero hits; no wireframe entry in `allowlist.ts`/`rawColorBaseline.ts`; the
+      Discard button (`WireframeToolbar.tsx:393`) carries `color="status.onSolids"`.
       `apps/ui/src/applications/wireframe/**` — **including NAMED colours** (`white`/`black`).
       The shipped `rawColorScan.ts` matches only hex / `rgb(`/`hsl(` / `var(--x)NN`, so the
       named-colour clause needs the wireframe-scoped check the fix must add (see F-58).
