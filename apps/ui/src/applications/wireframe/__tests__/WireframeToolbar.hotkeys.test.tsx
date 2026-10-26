@@ -42,6 +42,32 @@ async function settle(): Promise<void> {
   });
 }
 
+/**
+ * The generated CSS text for an element: every stylesheet rule whose selector
+ * references one of the element's classes. Chakra emits style props into
+ * emotion rules, so this is the rendered (class-based) oracle — a hardcoded
+ * `color="white"` surfaces here as `color: white`, a token as
+ * `color: status.onSolids`.
+ */
+function generatedCssFor(element: Element): string {
+  const classes = Array.from(element.classList);
+  const parts: string[] = [];
+  for (const sheet of Array.from(document.styleSheets)) {
+    let rules: CSSRuleList | null = null;
+    try {
+      rules = sheet.cssRules;
+    } catch {
+      continue;
+    }
+    if (!rules) continue;
+    for (const rule of Array.from(rules)) {
+      const text = rule.cssText ?? '';
+      if (classes.some((cls) => text.includes(`.${cls}`))) parts.push(text);
+    }
+  }
+  return parts.join('\n');
+}
+
 beforeEach(() => {
   resetWireframeStoreForTests();
   hostFocus.focused = true;
@@ -336,6 +362,23 @@ describe('New document (UI/UX 3.11 / R-4.12)', () => {
     expect(getSnapshot().filePath).toBeNull();
     expect(getSnapshot().dirty).toBe(true);
     expect(getSnapshot().canUndo).toBe(false);
+  });
+
+  it('renders the Discard label through the status.onSolids token, never a raw literal (AC1 / AC3)', async () => {
+    const user = userEvent.setup();
+    renderWithChakra(<WireframeToolbar />);
+
+    await user.click(button('wireframe-action-add-text'));
+    await user.click(button('wireframe-action-document-new'));
+    await screen.findByTestId('wireframe-new-document-dialog');
+
+    const css = generatedCssFor(button('wireframe-new-document-discard'));
+
+    // The label colour resolves through the theming-application token ...
+    expect(css).toMatch(/color:\s*status\.onSolids\b/);
+    // ... and never a hardcoded named / functional / hex colour literal.
+    expect(css).not.toMatch(/\bcolor:\s*(?:white|rgba?\(|hsla?\()/);
+    expect(css).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
   });
 
   it('a clean document starts over immediately with no dialog', async () => {

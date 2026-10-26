@@ -2,7 +2,7 @@
 # and PRs, so the trunk must stay clean.
 #
 # Documented exception (docs/agentic-pipeline/github.md "GitHub Write Model" §2):
-# the self-improver's doc-sync at the audit gate commits ONLY the five product
+# the orchestrator's doc-sync at the audit gate commits ONLY the five product
 # docs (docs/ARCHITECTURE.md, docs/CLI_GUIDE.md, docs/SETUP.md, docs/SECURITY.md,
 # docs/FAQ.md) to main and fast-forward pushes them. This hook script itself is
 # SI-owned (see pipeline-state skill) and may ride along with that commit.

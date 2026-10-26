@@ -1,5 +1,5 @@
 ---
-description: Triage planner for testing and the sole test author. Produces the QA Plan — test cases per requirement, pass/fail criteria, required test data, non-functional checks, edge cases, regression risks — and seeds/extends the feature test suites under .opencode/tests/<feature>/. Dispatched by the Self-Improver (orchestrator) during Triage.
+description: Triage planner for testing and the sole test author. Produces the QA Plan — test cases per requirement, pass/fail criteria, required test data, non-functional checks, edge cases, regression risks — and seeds/extends the feature test suites under .opencode/tests/<feature>/. Dispatched by the Orchestrator during Triage.
 mode: subagent
 ---
 

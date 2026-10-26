@@ -45,15 +45,15 @@ The label set models the workflow state. An issue's label is its pipeline state;
 | Label | Meaning | Requested by | → next |
 |-------|---------|--------------|--------|
 | `backlog` | Backlog issue created (backlog phase) | Product Owner | `planning` |
-| `planning` | Implementation Plan being produced (planning phase — the plan deliverable in `.opencode/tmp/<issue>/triage.md` must converge before leaving) | Self-Improver | `ready-for-dev` |
-| `ready-for-dev` | **Feature** — implementation phase; the developer works directly on the feature's `spec/<N>` branch | Self-Improver | `testing`, or back to `planning` (backward rescope — the "loop back to Phase 2 (Architect)" scope-redesign leg; the forward commit gate does not apply) |
+| `planning` | Implementation Plan being produced (planning phase — the plan deliverable in `.opencode/tmp/<issue>/triage.md` must converge before leaving) | Orchestrator | `ready-for-dev` |
+| `ready-for-dev` | **Feature** — implementation phase; the developer works directly on the feature's `spec/<N>` branch | Orchestrator | `testing`, or back to `planning` (backward rescope — the "loop back to Phase 2 (Architect)" scope-redesign leg; the forward commit gate does not apply) |
 | `in-progress-dev` | Legacy dev-work label (accepted for `create-worktree`) | — (reserved; no action sets it today) | — |
 | `ready-for-test` | Legacy implementation-phase label (accepted for `create-worktree`) | — (legacy) | — |
-| `testing` | **Feature** — testing phase; the tester posts its `## Tests Runs` verdict on the **feature issue** | Self-Improver | `audit` or back to `implementation` |
-| `audit` | Self-Improver is auditing the issue | Self-Improver | `cleanup` (success) or restart |
-| `cleanup` | Teardown-only phase — SI removes worktrees, prunes stale branches (spec/* kept), cleans scratch, retains evidence | Self-Improver (auto via `audit-record --verdict success`) | `done` (via `close-issue`) |
-| `blocked` | Work is stalled on a dependency | Self-Improver or Developer (with `Status` comment) | `ready-for-dev` after unblock |
-| `done` | Work passed testing + cleanup | Self-Improver (auto via cleanup close) | `planning` (reopen leg — post-merge defect reported while the issue is still OPEN); otherwise the human closes it manually |
+| `testing` | **Feature** — testing phase; the tester posts its `## Tests Runs` verdict on the **feature issue** | Orchestrator | `audit` or back to `implementation` |
+| `audit` | Auditor is auditing the issue | Auditor | `cleanup` (success) or restart |
+| `cleanup` | Teardown-only phase — Orchestrator removes worktrees, prunes stale branches (spec/* kept), cleans scratch, retains evidence | Auditor (auto via `audit-record --verdict success`) | `done` (via `close-issue`) |
+| `blocked` | Work is stalled on a dependency | Orchestrator or Developer (with `Status` comment) | `ready-for-dev` after unblock |
+| `done` | Work passed testing + cleanup | Orchestrator (auto via cleanup close) | `planning` (reopen leg — post-merge defect reported while the issue is still OPEN); otherwise the human closes it manually |
 
 **Label transitions** are executed by the state machine via the `transition` action — never by an agent calling `gh issue edit` directly. The state machine rejects transitions that skip phases or whose guards aren't met.
 
@@ -74,7 +74,7 @@ The label set models the workflow state. An issue's label is its pipeline state;
 
 ## Spec PR Checklist
 
-The only PR in the pipeline is the **spec PR** (`spec/<N>` → `main`), auto-created by the state machine when the feature transitions to testing. It must complete this checklist before merge; the Self-Improver verifies it.
+The only PR in the pipeline is the **spec PR** (`spec/<N>` → `main`), auto-created by the state machine when the feature transitions to testing. It must complete this checklist before merge; the Orchestrator verifies it.
 
 ```markdown
 - [ ] References the feature issue (spec #<N>)
@@ -106,13 +106,13 @@ Prefix every agent comment to keep issue timelines scannable and filterable. **C
 - Every agent-authored comment ends with `*Authored by <Agent Name>*`.
 - The state machine validates the prefix is `Status` before posting; anything else is refused with a pointer to the correct channel.
 
-**Timeline comments (the issue narrative):** the transition / `audit-record` auto-post five titled comments from `.opencode/tmp/<issue>/` drafts (templates in [templates/](templates/)): `## Triage Plan` (triage→implementation), `## Fix Plan (round N)` (rework re-entry — Architect-authored), `## Development Summary` (implementation→testing), `## Tests Runs` (testing — carries the verdict, read by the gate), `## SI Summary` (audit→done). **The issue BODY is the single PO Backlog** — no `## PO Backlog` comment is posted (it duplicated the body; PO feedback #2688).
+**Timeline comments (the issue narrative):** the transition / `audit-record` auto-post five titled comments from `.opencode/tmp/<issue>/` drafts (templates in [templates/](templates/)): `## Triage Plan` (triage→implementation), `## Fix Plan (round N)` (rework re-entry — Architect-authored), `## Development Summary` (implementation→testing), `## Tests Runs` (testing — carries the verdict, read by the gate), `## Orchestrator Summary` (audit→done). **The issue BODY is the single PO Backlog** — no `## PO Backlog` comment is posted (it duplicated the body; PO feedback #2688).
 
 **Retry rounds are machine-stamped on the timeline.** The state machine derives the current round from the event log (the count of `phase.started` entries for `testing`, advanced early by an implementation re-entry from `testing`/`audit` so a rework in flight — before the next testing entry — is already on the new round, never stuck at "round 1") and stamps it on retry-relevant comments — never the drafting agent:
 - the restart `## Decision` comment reads `Audit verdict: **restart → <phase> (round N)**` and lists the missed ACs for round N;
-- `## Development Summary`, `## Tests Runs`, `## Fix Plan`, and `## SI Summary` post as `## <title> (round N)`.
+- `## Development Summary`, `## Tests Runs`, `## Fix Plan`, and `## Orchestrator Summary` post as `## <title> (round N)`.
 
-`## Triage Plan` is posted once (round-1 only) and stays untagged; the full plan is never re-posted on retry — a compact `## Fix Plan (round N)` carries the deltas. **The Fix Plan is authored by the Software Architect** (draft `.opencode/tmp/<issue>/fix-plan.md` from the tester's FAIL verdict; footer `*Authored by Software Architect*`) — the SI dispatches the architect before re-entering implementation, and the machine round-stamps and posts it; when no authored draft exists the machine falls back to deriving a compact plan from the Triage Plan draft. The **round-aware verification guard** enforces the round: a retry round is only satisfied by evidence carrying the current round, so a stale round-1 PASS can never clear a round-2 audit (`latest_evidence_comment` parses `(round N)` from the `## Tests Runs` header; untagged evidence counts as round 1).
+`## Triage Plan` is posted once (round-1 only) and stays untagged; the full plan is never re-posted on retry — a compact `## Fix Plan (round N)` carries the deltas. **The Fix Plan is authored by the Software Architect** (draft `.opencode/tmp/<issue>/fix-plan.md` from the tester's FAIL verdict; footer `*Authored by Software Architect*`) — the Orchestrator dispatches the architect before re-entering implementation, and the machine round-stamps and posts it; when no authored draft exists the machine falls back to deriving a compact plan from the Triage Plan draft. The **round-aware verification guard** enforces the round: a retry round is only satisfied by evidence carrying the current round, so a stale round-1 PASS can never clear a round-2 audit (`latest_evidence_comment` parses `(round N)` from the `## Tests Runs` header; untagged evidence counts as round 1).
 
 **The Product Owner's GitHub output is deterministic:** `create-issue` creates the issue whose BODY is the backlog (the single PO Backlog), and after #2734 the PO may post `Status` comments (PO amendments) — but never gate-critical artifacts (verdicts are `## Tests Runs`; decisions are machine-only). The `post-comments` action remains gated to reject `product-owner`.
 
@@ -127,7 +127,7 @@ Because the state machine is the **single writer**, mechanical label/project boo
 
 | Capability | State machine action |
 |-----------|----------------------|
-| Auto-assemble the plan into the `## Triage Plan` feature-issue comment | `transition` side-effect (`triage → implementation`); `update-plan` (self-improver-gated, idempotent per-section replacement of the `triage-plan.md` draft) remains for edge/repair only |
+| Auto-assemble the plan into the `## Triage Plan` feature-issue comment | `transition` side-effect (`triage → implementation`); `update-plan` (orchestrator-gated, idempotent per-section replacement of the `triage-plan.md` draft) remains for edge/repair only |
 | Persist feature test suites to `main` | `tests-commit` (auto side-effect of `triage → implementation`; shared with the Tester) |
 | Auto label transition on phase change | `transition` (labels + side-effects are state-machine-driven) |
 | Auto A2A seed + spec branch + spec PR + merge | `transition` side-effects: `→ triage` seeds the A2A file; `triage → implementation` assembles the `## Triage Plan` comment + persists test suites (`tests-commit`) + creates `spec/<N>`; `→ testing` opens the spec PR; `testing → audit` merges it |
@@ -135,14 +135,14 @@ Because the state machine is the **single writer**, mechanical label/project boo
 | Project Status sync (labels + Status) | every transition mirrors the phase onto the GitHub project Status field (Backlog → Planning → Coding → E2E → Reviewing → Done); `create-issue` adds the issue to the project; `done`/`canceled` set `Done` while the issue stays OPEN for manual close — best-effort, never fatal |
 | SLA escalation on `blocked` | surfaced via the `health` report's **overdue-blocker list** (issues blocked past the default 4h SLA) — not a `blockedDuration` metric |
 | Worktree lifecycle | `create-worktree` / `remove-worktree` (developer); `prune` removes orphaned worktrees; `spec/*` branches are never pruned |
-| Hardening: lock all OPEN pipeline issues | `hardening-lock-open-issues` (Self-Improver) — enumerate OPEN pipeline issues (pipeline label) and `PUT .../issues/<n>/lock` with `lock_reason: off-topic`; skips `temp:` harness issues; one-shot |
-| Hardening: repo interaction limit | `interaction-limit` (Self-Improver) — `PUT .../interaction-limits` `{ limit: "collaborators_only", expiry: "six_months" }`; temporal |
+| Hardening: lock all OPEN pipeline issues | `hardening-lock-open-issues` (Machinist) — enumerate OPEN pipeline issues (pipeline label) and `PUT .../issues/<n>/lock` with `lock_reason: off-topic`; skips `temp:` harness issues; one-shot |
+| Hardening: repo interaction limit | `interaction-limit` (Machinist) — `PUT .../interaction-limits` `{ limit: "collaborators_only", expiry: "six_months" }`; temporal |
 | Hardening: lock-on-create | `create-issue` side-effect — a newly created non-`temp:` pipeline issue is locked immediately (best-effort) so it is comment-safe at birth |
 
-**The two deliberate exceptions to single-writer — the developer pushes to the spec integration branch, and the self-improver pushes product docs to `main`.**
+**The two deliberate exceptions to single-writer — the developer pushes to the spec integration branch, and the orchestrator pushes product docs to `main`.**
 
 1. **The developer pushes to the spec integration branch.** The developer commits in a detached worktree and pushes `git push origin HEAD:spec/<N>` (allowed in the developer permission set; `main`/`master` and `HEAD:main` denied). Rationale: `spec/<N>` is the developer's shared *work product* — the worktree sits at its tip, and pushing is how the plan's checklist work lands. It is not a pipeline-state mutation (issues, labels, comments, merges, closes). Everything *around* the push is still the state machine's: worktree creation/removal (`create-worktree`/`remove-worktree`) and cleanup (`prune`). The **spec PR** (`spec/<N>` → `main`) is created and merged automatically by `transition` — the only PR in the pipeline.
 
-2. **The self-improver fast-forward pushes synced product docs to `main`** (the doc-sync gate, [principle 6](principles.md#6-a-self-improver-gate-audits-every-issue)). The SI is the product-doc owner and commits the synced product docs (ARCHITECTURE.md, CLI_GUIDE.md, SETUP.md, SECURITY.md, FAQ.md) at the audit gate. Its one direct write is `git push origin main` — fast-forward only (allowed in the self-improver permission set). Everything force-ish or indirect stays denied: `--all`, `--mirror`, `--delete`, `--force`/`--force-with-lease` to `main`, `HEAD`-based pushes, `-u`/`--set-upstream origin main`, any `upstream` push to `main`, and **any push to `master`** remain denied.
+2. **The orchestrator fast-forward pushes synced product docs to `main`** (the doc-sync gate, [principle 6](principles.md#6-an-independent-auditor-gates-every-issue)). The Orchestrator is the product-doc owner and commits the synced product docs (ARCHITECTURE.md, CLI_GUIDE.md, SETUP.md, SECURITY.md, FAQ.md) at the audit gate. Its one direct write is `git push origin main` — fast-forward only (allowed in the orchestrator permission set). Everything force-ish or indirect stays denied: `--all`, `--mirror`, `--delete`, `--force`/`--force-with-lease` to `main`, `HEAD`-based pushes, `-u`/`--set-upstream origin main`, any `upstream` push to `main`, and **any push to `master`** remain denied.
 
-Agents never call `gh`/`git` to write GitHub state — the state machine does. Reads stay direct. **Exceptions:** the developer pushes `HEAD:spec/<N>` only, and the self-improver fast-forward pushes `main` for synced product docs only (see above).
+Agents never call `gh`/`git` to write GitHub state — the state machine does. Reads stay direct. **Exceptions:** the developer pushes `HEAD:spec/<N>` only, and the orchestrator fast-forward pushes `main` for synced product docs only (see above).

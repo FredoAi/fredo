@@ -17,7 +17,7 @@ summary. If you find a mismatch, report it - do not work around the sandbox.
 - **bash:** deny-by-default. Everyone gets read-only `gh` (`gh issue view/list`, `gh pr view/list/checks`)
   + `rust-script .opencode/scripts/pipeline-state.rs*` (your state-machine reads).
   **Read-only `git` (`git log/status/diff/branch/show/fetch/remote`) exists ONLY for
-  `developer`/`tester`/`self-improver`** — the three triage planners (`software-architect`,
+  `developer`/`tester`/`orchestrator`** — the three triage planners (`software-architect`,
   `ui-ux-expert`, `qa-expert`) have **no git commands at all** (deny-by-default breaks tool-loops,
   see [Loop mitigation](#loop-mitigation)). A planner never needs git — it edits its A2A section and
   reads repo files.
@@ -35,19 +35,19 @@ summary. If you find a mismatch, report it - do not work around the sandbox.
   or `%LOCALAPPDATA%` on non-roaming installs — it holds the embedded PostgreSQL cluster) and the **installed-plugin path**
   (`~/.config/opencode/plugins/`); everything else must be denied. **An explicit deny for one path
   is not repo-scoping** (G-009 default-deny variant): the map must deny by default and re-allow
-  only those documented paths. The Self-Improver owns this map via
+  only those documented paths. The Machinist owns this map via
   `set-permission --tool external_directory`.
   A flat `read: "allow"` is unscoped and the action refuses flat categories, so
   `external_directory` is the lever that scopes reads to the repo.
 
-## Editing agent permissions (the Self-Improver owns this)
+## Editing agent permissions (the Machinist owns this)
 
 An agent that hits a missing allowlist verb (a denied deletion, a new prerequisite command)
-does **not** route the change to the human. The **Self-Improver applies it itself**, through
+does **not** route the change to the human. The **Machinist applies it itself**, through
 the state machine's `set-permission` action:
 
 ```
-rust-script .opencode/scripts/pipeline-state.rs --agent self-improver --action set-permission \
+rust-script .opencode/scripts/pipeline-state.rs --agent machinist --action set-permission \
   --role <agent> --tool <category> --pattern "<glob>" --decision allow|deny
 ```
 
@@ -98,16 +98,20 @@ written. Four layers stop a loop; keep all four enabled:
 | `qa-expert` | tmp + refs + `.opencode/tests/**` | `telemetry-query.ps1` (read-only PostgreSQL telemetry) | Writes only under `.opencode/tests/`; sole test-suite author. |
 | `developer` | **allow (all files)** | `git checkout/switch/add/commit/rebase/stash`, `git push origin HEAD:spec/<N>` (never main/master/force), `cargo/pnpm/npm/npx/node/rustc`, `copilot*` (Copilot CLI live-capture leg, spec #2933), `Remove-Item .opencode/*` | NO `gh pr create/edit`, NO `git push` to main/master/force, NO `git merge main/master`, NO `git commit --no-verify`. |
 | `tester` | tmp + refs + `.opencode/tests/**` | `dev-env.ps1`, `test-scripts.ps1`, `telemetry-query.ps1`, `git checkout/add/commit`, `git push origin HEAD:spec/<N>`, `bun/npm/pnpm`, `cargo check/clippy/test` (CI-parity re-run of the Rust gates), `copilot*` (Copilot CLI live-capture leg, spec #2933), `Test-Path`, `fredo`, `Copy-Item/New-Item/Remove-Item/Set-Content .opencode/*`, `$env:OPENCODE_ENABLE_TELEMETRY=...` | NO raw `Remove-Item` outside `.opencode/*` - the store is reset via `dev-env.ps1 -Action Clean`, NOT a direct path (sandbox denies it, G-009). NO gh writes, NO command chains. NO direct `opencode` CLI invocation — live opencode sessions are launched ONLY through Fredo's Terminal feature (write_pty_input, never `opencode run`). `external_directory` **denies by default** — only the app-data directory and the installed-plugin path are re-allowed (G-009), so no out-of-repo read/write is reachable. |
-| `self-improver` | **allow** | `dev-env.ps1`, `test-scripts.ps1`, `git add/commit/push`, `git push origin main` (doc-sync ONLY), `git merge` (never main/master), `git checkout`, `git push origin HEAD:spec/<N>`, `bun/npm/pnpm/cargo`, `.opencode/*` file ops, `$env:OPENCODE_ENABLE_TELEMETRY=...` | NO force-push, NO `git push origin main` except the doc-sync, NO merge of main/master, NO gh writes. NO direct `opencode` CLI invocation — live opencode sessions run only via Fredo's Terminal feature. |
+| `orchestrator` | **allow** | `dev-env.ps1`, `test-scripts.ps1`, `git add/commit/push`, `git push origin main` (doc-sync ONLY), `git merge` (never main/master), `git checkout`, `git push origin HEAD:spec/<N>`, `bun/npm/pnpm/cargo`, `.opencode/*` file ops, `$env:OPENCODE_ENABLE_TELEMETRY=...` | NO force-push, NO `git push origin main` except the doc-sync, NO merge of main/master, NO gh writes. NO direct `opencode` CLI invocation — live opencode sessions run only via Fredo's Terminal feature. |
+| `auditor` | tmp only | (baseline only) | Read-only verification gate — no code/plan/test/record edits; its only output is the `audit-record` verdict. No gh/git writes. |
+| `curator` | tmp + `docs/agentic-pipeline/**` (`principles.md` denied) | (baseline only) | Durable lessons only — edits playbooks/`references.md`/pipeline docs; never product source. No gh/git writes. |
+| `toolsmith` | tmp + `.opencode/skills/**` + `.opencode/scripts/**` (`pipeline-state.rs` denied) + `.opencode/tests/**` | `test-scripts.ps1` | Reusable capability only — every script ships with its skill + a test. No gh/git writes. |
+| `machinist` | tmp + `.opencode/scripts/pipeline-state.rs` + `.opencode/pipeline.json` + `.opencode/skills/pipeline-state/**` + `docs/agentic-pipeline/state-machine.md` | `test-scripts.ps1` | The state machine, permissions/sandbox, and measurement. Every state-machine edit passes `test-scripts.ps1`. No gh/git writes. |
 
 ## Final-report issues section (required)
 
-Every agent's **final report** back to the orchestrator (the Self-Improver) MUST end with an
+Every agent's **final report** back to the Orchestrator MUST end with an
 `## Issues & tool-access gaps` section listing:
 
 1. **problems** you hit (blockers, stalls, confusing behavior),
 2. **tools/commands you could NOT use** (and why - permission denied? not installed? wrong path?),
 3. **tools you would like to have** (and what you would use them for).
 
-This is the channel by which the SI learns about subagent pain points. If you had no issues,
-state that explicitly ("none"). The SI reads this section and routes/tracks the gaps.
+This is the channel by which the Orchestrator learns about subagent pain points. If you had no issues,
+state that explicitly ("none"). The Orchestrator reads this section and routes/tracks the gaps.
