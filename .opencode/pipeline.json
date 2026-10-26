@@ -13,7 +13,7 @@
       "order": 1,
       "label": "planning",
       "exit_guard": "The implementation plan deliverable exists and is converged (`.opencode/tmp/<issue>/triage.md` carries all required sections + `## Convergence: agreed`) — the plan, not a GitHub Decision comment, is the planning artifact",
-      "owner": "self-improver"
+      "owner": "orchestrator"
     },
     "implementation": {
       "order": 2,
@@ -30,20 +30,20 @@
     "audit": {
       "order": 4,
       "label": "audit",
-      "exit_guard": "Self-Improver verdict posted: success, or restart phase + improvement",
-      "owner": "self-improver"
+      "exit_guard": "Auditor verdict posted: success, or restart phase + improvement",
+      "owner": "auditor"
     },
     "cleanup": {
       "order": 5,
       "label": "cleanup",
       "exit_guard": "Teardown complete: worktrees removed, stale branches pruned (spec/* kept as evidence), gitignored scratch cleaned, evidence retained, no leftover dirty state; then the feature is closed as done",
-      "owner": "self-improver"
+      "owner": "orchestrator"
     },
     "done": {
       "order": 6,
       "label": "done",
       "exit_guard": "Feature closed, branches cleaned, human review initiated",
-      "owner": "self-improver"
+      "owner": "orchestrator"
     }
   },
 
@@ -105,6 +105,10 @@
     "qa-expert":          { "playbook": "docs/agentic-pipeline/playbooks/qa-expert.md" },
     "developer":          { "playbook": "docs/agentic-pipeline/playbooks/developer.md" },
     "tester":             { "playbook": "docs/agentic-pipeline/playbooks/tester.md" },
-    "self-improver":      { "playbook": "docs/agentic-pipeline/playbooks/self-improver.md" }
+    "auditor":            { "playbook": "docs/agentic-pipeline/playbooks/auditor.md" },
+    "curator":            { "playbook": "docs/agentic-pipeline/playbooks/curator.md" },
+    "toolsmith":          { "playbook": "docs/agentic-pipeline/playbooks/toolsmith.md" },
+    "machinist":          { "playbook": "docs/agentic-pipeline/playbooks/machinist.md" },
+    "orchestrator":       { "playbook": "docs/agentic-pipeline/playbooks/orchestrator.md" }
   }
 }

@@ -38,7 +38,7 @@ At the principle level, the state machine does nine things:
    - **Exit guard (Definition of Done):** you may not leave until this phase's goals are met.
    The whole pipeline is a chain of "prove it, then move."
 
-3. **It is the pipeline's memory.** Every transition, and the evidence behind it, is recorded. Because every agent calls the state machine, each call is also a **telemetry event** — the state machine is the pipeline's passive metrics collector, and the metrics are the memory made measurable. This makes the pipeline auditable, debuggable, and restartable — and it is what makes the GitHub-backbone-and-log principle and the Self-Improver's audit (principle 6) enforceable. The metrics contract lives in [state-machine.md](state-machine.md#metrics-the-pipelines-memory).
+3. **It is the pipeline's memory.** Every transition, and the evidence behind it, is recorded. Because every agent calls the state machine, each call is also a **telemetry event** — the state machine is the pipeline's passive metrics collector, and the metrics are the memory made measurable. This makes the pipeline auditable, debuggable, and restartable — and it is what makes the GitHub-backbone-and-log principle and the Auditor's audit (principle 6) enforceable. The metrics contract lives in [state-machine.md](state-machine.md#metrics-the-pipelines-memory).
 
 4. **It injects context, so agents never guess.** Every agent that wakes receives, from the machine: which phase it is in, that phase's Goals, the playbook for it, and what must exist to leave. The agent reads its assignment from state — it does not infer it.
 
@@ -110,44 +110,46 @@ The benefits are deliberate: full auditability, asynchronous handoffs, and a rec
 
 ---
 
-## 6. A Self-Improver Gate Audits Every Issue
+## 6. An Independent Auditor Gates Every Issue
 
-Every issue ends with a **Self-Improver** audit, performed by the same agent that orchestrated the pipeline, after the Tester's verdict. The Self-Improver decides whether the issue was completed successfully:
+Every issue ends with an **independent audit**, performed by the **Auditor** — an agent that neither orchestrated nor built the work, after the Tester's verdict. The Auditor decides whether the issue completed successfully:
 
 - **Success** → the issue is done. The pipeline ends.
-- **Failure** → the Self-Improver chooses which phase the pipeline restarts from (Intake, Triage, Implementation, or Testing), **after improving** the thing that caused the failure. The Self-Improver then re-dispatches the pipeline from that phase — the orchestrator owns the whole flow, including restarts.
+- **Failure** → the Auditor chooses which phase the pipeline restarts from (Intake, Triage, Implementation, or Testing) and records the reason. The **Orchestrator** then executes the restart (it owns the whole flow, including restarts), and the **Curator** improves the pipeline's root cause before the re-run.
 
-The Self-Improver improves the pipeline itself, never the product. Its improvement toolkit:
+**Why the audit is independent.** The agent that orchestrates, staffs, and writes the plan cannot fairly judge its own outcome — self-grading is biased. The Auditor is independent in **information** (a fresh context; it judges only the recorded evidence — issues, comments, the A2A file, metrics, the spec-branch state — never the author's reasoning) and in **incentive** (it produces a verdict and never edits). A case with no evidence is UNVERIFIED/FAIL, never a guess.
 
-- **Agent playbooks** — edit the `docs/agentic-pipeline/playbooks/*.md` that made the wrong decision; agent identity (`.opencode/agents/*.md`) changes are proposed to the human as exact text.
-- **Skills** — strengthen a skill recipe or add a new one.
-- **Scripts** — fix or harden pipeline scripts.
-- **References** — add, edit, or delete useful references in the playbook folder's `references.md` (the shared knowledge the playbooks point at), so lessons persist beyond one issue.
-- **Pipeline documentation** — the SI owns the implementation docs: the playbook folder, `references.md`, and the pipeline docs set. **Exception: this principles document (`principles.md`) is above the SI** — the SI follows it and never edits it. Where an improvement would require changing a principle, the SI proposes it to the human and applies it only on approval. When the SI changes the pipeline, it documents the change in the same pass — an improvement that isn't documented is invisible.
-- **Product documentation** — the SI is the documentation owner for the whole pipeline. At the audit gate, it runs a **doc-sync step**: classify the merged spec diff into doc categories (`ARCHITECTURE.md`, `CLI_GUIDE.md`, `SETUP.md`, `SECURITY.md`, `FAQ.md`), patch the affected docs, and commit. Product docs are only coherent against the full merged diff — which the SI, running last, is the only agent positioned to see.
+**The improvement toolkit is split by artifact class — no role edits product source code:**
 
-**The SI never researches code and carries no telemetry/observability scope.** Code research (reading source, tracing data flows, inspecting spans/telemetry, profiling) and code-level improvements (adding metrics/logs/traces to the product for observability) belong to the **Software Architect** — routed through a triage → implementation cycle, never fixed directly by the SI. The SI's improvement toolkit covers pipeline *mechanics* (playbooks, skills, scripts, references, pipeline docs) — not product code. Agent identity (`.opencode/agents/*.md`) is proposed to the human, never edited by the SI.
+- **Curator — durable lessons (text).** Owns the pipeline's guardrails and knowledge: the agent playbooks (`playbooks/*.md`), the `### G-` guardrail records and `references.md`, and the retro-analysis curation (dedup, retirement, effectiveness tracking). It improves the pipeline, never the product.
+- **Toolsmith — reusable capability (executable).** Owns the skills and scripts the agents use, and every script ships with the skill that documents it (principle 9). Every tool is tested; a capability that writes and executes arbitrary code is not a tool. This is where the tooling library that replaces ad-hoc agent scripts is built.
+- **Machinist — the machine (code / config / observability).** Owns the state machine (below), the permission/sandbox map, and the measurement instrumentation.
+- **Agent identity (`.opencode/agents/*.md`) is proposed to the human by any role — never edited by an agent.**
+
+**Documentation is every agent's job, not a role.** Every agent records its own work on the issue timeline (principle 5) — the pipeline's shared artifact and memory is GitHub itself. The only distinct documentation task is the **gate-time product-doc sync**: the Orchestrator runs a `doc-sync` skill (classify the merged spec diff into `ARCHITECTURE.md`/`CLI_GUIDE.md`/`SETUP.md`/`SECURITY.md`/`FAQ.md`, patch, commit, fast-forward `main`), the narrow privileged step no per-agent write covers. Product docs are only coherent against the full merged diff, which the gate — running last — is the only point positioned to see.
+
+**No agent researches product code to judge or improve it.** Code research (reading source, tracing data flows, inspecting spans/telemetry, profiling) and code-level observability work belong to the **Software Architect**, routed through a triage → implementation cycle.
 
 #### The state machine: owned as an asset, authoritative at runtime
 
 The state machine (the `pipeline-state` script, `pipeline.json`, `state-machine.md`, and the `pipeline-state` skill) is both the pipeline's referee and a pipeline asset. Two distinct relationships, kept separate:
 
-- **Runtime authority is non-negotiable.** During a run, the state machine is the single writer and phase authority (principle 2 point 8), and that authority applies to the Self-Improver exactly like every other agent. The SI never bypasses it — no direct `gh`/`git` pipeline writes, no improvised transitions, no hand-editing the state. The single-writer rule has no owner exemption.
-- **Maintenance is the SI's.** The state machine is a pipeline script, and scripts are the SI's improvement toolkit. The SI owns its code: it fixes, hardens, and extends `pipeline-state.rs`, `pipeline.json`, `state-machine.md`, and the `pipeline-state` skill. It is the *only* agent that edits the state machine's logic.
+- **Runtime authority is non-negotiable.** During a run, the state machine is the single writer and phase authority (principle 2 point 8), and that authority applies to the Machinist exactly like every other agent. No agent bypasses it — no direct `gh`/`git` pipeline writes, no improvised transitions, no hand-editing the state. The single-writer rule has no owner exemption.
+- **Maintenance is the Machinist's.** The state machine is a pipeline script, and the Machinist owns its code: it fixes, hardens, and extends `pipeline-state.rs`, `pipeline.json`, `state-machine.md`, and the `pipeline-state` skill. It is the *only* agent that edits the state machine's logic.
 
-This document — **the principles themselves — are above the SI**. The SI *follows* these principles; it does not own them. Its maintenance authority covers the *implementation* of the principles (scripts, skills, playbooks, implementation docs) — never the principles as the binding contract. The SI may flag a principle-level problem (a rule that caused a failure) to the human, but it cannot rewrite the rules to make a failure pass. Where an improvement would require changing a principle, the SI proposes it to the human and applies it only on approval.
+This document — **the principles themselves — are above every agent**, including the Orchestrator, Auditor, SelfImprover, Toolsmith, and Machinist. They *follow* these principles; they do not own them. A role may flag a principle-level problem (a rule that caused a failure) to the human, but it cannot rewrite the rules to make a failure pass.
 
 Three gates make that maintenance ownership safe:
 
 1. **The referee must stay honest.** Every state-machine edit must pass `test-scripts.ps1` before it counts — a change that breaks the guards or the metrics is itself a pipeline failure, not an improvement.
-2. **Documented in the same pass.** The SI documents the change in the pipeline docs in the same pass as the code (rule: an improvement that isn't documented is invisible).
-3. **Anti-tamper line.** The SI edits the state machine's *logic* — guards, transitions, metrics, validation — **never the record**. The event log (`.opencode/state/issues/*.jsonl`), audit verdicts, and error log are append-only and must never be rewritten, edited, or backdated. The record is the evidence the SI judges on; hand-editing it destroys the audit.
+2. **Documented in the same pass.** The Machinist documents the change in the pipeline docs in the same pass as the code (rule: an improvement that isn't documented is invisible).
+3. **Anti-tamper line.** It edits the state machine's *logic* — guards, transitions, metrics, validation — **never the record**. The event log (`.opencode/state/issues/*.jsonl`), audit verdicts, and error log are append-only and must never be rewritten, edited, or backdated. The record is the evidence the Auditor judges on; hand-editing it destroys the audit.
 
-**Why the split:** the state machine's *authority* is what makes the pipeline deterministic and its *record* is what makes it auditable — both are structural, not personal. The SI can improve how the machine decides; it can never rewrite what the machine has already recorded.
+**Why the split:** the state machine's *authority* is what makes the pipeline deterministic and its *record* is what makes it auditable — both are structural, not personal. The Machinist can improve how the machine decides; it can never rewrite what the machine has already recorded.
 
-Its restart decision re-runs the pipeline from the chosen phase — the Self-Improver, as orchestrator, executes the restart itself (it dispatches the triage cluster, the developer pool, and the tester at every phase). The Self-Improver never edits product source code — but it does edit product *documentation*. Stale or missing product docs are a pipeline-quality failure the SI can flag: on audit, if the merged product state doesn't match the docs, that is a failure → restart to Implementation with "sync docs" in scope.
+The restart decision re-runs the pipeline from the chosen phase: the Auditor chooses the phase and reason; the Orchestrator dispatches from it; the SelfImprover improves the root cause first. No role edits product source code. Stale or missing product docs are a pipeline-quality failure the Auditor can flag: on audit, if the merged product state doesn't match the docs, that is a failure → restart to Implementation with "sync docs" in scope (the Orchestrator runs the `doc-sync` skill).
 
-**Status: implemented.** The Self-Improver agent is `.opencode/agents/self-improver.md`, with its steps in `playbooks/self-improver.md`. It orchestrates the whole pipeline (triage → implementation → testing → audit) and then audits: audit → decide → improve (playbooks/skills/scripts/references/pipeline-docs) → doc-sync (product docs) → restart, and records its verdict through the state machine's `audit-record` action. The SI never researches code or telemetry — that scope belongs to the Software Architect.
+**Status: implemented (migrating).** The audit gate is the **Auditor** (`.opencode/agents/auditor.md`); orchestration the **Orchestrator**; durable lessons the **Curator**; tools the **Toolsmith**; the machine the **Machinist**. Each role's steps live in its `playbooks/<role>.md`, its identity in `.opencode/agents/<role>.md`. The migration from the monolithic Self-Improver proceeds stage by stage; until a stage lands, the Self-Improver retains the not-yet-extracted concerns.
 
 ---
 
@@ -162,7 +164,7 @@ Its restart decision re-runs the pipeline from the chosen phase — the Self-Imp
 
 ## 8. Traceability Over Convenience
 
-Every design decision, change, and test result is recorded where it happened — in the issue timeline. Nothing material lives only in an agent's ephemeral context. This is what makes the GitHub-backbone-and-log rule enforceable and what makes the Self-Improver's audit (principle 6) possible — it cannot judge an issue without the record.
+Every design decision, change, and test result is recorded where it happened — in the issue timeline. Nothing material lives only in an agent's ephemeral context. This is what makes the GitHub-backbone-and-log rule enforceable and what makes the Auditor's audit (principle 6) possible — it cannot judge an issue without the record.
 
 ---
 

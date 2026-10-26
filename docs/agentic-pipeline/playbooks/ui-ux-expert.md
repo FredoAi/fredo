@@ -6,7 +6,7 @@
 Produces the Design Assets — mockups, component specs, interaction flows, states, accessibility requirements — that go into the Implementation Plan, so developers build to a concrete design and testers verify against it.
 
 ## When dispatched
-Dispatched by the Self-Improver (orchestrator) during Triage (Phase 2), in parallel with the Software Architect and the QA Expert, on the same brief: the backlog issue plus any Product Owner notes.
+Dispatched by the Orchestrator during Triage (Phase 2), in parallel with the Software Architect and the QA Expert, on the same brief: the backlog issue plus any Product Owner notes.
 
 ## Inputs
 Backlog issue (What, Wireframe, Behavioral Gherkin, Non-Behavioral, Risks) and the Software Architect's domain model (file:line citations).
@@ -18,14 +18,14 @@ Backlog issue (What, Wireframe, Behavioral Gherkin, Non-Behavioral, Risks) and t
 3. **Write your section draft** — under your `## UI/UX Expert` heading in the A2A working file `.opencode/tmp/<issue>/triage.md` (Design Assets; `N/A` when the work has no user-visible surface). Append your points to `## Discussion`, agent-tagged (e.g. `**UI/UX:** ...`).
 4. **Cross-review** — read the Software Architect's and QA Expert's drafts in the same file; reply to their `## Discussion` points for every conflict or gap you find (e.g. a design that contradicts the Domain Model), never editing another planner's section heading.
 5. **Resolve discussion** — answer every `## Discussion` point aimed at your section, resolving it or explicitly deferring with a reason. No point is left unaddressed.
-6. **Return to the Self-Improver (orchestrator)** — your final agreed section (updated with any resolutions) stays in the A2A file; the `triage → implementation` transition auto-assembles the Implementation Plan and fills your section from it.
+6. **Return to the Orchestrator** — your final agreed section (updated with any resolutions) stays in the A2A file; the `triage → implementation` transition auto-assembles the Implementation Plan and fills your section from it.
 
 ## Artifacts produced
 - Design Assets (mockups, component specs, interaction flows) — part of Implementation Plan
 - Section draft under `## UI/UX Expert` in `.opencode/tmp/<issue>/triage.md`
 
 ## GitHub conventions
-- The A2A file (`.opencode/tmp/<issue>/triage.md`) carries your section draft and `## Discussion` points. **You NEVER post comments to the issue** — all triage deliberation happens in the A2A file (your `## UI/UX Expert` section + agent-tagged `## Discussion` points). The state machine refuses to post the A2A file itself as a comment body (hardened after #2694 posted the raw template as `Status`/`Question` three times). Anything that must reach the issue timeline (a Product Owner question, a human decision) is routed by the Self-Improver orchestrator.
+- The A2A file (`.opencode/tmp/<issue>/triage.md`) carries your section draft and `## Discussion` points. **You NEVER post comments to the issue** — all triage deliberation happens in the A2A file (your `## UI/UX Expert` section + agent-tagged `## Discussion` points). The state machine refuses to post the A2A file itself as a comment body (hardened after #2694 posted the raw template as `Status`/`Question` three times). Anything that must reach the issue timeline (a Product Owner question, a human decision) is routed by the Orchestrator.
 
 ## Verification (definition of done)
 - Section draft written under your `## UI/UX Expert` heading in `.opencode/tmp/<issue>/triage.md`, cross-reviewed in `## Discussion`, and every `## Discussion` point aimed at it resolved

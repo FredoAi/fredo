@@ -77,7 +77,7 @@
   the origin/spec/<Spec> tip -- main's divergent code and any non-spec commit are
   REFUSED. Baseline legs never serve main and never hand-roll a detached
   dev-server spawn; a cross-branch serving need the tool does not cover is a
-  tooling request to the Self-Improver (new script/param), not an ad-hoc agent
+  tooling request to the Orchestrator (new script/param), not an ad-hoc agent
   script. The next standard Up (without -At) FULLY restores apps/ to the spec/<Spec>
   tip for the AFTER legs (G-163: tracked content reset to HEAD, baseline-only files
   deleted, and the restore fails closed if apps/ still differs from HEAD -- a plain
@@ -467,7 +467,7 @@ function Prepare-BaselineServing {
   # Fail closed: the baseline commit MUST be reachable from origin/spec/<Spec>.
   & git -C $RepoDir merge-base --is-ancestor $atSha "origin/spec/$SpecIssue" 2>&1 | Out-Null
   if ($LASTEXITCODE -ne 0) {
-    Write-Log "ERROR: -At $($atSha.Substring(0, [Math]::Min(8, $atSha.Length))) is NOT reachable from origin/spec/$SpecIssue -- baseline legs serve only PRE-FIX ancestors of the spec branch, never main or foreign commits. A genuine cross-branch measurement is a tooling request to the Self-Improver." -Level ERROR
+    Write-Log "ERROR: -At $($atSha.Substring(0, [Math]::Min(8, $atSha.Length))) is NOT reachable from origin/spec/$SpecIssue -- baseline legs serve only PRE-FIX ancestors of the spec branch, never main or foreign commits. A genuine cross-branch measurement is a tooling request to the Orchestrator." -Level ERROR
     exit 1
   }
 

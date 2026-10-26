@@ -1,6 +1,6 @@
 ---
 name: dev-environment
-description: Dev instance lifecycle management and E2E testing methodology. Loaded by the Self-Improver (orchestrator) and QA.
+description: Dev instance lifecycle management and E2E testing methodology. Loaded by the Orchestrator and QA.
 ---
 
 # Dev Environment — Lifecycle & E2E Testing
@@ -159,7 +159,7 @@ Notes:
 
 > **Which branch runs?** The dev instance builds whatever is checked out. Both the **Tester** and the **Developer** run against the **spec integration branch** — before `Up`, checkout `spec/<N>` (`git fetch origin spec/<N> && git checkout spec/<N>`) and pull the latest state. The Developer works in a worktree detached at `spec/<N>`'s tip; the Tester tests the accumulated feature on it. Never test against `main` mid-spec; the feature isn't there yet.
 
-> **Baseline legs (research-first specs) — NEVER hand-roll a dev-server spawn.** A Before/baseline measurement in a research-first perf spec (Spec #498 pattern, e.g. #2835) runs against the **pre-fix `spec/<N>` state** — the branch state BEFORE the fix work pushed (that state IS the same buggy code as `main`). The rule: **a baseline leg runs through `dev-env.ps1 -Action Up -Spec <N>`; you NEVER check out `main` for a baseline and NEVER hand-roll a detached spawn** (no ad-hoc `.mjs`/`.ps1`/`.js` scratch script that starts `pnpm dev:tauri` — `.opencode/tmp/<issue>/` is for DATA, not for re-inventing infrastructure). When the fix commits already sit on the branch and a pre-fix measurement is still required, serve the pre-fix ancestor commit through the sanctioned tool: `dev-env.ps1 -Action Up -Spec <N> -At <pre-fix-sha>` — the tool materializes ONLY the pre-fix product code (`apps/`) into the current `spec/<N>` serving tree and cold-starts it (tooling/`opencode.json` stay at the tip, so the sandbox and tool surface are unchanged); it is fail-closed (root must be on `spec/<N>`; the commit must be reachable from the `origin/spec/<N>` tip — main and foreign commits are refused). After the baseline leg, the next standard `Up` (no `-At`) restores the tip product code for the AFTER legs. **If a genuine cross-branch measurement (code NOT reachable from the spec branch tip) is ever required, that is a TOOLING REQUEST to the Self-Improver (a new script/param), not an ad-hoc agent script** — report the exact gap (command + why denied + what the provisioned tool lacks) and block/escalate instead of writing a scratch runner that re-implements a sanctioned tool's internals (G-110).
+> **Baseline legs (research-first specs) — NEVER hand-roll a dev-server spawn.** A Before/baseline measurement in a research-first perf spec (Spec #498 pattern, e.g. #2835) runs against the **pre-fix `spec/<N>` state** — the branch state BEFORE the fix work pushed (that state IS the same buggy code as `main`). The rule: **a baseline leg runs through `dev-env.ps1 -Action Up -Spec <N>`; you NEVER check out `main` for a baseline and NEVER hand-roll a detached spawn** (no ad-hoc `.mjs`/`.ps1`/`.js` scratch script that starts `pnpm dev:tauri` — `.opencode/tmp/<issue>/` is for DATA, not for re-inventing infrastructure). When the fix commits already sit on the branch and a pre-fix measurement is still required, serve the pre-fix ancestor commit through the sanctioned tool: `dev-env.ps1 -Action Up -Spec <N> -At <pre-fix-sha>` — the tool materializes ONLY the pre-fix product code (`apps/`) into the current `spec/<N>` serving tree and cold-starts it (tooling/`opencode.json` stay at the tip, so the sandbox and tool surface are unchanged); it is fail-closed (root must be on `spec/<N>`; the commit must be reachable from the `origin/spec/<N>` tip — main and foreign commits are refused). After the baseline leg, the next standard `Up` (no `-At`) restores the tip product code for the AFTER legs. **If a genuine cross-branch measurement (code NOT reachable from the spec branch tip) is ever required, that is a TOOLING REQUEST to the Orchestrator (a new script/param), not an ad-hoc agent script** — report the exact gap (command + why denied + what the provisioned tool lacks) and block/escalate instead of writing a scratch runner that re-implements a sanctioned tool's internals (G-110).
 
 > **Screenshot analysis is vision-native — no image-decoding scripts.** Every agent role is vision-capable: read a screenshot directly (the Read tool) to judge what it shows. Do NOT hand-roll PNG decode/measure/composite scripts (`*.mjs`/`*.js`/`*.ps1` under `.opencode/tmp/<issue>/`) — the image-analysis scratch scripts seen in early specs are obsolete. For exact pixel geometry, use measured rendered values (DOM `getBoundingClientRect`/`offsetWidth`), not pixel sampling (G-154).
 
@@ -410,7 +410,7 @@ tauri_webview_screenshot(filePath="...<issue>/e2e/after-<visual-check>.jpeg")
 
 **Pattern 8: Regression Smoke Test (No User-Observable ACs)**
 
-When a spec has zero user-observable ACs (performance audits, internal refactors, cleanup, infrastructure changes), run this smoke test to verify the app's core features still work. The Self-Improver (orchestrator) dispatches in "regression" mode.
+When a spec has zero user-observable ACs (performance audits, internal refactors, cleanup, infrastructure changes), run this smoke test to verify the app's core features still work. The Orchestrator dispatches in "regression" mode.
 
 **Checklist:**
 
@@ -424,7 +424,7 @@ When a spec has zero user-observable ACs (performance audits, internal refactors
 | 6* | Agent/Session nodes render (MANDATORY for ECE/mission-monitor specs) | Inject mock events via `fredo emit`, then `tauri_webview_dom_snapshot(type="structure")` inside Mission Monitor panel | Agent node visible in graph. If spec involves subagents, Subagent node visible and composited under parent. Graph is NOT empty. |
 | 7* | Console errors after event injection (for ECE/mission-monitor specs) | `tauri_read_logs(source="console", lines=100)` AFTER completing all event injection + UI interactions | No `Error:`, `Uncaught`, or `Maximum update depth exceeded` entries. Bug #523: 11+ re-render errors appeared only after ECE delivery processing — invisible at initial app shell render. |
 
-\* Steps 6-7 apply when the spec touches ECE, Mission Monitor graph rendering, session compositing, or event delivery infrastructure. The Self-Improver (orchestrator) should include these in the dispatch instructions for such specs.
+\* Steps 6-7 apply when the spec touches ECE, Mission Monitor graph rendering, session compositing, or event delivery infrastructure. The Orchestrator should include these in the dispatch instructions for such specs.
 
 **Pattern 9: React pointer-handler interactions (drag/resize with pointer capture)**
 
@@ -451,7 +451,7 @@ Note: the component under test may call `setPointerCapture`, which jsdom and som
 **Summary:** 5/5 passed — no regressions detected.
 ```
 
-If any check fails, report it as a regression bug to the Self-Improver (orchestrator). Do NOT retry or diagnose — the Self-Improver dispatches a Developer for the fix.
+If any check fails, report it as a regression bug to the Orchestrator. Do NOT retry or diagnose — the Orchestrator dispatches a Developer for the fix.
 
 **MCP Bridge IPC Limitation:** `tauri_ipc_execute_command` only supports a subset of Tauri commands. Feature-specific backend commands may return "Unsupported Tauri command". Do NOT treat this as FAIL — instead, verify backend state through the webview using `tauri_webview_execute_js(script="(() => { return __TAURI__.core.invoke('command_name', { ... }); })()")`.
 

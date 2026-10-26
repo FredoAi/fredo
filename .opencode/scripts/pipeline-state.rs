@@ -1481,8 +1481,7 @@ fn flag_untrusted_comments(issue: u32, flagged: &[serde_json::Value]) {
         }
         let _ = append_event(issue, "guard.fired", "pipeline-state", "unknown", "blocked",
             &format!("untrusted comment author ({}) excluded from agent context", assoc));
-        let snippet: String = body.chars().take(80).collect();
-        println!("GUARD.FIRED: #{} comment by {} excluded from agent context (author not write-capable): {}", issue, assoc, snippet);
+        println!("GUARD.FIRED: #{} comment by {} excluded from agent context (author not write-capable)", issue, assoc);
     }
 }
 
@@ -1717,7 +1716,7 @@ fn ensure_spec_pr_merged(issue: u32) -> anyhow::Result<Option<String>> {
         // delivery artifact is ambiguous and one would never be merged. Fail the
         // transition CLOSED instead of warn-and-continue into audit (audit fix):
         // the human must close all but one PR before the spec can merge.
-        append_event(issue, "guard.fired", "self-improver", "audit", "blocked", &format!("duplicate spec PRs: {} open {} PRs (#{}); refusing to merge", numbers.len(), head, numbers.join(", #")))?;
+        append_event(issue, "guard.fired", "orchestrator", "audit", "blocked", &format!("duplicate spec PRs: {} open {} PRs (#{}); refusing to merge", numbers.len(), head, numbers.join(", #")))?;
         anyhow::bail!(
             "{} open {} PRs (#{}) — expected exactly one; close the duplicates before transitioning to audit",
             numbers.len(), head, numbers.join(", #")
@@ -1900,7 +1899,7 @@ fn assemble_impl_plan(issue: u32, actor: &str) -> anyhow::Result<Option<()>> {
     }
     // The `## Triage Plan` timeline draft must carry the agent footer (anti-spoofing).
     if !body.to_lowercase().contains("*authored by") {
-        body.push_str("\n\n*Authored by Self-Improver*");
+        body.push_str("\n\n*Authored by Orchestrator*");
     }
     let draft_dir = project_root()?.join(".opencode").join("tmp").join(issue.to_string());
     std::fs::create_dir_all(&draft_dir)?;
@@ -2168,7 +2167,7 @@ fn sync_root_checkout_after_tests_commit(paths: &[std::path::PathBuf]) -> anyhow
 }
 
 /// Seed the Implementation Plan issue body from the triage-plan template when the
-/// orchestrator (self-improver) creates an impl-plan without a
+/// orchestrator creates an impl-plan without a
 /// `--body-file`. Substitutes the title and a backlog marker; the `<issue>`
 /// placeholder cannot be filled until the issue number is known, so it is patched
 /// by the caller after creation.
@@ -3129,7 +3128,7 @@ const TRIAGE_A2A_HEADER: &str = "\
 /// Post any pending timeline-comment drafts in `.opencode/tmp/<issue>/` as GitHub
 /// comments. Each draft file maps to a titled comment (the PO backlog, the triage
 /// plan, the Architect-authored fix plan, the development summary, the tests runs,
-/// the SI summary). The file is consumed (deleted) after posting so a draft is
+/// the Orchestrator Summary). The file is consumed (deleted) after posting so a draft is
 /// never posted twice. Runs as a transition side-effect and via the `post-comments`
 /// action. **Best-effort:** a failed comment post is logged, never fatal — a comment
 /// failure must not undo an already-applied phase transition or issue close.
@@ -3200,7 +3199,7 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
         ("fix-plan.md", "Fix Plan"),
         ("dev-summary.md", "Development Summary"),
         ("tests-runs.md", "Tests Runs"),
-        ("si-summary.md", "SI Summary"),
+        ("orchestrator-summary.md", "Orchestrator Summary"),
     ];
     let dir = project_root()?.join(".opencode").join("tmp").join(issue.to_string());
     if !dir.is_dir() {
@@ -3334,15 +3333,15 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
 
 /// Post a single timeline-comment draft (writes `## <title>` + body, posts it,
 /// consumes the file). Retry-relevant timeline comments (Development Summary,
-/// Tests Runs, SI Summary) get a machine-stamped `(round N)` header — the round is
+/// Tests Runs, Orchestrator Summary) get a machine-stamped `(round N)` header — the round is
 /// derived from the event log (`retry_state` / the testing-entry count), never
 /// written by the drafting agent, so the GitHub timeline is unambiguously
 /// round-tagged and round-1/round-2 verdicts never collide. The Development
 /// Summary stamps the round whose testing entry is being created (count + 1);
-/// Tests Runs and SI Summary stamp the round that is ending. PO Backlog and
+/// Tests Runs and Orchestrator Summary stamp the round that is ending. PO Backlog and
 /// Triage Plan are round-1-only artifacts and stay untagged.
 fn post_one_timeline_comment(issue: u32, actor: &str, phase: &str, p: &std::path::Path, title: &str, body: &str) -> anyhow::Result<()> {
-    const ROUND_TAGGED: &[&str] = &["Development Summary", "Tests Runs", "SI Summary"];
+    const ROUND_TAGGED: &[&str] = &["Development Summary", "Tests Runs", "Orchestrator Summary"];
     // G-020 on the timeline path (audit fix): the `comment` action refuses a second
     // verdict-carrying comment per round, but this path bypassed it — two
     // tests-runs.md flushes in one round BOTH posted. A verdict-carrying
@@ -3357,7 +3356,7 @@ fn post_one_timeline_comment(issue: u32, actor: &str, phase: &str, p: &std::path
         }
     }
     let header = if ROUND_TAGGED.contains(&title) {
-        // Round-stamp derivation (#2788 audit fix): Tests Runs and SI Summary
+        // Round-stamp derivation (#2788 audit fix): Tests Runs and Orchestrator Summary
         // document the testing round that is ENDING — the raw count of testing
         // `phase.started` entries at post time is correct for them. The
         // Development Summary documents the fix round whose testing entry this
@@ -3710,7 +3709,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             let phase = phase_of(a)?.as_str().to_string();
             let (round, _) = retry_state(issue);
             // 1) Post the `## Pipeline Improvement (round N)` comment on the issue.
-            let body = format!("## Pipeline Improvement (round {})\n\n{}\n\n*Authored by Self-Improver*", round, reason);
+            let body = format!("## Pipeline Improvement (round {})\n\n{}\n\n*Authored by Curator*", round, reason);
             let tmp = project_root()?.join(".opencode").join("tmp").join(format!("improvement-{}.md", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(tmp.parent().unwrap())?;
             std::fs::write(&tmp, &body)?;
@@ -3928,7 +3927,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 println!("SIDE-EFFECTS: {}", notes.join("; "));
             }
             // Post any pending timeline-comment drafts (`.opencode/tmp/<issue>/*.md`):
-            // PO Backlog, Triage Plan, Development Summary, Tests Runs, SI Summary.
+            // PO Backlog, Triage Plan, Development Summary, Tests Runs, Orchestrator Summary.
             // NOTE ordering: this MUST run BEFORE the destination `phase.started` is
             // appended — the plan-comment decision counts prior `phase.started`
             // entries for the destination phase (prior_phase_entries), so appending
@@ -4165,7 +4164,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // issue). Replaces one whole `##` section of that draft with the new
             // content, writing it back to the draft (idempotent per section — the
             // machine reads it on the next `post-comments` flush / transition).
-            // Gated to the self-improver.
+            // Gated to the orchestrator.
             if !actor_allowed(a.action.as_str(), &a.actor) {
                 append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action))?;
                 println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
@@ -4203,7 +4202,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // planners write under their own sections and converse in `##
             // Discussion` instead of GitHub comments; the converged result is
             // assembled into the plan by the `triage → implementation` transition.
-            // Also an auto side-effect of `intake → triage`. Gated to self-improver.
+            // Also an auto side-effect of `intake → triage`. Gated to orchestrator.
             if !actor_allowed(a.action.as_str(), &a.actor) {
                 append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action))?;
                 println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
@@ -4219,7 +4218,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // main as the regression asset; unique paths keep concurrent specs
             // conflict-free). Also an auto side-effect of `triage → implementation`
             // (feature names come from the QA Expert's `**Feature tests:**` line).
-            // Gated to self-improver and tester.
+            // Gated to orchestrator and tester.
             if !actor_allowed(a.action.as_str(), &a.actor) {
                 append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action))?;
                 println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
@@ -4248,7 +4247,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // this sweep catches abandoned/cancelled specs and stragglers).
             // Local deletes: any local `spec/*`/`feat/*` whose remote counterpart is
             // gone (already deleted upstream), plus legacy merged `feat/*`.
-            if a.actor != "self-improver" {
+            if a.actor != "orchestrator" {
                 println!("BLOCKED: actor {} not allowed to prune", a.actor);
                 return Ok(());
             }
@@ -4484,11 +4483,11 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             } else if verdict == "success" {
                 println!("NOTE: no 'Effort: N story points' line found in the ## Triage Plan comment — spec size not recorded for trend normalization");
             }
-            append_event_attrs(issue, "audit.verdict", "self-improver", phase,
+            append_event_attrs(issue, "audit.verdict", &a.actor, phase,
                 if verdict == "success" { "passed" } else { "failed" },
                 reason, &verdict_attrs)?;
             // Post any pending timeline-comment drafts (a restart's authored
-            // `fix-plan.md`, the SI Summary, ...) BEFORE the destination
+            // `fix-plan.md`, the Orchestrator Summary, ...) BEFORE the destination
             // `phase.started` is appended below. The plan-comment decision counts
             // prior `implementation` `phase.started` entries to stamp
             // `## Fix Plan (round N)`; flushing AFTER the restart's own
@@ -4502,9 +4501,9 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 // issue stays OPEN; the SI runs the cleanup teardown, then closes as
                 // done via close-issue (cleanup → done).
                 swap_phase_label(issue, Phase::Audit, Phase::Cleanup)?;
-                append_event(issue, "transition", "self-improver", "cleanup", "success", "audit -> cleanup (audit success)")?;
-                append_event_attrs(issue, "phase.completed", "self-improver", "audit", "success", "completed audit", &[("phase", "audit"), ("to", "cleanup")])?;
-                append_event_attrs(issue, "phase.started", "self-improver", "cleanup", "success", "started cleanup", &[("phase", "cleanup"), ("from", "audit")])?;
+                append_event(issue, "transition", &a.actor, "cleanup", "success", "audit -> cleanup (audit success)")?;
+                append_event_attrs(issue, "phase.completed", &a.actor, "audit", "success", "completed audit", &[("phase", "audit"), ("to", "cleanup")])?;
+                append_event_attrs(issue, "phase.started", &a.actor, "cleanup", "success", "started cleanup", &[("phase", "cleanup"), ("from", "audit")])?;
                 println!("AUDIT PASS -> CLEANUP (auto): #{} entered cleanup", issue);
             } else if let Some(to) = restart_to {
                 // A restart supersedes the round's testing — the stale Evidence
@@ -4526,9 +4525,9 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     }
                 }
                 swap_phase_label(issue, Phase::Audit, to)?;
-                append_event(issue, "transition", "self-improver", to.as_str(), "success", &format!("audit -> {} (auto restart)", to.as_str()))?;
-                append_event_attrs(issue, "phase.completed", "self-improver", "audit", "success", "completed audit", &[("phase", "audit"), ("to", to.as_str())])?;
-                append_event_attrs(issue, "phase.started", "self-improver", to.as_str(), "success", &format!("started {}", to.as_str()), &[("phase", to.as_str()), ("from", "audit")])?;
+                append_event(issue, "transition", &a.actor, to.as_str(), "success", &format!("audit -> {} (auto restart)", to.as_str()))?;
+                append_event_attrs(issue, "phase.completed", &a.actor, "audit", "success", "completed audit", &[("phase", "audit"), ("to", to.as_str())])?;
+                append_event_attrs(issue, "phase.started", &a.actor, to.as_str(), "success", &format!("started {}", to.as_str()), &[("phase", to.as_str()), ("from", "audit")])?;
                 println!("AUDIT -> {} (auto restart)", to.as_str());
             }
             println!("AUDIT RECORDED: {} on #{}", verdict, issue);
@@ -4539,7 +4538,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // `https://github.com/user-attachments/...` URL for the tester to embed in
             // the SINGLE `## Tests Runs` comment. Nothing is written to the repo, so
             // evidence never bloats `main` or the spec branch. Upload-ONLY: no comment
-            // is posted per upload. Gated to the tester (and self-improver).
+            // is posted per upload. Gated to the tester (and orchestrator).
             if !actor_allowed(a.action.as_str(), &a.actor) {
                 append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action))?;
                 println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
@@ -4752,34 +4751,34 @@ fn req_issue(a: &ActionArgs) -> anyhow::Result<u32> {
 /// actor. Unknown actions default to allowed (they fail later on the match arm).
 fn actor_allowed(action: &str, actor: &str) -> bool {
     match action {
-        "create-issue" => matches!(actor, "product-owner" | "self-improver"),
+        "create-issue" => matches!(actor, "product-owner" | "orchestrator"),
         // Product Owner posts non-gate comments (`Status` amendments/decisions,
         // `Question` clarifications). Gate-critical prefixes (`Decision`,
         // `Evidence`) remain restricted by the prefix gate in the comment action —
         // the PO can never forge an exit guard. (#2734: the PO had no way to record
         // an AC amendment and had to route through the SI.)
         "comment" => true,
-        "transition" => actor == "self-improver",
-        "block" | "unblock" => matches!(actor, "self-improver" | "developer"),
-        "close-issue" => actor == "self-improver",
+        "transition" => actor == "orchestrator",
+        "block" | "unblock" => matches!(actor, "orchestrator" | "developer"),
+        "close-issue" => actor == "orchestrator",
         "create-worktree" => actor == "developer",
         "remove-worktree" => actor == "developer",
-        "update-plan" => actor == "self-improver",
-        "triage-init" => actor == "self-improver",
+        "update-plan" => actor == "orchestrator",
+        "triage-init" => actor == "orchestrator",
         // The ONLY sanctioned writer of `opencode.json` agent `permission` blocks:
         // the SI grants a missing allowlist verb to a role instead of routing a
         // sandbox change to the human (G-142). Scoped to permission blocks by
         // construction — the editor refuses everything else.
-        "set-permission" => actor == "self-improver",
-        "tests-commit" => matches!(actor, "tester" | "self-improver"),
-        "audit-record" => actor == "self-improver",
-        "upload-evidence" => matches!(actor, "tester" | "self-improver"),
-        "post-comments" => matches!(actor, "self-improver" | "tester"),
-        "record-improvement" => actor == "self-improver",
-        "link-revision" => matches!(actor, "self-improver" | "product-owner"),
-        "hardening-lock-open-issues" => actor == "self-improver",
-        "interaction-limit" => actor == "self-improver",
-        "close-dependabot-prs" => actor == "self-improver",
+        "set-permission" => actor == "machinist",
+        "tests-commit" => matches!(actor, "tester" | "orchestrator"),
+        "audit-record" => actor == "auditor",
+        "upload-evidence" => matches!(actor, "tester" | "orchestrator"),
+        "post-comments" => matches!(actor, "orchestrator" | "tester"),
+        "record-improvement" => actor == "curator",
+        "link-revision" => matches!(actor, "orchestrator" | "product-owner"),
+        "hardening-lock-open-issues" => actor == "machinist",
+        "interaction-limit" => actor == "machinist",
+        "close-dependabot-prs" => actor == "machinist",
         "audit" | "prune" | "metrics" | "health" | "improvement" | "verify" | "context" => true,
         _ => true,
     }
@@ -4788,8 +4787,8 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
 // ── opencode.json agent-permission editor (`set-permission`) ─────────────────
 //
 // `opencode.json` is human-owned EXCEPT the per-agent `permission` blocks, which
-// the Self-Improver owns through this action: the sandbox is code, so an agent
-// that hits a missing allowlist verb (e.g. a deletion verb, G-142) has the SI
+// the Machinist owns through this action: the sandbox is code, so an agent
+// that hits a missing allowlist verb (e.g. a deletion verb, G-142) has the Machinist
 // grant it instead of routing a config change to the human. The editor is
 // TEXT-SURGICAL and never re-serializes the document: opencode evaluates
 // permission rules LAST-match-wins, so member ORDER is semantics — a serde_json
@@ -5069,7 +5068,7 @@ fn set_agent_permission(
 
 // ── Context block ────────────────────────────────────────────────────────────
 
-/// Read-only operational snapshot for the orchestrator (self-improver) context
+/// Read-only operational snapshot for the orchestrator context
 /// block: the linked plan, work items, A2A file, spec branch, and open blockers.
 /// Best-effort — every field falls back to a safe default if the underlying
 /// read fails, so the context block always renders.
@@ -5128,9 +5127,9 @@ fn print_context(issue: u32, actor: &str, raw: bool) -> anyhow::Result<()> {
     // reason is the audit's recorded cause of the restart.
     let (attempt, retry_reason) = retry_state(issue);
     let on_retry = attempt > 1;
-    // The orchestrator (self-improver) gets an operational snapshot — the linked
+    // The orchestrator gets an operational snapshot — the linked
     // artifacts it steers — so it does not re-discover the pipeline state each wake.
-    let orch = if actor == "self-improver" {
+    let orch = if actor == "orchestrator" {
         Some(orchestration_snapshot(issue))
     } else {
         None
@@ -6261,7 +6260,7 @@ fn improvement_report(json: bool) -> anyhow::Result<()> {
     } else { 0.0 };
 
     // Root-cause mix — the SI's routing input for which lever to strengthen
-    // (playbooks/self-improver.md: Class → Lever). Restarts carry `audit.verdict`
+    // (playbooks/curator.md: Class → Lever). Restarts carry `audit.verdict`
     // rootCause; the per-round loop carries `rework.rootcause` (the Architect's fix-plan
     // class). Most rounds burn in the rework loop, so the round mix is the primary source
     // and the restart mix is the fallback.
