@@ -702,4 +702,56 @@ round-2/3 live receipts stand.
 focuses a hidden radio/number input (`focus-context=text-entry`, hotkeys disabled) — a canvas
 pointer-down (the shipped explicit blur) restores `default` before any bare key.
 
+## Spec #3081 — Wireframe "Discard" label colour (AC1–AC4)
+
+> Extends the #3070 suite. Scope: the destructive-action confirm dialog's Discard button
+> (`WireframeToolbar.tsx:390-397`) currently sets `color="white"` (line 393) — a raw colour.
+> Fix: derive the label from `status.onSolids` / `--status-on-solids`. Verification policy:
+> **live** (DOM computed colour + measured contrast), no `telemetry_spans` receipt expected.
+> Evidence per row: a quoted `tauri_webview_execute_js` result carrying the OBSERVED computed
+> colour(s) + the resolved `--status-on-solids`, plus an uploaded `user-attachments` capture
+> (G-154 — a visual read alone is not a PASS).
+
+- [ ] **F-57 (REQ-1 / AC1)** Discard label colour derives from the theme token, light + dark.
+      **Recipe:** open Wireframe → add one element (dirty) → **New** → dialog
+      `[data-testid="wireframe-new-document-dialog"]`; read the Discard button
+      `[data-testid="wireframe-new-document-discard"]`.
+      **Expected:** `getComputedStyle(discard).color` equals
+      `getComputedStyle(document.documentElement).getPropertyValue('--status-on-solids')`
+      (rgb-normalised, same task) in BOTH `light-default` and a dark preset; contrast between
+      that colour and `getComputedStyle(discard).backgroundColor` ≥ **4.5** (the `status-error-label`
+      body floor); the label is NOT `rgb(255,255,255)` where `--status-error` is light; a source
+      read of `WireframeToolbar.tsx:393` shows a token prop (no `white`/hex/rgba).
+      **Edge:** accent override; dialog opened via the toolbar New button AND via a Companion
+      `document.new`; label unclipped inside the button.
+
+- [ ] **F-58 (REQ-2 / AC2)** Repo sweep — zero raw-colour literals in the Wireframe tree.
+      **Recipe:** `pnpm --filter @fredo/ui contrast:gate` (hex / `rgb(` / `hsl(` / `var(--x)NN`)
+      PLUS a wireframe-scoped **named-colour** scan over
+      `apps/ui/src/applications/wireframe/**` for `"white"`/`"black"`/`bg="<name>"`/`color="<name>"`.
+      **Expected:** ZERO hits in the whole tree; only `transparent`/`inherit`/`currentColor`/`none`
+      remain; no wireframe entry in `app/theme/contract/allowlist.ts` or `rawColorBaseline.ts`.
+      **Edge:** issue-ref comments stripped and must NOT mask a literal; `tint()`/`color-mix(...)`
+      is not a literal; `var(--x)55` alpha-append IS flagged; `.test.tsx` fixtures out of scope.
+
+- [ ] **F-59 (REQ-3 / AC3 — edge/negative)** Light `status.error` never yields white-on-light.
+      **Recipe:** force a light `--status-error` (the lightest-`status.error` shipped preset, or
+      the per-token override — theming app / `localStorage['Fredo_theme_overrides']`), open the
+      dialog, measure the label.
+      **Expected:** computed label colour is NOT `rgb(255,255,255)`; contrast ≥ 4.5; the capture
+      shows a readable (dark) glyph on the light-red fill.
+      **Edge:** a light `status.error` combined with dark `success`/`warning`/`info` (the
+      `resolveOnSolids` min-over-all-four semantics — see the plan Discussion point); accent
+      change while the override is active; mid-transition capture.
+
+- [ ] **F-60 (REQ-4 / AC4)** Regression gates.
+      **Recipe:** `pnpm --filter @fredo/ui test:run` (must include green
+      `applications/wireframe/__tests__/canvasPalette.test.ts` +
+      `applications/wireframe/__tests__/WireframeToolbar.hotkeys.test.tsx`),
+      `pnpm --filter @fredo/ui build` (zero TS errors), `pnpm --filter @fredo/ui contrast:gate`.
+      **Expected:** all three exit 0; the `WireframeToolbar` assertion is UPDATED to expect the
+      token (not deleted/weakened — G-125); no other assertion changed.
+      **Edge:** the dialog testid is unchanged; the build introduces no new chunk regression;
+      the contrast gate stays at its frozen baseline cap.
+
 
