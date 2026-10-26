@@ -1,13 +1,13 @@
 ---
 name: retro-analysis
-description: Post-spec retrospective analysis recipes for guardrail effectiveness tracking, cross-spec pattern detection, grounded verification, ACE curation lifecycle, and compositional skill building. Load when the Self-Improver performs post-spec improvement generation.
+description: Post-spec retrospective analysis recipes for guardrail effectiveness tracking, cross-spec pattern detection, grounded verification, ACE curation lifecycle, and compositional skill building. Load when the Curator performs post-spec improvement generation.
 ---
 
 # Retro-Analysis — Self-Improvement Recipes
 
 ## Overview
 
-This skill provides reusable technical recipes for the Self-Improver agent. The Self-Improver owns policy decisions (what to guard, when to escalate, how to report); this skill owns the execution mechanics (how to compute effectiveness, detect patterns, verify playbook grounding).
+This skill provides reusable technical recipes for the Curator agent. The Curator owns policy decisions (what to guard, when to escalate, how to report); this skill owns the execution mechanics (how to compute effectiveness, detect patterns, verify playbook grounding).
 
 **Core framework:** ACE (Agentic Context Engineering) Generation → Reflection → Curation cycle:
 1. **Generation**: Propose improvements from the pipeline's event-log data
@@ -22,9 +22,9 @@ All recipes read from the live pipeline, not static artifact files:
 - **State-machine metrics** — `rust-script .opencode/scripts/pipeline-state.rs --action metrics --all --json` (pipeline aggregates: `issues`, `events`, `blocked`, `rework`, `by_agent`, `by_phase`) and `--action metrics --issue <N> --json` (per-issue: `agent_calls`, `phase_durations_min`, `rework_loops`, `blocked_count`, `transitions`). `rework` counts `testing -> implementation` transitions only.
 - **Health report** — `rust-script .opencode/scripts/pipeline-state.rs --action health` (pipeline integrity, error counts, verdict summaries).
 - **Script errors** — `.opencode/state/script-errors.jsonl` (pipeline script failures, auto-logged).
-- **Spec issue comments** — the issue timeline (`gh issue view <spec_N> --comments`), where the Triage cluster, Self-Improver, Developer, and Tester post structured `## Review Results`, `## Capsule:`, `## E2E Test Results`, and `## Retro Report` blocks.
+- **Spec issue comments** — the issue timeline (`gh issue view <spec_N> --comments`), where the Triage cluster, Curator, Developer, and Tester post structured `## Review Results`, `## Capsule:`, `## E2E Test Results`, and `## Retro Report` blocks.
 
-The Self-Improver's improvement ledger (guardrail records: `guardrail_id`, `activation_date`, `target_failure`, `effectiveness`) is maintained by the SI itself — recorded as the `message`/reason of `audit.verdict` events and written into the **`## Known Failure Modes` section of `docs/agentic-pipeline/playbooks/references.md`** (the durable, human-readable ledger; Recipe 6 persists one record per audit, every audit). This ledger replaces the standalone improvement/metrics artifact files this skill previously read.
+The Curator's improvement ledger (guardrail records: `guardrail_id`, `activation_date`, `target_failure`, `effectiveness`) is maintained by the SI itself — recorded as the `message`/reason of `audit.verdict` events and written into the **`## Known Failure Modes` section of `docs/agentic-pipeline/playbooks/references.md`** (the durable, human-readable ledger; Recipe 6 persists one record per audit, every audit). This ledger replaces the standalone improvement/metrics artifact files this skill previously read.
 
 ---
 
@@ -135,7 +135,7 @@ Checks whether a guardrail actually exists in the relevant agent playbook, or is
 For each Active guardrail:
   1. Determine target agent from change description:
      - "Architect must ..." → read docs/agentic-pipeline/playbooks/software-architect.md
-     - "Self-Improver must ..." → read docs/agentic-pipeline/playbooks/self-improver.md
+     - "Curator must ..." → read docs/agentic-pipeline/playbooks/curator.md
      - "Developer must ..." → read docs/agentic-pipeline/playbooks/developer.md
      - "Tester must ..." → read docs/agentic-pipeline/playbooks/tester.md
      - "Pipeline" → read the relevant .opencode/scripts/* (pipeline-state.rs and friends)
@@ -214,7 +214,7 @@ Persists a run's observations as a structured guardrail record in `references.md
 
 **Trigger:** at every audit (after the verdict is derived from the record, before doc-sync), consolidate `.opencode/tmp/<issue>/observations.md` + this run's blockers/rework/verdict into guardrail candidates, then persist the durable ones here.
 
-**Lever selection (do this first).** Read the round's recorded `Root cause class` (the Architect's fix-plan line; aggregate via `--action improvement` → `root_cause_mix_on_restarts` / `rework_cause_mix_on_rounds` / `dominant_root_cause_class`) and pick each guardrail's `home` from the **Class → Lever** table in `playbooks/self-improver.md` (defect/technique/environment/scope + tooling/model/machine/doc-drift). Choose the lever by class, not by habit; the dominant class is the one the audit must answer for. Boundary: `principles.md`, `AGENTS.md`, non-permission `opencode.json`, and agent identity are proposed to the human, never applied.
+**Lever selection (do this first).** Read the round's recorded `Root cause class` (the Architect's fix-plan line; aggregate via `--action improvement` → `root_cause_mix_on_restarts` / `rework_cause_mix_on_rounds` / `dominant_root_cause_class`) and pick each guardrail's `home` from the **Class → Lever** table in `playbooks/curator.md` (defect/technique/environment/scope + tooling/model/machine/doc-drift). Choose the lever by class, not by habit; the dominant class is the one the audit must answer for. Boundary: `principles.md`, `AGENTS.md`, non-permission `opencode.json`, and agent identity are proposed to the human, never applied.
 
 **Guardrail record format** (append under `## Known Failure Modes` in `docs/agentic-pipeline/playbooks/references.md`):
 
@@ -244,7 +244,7 @@ Persists a run's observations as a structured guardrail record in `references.md
 
 ## Recipe 5: Pipeline Event-Log Data Extraction
 
-Standardized extraction patterns for the 3 Self-Improver data sources. These are **pipeline state-machine event logs + metrics** — NOT product telemetry. The SI never queries the product telemetry store (telemetry/observability is the Software Architect's scope).
+Standardized extraction patterns for the 3 Curator data sources. These are **pipeline state-machine event logs + metrics** — NOT product telemetry. The pipeline never queries the product telemetry store (telemetry/observability is the Software Architect's scope).
 
 **Source 1: per-issue event logs + state-machine metrics**
 
@@ -275,7 +275,7 @@ $errors = Get-Content ".opencode/state/script-errors.jsonl" | ForEach-Object {
 # Group by source: $errors | Group-Object source | Select-Object Count, Name
 ```
 
-**Source 3: spec issue comments — Triage cluster / Self-Improver findings**
+**Source 3: spec issue comments — Triage cluster / Curator findings**
 
 ```bash
 gh issue view <spec_N> --comments --json comments -q '.comments[].body'
@@ -286,7 +286,7 @@ Extract from comments:
 - `## Bug — Max Retries Exhausted` blocks → bug reports
 - `## Capsule:` blocks → Developer verification AC checklists
 - `## E2E Test Results` blocks → e2e pass/fail per AC
-- `## Retro Report` blocks → previous Self-Improver findings
+- `## Retro Report` blocks → previous Curator findings
 
 ---
 
@@ -299,8 +299,8 @@ Extract from comments:
 │  GENERATE ──→ REFLECT ──→ CURATE                    │
 │     │            │            │                      │
 │  Fredo:       Fredo:       Fredo:                   │
-│  Self-        Recipe 1     Recipe 4                 │
-│  Improver     (effective-  (decision                │
+│  Curator      Recipe 1     Recipe 4                 │
+│               (effective-  (decision                │
 │  reads        ness check)  tree: archive            │
 │  metrics,                  / escalate /             │
 │  proposes                  compose)                 │

@@ -14,9 +14,9 @@ which of three modes I want — do not pick one yourself:
 
 - **Edit** — I want a code change. Make it directly: implement within scope, verify it, report what changed. Use the engineering rules and build hygiene below.
 - **Backlog** — I want a work item shaped, not implemented. Route to the **`product-owner`** subagent; it clarifies with me and creates the backlog issue.
-- **Implement a backlog item** — I want a backlog item built. Route to the **`product-owner`**, which dispatches the **`self-improver`**; the pipeline runs the spec end-to-end (plan → implement → test → audit).
+- **Implement a backlog item** — I want a backlog item built. Route to the **`product-owner`**, which dispatches the **`orchestrator`**; the pipeline runs the spec end-to-end (plan → implement → test → audit).
 
-Do **not** start a spec, create issues, or dispatch `product-owner` / `self-improver` unless I
+Do **not** start a spec, create issues, or dispatch `product-owner` / `orchestrator` unless I
 ask for it. When in doubt about which mode I mean, ask.
 
 ## Exploring & debugging

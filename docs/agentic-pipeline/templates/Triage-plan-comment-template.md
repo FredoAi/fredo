@@ -1,6 +1,6 @@
 # Triage Plan Comment Template
 
-> Drafted by the **Self-Improver** after the triage cluster converges, as `.opencode/tmp/<issue>/triage-plan.md`, auto-posted as `## Triage Plan` by the triage → implementation transition. **Should contain ALL the information** needed to implement + verify the feature.
+> Drafted by the **Orchestrator** after the triage cluster converges, as `.opencode/tmp/<issue>/triage-plan.md`, auto-posted as `## Triage Plan` by the triage → implementation transition. **Should contain ALL the information** needed to implement + verify the feature.
 
 <!-- The full converged plan — everything below is required. -->
 
@@ -44,4 +44,4 @@
 
 - [ ] **No deviations from the acceptance criteria.** (If YES — any AC observable key changed — the PO must approve via a `Decision` comment before implementation.)
 
-*Authored by Self-Improver*
+*Authored by Orchestrator*

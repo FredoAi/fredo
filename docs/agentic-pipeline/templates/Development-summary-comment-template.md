@@ -1,6 +1,6 @@
 # Development Implementation Summary Comment Template
 
-> Drafted by the **Developer** (each round's developer writes it after pushing to `spec/<N>`) as `.opencode/tmp/<issue>/dev-summary.md`, auto-posted as `## Development Summary` by the implementation → testing transition. The Self-Improver reviews the pushed work at step 7 and may amend the draft before the transition flushes it.
+> Drafted by the **Developer** (each round's developer writes it after pushing to `spec/<N>`) as `.opencode/tmp/<issue>/dev-summary.md`, auto-posted as `## Development Summary` by the implementation → testing transition. The Orchestrator reviews the pushed work at step 7 and may amend the draft before the transition flushes it.
 
 <!-- One per sub-task / developer. -->
 

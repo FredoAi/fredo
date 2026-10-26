@@ -1,12 +1,12 @@
 # Staffing Heuristics & Guardrails
 
-How the Self-Improver (orchestrator) converts triage estimates into headcount, how the pool is used, and the rules that keep the pipeline from degrading under pressure.
+How the Orchestrator converts triage estimates into headcount, how the pool is used, and the rules that keep the pipeline from degrading under pressure.
 
 ---
 
 ## Staffing Heuristic
 
-The triage cluster estimates effort per plan sub-task (in story points). The Self-Improver converts effort to headcount using a simple rule.
+The triage cluster estimates effort per plan sub-task (in story points). The Orchestrator converts effort to headcount using a simple rule.
 
 **Default rule:** `1 full-stack developer � 5 story points per delivery window`.
 
@@ -25,7 +25,7 @@ The triage cluster **must state the heuristic it used** in the Staffing Plan sec
 | Feature panel | 5 |
 | **Total** | **16** |
 
-`ceil(16 / 5) = 4` developers (default heuristic). If the pool is saturated (below), the Self-Improver reduces headcount and re-sequences � it does not over-assign.
+`ceil(16 / 5) = 4` developers (default heuristic). If the pool is saturated (below), the Orchestrator reduces headcount and re-sequences � it does not over-assign.
 
 ---
 
@@ -37,7 +37,7 @@ Each developer may hold **at most 2 active workstreams**.
 - A developer picks up new work only when current work is merged or returned to the queue.
 - Rationale: limiting context switching. A developer juggling 4 half-done workstreams produces worse output than one finishing 2 cleanly.
 
-The Self-Improver enforces this when staffing and when dispatching retries.
+The Orchestrator enforces this when staffing and when dispatching retries.
 
 ---
 
@@ -56,8 +56,8 @@ The Self-Improver enforces this when staffing and when dispatching retries.
 
 | Blocker | SLA | Action |
 |---------|-----|--------|
-| Work / issue labeled `blocked` | **4 hours** (default) | Self-Improver intervenes: assess, re-plan, or escalate |
-| Repeated PR failures (same work rejected >3�) | immediate | Self-Improver escalates to human with "what we tried" summary |
+| Work / issue labeled `blocked` | **4 hours** (default) | Orchestrator intervenes: assess, re-plan, or escalate |
+| Repeated PR failures (same work rejected >3�) | immediate | Orchestrator escalates to human with "what we tried" summary |
 | Pool saturated | continuous | Work queues; staffing re-evaluated as capacity frees |
 
 The 4-hour SLA is a default. It is measured from the `blocked` label being applied, not from when the developer first noticed the issue � which is why labeling promptly matters.
@@ -85,6 +85,6 @@ No material information lives only in an agent's ephemeral context. If it isn't 
 | Headcount capped by pool | Never assign more developers than the pool can staff at 2-per-dev |
 | Max 2 active workstreams/dev | No over-assignment, no context-switch thrash |
 | 1 verdict per feature | Consolidated QA Plan, single accountable `## Tests Runs` verdict on the feature issue |
-| 4h blocked SLA | Self-Improver acts on `blocked` within 4 hours |
+| 4h blocked SLA | Orchestrator acts on `blocked` within 4 hours |
 | 3� retry ceiling | >3 rejections escalates to human |
 | Traceability | All decisions/evidence on the issue timeline |

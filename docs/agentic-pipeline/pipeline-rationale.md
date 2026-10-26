@@ -1,8 +1,7 @@
 # Deterministic Context for a Stochastic Agentic Pipeline
 
 > This document explains *why* Fredo's agentic pipeline is built the way it is — the
-> deterministic state machine, how it injects context, and what the Self-Improver
-> does. It's the maintainer's internal build automation, documented here so the
+> deterministic state machine, how it injects context, and what the pipeline's roles do. It's the maintainer's internal build automation, documented here so the
 > design is legible to anyone who audits the repo. It isn't required reading for most
 > contributors (see [CONTRIBUTING.md](../../CONTRIBUTING.md)).
 
@@ -31,7 +30,7 @@ stochastic but are contained by, and steered by, that determinism.
 > artifacts as the single writer) to **inject context** into each agent so the
 > pipeline moves from unbounded non-determinism to bounded *stochastic* behavior —
 > convergent variance inside a fixed frame — and use the
-> Self-Improver as the feedback loop that turns each failure into a tighter
+> audit/improvement loop that turns each failure into a tighter
 > deterministic control.
 
 ## The deterministic backbone: the state machine
@@ -49,7 +48,7 @@ via `rust-script`) whose configuration is the **single source of truth**
   the per-issue event log (`.opencode/state/issues/*.jsonl`, append-only, anti-tamper).
 - **The GitHub timeline as the log.** GitHub issues and comments are the durable,
   human-auditable record — `## Triage Plan`, `## Development Summary`, `## Fix Plan
-  (round N)`, `## Tests Runs`, `## SI Summary` are machine-posted, machine-stamped
+  (round N)`, `## Tests Runs`, `## Orchestrator Summary` are machine-posted, machine-stamped
   artifacts.
 
 Because the machine is the **single writer**, there is no ambiguity about "who moved
@@ -84,25 +83,24 @@ same, correct, self-describing frame. The variance is in the reasoning; the cont
 the state, and the definition of done are fixed. That is the "deterministic control
 injecting context to bound stochastic behavior."
 
-## The Self-Improver: the control loop
+## The feedback loop: orchestrator, auditor, improvement roles
 
-Determinism alone doesn't make the pipeline get *better*. The **Self-Improver** is the
-feedback loop:
+Determinism alone doesn't make the pipeline get *better*. The control loop is split across roles:
 
-- It is the **orchestrator**: it dispatches the triage cluster, the developer pool, and
-  the tester, and runs the state-machine transitions.
-- It is the **auditor**: after testing, it posts the verdict — success, or restart from
-  a chosen phase. On failure it records the **missed-AC reason** (the concrete list the
-  retry will read), so the restart is a targeted completion, not a rerun.
-- It **improves the root cause**. Every failure is turned into a durable control: a
+- The **Orchestrator** owns the flow: it dispatches the triage cluster, the developer pool, and
+  the tester, runs the state-machine transitions, and runs the gate doc-sync.
+- The **Auditor** is the independent gate: after testing, it posts the verdict — success, or restart
+  from a chosen phase — from the record alone. On failure it records the **missed-AC reason** (the
+  concrete list the retry will read), so the restart is a targeted completion, not a rerun.
+- The **Curator** improves the root cause. Every failure is turned into a durable control: a
   guardrail added/amended in `docs/agentic-pipeline/playbooks/references.md` (the
-  `G-###` list), a playbook tightened, a skill note added, or an observability/metric
-  bump. The `retro-analysis` skill and the guardrail catalog's `observed` /
-  `effectiveness` entries are the evidence trail for "did this control actually work."
-- It is also the **documentation owner**, syncing the product docs
-  (`ARCHITECTURE.md`, `CLI_GUIDE.md`, `SETUP.md`, `SECURITY.md`, `FAQ.md`) at the gate.
+  `G-###` list), a playbook tightened, or a skill note added. The `retro-analysis` skill and the
+  guardrail catalog's `observed` / `effectiveness` entries are the evidence trail for "did this
+  control actually work."
+- The **Toolsmith** builds the reusable tooling a finding calls for; the **Machinist** owns the
+  state machine, the sandbox, and the measurement instrumentation.
 
-So the loop is: a stochastic event (an agent failed some way) → the Self-Improver
+So the loop is: a stochastic event (an agent failed some way) → the pipeline
 converts it into a deterministic control (a guardrail or context rule) → the next run
 inherits that control. Over many specs the pipeline's behavior converges: more of what
 was once accident is now specified. That's the mechanism that makes "deterministic
