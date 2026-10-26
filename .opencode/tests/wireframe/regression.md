@@ -235,3 +235,18 @@
 - **R-12 (no new platform surface) PASS (static)** — no capability/plugin/dependency/manifest
   change in `481a590`; the capture view is a store field, not a DOM hook, and is explicitly
   excluded from `data-wireframe-*`, undo and the saved JSON (round-4 pins).
+
+## Spec #3081 — added regression pin
+
+- [ ] **R-13 (colour-literal pin — extends R-6).** No raw-colour literal may enter
+      `apps/ui/src/applications/wireframe/**` — **including NAMED colours** (`white`/`black`).
+      The shipped `rawColorScan.ts` matches only hex / `rgb(`/`hsl(` / `var(--x)NN`, so the
+      named-colour clause needs the wireframe-scoped check the fix must add (see F-58).
+      **Expected:** `pnpm --filter @fredo/ui contrast:gate` reports zero wireframe hits AND the
+      named-colour scan reports zero; the Discard button (`WireframeToolbar.tsx:390-397`) carries
+      `status.onSolids`, not `white`; no wireframe entry appears in `allowlist.ts` /
+      `rawColorBaseline.ts` (a new baseline entry for wireframe = FAIL).
+      **Edge:** the pin must fail if a `color="white"`/`bg="black"` literal is reintroduced
+      (verify with a scratch edit, then revert); `tint()`/`color-mix(...)` is not a literal.
+      Cross-ref `.opencode/tests/contrast-gate/` F-5 (anti-widening) and
+      `.opencode/tests/theme-contract/`.
