@@ -176,7 +176,12 @@ export function addWireframeElement(
   return true;
 }
 
-/** The current selection, or `null` when there is none (or it went stale). */
+/**
+ * The PRIMARY selected element's id (the derived `selectedId` mirror of the
+ * last id in document order), or `null` when there is none (or it went stale).
+ * `duplicateSelection` stays single-target, so it is the only remaining caller
+ * — delete/lock migrated to the multi-target store actions (R-1.6 / R-1.10).
+ */
 function selectedElementId(): string | null {
   const { selectedId, document } = getSnapshot();
   if (selectedId === null) return null;
@@ -192,18 +197,23 @@ function duplicateSelection(): boolean {
   return true;
 }
 
+/**
+ * Delete EVERY selected element (R-1.6). The store's `elements.delete` removes
+ * all ids, filters the selection and reconciles the groups in ONE snapshot, so
+ * a selected group is removed together with each of its members and a single
+ * undo restores the whole thing. `false` when the selection is empty.
+ */
 function deleteSelection(): boolean {
-  const id = selectedElementId();
-  if (id === null) return false;
-  dispatch('element.delete', { id });
-  return true;
+  return dispatch('elements.delete', { ids: getSnapshot().selectedIds });
 }
 
+/**
+ * Flip `locked` on EVERY selected element (R-1.10). The store's
+ * `element.toggleLock` accepts an id set and flips each element's own flag in
+ * ONE snapshot, so a single undo reverts the whole selection.
+ */
 function toggleSelectionLock(): boolean {
-  const id = selectedElementId();
-  if (id === null) return false;
-  dispatch('element.toggleLock', { id });
-  return true;
+  return dispatch('element.toggleLock', { ids: getSnapshot().selectedIds });
 }
 
 function runUndo(): boolean {
