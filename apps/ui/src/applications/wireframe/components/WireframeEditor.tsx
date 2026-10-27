@@ -1,10 +1,16 @@
 /**
- * Wireframe editor shell (Spec #3070, ST-1, C8).
+ * Wireframe editor shell (Spec #3070, ST-1, C8; root hooks extended by
+ * Spec #3071, ST-6).
  *
  * Composition seam: this file imports exactly the five store-connected, no-prop
  * children. ST-1 owns the shell, the status bar and every C7 root hook; the
  * canvas (ST-2), toolbar (ST-3), property panel (ST-4) and file-error banner
  * (ST-6) replace only their own file's body.
+ *
+ * ST-6 adds the arrangement observables to the root host (UI/UX 5): the
+ * selection SET, its count, the selection's group id, the document group count,
+ * the snap mode and the paint order. The Slice-1 hooks keep their names and
+ * meanings (`wireframe-selection-id` = the PRIMARY = last selected id).
  *
  * Layout (UI/UX section 1.3): toolbar -> main (canvas + panel) -> file error ->
  * status bar, inside a column that always reserves the shipped hotkey-bar band.
@@ -16,7 +22,12 @@ import { Flex } from '@chakra-ui/react';
 import { HOTKEY_BAR_HEIGHT_PX } from '../../../shared/hotkeys/HotkeyBar';
 import { formatGeometry } from '../model/geometry';
 import { useWireframeIntent } from '../hooks/useWireframeIntent';
-import { getSnapshot, subscribe } from '../store/wireframeDocumentStore';
+import {
+  getSnapshot,
+  primarySelectedId,
+  selectionGroup,
+  subscribe,
+} from '../store/wireframeDocumentStore';
 import { WireframeCanvas } from './WireframeCanvas';
 import { WireframeFileError } from './WireframeFileError';
 import { WireframePropertyPanel } from './WireframePropertyPanel';
@@ -28,12 +39,14 @@ export function WireframeEditor(): React.ReactElement {
   // the take-on-mount drain (the app may have been opened by the request).
   useWireframeIntent();
   const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-  const { document, selectedId, view, filePath, dirty, panMode } = state;
+  const { document, selectedIds, snapToGrid, view, filePath, dirty, panMode } = state;
 
+  const primaryId = primarySelectedId(state);
   const selectedElement =
-    selectedId === null
+    primaryId === null
       ? null
-      : document.elements.find((element) => element.id === selectedId) ?? null;
+      : document.elements.find((element) => element.id === primaryId) ?? null;
+  const activeGroup = selectionGroup(document, selectedIds);
 
   return (
     <Flex
@@ -44,6 +57,12 @@ export function WireframeEditor(): React.ReactElement {
       data-wireframe-selection-geometry={
         selectedElement ? formatGeometry(selectedElement) : ''
       }
+      data-wireframe-selection-ids={selectedIds.join(',')}
+      data-wireframe-selection-count={String(selectedIds.length)}
+      data-wireframe-selection-group={activeGroup?.id ?? ''}
+      data-wireframe-group-count={String(document.groups.length)}
+      data-wireframe-snap={snapToGrid ? 'true' : 'false'}
+      data-wireframe-stacking={document.elements.map((element) => element.id).join(',')}
       data-wireframe-dirty={dirty ? 'true' : 'false'}
       data-wireframe-document-path={filePath ?? ''}
       data-wireframe-page={`${Math.round(document.page.width)}x${Math.round(

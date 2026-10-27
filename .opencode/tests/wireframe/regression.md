@@ -10,16 +10,20 @@
 
 ## Must NOT change
 
-- [ ] **R-1 (hotkey duplicate guard — the highest-risk regression).** The shipped
-      `data-hotkey` model keys duplicate detection off the FIRST step
-      (`hotkeyElements.ts:132-146`) and throws `DuplicateHotkeyError` in DEV, so any overlap
-      crash-loops the whole webview.
+- [ ] **R-1 (hotkey duplicate guard — the highest-risk regression).** Duplicate detection is
+      keyed off the FULL serialized sequence (`hotkeyElements.ts:155-186`, Spec #3071 ST-3):
+      two entries collide iff they share `grammar.serialized`, OR one entry's serialized form
+      is a STRICT PREFIX of another's. A shared FIRST step alone is NOT a collision, so the
+      two-step `g` namespace (12 sequences under the first step `g`) mounts legally while the
+      `[a-z0-9]` first-step slots stay saturated; the flush still throws `DuplicateHotkeyError`
+      in DEV on a real collision, so a true overlap still crash-loops the whole webview.
       **Expected:** `document.body[data-fredo-hotkey-duplicate]` is absent and
       `[data-testid="hotkeys-duplicate-error"]` is absent with Wireframe focused, unfocused,
       and alongside Mission Monitor + Diagram + My Work Items + Optimizely + Dev Mode; the
-      extended `featureHotkeyKeys.test.ts` pins the toolbar file's 22 keys and a 36-key union
-      with no duplicate; the shipped 14-key set (`s d r a z j f q e c i x b v`) resolves
-      exactly as before; Mission Monitor `n`/`p` and Diagram `f` are still NOT mounted
+      extended `featureHotkeyKeys.test.ts` pins the toolbar file's 32 bindings (21 distinct
+      first-step keys) and a 35-key first-step union with no duplicate (`m` is now FREE); the
+      shipped 14-key set (`s d r a z j f q e c i x b v`) resolves exactly as before; Mission
+      Monitor `n`/`p` and Diagram `f` are still NOT mounted
       (`featureHotkeyKeys.test.ts:96-106` assertion unchanged).
       Cross-ref `.opencode/tests/hotkeys/` R-39/R-40/R-42 (one engine, one action table,
       no double-fire).
@@ -45,7 +49,7 @@
       (`with_app_control_doom_and_wireframe`), the offer order is
       `open_app, close_app, doom_mode, wireframe`, exactly one `llm-skill-call` listener per
       skill, and the existing replies/copy are unchanged. The wireframe catalog has no dead
-      id: all 25 declared actions are invocable through the same `llm-skill-call` path (F-43,
+      id: all 35 declared actions are invocable through the same `llm-skill-call` path (F-43,
       F-44a–F-44c); a declared-but-unreachable id is a FAIL.
       Cross-ref `.opencode/tests/companion/` R-50..R-52 and `.opencode/tests/doom-mode/`.
 - [ ] **R-6 (theme contract).** No hardcoded hex/`rgba(`/`hsla(` and no `var(--x)NN`

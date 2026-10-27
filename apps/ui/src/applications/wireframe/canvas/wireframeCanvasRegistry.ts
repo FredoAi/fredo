@@ -28,6 +28,13 @@ const WIREFRAME_PAGE_SELECTOR = `.${WIREFRAME_PAGE_NAME}`;
 /** Node name applied to every editor-only node that must not appear in an export. */
 export const CAPTURE_HIDDEN_NAME = 'wireframe-capture-hidden';
 
+/**
+ * Node name of the guides + snap-grid layer (Spec #3071, ST-5). It ALWAYS
+ * carries `CAPTURE_HIDDEN_NAME` as well, so smart alignment guides and the
+ * editor-only grid can never appear in an exported PNG (R-2.5 / NFR-2).
+ */
+export const WIREFRAME_GUIDES_LAYER_NAME = 'wireframe-guides';
+
 const CAPTURE_HIDDEN_SELECTOR = `.${CAPTURE_HIDDEN_NAME}`;
 
 /** Minimal Konva node surface the capture needs (duck-typed). */

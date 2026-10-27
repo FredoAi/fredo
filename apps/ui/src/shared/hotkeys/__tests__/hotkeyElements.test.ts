@@ -4,6 +4,11 @@
  * exclusion + diagnostic (R-1.3), duplicate detection + the DEV throw (R-3.4),
  * revision monotonicity (AGENTS.md #523), the body hooks, the coalesced observer
  * flush, and the activation fallback (A4).
+ *
+ * Spec #3071 ST-3 RELAXED the duplicate rule to full-sequence / strict-prefix
+ * uniqueness: a shared first step is no longer a duplicate (so a `g+*` namespace
+ * mounts), while a bare binding that is a strict prefix of a sequence still
+ * collides. The relaxed cases are pinned below.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -198,6 +203,56 @@ describe('detectDuplicateHotkeys', () => {
     expect(distinct.entries).toHaveLength(0);
   });
 
+  // ── Spec #3071 ST-3 — relaxed rule (full-sequence / strict-prefix) ──────────
+
+  it('does NOT treat a shared first step as a duplicate when the full serializations differ', () => {
+    const first = document.createElement('button');
+    const second = document.createElement('button');
+    const third = document.createElement('button');
+    // Every entry shares the first step `g` — the `g` namespace. Distinct
+    // two-step sequences are NOT duplicates (the shipped rule rejected them).
+    const result = detectDuplicateHotkeys([
+      makeEntry(first, 'g+g', 'Group'),
+      makeEntry(second, 'g+a', 'Align left'),
+      makeEntry(third, 'g+i', 'Zoom in'),
+    ]);
+    expect(result.duplicate).toBe(false);
+    expect(result.key).toBeNull();
+    expect(result.entries).toHaveLength(0);
+  });
+
+  it('flags two identical two-step serializations as duplicates', () => {
+    const first = document.createElement('button');
+    const second = document.createElement('button');
+    const result = detectDuplicateHotkeys([makeEntry(first, 'g+g'), makeEntry(second, 'g+g')]);
+    expect(result.duplicate).toBe(true);
+    expect(result.key).toBe('g g');
+    expect(result.entries).toHaveLength(2);
+  });
+
+  it('flags a bare binding that is a STRICT PREFIX of a sequence (prefix shadowing)', () => {
+    const bare = document.createElement('button');
+    const sequence = document.createElement('button');
+    // A bare `g` would win over `g+i` (EXACT beats PREFIX), so the pair collides.
+    const result = detectDuplicateHotkeys([makeEntry(bare, 'g'), makeEntry(sequence, 'g+i')]);
+    expect(result.duplicate).toBe(true);
+    expect(result.key).toBe('g');
+    expect(result.entries).toHaveLength(2);
+
+    // Order-independent: the sequence first, the bare binding second.
+    const reversed = detectDuplicateHotkeys([makeEntry(sequence, 'g+i'), makeEntry(bare, 'g')]);
+    expect(reversed.duplicate).toBe(true);
+    expect(reversed.key).toBe('g');
+  });
+
+  it('does NOT flag two distinct sequences that merely share a first step as prefix shadowing', () => {
+    const first = document.createElement('button');
+    const second = document.createElement('button');
+    // `g+a` and `g+c` are equal length, so neither is a strict prefix of the other.
+    const result = detectDuplicateHotkeys([makeEntry(first, 'g+a'), makeEntry(second, 'g+c')]);
+    expect(result.duplicate).toBe(false);
+  });
+
   it('defaults to the current listing when called with no argument', () => {
     document.body.appendChild(document.createElement('button')).setAttribute('data-hotkey', 'a');
     flushElementHotkeys();
@@ -235,6 +290,33 @@ describe('duplicate enforcement on flush', () => {
     second.remove();
     flushElementHotkeys();
     expect(document.body.hasAttribute(BODY_HOTKEY_DUPLICATE_ATTR)).toBe(false);
+  });
+
+  // ── Spec #3071 ST-3 — a shared first-step namespace mounts cleanly ──────────
+
+  it('mounts a shared-first-step namespace without a duplicate (relaxed rule)', () => {
+    appendHotkey('button', 'g+g');
+    appendHotkey('button', 'g+a');
+    appendHotkey('button', 'g+i');
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    expect(() => flushElementHotkeys()).not.toThrow();
+    expect(document.body.hasAttribute(BODY_HOTKEY_DUPLICATE_ATTR)).toBe(false);
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('enforces a strict-prefix shadow via the hook + the DEV throw', () => {
+    appendHotkey('button', 'g');
+    appendHotkey('button', 'g+i');
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    if (import.meta.env.DEV) {
+      expect(() => flushElementHotkeys()).toThrow(DuplicateHotkeyError);
+    } else {
+      expect(() => flushElementHotkeys()).not.toThrow();
+    }
+    expect(document.body.getAttribute(BODY_HOTKEY_DUPLICATE_ATTR)).toBe('true');
+    expect(error).toHaveBeenCalled();
   });
 });
 

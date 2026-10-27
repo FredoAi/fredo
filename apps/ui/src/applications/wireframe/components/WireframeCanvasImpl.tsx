@@ -1,14 +1,16 @@
 /**
- * Wireframe canvas implementation (Spec #3070, ST-2).
+ * Wireframe canvas implementation (Spec #3070, ST-2; extended by Spec #3071, ST-5).
  *
  * Loaded lazily by `WireframeCanvas.tsx` so `konva` / `react-konva` stay out of
  * the eager startup chunk (F-56). Renders the document as the visible page,
- * provides single selection, drag-move and Transformer resize, and consumes the
- * store's view transform.
+ * provides multi-selection (shift-click), group drag/resize committed as ONE
+ * mutation, snap-to-grid on drop and ephemeral smart alignment guides, and
+ * consumes the store's view transform.
  *
  * Performance contract (UI/UX section 9): pointer moves update Konva node
  * attributes imperatively — no React state is written per move — and exactly
- * ONE store step is committed on release.
+ * ONE store step is committed on release. The guide overlay and the
+ * `data-wireframe-guides` host attribute are written imperatively too.
  *
  * Colour contract: every painted colour comes from `useCanvasPalette()`; this
  * file contains no colour literal and no `var(--x)NN` alpha-append.
@@ -34,6 +36,7 @@ import {
   Line,
   Path,
   Rect,
+  Shape,
   Stage,
   Text as KonvaText,
   Transformer,
@@ -42,31 +45,78 @@ import type Konva from 'konva';
 
 import {
   ELEMENT_MIN_SIZE,
+  clamp,
   roundTo1dp,
+  type WireframeRect,
 } from '../model/geometry';
+import {
+  WIREFRAME_GRID_SIZE_PX,
+  computeAlignmentGuides,
+  selectionBounds,
+  snapValueToGrid,
+  type WireframeGuide,
+} from '../model/arrange';
 import type {
   WireframeBorderWidth,
   WireframeElement,
+  WireframeElementPatch,
   WireframeRadius,
   WireframeSectionPreset,
   WireframeTextSize,
 } from '../model/elements';
 import { findWireframeIcon } from '../model/icons';
 import {
+  clearSelection,
   dispatch,
   fitPageToViewport,
   getSnapshot,
+  isElementMovable,
+  primarySelectedId,
   registerCanvasStage,
   select,
   setView,
   subscribe,
+  toggleSelect,
 } from '../store/wireframeDocumentStore';
 import {
   CAPTURE_HIDDEN_NAME,
+  WIREFRAME_GUIDES_LAYER_NAME,
   WIREFRAME_PAGE_NAME,
   registerWireframeStage,
 } from '../canvas/wireframeCanvasRegistry';
 import { useCanvasPalette, type CanvasPalette } from '../theme/useCanvasPalette';
+
+/**
+ * Pointer modifier that toggles an element in/out of the selection (R-1.1 /
+ * R-1.2). The Konva event carries the native mouse event, whose `shiftKey` is
+ * the observable.
+ */
+export const SELECTION_TOGGLE_MODIFIER = 'shift';
+
+/**
+ * The number of smart-guide `Line` slots painted on the guides layer. A guide
+ * is produced per matched feature per axis (leading edge / centre / trailing
+ * edge) so six is the mathematical maximum.
+ */
+export const GUIDE_POOL_SIZE = 6;
+
+/** The native event a Konva pointer event wraps; only `shiftKey` is read. */
+function isSelectionToggle(
+  event: Konva.KonvaEventObject<MouseEvent | TouchEvent> | undefined,
+): boolean {
+  const native = event?.evt as { shiftKey?: boolean } | undefined;
+  return SELECTION_TOGGLE_MODIFIER === 'shift' && Boolean(native?.shiftKey);
+}
+
+/**
+ * One drag GESTURE's immutable start positions, keyed by element id. The
+ * session is gesture-scoped, not leader-keyed: a multi-node Transformer
+ * proxy-drag fires one `dragstart` per attached node, so the start map covers
+ * every movable member and the commit is deferred to the last release.
+ */
+interface DragSession {
+  start: Map<string, { x: number; y: number }>;
+}
 
 /** Logical text size per `WireframeTextSize` preset (UI/UX section 1.5). */
 export const TEXT_SIZE_PX: Readonly<Record<WireframeTextSize, number>> = {
@@ -567,7 +617,8 @@ function roundPositive(value: number): number {
 
 export function WireframeCanvasImpl(): ReactElement {
   const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-  const { document: wireframe, selectedId, view, panMode, captureView } = state;
+  const { document: wireframe, selectedIds, view, panMode, captureView, snapToGrid } = state;
+  const primaryId = primarySelectedId(state);
   const palette = useCanvasPalette();
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -576,6 +627,15 @@ export function WireframeCanvasImpl(): ReactElement {
   const stageRef = useRef<Konva.Stage | null>(null);
   const transformerRef = useRef<Konva.Transformer>(null);
   const elementNodes = useRef<Map<string, Konva.Group>>(new Map());
+  // Imperative guide slots on the capture-hidden guides layer (never React state).
+  const guideLineRefs = useRef<Array<Konva.Line | null>>([]);
+  const dragSessionRef = useRef<DragSession | null>(null);
+  // Count of nodes Konva is CURRENTLY dragging in the active gesture. A
+  // multi-node Transformer proxy-drag starts (and ends) one drag per attached
+  // node, so the session is built once (on the first start) and the single
+  // store commit fires when this returns to 0 (R-1.4 / NFR-4).
+  const activeDragCountRef = useRef(0);
+  const transformStartBoxRef = useRef<WireframeRect | null>(null);
   const measuredRef = useRef<CanvasSize>({ width: 0, height: 0 });
   const didFitRef = useRef(false);
 
@@ -588,10 +648,20 @@ export function WireframeCanvasImpl(): ReactElement {
   // the stage is only mounted once the host has measured a real size.
   const stageReady = size.width > 0 && size.height > 0;
 
-  const selectedElement =
-    selectedId === null
-      ? null
-      : wireframe.elements.find((element) => element.id === selectedId) ?? null;
+  const selectedIdSet = new Set(selectedIds);
+  const selectedElementList = wireframe.elements.filter((element) =>
+    selectedIdSet.has(element.id),
+  );
+  // A HIDDEN element is never bound to the Transformer: Konva's
+  // `Container.getClientRect` returns a 0x0 rect at the origin for a node with
+  // no visible shape, which would corrupt the union box of a mixed selection.
+  // This keeps the shipped Slice-1 rule (`!visible` ⇒ no handles).
+  const transformableElementIds = selectedElementList
+    .filter((element) => element.visible)
+    .map((element) => element.id);
+  const hasMovableSelection = selectedElementList.some(
+    (element) => element.visible && isElementMovable(wireframe, element),
+  );
 
   const scale = view.scale > 0 ? view.scale : 1;
 
@@ -663,27 +733,71 @@ export function WireframeCanvasImpl(): ReactElement {
     if (container) container.style.cursor = panMode ? 'grab' : 'default';
   }, [panMode, size.width, size.height]);
 
-  // ── Transformer attachment (selected + unlocked + visible only) ──────────
-  const showTransformer =
-    selectedElement !== null &&
-    !selectedElement.locked &&
-    selectedElement.visible &&
-    !panMode;
+  // ── Transformer attachment (the WHOLE selection) ─────────────────────────
+  // ONE Transformer is bound to every VISIBLE selected node; it is shown while
+  // the selection is non-empty AND at least one member is movable AND pan mode
+  // is off (R-1.4 / R-1.8). A fully locked (or fully hidden) selection detaches
+  // it — the shipped Slice-1 "no handles to grab" rule.
+  const showTransformer = selectedIds.length > 0 && hasMovableSelection && !panMode;
 
   useEffect(() => {
     const transformer = transformerRef.current;
     if (!transformer) return;
-    const node = selectedElement
-      ? elementNodes.current.get(selectedElement.id) ?? null
-      : null;
-    transformer.nodes(node ? [node] : []);
+    const nodes = transformableElementIds
+      .map((id) => elementNodes.current.get(id) ?? null)
+      .filter((node): node is Konva.Group => node !== null);
+    transformer.nodes(nodes);
     transformer.getLayer()?.batchDraw();
-  }, [selectedElement, panMode, wireframe.elements, size.width, size.height]);
+    // `transformableElementIds` is derived from `selectedIds` + `wireframe`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedIds, panMode, wireframe.elements, size.width, size.height]);
 
   const setStageCursor = useCallback((cursor: string): void => {
     const container = stageRef.current?.container();
     if (container) container.style.cursor = cursor;
   }, []);
+
+  // ── Smart guides + `data-wireframe-guides` (imperative, never React state) ─
+  const writeGuidesCount = useCallback((count: number): void => {
+    const host = containerRef.current;
+    if (host) host.setAttribute('data-wireframe-guides', String(count));
+  }, []);
+
+  const clearGuides = useCallback((): void => {
+    for (const node of guideLineRefs.current) {
+      if (node) node.visible(false);
+    }
+    guideLineRefs.current[0]?.getLayer()?.batchDraw();
+    writeGuidesCount(0);
+  }, [writeGuidesCount]);
+
+  const paintGuides = useCallback(
+    (guides: readonly WireframeGuide[]): void => {
+      const nodes = guideLineRefs.current;
+      for (let index = 0; index < nodes.length; index += 1) {
+        const node = nodes[index];
+        if (!node) continue;
+        const guide = guides[index];
+        if (!guide) {
+          node.visible(false);
+          continue;
+        }
+        // A guide on the x axis is a vertical line spanning the page height.
+        node.points(
+          guide.axis === 'x'
+            ? [guide.position, 0, guide.position, wireframe.page.height]
+            : [0, guide.position, wireframe.page.width, guide.position],
+        );
+        node.visible(true);
+      }
+      nodes[0]?.getLayer()?.batchDraw();
+      writeGuidesCount(guides.length);
+    },
+    [wireframe.page.width, wireframe.page.height, writeGuidesCount],
+  );
+
+  // Guides never survive a gesture: drop, cancel or unmount (R-2.5).
+  useEffect(() => () => clearGuides(), [clearGuides]);
 
   // ── Gestures ─────────────────────────────────────────────────────────────
 
@@ -691,6 +805,10 @@ export function WireframeCanvasImpl(): ReactElement {
     (id: string) => (event: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
       if (event && typeof event === 'object') event.cancelBubble = true;
       if (panMode) return;
+      if (isSelectionToggle(event)) {
+        toggleSelect(id);
+        return;
+      }
       select(id);
     },
     [panMode],
@@ -700,56 +818,265 @@ export function WireframeCanvasImpl(): ReactElement {
     (event: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
       if (panMode) return;
       const stage = event.target.getStage();
-      if (stage && event.target === stage) select(null);
+      if (stage && event.target === stage) clearSelection();
     },
     [panMode],
   );
 
+  /**
+   * Reset every node in `ids` back to its committed model geometry. Konva's
+   * Transformer applies a proportional transform (and, for a partially locked
+   * group, also to the immovable members) — the model is the single source of
+   * truth, so the nodes are re-synced after each gesture.
+   */
+  const resetNodesToModel = useCallback((ids: readonly string[]): void => {
+    const snapshot = getSnapshot();
+    const byId = new Map(snapshot.document.elements.map((element) => [element.id, element]));
+    let layer: Konva.Layer | null = null;
+    for (const id of ids) {
+      const element = byId.get(id);
+      const node = elementNodes.current.get(id);
+      if (!element || !node) continue;
+      node.x(element.x);
+      node.y(element.y);
+      node.width(element.width);
+      node.height(element.height);
+      node.scaleX(1);
+      node.scaleY(1);
+      layer = node.getLayer() ?? layer;
+    }
+    layer?.batchDraw();
+  }, []);
+
   const handleDragStart = useCallback(
-    (id: string) => () => {
+    (id: string) => (): void => {
       if (panMode) return;
-      select(id);
+      if (!getSnapshot().selectedIds.includes(id)) select(id);
+      // Build the gesture session ONCE — on the first `dragstart`. Konva's
+      // multi-node Transformer proxy-drag calls `startDrag()` on EVERY attached
+      // node (including locked members, which `startDrag` drags regardless of
+      // `draggable`), so a later start in the SAME gesture must not rebuild it.
+      if (activeDragCountRef.current === 0) {
+        const snapshot = getSnapshot();
+        const byId = new Map(snapshot.document.elements.map((element) => [element.id, element]));
+        const start = new Map<string, { x: number; y: number }>();
+        for (const memberId of snapshot.selectedIds) {
+          const element = byId.get(memberId);
+          if (!element || !isElementMovable(snapshot.document, element)) continue;
+          start.set(memberId, { x: element.x, y: element.y });
+        }
+        dragSessionRef.current = { start };
+      }
+      activeDragCountRef.current += 1;
     },
     [panMode],
+  );
+
+  // Pointer moves write Konva attributes only — no React state, no commit.
+  const handleDragMove = useCallback(
+    (id: string) => (): void => {
+      if (panMode) return;
+      const session = dragSessionRef.current;
+      if (!session || !session.start.has(id)) return;
+      const leaderNode = elementNodes.current.get(id);
+      const leaderStart = session.start.get(id);
+      if (!leaderNode || !leaderStart) return;
+
+      const dx = leaderNode.x() - leaderStart.x;
+      const dy = leaderNode.y() - leaderStart.y;
+      const byId = new Map(wireframe.elements.map((element) => [element.id, element]));
+      const movingRects: WireframeRect[] = [];
+      for (const [memberId, startPos] of session.start) {
+        const node = elementNodes.current.get(memberId);
+        if (node && memberId !== id) {
+          node.x(startPos.x + dx);
+          node.y(startPos.y + dy);
+        }
+        const element = byId.get(memberId);
+        movingRects.push({
+          x: startPos.x + dx,
+          y: startPos.y + dy,
+          width: element?.width ?? 0,
+          height: element?.height ?? 0,
+        });
+      }
+
+      const moving = selectionBounds(movingRects);
+      if (!moving) {
+        clearGuides();
+      } else {
+        const others: WireframeRect[] = [];
+        for (const element of wireframe.elements) {
+          if (session.start.has(element.id)) continue;
+          others.push({
+            x: element.x,
+            y: element.y,
+            width: element.width,
+            height: element.height,
+          });
+        }
+        paintGuides(computeAlignmentGuides(moving, others));
+      }
+      leaderNode.getLayer()?.batchDraw();
+    },
+    [panMode, wireframe.elements, paintGuides, clearGuides],
   );
 
   const handleDragEnd = useCallback(
-    (element: WireframeElement) => (event: Konva.KonvaEventObject<DragEvent>) => {
-      if (panMode || element.locked) return;
-      const node = event.target as Konva.Group;
-      const x = roundTo1dp(node.x());
-      const y = roundTo1dp(node.y());
-      if (x === element.x && y === element.y) return;
-      dispatch('element.update', { id: element.id, patch: { x, y } });
-    },
-    [panMode],
-  );
+    (element: WireframeElement) => (): void => {
+      clearGuides();
+      if (panMode) return;
+      // A gesture ends only when EVERY node Konva started dragging has
+      // released: the multi-node Transformer proxy-drag fires one dragstart /
+      // dragend pair per attached node, so the single store commit is deferred
+      // to the last release (R-1.4 / NFR-4).
+      activeDragCountRef.current = Math.max(0, activeDragCountRef.current - 1);
+      if (activeDragCountRef.current > 0) return;
 
-  const handleTransformEnd = useCallback(
-    (element: WireframeElement) => (event: Konva.KonvaEventObject<Event>) => {
-      if (panMode || element.locked) return;
-      const node = event.target as Konva.Group;
-      const width = roundPositive(node.width() * node.scaleX());
-      const height = roundPositive(node.height() * node.scaleY());
-      const x = roundTo1dp(node.x());
-      const y = roundTo1dp(node.y());
+      const session = dragSessionRef.current;
+      dragSessionRef.current = null;
 
-      // Geometry now lives in the model — the node returns to unit scale.
-      node.scaleX(1);
-      node.scaleY(1);
+      const snapshot = getSnapshot();
+      const byId = new Map(snapshot.document.elements.map((item) => [item.id, item]));
+      // A session already covers every MOVABLE selected member (built at
+      // `dragstart`). The defensive no-session branch commits the single
+      // dragged element and MUST honour movability — a locked member is never
+      // committed, so it can never move (R-1.8).
+      const targetIds = session
+        ? Array.from(session.start.keys())
+        : isElementMovable(snapshot.document, element)
+          ? [element.id]
+          : [];
 
-      if (
-        width === element.width &&
-        height === element.height &&
-        x === element.x &&
-        y === element.y
-      ) {
-        return;
+      const rects = new Map<string, WireframeRect>();
+      for (const id of targetIds) {
+        const current = byId.get(id);
+        if (!current) continue;
+        const node = elementNodes.current.get(id);
+        rects.set(id, {
+          x: node ? roundTo1dp(node.x()) : current.x,
+          y: node ? roundTo1dp(node.y()) : current.y,
+          width: current.width,
+          height: current.height,
+        });
       }
-      dispatch('element.update', { id: element.id, patch: { x, y, width, height } });
+
+      // Snap the selection's UNION-BOX ORIGIN to the nearest grid multiple
+      // (clamped to the page) and apply that delta uniformly (R-2.2 / R-2.9).
+      if (snapToGrid) {
+        const union = selectionBounds([...rects.values()]);
+        if (union) {
+          const maxX = Math.max(0, snapshot.document.page.width - union.width);
+          const maxY = Math.max(0, snapshot.document.page.height - union.height);
+          const dx = clamp(snapValueToGrid(union.x), 0, maxX) - union.x;
+          const dy = clamp(snapValueToGrid(union.y), 0, maxY) - union.y;
+          if (dx !== 0 || dy !== 0) {
+            for (const [id, rect] of rects) {
+              rects.set(id, { ...rect, x: rect.x + dx, y: rect.y + dy });
+            }
+          }
+        }
+      }
+
+      const patches: Record<string, WireframeElementPatch> = {};
+      for (const [id, rect] of rects) {
+        const current = byId.get(id);
+        if (!current) continue;
+        if (rect.x === current.x && rect.y === current.y) continue;
+        patches[id] = { x: rect.x, y: rect.y };
+      }
+      if (Object.keys(patches).length > 0) {
+        dispatch('elements.update', { patches });
+      }
+
+      // Re-pin EVERY selected node to the committed model — not only the
+      // committed members. Konva proxy-drags a locked member VISUALLY during
+      // the gesture, so the locked member is snapped back to its model
+      // geometry the instant the gesture ends (R-1.8).
+      resetNodesToModel(getSnapshot().selectedIds);
     },
-    [panMode],
+    [panMode, snapToGrid, clearGuides, resetNodesToModel],
   );
+
+  const handleTransformStart = useCallback((): void => {
+    const snapshot = getSnapshot();
+    const rects: WireframeRect[] = [];
+    for (const id of snapshot.selectedIds) {
+      const element = snapshot.document.elements.find((item) => item.id === id);
+      if (!element || !element.visible) continue;
+      const node = elementNodes.current.get(id);
+      if (!node) continue;
+      rects.push({
+        x: node.x(),
+        y: node.y(),
+        width: node.width() * node.scaleX(),
+        height: node.height() * node.scaleY(),
+      });
+    }
+    transformStartBoxRef.current = selectionBounds(rects);
+  }, []);
+
+  // ONE `elements.update` on release: the union-box delta `(dx, dy, dw, dh)`
+  // is applied to every MOVABLE member, the resize delta clamped so no member
+  // falls below `ELEMENT_MIN_SIZE` (R-1.4 / R-1.8 / R-2.9).
+  const handleTransformEnd = useCallback((): void => {
+    const startBox = transformStartBoxRef.current;
+    transformStartBoxRef.current = null;
+    if (panMode) return;
+
+    const snapshot = getSnapshot();
+    const byId = new Map(snapshot.document.elements.map((element) => [element.id, element]));
+    const selected = snapshot.selectedIds
+      .map((id) => byId.get(id))
+      .filter((element): element is WireframeElement => element !== undefined && element.visible);
+    const movable = selected.filter((element) =>
+      isElementMovable(snapshot.document, element),
+    );
+
+    const endRects: WireframeRect[] = [];
+    for (const element of selected) {
+      const node = elementNodes.current.get(element.id);
+      if (!node) continue;
+      endRects.push({
+        x: node.x(),
+        y: node.y(),
+        width: node.width() * node.scaleX(),
+        height: node.height() * node.scaleY(),
+      });
+    }
+    const endBox = selectionBounds(endRects);
+
+    const patches: Record<string, WireframeElementPatch> = {};
+    if (startBox && endBox && movable.length > 0) {
+      const minWidth = Math.min(...movable.map((element) => element.width));
+      const minHeight = Math.min(...movable.map((element) => element.height));
+      const deltaWidth = Math.max(endBox.width - startBox.width, ELEMENT_MIN_SIZE - minWidth);
+      const deltaHeight = Math.max(endBox.height - startBox.height, ELEMENT_MIN_SIZE - minHeight);
+      const deltaX = endBox.x - startBox.x;
+      const deltaY = endBox.y - startBox.y;
+      for (const element of movable) {
+        const x = roundTo1dp(element.x + deltaX);
+        const y = roundTo1dp(element.y + deltaY);
+        const width = roundPositive(element.width + deltaWidth);
+        const height = roundPositive(element.height + deltaHeight);
+        if (
+          x === element.x &&
+          y === element.y &&
+          width === element.width &&
+          height === element.height
+        ) {
+          continue;
+        }
+        patches[element.id] = { x, y, width, height };
+      }
+    }
+    if (Object.keys(patches).length > 0) {
+      dispatch('elements.update', { patches });
+    }
+
+    resetNodesToModel(snapshot.selectedIds);
+    transformerRef.current?.forceUpdate();
+  }, [panMode, resetNodesToModel]);
 
   const handlePanDragStart = useCallback(
     (event: Konva.KonvaEventObject<DragEvent>) => {
@@ -785,7 +1112,8 @@ export function WireframeCanvasImpl(): ReactElement {
   const handleKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLDivElement>): void => {
       if (event.key === 'Escape') {
-        select(null);
+        clearGuides();
+        clearSelection();
         return;
       }
       const isNext = event.key === 'ArrowRight' || event.key === 'ArrowDown';
@@ -796,8 +1124,8 @@ export function WireframeCanvasImpl(): ReactElement {
       if (elements.length === 0) return;
       event.preventDefault();
 
-      const index = selectedId
-        ? elements.findIndex((element) => element.id === selectedId)
+      const index = primaryId
+        ? elements.findIndex((element) => element.id === primaryId)
         : -1;
       const delta = isNext ? 1 : -1;
       const nextIndex =
@@ -808,7 +1136,7 @@ export function WireframeCanvasImpl(): ReactElement {
           : (index + delta + elements.length) % elements.length;
       select(elements[nextIndex].id);
     },
-    [selectedId, wireframe.elements],
+    [primaryId, wireframe.elements, clearGuides],
   );
 
   const renderElement = (element: WireframeElement): ReactElement => (
@@ -821,12 +1149,12 @@ export function WireframeCanvasImpl(): ReactElement {
       height={element.height}
       visible={element.visible}
       listening={element.visible}
-      draggable={!element.locked && !panMode}
+      draggable={isElementMovable(wireframe, element) && !panMode}
       onClick={handleElementClick(element.id)}
       onTap={handleElementClick(element.id)}
       onDragStart={handleDragStart(element.id)}
+      onDragMove={handleDragMove(element.id)}
       onDragEnd={handleDragEnd(element)}
-      onTransformEnd={handleTransformEnd(element)}
       onMouseEnter={() => {
         if (!panMode) setStageCursor('pointer');
       }}
@@ -842,10 +1170,48 @@ export function WireframeCanvasImpl(): ReactElement {
     </Group>
   );
 
+  // ── Snap grid overlay (editor-only, ONE Shape with a sceneFunc) ──────────
+  const drawSnapGrid = useCallback(
+    (context: Konva.Context): void => {
+      const { width, height } = wireframe.page;
+      const step = WIREFRAME_GRID_SIZE_PX;
+      const major = step * 5;
+      context.setAttr('lineWidth', 1 / paintScale);
+
+      context.setAttr('strokeStyle', palette.border);
+      context.beginPath();
+      for (let x = step; x < width; x += step) {
+        if (x % major === 0) continue;
+        context.moveTo(x, 0);
+        context.lineTo(x, height);
+      }
+      for (let y = step; y < height; y += step) {
+        if (y % major === 0) continue;
+        context.moveTo(0, y);
+        context.lineTo(width, y);
+      }
+      context.stroke();
+
+      context.setAttr('strokeStyle', palette.textMuted);
+      context.beginPath();
+      for (let x = major; x < width; x += major) {
+        context.moveTo(x, 0);
+        context.lineTo(x, height);
+      }
+      for (let y = major; y < height; y += major) {
+        context.moveTo(0, y);
+        context.lineTo(width, y);
+      }
+      context.stroke();
+    },
+    [palette.border, palette.textMuted, paintScale, wireframe.page.width, wireframe.page.height],
+  );
+
   return (
     <Box
       ref={containerRef}
       data-testid="wireframe-canvas"
+      data-wireframe-guides="0"
       tabIndex={0}
       role="group"
       aria-label="Wireframe canvas"
@@ -929,28 +1295,28 @@ export function WireframeCanvasImpl(): ReactElement {
               </Group>
 
               {/* Selection chrome lives above the artboard and outside its clip,
-                  so handles at the page edge stay reachable. */}
-              {selectedElement ? (
-                <Rect
-                  name={CAPTURE_HIDDEN_NAME}
-                  x={selectedElement.x}
-                  y={selectedElement.y}
-                  width={selectedElement.width}
-                  height={selectedElement.height}
-                  stroke={
-                    selectedElement.locked || !selectedElement.visible
-                      ? palette.textMuted
-                      : palette.focusRing
-                  }
-                  strokeWidth={2 / paintScale}
-                  dash={
-                    selectedElement.locked || !selectedElement.visible
-                      ? [6 / paintScale, 4 / paintScale]
-                      : undefined
-                  }
-                  listening={false}
-                />
-              ) : null}
+                  so handles at the page edge stay reachable. The PRIMARY (last)
+                  member paints 2 px accent, other movable members 1 px accent,
+                  and pinned members (individually locked, group-locked or
+                  hidden) a 1 px dashed muted outline (R-1.8). */}
+              {selectedElementList.map((element) => {
+                const primary = element.id === primaryId;
+                const pinned = !element.visible || !isElementMovable(wireframe, element);
+                return (
+                  <Rect
+                    key={`wireframe-outline-${element.id}`}
+                    name={CAPTURE_HIDDEN_NAME}
+                    x={element.x}
+                    y={element.y}
+                    width={element.width}
+                    height={element.height}
+                    stroke={pinned ? palette.textMuted : palette.accent}
+                    strokeWidth={(pinned ? 1 : primary ? 2 : 1) / paintScale}
+                    dash={pinned ? [6 / paintScale, 4 / paintScale] : undefined}
+                    listening={false}
+                  />
+                );
+              })}
 
               {showTransformer ? (
                 <Transformer
@@ -962,12 +1328,15 @@ export function WireframeCanvasImpl(): ReactElement {
                   ignoreStroke
                   enabledAnchors={[...TRANSFORMER_ANCHORS]}
                   anchorSize={8 / paintScale}
-                  anchorStrokeWidth={1.5 / paintScale}
-                  anchorStroke={palette.focusRing}
+                  anchorStrokeWidth={1 / paintScale}
+                  anchorStroke={palette.accent}
                   anchorFill={palette.surface}
                   anchorCornerRadius={0}
-                  borderStroke={palette.focusRing}
-                  borderStrokeWidth={1.5 / paintScale}
+                  borderStroke={palette.accent}
+                  borderStrokeWidth={1 / paintScale}
+                  borderDash={[4 / paintScale, 4 / paintScale]}
+                  onTransformStart={handleTransformStart}
+                  onTransformEnd={handleTransformEnd}
                   boundBoxFunc={(oldBox, newBox) =>
                     newBox.width < ELEMENT_MIN_SIZE * paintScale ||
                     newBox.height < ELEMENT_MIN_SIZE * paintScale
@@ -976,6 +1345,46 @@ export function WireframeCanvasImpl(): ReactElement {
                   }
                 />
               ) : null}
+            </Group>
+          </Layer>
+
+          {/*
+           * Guides + snap grid layer (R-2.5 / UI/UX 1.3-1.4): editor-only, drawn
+           * above the artboard, and capture-hidden so no guide or grid line can
+           * ever reach an exported PNG. `listening={false}` keeps it inert. The
+           * guide Lines are toggled imperatively — never through React state.
+           */}
+          <Layer
+            name={`${WIREFRAME_GUIDES_LAYER_NAME} ${CAPTURE_HIDDEN_NAME}`}
+            listening={false}
+          >
+            <Group
+              x={paintView.x}
+              y={paintView.y}
+              scaleX={paintScale}
+              scaleY={paintScale}
+              listening={false}
+            >
+              <Shape
+                name="wireframe-snap-grid"
+                visible={snapToGrid}
+                listening={false}
+                sceneFunc={drawSnapGrid}
+              />
+              {Array.from({ length: GUIDE_POOL_SIZE }, (_, index) => (
+                <Line
+                  key={`wireframe-guide-${index}`}
+                  name="wireframe-guide"
+                  ref={(node) => {
+                    guideLineRefs.current[index] = node;
+                  }}
+                  visible={false}
+                  listening={false}
+                  stroke={palette.accent}
+                  strokeWidth={1 / paintScale}
+                  points={[]}
+                />
+              ))}
             </Group>
           </Layer>
         </Stage>

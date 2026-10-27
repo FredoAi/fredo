@@ -316,3 +316,93 @@ describe('value-equal commits are not mutations (E-15)', () => {
     expect(after.selectedId).toBe(before.selectedId);
   });
 });
+
+describe('one snapshot per mutation (Spec #3071, NFR-4)', () => {
+  /** A loaded (history-free) document with the given element ids. */
+  function seedMulti(ids: readonly string[]): void {
+    const base = createNewWireframeDocument('desktop');
+    const elements = ids.map((id) =>
+      createDefaultElement('card', { page: base.page, elements: [], id }),
+    );
+    loadDocument({ ...base, elements }, 'C:/tmp/doc.wireframe.json');
+  }
+
+  it('group.create commits exactly one snapshot', () => {
+    seedMulti(['a', 'b']);
+    expect(dispatch('group.create', { ids: ['a', 'b'] })).toBe(true);
+    expect(getSnapshot().canUndo).toBe(true);
+
+    undo();
+    expect(getSnapshot().document.groups).toEqual([]);
+    expect(getSnapshot().canUndo).toBe(false);
+  });
+
+  it('group.ungroup commits exactly one snapshot', () => {
+    seedMulti(['a', 'b']);
+    dispatch('group.create', { ids: ['a', 'b'] });
+    const groupId = getSnapshot().document.groups[0].id;
+
+    expect(dispatch('group.ungroup', { groupIds: [groupId] })).toBe(true);
+    undo();
+    expect(getSnapshot().document.groups).toHaveLength(1);
+    expect(getSnapshot().canUndo).toBe(true);
+
+    undo();
+    expect(getSnapshot().document.groups).toEqual([]);
+    expect(getSnapshot().canUndo).toBe(false);
+  });
+
+  it('group.toggleLock commits exactly one snapshot', () => {
+    seedMulti(['a', 'b']);
+    dispatch('group.create', { ids: ['a', 'b'] });
+    const groupId = getSnapshot().document.groups[0].id;
+
+    expect(dispatch('group.toggleLock', { groupIds: [groupId] })).toBe(true);
+    expect(getSnapshot().document.groups[0].locked).toBe(true);
+
+    undo();
+    expect(getSnapshot().document.groups[0].locked).toBe(false);
+  });
+
+  it('elements.update commits exactly one snapshot', () => {
+    seedMulti(['a', 'b']);
+    expect(dispatch('elements.update', { patches: { a: { x: 5 }, b: { y: 7 } } })).toBe(true);
+    expect(getSnapshot().document.elements).toMatchObject([{ x: 5 }, { y: 7 }]);
+
+    undo();
+    expect(getSnapshot().document.elements[0].x).not.toBe(5);
+    expect(getSnapshot().document.elements[1].y).not.toBe(7);
+    expect(getSnapshot().canUndo).toBe(false);
+  });
+
+  it('elements.delete commits exactly one snapshot', () => {
+    seedMulti(['a', 'b', 'c']);
+    expect(dispatch('elements.delete', { ids: ['a', 'b'] })).toBe(true);
+    expect(getSnapshot().document.elements).toHaveLength(1);
+
+    undo();
+    expect(getSnapshot().document.elements).toHaveLength(3);
+    expect(getSnapshot().canUndo).toBe(false);
+  });
+
+  it('element.reorder commits exactly one snapshot', () => {
+    seedMulti(['a', 'b', 'c']);
+    expect(dispatch('element.reorder', { ids: ['a', 'b'], direction: 'forward' })).toBe(true);
+    expect(getSnapshot().document.elements.map((element) => element.id)).toEqual(['c', 'a', 'b']);
+
+    undo();
+    expect(getSnapshot().document.elements.map((element) => element.id)).toEqual(['a', 'b', 'c']);
+    expect(getSnapshot().canUndo).toBe(false);
+  });
+
+  it('a value-equal groups commit buys no history entry', () => {
+    seedMulti(['a', 'b']);
+    dispatch('group.create', { ids: ['a', 'b'] });
+    const before = getSnapshot();
+
+    // group.ungroup for an unknown group is a no-op with no snapshot.
+    expect(dispatch('group.ungroup', { groupIds: ['missing'] })).toBe(false);
+    expect(getSnapshot().document).toBe(before.document);
+    expect(getSnapshot().canUndo).toBe(true);
+  });
+});

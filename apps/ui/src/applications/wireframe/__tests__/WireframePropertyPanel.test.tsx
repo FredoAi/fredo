@@ -23,6 +23,8 @@ import {
   dispatch,
   getSnapshot,
   resetWireframeStoreForTests,
+  select,
+  selectMany,
 } from '../store/wireframeDocumentStore';
 
 let counter = 0;
@@ -415,6 +417,84 @@ describe('every control dispatches immediately', () => {
     // Property edits stay live while locked (R-2.5 names drag/handle gestures only).
     await clickControl('wireframe-align-center');
     expect(elementFromStore(element.id)).toMatchObject({ align: 'center' });
+  });
+});
+
+describe('multi-selection and group headers (Spec #3071, ST-6 — UI/UX 2.2)', () => {
+  it('shows the multi-selection header and no field sections for 2+ ungrouped elements', () => {
+    const first = addElement('text');
+    const second = addElement('button');
+    act(() => {
+      selectMany([first.id, second.id]);
+    });
+    renderPanel();
+
+    expect(screen.getByTestId('wireframe-panel-title')).toHaveTextContent('2 elements selected');
+    expect(screen.getByTestId('wireframe-panel-caption')).toHaveTextContent(
+      'Arrange, align or group them from the toolbar',
+    );
+    expect(screen.queryByTestId('wireframe-tag-group')).toBeNull();
+    expect(screen.queryByTestId('wireframe-page-controls')).toBeNull();
+    expect(screen.queryByTestId('wireframe-element-width')).toBeNull();
+    expect(screen.queryByTestId('wireframe-text-content')).toBeNull();
+    expect(screen.queryByTestId('wireframe-button-label')).toBeNull();
+  });
+
+  it('shows the Group header + tag and no field sections while the selection is a group', () => {
+    const first = addElement('text');
+    const second = addElement('button');
+    act(() => {
+      dispatch('group.create', { ids: [first.id, second.id] });
+    });
+    renderPanel();
+
+    expect(screen.getByTestId('wireframe-panel-title')).toHaveTextContent('Group');
+    expect(screen.getByTestId('wireframe-tag-group')).toHaveTextContent('Group · 2');
+    expect(screen.getByTestId('wireframe-panel-caption')).toHaveTextContent(
+      'Drag or resize to move every unlocked member',
+    );
+    expect(screen.queryByTestId('wireframe-tag-locked')).toBeNull();
+    expect(screen.queryByTestId('wireframe-page-controls')).toBeNull();
+    expect(screen.queryByTestId('wireframe-element-width')).toBeNull();
+    expect(screen.queryByTestId('wireframe-text-content')).toBeNull();
+  });
+
+  it('adds the locked tag and locked caption while the group is locked', () => {
+    const first = addElement('text');
+    const second = addElement('button');
+    act(() => {
+      dispatch('group.create', { ids: [first.id, second.id] });
+    });
+    const groupId = getSnapshot().document.groups[0].id;
+    act(() => {
+      dispatch('group.toggleLock', { groupIds: [groupId] });
+    });
+    renderPanel();
+
+    expect(screen.getByTestId('wireframe-panel-title')).toHaveTextContent('Group');
+    expect(screen.getByTestId('wireframe-tag-group')).toHaveTextContent('Group · 2');
+    expect(screen.getByTestId('wireframe-tag-locked')).toBeInTheDocument();
+    expect(screen.getByTestId('wireframe-panel-caption')).toHaveTextContent(
+      'Group locked — drag and resize are disabled',
+    );
+    expect(screen.queryByTestId('wireframe-element-width')).toBeNull();
+  });
+
+  it('keeps the single-element header for one selected member of a group', () => {
+    const first = addElement('text');
+    const second = addElement('button');
+    act(() => {
+      dispatch('group.create', { ids: [first.id, second.id] });
+    });
+    act(() => {
+      select(second.id);
+    });
+    renderPanel();
+
+    expect(screen.getByTestId('wireframe-panel-title')).toHaveTextContent('Button');
+    expect(screen.queryByTestId('wireframe-tag-group')).toBeNull();
+    expect(screen.queryByTestId('wireframe-panel-caption')).toBeNull();
+    expect(screen.getByTestId('wireframe-element-width')).toBeInTheDocument();
   });
 });
 
