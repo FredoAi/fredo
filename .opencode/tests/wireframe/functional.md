@@ -110,10 +110,12 @@
       `select[aria-label="Theme presets"]`) leaves the page background pixel within ±6/255 of
       the NEW `--body-bg` read from `getComputedStyle(document.documentElement)` in the SAME
       task; the primary-button LABEL matches `--accent-contrast` and the selection chrome
-      (outline + Transformer handles) matches `--accent-strong` — the 12-key palette is the
-      contract (C6/`useCanvasPalette` adjudication 4); a dense full-page diff between the two
-      captures is non-zero on ≥ 30 % of sampled pixels; card, text and border follow their
-      tokens.
+      (outline + Transformer handles) matches `palette.accent` — the `useCanvasPalette()` key
+      resolving `--accent-primary` (Spec #3071 ST-5 re-baseline: the canvas chrome moved off
+      `--accent-strong`, which now paints only the DOM focus ring via the `focusRing` key) —
+      the 12-key palette is the contract (C6/`useCanvasPalette` adjudication 4); a dense
+      full-page diff between the two captures is non-zero on ≥ 30 % of sampled pixels; card,
+      text and border follow their tokens.
       **Edge:** theme switch with a selection; theme switch mid-drag; accent override (not
       only a preset).
 - [ ] **F-8 (R-1.6 colour hygiene / palette shape)** Static + live colour audit.
@@ -130,7 +132,11 @@
 
 - [ ] **F-9 (R-2.1)** Click A then B.
       **Expected:** `-selection-id`/`-selection-type` = B exactly; A is not also selected;
-      handles show for B only; shift-click on C does not add a second selection.
+      handles show for B only. **Shift-click now ADDS to the selection (Spec #3071 R-1.1 — the
+      Slice-1 "does not add a second selection" clause is re-baselined):** shift-click C ⇒
+      `wireframe-root[data-wireframe-selection-ids]`=`B,C`, `-selection-count`=2 and the
+      Transformer wraps the UNION bounds; see F-61/F-62 for the full multi-select semantics
+      and F-79…F-83 for the group/arrange clauses.
       **Edge:** click empty canvas (selection cleared, page controls shown); click the same
       element twice; click an overlapping pair (topmost wins).
 - [ ] **F-10 (R-2.2)** Swipe-drag the element by (dx,dy).
@@ -253,11 +259,13 @@
       **Edge:** undo→redo→undo; redo after a NEW mutation (stack dropped); redo of a
       duplicate.
 - [ ] **F-26 (R-4.2)** Zoom in/out by a fixed step.
-      **Expected:** `g`/`m` change `-zoom` by the same declared step each press (record
-      consecutive values); the page visibly scales; `-element-count` and the document are
-      unchanged.
-      **Edge:** at 100 %; with a selection (handles scale, selection kept); alternate g/m back
-      to 100.
+      **Expected:** the two-step `g` `i` (zoom in) / `g` `o` (zoom out) — RE-BOUND from the
+      Slice-1 bare `g`/`m` by Spec #3071 ST-4 — change `-zoom` by the same declared step each
+      press (record consecutive values); the page visibly scales; `-element-count` and the
+      document are unchanged. The bare key `g` now only ARMS the two-step namespace
+      (`hotkeys-keybar-pending`), and the freed first step `m` dispatches nothing.
+      **Edge:** at 100 %; with a selection (handles scale, selection kept); alternate
+      `g i`/`g o` back to 100.
 - [ ] **F-27 (R-4.3)** Pan mode translates the VIEW only.
       **Expected:** `h` sets `-pan-mode`=`true`; dragging **anywhere** on the canvas shifts the
       rendered page by the pointer delta while `-element-count`, `-selection-id`,
@@ -368,34 +376,41 @@
 
 ## R-5 / AC5 — Hotkeys
 
-- [ ] **F-37 (R-5.1)** All 22 bindings, each vs its visible control.
-      **Expected:** with `data-fredo-focus-context=default`, each of
-      `1 2 3 4 5 6 7 8 9 p k l u y g m n 0 h w o t` produces its action's observable effect
-      (count / geometry / zoom / history / dirty / file); clicking its
+- [ ] **F-37 (R-5.1)** All 32 bindings, each vs its visible control.
+      **Expected:** with `data-fredo-focus-context=default`, each of the **20 bare keys**
+      `1 2 3 4 5 6 7 8 9 p k l u y n 0 h w o t` produces its action's observable effect
+      (count / geometry / zoom / history / dirty / file), AND each of the **12 two-step
+      sequences** in the `g` namespace — `g i` (zoom in) / `g o` (zoom out), re-bound from the
+      Slice-1 bare `g`/`m`, plus the 10 arrange rows `g g` / `g u` / `g l` / `g s` / `g a` /
+      `g c` / `g r` / `g d` / `g f` / `g b` — produces its action's observable effect (the
+      `hotkeys-keybar-pending` chip shows between the two strokes). Clicking its
       `[data-testid="wireframe-action-<suffix>"]` produces an INDISTINGUISHABLE effect. A
       POINTER toolbar activation blurs the control (UI/UX §3.14), so the very next bare key
       fires — verify that loop for at least `1`, `p`, `u`.
       **Edge:** `u`/`y` on empty history; `l`/`p`/`k` with no selection; `w`/`o`/`t` in the
-      seam env (all three path seams set at once); each key pressed twice.
-- [ ] **F-38 (R-5.2)** The always-on bar lists all 22 while focused.
+      seam env (all three path seams set at once); each key pressed twice; a lone `g` does
+      nothing after the 1000 ms prefix timeout.
+- [ ] **F-38 (R-5.2)** The always-on bar lists all 32 while focused.
       **Expected:** `[data-testid="hotkeys-keybar-row"]` contains a row for every one of the
-      22 `data-hotkey-key` values, each with a non-empty human title;
-      `document.body[data-fredo-hotkey-count]` is exactly 22 higher than with the host
+      32 bindings — 21 distinct `data-hotkey-key` first-step values (the 20 bare keys plus the
+      shared `g` namespace, which may now repeat) — each with a non-empty human title;
+      `document.body[data-fredo-hotkey-count]` is exactly 32 higher than with the host
       unfocused.
       **Edge:** other windows open (their rows also listed); narrow viewport (rows
-      scroll/are not clipped); the digit key `0` renders correctly.
+      scroll/are not clipped); the digit key `0` renders correctly; each of the 12
+      `g`-namespace rows renders as TWO chips.
 - [ ] **F-39 (R-5.3)** Text-entry suppression in the property panel.
       **Expected:** with a panel field focused, typing `1`, `p`, `k`, `n` lands the characters
       in the field, `data-fredo-hotkeys-disabled`=`true`, and count + document are UNCHANGED.
       **Edge:** each text-entry control (label, content, numeric dims); blur then press `1`
       (fires); a digit typed into the page width field.
 - [ ] **F-40 (R-5.4)** Unfocused Wireframe neither dispatches nor lists.
-      **Expected:** focus another window ⇒ the 22 `data-hotkey` attributes are gone from
-      `[data-testid="wireframe-toolbar"]`, `data-fredo-hotkey-count` drops by exactly 22, no
+      **Expected:** focus another window ⇒ the 32 `data-hotkey` attributes are gone from
+      `[data-testid="wireframe-toolbar"]`, `data-fredo-hotkey-count` drops by exactly 32, no
       wireframe row remains, and pressing `1` from the other window's `default` context adds
       nothing. The toolbar buttons stay VISIBLE and CLICKABLE and the keychip slot is reserved
       (hidden, not removed) so the toolbar height does not change (UI/UX §3.13).
-      **Edge:** focus returns (attributes restored, count back up 22, chips visible); toolbar
+      **Edge:** focus returns (attributes restored, count back up 32, chips visible); toolbar
       height unfocused vs focused (±0 px); two windows open.
 - [ ] **F-41 (R-5.5)** No duplicate-key collision.
       **Expected:** `document.body[data-fredo-hotkey-duplicate]` is ABSENT with Wireframe
@@ -413,10 +428,11 @@
 ## R-6 / AC6 — Companion control
 
 - [ ] **F-43 (R-6.1)** `wireframe.companion.listActions`.
-      **Expected:** the reply contains all 25 action ids with a non-empty description each;
-      supported by a direct `llm-skill-call` emit
+      **Expected:** the reply contains all 35 action ids with a non-empty description each
+      (the 25 Slice-1 ids + the 10 `wireframe.arrange.*` ids added by this slice); supported by
+      a direct `llm-skill-call` emit
       `{skill:"wireframe", arguments:{action:"wireframe.companion.listActions"}}`; a TS
-      parity test pins the 25 ids against the Rust catalog source.
+      parity test pins the 35 ids against the Rust catalog source.
       **Edge:** a narrow reply surface (scroll, never truncate the id list); invoked while the
       app is closed.
 - [ ] **F-44a (R-6.2)** Invoke the 9 `wireframe.add.*` actions.
@@ -442,9 +458,10 @@
       resolved through its own path seam) and `document.new` performs exactly its action: the
       save path receives the document, the open path restores it, the export path receives the
       page image, and `document.new` yields `-element-count`=0 with `-dirty`=`true` and the
-      path cleared. **Coverage accounting: these 23 ids + `companion.listActions` (F-43) +
-      `companion.draftApp` (F-47) = all 25 ids invoked.** The kind-group rows are a grouping
-      device only, never a substitute for covering all 25.
+      path cleared. **Coverage accounting: these 23 ids + the 10 `wireframe.arrange.*` ids
+      (F-63/F-76) + `companion.listActions` (F-43) + `companion.draftApp` (F-47) = all 35 ids
+      invoked.** The kind-group rows are a grouping device only, never a substitute for
+      covering all 35.
       **Edge:** app closed for one leg; file commands in a `CANCEL=1` env (no-op, document
       intact); `document.new` while dirty via the Companion (accepted overwrite — documented
       limitation); two sequential emits.
@@ -805,6 +822,11 @@ plan; the two REQ-1 named presets clear 4.5.
 > The tester re-baselines the COUNT to 32 and keeps every other clause; no assertion is deleted
 > or weakened. The new rows' `data-hotkey-key` is the FIRST step `g` (now repeated across the
 > namespace) and their serialized display is the two-step form.
+>
+> **Other Slice-1 rows re-baselined in place (expected value only, never deleted):**
+> `F-7` (selection chrome now `palette.accent`, not `--accent-strong`), `F-9` (shift-click ADDS
+> to the selection — R-1.1), `F-26` (zoom re-bound to `g i` / `g o`), and `F-43`/`F-44c`
+> (catalog ids **25 → 35**).
 >
 > **New hooks asserted:** root `wireframe-root[data-wireframe-selection-ids | -selection-count |
 > -selection-group | -group-count | -snap | -stacking]`; canvas

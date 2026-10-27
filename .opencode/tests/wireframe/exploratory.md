@@ -1,7 +1,8 @@
 # Wireframe — Exploratory
 
 Feature domain: `wireframe` (the paged wireframe editor: document model, Konva canvas,
-property panel, view/file commands, 22 element hotkeys, one Companion skill).
+property panel, view/file commands, 32 element hotkey bindings — 20 bare + the two-step `g`
+namespace, re-baselined by Spec #3071 — one Companion skill).
 Unscripted edge/failure probes for Spec #3070 Slice 1. Run beyond the scripted functional
 cases. A confirmed finding **PROMOTES** to `functional.md` as a new `F-` row (keep the
 origin note).

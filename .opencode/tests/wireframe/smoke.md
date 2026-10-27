@@ -46,8 +46,10 @@
       **Expected:** the app opens with `-element-count` ≥ 3 and the reply names only the
       performed actions; capture uploaded; console clean.
 - [ ] **S-9: Bar quick path** — with Wireframe focused, `[data-testid="hotkeys-keybar-row"]`
-      lists 22 wireframe keys and `document.body[data-fredo-hotkey-duplicate]` is absent;
-      focus another window and confirm the wireframe rows disappear.
+      lists 32 wireframe bindings (21 distinct `data-hotkey-key` first-step values; each of the
+      12 `g`-namespace rows renders two chips) and
+      `document.body[data-fredo-hotkey-duplicate]` is absent; focus another window and confirm
+      the wireframe rows disappear.
 - [ ] **S-10: CI-parity gate** — `pnpm --filter @fredo/ui build` exit 0, `pnpm --filter
       @fredo/ui test:run` green, `pnpm --filter @fredo/tauri build:webview` exit 0, and the
       Rust gates (`cargo check` / `cargo clippy -D warnings` / `cargo nextest run`, all
