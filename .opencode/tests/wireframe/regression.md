@@ -306,3 +306,27 @@
       added by this slice (the document stays a user FILE; `snapToGrid` is editor state, not
       persisted). **Expected:** `Cargo.lock` unchanged; the only writes remain the three file
       seams. Cross-ref `regression.md` R-8/R-12.
+
+## Spec #3087 — on-control hotkey chip removal: regression pins
+
+> The chip is deleted from the ONE render site (`WireframeActionButton`,
+> `WireframeInsertMenu.tsx:128-147`). These pins protect everything the deletion could
+> accidentally touch. **Verification policy: live** (DOM + bar receipt + uploaded capture;
+> document state — no `telemetry_spans` receipt expected).
+
+- [ ] **R-19 (chip removal must not move the bar, the bindings, or the names).**
+      **Expected:** (a) `document.body[data-fredo-hotkey-count]` and the
+      `hotkeys-keybar-row` set are UNCHANGED from the pre-change build (32 bindings, one row per
+      mounted `data-hotkey` control, non-empty titles) — the chip carried neither `data-hotkey`
+      nor `data-hotkey-label`, so the bar's discovery (`hotkeyElements.ts:376-400`) and titles
+      (`resolveTitle` `:441-453`) are untouched; (b) `WIREFRAME_ACTIONS` (ids, `hotkey` values,
+      `run`) is untouched and `featureHotkeyKeys.test.ts` (which parses the action-table source)
+      stays green; (c) every control's `aria-label`/tooltip still matches
+      `${label|description} (${hotkey})`; (d) Tab order is unchanged; (e) `Keycap`'s other
+      consumers (`HotkeyBar.tsx:154,318`, `LauncherActionList.tsx:114`, `src/index.ts:32`) still
+      render keycaps and `Keycap.test.tsx` is green; (f) `data-fredo-hotkey-duplicate` stays
+      absent.
+      **Edge:** focused AND unfocused; two-step `g`-namespace rows still render two chips in the
+      bar; `wireframe.document.new` still has no `data-hotkey` and no bar row; no
+      `#[allow(...)]` and no weakened assertion (G-125).
+      Cross-ref `functional.md` F-84…F-90 and `.opencode/tests/hotkeys/` R-39/R-40/R-42.
