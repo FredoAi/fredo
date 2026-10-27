@@ -169,7 +169,17 @@ pub fn classify_statement(sql: &str) -> StatementClass {
     let dialect = PostgreSqlDialect {};
     match Parser::parse_sql(&dialect, sql) {
         Ok(statements) if statements.len() == 1 => classify_ast(&statements[0]),
-        _ => StatementClass::Unknown,
+        // Not every valid PostgreSQL statement is modelled by `sqlparser` — e.g.
+        // `SECURITY LABEL` (superuser-only) fails to parse, so it never reaches
+        // [`classify_keyword`] via the AST. Honour a leading keyword the table
+        // calls `destructive` so such a statement is still confirmation-gated in
+        // write mode and refused on a read-only connection (R-3.1); every other
+        // unparseable statement stays the fail-safe `unknown` — never a `read`,
+        // and never a lesser-gated class (R-5.2/R-5.3).
+        _ => match classify_keyword(sql) {
+            StatementClass::Destructive => StatementClass::Destructive,
+            _ => StatementClass::Unknown,
+        },
     }
 }
 
@@ -239,12 +249,18 @@ fn classify_keyword(sql: &str) -> StatementClass {
             }
         }
         Some("VALUES") | Some("TABLE") | Some("SHOW") | Some("FETCH") => StatementClass::Read,
-        Some("INSERT") | Some("COPY") => StatementClass::Write,
+        Some("INSERT") => StatementClass::Write,
+        // `COPY` (incl. `COPY … TO/FROM PROGRAM`, arbitrary OS command/file
+        // access), `GRANT`/`REVOKE` (privilege changes) and `SECURITY LABEL`
+        // (superuser-only metadata) are confirmation-gated in write mode and
+        // refused on a read-only connection (R-3.1). `ALTER` stays destructive.
         Some("UPDATE") | Some("DELETE") | Some("DROP") | Some("TRUNCATE") | Some("ALTER")
-        | Some("MERGE") => StatementClass::Destructive,
-        Some("CREATE") | Some("GRANT") | Some("REVOKE") | Some("COMMENT") | Some("ANALYZE")
+        | Some("MERGE") | Some("COPY") | Some("GRANT") | Some("REVOKE") | Some("SECURITY") => {
+            StatementClass::Destructive
+        }
+        Some("CREATE") | Some("COMMENT") | Some("ANALYZE")
         | Some("VACUUM") | Some("REINDEX") | Some("CLUSTER") | Some("REFRESH")
-        | Some("SECURITY") | Some("SET") | Some("RESET") | Some("DISCARD") | Some("BEGIN")
+        | Some("SET") | Some("RESET") | Some("DISCARD") | Some("BEGIN")
         | Some("START") | Some("COMMIT") | Some("ROLLBACK") | Some("SAVEPOINT")
         | Some("RELEASE") => StatementClass::Ddl,
         _ => StatementClass::Unknown,

@@ -6,10 +6,17 @@
 //!
 //! * **classification + splitting** ([`classify`]) — `sqlparser`-based
 //!   classification and a quote/comment/dollar-aware splitter (R-5.2/R-5.3/R-5.4);
-//! * **safety gating** — a read-only connection refuses every non-`read`
-//!   statement *before* touching the server (R-5.2); a read-write connection
-//!   returns `confirmationRequired` for an unconfirmed `destructive`/`unknown`
-//!   statement and executes nothing (R-5.3);
+//! * **safety gating** — the client-side gate (layer 1): a read-only connection
+//!   refuses every non-`read` statement *before* touching the server
+//!   (R-5.2/R-1.3); a read-write connection returns `confirmationRequired` for
+//!   an unconfirmed `destructive`/`unknown` statement and executes nothing
+//!   (R-5.3/R-3.2). `COPY`/`GRANT`/`REVOKE`/`SECURITY` classify `destructive`
+//!   (R-3.1), so they are confirmation-gated here and refused on a read-only
+//!   connection. Layer 1 is not the only enforcement: a read-only session's
+//!   physical connection also carries the server-side read-only transaction
+//!   (`SET default_transaction_read_only = on`, applied per connection at pool
+//!   build in `connect.rs` — layer 2), which makes PostgreSQL itself reject a
+//!   `read`-classified statement that would still write (R-1.1/R-1.2);
 //! * **single-statement default** — [`QueryMode::Single`] executes at most the
 //!   first statement of the selection/caret scope and never the remainder
 //!   (R-5.4); [`QueryMode::All`] returns one result set per statement in order
@@ -25,7 +32,11 @@
 //! # Non-goals / invariants
 //!
 //! * A read-only connection never reaches the server for a non-`read` statement
-//!   (the gate runs before the pool lookup).
+//!   (this module's gate runs before the pool lookup) — layer 1. Layer 2 (the
+//!   server-side read-only transaction set on each physical connection in
+//!   `connect.rs`) independently rejects a `read`-classified statement that
+//!   would still mutate, so the two layers together close the gap between the
+//!   gate and the wire.
 //! * An unconfirmed `destructive`/`unknown` statement executes nothing.
 //! * One `db_query_execute` call in `Single` mode executes at most one statement.
 //! * `AppStore` / `EngineHandle` and the embedded-PostgreSQL supervisor are
@@ -98,8 +109,9 @@ pub async fn query_execute(
         }));
     }
 
-    // R-5.2 — a read-only connection refuses every non-`read` statement before
-    // any server contact.
+    // R-5.2/R-1.3 — layer 1: a read-only connection refuses every non-`read`
+    // statement before any server contact (layer 2 — the server-side read-only
+    // transaction — is applied at pool build in `connect.rs`).
     if access_mode == AccessMode::ReadOnly {
         if let Some(blocked) = statements.iter().find(|s| s.class != StatementClass::Read) {
             return Ok(error_outcome(DbQueryError {

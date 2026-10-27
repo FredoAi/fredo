@@ -121,7 +121,7 @@ fn classifies_reads() {
 
 #[test]
 fn classifies_writes() {
-    for sql in ["INSERT INTO t VALUES (1)", "COPY t FROM STDIN"] {
+    for sql in ["INSERT INTO t VALUES (1)"] {
         assert_eq!(classify_statement(sql), StatementClass::Write, "{sql}");
     }
 }
@@ -134,6 +134,14 @@ fn classifies_destructive_statements() {
         "DROP TABLE t",
         "TRUNCATE t",
         "ALTER TABLE t ADD COLUMN c int",
+        // Reclassified (R-3.1): confirmation-gated in write mode, refused in
+        // read-only. `COPY … FROM STDIN` / `COPY … TO PROGRAM` are the file/
+        // program forms — the latter is arbitrary OS command execution.
+        "COPY t FROM STDIN",
+        "COPY t TO PROGRAM 'x'",
+        "GRANT SELECT ON t TO u",
+        "REVOKE SELECT ON t FROM u",
+        "SECURITY LABEL ON TABLE t IS 'x'",
     ] {
         assert_eq!(classify_statement(sql), StatementClass::Destructive, "{sql}");
     }
@@ -144,8 +152,6 @@ fn classifies_ddl() {
     for sql in [
         "CREATE TABLE t (id int)",
         "CREATE INDEX i ON t (id)",
-        "GRANT SELECT ON t TO u",
-        "REVOKE SELECT ON t FROM u",
         "COMMENT ON TABLE t IS 'x'",
         "SET search_path TO public",
     ] {

@@ -82,6 +82,11 @@ async fn read_only_refuses_every_non_read_without_touching_the_server() {
         "DROP TABLE t",
         "TRUNCATE t",
         "ALTER TABLE t ADD COLUMN c int",
+        // Reclassified (R-3.1/R-3.3): refused before any server contact.
+        "COPY t FROM STDIN",
+        "GRANT SELECT ON t TO u",
+        "REVOKE SELECT ON t FROM u",
+        "SECURITY LABEL ON TABLE t IS 'x'",
         "SELCT 1",
         "WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d",
     ] {
@@ -118,6 +123,11 @@ async fn read_write_requires_confirmation_for_destructive_and_unknown() {
         ("UPDATE t SET a = 1", StatementClass::Destructive),
         ("DELETE FROM t", StatementClass::Destructive),
         ("DROP TABLE t", StatementClass::Destructive),
+        // Reclassified (R-3.1/R-3.2): confirmation-gated in write mode.
+        ("COPY t FROM STDIN", StatementClass::Destructive),
+        ("GRANT SELECT ON t TO u", StatementClass::Destructive),
+        ("REVOKE SELECT ON t FROM u", StatementClass::Destructive),
+        ("SECURITY LABEL ON TABLE t IS 'x'", StatementClass::Destructive),
         ("SELCT 1", StatementClass::Unknown),
     ] {
         let outcome = query_execute(args(sql, QueryMode::Single), &state)
@@ -129,6 +139,15 @@ async fn read_write_requires_confirmation_for_destructive_and_unknown() {
         assert_eq!(confirmation.statement_class, expected, "{sql}");
         assert!(!confirmation.statement_hash.is_empty(), "{sql}");
         assert!(!confirmation.preview.is_empty(), "{sql}");
+
+        // Echoing the returned hash back passes the gate; the missing pool is the
+        // oracle that nothing executed server-side (R-3.2).
+        let mut confirmed = args(sql, QueryMode::Single);
+        confirmed.confirmed_statement_hashes = vec![confirmation.statement_hash];
+        let error = query_execute(confirmed, &state)
+            .await
+            .expect_err("gate passed; no pool");
+        assert!(error.iter().any(|message| message.contains("not open")), "{sql}: {error:?}");
     }
 }
 
