@@ -122,6 +122,44 @@ headroom this feature connects on).
   Mission Monitor renders the live session while the builtin connection is connected.
   **FAIL** = a static-only receipt, or an undisclosed substitution.
 
+## Server-side read-only on the built-in connection (#3080)
+
+Slice on top of #3029. The built-in **"Fredo"** connection is `ReadOnly` and targets the embedded
+cluster as the **`postgres` superuser** — the exact superuser-on-a-"read-only"-connection case
+`SECURITY_AUDIT.md` Finding #5 names. This makes it the **live AC1/AC2 lever**: PostgreSQL itself
+now enforces read-only for it (`SET default_transaction_read_only = on` per physical connection
+via `PgPoolOptions::after_connect`, `connect.rs`). F-9 (client-side refusal) is unchanged and is
+now the *first* of two layers.
+
+> **Live receipt form (G-256):** this change emits **no OTLP spans**, so its live receipt is a
+> **live webview DOM/screenshot** (`tauri_webview_screenshot` + `tauri_webview_dom_snapshot`), not
+> `telemetry_spans`. Never fabricate a span receipt via `fredo emit`.
+
+> **G-263 SAFETY:** bounded legs; `.opencode/scripts/dev-env.ps1 -Action Up|Down -Spec 3080`;
+> managed-`psql` ≤60 s. The reconnect lever is a bounded managed-`psql`
+> `SELECT pg_terminate_backend(<app backend pid>)`.
+
+- [ ] **F-13 (EARS-5b / AC1) — the built-in connection is server-side read-only.**
+  Connect the built-in "Fredo" row; run `SHOW default_transaction_read_only;` (classifies `Read`).
+  **Expected:** the grid shows exactly **`on`**; live DOM + screenshot captured.
+  **Edge:** a readWrite connection (via the `FREDO_DBCLIENT_STATE_DIR` seam) shows `off`.
+  **FAIL** = anything other than `on`.
+
+- [ ] **F-14 (EARS-5b / AC1, BINDING) — the server rejects a `Read`-classified volatile write.**
+  On the built-in connection run `SELECT * FROM chat_rows LIMIT 1 FOR UPDATE;`; secondary
+  `SELECT nextval('qa_3080_seq');`.
+  **Expected:** a typed `query` error carrying SQLSTATE **`25006`**; no side effect (managed-`psql`
+  read). **Edge:** empty `chat_rows`; `FOR SHARE`. **FAIL** = the statement executes.
+  *(AC1's named example list is illustrative — see `postgres-client F-18` for the recorded
+  outcomes of `pg_terminate_backend`/`set_config`/`lo_import`/`nextval`.)*
+
+- [ ] **F-15 (EARS-5b / AC2) — the server-side read-only survives a reconnect.**
+  Verify `on`; force the physical connection to drop (bounded managed-`psql`
+  `pg_terminate_backend(<app backend pid>)`); re-query.
+  **Expected:** the replacement connection still reports `on` and still rejects F-14's write.
+  **Edge:** cannot force a drop → key to hook-at-build + `pg_stat_activity` and DISCLOSE.
+  **FAIL** = the replacement reports `off`, or a write executes.
+
 ## Non-functional
 
 - [ ] **N-1 (loopback-only):** the seed persists `host="127.0.0.1"` and connect resolves the same;
