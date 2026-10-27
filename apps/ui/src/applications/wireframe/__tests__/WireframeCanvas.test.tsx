@@ -45,6 +45,7 @@ import {
   setPanMode,
   setSnapToGrid,
   setView,
+  subscribe,
   undo,
 } from '../store/wireframeDocumentStore';
 
@@ -381,6 +382,50 @@ function dragElementTo(id: string, x: number, y: number): void {
   act(() => {
     elementGroup(id).props.onDragEnd();
   });
+}
+
+/**
+ * Drive Konva's multi-node Transformer proxy-drag. Konva calls `startDrag()` on
+ * EVERY node the Transformer is attached to (regardless of `draggable`), so one
+ * gesture emits a `dragstart`/`dragend` pair per attached node — the observed
+ * order `start:*, …, end:*, …`. The moves run between the starts and the ends.
+ */
+function proxyDragGesture(moves: Array<{ id: string; x: number; y: number }>): void {
+  for (const move of moves) {
+    act(() => {
+      elementGroup(move.id).props.onDragStart();
+    });
+  }
+  for (const move of moves) {
+    act(() => {
+      elementGroup(move.id).node.x(move.x);
+      elementGroup(move.id).node.y(move.y);
+      elementGroup(move.id).props.onDragMove();
+    });
+  }
+  for (const move of moves) {
+    act(() => {
+      elementGroup(move.id).props.onDragEnd();
+    });
+  }
+}
+
+/**
+ * Count store commits during `run`. The store notifies exactly ONCE per
+ * committed snapshot (`commitDocument` → `notify`), so the listener count is a
+ * direct oracle for "how many `elements.update` commits did this gesture make".
+ */
+function commitCountDuring(run: () => void): number {
+  let commits = 0;
+  const unsubscribe = subscribe(() => {
+    commits += 1;
+  });
+  try {
+    run();
+  } finally {
+    unsubscribe();
+  }
+  return commits;
 }
 
 beforeEach(() => {
@@ -728,6 +773,91 @@ describe('drag', () => {
     expect(after.document.elements[0]).toMatchObject({ x: 500, y: 400 });
     expect(after.document.elements[1]).toMatchObject({ x: 520, y: 324 });
     expect(after.document.elements[2]).toMatchObject({ x: 700, y: 700 });
+  });
+});
+
+describe('multi-node drag session (FX-1)', () => {
+  it('commits exactly ONE elements.update for a multi-node Transformer proxy-drag', () => {
+    seedDocument(
+      [textElement(), buttonElement('el-b', 500, 300)],
+      ['el-text', 'el-b'],
+    );
+    renderWithChakra(<WireframeCanvasImpl />);
+    expect(getSnapshot().canUndo).toBe(false);
+
+    // One gesture: a dragstart + dragmove + dragend for EACH attached node.
+    const commits = commitCountDuring(() => {
+      proxyDragGesture([
+        { id: 'el-text', x: 520, y: 396 },
+        { id: 'el-b', x: 540, y: 320 },
+      ]);
+    });
+
+    // The whole gesture is ONE `elements.update` — not one per member.
+    expect(commits).toBe(1);
+
+    const after = getSnapshot();
+    expect(after.document.elements[0]).toMatchObject({ x: 520, y: 396 });
+    expect(after.document.elements[1]).toMatchObject({ x: 540, y: 320 });
+
+    // ONE undo restores EVERY member and leaves nothing left to undo.
+    act(() => undo());
+    const undone = getSnapshot();
+    expect(undone.document.elements[0]).toMatchObject({ x: 480, y: 376 });
+    expect(undone.document.elements[1]).toMatchObject({ x: 500, y: 300 });
+    expect(undone.canUndo).toBe(false);
+  });
+
+  it('does not move a locked member of a dragged group, and re-pins its node on release', () => {
+    const locked = { ...textElement(), id: 'el-locked', x: 700, y: 700, locked: true };
+    seedDocument(
+      [textElement(), buttonElement('el-b', 500, 300), locked as WireframeElement],
+      ['el-text', 'el-b', 'el-locked'],
+    );
+    renderWithChakra(<WireframeCanvasImpl />);
+    expect(getSnapshot().canUndo).toBe(false);
+
+    // Konva proxy-drags the locked node too (`startDrag` ignores `draggable`),
+    // so its node is moved VISUALLY during the gesture...
+    const commits = commitCountDuring(() => {
+      proxyDragGesture([
+        { id: 'el-text', x: 520, y: 396 },
+        { id: 'el-b', x: 540, y: 320 },
+        { id: 'el-locked', x: 740, y: 720 },
+      ]);
+    });
+
+    expect(commits).toBe(1);
+
+    const after = getSnapshot();
+    // ...but its COMMITTED geometry is string-identical (R-1.8).
+    expect(after.document.elements[2]).toMatchObject({ x: 700, y: 700 });
+    expect(after.document.elements[0]).toMatchObject({ x: 520, y: 396 });
+    expect(after.document.elements[1]).toMatchObject({ x: 540, y: 320 });
+
+    // The locked Konva node is re-pinned to the model the instant the gesture ends.
+    expect(elementGroup('el-locked').node.x()).toBe(700);
+    expect(elementGroup('el-locked').node.y()).toBe(700);
+
+    // ONE undo restores every moved member; the locked member never changed.
+    act(() => undo());
+    const undone = getSnapshot();
+    expect(undone.document.elements[0]).toMatchObject({ x: 480, y: 376 });
+    expect(undone.document.elements[1]).toMatchObject({ x: 500, y: 300 });
+    expect(undone.document.elements[2]).toMatchObject({ x: 700, y: 700 });
+    expect(undone.canUndo).toBe(false);
+  });
+
+  it('still commits exactly one step for a plain single-element drag', () => {
+    seedDocument([textElement()], ['el-text']);
+    renderWithChakra(<WireframeCanvasImpl />);
+
+    const commits = commitCountDuring(() => {
+      dragElementTo('el-text', 500, 400);
+    });
+
+    expect(commits).toBe(1);
+    expect(getSnapshot().document.elements[0]).toMatchObject({ x: 500, y: 400 });
   });
 });
 

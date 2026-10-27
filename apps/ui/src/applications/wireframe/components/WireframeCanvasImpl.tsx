@@ -108,9 +108,13 @@ function isSelectionToggle(
   return SELECTION_TOGGLE_MODIFIER === 'shift' && Boolean(native?.shiftKey);
 }
 
-/** One drag gesture's immutable start positions, keyed by element id. */
+/**
+ * One drag GESTURE's immutable start positions, keyed by element id. The
+ * session is gesture-scoped, not leader-keyed: a multi-node Transformer
+ * proxy-drag fires one `dragstart` per attached node, so the start map covers
+ * every movable member and the commit is deferred to the last release.
+ */
 interface DragSession {
-  leaderId: string;
   start: Map<string, { x: number; y: number }>;
 }
 
@@ -626,6 +630,11 @@ export function WireframeCanvasImpl(): ReactElement {
   // Imperative guide slots on the capture-hidden guides layer (never React state).
   const guideLineRefs = useRef<Array<Konva.Line | null>>([]);
   const dragSessionRef = useRef<DragSession | null>(null);
+  // Count of nodes Konva is CURRENTLY dragging in the active gesture. A
+  // multi-node Transformer proxy-drag starts (and ends) one drag per attached
+  // node, so the session is built once (on the first start) and the single
+  // store commit fires when this returns to 0 (R-1.4 / NFR-4).
+  const activeDragCountRef = useRef(0);
   const transformStartBoxRef = useRef<WireframeRect | null>(null);
   const measuredRef = useRef<CanvasSize>({ width: 0, height: 0 });
   const didFitRef = useRef(false);
@@ -843,15 +852,22 @@ export function WireframeCanvasImpl(): ReactElement {
     (id: string) => (): void => {
       if (panMode) return;
       if (!getSnapshot().selectedIds.includes(id)) select(id);
-      const snapshot = getSnapshot();
-      const byId = new Map(snapshot.document.elements.map((element) => [element.id, element]));
-      const start = new Map<string, { x: number; y: number }>();
-      for (const memberId of snapshot.selectedIds) {
-        const element = byId.get(memberId);
-        if (!element || !isElementMovable(snapshot.document, element)) continue;
-        start.set(memberId, { x: element.x, y: element.y });
+      // Build the gesture session ONCE — on the first `dragstart`. Konva's
+      // multi-node Transformer proxy-drag calls `startDrag()` on EVERY attached
+      // node (including locked members, which `startDrag` drags regardless of
+      // `draggable`), so a later start in the SAME gesture must not rebuild it.
+      if (activeDragCountRef.current === 0) {
+        const snapshot = getSnapshot();
+        const byId = new Map(snapshot.document.elements.map((element) => [element.id, element]));
+        const start = new Map<string, { x: number; y: number }>();
+        for (const memberId of snapshot.selectedIds) {
+          const element = byId.get(memberId);
+          if (!element || !isElementMovable(snapshot.document, element)) continue;
+          start.set(memberId, { x: element.x, y: element.y });
+        }
+        dragSessionRef.current = { start };
       }
-      dragSessionRef.current = { leaderId: id, start };
+      activeDragCountRef.current += 1;
     },
     [panMode],
   );
@@ -861,7 +877,7 @@ export function WireframeCanvasImpl(): ReactElement {
     (id: string) => (): void => {
       if (panMode) return;
       const session = dragSessionRef.current;
-      if (!session || session.leaderId !== id) return;
+      if (!session || !session.start.has(id)) return;
       const leaderNode = elementNodes.current.get(id);
       const leaderStart = session.start.get(id);
       if (!leaderNode || !leaderStart) return;
@@ -909,16 +925,28 @@ export function WireframeCanvasImpl(): ReactElement {
   const handleDragEnd = useCallback(
     (element: WireframeElement) => (): void => {
       clearGuides();
+      if (panMode) return;
+      // A gesture ends only when EVERY node Konva started dragging has
+      // released: the multi-node Transformer proxy-drag fires one dragstart /
+      // dragend pair per attached node, so the single store commit is deferred
+      // to the last release (R-1.4 / NFR-4).
+      activeDragCountRef.current = Math.max(0, activeDragCountRef.current - 1);
+      if (activeDragCountRef.current > 0) return;
+
       const session = dragSessionRef.current;
       dragSessionRef.current = null;
-      if (panMode) return;
 
       const snapshot = getSnapshot();
       const byId = new Map(snapshot.document.elements.map((item) => [item.id, item]));
-      const targetIds =
-        session && session.leaderId === element.id
-          ? Array.from(session.start.keys())
-          : [element.id];
+      // A session already covers every MOVABLE selected member (built at
+      // `dragstart`). The defensive no-session branch commits the single
+      // dragged element and MUST honour movability — a locked member is never
+      // committed, so it can never move (R-1.8).
+      const targetIds = session
+        ? Array.from(session.start.keys())
+        : isElementMovable(snapshot.document, element)
+          ? [element.id]
+          : [];
 
       const rects = new Map<string, WireframeRect>();
       for (const id of targetIds) {
@@ -961,7 +989,11 @@ export function WireframeCanvasImpl(): ReactElement {
         dispatch('elements.update', { patches });
       }
 
-      resetNodesToModel(targetIds);
+      // Re-pin EVERY selected node to the committed model — not only the
+      // committed members. Konva proxy-drags a locked member VISUALLY during
+      // the gesture, so the locked member is snapped back to its model
+      // geometry the instant the gesture ends (R-1.8).
+      resetNodesToModel(getSnapshot().selectedIds);
     },
     [panMode, snapToGrid, clearGuides, resetNodesToModel],
   );
