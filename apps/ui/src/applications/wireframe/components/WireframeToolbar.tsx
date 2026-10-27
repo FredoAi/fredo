@@ -13,8 +13,9 @@
  * no roving-tabindex code is needed.
  *
  * Focus rules:
- * - `useWireframeHostFocused()` gates every `data-hotkey` (R-5.4) and the
- *   keychip's visibility (the slot stays reserved — no layout shift);
+ * - `useWireframeHostFocused()` gates every `data-hotkey` (R-5.4); the controls
+ *   carry no on-control keychip — the always-on bottom hotkey bar is the single
+ *   shortcut-discovery surface (#3087);
  * - a pointer activation blurs the control so the next bare key is in the
  *   `default` context (G-327 / UI/UX 3.14); a keyboard activation keeps focus
  *   so Tab order survives.

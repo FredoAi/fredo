@@ -158,29 +158,38 @@ describe('hotkey attributes (R-5.1 / R-5.4)', () => {
       'Duplicate',
     );
 
-    const chip = button('wireframe-action-add-text').querySelector(
-      '[data-testid="wireframe-hotkey-chip"]',
-    );
-    expect(chip).not.toBeNull();
-    expect(chip).toHaveStyle({ visibility: 'visible' });
+    // #3087 — the always-on bar is the single shortcut-discovery surface: no
+    // control renders an on-control hotkey badge/keychip in the focused state.
+    expect(
+      button('wireframe-action-add-text').querySelector(
+        '[data-testid="wireframe-hotkey-chip"]',
+      ),
+    ).toBeNull();
+    expect(
+      button('wireframe-action-add-text').querySelectorAll(
+        '[data-testid="hotkeys-keycap"]',
+      ),
+    ).toHaveLength(0);
   });
 
-  it('removes the attribute and hides (without dropping) the chip when unfocused', () => {
+  it('removes the attribute and renders no chip when unfocused', () => {
     hostFocus.focused = false;
     const { container } = renderWithChakra(<WireframeToolbar />);
 
     expect(container.querySelectorAll('[data-hotkey]')).toHaveLength(0);
-
-    const chip = button('wireframe-action-add-text').querySelector(
-      '[data-testid="wireframe-hotkey-chip"]',
-    );
-    expect(chip).not.toBeNull();
-    expect(chip).toHaveStyle({ visibility: 'hidden' });
+    // No on-control badge in the unfocused state either — the chip is removed,
+    // never merely hidden.
+    expect(
+      container.querySelectorAll('[data-testid="wireframe-hotkey-chip"]'),
+    ).toHaveLength(0);
+    expect(
+      container.querySelectorAll('[data-testid="hotkeys-keycap"]'),
+    ).toHaveLength(0);
   });
 });
 
-describe('two-step keychip display (Spec #3071, ST-4 — UI/UX 2.4)', () => {
-  it('renders a two-step binding as TWO keycaps while data-hotkey keeps the grammar form', () => {
+describe('two-step binding stays grammar-only (Spec #3087, supersedes #3071 ST-4)', () => {
+  it('keeps the g+g grammar form on data-hotkey and renders zero keycaps', () => {
     renderWithChakra(
       <WireframeActionButton
         actionId="wireframe.arrange.group"
@@ -194,20 +203,19 @@ describe('two-step keychip display (Spec #3071, ST-4 — UI/UX 2.4)', () => {
     );
 
     const control = button('wireframe-action-arrange-group');
-    // The attribute keeps the `g+g` grammar value the engine parses ...
+    // The attribute keeps the `g+g` grammar value the engine parses — the
+    // always-on bar reads it for discovery; no chip echoes it on the control.
     expect(control).toHaveAttribute('data-hotkey', 'g+g');
     expect(control).toHaveAttribute('data-hotkey-label', 'Group the selected elements');
-
-    // ... while the chip renders the serialized `g g` as two keycaps (a raw
-    // `g+g` reaches `parseSequence` as one unrepresentable token -> `null`).
-    const chip = control.querySelector('[data-testid="wireframe-hotkey-chip"]');
-    expect(chip).not.toBeNull();
-    const keycaps = chip?.querySelectorAll('[data-testid="hotkeys-keycap"]') ?? [];
-    expect(keycaps).toHaveLength(2);
-    expect(Array.from(keycaps).map((node) => node.textContent)).toEqual(['G', 'G']);
+    expect(
+      control.querySelectorAll('[data-testid="hotkeys-keycap"]'),
+    ).toHaveLength(0);
+    expect(
+      control.querySelector('[data-testid="wireframe-hotkey-chip"]'),
+    ).toBeNull();
   });
 
-  it('still renders a single-step binding as one keycap', () => {
+  it('renders zero keycaps for a single-step binding too', () => {
     renderWithChakra(
       <WireframeActionButton
         actionId="wireframe.element.duplicate"
@@ -222,9 +230,9 @@ describe('two-step keychip display (Spec #3071, ST-4 — UI/UX 2.4)', () => {
 
     const control = button('wireframe-action-element-duplicate');
     expect(control).toHaveAttribute('data-hotkey', 'p');
-    const keycaps = control.querySelectorAll('[data-testid="hotkeys-keycap"]');
-    expect(keycaps).toHaveLength(1);
-    expect(keycaps[0].textContent).toBe('P');
+    expect(
+      control.querySelectorAll('[data-testid="hotkeys-keycap"]'),
+    ).toHaveLength(0);
   });
 });
 

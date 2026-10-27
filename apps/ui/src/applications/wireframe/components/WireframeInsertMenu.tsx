@@ -13,8 +13,9 @@
  * - `data-hotkey` exists ONLY while `useWireframeHostFocused()` is true. An
  *   OPEN but unfocused window stays mounted, so leaving the attribute mounted
  *   would list this app's shortcuts in the always-on bar and dispatch them
- *   into the wrong window (R-5.4). The keychip slot stays in the layout and
- *   flips to `visibility: hidden`, so focus changes never shift the row;
+ *   into the wrong window (R-5.4). The binding lives only in the attribute —
+ *   the always-on bottom hotkey bar is the single shortcut-discovery surface
+ *   (#3087): controls carry no on-control keychip;
  * - a POINTER activation (`event.detail > 0`) blurs the control after running
  *   its action so the next bare key is in the `default` context (G-327,
  *   UI/UX 3.14); a keyboard activation (`detail === 0`) keeps focus for Tab
@@ -26,7 +27,6 @@
 
 import React from 'react';
 import {
-  Box,
   Button,
   HStack,
   Icon,
@@ -42,8 +42,6 @@ import {
   LuShapes,
 } from 'react-icons/lu';
 
-import { Keycap } from '../../../shared/components/hotkeys/Keycap';
-import { parseDataHotkey } from '../../../shared/hotkeys/hotkeyGrammar';
 import { tint } from '../../../shared/utils/colorTint';
 import {
   findWireframeAction,
@@ -58,7 +56,7 @@ export interface WireframeActionButtonProps {
   /** Human description used for the tooltip and the compact accessible name. */
   readonly description: string;
   readonly icon: IconType;
-  /** `full` = icon + label + keychip (Insert); `compact` = icon + keychip. */
+  /** `full` = icon + label (Insert); `compact` = icon only. */
   readonly density: 'full' | 'compact';
   /** True while the Wireframe host owns focus (controls `data-hotkey`). */
   readonly focused: boolean;
@@ -124,26 +122,6 @@ export function WireframeActionButton({
         <Text as="span" fontSize="xs" whiteSpace="nowrap">
           {label}
         </Text>
-      ) : null}
-      {hotkey ? (
-        <Box
-          as="span"
-          data-testid="wireframe-hotkey-chip"
-          aria-hidden="true"
-          display="inline-flex"
-          // The slot is always reserved; only its visibility flips, so the row
-          // never reflows when focus leaves the Wireframe window (UI/UX 3.13).
-          visibility={focused ? 'visible' : 'hidden'}
-        >
-          {/*
-           * Two-step display conversion (Spec #3071, ST-4): `Keycap` parses its
-           * input with the SPACE-joined `parseSequence`, so a raw `'g+g'` is one
-           * unrepresentable token and renders nothing. `parseDataHotkey` converts
-           * the grammar form to its serialized form (`'g g'` -> chips "G" "G");
-           * `data-hotkey` above keeps the `'g+g'` grammar value.
-           */}
-          <Keycap sequence={parseDataHotkey(hotkey)?.serialized ?? hotkey} />
-        </Box>
       ) : null}
     </Button>
   );
