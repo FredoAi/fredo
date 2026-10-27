@@ -139,3 +139,29 @@ Root defect detail + repro: see `functional.md` → "Round 1 result — served a
       is readable (contrast ≥ 4.5) against `status.error` in the current theme; a capture is
       uploaded; console clean.
       Cross-ref `functional.md` F-57/F-59.
+
+## Spec #3071 — added quick paths (Layout Intelligence)
+
+> Isolated env: `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec 3071 -EnvId
+> wf3071-a -EnvSlot 1 -RequireIsolation` (+ the three `FREDO_WIREFRAME_*_PATH` seams for the
+> file legs). Driver: `tauri_driver_session start` with `appIdentifier` = the env MCP port
+> decimal string. **Verification policy: live** — quoted `tauri_webview_*` result + screenshot;
+> document state, no `telemetry_spans` receipt expected.
+
+- [ ] **S-12: Multi-select + group quick path** — from the `default` focus gate add two elements
+      (`1`, `2`), shift-click to select both, press `g` then `g`.
+      **Expected:** `data-wireframe-selection-count`=2 before, `data-wireframe-group-count` 0→1,
+      `data-wireframe-selection-group` non-empty and `wireframe-tag-group` rendered after;
+      console clean.
+- [ ] **S-13: Snap + align quick path** — toggle snap (`g` `s`) and confirm
+      `data-wireframe-snap`=`true`; with two elements selected press `g` `a` (align left).
+      **Expected:** both left edges coincide in `-selection-geometry`; ONE `u` reverts; console
+      clean.
+- [ ] **S-14: Guides quick path** — start a drag so an element nears another's edge.
+      **Expected:** `[data-testid="wireframe-canvas"][data-wireframe-guides]` is a number > 0
+      mid-drag and returns to `'0'` on drop; console clean.
+- [ ] **S-15: Two-step hotkey + bar quick path** — with Wireframe focused press `g` alone.
+      **Expected:** `document.body[data-fredo-pending-sequence]`=`g` and the
+      `hotkeys-keybar-pending` chip shows (binding ARMED), then it clears after the 1000 ms
+      timeout with no document change; the bar lists the 10 new rows (now **32** total,
+      re-baselined from 22) with `data-hotkey-key`=`g`; console clean.
