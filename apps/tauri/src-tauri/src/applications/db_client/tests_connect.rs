@@ -66,6 +66,20 @@ fn ssl_modes_map_without_downgrade() {
     );
 }
 
+// ── R-2.1 / R-2.2 read-only session hook (wiring pin, NON-AC) ─────────────────
+
+#[test]
+fn read_only_session_sql_selects_the_server_side_read_only_setting() {
+    // Q-11: the wiring seam — `Some` for a read-only pool, `None` for a
+    // read-write pool (no hook attached). The live receipt proves the effect.
+    assert_eq!(
+        read_only_session_sql(AccessMode::ReadOnly),
+        Some("SET default_transaction_read_only = on")
+    );
+    assert_eq!(READ_ONLY_SESSION_SQL, "SET default_transaction_read_only = on");
+    assert!(read_only_session_sql(AccessMode::ReadWrite).is_none());
+}
+
 // ── R-1.2 validation ──────────────────────────────────────────────────────────
 
 #[test]
