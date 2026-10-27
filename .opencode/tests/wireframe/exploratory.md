@@ -186,6 +186,30 @@ behaviour is wrong.
   locked (`Access is denied (os error 5)` removing `target/debug/fredo.exe`). `Down` the env
   first, or accept an incremental rebuild.
 
+## Spec #3081 — new probes (Discard label colour)
+
+- [x] **E-25 (new) `resolveOnSolids` is min-over-all-four, not per-colour.** Override ONLY
+      **Round 1 (2026-10-26) — exercised.** `monochrome` (`--status-error:"#ffffff"`) → resolved
+      `--status-on-solids` `#0c1117` (dark), label `rgb(12,17,23)`, ratio 18.95 — the min-over-four
+      rule flipped to dark, never white-on-light. Per-preset sweep: `solarized` 4.10 / `paper` 4.49
+      are the only sub-4.5 ratios (recorded as a PO scope question, not a defect); no preset is
+      white-on-light. Full table in `.opencode/tmp/3081/tests-runs.md`.
+      `--status-error` to a very light red (keep success/warning/info dark) via the per-token
+      override, then open the Discard dialog. Does `--status-on-solids` flip to the dark
+      foreground (correct) or stay white because the other three hues outvote the light error
+      (white-on-light — a real defect vs AC3)? Record the resolved `--status-on-solids`, the
+      computed label colour, and the measured contrast. If it stays white, that is the
+      `resolveOnSolids` semantics (`ThemeProvider.tsx:218-230` — max of the MIN across statuses)
+      and must be surfaced as a product decision, not papered over.
+- [ ] **E-26 (new) Accent change while the dialog is open.** With the dialog open, change the
+      accent (Appearance) and re-measure. Does the label re-resolve with the theme, or is it
+      cached? (It should be independent of accent — the fill is `status.error` — but a stale
+      computed colour would indicate a repaint gap.)
+- [ ] **E-27 (new) Dialog from the Companion path.** Trigger `document.new` via a Companion
+      `llm-skill-call` on a dirty document. Does the dialog (and therefore the Discard button)
+      render with the token colour on that path too, or does the Companion path skip the dialog
+      (documented overwrite — F-44c)? Record the observed path.
+
 ## Teardown (run after this suite)
 - [ ] Close every Wireframe window, delete the probe fixtures under
       `.opencode/tmp/3070/e2e/` that are not part of the functional plan, restore the appearance

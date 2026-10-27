@@ -390,7 +390,7 @@ export function WireframeToolbar(): React.ReactElement {
                 data-testid="wireframe-new-document-discard"
                 size="sm"
                 bg="status.error"
-                color="white"
+                color="status.onSolids"
                 onClick={startNewDocument}
               >
                 Discard

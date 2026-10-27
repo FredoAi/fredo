@@ -702,4 +702,90 @@ round-2/3 live receipts stand.
 focuses a hidden radio/number input (`focus-context=text-entry`, hotkeys disabled) — a canvas
 pointer-down (the shipped explicit blur) restores `default` before any bare key.
 
+## Spec #3081 — Wireframe "Discard" label colour (AC1–AC4)
+
+> Extends the #3070 suite. Scope: the destructive-action confirm dialog's Discard button
+> (`WireframeToolbar.tsx:390-397`) currently sets `color="white"` (line 393) — a raw colour.
+> Fix: derive the label from `status.onSolids` / `--status-on-solids`. Verification policy:
+> **live** (DOM computed colour + measured contrast), no `telemetry_spans` receipt expected.
+> Evidence per row: a quoted `tauri_webview_execute_js` result carrying the OBSERVED computed
+> colour(s) + the resolved `--status-on-solids`, plus an uploaded `user-attachments` capture
+> (G-154 — a visual read alone is not a PASS).
+
+- [x] **F-57 (REQ-1 / AC1)** Discard label colour derives from the theme token, light + dark.
+      **Round 1 (2026-10-26) — PASS.** Env `3081-a` (MCP :16031), served `7f2983b`. LIGHT
+      `light-default`: `{labelColor:"rgb(12, 17, 23)", buttonBg:"rgb(239, 71, 71)",
+      onSolidsVar:"#0c1117", ratio:5.11, labelIsWhite:false}`; DARK `dark`:
+      `{labelColor:"rgb(12, 17, 23)", buttonBg:"rgb(239, 68, 68)", onSolidsVar:"#0c1117",
+      ratio:5.04, labelIsWhite:false}`. Label == resolved `--status-on-solids` (`#0c1117`) in
+      both; ratio ≥ 4.5; never white. Source `WireframeToolbar.tsx:393` = `color="status.onSolids"`.
+      **Recipe:** open Wireframe → add one element (dirty) → **New** → dialog
+      `[data-testid="wireframe-new-document-dialog"]`; read the Discard button
+      `[data-testid="wireframe-new-document-discard"]`.
+      **Expected:** `getComputedStyle(discard).color` equals
+      `getComputedStyle(document.documentElement).getPropertyValue('--status-on-solids')`
+      (rgb-normalised, same task) in BOTH `light-default` and a dark preset; contrast between
+      that colour and `getComputedStyle(discard).backgroundColor` ≥ **4.5** (the `status-error-label`
+      body floor); the label is NOT `rgb(255,255,255)` where `--status-error` is light; a source
+      read of `WireframeToolbar.tsx:393` shows a token prop (no `white`/hex/rgba).
+      **Edge:** accent override; dialog opened via the toolbar New button AND via a Companion
+      `document.new`; label unclipped inside the button.
+
+- [x] **F-58 (REQ-2 / AC2)** Repo sweep — zero raw-colour literals in the Wireframe tree.
+      **Round 1 (2026-10-26) — PASS.** `contrast:gate` 46/46; named-colour scan → only
+      `__tests__` comment/fixture hits, ZERO source hits; no wireframe entry in
+      `allowlist.ts`/`rawColorBaseline.ts`.
+      **Recipe:** `pnpm --filter @fredo/ui contrast:gate` (hex / `rgb(` / `hsl(` / `var(--x)NN`)
+      PLUS a wireframe-scoped **named-colour** scan over
+      `apps/ui/src/applications/wireframe/**` for `"white"`/`"black"`/`bg="<name>"`/`color="<name>"`.
+      **Expected:** ZERO hits in the whole tree; only `transparent`/`inherit`/`currentColor`/`none`
+      remain; no wireframe entry in `app/theme/contract/allowlist.ts` or `rawColorBaseline.ts`.
+      **Edge:** issue-ref comments stripped and must NOT mask a literal; `tint()`/`color-mix(...)`
+      is not a literal; `var(--x)55` alpha-append IS flagged; `.test.tsx` fixtures out of scope.
+
+- [x] **F-59 (REQ-3 / AC3 — edge/negative)** Light `status.error` never yields white-on-light.
+      **Round 1 (2026-10-26) — PASS.** Preset `monochrome` (`--status-error:"#ffffff"`):
+      `{labelColor:"rgb(12, 17, 23)", buttonBg:"rgb(255, 255, 255)", onSolidsVar:"#0c1117",
+      ratio:18.95, labelIsWhite:false, fillIsLight:true}` — dark glyph on white fill, never
+      white-on-light.
+      **Recipe:** force a light `--status-error` (the lightest-`status.error` shipped preset, or
+      the per-token override — theming app / `localStorage['Fredo_theme_overrides']`), open the
+      dialog, measure the label.
+      **Expected:** computed label colour is NOT `rgb(255,255,255)`; contrast ≥ 4.5; the capture
+      shows a readable (dark) glyph on the light-red fill.
+      **Edge:** a light `status.error` combined with dark `success`/`warning`/`info` (the
+      `resolveOnSolids` min-over-all-four semantics — see the plan Discussion point); accent
+      change while the override is active; mid-transition capture.
+
+- [x] **F-60 (REQ-4 / AC4)** Regression gates.
+      **Round 1 (2026-10-26) — PASS.** `test:run` 240 files / 3084 tests; `build` 2832 modules
+      zero TS errors; `contrast:gate` 46/46; `WireframeToolbar` assertion UPDATED (+43 lines,
+      strengthened — G-125).
+      **Recipe:** `pnpm --filter @fredo/ui test:run` (must include green
+      `applications/wireframe/__tests__/canvasPalette.test.ts` +
+      `applications/wireframe/__tests__/WireframeToolbar.hotkeys.test.tsx`),
+      `pnpm --filter @fredo/ui build` (zero TS errors), `pnpm --filter @fredo/ui contrast:gate`.
+      **Expected:** all three exit 0; the `WireframeToolbar` assertion is UPDATED to expect the
+      token (not deleted/weakened — G-125); no other assertion changed.
+      **Edge:** the dialog testid is unchanged; the build introduces no new chunk regression;
+      the contrast gate stays at its frozen baseline cap.
+
+### Round 1 result — 2026-10-26 — PASS (4/4)
+
+Env `3081-a` (Vite :16030 / MCP :16031), served `7f2983b` (= `spec/3081` HEAD). Driver:
+`tauri_driver_session` on `127.0.0.1:16031` (the `tauri_*` tools were PRESENT this round).
+Dialog reached by: launcher → Wireframe → `wireframe-action-add-text` (count 1) →
+`wireframe-action-document-new` → `wireframe-new-document-dialog`. Theme via Settings →
+Appearance `select[aria-label="Theme presets"]` (reset to default after).
+
+- **F-57 PASS** — label == `--status-on-solids` in light + dark; ratios 5.11 / 5.04.
+- **F-58 PASS** — `contrast:gate` 46/46 + zero named-colour source hits + no allowlist/baseline entry.
+- **F-59 PASS** — `monochrome` (light `status.error`) → dark label, ratio 18.95, never white-on-light.
+- **F-60 PASS** — `test:run` 240/3084, `build` 2832 modules zero TS errors, `contrast:gate` 46/46.
+
+**Residual recorded (PO scope question, not a fix defect):** per-preset painted-pair ratios —
+`solarized` 4.10, `paper` 4.49 sit marginally below the 4.5 body floor (mid-luminance error;
+`resolveOnSolids` min-over-four). No preset is white-on-light. Flagged to the Orchestrator per the
+plan; the two REQ-1 named presets clear 4.5.
+
 

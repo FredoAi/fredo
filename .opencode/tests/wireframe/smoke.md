@@ -126,3 +126,16 @@ Root defect detail + repro: see `functional.md` → "Round 1 result — served a
 - **S-10 PASS (tester-run):** typecheck ✓ · build 2832 modules ✓ · test:run 3077 ✓ ·
   contrast 46/46 ✓ · build:webview 2834 modules ✓ · cargo check/clippy zero warnings ✓ ·
   cargo test 1451 lib tests + integration suites ✓.
+
+## Spec #3081 — added quick path
+
+- [x] **S-11: Discard-dialog quick path — token-coloured label.** Add one element (dirty),
+      **Round 1 (2026-10-26) — PASS.** Add text (count 1) → New → dialog renders; Discard label
+      `rgb(12,17,23)` == resolved `--status-on-solids` `#0c1117`; ratio 5.11 (light) / 5.04 (dark);
+      capture uploaded; console clean.
+      press **New**, confirm `[data-testid="wireframe-new-document-dialog"]` renders.
+      **Expected:** the Discard button `[data-testid="wireframe-new-document-discard"]` exists,
+      its `getComputedStyle(...).color` equals the resolved `--status-on-solids`, and the label
+      is readable (contrast ≥ 4.5) against `status.error` in the current theme; a capture is
+      uploaded; console clean.
+      Cross-ref `functional.md` F-57/F-59.
