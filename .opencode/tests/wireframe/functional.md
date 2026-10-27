@@ -408,10 +408,11 @@
       **Expected:** focus another window ⇒ the 32 `data-hotkey` attributes are gone from
       `[data-testid="wireframe-toolbar"]`, `data-fredo-hotkey-count` drops by exactly 32, no
       wireframe row remains, and pressing `1` from the other window's `default` context adds
-      nothing. The toolbar buttons stay VISIBLE and CLICKABLE and the keychip slot is reserved
-      (hidden, not removed) so the toolbar height does not change (UI/UX §3.13).
-      **Edge:** focus returns (attributes restored, count back up 32, chips visible); toolbar
-      height unfocused vs focused (±0 px); two windows open.
+      nothing. The toolbar buttons stay VISIBLE and CLICKABLE and **no keychip slot exists in
+      either state** (Spec #3087 — the on-control chip is REMOVED, not hidden) so the toolbar
+      height still does not change across focus (UI/UX §3.13, superseded by #3087).
+      **Edge:** focus returns (attributes restored, count back up 32, **no chip in either
+      state**); toolbar height unfocused vs focused (±0 px); two windows open.
 - [ ] **F-41 (R-5.5)** No duplicate-key collision.
       **Expected:** `document.body[data-fredo-hotkey-duplicate]` is ABSENT with Wireframe
       focused, with it open-but-unfocused, and with Mission Monitor + Diagram + Wireframe all
@@ -1034,5 +1035,59 @@ plan; the two REQ-1 named presets clear 4.5.
       **Edge:** a group of 2 with 1 dangling id ⇒ group survives with 1 member; a group of 1
       whose only id dangles ⇒ group removed; an id duplicated across two groups ⇒ FIRST keeps it,
       the second drops it; `groups` present but not an array ⇒ reject; each via the Open seam.
+
+## Spec #3087 — remove the on-control hotkey chip (F-84…F-90)
+
+> The Wireframe toolbar must render **no** hotkey badge/chip on any control; shortcuts show
+> only on the always-on bottom hotkey bar. Deletion-only markup; bindings/actions/bar
+> unchanged. **Verification policy: live** — DOM observable + a real keystroke performing the
+> action; document state, no `telemetry_spans` receipt expected. Isolated env:
+> `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec 3087 -EnvId wf3087-a
+> -EnvSlot 1 -RequireIsolation`; driver `tauri_driver_session start` with `appIdentifier` = the
+> env MCP port decimal string. Do **not** synthesize key events (E-22).
+
+- [ ] **F-84 (R-1)** No hotkey chip on any toolbar control while FOCUSED.
+      **Expected:** with the host focused (`data-fredo-focus-context=default`),
+      `document.querySelectorAll('[data-testid="wireframe-toolbar"] [data-testid="wireframe-hotkey-chip"]').length === 0`
+      AND `... [data-testid="hotkeys-keycap"]').length === 0`; all **33**
+      `[data-testid^="wireframe-action-"]` controls render; exactly **32** carry `data-hotkey`.
+      A capture of the toolbar is uploaded.
+      **Edge:** two-step controls (`g+g`…`g+b`); `wireframe-action-document-new` (no binding);
+      the two insert-menu chevrons (never had a chip); `full` (insert) and `compact` densities.
+- [ ] **F-85 (R-1.2)** No hotkey chip on any toolbar control while UNFOCUSED.
+      **Expected:** focus another window (or the app's own `app-wireframe` host) ⇒ the same two
+      counts are `0` and `[data-testid="wireframe-toolbar"] [data-hotkey]` count is `0`; the
+      attribute is REMOVED, never `''`. A chip present even with `visibility:hidden` = FAIL.
+      **Edge:** toggle focus 10×; the toolbar renders no chip in either state.
+- [ ] **F-86 (R-2)** The bar lists every shortcut and a shortcut still performs its action.
+      **Expected:** focused `data-fredo-hotkey-count` − unfocused count `=== 32`; one
+      `[data-testid="hotkeys-keybar-row"]` per mounted `data-hotkey` control, each with a
+      non-empty title; pressing bare `1` then the two-step `g` `g` (real driver keys, from the
+      `default` context) produces the SAME store/document delta as clicking
+      `wireframe-action-add-text` / `wireframe-action-arrange-group`.
+      **Edge:** `wireframe.document.new` has NO bar row; two-step rows render two chips; a bare
+      key after a pointer toolbar activation still fires (UI/UX §3.14).
+- [ ] **F-87 (R-3)** Keyboard operability + accessible name/tooltip unchanged.
+      **Expected:** Tab order is identical to the pre-change order; every control's `aria-label`
+      is `${label|description} (${hotkey})`; the compact-control tooltip is
+      `${description} (${hotkey})`; nothing derives from the removed (aria-hidden) chip.
+      **Edge:** `document.new` (no `(hotkey)` suffix); a locked control (`aria-pressed=true`); a
+      disabled control.
+- [ ] **F-88 (R-4)** Unit suite + build.
+      **Expected:** `pnpm --filter @fredo/ui test:run -- WireframeToolbar.hotkeys` green with the
+      chip-**absence** pins (no `wireframe-hotkey-chip` / "2 chips / 1 chip" assertion survives);
+      `pnpm --filter @fredo/ui build` exit 0 zero TS errors. No weakened/deleted assertion
+      (G-125). Cross-ref `regression.md` R-19.
+      **Edge:** full `test:run` green; `contrast:gate` zero wireframe hits.
+- [ ] **F-89 (edge)** Toolbar height stable across focus (no reserved slot).
+      **Expected:** `wireframe-toolbar` height focused vs unfocused is identical (±0 px); no
+      keychip slot exists in either state (supersedes UI/UX §3.13).
+      **Edge:** toolbar width/wrap may differ ONCE from the pre-change build (static, identical
+      in both states) — NOT a focus reflow.
+- [ ] **F-90 (edge)** `Keycap`'s other consumers intact.
+      **Expected:** `hotkeys-keycap` chips still render in the always-on bar's non-Wireframe rows
+      (`HotkeyBar.tsx:154,318`) and in `LauncherActionList.tsx:114`; `src/index.ts:32` still
+      re-exports `Keycap`; `Keycap.test.tsx` green.
+      **Edge:** a two-step Wireframe bar row still renders two chips.
 
 
