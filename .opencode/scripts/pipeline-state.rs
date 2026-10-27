@@ -3848,13 +3848,16 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             post_pending_comments(issue, &a.actor, &phase, None)?;
         }
         "record-improvement" => {
-            // The SI records a pipeline improvement it made on the go — posts a
+            // The Curator records a pipeline improvement — posts a
             // `## Pipeline Improvement (round N)` comment on the feature issue
             // immediately (so the timeline shows the improvement at the moment it
             // happened, not only at audit), records a `pipeline.improvement` metric
-            // event (tracked in the event log + metrics), and appends a guardrail
-            // record to `references.md` `Known Failure Modes` (retro-analysis
-            // Recipe 6 format, SI-owned G- records). Requires --reason.
+            // event (tracked in the event log + metrics), and allocates the next
+            // free `### G-NNN` id (stamped as `guardrailId` on the event and
+            // printed for the Curator). The machine does NOT author the `### G-`
+            // record — the guardrail records are Curator-authored (principle 6);
+            // the Curator writes the record in the same pass with the allocated id.
+            // Requires --reason.
             if !actor_allowed(a.action.as_str(), &a.actor) {
                 append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action))?;
                 println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
@@ -3875,11 +3878,13 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
             let _ = std::fs::remove_file(&tmp);
             println!("IMPROVEMENT COMMENTED: round {} on #{}", round, issue);
-            // 2) Persist the guardrail FIRST so its allocated id can be stamped on
-            //    the metric event — making `pipeline.improvement` / `guard.fired` /
-            //    `### G-NNN` joinable (guardrail identity for effectiveness work).
-            let guard_id = persist_improvement_guardrail(issue, reason, round).ok().flatten();
-            // 3) Record the metric event (with guardrailId when a G-record landed).
+            // 2) Allocate the next free guardrail id (deterministic) so it can be
+            //    stamped on the metric event — making `pipeline.improvement` /
+            //    `guard.fired` / `### G-NNN` joinable (guardrail identity for
+            //    effectiveness work). The machine allocates the id only; the
+            //    Curator authors the `### G-` record in the same pass.
+            let guard_id = allocate_guardrail_id(issue).ok().flatten();
+            // 3) Record the metric event (with guardrailId when an id was allocated).
             let round_s = round.to_string();
             let gid = guard_id.map(|g| format!("G-{:03}", g)).unwrap_or_default();
             let mut attrs: Vec<(&str, &str)> = vec![("round", round_s.as_str())];
@@ -5892,18 +5897,21 @@ fn regex_lite_find(haystack: &str) -> Option<String> {
     if digits.is_empty() { None } else { Some(digits) }
 }
 
-/// Persist an on-the-go improvement as a guardrail record under `## Known Failure
-/// Modes` in `docs/agentic-pipeline/playbooks/references.md` (retro-analysis Recipe 6
-/// format). The `record-improvement` action calls this so a pipeline fix is recorded
-/// immediately, not only at audit. Best-effort: returns Ok even if the file write
-/// fails (the GitHub comment + metric event remain the durable record). Guardrail id
-/// is the next free `### G-NNN`; records are prose-only and never touch `AGENTS.md`/
-/// `opencode.json` (human-owned).
-fn persist_improvement_guardrail(issue: u32, reason: &str, round: u32) -> anyhow::Result<Option<u32>> {
+/// Allocate the next free `### G-NNN` guardrail id by scanning the existing
+/// records under `## Known Failure Modes` in
+/// `docs/agentic-pipeline/playbooks/references.md`. The `record-improvement`
+/// action calls this so the allocated id can be stamped on the
+/// `pipeline.improvement` event (`guardrailId`) and printed for the Curator.
+/// The machine does NOT author the `### G-` record — the guardrail records are
+/// Curator-authored (principle 6); the Curator writes the record in the same
+/// pass with the allocated id. Best-effort: returns Ok(None) when the ledger
+/// cannot be read (the GitHub comment + metric event remain the durable record).
+/// Never touches `AGENTS.md`/`opencode.json` (human-owned).
+fn allocate_guardrail_id(issue: u32) -> anyhow::Result<Option<u32>> {
     let path = project_root()?.join("docs").join("agentic-pipeline").join("playbooks").join("references.md");
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
-        Err(e) => { println!("WARNING: could not read references.md for guardrail persist ({})", e); return Ok(None); }
+        Err(e) => { println!("WARNING: could not read references.md to allocate a guardrail id ({})", e); return Ok(None); }
     };
     // Find the next free G-NNN id (scan existing `### G-` headings).
     let next_id: u32 = content.lines()
@@ -5913,24 +5921,7 @@ fn persist_improvement_guardrail(issue: u32, reason: &str, round: u32) -> anyhow
         .max()
         .map(|m| m + 1)
         .unwrap_or(1);
-    let today = chrono::Utc::now().format("%Y-%m-%d");
-    let anchor = if content.contains("## Known Failure Modes") { "## Known Failure Modes" } else { "## Useful External References" };
-    let record = format!(
-        "\n### G-{:03}: on_the_go_improvement\n- **activation_date:** {}\n- **observed:** #{} round {}\n- **target_failure:** (on-the-go pipeline improvement)\n- **guardrail:** {}\n- **home:** references.md (G-{:03})\n- **effectiveness:** Pending\n",
-        next_id, today, issue, round, reason, next_id
-    );
-    let updated = match content.find(anchor) {
-        Some(idx) => {
-            let (head, tail) = content.split_at(idx + anchor.len());
-            format!("{}{}{}", head, record, tail)
-        }
-        None => format!("{}{}", content, record),
-    };
-    if let Err(e) = std::fs::write(&path, updated) {
-        println!("WARNING: could not write guardrail to references.md ({})", e);
-        return Ok(None);
-    }
-    println!("GUARDRAIL PERSISTED: G-{:03} on #{}", next_id, issue);
+    println!("GUARDRAIL ID ALLOCATED: G-{:03} on #{} — Curator: author the `### G-{:03}` record in references.md with this id", next_id, issue, next_id);
     Ok(Some(next_id))
 }
 

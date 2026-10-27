@@ -287,10 +287,12 @@ Test-Script "Round-aware verification: round-1 PASS cannot clear round-2 audit" 
   }
 }
 
-# record-improvement: the SI records an on-the-go pipeline improvement — posts a
-# ## Pipeline Improvement (round N) comment, records a pipeline.improvement event,
-# and persists a guardrail to references.md. Gated to curator.
-Test-Script "record-improvement posts comment + event + guardrail" {
+# record-improvement: the Curator records an on-the-go pipeline improvement - posts
+# a ## Pipeline Improvement (round N) comment, records a pipeline.improvement event,
+# and ALLOCATES the next free G-NNN id (stamped as guardrailId + printed). The machine
+# must NOT author the ### G- record (Curator-authored, principle 6), so references.md
+# is left untouched. Gated to curator.
+Test-Script "record-improvement posts comment + event + allocates guardrail id" {
   $url = Mock-IssueCreate "temp: record-improvement" "improvement scratch" ""
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
@@ -319,7 +321,7 @@ Test-Script "record-improvement posts comment + event + guardrail" {
     $out = & rust-script $ps --issue $issueNum --agent curator --action record-improvement --reason "G-test: sandbox gap fixed" 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($outStr -notmatch "IMPROVEMENT COMMENTED: round 1") { throw "Expected improvement comment, got: $outStr" }
-    if ($outStr -notmatch "GUARDRAIL PERSISTED: G-") { throw "Expected guardrail persist, got: $outStr" }
+    if ($outStr -notmatch "GUARDRAIL ID ALLOCATED: G-") { throw "Expected guardrail id allocation, got: $outStr" }
     # comment landed on the issue
     $cmts = Mock-IssueComments $issueNum
     $joined = $cmts -join "`n"
@@ -327,10 +329,10 @@ Test-Script "record-improvement posts comment + event + guardrail" {
     # pipeline.improvement event recorded
     $ev = Select-String -Path $log -Pattern 'pipeline.improvement' -ErrorAction SilentlyContinue | Measure-Object
     if ($ev.Count -lt 1) { throw "pipeline.improvement event not recorded in $log" }
-    # guardrail appended to references.md
+    # references.md must be UNCHANGED — the machine no longer authors the guardrail record
     $after = (Select-String -Path $refs -Pattern '^### G-' -ErrorAction SilentlyContinue | Measure-Object).Count
-    if ($after -le $before) { throw "guardrail not appended to references.md (before=$before after=$after)" }
-    return "record-improvement: comment + event + guardrail verified"
+    if ($after -ne $before) { throw "references.md was modified by record-improvement (before=$before after=$after) - the machine must not author ### G- records" }
+    return "record-improvement: comment + event + guardrail id allocation verified (references.md untouched)"
   } finally {
     # Restore references.md byte-for-byte (the test's record-improvement appends a
     # real guardrail record to this TRACKED file). A byte-exact restore keeps the

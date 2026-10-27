@@ -119,6 +119,7 @@
                 "webfetch": "allow",
                 "glob": "allow",
                 "grep": "allow",
+                "chakra-ui_*": "allow",
                 "reactbits_*": "allow",
                 "task": "deny",
                 "question": "deny",
@@ -151,8 +152,7 @@
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny"
-            },
-                "chakra-ui_*": "allow"
+            }
             }
         },
         "qa-expert": {
@@ -219,6 +219,7 @@
                 "question": "deny",
                 "tauri_*": "deny",
                 "reactbits_*": "deny",
+                "chakra-ui_*": "allow",
                 "doom_loop": "allow",
                 "skill": {
                     "*": "deny",
@@ -332,8 +333,7 @@
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny"
-            },
-                "chakra-ui_*": "allow"
+            }
             }
         },
         "tester": {
@@ -354,6 +354,7 @@
                 "question": "deny",
                 "tauri_*": "allow",
                 "reactbits_*": "deny",
+                "chakra-ui_*": "deny",
                 "doom_loop": "allow",
                 "skill": {
                     "*": "deny",
@@ -442,8 +443,7 @@
                 "~/AppData/Roaming/com.fredo.app/**": "allow",
                 "~/AppData/Local/com.fredo.app/**": "allow",
                 "~/.config/opencode/plugins/**": "allow"
-            },
-                "chakra-ui_*": "deny"
+            }
             }
         },
         "machinist": {
@@ -697,6 +697,7 @@
                 "question": "deny",
                 "tauri_*": "deny",
                 "reactbits_*": "deny",
+                "chakra-ui_*": "deny",
                 "doom_loop": "allow",
                 "skill": {
                     "*": "deny",
@@ -800,8 +801,7 @@
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny"
-            },
-                "chakra-ui_*": "deny"
+            }
             }
         }
     },
