@@ -253,3 +253,52 @@
       (verify with a scratch edit, then revert); `tint()`/`color-mix(...)` is not a literal.
       Cross-ref `.opencode/tests/contrast-gate/` F-5 (anti-widening) and
       `.opencode/tests/theme-contract/`.
+
+## Spec #3071 — Layout Intelligence: re-baseline + new regression pins
+
+> Runs on the #3071 testing phase. **Verification policy: live** (DOM hooks + uploaded capture;
+> document state — no `telemetry_spans` receipt expected). **Re-baseline, never delete (G-125):**
+> this slice adds 10 hotkeyed controls so the Slice-1 exact counts move **22 → 32**.
+
+- [ ] **R-14 (Slice-1 hotkey/bar re-baseline).** The 22 shipped actions stay reachable and
+      hotkeyed; `wireframe.zoom.in`/`zoom.out` keep working (re-bound to the two-step `g+i` /
+      `g+o`); `wireframe.zoom.out`'s old first step `m` is FREE. **Expected:**
+      `document.body[data-fredo-hotkey-duplicate]` absent and
+      `[data-testid="hotkeys-duplicate-error"]` absent with Wireframe focused, unfocused and
+      alongside Mission Monitor + Diagram + My Work Items + Optimizely + Dev Mode;
+      `data-fredo-hotkey-count` and the bar now carry **32** rows (the tester re-baselines
+      `functional.md` F-37/F-38/F-39/F-40, `smoke.md` S-9 and this file's R-1/R-2/R-3 counts
+      from 22 to 32 — the other clauses stay verbatim). The shipped 14-key non-wireframe set
+      (`s d r a z j f q e c i x b v`) resolves exactly as before; Mission Monitor `n`/`p` and
+      Diagram `f` are still NOT mounted.
+      Cross-ref `.opencode/tests/hotkeys/` R-39/R-40/R-42.
+- [ ] **R-15 (document shape unchanged for Slice-1 files).** `WIREFRAME_SCHEMA_VERSION` stays
+      `1`; a Slice-1 document with NO `groups` key parses to `groups: []`; a Slice-1 file still
+      opens with every element's geometry/type/properties intact; `serializeWireframeDocument`
+      still round-trips the whole document. **Expected:** the F-50/F-51/F-52 rejection rows
+      (bad JSON / foreign app tag / bad `schemaVersion`) keep their exact messages and no page
+      change. The new **R-3.3** reconciliation (`reconcileDocumentGroups`) is a parse-time
+      extension of the same path: dangling `memberIds` are dropped, a group emptied by the drop
+      is removed, first-group-wins on a duplicate membership, and a malformed group rejects with
+      `WireframeDocumentError` (nothing changes). Cross-ref `functional.md`
+      F-31/F-32/F-50/F-51/F-52/F-83.
+- [ ] **R-16 (one-undo + dirty semantics preserved).** Every document mutation (group, ungroup,
+      group-lock, align, distribute, reorder, group drag/resize, delete-group — incl. the
+      movable-only operand set of **R-2.8**) commits exactly ONE undo snapshot; `UNDO_DEPTH` stays 100; editor-only state (selection set, snap flag,
+      guides, pan) never pushes a snapshot and never flips `dirty`. **Expected:** the Slice-1
+      undo/redo rows (F-24/F-25) still pass; a groups-only change (group-lock, and a re-group
+      that removes an emptied group — **R-1.9**) is NOT a silent no-op (the `documentsEqual`
+      trap); and the **R-2.9** true-no-op clause holds — an already-aligned / already-even /
+      end-clamped reorder is value-equal ⇒ NOTHING commits (no snapshot, no `-dirty`, returns
+      `false`). Cross-ref `functional.md` F-24/F-25/F-67/F-79/F-82.
+- [ ] **R-17 (colour + capture hygiene extended to guides).** No raw-colour literal and no
+      `var(--x)NN` alpha-append enters the new arrangement code or the guide layer; guides and
+      selection chrome carry `CAPTURE_HIDDEN_NAME` so they never appear in an exported PNG.
+      **Expected:** the R-6/R-13 scans stay zero; `contrast:gate` green; an export taken after a
+      guide-bearing drag is byte-identical to one with no guide ever painted.
+      Cross-ref `functional.md` F-33/F-78.
+- [ ] **R-18 (no new platform surface / no telemetry).** No new Tauri capability/plugin, no
+      `global-shortcut` registration, no new persisted settings key, no RTDB row and no span is
+      added by this slice (the document stays a user FILE; `snapToGrid` is editor state, not
+      persisted). **Expected:** `Cargo.lock` unchanged; the only writes remain the three file
+      seams. Cross-ref `regression.md` R-8/R-12.
