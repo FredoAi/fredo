@@ -119,7 +119,7 @@ Per-agent dispatch briefs — the role's mandate, its phases, its tools, and the
 | 3. Implementation | Orchestrator (setup) + Developer pool | All plan checklist work pushed to `spec/<N>`, CI green | Staff → dispatch devs → worktree on spec branch → push → spec PR | Implementation Plan checklist, spec/<N> branch |
 | 4. Testing | Tester | Verdict posted with evidence; failures re-dispatched | Execute QA Plan → attach evidence → verdict | Test report, verdict comments |
 | **Gate** | Auditor | Verdict: success, or restart phase + root cause | Audit from the record → decide → record verdict | Audit verdict |
-| 5. Post-audit | Orchestrator | Self-improvement + gate merge ran: the Curator recorded a lesson, the specialists' edits opened as maintenance PRs, product docs synced | Dispatch the Curator + specialists → gate doc-sync → `maint-pr` → `post-audit → cleanup` (success) or `→ <phase>` (restart) | Curator lesson, maint PRs |
+| 5. Post-audit | Orchestrator | Self-improvement + gate merge ran: the Curator recorded a lesson, the SPEC MAINT PR (`maint/<N>`) opened and merged, product docs synced | Dispatch the Curator + specialists → gate doc-sync → `maint-pr` (force-merge) → `post-audit → cleanup` (success, gated on the merge) or `→ <phase>` (restart) | Curator lesson, merged SPEC MAINT PR |
 | 6. Cleanup | Orchestrator | Teardown done, feature labeled `done`, human review | Cleanup → human review | Closed work, final status |
 | 7. Done | Orchestrator | Feature `done`, worktrees cleaned, human review | Status updates, human review | Closed work, final status |
 
@@ -130,7 +130,7 @@ Per-agent dispatch briefs — the role's mandate, its phases, its tools, and the
 - **Single source of truth:** GitHub issues and comments track every artifact, decision, status, and piece of evidence.
 - **Comment prefixes:** one agent-facing prefix — `Status` (blockers/escalations only). Verdicts are the machine-posted `## Tests Runs`; decisions are the machine-posted audit `Decision`.
 - **Issue model per feature:** one **feature issue** (the single work-tracking artifact). Its `### Sub-issue Decomposition` `- [ ]` lines are the work checklist developers execute on the spec branch — there are **no sub-issues and no tester issue** (`generate-work` was removed).
-- **Branch naming:** one **spec integration branch** `spec/<N>` per spec (never deleted — it carries the evidence trail). No per-developer branches: developers work in worktrees **detached at `spec/<N>`'s tip** and push with `git push origin HEAD:spec/<N>`. The only PR is the spec PR (`spec/<N>` → `main`).
+- **Branch naming:** one **spec integration branch** `spec/<N>` per spec (never deleted — it carries the evidence trail). No per-developer branches: developers work in worktrees **detached at `spec/<N>`'s tip** and push with `git push origin HEAD:spec/<N>`. The product PR is the spec PR (`spec/<N>` → `main`); the post-audit SPEC MAINT PR (`maint/<N>`) is the other.
 - **The machine owns the mechanics:** the A2A file is auto-seeded on `intake → triage`; the `triage → implementation` transition auto-assembles the Implementation Plan, persists the QA-seeded test suites, and creates the spec branch. The Orchestrator runs the transitions and dispatches the agents; it never runs these mechanical steps by hand.
 - **Independent audit gate + post-audit phase:** the **Auditor** — which neither orchestrated nor built the work — audits every issue after testing from the record; its verdict transitions `audit → post-audit`, the phase where the **Curator** distils a durable lesson and the Orchestrator runs the gate merge. On success the flow goes `post-audit → cleanup`; on failure `post-audit → <phase>` re-dispatches from the chosen phase.
 
@@ -146,4 +146,4 @@ Per-agent dispatch briefs — the role's mandate, its phases, its tools, and the
 | Review | Orchestrator reviews + QA runs e2e | Merging by Orchestrator + single Tester |
 | Verification | QA Lead (plan) + QA (execute) | QA Expert (plan + tests in triage) + Tester (execute) |
 | Improvement | Orchestrator gate + 3-gate validation | Independent Auditor gate + Curator/Toolsmith/Machinist improvement roles (implemented) |
-| Docs | Documentation Keeper agent | Orchestrator (gate doc-sync — product docs via `maint-pr`, docs auto-merged) |
+| Docs | Documentation Keeper agent | Orchestrator (gate doc-sync — product docs in the force-merged SPEC MAINT PR) |

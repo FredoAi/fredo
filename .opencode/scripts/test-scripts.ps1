@@ -917,6 +917,13 @@ Test-Script "audit-record success -> cleanup, then close-issue -> done" {
     $refsBackup = Join-Path $env:TEMP ("refs-" + [Guid]::NewGuid().ToString("N") + ".md")
     Copy-Item -LiteralPath $refs -Destination $refsBackup -Force
     & rust-script $ps --issue $issueNum --agent curator --action record-improvement --reason "harness: post-audit lesson" 2>&1 | Out-Null
+    # The success exit (post-audit -> cleanup) requires the SPEC MAINT PR to have
+    # MERGED. Drive maint-pr with the working-tree marker so the mock opens the PR
+    # and force-merges it (--admin; the mock default), recording merged:true.
+    New-Item -ItemType File -Path (Join-Path $env:FREDO_MOCK_STORE "maint-dirty") -Force | Out-Null
+    $mp = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
+    $mpStr = if ($mp -is [array]) { $mp -join "`n" } else { "$mp" }
+    if ($mpStr -notmatch "SPEC MAINT PR MERGED") { throw "Expected SPEC MAINT PR MERGED, got: $mpStr" }
     $pout = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase cleanup 2>&1
     $poutStr = if ($pout -is [array]) { $pout -join "`n" } else { "$pout" }
     if ($poutStr -notmatch "TRANSITIONED: post-audit -> cleanup") { throw "Expected post-audit -> cleanup, got: $poutStr" }
@@ -931,6 +938,7 @@ Test-Script "audit-record success -> cleanup, then close-issue -> done" {
     if ($st2.Labels -notcontains "done") { throw "Expected done label, got: $($st2.Labels)" }
     return "audit-record success -> post-audit -> cleanup -> labeled done (open, human closes) (#$issueNum)"
   } finally {
+    Remove-Item -LiteralPath (Join-Path $env:FREDO_MOCK_STORE "maint-dirty") -Force -ErrorAction SilentlyContinue
     if ($refsBackup -and (Test-Path -LiteralPath $refsBackup)) { Copy-Item -LiteralPath $refsBackup -Destination $refs -Force; Remove-Item -LiteralPath $refsBackup -Force -ErrorAction SilentlyContinue }
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
@@ -1156,6 +1164,10 @@ Test-Script "audit-record restart positive path (audit -> implementation)" {
     if ($routStr -notmatch "TRANSITIONED: post-audit -> implementation") { throw "Expected post-audit -> implementation, got: $routStr" }
     $st2 = Mock-IssueState $issueNum
     if ($st2.Labels -notcontains "ready-for-dev") { throw "Expected ready-for-dev label after restart, got: $($st2.Labels)" }
+    # A restart exit does NOT require (nor record) a merged SPEC MAINT PR — the run
+    # is not done, so the maintenance PR is only required on the success exit.
+    $mpEv = @(Get-Content ".opencode/state/issues/$issueNum.jsonl" -ErrorAction SilentlyContinue | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "maint-pr" })
+    if ($mpEv.Count -ne 0) { throw "restart path must not require/record a maint-pr" }
     return "audit-record restart moved #$issueNum audit -> post-audit -> implementation"
   } finally {
     if ($refsBackup -and (Test-Path -LiteralPath $refsBackup)) { Copy-Item -LiteralPath $refsBackup -Destination $refs -Force; Remove-Item -LiteralPath $refsBackup -Force -ErrorAction SilentlyContinue }
@@ -2752,6 +2764,11 @@ Test-Script "Cleanup phase: done-close gated to cleanup" {
     $refsBackup = Join-Path $env:TEMP ("refs-" + [Guid]::NewGuid().ToString("N") + ".md")
     Copy-Item -LiteralPath $refs -Destination $refsBackup -Force
     & rust-script $ps --issue $issueNum --agent curator --action record-improvement --reason "harness: cleanup-gate lesson" 2>&1 | Out-Null
+    # The success exit (post-audit -> cleanup) requires the SPEC MAINT PR to have MERGED.
+    New-Item -ItemType File -Path (Join-Path $env:FREDO_MOCK_STORE "maint-dirty") -Force | Out-Null
+    $mp = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
+    $mpStr = if ($mp -is [array]) { $mp -join "`n" } else { "$mp" }
+    if ($mpStr -notmatch "SPEC MAINT PR MERGED") { throw "Expected SPEC MAINT PR MERGED, got: $mpStr" }
     $pout = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase cleanup 2>&1
     $poutStr = if ($pout -is [array]) { $pout -join "`n" } else { "$pout" }
     if ($poutStr -notmatch "TRANSITIONED: post-audit -> cleanup") { throw "Expected post-audit -> cleanup, got: $poutStr" }
@@ -2762,10 +2779,11 @@ Test-Script "Cleanup phase: done-close gated to cleanup" {
     $closeStr = if ($close -is [array]) { $close -join "`n" } else { "$close" }
     if ($closeStr -notmatch "labeled done") { throw "Expected labeled-done from cleanup, got: $closeStr" }
     $st2 = Mock-IssueState $issueNum
-    if ($st2.State -ne "OPEN") { throw "Expected OPEN (human closes manually), got: $($st2.State)" }
+    if ($st2.State -ne "OPEN") { throw "Expected OPEN (human closes manually), got state $($st2.State)" }
     if ($st2.Labels -notcontains "done") { throw "Expected done label, got: $($st2.Labels)" }
     return "cleanup phase: done-label gated to cleanup, audit->post-audit->cleanup->done (open) works"
   } finally {
+    Remove-Item -LiteralPath (Join-Path $env:FREDO_MOCK_STORE "maint-dirty") -Force -ErrorAction SilentlyContinue
     if ($refsBackup -and (Test-Path -LiteralPath $refsBackup)) { Copy-Item -LiteralPath $refsBackup -Destination $refs -Force; Remove-Item -LiteralPath $refsBackup -Force -ErrorAction SilentlyContinue }
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
@@ -2796,6 +2814,11 @@ Test-Script "Reopen removed: done -> planning is refused (terminal)" {
     $refsBackup = Join-Path $env:TEMP ("refs-" + [Guid]::NewGuid().ToString("N") + ".md")
     Copy-Item -LiteralPath $refs -Destination $refsBackup -Force
     & rust-script $ps --issue $issueNum --agent curator --action record-improvement --reason "harness: reopen-removed lesson" 2>&1 | Out-Null
+    # The success exit (post-audit -> cleanup) requires the SPEC MAINT PR to have MERGED.
+    New-Item -ItemType File -Path (Join-Path $env:FREDO_MOCK_STORE "maint-dirty") -Force | Out-Null
+    $mp = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
+    $mpStr = if ($mp -is [array]) { $mp -join "`n" } else { "$mp" }
+    if ($mpStr -notmatch "SPEC MAINT PR MERGED") { throw "Expected SPEC MAINT PR MERGED, got: $mpStr" }
     $pout = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase cleanup 2>&1
     $poutStr = if ($pout -is [array]) { $pout -join "`n" } else { "$pout" }
     if ($poutStr -notmatch "TRANSITIONED: post-audit -> cleanup") { throw "Expected post-audit -> cleanup, got: $poutStr" }
@@ -2811,6 +2834,7 @@ Test-Script "Reopen removed: done -> planning is refused (terminal)" {
     if ($st.Labels -contains "planning") { throw "planning label must NOT be applied, got: $($st.Labels)" }
     return "reopen removed: done -> planning refused, done label intact (#$issueNum)"
   } finally {
+    Remove-Item -LiteralPath (Join-Path $env:FREDO_MOCK_STORE "maint-dirty") -Force -ErrorAction SilentlyContinue
     if ($refsBackup -and (Test-Path -LiteralPath $refsBackup)) { Copy-Item -LiteralPath $refsBackup -Destination $refs -Force; Remove-Item -LiteralPath $refsBackup -Force -ErrorAction SilentlyContinue }
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
@@ -3616,63 +3640,112 @@ Test-Script "human.review records accept/reject (PO-gated) and improvement count
   }
 }
 
-# --- maint-pr (the post-audit gate, per concern) ---
+# --- maint-pr (the post-audit SPEC MAINT PR) ---
 Write-Host "maint-pr:" -ForegroundColor Cyan
 
-Test-Script "maint-pr opens per-concern PRs (docs auto-merged, pipeline left open)" {
+Test-Script "maint-pr opens ONE SPEC MAINT PR and force-merges it (--admin)" {
   $url = Mock-IssueCreate "temp: maint-pr" "maint-pr scratch" "post-audit"
   $issueNum = if ($url -match 'issues/(\d+)') { [int]$Matches[1] } else { throw "no issue from mock: $url" }
   $marker = Join-Path $env:FREDO_MOCK_STORE "maint-dirty"
+  $pending = Join-Path $env:FREDO_MOCK_STORE "maint-merge-pending"
+  $closed = Join-Path $env:FREDO_MOCK_STORE "maint-merge-closed"
   try {
-    # Role gate: only the orchestrator may open maintenance PRs.
-    $deny = & rust-script $ps --issue $issueNum --agent developer --action maint-pr --concern docs 2>&1
+    # Role gate: only the orchestrator may open the maintenance PR.
+    $deny = & rust-script $ps --issue $issueNum --agent developer --action maint-pr 2>&1
     $denyStr = if ($deny -is [array]) { $deny -join "`n" } else { "$deny" }
     if ($denyStr -notmatch "not allowed to maint-pr") { throw "expected role gate, got: $denyStr" }
-    # Missing --concern is refused.
-    $noConcern = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
-    if ($LASTEXITCODE -eq 0) { throw "maint-pr without --concern should fail" }
-    $global:LASTEXITCODE = 0
-    # An unknown concern is refused.
-    $bad = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr --concern vibes 2>&1
-    $badStr = if ($bad -is [array]) { $bad -join "`n" } else { "$bad" }
-    if ($LASTEXITCODE -eq 0) { throw "unknown concern should fail" }
-    if ($badStr -notmatch "unknown --concern") { throw "expected unknown-concern refusal, got: $badStr" }
-    $global:LASTEXITCODE = 0
-    # A clean concern is a NO-OP, never fatal (no marker → git status empty).
-    $noop = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr --concern docs 2>&1
+    # A clean tree is a NO-OP, never fatal (no marker → git status empty).
+    $noop = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
     $noopStr = if ($noop -is [array]) { $noop -join "`n" } else { "$noop" }
-    if ($LASTEXITCODE -ne 0) { throw "clean concern should NO-OP, got exit ${LASTEXITCODE}: $noopStr" }
-    if ($noopStr -notmatch "NO-OP: no docs changes") { throw "expected docs NO-OP, got: $noopStr" }
-    # Make the working tree dirty for the named concern paths (mock marker).
+    if ($LASTEXITCODE -ne 0) { throw "clean tree should NO-OP, got exit ${LASTEXITCODE}: $noopStr" }
+    if ($noopStr -notmatch "NO-OP: no post-audit changes") { throw "expected NO-OP, got: $noopStr" }
+    # Make the working tree dirty for the post-audit paths (mock marker).
     New-Item -ItemType File -Path $marker -Force | Out-Null
-    # docs → auto-merged.
-    $docs = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr --concern docs 2>&1
-    $docsStr = if ($docs -is [array]) { $docs -join "`n" } else { "$docs" }
-    if ($LASTEXITCODE -ne 0) { throw "maint-pr docs failed: $docsStr" }
-    if ($docsStr -notmatch "MAINT PR OPENED:.*\(docs\)") { throw "expected docs MAINT PR OPENED, got: $docsStr" }
-    if ($docsStr -notmatch "auto-merged") { throw "docs PR should auto-merge, got: $docsStr" }
-    $docsPr = [regex]::Match($docsStr, "/pull/(\d+)").Groups[1].Value
-    if (-not $docsPr) { throw "no docs PR number parsed: $docsStr" }
-    $docsState = (Get-Content (Join-Path $env:FREDO_MOCK_STORE "prs\$docsPr.json") -Raw | ConvertFrom-Json).state
-    if ($docsState -ne "MERGED") { throw "docs PR should be MERGED, got $docsState" }
-    # pipeline → left OPEN for human review.
-    $pipe = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr --concern pipeline 2>&1
-    $pipeStr = if ($pipe -is [array]) { $pipe -join "`n" } else { "$pipe" }
-    if ($LASTEXITCODE -ne 0) { throw "maint-pr pipeline failed: $pipeStr" }
-    if ($pipeStr -notmatch "MAINT PR OPENED:.*\(pipeline\)") { throw "expected pipeline MAINT PR OPENED, got: $pipeStr" }
-    if ($pipeStr -notmatch "awaiting human review") { throw "pipeline PR should await human review, got: $pipeStr" }
-    $pipePr = [regex]::Match($pipeStr, "/pull/(\d+)").Groups[1].Value
-    if (-not $pipePr) { throw "no pipeline PR number parsed: $pipeStr" }
-    $pipeState = (Get-Content (Join-Path $env:FREDO_MOCK_STORE "prs\$pipePr.json") -Raw | ConvertFrom-Json).state
-    if ($pipeState -ne "OPEN") { throw "pipeline PR should be OPEN, got $pipeState" }
-    # The maint-pr event records the concern/branch/merged attrs.
-    $ev = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "maint-pr" -and $_.attributes.concern -eq "pipeline" } | Select-Object -Last 1
-    if (-not $ev) { throw "no maint-pr event for the pipeline concern" }
-    if ($ev.attributes.merged -ne "false") { throw "pipeline maint-pr should record merged=false, got $($ev.attributes.merged)" }
-    return "maint-pr: docs auto-merged, pipeline left open (#$issueNum)"
+    # Happy path: ONE PR off maint/<N>, force-merged with --admin → MERGED.
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "maint-pr failed: $outStr" }
+    if ($outStr -notmatch "SPEC MAINT PR MERGED") { throw "expected SPEC MAINT PR MERGED, got: $outStr" }
+    $prN = [regex]::Match($outStr, "/pull/(\d+)").Groups[1].Value
+    if (-not $prN) { throw "no PR number parsed: $outStr" }
+    $prObj = Get-Content (Join-Path $env:FREDO_MOCK_STORE "prs\$prN.json") -Raw | ConvertFrom-Json
+    if ($prObj.state -ne "MERGED") { throw "SPEC MAINT PR should be MERGED, got $($prObj.state)" }
+    if ($prObj.head -ne "maint/$issueNum") { throw "SPEC MAINT PR head should be maint/$issueNum, got $($prObj.head)" }
+    # Exactly ONE maintenance PR was opened (no per-concern split).
+    $maintPrs = @(Get-ChildItem (Join-Path $env:FREDO_MOCK_STORE "prs") -Filter *.json | ForEach-Object { Get-Content $_.FullName -Raw | ConvertFrom-Json } | Where-Object { $_.head -like "maint/*" })
+    if ($maintPrs.Count -ne 1) { throw "expected exactly ONE maint PR, got $($maintPrs.Count)" }
+    # The event records branch/pr/merged=true (no concern attr).
+    $ev = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "maint-pr" -and $_.attributes.merged -eq "true" } | Select-Object -Last 1
+    if (-not $ev) { throw "no merged maint-pr event recorded" }
+    if ($ev.attributes.branch -ne "maint/$issueNum") { throw "event branch wrong: $($ev.attributes.branch)" }
+    if ($ev.attributes.pr -ne "$prN") { throw "event pr wrong: $($ev.attributes.pr)" }
+    # Merge-await verification: an unmerged PR (mock marker) leaves the PR OPEN →
+    # the bounded poll times out → maint-pr ERRORS (the gate fails, no merged event).
+    New-Item -ItemType File -Path $pending -Force | Out-Null
+    $env:FREDO_MAINT_MERGE_ATTEMPTS = "1"
+    $to = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
+    $toStr = if ($to -is [array]) { $to -join "`n" } else { "$to" }
+    if ($LASTEXITCODE -eq 0) { throw "an unmerged PR should fail the gate, got: $toStr" }
+    if ($toStr -notmatch "did not merge within the timeout") { throw "expected timeout error, got: $toStr" }
+    $global:LASTEXITCODE = 0
+    Remove-Item -LiteralPath $pending -Force -ErrorAction SilentlyContinue
+    # A closed-unmerged PR errors too (mock marker).
+    New-Item -ItemType File -Path $closed -Force | Out-Null
+    $cl = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
+    $clStr = if ($cl -is [array]) { $cl -join "`n" } else { "$cl" }
+    if ($LASTEXITCODE -eq 0) { throw "a closed-unmerged PR should fail the gate, got: $clStr" }
+    if ($clStr -notmatch "closed unmerged") { throw "expected closed-unmerged error, got: $clStr" }
+    $global:LASTEXITCODE = 0
+    return "maint-pr: ONE SPEC MAINT PR, force-merged (--admin); unmerged/closed fail the gate (#$issueNum)"
   } finally {
     Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $pending -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $closed -Force -ErrorAction SilentlyContinue
+    Remove-Item Env:\FREDO_MAINT_MERGE_ATTEMPTS -ErrorAction SilentlyContinue
     Remove-Item (Join-Path $env:FREDO_MOCK_STORE "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# The success exit (post-audit -> cleanup) is gated on the merged SPEC MAINT PR:
+# with the Curator improvement recorded but NO maint-pr, the transition is BLOCKED
+# (so `done` is unreachable). A restart exit is NOT gated (covered by the
+# audit-record restart test above).
+Test-Script "post-audit -> cleanup requires the merged SPEC MAINT PR" {
+  $url = Mock-IssueCreate "temp: post-audit merge gate" "merge gate scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $draftDir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$draftDir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
+    & rust-script $ps --issue $issueNum --agent auditor --action audit-record --verdict success --reason "ok" 2>&1 | Out-Null
+    $refs = "docs/agentic-pipeline/playbooks/references.md"
+    $refsBackup = Join-Path $env:TEMP ("refs-" + [Guid]::NewGuid().ToString("N") + ".md")
+    Copy-Item -LiteralPath $refs -Destination $refsBackup -Force
+    & rust-script $ps --issue $issueNum --agent curator --action record-improvement --reason "harness: merge-gate lesson" 2>&1 | Out-Null
+    # No maint-pr yet → post-audit -> cleanup is BLOCKED on the merged event.
+    $blocked = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase cleanup 2>&1
+    $blockedStr = if ($blocked -is [array]) { $blocked -join "`n" } else { "$blocked" }
+    if ($blockedStr -notmatch "no merged SPEC MAINT PR recorded") { throw "Expected merged-gate block, got: $blockedStr" }
+    $st = Mock-IssueState $issueNum
+    if ($st.Labels -notcontains "post-audit") { throw "issue must stay post-audit after the blocked transition, got: $($st.Labels)" }
+    # Once the SPEC MAINT PR force-merges (--admin), the same transition succeeds.
+    New-Item -ItemType File -Path (Join-Path $env:FREDO_MOCK_STORE "maint-dirty") -Force | Out-Null
+    & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1 | Out-Null
+    $pout = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase cleanup 2>&1
+    $poutStr = if ($pout -is [array]) { $pout -join "`n" } else { "$pout" }
+    if ($poutStr -notmatch "TRANSITIONED: post-audit -> cleanup") { throw "Expected post-audit -> cleanup after the merge, got: $poutStr" }
+    return "post-audit -> cleanup gated on the merged SPEC MAINT PR (#$issueNum)"
+  } finally {
+    Remove-Item -LiteralPath (Join-Path $env:FREDO_MOCK_STORE "maint-dirty") -Force -ErrorAction SilentlyContinue
+    if ($refsBackup -and (Test-Path -LiteralPath $refsBackup)) { Copy-Item -LiteralPath $refsBackup -Destination $refs -Force; Remove-Item -LiteralPath $refsBackup -Force -ErrorAction SilentlyContinue }
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
@@ -3707,12 +3780,14 @@ Test-Script-Syntax "pipeline-state skill" ".opencode/skills/pipeline-state/SKILL
 
 Test-Script-Syntax "doc-sync skill" ".opencode/skills/doc-sync/SKILL.md"
 
-# doc-sync content pin: the skill must document the maint-pr gate flow (the two
-# per-concern invocations) and the five product-doc categories, and must NOT
-# prescribe the removed `git push origin main` direct write.
+# doc-sync content pin: the skill must document the single-SPEC-MAINT-PR gate flow
+# (`maint-pr`) and the five product-doc categories, and must NOT prescribe the
+# removed `git push origin main` direct write. NOTE: the concern split was dropped
+# from the machine, so the skill must NOT teach the removed `--concern` split
+# either (the doc-sync skill itself is updated out-of-band by the human).
 Test-Script "doc-sync skill pins the maint-pr gate flow + doc categories" {
   $src = Get-Content ".opencode/skills/doc-sync/SKILL.md" -Raw
-  foreach ($tok in @("maint-pr", "--concern docs", "--concern pipeline")) {
+  foreach ($tok in @("maint-pr")) {
     if ($src -notmatch [regex]::Escape($tok)) { throw "doc-sync skill missing token: $tok" }
   }
   foreach ($c in @("ARCHITECTURE.md", "CLI_GUIDE.md", "SETUP.md", "SECURITY.md", "FAQ.md")) {

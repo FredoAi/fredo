@@ -757,8 +757,24 @@ fn mock_gh_pr(args: &[&str]) -> anyhow::Result<String> {
         "merge" => {
             let p = args.get(2).ok_or_else(|| anyhow::anyhow!("mock gh pr merge: no pr number"))?.to_string();
             let n = p.trim_start_matches('#').parse::<u32>().map_err(|_| anyhow::anyhow!("mock gh pr merge: bad pr `{}`", p))?;
+            // The machine FORCE-merges the SPEC MAINT PR with `--admin` (the repo has
+            // auto-merge disabled, so `--auto` is not used). A privileged merge applies
+            // immediately; the markers drive the failure branches deterministically:
+            // `maint-merge-closed` → CLOSED (verification errors) and `maint-merge-pending`
+            // → OPEN (the poll times out). Plain `--squash` merges (spec PRs) always merge.
+            let forced = args.iter().any(|a| *a == "--admin" || *a == "--auto");
             let mut pr = mock_read_pr(n);
-            pr["state"] = serde_json::json!("MERGED");
+            if forced {
+                if mock_file(&["maint-merge-closed"]).exists() {
+                    pr["state"] = serde_json::json!("CLOSED");
+                } else if mock_file(&["maint-merge-pending"]).exists() {
+                    pr["state"] = serde_json::json!("OPEN");
+                } else {
+                    pr["state"] = serde_json::json!("MERGED");
+                }
+            } else {
+                pr["state"] = serde_json::json!("MERGED");
+            }
             mock_write_pr(n, &pr)?;
             Ok(String::new())
         }
@@ -1767,58 +1783,58 @@ fn ensure_spec_pr_merged(issue: u32) -> anyhow::Result<Option<String>> {
     Ok(Some(format!("spec PR #{} merged", pr)))
 }
 
-/// The post-audit gate merge, per concern — replaces the orchestrator's direct
-/// `git push origin main`. Opens a `maint/<N>-<concern>` PR off `main` instead of
-/// fast-forwarding the branch, so each concern is reviewed on its own:
-///   - `pipeline` — the pipeline's own edits (playbooks/references/skills/
-///     state-machine/`pipeline.json`/`opencode.json` permission blocks). This is
-///     the **machine/config** PR: it is NOT auto-merged — it awaits human review.
-///   - `docs` — the product docs (ARCHITECTURE/CLI_GUIDE/SETUP/SECURITY/FAQ). This
-///     is the **docs** PR: it is auto-merged (squash + delete branch).
-/// Only the named concern's paths are committed, so the two are independent. An
-/// empty concern is a NO-OP (never fatal).
+/// The post-audit **SPEC MAINT PR** — replaces the orchestrator's former direct
+/// `git push origin main`. Opens ONE `maint/<N>` PR off `main` carrying ALL
+/// post-audit paths in a single commit:
+///   - the pipeline's own edits — `docs/agentic-pipeline/`, `.opencode/skills/`,
+///     `.opencode/scripts/`, `.opencode/pipeline.json`, `opencode.json`; and
+///   - the product docs — ARCHITECTURE/CLI_GUIDE/SETUP/SECURITY/FAQ.
+/// The PR is FORCE-merged as the privileged writer (`gh pr merge --admin --squash
+/// --delete-branch`) — the repo has auto-merge DISABLED (`allow_auto_merge: false`),
+/// so `--auto` fails outright, and the human chose the admin bypass (it SKIPS the
+/// required `validate` status check). `gh` applies the merge synchronously; the
+/// machine then VERIFIES the PR is actually MERGED and only then records the
+/// `maint-pr` event (`merged: true`). A PR that is not MERGED (closed unmerged) or a
+/// bounded timeout is an ERROR — the post-audit gate must fail so `done` stays
+/// unreachable. An empty change set is a NO-OP (never fatal): no PR, no merged event.
 fn post_audit_maint_pr(
     issue: u32,
     actor: &str,
     phase: &str,
-    concern: &str,
     title: Option<&str>,
     body_file: Option<&str>,
 ) -> anyhow::Result<()> {
-    let paths: &[&str] = match concern {
-        "pipeline" => &[
-            "docs/agentic-pipeline",
-            ".opencode/skills",
-            ".opencode/scripts",
-            ".opencode/pipeline.json",
-            "opencode.json",
-        ],
-        "docs" => &[
-            "docs/ARCHITECTURE.md",
-            "docs/CLI_GUIDE.md",
-            "docs/SETUP.md",
-            "docs/SECURITY.md",
-            "docs/FAQ.md",
-        ],
-        other => anyhow::bail!("maint-pr: unknown --concern '{}' (expected pipeline|docs)", other),
-    };
-    // Anything to commit for this concern?
+    // ALL post-audit paths ride the ONE PR: the pipeline's own edits + the
+    // product docs.
+    const PATHS: &[&str] = &[
+        "docs/agentic-pipeline",
+        ".opencode/skills",
+        ".opencode/scripts",
+        ".opencode/pipeline.json",
+        "opencode.json",
+        "docs/ARCHITECTURE.md",
+        "docs/CLI_GUIDE.md",
+        "docs/SETUP.md",
+        "docs/SECURITY.md",
+        "docs/FAQ.md",
+    ];
+    // Anything to commit at all?
     let mut st: Vec<&str> = vec!["status", "--porcelain", "--"];
-    st.extend(paths.iter().copied());
+    st.extend(PATHS.iter().copied());
     if run_cmd("git", &st)?.trim().is_empty() {
-        println!("NO-OP: no {} changes for #{} — nothing to open a maint PR for", concern, issue);
-        append_event(issue, "maint-pr", actor, phase, "unknown", &format!("no {} changes to sync", concern))?;
+        println!("NO-OP: no post-audit changes for #{} — nothing to open a SPEC MAINT PR for", issue);
+        append_event_attrs(issue, "maint-pr", actor, phase, "success", &format!("no post-audit changes to sync for #{}", issue), &[("merged", "false"), ("noop", "true")])?;
         return Ok(());
     }
-    let branch = format!("maint/{}-{}", issue, concern);
+    let branch = format!("maint/{}", issue);
     // Create/reset the branch at HEAD, carrying the working-tree edits.
     run_cmd("git", &["checkout", "-B", &branch])?;
     let mut add: Vec<&str> = vec!["add", "--"];
-    add.extend(paths.iter().copied());
+    add.extend(PATHS.iter().copied());
     run_cmd("git", &add)?;
     let pr_title = title
         .map(|s| s.to_string())
-        .unwrap_or_else(|| format!("pipeline(#{}): post-audit {} sync", issue, concern));
+        .unwrap_or_else(|| format!("Spec #{}: maintenance sync", issue));
     // Commit message via a file (G-268: an inline `-m` carrying a `#` reference is
     // sandbox-denied for agents; the file form is uniformly safe for the machine).
     let msg_file = project_root()?
@@ -1831,38 +1847,92 @@ fn post_audit_maint_pr(
     let _ = std::fs::remove_file(&msg_file);
     run_cmd("git", &["push", "-u", "origin", &branch])?;
     let body = match body_file {
-        Some(f) => std::fs::read_to_string(f).unwrap_or_else(|_| format!("Post-audit {} sync for #{}.", concern, issue)),
-        None => format!("Post-audit {} sync for #{}.", concern, issue),
+        Some(f) => std::fs::read_to_string(f).unwrap_or_else(|_| format!("Post-audit maintenance sync for #{}.", issue)),
+        None => format!("Post-audit maintenance sync for #{}.", issue),
     };
     let url = run_gh(&["pr", "create", "--base", "main", "--head", &branch, "--title", &pr_title, "--body", &body])?;
     let url = url.trim().to_string();
     let pr_n = url.rsplit('/').next().unwrap_or("").to_string();
-    // docs → auto-merge; pipeline (machine/config) → human review, left OPEN.
-    let auto_merge = concern == "docs";
-    if auto_merge {
-        run_gh(&["pr", "merge", &pr_n, "--squash", "--delete-branch"])?;
-    }
+    // FORCE-merge as the privileged writer (`--admin`): the repo has auto-merge
+    // DISABLED (`allow_auto_merge: false`), so `--auto` fails outright. The admin
+    // bypass SKIPS the required `validate` status check — the human's call. `gh`
+    // applies the merge synchronously; `await_maint_pr_merged` then VERIFIES the PR
+    // is actually MERGED (it resolves on the first poll).
+    run_gh(&["pr", "merge", &pr_n, "--admin", "--squash", "--delete-branch"])?;
+    await_maint_pr_merged(&pr_n)?;
     append_event_attrs(
         issue,
         "maint-pr",
         actor,
         phase,
         "success",
-        &format!("opened {} maint PR {} for #{}", concern, url, issue),
+        &format!("merged SPEC MAINT PR {} for #{}", url, issue),
         &[
-            ("concern", concern),
             ("branch", branch.as_str()),
             ("pr", pr_n.as_str()),
-            ("merged", if auto_merge { "true" } else { "false" }),
+            ("merged", "true"),
         ],
     )?;
-    println!(
-        "MAINT PR OPENED: {} ({}) {}",
-        url,
-        concern,
-        if auto_merge { "— auto-merged (docs)" } else { "— awaiting human review (machine/config)" }
-    );
+    println!("SPEC MAINT PR MERGED: {} ({})", url, branch);
     Ok(())
+}
+
+/// Post-merge VERIFICATION: poll `gh pr view <pr> --json state,mergeStateStatus`
+/// on a bounded interval until the SPEC MAINT PR is MERGED. With the forced
+/// (`--admin`) merge this resolves on the FIRST poll; the loop + bounded timeout
+/// remain as a safety net (an unmerged PR, a CLOSED PR, or a timeout errors the
+/// gate). The attempt count + interval are env-overridable so the offline harness
+/// can drive the timeout branch deterministically.
+fn await_maint_pr_merged(pr: &str) -> anyhow::Result<()> {
+    let attempts: u32 = std::env::var("FREDO_MAINT_MERGE_ATTEMPTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(60);
+    let interval_ms: u64 = std::env::var("FREDO_MAINT_MERGE_INTERVAL_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10_000);
+    let mut last = String::from("(no poll completed)");
+    for i in 0..attempts {
+        let json = run_gh(&["pr", "view", pr, "--json", "state,mergeStateStatus"])?;
+        let v: serde_json::Value = serde_json::from_str(&json)?;
+        let state = v.get("state").and_then(|s| s.as_str()).unwrap_or("");
+        let mss = v.get("mergeStateStatus").and_then(|s| s.as_str()).unwrap_or("");
+        if state == "MERGED" {
+            return Ok(());
+        }
+        if state == "CLOSED" {
+            anyhow::bail!("SPEC MAINT PR #{} closed unmerged (state CLOSED) — the post-audit gate failed", pr);
+        }
+        last = format!("state={}, mergeStateStatus={}", state, mss);
+        if i + 1 < attempts {
+            std::thread::sleep(std::time::Duration::from_millis(interval_ms));
+        }
+    }
+    anyhow::bail!(
+        "SPEC MAINT PR #{} did not merge within the timeout ({} poll(s); last: {}) — a failed/pending required check blocks the gate; the post-audit gate failed",
+        pr, attempts, last
+    )
+}
+
+/// The success-only post-audit gate: leaving `post-audit` for `cleanup` (the road
+/// to `done`) requires the SPEC MAINT PR to have MERGED. Ok iff the issue's event
+/// log carries a `maint-pr` event with `merged: true`. A restart exit
+/// (`post-audit → <phase>`) does NOT consult this — the run is not done, so the
+/// maintenance PR is not required yet. Net effect: `done` is unreachable unless
+/// the maintenance PR merged.
+fn maint_pr_merged(issue: u32) -> anyhow::Result<()> {
+    let merged = read_issue_events(issue)
+        .iter()
+        .any(|e| e.event_name == "maint-pr" && e.attributes.get("merged").map(|v| v == "true").unwrap_or(false));
+    if merged {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "no merged SPEC MAINT PR recorded — run `maint-pr` (it opens ONE `maint/<N>` PR, force-merges it as the privileged writer (`--admin`), and records a `maint-pr` event with merged:true) before `post-audit → cleanup`"
+        ))
+    }
 }
 
 /// Swap an issue's phase label from `from` to `to` (removes the source label,
@@ -3050,18 +3120,20 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
             // The post-audit phase is where the pipeline's own self-improvement runs
             // before teardown/rework: the Curator distills the durable lesson
             // (`record-improvement` — a `pipeline.improvement` event + the
-            // `## Pipeline Improvement (round N)` comment), the specialists'
+            // `## Pipeline Improvement (round N)` comment), and the specialists'
             // pipeline edits (Curator playbooks/references, Machinist machine/config,
-            // Toolsmith scripts/skills) and the product docs are synced through
-            // per-concern maintenance PRs (`maint-pr` — `maint/<N>-pipeline` left
-            // OPEN for human review, `maint/<N>-docs` auto-merged). The deterministic
-            // anchor the machine can verify is the Curator's recorded improvement —
-            // without it the post-audit did not run. (The gate merge is the machine's
-            // `maint-pr` action; the Auditor verifies the merged diff.)
+            // Toolsmith scripts/skills) + the product docs are synced through ONE
+            // **SPEC MAINT PR** (`maint-pr` — a `maint/<N>` branch force-merged with
+            // `--admin`). The
+            // deterministic anchor the machine can verify HERE is the Curator's
+            // recorded improvement — without it the post-audit did not run. The
+            // SUCCESS exit (`post-audit → cleanup`) ADDITIONALLY requires the merged
+            // SPEC MAINT PR, enforced at the transition site (`maint_pr_merged`); a
+            // restart exit (`post-audit → <phase>`) does not require it.
             let recorded = read_issue_events(issue)
                 .iter()
                 .any(|e| e.event_name == "pipeline.improvement");
-            (recorded, if recorded { String::new() } else { "no Curator improvement recorded — the post-audit (record-improvement + the gate commit/doc-sync) has not run".into() })
+            (recorded, if recorded { String::new() } else { "no Curator improvement recorded — the post-audit (record-improvement + the SPEC MAINT PR) has not run".into() })
         }
         Phase::Cleanup => {
             // Teardown-only phase: exit requires the teardown to be complete
@@ -3259,9 +3331,6 @@ struct ActionArgs {
     note: Option<String>,
     /// `human.review` reviewer identity (`--reviewer`) recorded on the event.
     reviewer: Option<String>,
-    /// `maint-pr --concern pipeline|docs`: which post-audit maintenance PR to open
-    /// (the pipeline's own edits vs the product docs).
-    concern: Option<String>,
 }
 
 /// Working-conventions header prepended to every triage A2A file. The triage
@@ -3979,6 +4048,20 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 append_event(issue, "transition", &a.actor, phase.as_str(), "blocked", &reason)?;
                 println!("BLOCKED: {}", reason);
                 return Ok(());
+            }
+            // Success-only post-audit gate: `post-audit → cleanup` (the road to
+            // `done`) ADDITIONALLY requires the SPEC MAINT PR to have MERGED. A
+            // restart exit (`post-audit → <phase>`) does NOT require it — the run is
+            // not done. Net effect: `done` is unreachable unless the maintenance PR
+            // merged. Enforced here (not in `exit_guard_passes`) because only this
+            // leg is the success path.
+            if phase == Phase::PostAudit && to == Phase::Cleanup {
+                if let Err(e) = maint_pr_merged(issue) {
+                    let reason = e.to_string();
+                    append_event(issue, "transition", &a.actor, phase.as_str(), "blocked", &reason)?;
+                    println!("BLOCKED: {}", reason);
+                    return Ok(());
+                }
             }
             if human_authorized_rework {
                 append_event(issue, "human.authorization", &a.actor, phase.as_str(), "success",
@@ -4925,10 +5008,12 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             );
         }
         "maint-pr" => {
-            // The post-audit gate merge, per concern (replaces the orchestrator's
-            // direct `git push origin main`): open a `maint/<N>-<concern>` PR off
-            // main — the docs PR auto-merges, the machine/config PR awaits human
-            // review. See `state-machine.md`.
+            // The post-audit gate merge (replaces the orchestrator's direct
+            // `git push origin main`): open ONE `maint/<N>` SPEC MAINT PR off main
+            // carrying ALL post-audit paths (the pipeline's own edits + the product
+            // docs), FORCE-merge it as the privileged writer (`--admin`, skipping the
+            // required check), and record the `maint-pr` event only once it MERGED.
+            // See `state-machine.md`.
             if !actor_allowed(a.action.as_str(), &a.actor) {
                 append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action))?;
                 println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
@@ -4936,8 +5021,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             }
             let issue = req_issue(a)?;
             let phase = phase_of(a)?.as_str().to_string();
-            let concern = a.concern.as_deref().ok_or_else(|| anyhow::anyhow!("maint-pr requires --concern pipeline|docs"))?;
-            post_audit_maint_pr(issue, &a.actor, &phase, concern, a.title.as_deref(), a.body_file.as_deref())?;
+            post_audit_maint_pr(issue, &a.actor, &phase, a.title.as_deref(), a.body_file.as_deref())?;
         }
         other => anyhow::bail!("unknown action: {}", other),
     }
@@ -4981,8 +5065,8 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
         // the Product Owner — the human-facing proxy (the human has no machine
         // identity) — never by the machine itself (research/27 §4.1b).
         "human.review" => actor == "product-owner",
-        // The post-audit gate opens the per-concern maintenance PRs (the gate runner
-        // is the orchestrator).
+        // The post-audit gate opens the single SPEC MAINT PR (the gate runner is
+        // the orchestrator).
         "maint-pr" => actor == "orchestrator",
         "link-revision" => matches!(actor, "orchestrator" | "product-owner"),
         "hardening-lock-open-issues" => actor == "machinist",
@@ -6723,7 +6807,6 @@ fn parse_args() -> ActionArgs {
         intent: val("--intent"),
         note: val("--note"),
         reviewer: val("--reviewer"),
-        concern: val("--concern"),
     }
 }
 
