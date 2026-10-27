@@ -167,3 +167,21 @@ Root defect detail + repro: see `functional.md` → "Round 1 result — served a
       `hotkeys-keybar-pending` chip shows (binding ARMED), then it clears after the 1000 ms
       timeout with no document change; the bar lists the 10 new rows (now **32** total,
       re-baselined from 22) with `data-hotkey-key`=`g`; console clean.
+
+## Spec #3087 — added quick path (chip removal)
+
+> Isolated env: `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec 3087 -EnvId
+> wf3087-a -EnvSlot 1 -RequireIsolation`. Driver: `tauri_driver_session start` with
+> `appIdentifier` = the env MCP port decimal string. **Verification policy: live** — quoted
+> `tauri_webview_*` result + screenshot; document state, no `telemetry_spans` receipt expected.
+> Do **not** synthesize key events (E-22).
+
+- [ ] **S-16: Toolbar has no hotkey chip; the bar still lists the shortcuts.**
+      Open Wireframe from the launcher with the host focused.
+      **Expected:** `[data-testid="wireframe-toolbar"]` contains **0**
+      `[data-testid="wireframe-hotkey-chip"]` and **0** `[data-testid="hotkeys-keycap"]` nodes;
+      33 `wireframe-action-*` controls render (32 with `data-hotkey`); the
+      `hotkeys-keybar-row` list still carries all 32 Wireframe shortcuts; pressing bare `1` from
+      the `default` gate still adds a text element (`-element-count` 0→1); a capture of the
+      clean toolbar is uploaded; console clean.
+      Cross-ref `functional.md` F-84/F-86.
