@@ -89,7 +89,24 @@ The **spec PR** (`spec/<N>` → `main`) is auto-created by the state machine whe
 
 ## Comment Conventions
 
-Prefix every agent comment to keep issue timelines scannable and filterable. **Comments are posted by the state machine** via the `comment` action. **Agents never write to GitHub directly** — they draft the comment as a `.md` file in `.opencode/tmp/<issue>/<prefix>.md` using the comment templates in [templates/](templates/), and the state machine reads that file and posts it (`--body-file` is optional and overrides the conventional `.opencode/tmp/<issue>/<prefix>.md` path).
+Every pipeline comment is a **structured, authored, machine-posted** message. The `@`-handle on a comment is the machine's `gh` principal (the human's account), so **the author must live in the body**: every comment ends with its literal `*Authored by <Agent>*` footer (anti-spoofing — the flush gate refuses an unattributed draft). Comments are posted by the state machine; **agents never write to GitHub directly** — they draft the comment as a `.md` file in `.opencode/tmp/<issue>/` using the comment templates in [templates/](templates/), and the state machine reads that file and posts it (`--body-file` is optional and overrides the conventional path).
+
+### The header set — one structured comment per phase
+
+| Phase | Author | Header | Template |
+|-------|--------|--------|----------|
+| planning | triage cluster (assembled by the machine) | `## Triage Plan` | `Triage-plan-comment-template.md` |
+| implementation | **each** developer | `## Developer <ST-id> — verification` | per-developer comment (see [artifacts.md](artifacts.md#developer-verification-comment)) |
+| implementation (roll-up) | machine (from the pool's drafts) | `## Development Summary` | `Development-summary-comment-template.md` |
+| retry round | Software Architect | `## Fix Plan (round N)` | `Fix-plan-comment-template.md` |
+| testing | tester | `## Tests Runs (round N)` | `Tests-runs-comment-template.md` |
+| audit | **auditor** (one message at its turn) | `## Audit Verdict` | `Audit-verdict-comment-template.md` |
+| post-audit | Curator (**one** comment) | `## Pipeline Improvement` | `Pipeline-improvement-comment-template.md` |
+| done | orchestrator | `## Final Status` | `Final-status-comment-template.md` |
+
+**The free-form `## Decision` header is dropped.** The audit verdict is the structured `## Audit Verdict` (verdict + per-AC re-derivation). There is no bare machine verdict with no author.
+
+### Ad-hoc comments — the only agent-facing prefix
 
 | Prefix | Purpose | Requested by | Template |
 |--------|---------|--------------|----------|
@@ -98,19 +115,19 @@ Prefix every agent comment to keep issue timelines scannable and filterable. **C
 **Removed prefixes** (PO decision, #2756 data — 1 Question + 1 Decision across a 2,826-comment spec):
 - `Evidence` — the canonical verdict is the `## Tests Runs` timeline draft (machine round-stamped); screenshots go through `upload-evidence` (upload-only, uploaded as `gh image` user-attachments). Caused the G-006/G-020/G-029 bug class.
 - `Question` — genuine ambiguity IS a blocker until answered: use the `block` action (`--reason`, label + SLA); the orchestrator resolves and re-dispatches with the answer inlined in the brief. A parallel Q/A channel nobody reads (workers get answers via briefs, never by scanning threads).
-- `Decision` (free-form) — MACHINE-ONLY: posted by the `audit-record` verdict. Decisions reach the record via `audit-record --reason` or a PO amendment through `Status`.
+- `Decision` (free-form) — REMOVED: the audit verdict is now the structured `## Audit Verdict` comment (posted by `audit-record`), and decisions reach the record via `audit-record --reason` or a PO amendment through `Status`. No bare `## Decision` comment is posted.
 
 **Rules:**
 - One topic per comment; blockers get the label too (`block` action posts the Status + sets it).
 - Evidence lives in the `## Tests Runs` draft: links, screenshots, log excerpts — not "it worked."
-- Every agent-authored comment ends with `*Authored by <Agent Name>*`.
+- **Every comment — the structured phase comments AND the ad-hoc `Status` comments — ends with its literal `*Authored by <Agent Name>*` footer.** The machine posts through the human's `gh` auth, so the footer is the only in-body attribution.
 - The state machine validates the prefix is `Status` before posting; anything else is refused with a pointer to the correct channel.
 
-**Timeline comments (the issue narrative):** the transition / `audit-record` auto-post five titled comments from `.opencode/tmp/<issue>/` drafts (templates in [templates/](templates/)): `## Triage Plan` (triage→implementation), `## Fix Plan (round N)` (rework re-entry — Architect-authored), `## Development Summary` (implementation→testing), `## Tests Runs` (testing — carries the verdict, read by the gate), `## Orchestrator Summary` (audit→done). **The issue BODY is the single PO Backlog** — no `## PO Backlog` comment is posted (it duplicated the body; PO feedback #2688).
+**Timeline comments (the issue narrative):** the transition / `audit-record` / `record-improvement` / `close-issue` auto-post the structured comments above from `.opencode/tmp/<issue>/` drafts (templates in [templates/](templates/)): `## Triage Plan` (triage→implementation), the per-developer `## Developer <ST-id> — verification` (posted by the `comment` action), `## Development Summary` (implementation→testing), `## Fix Plan (round N)` (rework re-entry — Architect-authored), `## Tests Runs` (testing — carries the verdict, read by the gate), `## Audit Verdict` (audit), `## Pipeline Improvement` (post-audit — Curator), `## Final Status` (done — closes the issue). **The issue BODY is the single PO Backlog** — no `## PO Backlog` comment is posted (it duplicated the body; PO feedback #2688).
 
 **Retry rounds are machine-stamped on the timeline.** The state machine derives the current round from the event log (the count of `phase.started` entries for `testing`, advanced early by an implementation re-entry from `testing`/`audit` so a rework in flight — before the next testing entry — is already on the new round, never stuck at "round 1") and stamps it on retry-relevant comments — never the drafting agent:
-- the restart `## Decision` comment reads `Audit verdict: **restart → <phase> (round N)**` and lists the missed ACs for round N;
-- `## Development Summary`, `## Tests Runs`, `## Fix Plan`, and `## Orchestrator Summary` post as `## <title> (round N)`.
+- the restart `## Audit Verdict` comment reads `Verdict: **RESTART → <phase> (round N)**` and lists the missed ACs for round N;
+- `## Development Summary`, `## Tests Runs`, and `## Fix Plan` post as `## <title> (round N)`.
 
 `## Triage Plan` is posted once (round-1 only) and stays untagged; the full plan is never re-posted on retry — a compact `## Fix Plan (round N)` carries the deltas. **The Fix Plan is authored by the Software Architect** (draft `.opencode/tmp/<issue>/fix-plan.md` from the tester's FAIL verdict; footer `*Authored by Software Architect*`) — the Orchestrator dispatches the architect before re-entering implementation, and the machine round-stamps and posts it; when no authored draft exists the machine falls back to deriving a compact plan from the Triage Plan draft. The **round-aware verification guard** enforces the round: a retry round is only satisfied by evidence carrying the current round, so a stale round-1 PASS can never clear a round-2 audit (`latest_evidence_comment` parses `(round N)` from the `## Tests Runs` header; untagged evidence counts as round 1).
 
@@ -131,7 +148,7 @@ Because the state machine is the **single writer**, mechanical label/project boo
 | Persist feature test suites to `main` | `tests-commit` (auto side-effect of `triage → implementation`; shared with the Tester) |
 | Auto label transition on phase change | `transition` (labels + side-effects are state-machine-driven) |
 | Auto A2A seed + spec branch + spec PR + merge | `transition` side-effects: `→ triage` seeds the A2A file; `triage → implementation` assembles the `## Triage Plan` comment + persists test suites (`tests-commit`) + creates `spec/<N>`; `→ testing` opens the spec PR; `testing → audit` merges it |
-| Timeline comments (the issue narrative) | auto-posted from `.opencode/tmp/<issue>/*.md` drafts (`triage-plan.md` / `fix-plan.md` / `dev-summary.md` / `tests-runs.md` / `si-summary.md`) on every transition and `audit-record`; `post-comments` flushes pending drafts; a `## Tests Runs` draft is refused unless it carries a literal `Verdict:` line AND every image reference is an `https://` URL (bare filenames/local paths are unviewable evidence — refused, draft kept) |
+| Timeline comments (the issue narrative) | auto-posted from `.opencode/tmp/<issue>/*.md` drafts (`triage-plan.md` / `fix-plan.md` / `dev-summary.md` / `dev-verify-<ST-id>.md` / `tests-runs.md` / `audit-verdict.md` / `pipeline-improvement.md` / `final-status.md`) on every transition, `audit-record`, `record-improvement`, and `close-issue`; `post-comments` flushes pending drafts; a `## Tests Runs` draft is refused unless it carries a literal `Verdict:` line AND every image reference is an `https://` URL (bare filenames/local paths are unviewable evidence — refused, draft kept) |
 | Project Status sync (labels + Status) | every transition mirrors the phase onto the GitHub project Status field (Backlog → Planning → Coding → E2E → Reviewing); `create-issue` adds the issue to the project; a finished `done` sets **Reviewing** (awaiting manual human review — the issue stays OPEN for manual test/close) and only `canceled` sets `Done` — best-effort, never fatal |
 | SLA escalation on `blocked` | surfaced via the `health` report's **overdue-blocker list** (issues blocked past the default 4h SLA) — not a `blockedDuration` metric |
 | Worktree lifecycle | `create-worktree` / `remove-worktree` (developer); `prune` removes orphaned worktrees; `spec/*` branches are never pruned |

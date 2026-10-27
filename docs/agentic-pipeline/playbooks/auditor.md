@@ -6,7 +6,7 @@
 
 The Auditor is the pipeline's **independent verification gate**. After the Tester posts its verdict, the Auditor judges whether the issue completed successfully — **from the record, never from the author's reasoning**. It runs the integrity gate, reads the audit bundle, independently re-derives each acceptance criterion's verdict against the recorded evidence, rejects any false PASS or unbacked UNVERIFIED row, and decides success or restart (phase + root cause + reason). It is independent in **information** (a fresh context; it sees only what the record holds) and in **incentive** (it produces a verdict and never edits the work). This is principle 6 made operational: the agent that orchestrated or built the work cannot fairly grade it.
 
-**Read-only.** The Auditor never edits product code, the plan, the tests, or the record. Its only output is the `audit-record` verdict.
+**Read-only.** The Auditor never edits product code, the plan, the tests, or the record. Its only output is the `audit-record` verdict — posted as the single structured `## Audit Verdict` timeline comment.
 
 ## When dispatched
 
@@ -31,21 +31,21 @@ By the Orchestrator when a feature reaches the `audit` phase — the spec PR has
    - a row left **UNVERIFIED without a named blocker** (the specific tool failure, environment wedge, data absence, or unreachable fixture — with the command/query attempted) is rejected and returned, not accepted.
 4. **Decide success or restart.** Success only when every acceptance criterion is supported by evidence in the record and the integrity gate passed. If the record is insufficient to judge (missing Tester verdict or evidence, or `verification-ok = false`), **report the gap instead of guessing** — an unsupported verdict is itself a failure.
 5. **On restart, choose the phase and classify the cause.** Pick the phase the pipeline must re-enter (`backlog`/`planning`/`implementation`/`testing`) and a structured `--root-cause` (`defect`|`technique`|`environment`|`scope`), and write `--reason` as the **missed-AC list** the next round must complete — the recorded reason becomes the retry context every re-dispatched agent reads.
-6. **Record the verdict** via `--action audit-record`:
-   - `--verdict success` posts the `Decision` comment and transitions `audit → post-audit`;
-   - `--verdict restart --phase <p> --root-cause <c> --reason "<missed-AC list>"` posts the restart `Decision` and transitions `audit → post-audit` (the recorded phase is the restart target).
+6. **Record the verdict** via `--action audit-record`, drafting the structured verdict to `.opencode/tmp/<issue>/audit-verdict.md` per the [Audit-verdict comment template](../templates/Audit-verdict-comment-template.md) (verdict line + integrity gate + per-AC re-derivation + rationale, ending `*Authored by Auditor*`):
+   - `--verdict success` posts the `## Audit Verdict` comment and transitions `audit → post-audit`;
+   - `--verdict restart --phase <p> --root-cause <c> --reason "<missed-AC list>"` posts the restart `## Audit Verdict` and transitions `audit → post-audit` (the recorded phase is the restart target).
 
 **All GitHub writes go through the state machine** — the `audit-record` action posts the verdict and records the metric event in one write. The Auditor issues no other GitHub write.
 
 ## Artifacts produced
 
-- The audit `Decision` comment (success, or restart with phase + root cause + missed-AC reason) — posted by `audit-record`.
+- The `## Audit Verdict` comment (success, or restart with phase + root cause + missed-AC reason, with the per-AC re-derivation) — posted by `audit-record` from the `audit-verdict.md` draft.
 
 ## GitHub conventions
 
-- The verdict comment (`Decision`) is posted **only** by the `audit-record` action — never a separate `comment` call. It is machine-stamped (`success` or `restart → <phase> (round N)`).
+- The verdict comment (`## Audit Verdict`) is posted **only** by the `audit-record` action — never a separate `comment` call. It is machine-stamped (`SUCCESS` or `RESTART → <phase> (round N)`); the Auditor drafts the body and the per-AC re-derivation.
 - The Auditor reads GitHub directly (issue, comments, branches) but writes nothing but the verdict.
-- Comments end `*Authored by Auditor*`.
+- The verdict comment ends `*Authored by Auditor*`.
 
 ## Verification (definition of done)
 
@@ -72,4 +72,5 @@ By the Orchestrator when a feature reaches the `audit` phase — the spec PR has
 - docs/agentic-pipeline/pipeline.md (phases + the audit gate)
 - docs/agentic-pipeline/state-machine.md (the `audit`, `audit-record`, and `verify` actions; the audit bundle)
 - docs/agentic-pipeline/github.md
+- docs/agentic-pipeline/templates/Audit-verdict-comment-template.md (the `## Audit Verdict` comment shape)
 - docs/agentic-pipeline/playbooks/references.md

@@ -246,7 +246,7 @@ Test-Script "Context block surfaces retry state (round + reason)" {
 
 # Round-aware verification guard: a retry round is only satisfied by evidence
 # carrying the CURRENT round. A stale round-1 PASS must never clear a round-2
-# audit — the round is stamped on the restart Decision comment AND enforced by
+# audit — the round is stamped on the restart Audit Verdict comment AND enforced by
 # verification_status (round-1 evidence on a round-2 issue fails closed).
 Test-Script "Round-aware verification: round-1 PASS cannot clear round-2 audit" {
   $url = Mock-IssueCreate "temp: round-aware verify" "round-aware scratch" ""
@@ -288,10 +288,10 @@ Test-Script "Round-aware verification: round-1 PASS cannot clear round-2 audit" 
 }
 
 # record-improvement: the Curator records an on-the-go pipeline improvement - posts
-# a ## Pipeline Improvement (round N) comment, records a pipeline.improvement event,
-# and ALLOCATES the next free G-NNN id (stamped as guardrailId + printed). The machine
-# must NOT author the ### G- record (Curator-authored, principle 6), so references.md
-# is left untouched. Gated to curator.
+# the ONE ## Pipeline Improvement comment (not round-tagged), records a
+# pipeline.improvement event, and ALLOCATES the next free G-NNN id (stamped as
+# guardrailId + printed). The machine must NOT author the ### G- record
+# (Curator-authored, principle 6), so references.md is left untouched. Gated to curator.
 Test-Script "record-improvement posts comment + event + allocates guardrail id" {
   $url = Mock-IssueCreate "temp: record-improvement" "improvement scratch" ""
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
@@ -322,10 +322,13 @@ Test-Script "record-improvement posts comment + event + allocates guardrail id" 
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($outStr -notmatch "IMPROVEMENT COMMENTED: round 1") { throw "Expected improvement comment, got: $outStr" }
     if ($outStr -notmatch "GUARDRAIL ID ALLOCATED: G-") { throw "Expected guardrail id allocation, got: $outStr" }
-    # comment landed on the issue
+    # comment landed on the issue — ONE structured `## Pipeline Improvement`
+    # comment (not round-tagged), carrying the Curator footer (anti-spoofing).
     $cmts = Mock-IssueComments $issueNum
     $joined = $cmts -join "`n"
-    if ($joined -notmatch "## Pipeline Improvement \(round 1\)") { throw "Improvement comment not posted, got: $joined" }
+    if ($joined -notmatch "## Pipeline Improvement\b") { throw "Improvement comment not posted, got: $joined" }
+    if ($joined -match "## Pipeline Improvement \(round") { throw "improvement comment must NOT be round-tagged (ONE per run), got: $joined" }
+    if ($joined -notmatch "\*Authored by Curator\*") { throw "improvement comment lacks the Curator footer, got: $joined" }
     # pipeline.improvement event recorded
     $ev = Select-String -Path $log -Pattern 'pipeline.improvement' -ErrorAction SilentlyContinue | Measure-Object
     if ($ev.Count -lt 1) { throw "pipeline.improvement event not recorded in $log" }
@@ -644,7 +647,7 @@ Test-Script "Write actions are role-gated" {
 } -ExpectedExitCode 1
 
 # audit-record must reject a restart targeting the terminal phase (no GitHub write —
-# the done-rejection fires before any gh call), and refuse to post a Decision comment
+# the done-rejection fires before any gh call), and refuse to post an Audit Verdict comment
 # on an issue that is not in the audit phase.
 Test-Script "audit-record rejects restart-to-done / non-audit issue (no mutation)" {
   $out = & rust-script $ps --issue $TestIssue --agent auditor --action audit-record --verdict restart --phase done 2>&1
@@ -908,6 +911,13 @@ Test-Script "audit-record success -> cleanup, then close-issue -> done" {
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "audit-record failed (exit $LASTEXITCODE): $outStr" }
     if ($outStr -notmatch "AUDIT PASS -> POST-AUDIT") { throw "Expected AUDIT PASS -> POST-AUDIT, got: $outStr" }
+    # The verdict comment is the machine-posted `## Audit Verdict` (NOT `## Decision`),
+    # carrying a parseable `Verdict:` line and the Auditor footer (anti-spoofing).
+    $vjoined = (Mock-IssueComments $issueNum) -join "`n"
+    if ($vjoined -notmatch "## Audit Verdict") { throw "audit-record must post a ## Audit Verdict comment, got: $vjoined" }
+    if ($vjoined -match "## Decision") { throw "audit-record must NOT post a ## Decision comment, got: $vjoined" }
+    if ($vjoined -notmatch "Verdict: \*\*SUCCESS\*\*") { throw "audit verdict comment lacks the SUCCESS verdict line, got: $vjoined" }
+    if ($vjoined -notmatch "\*Authored by Auditor\*") { throw "audit verdict comment lacks the Auditor footer, got: $vjoined" }
     # After audit success the issue enters the post-audit phase (self-improvement + gate merge).
     $st = Mock-IssueState $issueNum
     if ($st.State -ne "OPEN") { throw "Expected OPEN in post-audit, got state $($st.State)" }
@@ -936,10 +946,109 @@ Test-Script "audit-record success -> cleanup, then close-issue -> done" {
     $st2 = Mock-IssueState $issueNum
     if ($st2.State -ne "OPEN") { throw "Expected OPEN (human closes manually), got state $($st2.State)" }
     if ($st2.Labels -notcontains "done") { throw "Expected done label, got: $($st2.Labels)" }
+    # The done close posts ONE `## Final Status` comment (outcome + the machine's
+    # metrics), NOT a separate metrics `## Status` comment; Orchestrator footer.
+    $fjoined = (Mock-IssueComments $issueNum) -join "`n"
+    if ($fjoined -notmatch "## Final Status") { throw "close-issue done must post a ## Final Status comment, got: $fjoined" }
+    if ($fjoined -notmatch "## Metrics") { throw "## Final Status must fold in the machine metrics, got: $fjoined" }
+    if ($fjoined -notmatch "\*Authored by Orchestrator\*") { throw "## Final Status lacks the Orchestrator footer, got: $fjoined" }
+    if ($fjoined -match "## Status\b") { throw "the separate metrics ## Status comment must be gone, got: $fjoined" }
     return "audit-record success -> post-audit -> cleanup -> labeled done (open, human closes) (#$issueNum)"
   } finally {
     Remove-Item -LiteralPath (Join-Path $env:FREDO_MOCK_STORE "maint-dirty") -Force -ErrorAction SilentlyContinue
     if ($refsBackup -and (Test-Path -LiteralPath $refsBackup)) { Copy-Item -LiteralPath $refsBackup -Destination $refs -Force; Remove-Item -LiteralPath $refsBackup -Force -ErrorAction SilentlyContinue }
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# audit-record + record-improvement accept a structured --body-file draft: the
+# machine owns the header + the footer (anti-spoofing), the agent owns the
+# structured body. This is the ONE-message-per-phase convention (Audit Verdict /
+# Pipeline Improvement). A duplicate header the agent included is NOT re-emitted.
+Test-Script "audit-record + record-improvement accept structured --body-file" {
+  $url = Mock-IssueCreate "temp: structured body" "structured body scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $dir = ".opencode/tmp/$issueNum"
+  $refs = "docs/agentic-pipeline/playbooks/references.md"
+  $refsBackup = Join-Path $env:TEMP ("refs-" + [Guid]::NewGuid().ToString("N") + ".md")
+  Copy-Item -LiteralPath $refs -Destination $refsBackup -Force
+  $av = Join-Path $env:TEMP "fredo-audit-verdict-body.md"
+  try {
+    # live-policy PASS so audit-record --verdict success clears the verification gate.
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
+    # The Auditor's structured draft (template shape): its own `## Audit Verdict` header.
+    [System.IO.File]::WriteAllText($av, "## Audit Verdict`n`nVerdict: **SUCCESS**`n`n## Per-AC re-derivation`n`n| AC | Verdict |`n|----|----|`n| GA-1 | PASS |`n`n*Authored by Auditor*", [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --issue $issueNum --agent auditor --action audit-record --verdict success --body-file $av 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "audit-record --body-file failed (exit $LASTEXITCODE): $outStr" }
+    $vj = (Mock-IssueComments $issueNum) -join "`n"
+    if ($vj -notmatch "## Audit Verdict") { throw "audit-record did not post the Audit Verdict comment, got: $vj" }
+    if (($vj -split "## Audit Verdict").Count -ne 2) { throw "duplicate ## Audit Verdict header (the draft's header was not stripped), got: $vj" }
+    if ($vj -notmatch "Per-AC re-derivation") { throw "the structured body was not posted, got: $vj" }
+    if ($vj -notmatch "\*Authored by Auditor\*") { throw "the Auditor footer is missing, got: $vj" }
+    # The Curator's structured improvement draft at the CONVENTIONAL path
+    # (`.opencode/tmp/<issue>/pipeline-improvement.md`), posted with NO --reason and
+    # NO --body-file — the machine auto-reads the draft (artifacts.md convention).
+    [System.IO.File]::WriteAllText("$dir/pipeline-improvement.md", "## Class`n`ntechnique`n`n## Root cause`n`nmechanism`n`n## Lever`n`nplaybook`n`n## Guardrails`n`nnone (curation only)`n`n## Effectiveness`n`nPending", [System.Text.UTF8Encoding]::new($false))
+    $iout = & rust-script $ps --issue $issueNum --agent curator --action record-improvement 2>&1
+    $ioutStr = if ($iout -is [array]) { $iout -join "`n" } else { "$iout" }
+    if ($LASTEXITCODE -ne 0) { throw "record-improvement (conventional draft) failed (exit $LASTEXITCODE): $ioutStr" }
+    if (Test-Path "$dir/pipeline-improvement.md") { throw "the conventional pipeline-improvement.md draft must be consumed after posting" }
+    $ij = (Mock-IssueComments $issueNum) -join "`n"
+    if ($ij -notmatch "## Pipeline Improvement") { throw "record-improvement did not post the Pipeline Improvement comment, got: $ij" }
+    if ($ij -match "## Pipeline Improvement \(round") { throw "improvement comment must NOT be round-tagged, got: $ij" }
+    if ($ij -notmatch "## Effectiveness") { throw "the structured improvement body was not posted, got: $ij" }
+    if ($ij -notmatch "\*Authored by Curator\*") { throw "the Curator footer is missing, got: $ij" }
+    # The pipeline.improvement event was recorded (with an allocated guardrailId).
+    $log = ".opencode/state/issues/$issueNum.jsonl"
+    $ev = Select-String -Path $log -Pattern 'pipeline.improvement' -ErrorAction SilentlyContinue | Measure-Object
+    if ($ev.Count -lt 1) { throw "pipeline.improvement event not recorded in $log" }
+    return "structured --body-file: Audit Verdict + Pipeline Improvement posted (headers/footers machine-owned)"
+  } finally {
+    Remove-Item -LiteralPath $av -Force -ErrorAction SilentlyContinue
+    if ($refsBackup -and (Test-Path -LiteralPath $refsBackup)) { Copy-Item -LiteralPath $refsBackup -Destination $refs -Force; Remove-Item -LiteralPath $refsBackup -Force -ErrorAction SilentlyContinue }
+    Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# audit-record injects the machine's `Verdict:` line when the Auditor's draft
+# omits it, so the audit/cleanup exit guards can always read the verdict from the
+# posted comment (the verdict is machine-known via --verdict, never parsed prose).
+Test-Script "audit-record injects the verdict line when the draft omits it" {
+  $url = Mock-IssueCreate "temp: verdict inject" "verdict-inject scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $dir = ".opencode/tmp/$issueNum"
+  $av = Join-Path $env:TEMP "fredo-audit-noverdict.md"
+  try {
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
+    # A draft with NO `Verdict:` line.
+    [System.IO.File]::WriteAllText($av, "## Integrity gate`n`n- verify: INTEGRITY OK", [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --issue $issueNum --agent auditor --action audit-record --verdict success --body-file $av 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "audit-record failed (exit $LASTEXITCODE): $outStr" }
+    $vj = (Mock-IssueComments $issueNum) -join "`n"
+    if ($vj -notmatch "## Audit Verdict") { throw "missing ## Audit Verdict header, got: $vj" }
+    if ($vj -notmatch "Verdict: \*\*SUCCESS\*\*") { throw "the machine must inject the SUCCESS verdict line, got: $vj" }
+    if ($vj -notmatch "Integrity gate") { throw "the structured body was dropped, got: $vj" }
+    return "audit-record injected the missing verdict line"
+  } finally {
+    Remove-Item -LiteralPath $av -Force -ErrorAction SilentlyContinue
+    Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
@@ -1233,7 +1342,7 @@ generate-work removed-path Implementation Plan
 
 # Structured root cause (SI-decision data): audit-record restart accepts
 # --root-cause defect|technique|environment|scope, records it as an audit.verdict
-# event attribute, prints it in the Decision, and the context block surfaces it.
+# event attribute, prints it in the Audit Verdict, and the context block surfaces it.
 Test-Script "audit-record restart records a structured root cause" {
   $url = Mock-IssueCreate "temp: root cause" "root-cause scratch" "audit"
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
@@ -2606,7 +2715,10 @@ Test-Script "Product Owner posts Status (Decision/Question/Evidence prefixes rem
   }
 }
 
-# timeline comments: drafts in .opencode/tmp/<issue>/*.md are posted + consumed
+# timeline comments: drafts in .opencode/tmp/<issue>/*.md are posted + consumed.
+# `po-backlog.md` is NOT a timeline comment (the issue BODY is the single backlog),
+# and `orchestrator-summary.md` is RETIRED (superseded by `## Final Status`) — both
+# are left unconsumed and never posted.
 Test-Script "timeline comments posted from tmp drafts (post-comments)" {
   $url = Mock-IssueCreate "temp: timeline comments" "timeline scratch" ""
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
@@ -2617,23 +2729,28 @@ Test-Script "timeline comments posted from tmp drafts (post-comments)" {
   $dir = ".opencode/tmp/$issueNum"
   try {
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
-    # PO Backlog is no longer a timeline comment (the issue BODY is the single source).
+    # Not timeline comments: the PO Backlog (the issue BODY is the source) and the
+    # retired Orchestrator Summary (superseded by `## Final Status`).
     [System.IO.File]::WriteAllText("$dir/po-backlog.md", "As a tester, I can see the PO backlog comment.`n`n*Authored by Product Owner*", [System.Text.UTF8Encoding]::new($false))
-    [System.IO.File]::WriteAllText("$dir/orchestrator-summary.md", "Audit verdict: SUCCESS`n`n*Authored by Orchestrator*", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText("$dir/orchestrator-summary.md", "Retired closing narrative.`n`n*Authored by Orchestrator*", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText("$dir/dev-summary.md", "Round work summary.`n`n*Authored by developer*", [System.Text.UTF8Encoding]::new($false))
     $out = & rust-script $ps --issue $issueNum --agent orchestrator --action post-comments 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "post-comments failed: $outStr" }
-    if ($outStr -notmatch "COMMENTED: Orchestrator Summary") { throw "expected Orchestrator Summary comment, got: $outStr" }
+    if ($outStr -notmatch "COMMENTED: Development Summary \(round 1\)") { throw "expected Development Summary comment, got: $outStr" }
     if ($outStr -match "COMMENTED: PO Backlog") { throw "PO Backlog comment must NOT be auto-posted, got: $outStr" }
-    # orchestrator-summary draft consumed; po-backlog draft left unconsumed (no longer a timeline comment).
-    if (Test-Path "$dir/orchestrator-summary.md") { throw "orchestrator-summary draft not consumed" }
+    if ($outStr -match "COMMENTED: Orchestrator Summary") { throw "Orchestrator Summary is retired and must NOT be posted, got: $outStr" }
+    # dev-summary draft consumed; the two non-timeline drafts left unconsumed.
+    if (Test-Path "$dir/dev-summary.md") { throw "dev-summary draft not consumed" }
     if (-not (Test-Path "$dir/po-backlog.md")) { throw "po-backlog draft should be left unconsumed" }
-    # comments actually on the issue; Orchestrator Summary is machine-stamped with the round.
+    if (-not (Test-Path "$dir/orchestrator-summary.md")) { throw "retired orchestrator-summary draft should be left unconsumed" }
+    # comments actually on the issue; Development Summary is machine-stamped with the round.
     $cmts = Mock-IssueComments $issueNum
     $joined = $cmts -join "`n"
     if ($joined -match "## PO Backlog") { throw "PO Backlog must NOT appear on the issue: $joined" }
-    if ($joined -notmatch "## Orchestrator Summary \(round 1\)") { throw "Orchestrator Summary comment not posted to issue: $joined" }
-    return "timeline: Orchestrator Summary posted + consumed; PO Backlog draft left unconsumed (body is the source)"
+    if ($joined -match "## Orchestrator Summary") { throw "## Orchestrator Summary must NOT appear (retired): $joined" }
+    if ($joined -notmatch "## Development Summary \(round 1\)") { throw "Development Summary comment not posted to issue: $joined" }
+    return "timeline: Development Summary posted + consumed; PO Backlog + retired Orchestrator Summary left unconsumed"
   } finally {
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
     Mock-Cleanup $issueNum
@@ -2823,7 +2940,7 @@ Test-Script "Project status sync: done -> Reviewing, canceled -> Done (all-digit
   $global:LASTEXITCODE = 0
   # (2) End-to-end done-close: `done` now maps to `Reviewing` (alphanumeric id); the
   # close must apply it and must NOT record a sync failure. Drive an issue straight to
-  # a done-closeable state (label `cleanup` + a success audit Decision + a live-policy
+  # a done-closeable state (label `cleanup` + a success `## Audit Verdict` + a live-policy
   # PASS verdict).
   $url = Mock-IssueCreate "temp: project-status done sync" "project status scratch" "cleanup"
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
@@ -2847,7 +2964,7 @@ Test-Script "Project status sync: done -> Reviewing, canceled -> Done (all-digit
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
     & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
-    [System.IO.File]::WriteAllText("$dir/decision.md", "## Decision`n`nAudit verdict: **success**`n`n*Authored by Auditor*", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText("$dir/decision.md", "## Audit Verdict`n`nVerdict: **SUCCESS**`n`n*Authored by Auditor*", [System.Text.UTF8Encoding]::new($false))
     & rust-script $ps --action mock-gh --ghargs "issue comment $issueNum --body-file $dir/decision.md" 2>&1 | Out-Null
     $out = & rust-script $ps --issue $issueNum --agent orchestrator --action close-issue --to-phase done 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
@@ -3884,6 +4001,28 @@ Test-Script "doc-sync skill pins the maint-pr gate flow + doc categories" {
   }
   if ($src -match "git push origin main") { throw "doc-sync skill still references the removed 'git push origin main'" }
   return "doc-sync skill: maint-pr gate flow + categories present, no removed push"
+}
+
+# dev-environment skill pin (G-401 fix): a completed spec must STOP + CLEAN its
+# isolated env at the cleanup phase. The skill must carry the run-complete teardown
+# command, the lease->env-id lookup, and the why (the accumulation is the G-401
+# collision class); the old unconditional "leave it running" instruction must be
+# gone (it is right intra-run only). Guards the guidance against silent regression.
+Test-Script "dev-environment skill pins the run-complete env teardown" {
+  $src = Get-Content ".opencode/skills/dev-environment/SKILL.md" -Raw
+  foreach ($tok in @(
+    ".opencode/state/env-leases/",
+    "-Action Clean -EnvId",
+    "-Spec <N>",
+    "G-401",
+    "cleanup"
+  )) {
+    if ($src -notmatch [regex]::Escape($tok)) { throw "dev-environment skill missing token: $tok" }
+  }
+  if ($src -match [regex]::Escape("Do NOT stop the dev:tauri instance")) {
+    throw "dev-environment skill still carries the unconditional 'Do NOT stop the dev:tauri instance' instruction"
+  }
+  return "dev-environment skill: run-complete teardown + lease lookup + G-401 present; unconditional stop removed"
 }
 
 # --- Summary ---

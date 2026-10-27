@@ -28,7 +28,7 @@ The Curator owns the pipeline's **durable lessons (text)** — its guardrails an
 3. **Decide the lever** from the Class → Lever table below — chosen by the class, never by habit. The Curator's levers are **text**: a playbook edit, a skill recipe, a reference, or a `### G-` guardrail record. A script or machine lever routes to the **Toolsmith**/**Machinist**; an `opencode.json` permission gap routes to the **Orchestrator's** `set-permission`; a universal rule for `AGENTS.md`, a non-permission config change, agent identity, or a principle change is **proposed to the human**.
 4. **Curate — never accumulate.** Before adding anything, run the ACE curation lifecycle (Recipe 4): dedup the new lesson against the existing guardrail store; retire stale rules (a failure class extinct or superseded, a guardrail not triggered in 10+ specs); strengthen (`Partial`) or escalate a rule that did not reduce recurrence; re-validate `effectiveness:` for every guardrail this round exercised (Recipe 1). Adding a rule without curating the store is the failure mode — guardrail bloat causes context collapse (ACE) and the attention budget drops every rule (Anthropic). **A rule that does not reduce recurrence is bloat.**
 5. **Persist a `### G-` guardrail record ONLY when it will reduce recurrence** — Recipe 6's format, appended under `## Known Failure Modes` in `references.md` (one record per durable failure class; ephemeral one-off friction stays in the observations log). The rule must be an imperative the affected agent can follow, **prose-only** (no code snippets, no product symbols), and its `home` must be the playbook/skill/reference that bakes it in — an un-baked rule is **orphaned** (Recipe 3).
-6. **Record the improvement** via the state machine's `record-improvement` action (`--reason "<what you changed and why>"`) — it posts the `## Pipeline Improvement (round N)` comment, records the `pipeline.improvement` metric event, and stamps the allocated `guardrailId` (the `### G-NNN` for the record). **The machine does NOT author the `### G-` record** — the guardrail records are the Curator's (principle 6); write the record in the same pass with the stamped id (step 5).
+6. **Record the improvement — ONE comment per run** via the state machine's `record-improvement` action (`--reason "<what you changed and why>"`). Draft the structured comment to `.opencode/tmp/<issue>/pipeline-improvement.md` per the [Pipeline-improvement comment template](../templates/Pipeline-improvement-comment-template.md) (Class / Root cause / Lever / Guardrails / Effectiveness, ending `*Authored by Curator*`); `record-improvement` posts it as the `## Pipeline Improvement` comment, records the `pipeline.improvement` metric event, and stamps the allocated `guardrailId` (the `### G-NNN` for the record). **Post exactly ONE `## Pipeline Improvement` comment for the whole pass — never one comment per guardrail.** A pass that writes or curates several `### G-` records (e.g. G-401/G-402/G-403) still produces a single comment with the ids listed under `## Guardrails`; N separate improvement comments read as spam. **The machine does NOT author the `### G-` record** — the guardrail records are the Curator's (principle 6); write the record(s) in the same pass with the stamped id (step 5).
 7. **Edit the playbook/references in the same pass as the change.** An improvement not baked into its `home` in the same pass is invisible — the rule lives in the playbook/skill/reference it targets, not only in the guardrail ledger. Document the change in the same pass (common-rules).
 
 ### Class → Lever routing (what the Curator owns)
@@ -49,12 +49,13 @@ Boundary: a **script/machine** lever is the Machinist's; a **skill/script** leve
 
 - A `### G-` guardrail record under `## Known Failure Modes` in `references.md` (only when it will reduce recurrence).
 - Edits to the affected playbook(s), skill recipe(s), and/or `references.md`.
-- The `## Pipeline Improvement (round N)` comment + `pipeline.improvement` metric event (via `record-improvement`).
+- **ONE** `## Pipeline Improvement` comment + `pipeline.improvement` metric event (via `record-improvement`) — the guardrail ids are a list inside the one comment.
 - A curation outcome for the guardrail store: deduped entries, retired stale rules, strengthened/escalated weak rules, updated `effectiveness:` values.
 
 ## GitHub conventions
 
 - GitHub writes go through the state machine: `record-improvement` posts the improvement comment and records the event. The Curator does not call `gh`/`git` for pipeline operations.
+- **One `## Pipeline Improvement` comment per run** — never one per guardrail. List every guardrail touched under `## Guardrails` in that single comment.
 - The improvement comment ends `*Authored by Curator*`.
 - `references.md` is a shared, agent-editable knowledge base (common-rules §2) — the `### G-` guardrail records are the Curator's exclusive ownership; curate other agents' entries, never revert them.
 - Guardrail records are prose-only — no code snippets, no product symbols.
@@ -77,6 +78,7 @@ Boundary: a **script/machine** lever is the Machinist's; a **skill/script** leve
 - **Prose-only records.** A guardrail record describes the rule in prose; it never embeds code snippets, API signatures, or product symbols.
 - **The `### G-` records are Curator-authored (boundary).** The `record-improvement` action's machine side owns only the deterministic part — allocating the `G-NNN` id and stamping `guardrailId` on the `pipeline.improvement` event. The machine must not author a `### G-` record; the Curator writes it in the same pass (principle 6). Until the Machinist removes the machine's stub write, replace any machine-written `on_the_go_improvement` stub with a real record (rename the heading to the failure class; fill `target_failure` / `observed` / `home` / `effectiveness`).
 - **Boundary.** `principles.md`, `AGENTS.md`, non-permission `opencode.json`, agent identity (`.opencode/agents/*.md`), scripts/skills-as-executables (Toolsmith), and the state machine (Machinist) are not the Curator's to apply — propose to the human or route to the owning role.
+- **One improvement comment per run (timeline hygiene).** `record-improvement` is called ONCE per curation pass and posts ONE `## Pipeline Improvement` comment covering every guardrail touched (Class / Root cause / Lever / Guardrails / Effectiveness). Never call it once per guardrail — N separate improvement comments on one issue's timeline read as spam and bury the signal.
 - **Record-anchored.** Derive the lesson from the record (the audit verdict, the fix plan, the event log, the observations log) — never from memory of the round.
 - **Never touch the record.** The event log, verdicts, and error log are append-only; the Curator reads them and never rewrites, edits, or backdates them.
 
@@ -88,4 +90,5 @@ Boundary: a **script/machine** lever is the Machinist's; a **skill/script** leve
 - docs/agentic-pipeline/playbooks/orchestrator.md (the orchestration + retry flow the lessons derive from)
 - docs/agentic-pipeline/playbooks/auditor.md (the audit verdict the lesson derives from)
 - docs/agentic-pipeline/state-machine.md (the `record-improvement` action)
+- docs/agentic-pipeline/templates/Pipeline-improvement-comment-template.md (the one `## Pipeline Improvement` comment shape)
 - .opencode/skills/retro-analysis/SKILL.md (Recipes 1–6 — effectiveness, patterns, grounded verification, ACE curation, auto-persist)

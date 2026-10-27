@@ -47,9 +47,10 @@ via `rust-script`) whose configuration is the **single source of truth**
 - **Issue state.** The state machine reads/writes GitHub labels, the issue project, and
   the per-issue event log (`.opencode/state/issues/*.jsonl`, append-only, anti-tamper).
 - **The GitHub timeline as the log.** GitHub issues and comments are the durable,
-  human-auditable record — `## Triage Plan`, `## Development Summary`, `## Fix Plan
-  (round N)`, `## Tests Runs`, `## Orchestrator Summary` are machine-posted, machine-stamped
-  artifacts.
+  human-auditable record — `## Triage Plan`, the per-developer `## Developer <ST-id> —
+  verification`, `## Development Summary`, `## Fix Plan (round N)`, `## Tests Runs`,
+  `## Audit Verdict`, `## Pipeline Improvement`, and `## Final Status` are machine-posted,
+  machine-stamped artifacts, each ending `*Authored by <Agent>*`.
 
 Because the machine is the **single writer**, there is no ambiguity about "who moved
 the issue" or "what state are we in" — the answer is read, not guessed. Multi-agent

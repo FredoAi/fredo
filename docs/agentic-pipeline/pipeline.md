@@ -155,7 +155,7 @@ Each developer works a slice of the plan's task decomposition directly on the fe
 3. **Implement** — strictly within the plan's scope. Never touch files outside the task; never redesign architecture.
 4. **Verify locally** — lint, typecheck, build, tests.
 5. **Push with `git push origin HEAD:spec/<N>`** — the developer's one allowed direct write (never `main`/`master`). Pull/merge `spec/<N>` first if the push is rejected.
-6. **Remove the worktree** (`remove-worktree`) and **Report** — a `Status` comment on the FEATURE issue: what shipped, verification results, any scope notes.
+6. **Remove the worktree** (`remove-worktree`) and **Report** — a per-developer `## Developer <ST-id> — verification` comment on the FEATURE issue: what shipped, verification results, any scope notes.
 
 > **Round isolation (Spec #3066).** Every dev/test/pipeline round runs against its OWN isolated env slot — `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec <N> -EnvId <id> -EnvSlot <n> -RequireIsolation` — never the legacy shared path. A round that resolves to the shared `%APPDATA%\com.fredo.app` PostgreSQL cluster dir **fails closed** (`ISOLATION REFUSED`, exit `3`) BEFORE PostgreSQL starts, and the credential sentinel seams (`FREDO_PG_PASSWORD_FILE` / `FREDO_PG_KEYCHAIN_DISABLED`) are refused there too. The legacy shared path is **FORBIDDEN for rounds**. **`Restart` is forbidden for isolated envs** — it drops `-EnvSlot` (G-328) and falls back to the legacy ports; recover with an explicit `-Action Down -EnvId <id>` then `-Action Up -EnvId <id> -EnvSlot <n>`. Every isolation/refusal is recorded append-only in `.opencode/state/env-isolation.jsonl`; `dev-env.ps1 -Action Status` surfaces the read-only isolation check (`verify-env-isolation.ps1`, which flags an active env whose data root IS the shared cluster dir).
 
@@ -219,14 +219,15 @@ Failing work goes back through Implementation (Phase 3) and, once pushed again, 
 **Owner:** Orchestrator — teardown only (the audit verdict was already recorded by the Auditor at the audit gate)
 **Input:** Auditor audit verdict = success (issue in `cleanup`, label `cleanup`)
 **Output:** Feature labeled `done` (left OPEN), human review
-**Goals:** Teardown complete — no leftover worktrees, stale branches, or scratch — then the feature is labeled `done` (the human closes it manually after review).
+**Goals:** Teardown complete — no leftover worktrees, stale branches, scratch, or running isolated dev env — then the feature is labeled `done` (the human closes it manually after review).
 
 1. **Remove worktrees** — any leftover developer worktrees are removed (`git worktree remove` / `prune`).
-2. **Prune stale branches** — the state machine's `prune` action deletes local `spec/*`/`feat/*` branches whose remote counterpart is gone, and `prune --remote` deletes `origin/spec/<N>` for every **closed** spec (open-issue list read once; fail-safe). Merged spec PRs also auto-delete their head branch (`delete_branch_on_merge`); `spec/*` is no longer kept as an evidence record — evidence is uploaded as GitHub `user-attachments`.
-3. **Clean scratch** — leftover gitignored scratch under `.opencode/tmp/` is removed; evidence now lives on GitHub as `user-attachments` (no repo copy to retain).
-4. **Verify no dirty state** — confirm the working tree is clean (no leftover modified/untracked files from the run).
-5. **Label done (leave open)** — `close-issue --to-phase done` (cleanup → done): the machine swaps the label to `done`, records the phase transition, and posts the final-metrics summary. **The issue is NOT closed by the machine** — it stays OPEN so the human closes it manually after review.
-6. **Human review + close** — the human validates the finished feature manually, then closes the issue. If the human finds an issue, they report back and the Product Owner opens a follow-up backlog item (labeled `backlog`, with the bug variant of the PO template).
+2. **Stop + clean the isolated dev env** — the round's isolated env (`wf<N>-a`; the id is in the lease `.opencode/state/env-leases/<N>.json`) is stopped + cleaned with `dev-env.ps1 -Action Clean -EnvId <id>`. A completed run never leaves its env running — the accumulation is the G-401 collision class; the "leave running" guidance is intra-run reuse only (between rounds), and the human's manual review is async and is not a reason to keep it.
+3. **Prune stale branches** — the state machine's `prune` action deletes local `spec/*`/`feat/*` branches whose remote counterpart is gone, and `prune --remote` deletes `origin/spec/<N>` for every **closed** spec (open-issue list read once; fail-safe). Merged spec PRs also auto-delete their head branch (`delete_branch_on_merge`); `spec/*` is no longer kept as an evidence record — evidence is uploaded as GitHub `user-attachments`.
+4. **Clean scratch** — leftover gitignored scratch under `.opencode/tmp/` is removed; evidence now lives on GitHub as `user-attachments` (no repo copy to retain).
+5. **Verify no dirty state** — confirm the working tree is clean (no leftover modified/untracked files from the run).
+6. **Label done (leave open)** — `close-issue --to-phase done` (cleanup → done): the machine swaps the label to `done`, records the phase transition, and posts the final-metrics summary. **The issue is NOT closed by the machine** — it stays OPEN so the human closes it manually after review.
+7. **Human review + close** — the human validates the finished feature manually, then closes the issue. If the human finds an issue, they report back and the Product Owner opens a follow-up backlog item (labeled `backlog`, with the bug variant of the PO template).
 
 ---
 
@@ -235,11 +236,11 @@ Failing work goes back through Implementation (Phase 3) and, once pushed again, 
 **Owner:** Orchestrator
 **Input:** Cleanup complete (teardown done, issue labeled `done` and left OPEN)
 **Output:** Feature closed by the human, human review
-**Goals:** Feature labeled `done`, branches cleaned, final `Status` summary posted, human review + close initiated.
+**Goals:** Feature labeled `done`, branches cleaned, final `## Final Status` comment posted, human review + close initiated.
 
 1. Confirm the spec PR was merged and the tester verdict passed.
 2. The feature is already labeled `done` and left OPEN — `close-issue --to-phase done` from cleanup labeled it; **the human closes it manually** after review.
-3. Post a final `Status` summary: what shipped, test results, remaining risks (if any).
+3. The `## Final Status` comment (posted by `close-issue --to-phase done` from the `final-status.md` draft) is the ONE closing comment: outcome + doc-sync classification summary + final metrics + merged PRs.
 4. **Human review + close** — the human validates the finished feature manually, then closes the issue. `done` is **terminal**: a defect in the merged work is **not reopened** — it becomes a **follow-up backlog issue** (the PO links it with `revises: #N`; the `feature.revised` metric tracks it), which runs the pipeline normally.
 
 ---

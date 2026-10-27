@@ -1,5 +1,7 @@
-# Orchestrator Summary Comment Template
+# Orchestrator Summary Comment Template — SUPERSEDED
 
+> **SUPERSEDED by [Final-status-comment-template.md](Final-status-comment-template.md).** The `## Orchestrator Summary` header is retired: the closing comment is now the single `## Final Status` (outcome + doc-sync classification summary + final metrics + merged PRs), posted by `close-issue --to-phase done` from the `final-status.md` draft. Do not post a `## Orchestrator Summary`; keep this file only as history.
+>
 > Drafted by the **Orchestrator** as `.opencode/tmp/<issue>/si-summary.md`, auto-posted as `## Orchestrator Summary` by `audit-record` (on success → done). The closing narrative of the issue timeline.
 
 ## Verdict

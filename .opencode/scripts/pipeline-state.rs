@@ -1720,12 +1720,54 @@ fn pr_merge_guard(pr: &str) -> anyhow::Result<(bool, String)> {
     Ok((true, String::new()))
 }
 
-/// Post a compact final-metrics `Status` comment for a completed issue (durations,
-/// rework, blocked, failures, event count). The mechanical half of the closing summary.
-fn post_final_summary(issue: u32) -> anyhow::Result<()> {
+/// Title-case a hyphenated agent name for the `*Authored by <Agent>*` footer
+/// (`orchestrator` → `Orchestrator`, `software-architect` → `Software Architect`).
+fn agent_title(agent: &str) -> String {
+    agent
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Anti-spoofing (G-223): ensure a machine-posted comment carries its
+/// `*Authored by <Agent>*` footer. Idempotent — a body that already carries a
+/// footer is returned unchanged (the machine is the single writer; the footer
+/// attributes the post to the agent the machine posted it for, never the human
+/// whose `gh` auth was used).
+fn ensure_author_footer(body: &str, agent: &str) -> String {
+    if body.to_lowercase().contains("*authored by") {
+        body.to_string()
+    } else {
+        format!("{}\n\n*Authored by {}*", body.trim_end(), agent_title(agent))
+    }
+}
+
+/// Strip a leading machine-owned `## <heading>` header (and the blank lines after
+/// it) from an agent-authored draft, so the machine can prepend its own header
+/// without duplicating one the agent included.
+fn strip_leading_heading(body: &str, heading: &str) -> String {
+    let text = body.strip_prefix('\u{feff}').unwrap_or(body).trim();
+    match text.strip_prefix(heading) {
+        Some(rest) => rest.trim_start().to_string(),
+        None => text.to_string(),
+    }
+}
+
+/// The machine-computed final-metrics block for the `## Final Status` comment
+/// (durations, rework, blocked, failures, event count). The mechanical half of
+/// the closing report.
+fn final_metrics_text(issue: u32) -> String {
     let events = read_issue_events(issue);
     if events.is_empty() {
-        return Ok(());
+        return "no metric events recorded".to_string();
     }
     let mut phase_starts: BTreeMap<String, i64> = BTreeMap::new();
     let mut phase_completes: BTreeMap<String, i64> = BTreeMap::new();
@@ -1756,15 +1798,49 @@ fn post_final_summary(issue: u32) -> anyhow::Result<()> {
     } else {
         durations.iter().map(|(p, m)| format!("{}:{:.0}m", p, m)).collect::<Vec<_>>().join(", ")
     };
-    let body = format!(
-        "## Status\n\nFinal metrics: **{}** events · rework **{}** · blocked **{}** · failures **{}** · phase durations ({})",
+    format!(
+        "**{}** events · rework **{}** · blocked **{}** · failures **{}** · phase durations ({})",
         events.len(), rework, blocked, failures, dur_text
-    );
-    let tmp = project_root()?.join(".opencode").join("tmp").join(format!("summary-{}.md", uuid::Uuid::new_v4()));
+    )
+}
+
+/// Post the ONE `## Final Status` closing comment for a completed issue (the
+/// `close-issue --to-phase done` path). It folds the Orchestrator's outcome/doc-sync
+/// draft (`--body-file`, else the conventional `.opencode/tmp/<issue>/final-status.md`)
+/// and the machine's final metrics into a single message — replacing the former
+/// separate metrics `## Status` comment. The machine owns the header + the metrics
+/// block + the footer (anti-spoofing); the Orchestrator owns the outcome/doc-sync prose.
+fn post_final_status(issue: u32, body_file: Option<&str>) -> anyhow::Result<()> {
+    let conventional = project_root()?.join(".opencode").join("tmp").join(issue.to_string()).join("final-status.md");
+    let raw = match body_file {
+        Some(f) => std::fs::read_to_string(f)
+            .map_err(|e| anyhow::anyhow!("cannot read --body-file {}: {}", f, e))?,
+        None => {
+            if conventional.exists() { std::fs::read_to_string(&conventional)? } else { String::new() }
+        }
+    };
+    let mut content = strip_leading_heading(&raw, "## Final Status");
+    let metrics = final_metrics_text(issue);
+    // Fold the machine metrics into the single `## Metrics` section: replace the
+    // Orchestrator's (template) section in place when present, else append it.
+    if content.lines().any(|l| l.trim() == "## Metrics") {
+        content = replace_section(&content, "metrics", &metrics)?;
+    } else if content.trim().is_empty() {
+        content = format!("## Metrics\n\n{}", metrics);
+    } else {
+        content = format!("{}\n\n## Metrics\n\n{}", content.trim_end(), metrics);
+    }
+    let body = ensure_author_footer(&format!("## Final Status\n\n{}", content), "orchestrator");
+    let tmp = project_root()?.join(".opencode").join("tmp").join(format!("final-status-{}.md", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(tmp.parent().unwrap())?;
     std::fs::write(&tmp, body)?;
     run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
     let _ = std::fs::remove_file(&tmp);
+    // Consume the conventional draft so a re-run never re-posts it.
+    if body_file.is_none() && conventional.exists() {
+        let _ = std::fs::remove_file(&conventional);
+    }
+    println!("FINAL STATUS POSTED: #{}", issue);
     Ok(())
 }
 
@@ -2566,6 +2642,31 @@ fn line_has_verdict(l: &str) -> bool {
     t.starts_with("verdict:")
 }
 
+/// Whether a line carries an audit-verdict marker — `Verdict: ...` (the
+/// `## Audit Verdict` template's first content line) or the legacy
+/// `Audit verdict: ...` phrasing. Case-insensitive; tolerant of a leading
+/// BOM/blockquote/bold. Used by the audit/cleanup exit guards and by the
+/// `audit-record` injection (so a draft written in either phrasing is read).
+fn line_has_audit_verdict(l: &str) -> bool {
+    let t = l.trim().trim_start_matches('\u{feff}').trim().trim_start_matches('>').trim().trim_start_matches('*').trim().to_lowercase();
+    t.starts_with("verdict:") || t.starts_with("audit verdict:")
+}
+
+/// Whether a posted `## Audit Verdict` comment records a SUCCESS verdict (the
+/// template's first content line `Verdict: **SUCCESS**`, or the machine's
+/// synthesized default). Used by the cleanup exit guard. Tolerant of bolding —
+/// the verdict word is matched case-insensitively, and a `restart` line is never
+/// read as a success even if its prose mentions the word.
+fn audit_verdict_is_success(body: &str) -> bool {
+    body.lines().any(|l| {
+        if !line_has_audit_verdict(l) {
+            return false;
+        }
+        let t = l.to_lowercase();
+        t.contains("success") && !t.contains("restart")
+    })
+}
+
 /// Run `git` against a specific checkout root. After #2944 the served root may be
 /// the per-issue `.serve/<issue>` checkout rather than the process CWD, so the
 /// serving guards must resolve branch/HEAD from that checkout. In mock mode the
@@ -3214,11 +3315,11 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
         }
         Phase::Audit => {
             let comments = get_issue_comments(issue);
-            // `audit-record` posts "## Decision" + "Audit verdict: ...". Require the
-            // Decision prefix AND the verdict marker together, not either alone.
+            // `audit-record` posts the `## Audit Verdict` comment carrying a
+            // machine-parseable `Verdict:` line. Require the header AND the verdict
+            // marker together, not either alone.
             let has = comments.iter().any(|b| {
-                let trimmed = b.trim_start();
-                trimmed.starts_with("## Decision") && trimmed.contains("Audit verdict")
+                b.trim_start().starts_with("## Audit Verdict") && b.lines().any(line_has_audit_verdict)
             });
             (has, if has { String::new() } else { "no audit verdict found".into() })
         }
@@ -3226,7 +3327,7 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
             // The post-audit phase is where the pipeline's own self-improvement runs
             // before teardown/rework: the Curator distills the durable lesson
             // (`record-improvement` — a `pipeline.improvement` event + the
-            // `## Pipeline Improvement (round N)` comment), and the specialists'
+            // `## Pipeline Improvement` comment), and the specialists'
             // pipeline edits (Curator playbooks/references, Machinist machine/config,
             // Toolsmith scripts/skills) + the product docs are synced through ONE
             // **SPEC MAINT PR** (`maint-pr` — a `maint/<N>` branch force-merged with
@@ -3247,11 +3348,10 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
             // dirty state) before closing as done. The SI runs the cleanup actions
             // then transitions cleanup → done (close-issue), which closes the issue.
             // The success audit verdict was recorded at the audit → post-audit gate
-            // (audit-record) and survives on the issue's Decision comment.
+            // (audit-record) and survives on the issue's `## Audit Verdict` comment.
             let comments = get_issue_comments(issue);
             let verdict_ok = comments.iter().any(|b| {
-                let trimmed = b.trim_start();
-                trimmed.starts_with("## Decision") && trimmed.contains("Audit verdict: **success**")
+                b.trim_start().starts_with("## Audit Verdict") && audit_verdict_is_success(b)
             });
             // Teardown completeness is enforced at the cleanup → done transition; the
             // exit guard checks the audit verdict exists (the gate into the cleanup
@@ -3453,9 +3553,9 @@ const TRIAGE_A2A_HEADER: &str = "\
 ";
 
 /// Post any pending timeline-comment drafts in `.opencode/tmp/<issue>/` as GitHub
-/// comments. Each draft file maps to a titled comment (the PO backlog, the triage
-/// plan, the Architect-authored fix plan, the development summary, the tests runs,
-/// the Orchestrator Summary). The file is consumed (deleted) after posting so a draft is
+/// comments. Each draft file maps to a titled comment (the triage plan, the
+/// Architect-authored fix plan, the development summary, the tests runs). The file
+/// is consumed (deleted) after posting so a draft is
 /// never posted twice. Runs as a transition side-effect and via the `post-comments`
 /// action. **Best-effort:** a failed comment post is logged, never fatal — a comment
 /// failure must not undo an already-applied phase transition or issue close.
@@ -3526,7 +3626,6 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
         ("fix-plan.md", "Fix Plan"),
         ("dev-summary.md", "Development Summary"),
         ("tests-runs.md", "Tests Runs"),
-        ("orchestrator-summary.md", "Orchestrator Summary"),
     ];
     let dir = project_root()?.join(".opencode").join("tmp").join(issue.to_string());
     if !dir.is_dir() {
@@ -3666,15 +3765,15 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
 
 /// Post a single timeline-comment draft (writes `## <title>` + body, posts it,
 /// consumes the file). Retry-relevant timeline comments (Development Summary,
-/// Tests Runs, Orchestrator Summary) get a machine-stamped `(round N)` header — the round is
+/// Tests Runs) get a machine-stamped `(round N)` header — the round is
 /// derived from the event log (`retry_state` / the testing-entry count), never
 /// written by the drafting agent, so the GitHub timeline is unambiguously
 /// round-tagged and round-1/round-2 verdicts never collide. The Development
 /// Summary stamps the round whose testing entry is being created (count + 1);
-/// Tests Runs and Orchestrator Summary stamp the round that is ending. PO Backlog and
-/// Triage Plan are round-1-only artifacts and stay untagged.
+/// Tests Runs stamps the round that is ending. Triage Plan is a round-1-only
+/// artifact and stays untagged.
 fn post_one_timeline_comment(issue: u32, actor: &str, phase: &str, p: &std::path::Path, title: &str, body: &str) -> anyhow::Result<()> {
-    const ROUND_TAGGED: &[&str] = &["Development Summary", "Tests Runs", "Orchestrator Summary"];
+    const ROUND_TAGGED: &[&str] = &["Development Summary", "Tests Runs"];
     // G-020 on the timeline path (audit fix): the `comment` action refuses a second
     // verdict-carrying comment per round, but this path bypassed it — two
     // tests-runs.md flushes in one round BOTH posted. A verdict-carrying
@@ -3689,9 +3788,9 @@ fn post_one_timeline_comment(issue: u32, actor: &str, phase: &str, p: &std::path
         }
     }
     let header = if ROUND_TAGGED.contains(&title) {
-        // Round-stamp derivation (#2788 audit fix): Tests Runs and Orchestrator Summary
-        // document the testing round that is ENDING — the raw count of testing
-        // `phase.started` entries at post time is correct for them. The
+        // Round-stamp derivation (#2788 audit fix): Tests Runs documents the
+        // testing round that is ENDING — the raw count of testing
+        // `phase.started` entries at post time is correct for it. The
         // Development Summary documents the fix round whose testing entry this
         // transition is ABOUT to create (drafts flush BEFORE the destination
         // `phase.started` append), so its stamp is count + 1 — otherwise every
@@ -3904,10 +4003,10 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             //   — use the `block` action (label + SLA + Status reason) instead of a
             //   parallel Q/A channel nobody reads (workers get answers via their
             //   re-dispatch briefs, never by scanning threads).
-            // - `Decision` is MACHINE-ONLY: the audit-record action posts the verdict
-            //   Decision internally. Free-form Decision comments are refused — a
-            //   decision reaches the record through `audit-record` or a PO amendment
-            //   via `Status`, never as agent prose.
+            // - `Decision` is MACHINE-ONLY: the `audit-record` action posts the
+            //   `## Audit Verdict` comment internally. Free-form Decision comments
+            //   are refused — a decision reaches the record through `audit-record`
+            //   or a PO amendment via `Status`, never as agent prose.
             if prefix == "Evidence" {
                 let _ = append_event_attrs(issue, "guard.fired", &a.actor, phase.as_str(), "blocked", "refused --prefix Evidence (removed; verdict goes via tests-runs.md draft)", &[("guardId", "G-064"), ("guardKey", "evidence_prefix_removed"), ("failureClass", "removed_prefix_used"), ("site", "comment")]);
                 anyhow::bail!(
@@ -3923,7 +4022,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             if prefix == "Decision" {
                 let _ = append_event_attrs(issue, "guard.fired", &a.actor, phase.as_str(), "blocked", "refused free-form Decision (machine-only via audit-record)", &[("guardId", "decision_prefix_machine_only"), ("guardKey", "decision_prefix_machine_only"), ("failureClass", "machine_only_prefix_used"), ("site", "comment")]);
                 anyhow::bail!(
-                    "`Decision` comments are machine-only (posted by the `audit-record` verdict) — decisions reach the record via `audit-record --reason` or a PO amendment through `--prefix Status`"
+                    "`Decision` comments are machine-only — the audit verdict is the machine-posted `## Audit Verdict` comment (via `audit-record`); decisions reach the record via `audit-record` or a PO amendment through `--prefix Status`"
                 );
             }
             if !["Status"].contains(&prefix) {
@@ -4023,35 +4122,57 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             post_pending_comments(issue, &a.actor, &phase, None)?;
         }
         "record-improvement" => {
-            // The Curator records a pipeline improvement — posts a
-            // `## Pipeline Improvement (round N)` comment on the feature issue
-            // immediately (so the timeline shows the improvement at the moment it
-            // happened, not only at audit), records a `pipeline.improvement` metric
-            // event (tracked in the event log + metrics), and allocates the next
-            // free `### G-NNN` id (stamped as `guardrailId` on the event and
-            // printed for the Curator). The machine does NOT author the `### G-`
-            // record — the guardrail records are Curator-authored (principle 6);
-            // the Curator writes the record in the same pass with the allocated id.
-            // Requires --reason.
+            // The Curator records a pipeline improvement — posts the ONE structured
+            // `## Pipeline Improvement` comment on the feature issue immediately (the
+            // timeline shows the improvement at the moment it happened, not only at
+            // audit; ONE comment per curation pass, never one per guardrail),
+            // records a `pipeline.improvement` metric event (tracked in the event
+            // log + metrics), and allocates the next free `### G-NNN` id (stamped as
+            // `guardrailId` on the event and printed for the Curator). The machine
+            // does NOT author the `### G-` record — the guardrail records are
+            // Curator-authored (principle 6); the Curator writes the record in the
+            // same pass with the allocated id. The structured body comes from
+            // `--body-file` (the `pipeline-improvement.md` template draft); a bare
+            // `--reason` is the fallback. One of the two is required.
             if !actor_allowed(a.action.as_str(), &a.actor) {
                 append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action))?;
                 println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
                 return Ok(());
             }
             let issue = req_issue(a)?;
-            let reason = a.reason.as_deref().unwrap_or("").trim();
-            if reason.is_empty() {
-                anyhow::bail!("record-improvement requires --reason \"<what was improved>\"");
+            let reason = a.reason.as_deref().unwrap_or("").trim().to_string();
+            let body_file = a.body_file.as_deref();
+            // The structured body source: `--body-file`, else the conventional
+            // `.opencode/tmp/<issue>/pipeline-improvement.md` draft, else a bare
+            // `--reason`. At least one of `--reason`/`--body-file` is required; the
+            // conventional draft is only consulted when `--body-file` is absent.
+            let conventional = project_root()?.join(".opencode").join("tmp").join(issue.to_string()).join("pipeline-improvement.md");
+            if reason.is_empty() && body_file.is_none() && !conventional.exists() {
+                anyhow::bail!("record-improvement requires --reason \"<what was improved>\" or --body-file <structured draft>");
             }
             let phase = phase_of(a)?.as_str().to_string();
             let (round, _) = retry_state(issue);
-            // 1) Post the `## Pipeline Improvement (round N)` comment on the issue.
-            let body = format!("## Pipeline Improvement (round {})\n\n{}\n\n*Authored by Curator*", round, reason);
+            // 1) Post the ONE `## Pipeline Improvement` comment on the issue. The
+            //    machine owns the header + footer (anti-spoofing); the Curator owns
+            //    the structured body.
+            let (raw_body, from_conventional) = match body_file {
+                Some(f) => (std::fs::read_to_string(f)
+                    .map_err(|e| anyhow::anyhow!("cannot read --body-file {}: {}", f, e))?, false),
+                None if conventional.exists() => (std::fs::read_to_string(&conventional)?, true),
+                None => (reason.clone(), false),
+            };
+            let body = ensure_author_footer(
+                &format!("## Pipeline Improvement\n\n{}", strip_leading_heading(&raw_body, "## Pipeline Improvement")),
+                "curator",
+            );
             let tmp = project_root()?.join(".opencode").join("tmp").join(format!("improvement-{}.md", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(tmp.parent().unwrap())?;
             std::fs::write(&tmp, &body)?;
             run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
             let _ = std::fs::remove_file(&tmp);
+            if from_conventional {
+                let _ = std::fs::remove_file(&conventional);
+            }
             println!("IMPROVEMENT COMMENTED: round {} on #{}", round, issue);
             // 2) Allocate the next free guardrail id (deterministic) so it can be
             //    stamped on the metric event — making `pipeline.improvement` /
@@ -4064,7 +4185,8 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             let gid = guard_id.map(|g| format!("G-{:03}", g)).unwrap_or_default();
             let mut attrs: Vec<(&str, &str)> = vec![("round", round_s.as_str())];
             if !gid.is_empty() { attrs.push(("guardrailId", gid.as_str())); }
-            append_event_attrs(issue, "pipeline.improvement", &a.actor, &phase, "success", reason, &attrs)?;
+            let msg = if reason.is_empty() { "pipeline improvement (structured body)".to_string() } else { reason };
+            append_event_attrs(issue, "pipeline.improvement", &a.actor, &phase, "success", &msg, &attrs)?;
         }
         "transition" => {
             if !actor_allowed(a.action.as_str(), &a.actor) {
@@ -4278,7 +4400,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 println!("SIDE-EFFECTS: {}", notes.join("; "));
             }
             // Post any pending timeline-comment drafts (`.opencode/tmp/<issue>/*.md`):
-            // PO Backlog, Triage Plan, Development Summary, Tests Runs, Orchestrator Summary.
+            // Triage Plan, Fix Plan, Development Summary, Tests Runs.
             // NOTE ordering: this MUST run BEFORE the destination `phase.started` is
             // appended — the plan-comment decision counts prior `phase.started`
             // entries for the destination phase (prior_phase_entries), so appending
@@ -4303,7 +4425,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             run_gh(&["issue", "edit", &issue.to_string(), "--add-label", &blocked_label])?;
             let tmp = project_root()?.join(".opencode").join("tmp").join(format!("block-{}.md", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(tmp.parent().unwrap())?;
-            std::fs::write(&tmp, format!("## Status\n\nBlocked: {}", reason))?;
+            std::fs::write(&tmp, ensure_author_footer(&format!("## Status\n\nBlocked: {}", reason), &a.actor))?;
             run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
             let _ = std::fs::remove_file(&tmp);
             println!("BLOCKED: #{} ({})", issue, reason);
@@ -4380,8 +4502,9 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 swap_phase_label(issue, Phase::Cleanup, Phase::Done)?;
                 append_event_attrs(issue, "phase.completed", &a.actor, "cleanup", "success", "completed cleanup", &[("phase", "cleanup"), ("to", "done")])?;
                 append_event_attrs(issue, "phase.started", &a.actor, "done", "success", "started done", &[("phase", "done"), ("from", "cleanup")])?;
-                // Auto final-metrics summary (the mechanical half of the closing report).
-                let _ = post_final_summary(issue);
+                // Post the ONE `## Final Status` closing comment: the Orchestrator's
+                // outcome/doc-sync draft (`--body-file`) + the machine's final metrics.
+                let _ = post_final_status(issue, a.body_file.as_deref());
                 // Mirror the done status onto the project Status field (issue stays OPEN).
                 let _ = sync_project_status(issue, "done");
                 println!("CLEANUP -> DONE: #{} labeled done (issue left OPEN for human close)", issue);
@@ -4731,8 +4854,8 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             audit_evidence(issue, a.json)?;
         }
         "audit-record" => {
-            // SI verdict: posts the Decision comment AND records the metric event —
-            // one write path, one event, no separate `comment` step.
+            // SI verdict: posts the `## Audit Verdict` comment AND records the metric
+            // event — one write path, one event, no separate `comment` step.
             if !actor_allowed(a.action.as_str(), &a.actor) {
                 append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action))?;
                 println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
@@ -4764,10 +4887,10 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     return Ok(());
                 }
             }
-            // `phase` is derived from --phase for the Decision comment / event message
-            // — it is the RECORDED restart target (the phase the post-audit will exit
-            // to once the specialists have run). "audit" (the default) means a success
-            // verdict.
+            // `phase` is derived from --phase for the Audit Verdict comment / event
+            // message — it is the RECORDED restart target (the phase the post-audit
+            // will exit to once the specialists have run). "audit" (the default)
+            // means a success verdict.
             let phase = a.to_phase.as_deref().unwrap_or("audit");
             let reason = a.reason.as_deref().unwrap_or("");
             // Validate the restart target before any write: only the four real restart
@@ -4801,7 +4924,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             } else {
                 None
             };
-            // The Decision comment implies a label swap (audit → post-audit) —
+            // The Audit Verdict comment implies a label swap (audit → post-audit) —
             // refuse to post it unless the issue is actually in the audit phase, so a
             // failed label swap can never leave a posted verdict behind (no half-state).
             let current = phase_of(a)?;
@@ -4811,19 +4934,48 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 println!("BLOCKED: {}", msg);
                 return Ok(());
             }
-            let body = if verdict == "success" {
-                format!("## Decision\n\nAudit verdict: **success**.\n\n{}", reason)
+            // Machine-stamped round: the restart names the round the next dispatch is
+            // completing, so the timeline is round-tagged and the reason (missed-AC
+            // list) is scoped to that round.
+            let (round, _) = retry_state(issue);
+            // The Auditor's structured body: `--body-file` (the `## Audit Verdict`
+            // template draft, `.opencode/tmp/<issue>/audit-verdict.md`) if given, else
+            // the conventional draft path, else a machine-synthesized default. The
+            // machine owns the `## Audit Verdict` header + the `Verdict:` line +
+            // the footer (anti-spoofing); the Auditor owns the per-AC detail. The
+            // verdict is machine-known (`--verdict`), never parsed from the prose.
+            let default_body = if verdict == "success" {
+                format!("Verdict: **SUCCESS**\n\n{}", reason)
             } else {
-                // Machine-stamped round: the restart Decision names the round the
-                // next dispatch is completing, so the timeline is round-tagged and
-                // the reason (missed-AC list) is scoped to that round.
-                let (round, _) = retry_state(issue);
                 let rc_line = match a.root_cause.as_deref() {
-                    Some(rc) => format!("\nRoot cause: **{}**.\n", rc),
+                    Some(rc) => format!("Root cause: **{}**.\n\n", rc),
                     None => String::new(),
                 };
-                format!("## Decision\n\nAudit verdict: **restart → {} (round {})**.{}\nMissed ACs to complete in round {}:\n{}", phase, round, rc_line, round, reason)
+                format!("Verdict: **RESTART → {} (round {})**\n\n{}Missed ACs to complete in round {}:\n{}", phase, round, rc_line, round, reason)
             };
+            let raw_body = match a.body_file.as_deref() {
+                Some(f) => std::fs::read_to_string(f)
+                    .map_err(|e| anyhow::anyhow!("cannot read --body-file {}: {}", f, e))?,
+                None => {
+                    let conventional = project_root()?.join(".opencode").join("tmp").join(issue.to_string()).join("audit-verdict.md");
+                    if conventional.exists() { std::fs::read_to_string(&conventional)? } else { default_body }
+                }
+            };
+            let detail = strip_leading_heading(&raw_body, "## Audit Verdict");
+            // Guarantee a machine-parseable verdict line (the template's first content
+            // line) so the audit/cleanup exit guards can read the verdict from the
+            // posted comment even when the Auditor's draft omitted it.
+            let detail = if detail.lines().any(line_has_audit_verdict) {
+                detail
+            } else {
+                let verdict_line = if verdict == "success" {
+                    "Verdict: **SUCCESS**".to_string()
+                } else {
+                    format!("Verdict: **RESTART → {} (round {})**", phase, round)
+                };
+                if detail.trim().is_empty() { verdict_line } else { format!("{}\n\n{}", verdict_line, detail) }
+            };
+            let body = ensure_author_footer(&format!("## Audit Verdict\n\n{}", detail), "auditor");
             let tmp = project_root()?.join(".opencode").join("tmp").join(format!("audit-{}.md", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(tmp.parent().unwrap())?;
             std::fs::write(&tmp, body)?;
@@ -4845,7 +4997,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 if verdict == "success" { "passed" } else { "failed" },
                 reason, &verdict_attrs)?;
             // Post any pending timeline-comment drafts (a restart's authored
-            // `fix-plan.md`, the Orchestrator Summary, ...) BEFORE the destination
+            // `fix-plan.md`, ...) BEFORE the destination
             // `phase.started` is appended below. The plan-comment decision counts
             // prior `implementation` `phase.started` entries to stamp
             // `## Fix Plan (round N)`; flushing AFTER the destination entry
@@ -4858,7 +5010,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // the specialists' pipeline edits are committed with the product-doc sync,
             // and the product docs are synced. The RECORDED verdict (success, or
             // restart + target phase — stamped on the `audit.verdict` event above and
-            // in the Decision comment) tells the Orchestrator where the post-audit
+            // in the Audit Verdict comment) tells the Orchestrator where the post-audit
             // exits to once the specialists have run: `transition post-audit →
             // cleanup` on success, or `transition post-audit → <phase>` on a restart.
             swap_phase_label(issue, Phase::Audit, Phase::PostAudit)?;
@@ -6307,7 +6459,7 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
     println!("Audit OK (verification + env evidence attribution): {}", audit_ok);
     println!("Spec PR merged: {}", spec_merged);
     println!();
-    println!("Record verdict: pipeline-state.rs --action audit-record --issue {} --verdict success|restart [--phase <p> --reason <why>]", issue);
+    println!("Record verdict: pipeline-state.rs --action audit-record --issue {} --verdict success|restart [--phase <p> --reason <why>] [--body-file <audit-verdict.md>]", issue);
     Ok(())
 }
 

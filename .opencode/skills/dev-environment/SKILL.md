@@ -14,7 +14,8 @@ No state files. Ports (5174 Vite, 9223 MCP Bridge) are the source of truth. Dual
 | Action | Command | Description |
 |--------|---------|-------------|
 | Up | `powershell -File .opencode/scripts/dev-env.ps1 -Action Up` | Ensure dev instance is running AND ready. Auto-starts if not running. Polls ports until responsive. |
-| Down | `powershell -File .opencode/scripts/dev-env.ps1 -Action Down` | Stop dev instance. Finds process by port, kills tree. |
+| Down | `powershell -File .opencode/scripts/dev-env.ps1 -Action Down` | Stop dev instance. Finds process by port, kills tree. Keeps the env's data (intra-run recovery). |
+| Clean | `powershell -File .opencode/scripts/dev-env.ps1 -Action Clean -EnvId <id>` | **Run-complete teardown (isolated env).** Stop the env, then remove ONLY its manifest/app-data/PostgreSQL dir/cache/logs and release its lease — nothing left behind. See [Cleanup](#cleanup). |
 | Status | `powershell -File .opencode/scripts/dev-env.ps1 -Action Status` | Read-only: `running` / `starting` / `stopped`. |
 | Restart | `powershell -File .opencode/scripts/dev-env.ps1 -Action Restart -Spec <N>` | Down then Up. **`-Spec` (or a repo root already on `spec/<N>`) is resolved BEFORE anything is stopped** — a missing `-Spec` now exits with a clear error and leaves the running instance up, instead of killing it and then failing the Up leg's range guard. **The Restart verb does NOT persist `-EnvSlot`** (G-328): for a per-issue ISOLATED env it silently falls back to the legacy ports (5174/9223) while keeping the env-scoped PG dir. To recover/restart an isolated env, run an explicit `-Action Down -EnvId <id>` followed by `-Action Up -Spec <N> -EnvId <id> -EnvSlot <n>`; name that isolated form in any tester brief so the round never enters the legacy shared path. |
 | Logs | `powershell -File .opencode/scripts/dev-env.ps1 -Action Logs` | Tail process stdout/stderr. |
@@ -197,7 +198,15 @@ tauri_driver_session start
 # Check logs if something's wrong
 powershell -File .opencode/scripts/dev-env.ps1 -Action Logs
 
-# Leave running after testing — do NOT stop
+# Intra-run reuse: leave the dev instance RUNNING for the next round's agent
+# (rework/audit reuses the boot) — stop only YOUR driver session, do NOT Down it.
+tauri_driver_session stop
+
+# Run complete (the `cleanup` phase — success OR canceled): STOP + CLEAN the
+# isolated env so completed specs do not accumulate envs/watchers holding ports
+# (G-401). Resolve the env id from the lease, then Clean (see Cleanup below):
+#   .opencode/state/env-leases/<N>.json  ->  envId
+#   powershell -File .opencode/scripts/dev-env.ps1 -Action Clean -EnvId <id> -Spec <N>
 ```
 
 ## Connecting to the App
@@ -502,8 +511,35 @@ Retry up to 3 times. After 3 restart cycles, report "E2E BLOCKED: webview unresp
 
 ### Cleanup
 
+Always stop your driver session when a testing round ends:
+
 ```
 tauri_driver_session stop
 ```
 
-Do NOT stop the dev:tauri instance — leave it running for the next agent.
+**Intra-run reuse (between rounds) — leave the env RUNNING.** A rework round's tester, the
+Auditor, and the next round's agent reuse the SAME isolated env and skip the 3–5 min boot
+(G-386). Within a run, do NOT `Down`/`Clean` the dev instance — stop only your driver session
+and leave the app up for the next agent. (The human's post-run review is **async** and is
+**not** a reason to keep the env: it is read from the record, not from a live app.)
+
+**Run complete (the `cleanup` phase — success OR canceled) — STOP + CLEAN the isolated env.**
+When the run is over, tear the env down. A completed spec must not leave its isolated env (or
+its watchers) running: the accumulation holds ports and is the **G-401** collision class
+(stale envs/watchers starving the next round's `Up`). The env id is recorded in the run's
+lease — `.opencode/state/env-leases/<N>.json` (`envId`) — and is **not** always `spec<N>`
+(custom ids like `wf3087-a` occur):
+
+```
+# 1. read the lease for this issue and take its envId:
+#    .opencode/state/env-leases/<N>.json  ->  { "issue": N, "envId": "<id>", "pid": ..., ... }
+# 2. stop + remove ONLY that env (manifest / app-data / PostgreSQL dir / cache / logs)
+#    and release its lease:
+powershell -File .opencode/scripts/dev-env.ps1 -Action Clean -EnvId <id> -Spec <N>
+```
+
+`Clean` is the run-complete verb — the spec is finished, so nothing is left behind. `Down`
+keeps the data and is for intra-run recovery only. Passing `-Spec <N>` also releases the
+lease when the env's manifest is already gone. If the lease is absent (the env was never
+isolated, or it was already torn down), there is nothing to clean — the command is a safe
+no-op.

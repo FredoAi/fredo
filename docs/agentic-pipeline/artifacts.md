@@ -61,11 +61,11 @@ flowchart LR
 | Fix Plan (`## Fix Plan (round N)` comment) | Software Architect (drafts `.opencode/tmp/<issue>/fix-plan.md` from the tester's FAIL verdict); State machine (round-stamps + posts it) | Developer pool, Tester | Timeline comment: `## Failed ACs`, `## Root Cause (file:line)`, `## Fix Scope`, footer `*Authored by Software Architect*` | Feature issue #N |
 | Plan Checklist | Software Architect (triage) | Developer pool | The `- [ ]` lines under `### Sub-issue Decomposition` in the plan comment — the work list developers execute on `spec/<N>` | Feature issue #N |
 | Staffing Plan | Triage cluster | Orchestrator | Section of the plan comment | Feature issue #N |
-| Timeline Comments (PO Backlog / Triage Plan / Development Summary / Tests Runs / Orchestrator Summary) | State machine (auto-posts drafts from `.opencode/tmp/<issue>/*.md` on transitions / `audit-record`) | Pipeline readers | Markdown comments (`## <Title>`, `*Authored by <Agent>*`) | Feature issue #N |
+| Timeline Comments (`## Triage Plan` / `## Developer <ST-id> — verification` / `## Development Summary` / `## Tests Runs` / `## Fix Plan (round N)` / `## Audit Verdict` / `## Pipeline Improvement` / `## Final Status`) | State machine (auto-posts drafts from `.opencode/tmp/<issue>/*.md` on transitions / `audit-record` / `record-improvement` / `close-issue`) | Pipeline readers | Markdown comments (`## <Title>`, `*Authored by <Agent>*`) | Feature issue #N |
 | Feature PR | State machine (auto: created on `→testing`, merged on `testing→audit`) | Tester | GitHub PR | `spec/<N>` branch → `main` |
-| Verification Comment | Developer | Orchestrator | Markdown comment (`Status`) | Feature issue #N |
+| Developer Verification Comment | Developer (one per developer) | Orchestrator | Markdown comment (`## Developer <ST-id> — verification`) | Feature issue #N |
 | Test Report | Tester | Orchestrator, Product Owner | Markdown + evidence | Feature issue #N |
-| Verdict Comment | Tester | Auditor, Orchestrator, Developer pool | Markdown comment (`## Tests Runs` / `Status`) | Feature issue #N |
+| Verdict Comment | Tester | Auditor, Orchestrator, Developer pool | Markdown comment (`## Tests Runs`) | Feature issue #N |
 
 ---
 
@@ -160,20 +160,22 @@ The plan is one comment per feature, structured per-agent. Each `##` section is 
 
 ### Implementation checklist (the work list)
 
-There are **no sub-issues and no tester issue** — `generate-work` was removed (PO decision). The plan's `### Sub-issue Decomposition` `- [ ]` lines ARE the work list: each line carries intent (goal + why), non-goals, the EARS requirement IDs it satisfies, and the files it owns. Developers work these checklist items directly on the feature's `spec/<N>` branch (worktree detached at its tip, per the [developer playbook](playbooks/developer.md)) and report via a `Status` Verification comment on the **feature** issue.
+There are **no sub-issues and no tester issue** — `generate-work` was removed (PO decision). The plan's `### Sub-issue Decomposition` `- [ ]` lines ARE the work list: each line carries intent (goal + why), non-goals, the EARS requirement IDs it satisfies, and the files it owns. Developers work these checklist items directly on the feature's `spec/<N>` branch (worktree detached at its tip, per the [developer playbook](playbooks/developer.md)) and each reports via a per-developer `## Developer <ST-id> — verification` comment on the **feature** issue.
 
 ### Timeline comments (the issue narrative)
 
-The feature issue's timeline is built from five titled comments that the state machine auto-posts from drafts in `.opencode/tmp/<issue>/` on every transition and `audit-record` (`post-comments` flushes pending drafts manually). Each draft must carry an `*Authored by <Agent>*` footer (anti-spoofing) and is consumed (deleted) after posting.
+The feature issue's timeline is built from the **structured phase comments** the state machine auto-posts from drafts in `.opencode/tmp/<issue>/` on every transition, `audit-record`, `record-improvement`, and `close-issue` (`post-comments` flushes pending drafts manually). Each draft must carry an `*Authored by <Agent>*` footer (anti-spoofing) and is consumed (deleted) after posting. The issue BODY is the single PO Backlog — no `## PO Backlog` comment is posted.
 
 | Draft file | Comment title | Posted at |
 |------------|---------------|-----------|
-| `po-backlog.md` | `## PO Backlog` | intake |
 | `triage-plan.md` | `## Triage Plan` | triage → implementation |
+| `dev-verify-<ST-id>.md` | `## Developer <ST-id> — verification` | implementation — one per developer, via the `comment` action |
+| `dev-summary.md` | `## Development Summary` | implementation → testing (the assembled roll-up) |
 | `fix-plan.md` | `## Fix Plan (round N)` | rework re-entry into implementation (`testing → implementation`, or an audit restart) — authored by the **Software Architect** from the tester's FAIL verdict; retry rounds only |
-| `dev-summary.md` | `## Development Summary` | implementation → testing |
-| `tests-runs.md` | `## Tests Runs` | testing — carries the tester's verdict; the verification gate reads it (the only evidence source) |
-| `orchestrator-summary.md` | `## Orchestrator Summary` | post-audit → cleanup |
+| `tests-runs.md` | `## Tests Runs (round N)` | testing — carries the tester's verdict; the verification gate reads it (the only evidence source) |
+| `audit-verdict.md` | `## Audit Verdict` | audit — the Auditor's one structured verdict, via `audit-record` |
+| `pipeline-improvement.md` | `## Pipeline Improvement` | post-audit — the Curator's ONE improvement comment, via `record-improvement` |
+| `final-status.md` | `## Final Status` | done — outcome + doc-sync + metrics + merged PRs, via `close-issue --to-phase done` |
 
 ### Fix Plan (retry rounds)
 
@@ -197,13 +199,19 @@ On a rework re-entry the full plan is never re-posted. The fix scope is a design
 - Verdict: PASS / FAIL
 ```
 
-### Verification Comment (Developer)
+### Developer Verification Comment
+
+> One per developer, posted via the `comment` action on the FEATURE issue. The header is `## Developer <ST-id> — verification`; it ends `*Authored by Developer*`. The assembled `## Development Summary` (from `dev-summary.md`) remains the transition-flushed roll-up across the pool.
 
 ```markdown
-## Status — Feature #N
+## Developer ST-<id> — verification
+
 - Files changed: <summary>
 - Build: PASSED / FAILED
 - Tests: <P passed, F failed>
 - Acceptance criteria: <X/Y met>
+- Scope notes: <files changed, anything outside scope, regression invariants preserved>
 - Notes: <implementation decisions within scope>
+
+*Authored by Developer*
 ```

@@ -98,3 +98,5 @@ it satisfies, and the files it owns. Developers work these checklist items on th
 ## Risks & Mitigations
 
 <risk> → <mitigation>
+
+*Authored by Orchestrator*

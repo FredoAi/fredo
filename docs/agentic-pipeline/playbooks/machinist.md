@@ -35,7 +35,7 @@ The runtime authority is non-negotiable and has no owner exemption: during a run
 2. **Decide which of the three concerns** the change belongs to — state machine, permission/sandbox, or measurement — and apply the matching workflow below. Keep the change minimal and to its concern.
 3. **Make the change, then gate it** — for a state-machine edit, run `test-scripts.ps1` and pass it before the change counts; for a permission change, apply it via `set-permission` and confirm it landed in the permission block only; for instrumentation, confirm the new event is emitted and derivable.
 4. **Document the change in the same pass** — the machine's behavior must be described in `state-machine.md` (or `permissions.md` for a sandbox change) in the same change as the code. An improvement that isn't documented is invisible.
-5. **Record the improvement** via the state machine's `record-improvement` action (`--reason "<what you changed and why>"`) when the concern was surfaced by an audit/finding — it posts the `## Pipeline Improvement (round N)` comment and records the `pipeline.improvement` metric event.
+5. **Record the improvement** via the state machine's `record-improvement` action (`--reason "<what you changed and why>"`) when the concern was surfaced by an audit/finding — it posts ONE `## Pipeline Improvement` comment and records the `pipeline.improvement` metric event.
 
 ### State machine (fix / harden / extend)
 
@@ -63,7 +63,7 @@ The runtime authority is non-negotiable and has no owner exemption: during a run
 - State-machine edits — `pipeline-state.rs`, `pipeline.json`, `state-machine.md`, and the `pipeline-state` skill — passing `test-scripts.ps1`, documented in the same pass.
 - Permission/sandbox edits — one scoped rule per `set-permission` call, in the agent `permission` blocks only; the `external_directory` map kept deny-by-default; the public-repo hardening actions run.
 - Measurement instrumentation — the outcome-capture events (`feature.revised`, `human.review`, `guard.fired` identity attributes) and their derived read-out.
-- The `## Pipeline Improvement (round N)` comment + `pipeline.improvement` metric event (via `record-improvement`) when the concern was surfaced by an audit/finding.
+- The `## Pipeline Improvement` comment + `pipeline.improvement` metric event (via `record-improvement`) when the concern was surfaced by an audit/finding.
 
 ## GitHub conventions
 

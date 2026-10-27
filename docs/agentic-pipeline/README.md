@@ -103,10 +103,12 @@ Per-agent dispatch briefs — the role's mandate, its phases, its tools, and the
 | [triage-plan-template.md](templates/triage-plan-template.md) | The Implementation Plan assembled at the `triage → implementation` transition |
 | [Triage-plan-comment-template.md](templates/Triage-plan-comment-template.md) | The `## Triage Plan` comment |
 | [Status-comment-template.md](templates/Status-comment-template.md) | The agent-facing `Status` comment (blockers/escalations only) |
-| [Development-summary-comment-template.md](templates/Development-summary-comment-template.md) | The `## Development Summary` comment |
+| [Development-summary-comment-template.md](templates/Development-summary-comment-template.md) | The `## Development Summary` roll-up comment |
 | [Tests-runs-comment-template.md](templates/Tests-runs-comment-template.md) | The `## Tests Runs` verdict comment |
 | [Fix-plan-comment-template.md](templates/Fix-plan-comment-template.md) | The machine-posted `## Fix Plan (round N)` comment |
-| [Orchestrator-summary-comment-template.md](templates/Orchestrator-summary-comment-template.md) | The Orchestrator's `## Orchestrator Summary` comment |
+| [Audit-verdict-comment-template.md](templates/Audit-verdict-comment-template.md) | The Auditor's one `## Audit Verdict` comment (verdict + per-AC re-derivation) |
+| [Pipeline-improvement-comment-template.md](templates/Pipeline-improvement-comment-template.md) | The Curator's ONE `## Pipeline Improvement` comment |
+| [Final-status-comment-template.md](templates/Final-status-comment-template.md) | The `## Final Status` closing comment (outcome + doc-sync + metrics + PRs) |
 
 ---
 
@@ -128,7 +130,7 @@ Per-agent dispatch briefs — the role's mandate, its phases, its tools, and the
 ## Core Conventions
 
 - **Single source of truth:** GitHub issues and comments track every artifact, decision, status, and piece of evidence.
-- **Comment prefixes:** one agent-facing prefix — `Status` (blockers/escalations only). Verdicts are the machine-posted `## Tests Runs`; decisions are the machine-posted audit `Decision`.
+- **Comment prefixes:** one agent-facing prefix — `Status` (blockers/escalations only). Every phase also has ONE structured, authored comment: the plan `## Triage Plan`, each developer's `## Developer <ST-id> — verification`, the tester's `## Tests Runs`, the Auditor's `## Audit Verdict`, the Curator's `## Pipeline Improvement`, and the closing `## Final Status` — every one ending `*Authored by <Agent>*`.
 - **Issue model per feature:** one **feature issue** (the single work-tracking artifact). Its `### Sub-issue Decomposition` `- [ ]` lines are the work checklist developers execute on the spec branch — there are **no sub-issues and no tester issue** (`generate-work` was removed).
 - **Branch naming:** one **spec integration branch** `spec/<N>` per spec (never deleted — it carries the evidence trail). No per-developer branches: developers work in worktrees **detached at `spec/<N>`'s tip** and push with `git push origin HEAD:spec/<N>`. The product PR is the spec PR (`spec/<N>` → `main`); the post-audit SPEC MAINT PR (`maint/<N>`) is the other.
 - **The machine owns the mechanics:** the A2A file is auto-seeded on `intake → triage`; the `triage → implementation` transition auto-assembles the Implementation Plan, persists the QA-seeded test suites, and creates the spec branch. The Orchestrator runs the transitions and dispatches the agents; it never runs these mechanical steps by hand.
