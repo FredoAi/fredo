@@ -11,9 +11,11 @@
 import React from 'react';
 import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { LuCopy } from 'react-icons/lu';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
+import { WireframeActionButton } from '../components/WireframeInsertMenu';
 import { WireframeToolbar } from '../components/WireframeToolbar';
 import {
   getSnapshot,
@@ -79,7 +81,7 @@ afterEach(() => {
 });
 
 describe('toolbar markup (UI/UX 2.1)', () => {
-  it('renders a group labelled "Wireframe tools" with 23 action controls', () => {
+  it('renders a group labelled "Wireframe tools" with 33 action controls', () => {
     renderWithChakra(<WireframeToolbar />);
 
     const toolbar = button('wireframe-toolbar');
@@ -87,7 +89,9 @@ describe('toolbar markup (UI/UX 2.1)', () => {
     expect(toolbar).toHaveAttribute('aria-label', 'Wireframe tools');
     expect(toolbar).toHaveStyle({ flexWrap: 'wrap' });
 
-    expect(screen.getAllByTestId(/^wireframe-action-/)).toHaveLength(23);
+    // 23 Slice-1 controls + the 10 arrange controls (Spec #3071 ST-6 renders
+    // them from the ONE table; re-baselined from 23, never weakened).
+    expect(screen.getAllByTestId(/^wireframe-action-/)).toHaveLength(33);
     // The two Companion-only ids never render a control.
     expect(screen.queryByTestId('wireframe-action-companion-listActions')).toBeNull();
     expect(screen.queryByTestId('wireframe-action-companion-draftApp')).toBeNull();
@@ -131,8 +135,8 @@ describe('hotkey attributes (R-5.1 / R-5.4)', () => {
       ['wireframe-action-element-toggleLock', 'l'],
       ['wireframe-action-edit-undo', 'u'],
       ['wireframe-action-edit-redo', 'y'],
-      ['wireframe-action-zoom-in', 'g'],
-      ['wireframe-action-zoom-out', 'm'],
+      ['wireframe-action-zoom-in', 'g+i'],
+      ['wireframe-action-zoom-out', 'g+o'],
       ['wireframe-action-view-fitPage', 'n'],
       ['wireframe-action-view-resetView', '0'],
       ['wireframe-action-view-togglePan', 'h'],
@@ -172,6 +176,55 @@ describe('hotkey attributes (R-5.1 / R-5.4)', () => {
     );
     expect(chip).not.toBeNull();
     expect(chip).toHaveStyle({ visibility: 'hidden' });
+  });
+});
+
+describe('two-step keychip display (Spec #3071, ST-4 — UI/UX 2.4)', () => {
+  it('renders a two-step binding as TWO keycaps while data-hotkey keeps the grammar form', () => {
+    renderWithChakra(
+      <WireframeActionButton
+        actionId="wireframe.arrange.group"
+        label="Group"
+        description="Group the selected elements"
+        icon={LuCopy}
+        density="compact"
+        focused
+        onActivate={() => {}}
+      />,
+    );
+
+    const control = button('wireframe-action-arrange-group');
+    // The attribute keeps the `g+g` grammar value the engine parses ...
+    expect(control).toHaveAttribute('data-hotkey', 'g+g');
+    expect(control).toHaveAttribute('data-hotkey-label', 'Group the selected elements');
+
+    // ... while the chip renders the serialized `g g` as two keycaps (a raw
+    // `g+g` reaches `parseSequence` as one unrepresentable token -> `null`).
+    const chip = control.querySelector('[data-testid="wireframe-hotkey-chip"]');
+    expect(chip).not.toBeNull();
+    const keycaps = chip?.querySelectorAll('[data-testid="hotkeys-keycap"]') ?? [];
+    expect(keycaps).toHaveLength(2);
+    expect(Array.from(keycaps).map((node) => node.textContent)).toEqual(['G', 'G']);
+  });
+
+  it('still renders a single-step binding as one keycap', () => {
+    renderWithChakra(
+      <WireframeActionButton
+        actionId="wireframe.element.duplicate"
+        label="Duplicate"
+        description="Duplicate"
+        icon={LuCopy}
+        density="compact"
+        focused
+        onActivate={() => {}}
+      />,
+    );
+
+    const control = button('wireframe-action-element-duplicate');
+    expect(control).toHaveAttribute('data-hotkey', 'p');
+    const keycaps = control.querySelectorAll('[data-testid="hotkeys-keycap"]');
+    expect(keycaps).toHaveLength(1);
+    expect(keycaps[0].textContent).toBe('P');
   });
 });
 

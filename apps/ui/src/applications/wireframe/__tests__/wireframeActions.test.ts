@@ -1,10 +1,14 @@
 /**
  * Wireframe command table (Spec #3070, ST-3, C4 / R-1.2 / R-1.3 / R-2.4 /
- * R-4.1).
+ * R-4.1; extended by Spec #3071, ST-4).
  *
- * Pins the table contract ST-7 depends on (25 ids, 22 single-step hotkeys, the
- * two Companion-only rows with no local `run`) and proves every action's side
- * effect on the module-scoped store — no UI involved.
+ * Pins the table contract ST-7 depends on (35 ids, 32 hotkeys — 20 single-step
+ * plus the 12 two-step `g`-namespace bindings — the two Companion-only rows with
+ * no local `run`) and proves every action's side effect on the module-scoped
+ * store — no UI involved.
+ *
+ * ST-4 adds the 10 arrange rows and RE-BINDS `wireframe.zoom.in` (`g` -> `g+i`)
+ * and `wireframe.zoom.out` (`m` -> `g+o`), so `g` is a PREFIX-ONLY namespace.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -18,15 +22,21 @@ import {
   runWireframeAction,
   wireframeActionTestId,
 } from '../actions/wireframeActions';
-import type { WireframeElementType } from '../model/elements';
+import type { WireframeElementPatch, WireframeElementType } from '../model/elements';
+import type { WireframeRect } from '../model/geometry';
 import {
+  dispatch,
   getSnapshot,
   registerCanvasStage,
   resetWireframeStoreForTests,
+  select,
+  selectMany,
   setStatus,
 } from '../store/wireframeDocumentStore';
 
 const SHIPPED_KEYS = ['s', 'd', 'r', 'a', 'z', 'j', 'f', 'q', 'e', 'c', 'i', 'x', 'b', 'v'];
+
+const DATA_HOTKEY = /^[a-z0-9](?:\+[a-z0-9])?$/;
 
 const EXPECTED_IDS = [
   'wireframe.add.text',
@@ -51,6 +61,16 @@ const EXPECTED_IDS = [
   'wireframe.file.saveAs',
   'wireframe.file.open',
   'wireframe.file.exportPng',
+  'wireframe.arrange.group',
+  'wireframe.arrange.ungroup',
+  'wireframe.arrange.toggleGroupLock',
+  'wireframe.arrange.toggleSnap',
+  'wireframe.arrange.alignLeft',
+  'wireframe.arrange.alignCenter',
+  'wireframe.arrange.alignRight',
+  'wireframe.arrange.distribute',
+  'wireframe.arrange.bringForward',
+  'wireframe.arrange.sendBackward',
   'wireframe.document.new',
   'wireframe.companion.listActions',
   'wireframe.companion.draftApp',
@@ -71,14 +91,24 @@ const EXPECTED_KEYS: Readonly<Record<string, string>> = {
   'wireframe.element.toggleLock': 'l',
   'wireframe.edit.undo': 'u',
   'wireframe.edit.redo': 'y',
-  'wireframe.zoom.in': 'g',
-  'wireframe.zoom.out': 'm',
+  'wireframe.zoom.in': 'g+i',
+  'wireframe.zoom.out': 'g+o',
   'wireframe.view.fitPage': 'n',
   'wireframe.view.resetView': '0',
   'wireframe.view.togglePan': 'h',
   'wireframe.file.saveAs': 'w',
   'wireframe.file.open': 'o',
   'wireframe.file.exportPng': 't',
+  'wireframe.arrange.group': 'g+g',
+  'wireframe.arrange.ungroup': 'g+u',
+  'wireframe.arrange.toggleGroupLock': 'g+l',
+  'wireframe.arrange.toggleSnap': 'g+s',
+  'wireframe.arrange.alignLeft': 'g+a',
+  'wireframe.arrange.alignCenter': 'g+c',
+  'wireframe.arrange.alignRight': 'g+r',
+  'wireframe.arrange.distribute': 'g+d',
+  'wireframe.arrange.bringForward': 'g+f',
+  'wireframe.arrange.sendBackward': 'g+b',
 };
 
 function elements() {
@@ -94,6 +124,30 @@ function measureStage(width = 800, height = 600): void {
   registerCanvasStage({ width: () => width, height: () => height });
 }
 
+/**
+ * Add one card per rect (document order = input order), force the geometry and
+ * select the whole set. Returns the ids in document order.
+ */
+function seed(rects: readonly WireframeRect[]): string[] {
+  const ids: string[] = [];
+  for (let index = 0; index < rects.length; index += 1) {
+    addWireframeElement('card');
+    ids.push(lastElement().id);
+  }
+  const patches: Record<string, WireframeElementPatch> = {};
+  ids.forEach((id, index) => {
+    patches[id] = { ...rects[index] };
+  });
+  dispatch('elements.update', { patches });
+  selectMany(ids);
+  return ids;
+}
+
+/** Lock one element through the store (position/size lock only). */
+function lock(id: string): void {
+  dispatch('element.toggleLock', { id });
+}
+
 beforeEach(() => {
   resetWireframeStoreForTests();
   resetWireframeFileActionHandlersForTests();
@@ -104,25 +158,31 @@ afterEach(() => {
 });
 
 describe('WIREFRAME_ACTIONS — the one command table', () => {
-  it('declares the 25 C4 ids in catalog order', () => {
+  it('declares the 35 C4 ids in catalog order', () => {
     expect(WIREFRAME_ACTIONS.map((action) => action.id)).toEqual(EXPECTED_IDS);
   });
 
-  it('binds exactly the 22 declared single-step keys', () => {
+  it('binds exactly the 32 declared hotkeys (single- and two-step)', () => {
     const bound = WIREFRAME_ACTIONS.filter((action) => action.hotkey !== undefined);
-    expect(bound).toHaveLength(22);
+    expect(bound).toHaveLength(32);
 
     for (const action of bound) {
       expect(action.hotkey, action.id).toBe(EXPECTED_KEYS[action.id]);
-      expect(action.hotkey).toMatch(/^[a-z0-9]$/);
+      expect(action.hotkey, action.id).toMatch(DATA_HOTKEY);
     }
 
-    // No duplicate key inside the table.
+    // No duplicate full serialization inside the table (the relaxed rule).
     const keys = bound.map((action) => action.hotkey as string);
     expect(new Set(keys).size).toBe(keys.length);
 
-    // Disjoint from the 14 shipped keys (the 36-key budget is exactly full).
-    for (const key of keys) expect(SHIPPED_KEYS).not.toContain(key);
+    // No strict-prefix shadowing: no binding's value is a strict prefix of
+    // another's, so a bare key can never shadow a sequence on its key.
+    for (const key of keys) {
+      expect(keys.some((other) => other.startsWith(`${key}+`)), key).toBe(false);
+    }
+
+    // First steps disjoint from the 14 shipped keys.
+    for (const key of keys) expect(SHIPPED_KEYS).not.toContain(key.split('+')[0]);
   });
 
   it('marks only the two companion ids as non-toolbar, with no hotkey and no local run', () => {
@@ -317,6 +377,261 @@ describe('view actions (R-4.2 - R-4.5, store-only)', () => {
     expect(runWireframeAction('wireframe.view.togglePan')).toBe(true);
     expect(getSnapshot().panMode).toBe(false);
     expect(getSnapshot().canUndo).toBe(false);
+  });
+});
+
+describe('arrange actions (Spec #3071, ST-4 — R-1.3/1.5/1.7/1.9/2.1/2.3/2.4/2.6/2.7/2.8/2.9)', () => {
+  it('declares the 10 arrange rows as toolbar controls bound in the `g` namespace', () => {
+    const arrange = WIREFRAME_ACTIONS.filter((action) =>
+      action.id.startsWith('wireframe.arrange.'),
+    );
+    expect(arrange.map((action) => action.id)).toEqual([
+      'wireframe.arrange.group',
+      'wireframe.arrange.ungroup',
+      'wireframe.arrange.toggleGroupLock',
+      'wireframe.arrange.toggleSnap',
+      'wireframe.arrange.alignLeft',
+      'wireframe.arrange.alignCenter',
+      'wireframe.arrange.alignRight',
+      'wireframe.arrange.distribute',
+      'wireframe.arrange.bringForward',
+      'wireframe.arrange.sendBackward',
+    ]);
+    for (const action of arrange) {
+      expect(action.toolbar, action.id).toBe(true);
+      expect(action.hotkey, action.id).toMatch(/^g\+[a-z0-9]$/);
+      expect(action.run, action.id).toBeTypeOf('function');
+    }
+  });
+
+  it('re-binds the two Slice-1 view rows and leaves `g` prefix-only (`m` free)', () => {
+    expect(findWireframeAction('wireframe.zoom.in')?.hotkey).toBe('g+i');
+    expect(findWireframeAction('wireframe.zoom.out')?.hotkey).toBe('g+o');
+    expect(WIREFRAME_ACTIONS.some((action) => action.hotkey === 'g')).toBe(false);
+    expect(WIREFRAME_ACTIONS.some((action) => action.hotkey === 'm')).toBe(false);
+  });
+
+  it('group is a false no-op with fewer than two selected (R-2.7)', () => {
+    expect(runWireframeAction('wireframe.arrange.group')).toBe(false);
+    expect(getSnapshot().canUndo).toBe(false);
+
+    seed([{ x: 10, y: 10, width: 40, height: 40 }]);
+    expect(runWireframeAction('wireframe.arrange.group')).toBe(false);
+    expect(getSnapshot().document.groups).toHaveLength(0);
+  });
+
+  it('group creates ONE group for >=2 selected and selects its members (R-1.3)', () => {
+    const [a, b] = seed([
+      { x: 10, y: 10, width: 40, height: 40 },
+      { x: 90, y: 60, width: 20, height: 20 },
+    ]);
+
+    expect(runWireframeAction('wireframe.arrange.group')).toBe(true);
+    const groups = getSnapshot().document.groups;
+    expect(groups).toHaveLength(1);
+    expect(groups[0].memberIds).toEqual([a, b]);
+    expect(groups[0].locked).toBe(false);
+    expect(getSnapshot().selectedIds).toEqual([a, b]);
+    // Geometry is unchanged by grouping.
+    expect(elements().map((element) => element.x)).toEqual([10, 90]);
+  });
+
+  it('group on a whole-group selection is a false no-op (R-1.9)', () => {
+    seed([
+      { x: 10, y: 10, width: 40, height: 40 },
+      { x: 90, y: 60, width: 20, height: 20 },
+    ]);
+    expect(runWireframeAction('wireframe.arrange.group')).toBe(true);
+
+    expect(runWireframeAction('wireframe.arrange.group')).toBe(false);
+    expect(getSnapshot().document.groups).toHaveLength(1);
+  });
+
+  it('ungroup removes the group; an ungrouped selection is a false no-op (R-1.5)', () => {
+    seed([
+      { x: 10, y: 10, width: 40, height: 40 },
+      { x: 90, y: 60, width: 20, height: 20 },
+    ]);
+    expect(runWireframeAction('wireframe.arrange.ungroup')).toBe(false);
+
+    runWireframeAction('wireframe.arrange.group');
+    expect(runWireframeAction('wireframe.arrange.ungroup')).toBe(true);
+    expect(getSnapshot().document.groups).toHaveLength(0);
+    // Members stay selected and keep their geometry.
+    expect(getSnapshot().selectedIds).toHaveLength(2);
+    expect(elements().map((element) => element.x)).toEqual([10, 90]);
+  });
+
+  it('toggleGroupLock flips the group lock; a non-group selection is false (R-1.7)', () => {
+    seed([
+      { x: 10, y: 10, width: 40, height: 40 },
+      { x: 90, y: 60, width: 20, height: 20 },
+    ]);
+    expect(runWireframeAction('wireframe.arrange.toggleGroupLock')).toBe(false);
+
+    runWireframeAction('wireframe.arrange.group');
+    expect(runWireframeAction('wireframe.arrange.toggleGroupLock')).toBe(true);
+    expect(getSnapshot().document.groups[0].locked).toBe(true);
+    expect(getSnapshot().dirty).toBe(true);
+  });
+
+  it('toggleSnap flips the editor flag without a document mutation (R-2.1)', () => {
+    expect(getSnapshot().snapToGrid).toBe(false);
+    const documentBefore = getSnapshot().document;
+
+    expect(runWireframeAction('wireframe.arrange.toggleSnap')).toBe(true);
+    expect(getSnapshot().snapToGrid).toBe(true);
+    expect(getSnapshot().document).toBe(documentBefore);
+    expect(getSnapshot().canUndo).toBe(false);
+
+    expect(runWireframeAction('wireframe.arrange.toggleSnap')).toBe(true);
+    expect(getSnapshot().snapToGrid).toBe(false);
+  });
+
+  it('alignLeft moves the selection to the union left edge (R-2.3)', () => {
+    seed([
+      { x: 10, y: 10, width: 40, height: 40 },
+      { x: 90, y: 60, width: 20, height: 20 },
+    ]);
+
+    expect(runWireframeAction('wireframe.arrange.alignLeft')).toBe(true);
+    expect(elements().map((element) => element.x)).toEqual([10, 10]);
+    // Sizes are preserved.
+    expect(elements().map((element) => element.width)).toEqual([40, 20]);
+
+    // Already aligned => a true no-op returning false (R-2.9).
+    expect(runWireframeAction('wireframe.arrange.alignLeft')).toBe(false);
+  });
+
+  it('alignCenter centres every element on the union box (R-2.3)', () => {
+    seed([
+      { x: 10, y: 10, width: 40, height: 40 },
+      { x: 90, y: 60, width: 20, height: 20 },
+    ]);
+
+    expect(runWireframeAction('wireframe.arrange.alignCenter')).toBe(true);
+    expect(elements().map((element) => element.x)).toEqual([40, 50]);
+  });
+
+  it('alignRight aligns the selection to the union right edge (R-2.3)', () => {
+    seed([
+      { x: 10, y: 10, width: 40, height: 40 },
+      { x: 90, y: 60, width: 20, height: 20 },
+    ]);
+
+    expect(runWireframeAction('wireframe.arrange.alignRight')).toBe(true);
+    expect(elements().map((element) => element.x)).toEqual([70, 90]);
+  });
+
+  it('align is a false no-op with fewer than two selected (R-2.7)', () => {
+    const [a] = seed([{ x: 10, y: 10, width: 40, height: 40 }]);
+    select(a);
+    expect(runWireframeAction('wireframe.arrange.alignLeft')).toBe(false);
+    expect(runWireframeAction('wireframe.arrange.alignCenter')).toBe(false);
+    expect(runWireframeAction('wireframe.arrange.alignRight')).toBe(false);
+  });
+
+  it('align/distribute operate on the MOVABLE members only (R-2.8)', () => {
+    const [a, b] = seed([
+      { x: 10, y: 10, width: 40, height: 40 },
+      { x: 90, y: 60, width: 20, height: 20 },
+    ]);
+    lock(b);
+    selectMany([a, b]);
+
+    // One movable member is below the minimum => nothing changes, false.
+    expect(runWireframeAction('wireframe.arrange.alignLeft')).toBe(false);
+    expect(elements().map((element) => element.x)).toEqual([10, 90]);
+  });
+
+  it('align uses the WHOLE selection union bounds with a locked anchor (R-2.8)', () => {
+    const [a, b, c] = seed([
+      { x: 0, y: 0, width: 40, height: 40 },
+      { x: 120, y: 0, width: 40, height: 40 },
+      { x: 300, y: 0, width: 40, height: 40 },
+    ]);
+    // `b` is locked and stays exactly where it is; the union's right edge (340)
+    // is still the align target.
+    lock(b);
+    selectMany([a, b, c]);
+
+    expect(runWireframeAction('wireframe.arrange.alignRight')).toBe(true);
+    const byId = new Map(elements().map((element) => [element.id, element]));
+    expect(byId.get(a)?.x).toBe(300);
+    expect(byId.get(c)?.x).toBe(300);
+    // The locked member never moves.
+    expect(byId.get(b)?.x).toBe(120);
+  });
+
+  it('distribute equalises the horizontal gaps; <3 movable is false (R-2.4/R-2.7)', () => {
+    seed([
+      { x: 0, y: 0, width: 40, height: 40 },
+      { x: 100, y: 0, width: 20, height: 40 },
+      { x: 200, y: 0, width: 40, height: 40 },
+    ]);
+
+    expect(runWireframeAction('wireframe.arrange.distribute')).toBe(true);
+    const xs = elements().map((element) => element.x);
+    expect(xs[0]).toBe(0);
+    expect(xs[2]).toBe(200);
+    // Equal edge-to-edge gaps.
+    const gap1 = xs[1] - (xs[0] + elements()[0].width);
+    const gap2 = xs[2] - (xs[1] + elements()[1].width);
+    expect(gap1).toBeCloseTo(gap2, 6);
+
+    // Already distributed => true no-op (R-2.9).
+    expect(runWireframeAction('wireframe.arrange.distribute')).toBe(false);
+  });
+
+  it('distribute is a false no-op with fewer than three selected (R-2.7)', () => {
+    seed([
+      { x: 0, y: 0, width: 40, height: 40 },
+      { x: 100, y: 0, width: 20, height: 40 },
+    ]);
+    expect(runWireframeAction('wireframe.arrange.distribute')).toBe(false);
+  });
+
+  it('distribute with three selected but only two movable is a false no-op (R-2.8)', () => {
+    const [a, b, c] = seed([
+      { x: 0, y: 0, width: 40, height: 40 },
+      { x: 100, y: 0, width: 20, height: 40 },
+      { x: 200, y: 0, width: 40, height: 40 },
+    ]);
+    lock(c);
+    selectMany([a, b, c]);
+    expect(runWireframeAction('wireframe.arrange.distribute')).toBe(false);
+    expect(elements().map((element) => element.x)).toEqual([0, 100, 200]);
+  });
+
+  it('bringForward / sendBackward move the selection in paint order (R-2.6)', () => {
+    const [a, b] = seed([
+      { x: 0, y: 0, width: 40, height: 40 },
+      { x: 100, y: 0, width: 40, height: 40 },
+    ]);
+
+    select(a);
+    expect(runWireframeAction('wireframe.arrange.bringForward')).toBe(true);
+    expect(elements().map((element) => element.id)).toEqual([b, a]);
+
+    select(a);
+    expect(runWireframeAction('wireframe.arrange.sendBackward')).toBe(true);
+    expect(elements().map((element) => element.id)).toEqual([a, b]);
+  });
+
+  it('bringForward / sendBackward are false no-ops when empty or clamped (R-2.7/R-2.9)', () => {
+    expect(runWireframeAction('wireframe.arrange.bringForward')).toBe(false);
+    expect(runWireframeAction('wireframe.arrange.sendBackward')).toBe(false);
+
+    const [a, b] = seed([
+      { x: 0, y: 0, width: 40, height: 40 },
+      { x: 100, y: 0, width: 40, height: 40 },
+    ]);
+    // Top element cannot move forward; bottom cannot move backward.
+    select(b);
+    expect(runWireframeAction('wireframe.arrange.bringForward')).toBe(false);
+    select(a);
+    expect(runWireframeAction('wireframe.arrange.sendBackward')).toBe(false);
+    expect(elements().map((element) => element.id)).toEqual([a, b]);
   });
 });
 
