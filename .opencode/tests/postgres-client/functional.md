@@ -150,6 +150,89 @@ following slice that touches the Postgres client surface.
   **Expected:** identical set and stable ordering of saved connections and history each boot;
   no duplicates, no lost entries. **FAIL** = nondeterministic order, duplicates, or loss.
 
+## Server-side read-only hardening (#3080)
+
+Slice on top of #2950/#3029. PostgreSQL itself enforces read-only: for a `ReadOnly` connection
+the pool applies `SET default_transaction_read_only = on` per **physical** connection via
+`PgPoolOptions::after_connect` (`applications/db_client/connect.rs`), and `COPY`/`GRANT`/`REVOKE`/
+`SECURITY` move to `StatementClass::Destructive` (`classify.rs`). Layer 1 (the client-side
+`readOnlyBlocked` gate, `query.rs:103-115`) is unchanged and KEPT.
+
+> **Verification policy: LIVE.** AC1 ("the server rejects the statement") and AC2 ("applied only
+> to read-only connections and survives pool reconnects") are runtime properties of a live
+> PostgreSQL. **Live receipt = a live webview DOM/screenshot** (`tauri_webview_screenshot` +
+> `tauri_webview_dom_snapshot`): this change emits **no OTLP spans**, so a `telemetry_spans`
+> receipt is NOT producible by it — never fabricate one via `fredo emit` (G-256).
+
+> **G-263 SAFETY:** bounded legs; the app is started/stopped only via
+> `.opencode/scripts/dev-env.ps1 -Action Up|Down -Spec 3080`; managed-`psql` ≤60 s; connect ≤10 s.
+
+> **INDUCTION LEVERS (G-275/G-300):** `FREDO_DBCLIENT_STATE_DIR=<seeded dir>` supplies a
+> read-write connection; `FREDO_DBCLIENT_FORCE_FAIL=connect|auth|timeout|query` (inert when unset);
+> the reconnect lever is a bounded managed-`psql` `SELECT pg_terminate_backend(<app backend pid>)`.
+
+- [ ] **F-16 (AC1 / R-1.1) — read-only session reports `on`.**
+  Connect the built-in **"Fredo"** row (ReadOnly, `postgres` superuser); run
+  `SHOW default_transaction_read_only;` (classifies `Read`).
+  **Expected:** the result grid shows exactly **`on`**; live DOM + screenshot captured.
+  **Edge:** the ReadWrite leg shows **`off`**; the transient test-before-save probe (no access
+  mode) is unaffected. **FAIL** = anything other than `on` on the read-only session.
+
+- [ ] **F-17 (AC1 / R-1.2) — the server rejects a `Read`-classified volatile write (BINDING).**
+  On the read-only session run `SELECT * FROM chat_rows LIMIT 1 FOR UPDATE;` (classifies `Read`);
+  secondary: `SELECT nextval('qa_3080_seq');` (create `qa_3080_seq` read-write first).
+  **Expected:** a typed **`query`** error whose message carries SQLSTATE **`25006`**
+  ("read-only transaction"); **no** write performed (a managed-`psql` read confirms no side
+  effect). **Edge:** empty `chat_rows` still errors (plan-time rejection); `FOR SHARE`.
+  **FAIL** = the statement executes on the read-only connection.
+
+- [ ] **F-18 (AC1 caveat / R-1.2) — RECORD the four AC1-named statements' outcomes.**
+  On the read-only session run each and **record error-or-success + message**: (a)
+  `SELECT pg_terminate_backend(0);` (b) `SELECT set_config('default_transaction_read_only','off',false);`
+  (c) `SELECT lo_import('.opencode/tmp/3080/lo.txt');` (d) `SELECT nextval('qa_3080_seq');`.
+  **Expected (recorded, NOT asserted):** (a)/(b) **pass through** (PostgreSQL carries no
+  `XactReadOnly` guard); (c)/(d) rejected `25006`. AC1's named list is **illustrative ("e.g.")** —
+  F-17 is the binding evidence. **Edge:** pid `0` so nothing is killed; **disconnect + reconnect
+  after (b)** (the hook re-applies `on`). (a)/(b) passing through is a **residual → follow-up**,
+  not a FAIL of this slice. **FAIL** = (c)/(d) not rejected, or a write performed by (c).
+
+- [ ] **F-19 (AC1 / R-1.3) — layer 1 unchanged.**
+  Read-only session: submit `INSERT`/`UPDATE`/`DELETE`/`DROP`/`COPY`/`GRANT`/`REVOKE`/`SECURITY`.
+  **Expected:** **`readOnlyBlocked`** before any server contact; `tauri_ipc_monitor` shows the
+  statement never reached the server; no `25006`. **Edge:** a batch whose first is `Read` and a
+  later is non-`Read` → the whole call is refused. **FAIL** = a statement reaches the server.
+
+- [ ] **F-20 (AC2 / R-2.1, R-2.3) — the hook survives a pool reconnect.**
+  Verify `SHOW default_transaction_read_only` = `on`; force the physical connection to drop via a
+  bounded managed-`psql` `SELECT pg_terminate_backend(<app backend pid>)`; re-query.
+  **Expected:** the **replacement** connection still reports `on` and still rejects F-17's write.
+  **Edge:** if a drop cannot be forced, key the row to the hook-at-build + `pg_stat_activity`
+  evidence and **disclose** the substitution (never a static PASS). **FAIL** = the replacement
+  reports `off` or a write executes.
+
+- [ ] **F-21 (AC2 / R-2.2) — ReadWrite is byte-identical to today.**
+  ReadWrite session: `SHOW default_transaction_read_only;`, then `INSERT`/`UPDATE`.
+  **Expected:** **`off`**; writes execute; `min_connections(0)`/`max_connections(1)` and the
+  destructive-confirmation gate unchanged. **Edge:** built-in edited to readWrite, or the
+  `FREDO_DBCLIENT_STATE_DIR` seam with a hand-authored readWrite row. **FAIL** = `on`, or a
+  changed write/confirmation path.
+
+- [ ] **F-22 (AC3 / R-3.1..R-3.4) — reclassification + gate consequences (unit pin).**
+  Pin `COPY`/`GRANT`/`REVOKE`/`SECURITY` → `Destructive`; on a ReadWrite state they yield
+  `confirmationRequired` (echo the hash → gate passes); on a ReadOnly state they yield
+  `readOnlyBlocked`; `ALTER` stays `Destructive`, `INSERT` stays `Write`.
+  **FAIL** = a reclassified statement keeps `Write`/`Ddl`, or the gate consequences differ.
+
+- [ ] **F-23 (AC4 / R-4) — test churn handled.**
+  `cargo nextest run`: the moved `tests_classify.rs` cases + extended `tests_query.rs` cases are
+  green and every pre-existing db_client test stays green. **FAIL** = a stale assertion or a red
+  test.
+
+- [ ] **F-24 (AC5 / R-5) — build hygiene.**
+  `cargo check` (from `apps/tauri/src-tauri/`) + `cargo nextest run`.
+  **Expected:** **zero warnings, no `#[allow(...)]`**; nextest green; `FREDO_TEST_PG`-gated
+  integration binaries are no-ops without the env. **FAIL** = any warning or failure.
+
 ## Suite-level pass/fail
 
 PASS = F-1..F-15 all green. Any unbounded external command; a destructive statement executed
@@ -158,6 +241,16 @@ action executing more than one statement; a plaintext credential sentinel in rep
 an unbounded result grid with no default row limit or Load more; Mission Monitor blank while
 live/stored rows exist = **FAIL**. UNVERIFIED rows (no reachable induction lever) are not
 PASS — the verdict fails closed (G-033).
+
+For the **#3080 slice**, PASS additionally requires **F-16..F-24** all green, with **F-17**
+(binding: a read-classified volatile write → server `25006`) and **F-16** (`SHOW
+default_transaction_read_only` = `on`) captured as live webview DOM/screenshot. A read-classified
+volatile write that executes on the read-only connection; a read-only session reporting anything
+but `on`; a ReadWrite session changed; a reclassified statement not `Destructive`; a
+`readOnlyBlocked` statement reaching the server; or a `cargo check` warning = **FAIL**. **F-18**
+is a RECORD row — a pass-through of `pg_terminate_backend`/`set_config` is PASS for this slice
+(residual → follow-up); **F-22's wiring pin never alone satisfies AC1/AC2**. The live receipt is
+a webview DOM/screenshot, **not** `telemetry_spans` (this change emits no spans).
 
 ## Round — #2950 (2026-10-02, round 2, `spec/2950 @ adc8760`) — PASS 15/15 + smoke 8/8
 
