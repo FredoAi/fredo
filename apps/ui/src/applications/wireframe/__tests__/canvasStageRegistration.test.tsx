@@ -96,7 +96,11 @@ vi.mock('react-konva', async () => {
   });
 
   const Layer = (props: any) =>
-    ReactModule.createElement('div', { 'data-mock-layer': 'true' }, props.children);
+    ReactModule.createElement(
+      'div',
+      { 'data-mock-layer': 'true', 'data-mock-layer-name': props.name ?? '' },
+      props.children,
+    );
 
   const Group = ReactModule.forwardRef(function MockGroup(props: any, _ref: any) {
     return ReactModule.createElement('div', { 'data-mock-group': props.name }, props.children);
@@ -106,17 +110,37 @@ vi.mock('react-konva', async () => {
     return ReactModule.createElement('div', { 'data-testid': 'mock-transformer' });
   });
 
+  const Shape = (props: any) =>
+    ReactModule.createElement('div', {
+      'data-mock-shape': 'shape',
+      'data-mock-name': props.name ?? '',
+      'data-mock-visible': String(props.visible ?? true),
+    });
+
+  // The guide `Line`s are driven imperatively through their refs.
+  const Line = ReactModule.forwardRef(function MockLine(props: any, _ref: any) {
+    return ReactModule.createElement('div', {
+      'data-mock-shape': 'line',
+      'data-mock-name': props.name ?? '',
+    });
+  });
+
   const shape = (tag: string) => (props: any) =>
-    ReactModule.createElement('div', { 'data-mock-shape': tag, 'data-mock-name': props.name ?? '' });
+    ReactModule.createElement('div', {
+      'data-mock-shape': tag,
+      'data-mock-name': props.name ?? '',
+      'data-mock-listening': String(props.listening ?? true),
+    });
 
   return {
     Stage,
     Layer,
     Group,
     Transformer,
+    Shape,
+    Line,
     Rect: shape('rect'),
     Text: shape('text'),
-    Line: shape('line'),
     Path: shape('path'),
     Circle: shape('circle'),
     Ellipse: shape('ellipse'),
@@ -213,5 +237,22 @@ describe('capture stage registration under StrictMode', () => {
 
     expect(getWireframeStage()).toBeNull();
     expect(captureWireframePagePng()).toBeNull();
+  });
+});
+
+describe('guides layer is capture-hidden (Spec #3071, ST-5)', () => {
+  it('mounts the guides + snap-grid layer under the capture-hidden name', () => {
+    renderCanvas();
+
+    const layer = document.querySelector(
+      '[data-mock-layer-name="wireframe-guides wireframe-capture-hidden"]',
+    );
+    expect(layer).not.toBeNull();
+    expect(layer!.querySelector('[data-mock-name="wireframe-snap-grid"]')).not.toBeNull();
+  });
+
+  it('keeps the page-capture seam intact with the guides layer mounted', () => {
+    renderCanvas();
+    expect(captureWireframePagePng()).toBe('U1RBR0U=');
   });
 });

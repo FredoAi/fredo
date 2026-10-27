@@ -1,12 +1,17 @@
 /**
- * Wireframe canvas behaviour (Spec #3070, ST-2).
+ * Wireframe canvas behaviour (Spec #3070, ST-2; extended by Spec #3071, ST-5).
  *
  * Konva is mocked: the shape components render inert divs and the element /
  * Transformer props are exposed through a module-scoped registry, so the tests
  * drive the real React component + the real store and assert:
- *  - the C7 canvas host contract,
- *  - single selection / empty-canvas clear,
- *  - one store step per drag and per resize,
+ *  - the C7 canvas host contract (+ the `data-wireframe-guides` hook),
+ *  - single + multi (shift-click) selection / empty-canvas clear,
+ *  - ONE Transformer bound to the whole selection,
+ *  - primary / member / pinned selection outlines,
+ *  - one store step per drag and per resize, group drag + group resize as ONE
+ *    `elements.update` applied to the MOVABLE members only,
+ *  - snap-to-grid on drop (union-box origin, clamped to the page),
+ *  - smart alignment guides painted mid-drag and removed on drop (imperative),
  *  - locked inertness (no Transformer, body drag refused),
  *  - hidden elements paint no ink (group invisible) and show a dashed outline,
  *  - theme-true artboard colours from the palette,
@@ -36,14 +41,25 @@ import {
   getSnapshot,
   loadDocument,
   resetWireframeStoreForTests,
-  select,
+  selectMany,
   setPanMode,
+  setSnapToGrid,
   setView,
   undo,
 } from '../store/wireframeDocumentStore';
 
+interface MockNode {
+  attrs: Record<string, any>;
+  getLayer: () => { batchDraw: () => void };
+  getStage: () => MockNode;
+  forceUpdate: () => void;
+  [key: string]: any;
+}
+
 const konvaMock = vi.hoisted(() => ({
   groups: new Map<string, { props: Record<string, any>; node: Record<string, any> }>(),
+  /** Every guide `Line` node (name `wireframe-guide`), in mount order. */
+  lines: [] as Array<Record<string, any>>,
   transformer: null as null | { props: Record<string, any>; api: Record<string, any> },
   transformerNodes: [] as Array<Record<string, any>>,
   /** Every Stage render's committed size, in render order. */
@@ -52,6 +68,49 @@ const konvaMock = vi.hoisted(() => ({
 
 vi.mock('react-konva', async () => {
   const React = await import('react');
+
+  const makeNode = (initial: {
+    x?: number;
+    y?: number;
+    width?: number;
+    height?: number;
+    visible?: boolean;
+    points?: number[];
+  }): MockNode => {
+    const attrs: Record<string, any> = {
+      x: initial.x ?? 0,
+      y: initial.y ?? 0,
+      width: initial.width ?? 0,
+      height: initial.height ?? 0,
+      scaleX: 1,
+      scaleY: 1,
+      visible: initial.visible ?? true,
+      points: initial.points ?? [],
+    };
+    const node: MockNode = {
+      attrs,
+      getLayer: () => ({ batchDraw: () => undefined }),
+      getStage: () => node,
+      forceUpdate: () => undefined,
+    };
+    for (const key of [
+      'x',
+      'y',
+      'width',
+      'height',
+      'scaleX',
+      'scaleY',
+      'visible',
+      'points',
+    ]) {
+      node[key] = (value?: unknown) => {
+        if (value === undefined) return attrs[key];
+        attrs[key] = value;
+        return node;
+      };
+    }
+    return node;
+  };
 
   const Stage = React.forwardRef(function MockStage(props: any, ref: any) {
     konvaMock.stageHistory.push({ width: props.width, height: props.height });
@@ -79,20 +138,29 @@ vi.mock('react-konva', async () => {
   });
 
   const Layer = (props: any) =>
-    React.createElement('div', { 'data-mock-layer': 'true' }, props.children);
+    React.createElement(
+      'div',
+      { 'data-mock-layer': 'true', 'data-mock-layer-name': props.name ?? '' },
+      props.children,
+    );
 
   const Group = React.forwardRef(function MockGroup(props: any, ref: any) {
-    const node = {
-      x: () => props.x ?? 0,
-      y: () => props.y ?? 0,
-      width: () => props.width ?? 0,
-      height: () => props.height ?? 0,
-      scaleX: () => 1,
-      scaleY: () => 1,
-    };
+    const node = React.useMemo(
+      () =>
+        makeNode({
+          x: props.x,
+          y: props.y,
+          width: props.width,
+          height: props.height,
+          visible: props.visible,
+        }),
+      // A fresh node per mount; imperative updates flow through the api.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [],
+    );
 
     if (props.name) konvaMock.groups.set(props.name, { props, node });
-    React.useImperativeHandle(ref, () => node);
+    React.useImperativeHandle(ref, () => node, [node]);
 
     return React.createElement(
       'div',
@@ -122,11 +190,45 @@ vi.mock('react-konva', async () => {
         return konvaMock.transformerNodes;
       },
       getLayer: () => ({ batchDraw: () => undefined }),
+      forceUpdate: () => undefined,
     };
     konvaMock.transformer = { props, api };
-    React.useImperativeHandle(ref, () => api);
+    React.useImperativeHandle(ref, () => api, [api]);
     return React.createElement('div', { 'data-testid': 'mock-transformer' });
   });
+
+  const Line = React.forwardRef(function MockLine(props: any, ref: any) {
+    const node = React.useMemo(
+      () => makeNode({ points: props.points, visible: props.visible }),
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [],
+    );
+    React.useImperativeHandle(
+      ref,
+      () => {
+        if (props.name === 'wireframe-guide') konvaMock.lines.push(node);
+        return node;
+      },
+      [node, props.name],
+    );
+    return React.createElement('div', {
+      'data-mock-shape': 'line',
+      'data-mock-name': props.name ?? '',
+      'data-mock-stroke': props.stroke ?? '',
+      'data-mock-dash': props.dash ? JSON.stringify(props.dash) : '',
+      'data-mock-listening': String(props.listening ?? true),
+      'data-mock-stroke-width':
+        props.strokeWidth === undefined ? '' : String(props.strokeWidth),
+    });
+  });
+
+  const Shape = (props: any) =>
+    React.createElement('div', {
+      'data-mock-shape': 'shape',
+      'data-mock-name': props.name ?? '',
+      'data-mock-visible': String(props.visible ?? true),
+      'data-mock-listening': String(props.listening ?? true),
+    });
 
   const shape = (tag: string) => (props: any) =>
     React.createElement(
@@ -154,9 +256,10 @@ vi.mock('react-konva', async () => {
     Layer,
     Group,
     Transformer,
+    Shape,
+    Line,
     Rect: shape('rect'),
     Text: shape('text'),
-    Line: shape('line'),
     Path: shape('path'),
     Circle: shape('circle'),
     Ellipse: shape('ellipse'),
@@ -215,19 +318,39 @@ function textElement(overrides: Partial<WireframeElement> = {}): WireframeElemen
   } as WireframeElement;
 }
 
-function seedDocument(elements: WireframeElement[], selectedId?: string): void {
+function buttonElement(id: string, x: number, y: number): WireframeElement {
+  return {
+    id,
+    type: 'button',
+    x,
+    y,
+    width: 160,
+    height: 44,
+    visible: true,
+    locked: false,
+    label: 'Go',
+    appearance: 'primary',
+  } as WireframeElement;
+}
+
+function seedDocument(elements: WireframeElement[], selectedIds?: string[]): void {
   const document: WireframeDocument = {
     ...createNewWireframeDocument('desktop'),
     elements,
   };
   loadDocument(document, 'C:/tmp/wireframe.wireframe.json');
-  if (selectedId) select(selectedId);
+  if (selectedIds && selectedIds.length > 0) selectMany(selectedIds);
 }
 
-function elementGroup(): { props: Record<string, any>; node: Record<string, any> } {
-  const entry = konvaMock.groups.get('wireframe-element-el-text');
-  if (!entry) throw new Error('element group not mounted');
-  return entry;
+function elementGroup(id = 'el-text'): { props: Record<string, any>; node: MockNode } {
+  const entry = konvaMock.groups.get(`wireframe-element-${id}`);
+  if (!entry) throw new Error(`element group ${id} not mounted`);
+  return entry as { props: Record<string, any>; node: MockNode };
+}
+
+function transformerProps(): Record<string, any> {
+  if (!konvaMock.transformer) throw new Error('transformer not mounted');
+  return konvaMock.transformer.props;
 }
 
 function chromeOutlines(): Element[] {
@@ -236,9 +359,34 @@ function chromeOutlines(): Element[] {
   );
 }
 
+function clickElement(id: string, shiftKey = false): void {
+  act(() => {
+    elementGroup(id).props.onClick({
+      cancelBubble: false,
+      evt: { shiftKey },
+    });
+  });
+}
+
+function dragElementTo(id: string, x: number, y: number): void {
+  const node = elementGroup(id).node;
+  act(() => {
+    elementGroup(id).props.onDragStart();
+  });
+  act(() => {
+    node.x(x);
+    node.y(y);
+    elementGroup(id).props.onDragMove();
+  });
+  act(() => {
+    elementGroup(id).props.onDragEnd();
+  });
+}
+
 beforeEach(() => {
   resetWireframeStoreForTests();
   konvaMock.groups.clear();
+  konvaMock.lines.length = 0;
   konvaMock.transformer = null;
   konvaMock.transformerNodes = [];
   konvaMock.stageHistory = [];
@@ -293,6 +441,15 @@ describe('canvas host contract', () => {
     expect(stage).toHaveAttribute('data-stage-height', '640');
   });
 
+  it('exposes the guides hook at 0 while idle', () => {
+    seedDocument([]);
+    renderWithChakra(<WireframeCanvasImpl />);
+    expect(screen.getByTestId('wireframe-canvas')).toHaveAttribute(
+      'data-wireframe-guides',
+      '0',
+    );
+  });
+
   it('paints the artboard from the resolved theme palette', () => {
     seedDocument([]);
     const { container } = renderWithChakra(<WireframeCanvasImpl />);
@@ -323,73 +480,141 @@ describe('selection', () => {
 
     expect(screen.queryByTestId('mock-transformer')).toBeNull();
 
-    act(() => {
-      elementGroup().props.onClick({ cancelBubble: false });
-    });
+    clickElement('el-text');
 
     const state = getSnapshot();
+    expect(state.selectedIds).toEqual(['el-text']);
     expect(state.selectedId).toBe('el-text');
     expect(screen.getByTestId('mock-transformer')).toBeInTheDocument();
     expect(konvaMock.transformerNodes).toHaveLength(1);
     expect(konvaMock.transformerNodes[0]).toBe(elementGroup().node);
   });
 
-  it('replaces the previous selection (single selection)', () => {
-    seedDocument([
-      textElement(),
-      {
-        ...textElement(),
-        id: 'el-other',
-        type: 'button',
-        label: 'Go',
-        appearance: 'primary',
-      } as WireframeElement,
-    ]);
+  it('replaces the previous selection on a plain click', () => {
+    seedDocument([textElement(), buttonElement('el-other', 200, 200)]);
     renderWithChakra(<WireframeCanvasImpl />);
 
-    act(() => {
-      konvaMock.groups.get('wireframe-element-el-text')!.props.onClick({
-        cancelBubble: false,
-      });
-    });
-    act(() => {
-      konvaMock.groups.get('wireframe-element-el-other')!.props.onClick({
-        cancelBubble: false,
-      });
-    });
+    clickElement('el-text');
+    clickElement('el-other');
 
+    expect(getSnapshot().selectedIds).toEqual(['el-other']);
     expect(getSnapshot().selectedId).toBe('el-other');
     expect(screen.getAllByTestId('mock-transformer')).toHaveLength(1);
   });
 
+  it('shift-click ADDS an element and keeps the previous one selected', () => {
+    seedDocument([textElement(), buttonElement('el-b', 200, 200), buttonElement('el-c', 400, 400)]);
+    renderWithChakra(<WireframeCanvasImpl />);
+
+    clickElement('el-text');
+    clickElement('el-b', true);
+    clickElement('el-c', true);
+
+    const state = getSnapshot();
+    expect(state.selectedIds).toEqual(['el-text', 'el-b', 'el-c']);
+    // Primary = the last id (document order).
+    expect(state.selectedId).toBe('el-c');
+  });
+
+  it('shift-click REMOVES an already-selected element', () => {
+    seedDocument([textElement(), buttonElement('el-b', 200, 200)]);
+    seedDocument([textElement(), buttonElement('el-b', 200, 200)], ['el-text', 'el-b']);
+    renderWithChakra(<WireframeCanvasImpl />);
+
+    clickElement('el-b', true);
+
+    expect(getSnapshot().selectedIds).toEqual(['el-text']);
+    expect(getSnapshot().selectedId).toBe('el-text');
+  });
+
+  it('shift-click down to empty clears the selection and the Transformer', () => {
+    seedDocument([textElement()], ['el-text']);
+    renderWithChakra(<WireframeCanvasImpl />);
+    expect(screen.getByTestId('mock-transformer')).toBeInTheDocument();
+
+    clickElement('el-text', true);
+
+    expect(getSnapshot().selectedIds).toEqual([]);
+    expect(getSnapshot().selectedId).toBeNull();
+    expect(screen.queryByTestId('mock-transformer')).toBeNull();
+  });
+
+  it('binds ONE Transformer to every selected node', () => {
+    seedDocument([textElement(), buttonElement('el-b', 200, 200)], ['el-text', 'el-b']);
+    renderWithChakra(<WireframeCanvasImpl />);
+
+    expect(screen.getAllByTestId('mock-transformer')).toHaveLength(1);
+    expect(konvaMock.transformerNodes).toHaveLength(2);
+    expect(konvaMock.transformerNodes).toContain(elementGroup('el-text').node);
+    expect(konvaMock.transformerNodes).toContain(elementGroup('el-b').node);
+  });
+
   it('clears the selection on an empty-canvas click', () => {
-    seedDocument([textElement()], 'el-text');
+    seedDocument([textElement()], ['el-text']);
     renderWithChakra(<WireframeCanvasImpl />);
     expect(getSnapshot().selectedId).toBe('el-text');
 
     fireEvent.click(screen.getByTestId('mock-stage'));
 
-    expect(getSnapshot().selectedId).toBeNull();
+    expect(getSnapshot().selectedIds).toEqual([]);
     expect(screen.queryByTestId('mock-transformer')).toBeNull();
+  });
+});
+
+describe('selection outlines', () => {
+  it('paints the primary 2 px accent and other members 1 px accent', () => {
+    seedDocument([textElement(), buttonElement('el-b', 200, 200)], ['el-text', 'el-b']);
+    renderWithChakra(<WireframeCanvasImpl />);
+    // 100 % zoom so the chrome stroke is exactly 2 / 1 logical px.
+    act(() => setView({ scale: 1, x: 0, y: 0 }));
+
+    const outlines = chromeOutlines();
+    expect(outlines).toHaveLength(2);
+    for (const outline of outlines) {
+      expect(outline).toHaveAttribute('data-mock-stroke', 'token-accent');
+      expect(outline).toHaveAttribute('data-mock-dash', '');
+    }
+    // el-b is the primary (last in document order) ⇒ 2, el-text ⇒ 1.
+    const primary = outlines.find(
+      (outline) => outline.getAttribute('data-mock-x') === '200',
+    );
+    expect(primary).toHaveAttribute('data-mock-stroke-width', '2');
+    const widths = outlines.map((outline) =>
+      Number(outline.getAttribute('data-mock-stroke-width')),
+    );
+    expect(widths.sort()).toEqual([1, 2]);
+  });
+
+  it('paints a locked member 1 px dashed muted', () => {
+    const document: WireframeDocument = {
+      ...createNewWireframeDocument('desktop'),
+      elements: [
+        textElement(),
+        { ...buttonElement('el-b', 200, 200), locked: true } as WireframeElement,
+      ],
+    };
+    loadDocument(document, 'C:/tmp/wireframe.wireframe.json');
+    selectMany(['el-text', 'el-b']);
+    renderWithChakra(<WireframeCanvasImpl />);
+    act(() => setView({ scale: 1, x: 0, y: 0 }));
+
+    const outlines = chromeOutlines();
+    const lockedOutline = outlines.find(
+      (outline) => outline.getAttribute('data-mock-x') === '200',
+    );
+    expect(lockedOutline).toHaveAttribute('data-mock-stroke', 'token-text-muted');
+    expect(lockedOutline).toHaveAttribute('data-mock-stroke-width', '1');
+    expect(lockedOutline!.getAttribute('data-mock-dash')).not.toBe('');
   });
 });
 
 describe('drag', () => {
   it('commits exactly ONE store step on drag end and updates the position', () => {
-    seedDocument([textElement()]);
+    seedDocument([textElement()], ['el-text']);
     renderWithChakra(<WireframeCanvasImpl />);
     expect(getSnapshot().canUndo).toBe(false);
 
-    act(() => {
-      elementGroup().props.onDragStart();
-    });
-    expect(getSnapshot().selectedId).toBe('el-text');
-
-    act(() => {
-      elementGroup().props.onDragEnd({
-        target: { x: () => 500, y: () => 400 },
-      });
-    });
+    dragElementTo('el-text', 500, 400);
 
     const afterDrag = getSnapshot();
     expect(afterDrag.document.elements[0]).toMatchObject({ x: 500, y: 400 });
@@ -403,53 +628,286 @@ describe('drag', () => {
   });
 
   it('does not commit a step for a click without movement', () => {
-    seedDocument([textElement()]);
+    seedDocument([textElement()], ['el-text']);
     renderWithChakra(<WireframeCanvasImpl />);
 
     act(() => {
-      elementGroup().props.onDragEnd({
-        target: { x: () => 480, y: () => 376 },
-      });
+      elementGroup().props.onDragStart();
+      elementGroup().props.onDragEnd();
     });
 
     expect(getSnapshot().canUndo).toBe(false);
     expect(getSnapshot().document.elements[0]).toMatchObject({ x: 480, y: 376 });
   });
 
-  it('never writes React state per pointer move (no drag-move handler)', () => {
-    seedDocument([textElement()]);
+  it('never writes React state per pointer move (drag-move updates Konva attrs only)', () => {
+    seedDocument([textElement()], ['el-text']);
     renderWithChakra(<WireframeCanvasImpl />);
-    expect(elementGroup().props.onDragMove).toBeUndefined();
-    expect(elementGroup().props.onTransform).toBeUndefined();
+
+    act(() => {
+      elementGroup().props.onDragStart();
+    });
+    const before = getSnapshot();
+
+    act(() => {
+      elementGroup().node.x(520);
+      elementGroup().node.y(400);
+      elementGroup().props.onDragMove();
+    });
+
+    // The store snapshot is byte-identical: no notify, no commit.
+    expect(getSnapshot()).toBe(before);
+    expect(getSnapshot().canUndo).toBe(false);
+    // Konva attributes carried the move instead.
+    expect(elementGroup().node.x()).toBe(520);
+    expect(elementGroup().node.y()).toBe(400);
+  });
+
+  it('moves EVERY movable member by the same delta in ONE commit', () => {
+    seedDocument(
+      [textElement(), buttonElement('el-b', 500, 300)],
+      ['el-text', 'el-b'],
+    );
+    renderWithChakra(<WireframeCanvasImpl />);
+
+    act(() => {
+      elementGroup('el-text').props.onDragStart();
+    });
+    act(() => {
+      // The leader moved by (+40, +20).
+      elementGroup('el-text').node.x(520);
+      elementGroup('el-text').node.y(396);
+      elementGroup('el-text').props.onDragMove();
+    });
+
+    // The other member followed imperatively.
+    expect(elementGroup('el-b').node.x()).toBe(540);
+    expect(elementGroup('el-b').node.y()).toBe(320);
+    expect(getSnapshot().canUndo).toBe(false);
+
+    act(() => {
+      elementGroup('el-text').props.onDragEnd();
+    });
+
+    const after = getSnapshot();
+    expect(after.document.elements[0]).toMatchObject({ x: 520, y: 396 });
+    expect(after.document.elements[1]).toMatchObject({ x: 540, y: 320 });
+    expect(after.canUndo).toBe(true);
+
+    act(() => undo());
+    const undone = getSnapshot();
+    expect(undone.document.elements[0]).toMatchObject({ x: 480, y: 376 });
+    expect(undone.document.elements[1]).toMatchObject({ x: 500, y: 300 });
+    expect(undone.canUndo).toBe(false);
+  });
+
+  it('leaves an individually locked member in place during a group drag', () => {
+    const locked = { ...textElement(), id: 'el-locked', x: 700, y: 700, locked: true };
+    seedDocument(
+      [textElement(), buttonElement('el-b', 500, 300), locked as WireframeElement],
+      ['el-text', 'el-b', 'el-locked'],
+    );
+    renderWithChakra(<WireframeCanvasImpl />);
+
+    // A locked member is not draggable.
+    expect(elementGroup('el-locked').props.draggable).toBe(false);
+
+    act(() => {
+      elementGroup('el-text').props.onDragStart();
+    });
+    act(() => {
+      elementGroup('el-text').node.x(500);
+      elementGroup('el-text').node.y(400);
+      elementGroup('el-text').props.onDragMove();
+    });
+    act(() => {
+      elementGroup('el-text').props.onDragEnd();
+    });
+
+    const after = getSnapshot();
+    expect(after.document.elements[0]).toMatchObject({ x: 500, y: 400 });
+    expect(after.document.elements[1]).toMatchObject({ x: 520, y: 324 });
+    expect(after.document.elements[2]).toMatchObject({ x: 700, y: 700 });
+  });
+});
+
+describe('snap to grid', () => {
+  it('lands the dragged origin on the grid when snap is on', () => {
+    seedDocument([textElement()], ['el-text']);
+    act(() => setSnapToGrid(true));
+    renderWithChakra(<WireframeCanvasImpl />);
+
+    dragElementTo('el-text', 133, 91);
+
+    // 133 → 136, 91 → 88 (nearest multiple of 8).
+    expect(getSnapshot().document.elements[0]).toMatchObject({ x: 136, y: 88 });
+  });
+
+  it('keeps free coordinates when snap is off', () => {
+    seedDocument([textElement()], ['el-text']);
+    renderWithChakra(<WireframeCanvasImpl />);
+
+    dragElementTo('el-text', 133, 91);
+
+    expect(getSnapshot().document.elements[0]).toMatchObject({ x: 133, y: 91 });
+  });
+
+  it('snaps a multi-selection from its UNION-BOX origin with ONE uniform delta', () => {
+    seedDocument(
+      [textElement(), buttonElement('el-b', 600, 450)],
+      ['el-text', 'el-b'],
+    );
+    act(() => setSnapToGrid(true));
+    renderWithChakra(<WireframeCanvasImpl />);
+
+    act(() => {
+      elementGroup('el-text').props.onDragStart();
+    });
+    act(() => {
+      elementGroup('el-text').node.x(485);
+      elementGroup('el-text').node.y(379);
+      elementGroup('el-text').props.onDragMove();
+    });
+    act(() => {
+      elementGroup('el-text').props.onDragEnd();
+    });
+
+    // Union origin (485, 379) snaps to (488, 376) ⇒ delta (+3, −3) applied
+    // uniformly; inter-element offsets preserved.
+    const after = getSnapshot();
+    expect(after.document.elements[0]).toMatchObject({ x: 488, y: 376 });
+    expect(after.document.elements[1]).toMatchObject({ x: 608, y: 450 });
+    expect(after.canUndo).toBe(true);
+  });
+
+  it('clamps the snapped origin inside the page', () => {
+    // 1268 → nearest 8 is 1272, but max x is 1280 - 320 = 960.
+    seedDocument([textElement({ x: 955, y: 100 })], ['el-text']);
+    act(() => setSnapToGrid(true));
+    renderWithChakra(<WireframeCanvasImpl />);
+
+    dragElementTo('el-text', 1268, 97);
+
+    expect(getSnapshot().document.elements[0]).toMatchObject({ x: 960, y: 96 });
+  });
+});
+
+describe('smart alignment guides', () => {
+  it('paints guides mid-drag and clears them on drop (imperative hook)', () => {
+    seedDocument([textElement(), buttonElement('el-b', 800, 376)], ['el-text']);
+    renderWithChakra(<WireframeCanvasImpl />);
+
+    const host = screen.getByTestId('wireframe-canvas');
+    expect(host).toHaveAttribute('data-wireframe-guides', '0');
+
+    act(() => {
+      elementGroup('el-text').props.onDragStart();
+    });
+    act(() => {
+      // el-text's edges/centre stay within 6 px of el-b's on the y axis.
+      elementGroup('el-text').node.x(480);
+      elementGroup('el-text').node.y(377);
+      elementGroup('el-text').props.onDragMove();
+    });
+
+    expect(Number(host.getAttribute('data-wireframe-guides'))).toBeGreaterThan(0);
+    expect(konvaMock.lines.some((line) => line.visible() === true)).toBe(true);
+
+    act(() => {
+      elementGroup('el-text').props.onDragEnd();
+    });
+
+    expect(host).toHaveAttribute('data-wireframe-guides', '0');
+    expect(konvaMock.lines.every((line) => line.visible() === false)).toBe(true);
+  });
+
+  it('never paints a guide when nothing is near', () => {
+    seedDocument([textElement(), buttonElement('el-b', 1200, 700)], ['el-text']);
+    renderWithChakra(<WireframeCanvasImpl />);
+
+    act(() => {
+      elementGroup('el-text').props.onDragStart();
+    });
+    act(() => {
+      elementGroup('el-text').node.x(480);
+      elementGroup('el-text').node.y(377);
+      elementGroup('el-text').props.onDragMove();
+    });
+
+    expect(screen.getByTestId('wireframe-canvas')).toHaveAttribute(
+      'data-wireframe-guides',
+      '0',
+    );
+  });
+
+  it('clears every guide on Escape (drag cancel)', () => {
+    seedDocument([textElement(), buttonElement('el-b', 800, 376)], ['el-text']);
+    renderWithChakra(<WireframeCanvasImpl />);
+
+    act(() => {
+      elementGroup('el-text').props.onDragStart();
+    });
+    act(() => {
+      elementGroup('el-text').node.y(377);
+      elementGroup('el-text').props.onDragMove();
+    });
+    expect(
+      Number(screen.getByTestId('wireframe-canvas').getAttribute('data-wireframe-guides')),
+    ).toBeGreaterThan(0);
+
+    act(() => {
+      fireEvent.keyDown(screen.getByTestId('wireframe-canvas'), { key: 'Escape' });
+    });
+
+    expect(screen.getByTestId('wireframe-canvas')).toHaveAttribute(
+      'data-wireframe-guides',
+      '0',
+    );
+  });
+
+  it('puts guides + the snap grid on a capture-hidden layer', () => {
+    seedDocument([]);
+    renderWithChakra(<WireframeCanvasImpl />);
+
+    const layer = document.querySelector(
+      '[data-mock-layer-name="wireframe-guides wireframe-capture-hidden"]',
+    );
+    expect(layer).not.toBeNull();
+    // The grid shape lives on that layer and is hidden while snap is off.
+    expect(layer!.querySelector('[data-mock-name="wireframe-snap-grid"]')).toHaveAttribute(
+      'data-mock-visible',
+      'false',
+    );
+  });
+
+  it('shows the snap grid while snap is on and hides it when off', () => {
+    seedDocument([]);
+    renderWithChakra(<WireframeCanvasImpl />);
+
+    const grid = () => document.querySelector('[data-mock-name="wireframe-snap-grid"]');
+    expect(grid()).toHaveAttribute('data-mock-visible', 'false');
+
+    act(() => setSnapToGrid(true));
+    expect(grid()).toHaveAttribute('data-mock-visible', 'true');
+
+    act(() => setSnapToGrid(false));
+    expect(grid()).toHaveAttribute('data-mock-visible', 'false');
   });
 });
 
 describe('transformer resize', () => {
-  it('commits ONE store step on release and folds scale into width/height', () => {
-    seedDocument([textElement()], 'el-text');
+  it('commits ONE store step on release and folds the delta into width/height', () => {
+    seedDocument([textElement()], ['el-text']);
     renderWithChakra(<WireframeCanvasImpl />);
 
-    let scaleX = 2;
-    let scaleY = 1.5;
-    const target = {
-      x: () => 480,
-      y: () => 376,
-      width: () => 320,
-      height: () => 48,
-      scaleX: (value?: number) => {
-        if (value === undefined) return scaleX;
-        scaleX = value;
-        return target;
-      },
-      scaleY: (value?: number) => {
-        if (value === undefined) return scaleY;
-        scaleY = value;
-        return target;
-      },
-    };
-
+    const node = elementGroup().node;
     act(() => {
-      elementGroup().props.onTransformEnd({ target });
+      transformerProps().onTransformStart();
+    });
+    act(() => {
+      node.scaleX(2);
+      node.scaleY(1.5);
+      transformerProps().onTransformEnd();
     });
 
     const afterResize = getSnapshot();
@@ -459,28 +917,90 @@ describe('transformer resize', () => {
       width: 640,
       height: 72,
     });
-    expect(scaleX).toBe(1);
-    expect(scaleY).toBe(1);
+    expect(node.scaleX()).toBe(1);
+    expect(node.scaleY()).toBe(1);
     expect(afterResize.canUndo).toBe(true);
 
     act(() => undo());
     expect(getSnapshot().document.elements[0]).toMatchObject({ width: 320, height: 48 });
     expect(getSnapshot().canUndo).toBe(false);
   });
+
+  it('applies the SAME union-box delta to every movable member in ONE commit', () => {
+    seedDocument(
+      [textElement(), buttonElement('el-b', 500, 300)],
+      ['el-text', 'el-b'],
+    );
+    renderWithChakra(<WireframeCanvasImpl />);
+
+    act(() => {
+      transformerProps().onTransformStart();
+    });
+    act(() => {
+      // Konva scales the nodes; the union box grows by (+160, +88) at the
+      // same origin ⇒ dw = +160, dh = +88, dx = dy = 0.
+      elementGroup('el-text').node.scaleX(1.5);
+      elementGroup('el-b').node.scaleX(2);
+      elementGroup('el-b').node.scaleY(3);
+      transformerProps().onTransformEnd();
+    });
+
+    const after = getSnapshot();
+    // delta = endUnion - startUnion. startUnion = (480, 300, 180, 48);
+    // endUnion = (480, 300, 320 + 160? , ...) computed from the scaled nodes.
+    // Assert the invariant instead: every movable member grew by the SAME
+    // (dw, dh) and kept its origin offsets.
+    const startWidths = [320, 160];
+    const widths = after.document.elements.map((element) => element.width);
+    expect(widths[0] - startWidths[0]).toBe(widths[1] - startWidths[1]);
+    const heights = after.document.elements.map((element) => element.height);
+    expect(heights[0] - 48).toBe(heights[1] - 44);
+    // Origins unchanged (dx = dy = 0 for this drag).
+    expect(after.document.elements[0]).toMatchObject({ x: 480, y: 376 });
+    expect(after.document.elements[1]).toMatchObject({ x: 500, y: 300 });
+    expect(after.canUndo).toBe(true);
+  });
+
+  it('clamps the resize delta so no movable member falls below ELEMENT_MIN_SIZE', () => {
+    seedDocument(
+      [
+        textElement({ width: 320, height: 48 }),
+        buttonElement('el-b', 500, 300),
+      ],
+      ['el-text', 'el-b'],
+    );
+    renderWithChakra(<WireframeCanvasImpl />);
+
+    act(() => {
+      transformerProps().onTransformStart();
+    });
+    act(() => {
+      // Collapse the union box to almost nothing.
+      elementGroup('el-text').node.scaleX(0.0001);
+      elementGroup('el-text').node.scaleY(0.0001);
+      elementGroup('el-b').node.scaleX(0.0001);
+      elementGroup('el-b').node.scaleY(0.0001);
+      transformerProps().onTransformEnd();
+    });
+
+    const widths = getSnapshot().document.elements.map((element) => element.width);
+    expect(Math.min(...widths)).toBeGreaterThanOrEqual(8);
+  });
 });
 
 describe('locked inertness', () => {
   it('renders no Transformer and refuses a body drag', () => {
-    seedDocument([textElement({ locked: true })], 'el-text');
+    seedDocument([textElement({ locked: true })], ['el-text']);
     renderWithChakra(<WireframeCanvasImpl />);
 
     expect(screen.queryByTestId('mock-transformer')).toBeNull();
     expect(elementGroup().props.draggable).toBe(false);
 
     act(() => {
-      elementGroup().props.onDragEnd({
-        target: { x: () => 700, y: () => 500 },
-      });
+      elementGroup().props.onDragStart();
+      elementGroup().node.x(700);
+      elementGroup().node.y(500);
+      elementGroup().props.onDragEnd();
     });
 
     expect(getSnapshot().document.elements[0]).toMatchObject({ x: 480, y: 376 });
@@ -490,7 +1010,7 @@ describe('locked inertness', () => {
 
 describe('hidden elements', () => {
   it('paint no ink but keep a dashed textMuted outline while selected', () => {
-    seedDocument([textElement({ visible: false })], 'el-text');
+    seedDocument([textElement({ visible: false })], ['el-text']);
     renderWithChakra(<WireframeCanvasImpl />);
 
     expect(elementGroup().props.visible).toBe(false);
@@ -502,13 +1022,13 @@ describe('hidden elements', () => {
     expect(outlines[0].getAttribute('data-mock-dash')).not.toBe('');
   });
 
-  it('shows a solid focusRing outline for a visible selection', () => {
-    seedDocument([textElement()], 'el-text');
+  it('shows a solid accent outline for a visible selection', () => {
+    seedDocument([textElement()], ['el-text']);
     renderWithChakra(<WireframeCanvasImpl />);
 
     const outlines = chromeOutlines();
     expect(outlines).toHaveLength(1);
-    expect(outlines[0]).toHaveAttribute('data-mock-stroke', 'token-focus-ring');
+    expect(outlines[0]).toHaveAttribute('data-mock-stroke', 'token-accent');
     expect(outlines[0]).toHaveAttribute('data-mock-dash', '');
   });
 });
@@ -655,7 +1175,7 @@ describe('capture paint override (F-33)', () => {
 
 describe('bubbled element drag (E-16)', () => {
   it('leaves the view untouched and still commits exactly one element move', () => {
-    seedDocument([textElement()]);
+    seedDocument([textElement()], ['el-text']);
     renderWithChakra(<WireframeCanvasImpl />);
     act(() => setView({ scale: 1, x: 175, y: 30.5 }));
 
@@ -663,12 +1183,15 @@ describe('bubbled element drag (E-16)', () => {
     expect(viewGroup).toBeDefined();
 
     const viewBefore = JSON.stringify(getSnapshot().view);
-    const elementNode = { x: () => 520, y: () => 406 };
+    const elementNode = elementGroup().node;
     const panNode = { x: () => 175, y: () => 30.5 };
 
     act(() => {
       // The element's own drag commits its geometry...
-      elementGroup().props.onDragEnd({ target: elementNode });
+      elementGroup().props.onDragStart();
+      elementNode.x(520);
+      elementNode.y(406);
+      elementGroup().props.onDragEnd();
       // ...then Konva bubbles dragstart/dragend to the pan group, where the
       // target is the element and the currentTarget is the pan group (E-16).
       viewGroup!.props.onDragStart({ target: elementNode, currentTarget: panNode });
