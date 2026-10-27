@@ -2,7 +2,7 @@
  * Theme contract — surfaces, states, contrast pairs, floors and derivations
  * (Spec #3034 ST-1).
  *
- * The completeness enumeration: every painted surface (13) × every interactive
+ * The completeness enumeration: every painted surface (19) × every interactive
  * control state (6) maps to the semantic-token NAMES that back it. This is the
  * SUPERSET of the merged contrast gate's enumeration (#3033, 7 surfaces × 5
  * states): ST-3 makes the gate consume a projection of this list, so no surface
@@ -34,7 +34,14 @@ export type SurfaceId =
   | 'control-outline'
   | 'control-solid'
   | 'select'
-  | 'radio-card';
+  | 'radio-card'
+  // ── Wireframe control classes (Spec #3086) ──────────────────────────────────
+  | 'segmented'
+  | 'slider'
+  | 'number-input'
+  | 'control-ghost'
+  | 'status-solid'
+  | 'banner';
 
 /** The interactive state of a control whose colour pair is measured. */
 export type ControlState =
@@ -94,6 +101,13 @@ export const SURFACE_IDS: readonly SurfaceId[] = [
   'control-solid',
   'select',
   'radio-card',
+  // ── Wireframe control classes (Spec #3086) ──────────────────────────────────
+  'segmented',
+  'slider',
+  'number-input',
+  'control-ghost',
+  'status-solid',
+  'banner',
 ];
 
 /** The interactive states, in declaration order (the binding vocabulary). */
@@ -185,6 +199,26 @@ addSurface('badge', 'bg.hover');
 addSurface('control-outline', 'bg.surface');
 addSurface('select', 'bg.surface');
 addSurface('radio-card', 'bg.surface');
+
+// ── Wireframe control classes (Spec #3086) ────────────────────────────────────
+// The reported Wireframe surfaces are the Chakra `SegmentGroup` / `Slider` /
+// `NumberInput` control classes plus the ghost toolbar button, the status-filled
+// Discard button and the file-error banner. Their chrome is painted on
+// `bg.surface` (the property panel / toolbar) except the banner, which sits on
+// `bg.canvas`. `addSurface` gives each the full state matrix; the gate projects
+// the contrast-checkable subset (see `contrast/matrix.ts`).
+addSurface('segmented', 'bg.surface');
+addSurface('slider', 'bg.surface');
+addSurface('number-input', 'bg.surface');
+addSurface('control-ghost', 'bg.surface');
+addSurface('status-solid', 'bg.surface');
+addSurface('banner', 'bg.canvas');
+
+// ── Wireframe extras (Spec #3086) ─────────────────────────────────────────────
+// The slider's DISABLED rail is the `range` fill (not the `label`), so it needs
+// its own enumerated cell to carry the WCAG inactive-component exemption — the
+// gate's `slider|disabled|range` row must resolve to an exempt contract cell.
+seeds.push(['slider', 'disabled', 'range', 'ui', 'fg.subtle', 'bg.muted', false, true]);
 
 // ── Accent-filled control (label on the accent fill) ─────────────────────────
 seeds.push(

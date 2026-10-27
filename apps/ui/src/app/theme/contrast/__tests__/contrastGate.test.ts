@@ -171,8 +171,15 @@ describe('AC5 control classes and states (Q-7, R-5)', () => {
     expect(disabled.length).toBeGreaterThan(0);
     for (const row of disabled) {
       expect(row.composed, `${row.key} must be a token read, not an opacity composition`).toBe(false);
-      expect(row.kind, row.key).toBe('body');
-      expect(row.floor, row.key).toBe(BODY_FLOOR);
+      // #3086 — the slider DISABLED rail is a UI boundary (`range`), not body
+      // text; every other disabled pair is the `label` body pair.
+      if (row.pairId === 'range') {
+        expect(row.kind, row.key).toBe('ui');
+        expect(row.floor, row.key).toBe(UI_FLOOR);
+      } else {
+        expect(row.kind, row.key).toBe('body');
+        expect(row.floor, row.key).toBe(BODY_FLOOR);
+      }
       // ST-2 (#3035) — WCAG inactive-component exemption (never a floor violation).
       expect(row.exempt, `${row.key} must be WCAG-exempt`).toBe(true);
     }
@@ -275,5 +282,69 @@ describe('day-one green on the tip (Q-5 re-bind, AC1 / AC3)', () => {
     expect(evaluation.violations).toEqual([]);
     expect(evaluation.staleBaseline).toEqual([]);
     expect(RAW_COLOR_BASELINE.length).toBe(RAW_COLOR_BASELINE_MAX);
+  });
+});
+
+describe('#3086 — Wireframe control classes in the gate projection (Q-6, R-3)', () => {
+  const WIREFRAME_SURFACES: readonly SurfaceId[] = [
+    'segmented',
+    'slider',
+    'number-input',
+    'control-ghost',
+    'status-solid',
+    'banner',
+  ];
+
+  it('represents every Wireframe surface for every preset (no vacuous coverage)', () => {
+    for (const presetId of PRESET_IDS) {
+      const rows = matrix.filter((r) => r.presetId === presetId);
+      const surfaces = new Set(rows.map((r) => r.surface));
+      for (const surface of WIREFRAME_SURFACES) {
+        expect(surfaces.has(surface), `${presetId} missing Wireframe surface ${surface}`).toBe(true);
+      }
+    }
+  });
+
+  it('gates the Wireframe default/focus/disabled pairs with the absolute floors', () => {
+    for (const presetId of PRESET_IDS) {
+      for (const [surface, state, pairId, kind] of [
+        ['segmented', 'default', 'label', 'body'],
+        ['segmented', 'default', 'track', 'ui'],
+        ['segmented', 'selected', 'label', 'body'],
+        ['slider', 'default', 'track', 'ui'],
+        ['slider', 'default', 'range', 'ui'],
+        ['number-input', 'default', 'label', 'body'],
+        ['number-input', 'default', 'stepper', 'ui'],
+        ['control-ghost', 'active', 'label', 'body'],
+        ['status-solid', 'default', 'label', 'body'],
+        ['banner', 'default', 'label', 'body'],
+        ['banner', 'default', 'icon', 'ui'],
+        ['canvas', 'default', 'fallback-label', 'body'],
+        ['subtle', 'default', 'chip-label', 'body'],
+        ['surface', 'default', 'overlay-label', 'body'],
+      ] as const) {
+        const row = matrix.find(
+          (r) => r.presetId === presetId && r.surface === surface && r.state === state && r.pairId === pairId,
+        );
+        expect(row, `${presetId}|${surface}|${state}|${pairId}`).toBeDefined();
+        expect(row!.kind, `${presetId}|${surface}|${state}|${pairId}`).toBe(kind);
+        expect(row!.floor, `${presetId}|${surface}|${state}|${pairId}`).toBe(
+          kind === 'body' ? BODY_FLOOR : UI_FLOOR,
+        );
+        expect(row!.exempt, `${presetId}|${surface}|${state}|${pairId}`).toBe(state === 'disabled');
+      }
+    }
+  });
+
+  it('the #3081 Discard pair is gate-guarded and clears the floor on every preset', () => {
+    for (const presetId of PRESET_IDS) {
+      const row = matrix.find(
+        (r) => r.presetId === presetId && r.surface === 'status-solid' && r.state === 'default' && r.pairId === 'label',
+      );
+      expect(row, `${presetId} status-solid|default|label`).toBeDefined();
+      expect(row!.kind).toBe('body');
+      expect(row!.floor).toBe(BODY_FLOOR);
+      expect(row!.ratio, `${presetId} Discard pair must clear 4.5`).toBeGreaterThanOrEqual(BODY_FLOOR);
+    }
   });
 });

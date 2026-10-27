@@ -1,4 +1,4 @@
-import { createSystem, defaultConfig, defineConfig } from '@chakra-ui/react';
+import { createSystem, defaultConfig, defineConfig, defineSlotRecipe } from '@chakra-ui/react';
 import { SEMANTIC_TOKENS, type SemanticToken } from './contract';
 
 /**
@@ -62,6 +62,16 @@ function chakraValue(token: SemanticToken): string {
   }
   return `var(${token.varName})`;
 }
+
+/**
+ * Chakra's `theme.slotRecipes` type demands a COMPLETE slot recipe (`slots` +
+ * variants); a deep-merged PARTIAL override is exactly what `mergeConfigs`
+ * supports at runtime — the built-in recipe keeps its own `slots`, so the slot
+ * list is never rewritten. This narrows the partial to Chakra's slot-recipe
+ * type without changing the runtime shape.
+ */
+const partialSlotRecipe = (recipe: object): ReturnType<typeof defineSlotRecipe> =>
+  recipe as ReturnType<typeof defineSlotRecipe>;
 
 /** Derive the `semanticTokens.colors` map from the contract. */
 function buildColorTokens(): ColorTokenTree {
@@ -197,6 +207,97 @@ const config = defineConfig({
           },
         },
       },
+    },
+    /**
+     * Spec #3086 ST-2 — the Chakra SLOT recipes for the Wireframe control classes.
+     * Chakra deep-merges `defineConfig.theme.slotRecipes.<key>` over its built-in
+     * slot recipe (`mergeConfigs` + the recursive `utils/merge.js`), and the
+     * merged recipe emits into `@layer recipes` — the cascade-WINNING path
+     * (`reset, base, tokens, recipes`). A `globalCss` selector would land in
+     * `@layer base` and LOSE (G-365). Each override paints the SAME contract
+     * token pair the contrast gate validates (one home per pair, G-366):
+     *
+     *  - `segmentGroup` (Wireframe `SegmentedField.tsx`): root `bg.surface` with a
+     *    `border.default` rail boundary, hover boundary `accent.border`, selected
+     *    indicator `accent.tint` with an `accent.strong` boundary, item text
+     *    `fg.default` (selected + unselected), disabled `fg.subtle`, focus ring
+     *    `accent.focusRing` (= `--accent-strong`).
+     *  - `slider` (Wireframe `NumberSliderField.tsx`): rail fill `bg.subtle` with
+     *    a `border.default` boundary, range/thumb `accent.strong`, disabled range
+     *    `fg.subtle`, focus ring `accent.focusRing`.
+     *  - `numberInput` (Wireframe `NumberSliderField.tsx`): input `bg.surface` /
+     *    `fg.default` / `border.default` (hover `accent.border`), stepper
+     *    `fg.muted`, focus ring `accent.focusRing`.
+     *
+     * Contract tokens only — no raw colour. The one var reference
+     * (`var(--border-strong)` / `var(--accent-strong)`) is the same contract
+     * boundary the `boxShadow: 'inset'` ring already drew, only recoloured (no
+     * layout change).
+     */
+    slotRecipes: {
+      segmentGroup: partialSlotRecipe({
+        base: {
+          root: {
+            bg: 'bg.surface',
+            boxShadow: 'inset 0 0 0 1px var(--border-strong)',
+            _hover: { boxShadow: 'inset 0 0 0 1px var(--accent-strong)' },
+          },
+          item: {
+            color: 'fg.default',
+            '&[data-state=checked]': { color: 'fg.default' },
+            _before: { bg: 'border.default' },
+            _disabled: { opacity: 1, color: 'fg.subtle' },
+            '&:has(input:focus-visible)': { outlineColor: 'var(--accent-strong)' },
+          },
+          indicator: {
+            bg: 'accent.tint',
+            borderColor: 'accent.strong',
+            borderWidth: '1px',
+          },
+        },
+      }),
+      slider: partialSlotRecipe({
+        variants: {
+          variant: {
+            outline: {
+              track: {
+                bg: 'bg.subtle',
+                boxShadow: 'inset 0 0 0 1px var(--border-strong)',
+              },
+              range: { bg: 'accent.strong', _disabled: { bg: 'fg.subtle' } },
+              thumb: { bg: 'accent.strong', borderColor: 'accent.strong' },
+            },
+            solid: {
+              track: { bg: 'bg.subtle' },
+              range: { bg: 'accent.strong', _disabled: { bg: 'fg.subtle' } },
+              thumb: { bg: 'accent.strong' },
+            },
+          },
+        },
+        base: {
+          thumb: { _focusVisible: { ringColor: 'var(--accent-strong)' } },
+        },
+      }),
+      numberInput: partialSlotRecipe({
+        variants: {
+          variant: {
+            outline: {
+              input: {
+                bg: 'bg.surface',
+                color: 'fg.default',
+                borderColor: 'border.default',
+                focusRingColor: 'var(--accent-strong)',
+                _hover: { borderColor: 'accent.border' },
+              },
+            },
+          },
+        },
+        base: {
+          control: { color: 'fg.muted' },
+          incrementTrigger: { color: 'fg.muted' },
+          decrementTrigger: { color: 'fg.muted' },
+        },
+      }),
     },
     tokens: {
       fonts: {

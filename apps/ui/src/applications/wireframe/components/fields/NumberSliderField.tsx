@@ -7,6 +7,15 @@
  * typed value commits on Enter/blur through the NumberInput's own commit hook
  * (the shipped CompanionSettingsPanel convention) so a half-typed number never
  * churns the undo history.
+ *
+ * Spec #3086 (ST-3) — the control chrome resolves the SAME contract token pairs
+ * the contrast gate validates (`matrix.ts` `PAIR_SPECS`; one home per pair,
+ * G-366): the number field paints `bg.surface`/`fg.default`/`border.default`, the
+ * stepper `fg.muted`, the slider rail fill `bg.subtle` (boundary `border.default`,
+ * from the `slider` recipe) and the range/thumb `accent.strong`. The
+ * `data-contrast-*` anchors are ADDITIVE: they expose the rendered fg/bg of each
+ * pair to the live rendered leg (G-154) and change no role, name or state
+ * semantics.
  */
 
 import React, { useEffect, useRef, useState } from 'react';
@@ -86,12 +95,17 @@ export function NumberSliderField({
           {/* Zag only commits on blur/Enter, and it steps on pointerdown — so
               the click handler must commit the REF (the stepped value written by
               `onValueChange`), never this render's stale `draft` state. */}
-          <NumberInput.Control onClick={() => commit(draftRef.current)} />
+          <NumberInput.Control
+            color="fg.muted"
+            data-contrast-pair="number-input|default|stepper"
+            onClick={() => commit(draftRef.current)}
+          />
           <NumberInput.Input
             aria-label={label}
             bg="bg.surface"
             color="fg.default"
             borderColor="border.default"
+            data-contrast-pair="number-input|default|label"
           />
         </NumberInput.Root>
         <Text as="span" fontSize="xs" color="fg.muted">
@@ -112,10 +126,14 @@ export function NumberSliderField({
         width="full"
       >
         <Slider.Control>
-          <Slider.Track>
-            <Slider.Range />
+          <Slider.Track bg="bg.subtle" data-contrast-pair="slider|default|track">
+            <Slider.Range bg="accent.strong" data-contrast-pair="slider|default|range" />
           </Slider.Track>
-          <Slider.Thumb index={0}>
+          <Slider.Thumb
+            index={0}
+            bg="accent.strong"
+            data-contrast-pair="slider|default|thumb"
+          >
             <Slider.HiddenInput />
           </Slider.Thumb>
         </Slider.Control>

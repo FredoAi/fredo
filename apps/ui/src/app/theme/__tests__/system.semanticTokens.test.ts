@@ -89,3 +89,61 @@ describe('#2865 ST-3a semantic-token bridge', () => {
     expect(base['--chakra-colors-status\\.success']).toBe('var(--status-success)');
   });
 });
+
+/** A loose view of a merged slot recipe (base + variants), for the ST-2 pins. */
+type LooseSlotRecipe = {
+  base?: Record<string, Record<string, unknown>>;
+  variants?: Record<string, Record<string, Record<string, Record<string, unknown>>>>;
+};
+
+const slotRecipe = (key: string): LooseSlotRecipe =>
+  system.getSlotRecipe(key) as unknown as LooseSlotRecipe;
+
+describe('#3086 ST-2 — Wireframe control-class slot recipes (cascade-winning path)', () => {
+  it('registers segmentGroup / slider / numberInput as slot recipes', () => {
+    for (const key of ['segmentGroup', 'slider', 'numberInput']) {
+      expect(system.isSlotRecipe(key), key).toBe(true);
+      expect(system.getSlotRecipe(key), key).toBeDefined();
+    }
+  });
+
+  it('emits the bounded Wireframe tokens as live color-mix() expressions', () => {
+    const base = baseTokenVars();
+    expect(base['--chakra-colors-accent\\.tint']).toBe(
+      'color-mix(in srgb, var(--accent-primary) 10%, var(--body-bg) 90%)',
+    );
+    // Chakra kebab-cases camelCase token leaves (`errorTint` → `error-tint`).
+    expect(base['--chakra-colors-status\\.error-tint']).toBe(
+      'color-mix(in srgb, var(--status-error) 15%, var(--body-bg) 85%)',
+    );
+    expect(base['--chakra-colors-status\\.error-strong']).toBe(
+      'color-mix(in srgb, var(--status-error) 50%, var(--text-primary) 50%)',
+    );
+  });
+
+  it('segmentGroup paints the contract token pairs (gate ↔ paint agreement)', () => {
+    const recipe = slotRecipe('segmentGroup');
+    expect(recipe.base!.root.bg).toBe('bg.surface');
+    expect(recipe.base!.root.boxShadow).toBe('inset 0 0 0 1px var(--border-strong)');
+    expect(recipe.base!.item.color).toBe('fg.default');
+    expect(recipe.base!.item._disabled).toMatchObject({ opacity: 1, color: 'fg.subtle' });
+    expect(recipe.base!.indicator.bg).toBe('accent.tint');
+    expect(recipe.base!.indicator.borderColor).toBe('accent.strong');
+  });
+
+  it('slider paints the contract token pairs (rail fill bg.subtle, range/thumb accent.strong)', () => {
+    const outline = slotRecipe('slider').variants!.variant.outline;
+    expect(outline.track.bg).toBe('bg.subtle');
+    expect(outline.track.boxShadow).toBe('inset 0 0 0 1px var(--border-strong)');
+    expect(outline.range.bg).toBe('accent.strong');
+    expect(outline.thumb.bg).toBe('accent.strong');
+  });
+
+  it('numberInput paints the contract token pairs (input surface/field, stepper fg.muted)', () => {
+    const recipe = slotRecipe('numberInput');
+    expect(recipe.variants!.variant.outline.input.bg).toBe('bg.surface');
+    expect(recipe.variants!.variant.outline.input.color).toBe('fg.default');
+    expect(recipe.variants!.variant.outline.input.borderColor).toBe('border.default');
+    expect(recipe.base!.control.color).toBe('fg.muted');
+  });
+});

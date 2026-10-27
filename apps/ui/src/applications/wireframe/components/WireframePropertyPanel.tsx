@@ -382,8 +382,20 @@ function TextFields({
                 aria-label={option.label}
                 aria-pressed={pressed}
                 onClick={() => update({ align: option.value })}
-                color={pressed ? 'accent.default' : 'fg.muted'}
+                // #3086 ST-3 (G-235 substitution) — this align control is a
+                // `variant="ghost"` pressable (`aria-pressed`), i.e. the
+                // `control-ghost` gate surface ("variant='ghost' pressable
+                // buttons — toolbar + panel align"). The label stays
+                // `fg.default` in EVERY state; the accent signal is the FILL,
+                // matching the committed composed rows —
+                // `control-ghost|default|label` = `fg.default` on `bg.surface`,
+                // `|hover|label` = the 10 % accent tint, `|active|label` = the
+                // 18 % accent tint. `accent.default` on its own faint tint was
+                // the sub-floor pair (G-366).
+                color="fg.default"
                 bg={pressed ? tint('var(--accent-primary)', 18) : undefined}
+                _hover={{ bg: tint('var(--accent-primary)', pressed ? 18 : 10) }}
+                data-contrast-pair="control-ghost|active|label"
                 px={2}
               >
                 <Icon as={option.icon} boxSize={4} aria-hidden="true" />

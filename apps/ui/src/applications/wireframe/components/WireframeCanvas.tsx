@@ -29,7 +29,11 @@ function CanvasFallback(): ReactElement {
       minW={0}
       minH={0}
       overflow="hidden"
-      bg="bg.muted"
+      // #3086 ST-4 — the fallback backdrop is the preset-authored `bg.subtle`
+      // (the gate row `canvas|default|fallback-label` is `fg.muted` on
+      // `bg.subtle`; the former `bg.muted` is not preset-authored and could not
+      // clear the body floor on every preset).
+      bg="bg.subtle"
       display="flex"
       flexDirection="column"
       alignItems="center"
@@ -37,7 +41,11 @@ function CanvasFallback(): ReactElement {
       gap={3}
     >
       <Skeleton width="70%" height="70%" maxW="960px" maxH="640px" />
-      <Text fontSize="sm" color="fg.muted">
+      <Text
+        fontSize="sm"
+        color="fg.muted"
+        data-contrast-pair="canvas|default|fallback-label"
+      >
         Loading canvas…
       </Text>
     </Box>

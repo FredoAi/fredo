@@ -49,7 +49,7 @@ async function settle(): Promise<void> {
  * references one of the element's classes. Chakra emits style props into
  * emotion rules, so this is the rendered (class-based) oracle — a hardcoded
  * `color="white"` surfaces here as `color: white`, a token as
- * `color: status.onSolids`.
+ * `color: fg.default`.
  */
 function generatedCssFor(element: Element): string {
   const classes = Array.from(element.classList);
@@ -417,7 +417,7 @@ describe('New document (UI/UX 3.11 / R-4.12)', () => {
     expect(getSnapshot().canUndo).toBe(false);
   });
 
-  it('renders the Discard label through the status.onSolids token, never a raw literal (AC1 / AC3)', async () => {
+  it('renders the Discard label through the contract tokens, never a raw literal (AC1 / AC3)', async () => {
     const user = userEvent.setup();
     renderWithChakra(<WireframeToolbar />);
 
@@ -427,8 +427,13 @@ describe('New document (UI/UX 3.11 / R-4.12)', () => {
 
     const css = generatedCssFor(button('wireframe-new-document-discard'));
 
-    // The label colour resolves through the theming-application token ...
-    expect(css).toMatch(/color:\s*status\.onSolids\b/);
+    // #3086 ST-4 — the gated `status-solid|default|label` pair is `fg.default`
+    // on `status.errorTint` (the G-235 substitution for the below-floor #3081
+    // `status.onSolids`-on-`status.error` pair). The label colour resolves
+    // through the theming-application contract token ...
+    expect(css).toMatch(/(?:color:\s*fg\.default\b|--chakra-colors-fg-default)/);
+    // ... and the destructive fill is the bounded status-error tint token.
+    expect(css).toMatch(/(?:status\.errorTint\b|--chakra-colors-status-error-tint)/);
     // ... and never a hardcoded named / functional / hex colour literal.
     expect(css).not.toMatch(/\bcolor:\s*(?:white|rgba?\(|hsla?\()/);
     expect(css).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);

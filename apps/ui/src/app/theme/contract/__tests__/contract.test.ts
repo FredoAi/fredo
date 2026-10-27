@@ -140,10 +140,21 @@ describe('#3034 ST-1 contract — R-1.2: no pair names a token absent from the r
 
 describe('#3034 ST-1 contract — R-1.1: the surface × state completeness enumeration', () => {
   it('exposes the binding surface/state vocabulary', () => {
-    expect(SURFACE_IDS).toHaveLength(13);
+    expect(SURFACE_IDS).toHaveLength(19);
     expect(CONTROL_STATE_IDS).toHaveLength(6);
     expect(CONTROL_STATE_IDS).toContain('active');
     for (const surface of ['overlay', 'nav', 'input', 'card', 'pill', 'badge'] as SurfaceId[]) {
+      expect(SURFACE_IDS).toContain(surface);
+    }
+    // Spec #3086 — the six Wireframe control classes join the vocabulary.
+    for (const surface of [
+      'segmented',
+      'slider',
+      'number-input',
+      'control-ghost',
+      'status-solid',
+      'banner',
+    ] as SurfaceId[]) {
       expect(SURFACE_IDS).toContain(surface);
     }
   });
