@@ -210,6 +210,34 @@ behaviour is wrong.
       render with the token colour on that path too, or does the Companion path skip the dialog
       (documented overwrite — F-44c)? Record the observed path.
 
+## Spec #3071 — new probes (Layout Intelligence)
+
+> Unscripted edge/failure probes for the arrangement slice. Evidence is LIVE + MEASURED — a
+> quoted `tauri_webview_*` result plus an uploaded capture (document state, no `telemetry_spans`
+> receipt expected). A confirmed finding PROMOTES to `functional.md` as a new `F-` row.
+
+- [ ] **E-28 Group membership drift under undo/redo.** Group 3 elements, ungroup, then hammer
+      `u`/`y` 10×. Does `groups[].memberIds` ever reference an element that no longer exists, or
+      does a group reappear pointing at stale ids? Record `-group-count` + the saved JSON each
+      cycle.
+- [ ] **E-29 Reorder + group interaction.** Send an element of a group backward past a
+      non-member, then drag the group. Do the members keep their relative stacking, and does
+      `data-wireframe-stacking` stay coherent with the group membership?
+- [ ] **E-30 Snap vs align-guide conflict.** With snap ON, drag an element so both the grid snap
+      and a smart guide want to pull it. Which wins, and does the committed geometry land on the
+      grid multiple? Record the guide count and the final x/y.
+- [ ] **E-31 Two-step namespace under text entry / focus churn.** Press `g` then focus a panel
+      field before the second key. Does the pending sequence (`data-fredo-pending-sequence`) leak
+      or fire a stale action after the 1000 ms timeout? Then press `g` `g` across a window
+      focus change.
+- [ ] **E-32 Companion under-sized honesty.** Invoke `wireframe.arrange.distribute` via the
+      Companion with only 2 elements selected. Does it reply "nothing changed" (honest) or claim
+      success? Cross-check `runWireframeAction`'s return.
+- [ ] **E-33 Large grouped document performance.** Build ~40 elements across ~10 groups, then
+      drag/resize groups and run align/distribute. Does the canvas stay responsive (no per-move
+      React render storm), does one undo revert a group drag, and does Save/Open round-trip all
+      groups + stacking?
+
 ## Teardown (run after this suite)
 - [ ] Close every Wireframe window, delete the probe fixtures under
       `.opencode/tmp/3070/e2e/` that are not part of the functional plan, restore the appearance
