@@ -178,6 +178,51 @@ describe('editor shell DOM hooks (C7)', () => {
     expect(getByTestId('wireframe-status').textContent).toBe('Saved');
   });
 
+  it('publishes the arrangement hooks (Spec #3071, ST-6 — UI/UX 5)', () => {
+    const { getByTestId } = renderWithChakra(React.createElement(WireframeEditor));
+    const root = getByTestId('wireframe-root');
+
+    expect(root.getAttribute('data-wireframe-selection-ids')).toBe('');
+    expect(root.getAttribute('data-wireframe-selection-count')).toBe('0');
+    expect(root.getAttribute('data-wireframe-selection-group')).toBe('');
+    expect(root.getAttribute('data-wireframe-group-count')).toBe('0');
+    expect(root.getAttribute('data-wireframe-snap')).toBe('false');
+    expect(root.getAttribute('data-wireframe-stacking')).toBe('');
+
+    const page = getSnapshot().document.page;
+    const a = createDefaultElement('text', { page, elements: [], id: 'a' });
+    const b = createDefaultElement('card', { page, elements: [], id: 'b' });
+    act(() => {
+      dispatch('element.add', { element: a });
+      dispatch('element.add', { element: b });
+    });
+
+    // Paint order is document order; the last added element is the primary.
+    expect(root.getAttribute('data-wireframe-stacking')).toBe('a,b');
+    expect(root.getAttribute('data-wireframe-selection-ids')).toBe('b');
+    expect(root.getAttribute('data-wireframe-selection-count')).toBe('1');
+    expect(root.getAttribute('data-wireframe-selection-group')).toBe('');
+
+    act(() => {
+      dispatch('group.create', { ids: ['a', 'b'] });
+    });
+
+    expect(root.getAttribute('data-wireframe-group-count')).toBe('1');
+    expect(root.getAttribute('data-wireframe-selection-ids')).toBe('a,b');
+    expect(root.getAttribute('data-wireframe-selection-count')).toBe('2');
+    // `-selection-group` is non-empty iff the whole selection shares one group.
+    expect(root.getAttribute('data-wireframe-selection-group')).toBe(
+      getSnapshot().document.groups[0].id,
+    );
+    // The Slice-1 hook keeps its meaning: the PRIMARY (last selected) id.
+    expect(root.getAttribute('data-wireframe-selection-id')).toBe('b');
+
+    act(() => {
+      toggleSnapToGrid();
+    });
+    expect(root.getAttribute('data-wireframe-snap')).toBe('true');
+  });
+
   it('renders the status live region as polite + atomic', () => {
     const { getByTestId } = renderWithChakra(React.createElement(WireframeEditor));
     const region = getByTestId('wireframe-status').closest('[role="status"]');

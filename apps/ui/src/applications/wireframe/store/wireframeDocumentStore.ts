@@ -363,6 +363,28 @@ export function selectedElements(state: WireframeEditorState): WireframeElement[
   return result;
 }
 
+/**
+ * The ONE group the whole selection belongs to, or `null` (Spec #3071 ST-6 /
+ * UI/UX B4). Non-empty **iff** the selection is non-empty AND every selected
+ * element resolves to the same group — a PARTIAL membership still reports its
+ * group, while an empty selection or a selection spanning two groups is never a
+ * group selection. One shared derivation for the root
+ * `data-wireframe-selection-group` hook, the panel's Group header and the
+ * `ungroup` / `toggleGroupLock` disabled rules.
+ */
+export function selectionGroup(
+  document: WireframeDocument,
+  ids: readonly string[],
+): WireframeGroup | null {
+  if (ids.length === 0) return null;
+  const group = groupOfElement(document, ids[0]);
+  if (!group) return null;
+  for (const id of ids) {
+    if (groupOfElement(document, id)?.id !== group.id) return null;
+  }
+  return group;
+}
+
 function updateElement(
   document: WireframeDocument,
   id: string,

@@ -1,9 +1,12 @@
 /**
- * Wireframe toolbar (Spec #3070, ST-3, UI/UX 2.1 / 2.2 / 3.13 / 3.14).
+ * Wireframe toolbar (Spec #3070, ST-3, UI/UX 2.1 / 2.2 / 3.13 / 3.14;
+ * extended by Spec #3071, ST-6).
  *
- * Five groups in DOM order — Insert `1…9`, Element `p k l`, Edit `u y`,
- * View `m g n 0 h`, File `New o w t` — every control rendered from the ONE
- * `WIREFRAME_ACTIONS` table (see `actions/wireframeActions.ts`).
+ * Six groups in DOM order — Insert `1…9`, Element `p k l`, Arrange `g+…`,
+ * Edit `u y`, View `g+i g+o n 0 h`, File `New o w t` — every control rendered
+ * from the ONE `WIREFRAME_ACTIONS` table (see `actions/wireframeActions.ts`).
+ * The Arrange group is ONE group carrying four visually sub-chunked clusters
+ * (Selection · Align · Order · Mode) separated by a thin inner divider.
  *
  * The toolbar is `role="group"`, NOT `role="toolbar"`: every control stays an
  * ordinary Tab stop (predictable tab order; the hotkeys are the fast path) and
@@ -23,10 +26,17 @@ import React, { useSyncExternalStore } from 'react';
 import { Box, Button, Dialog, Flex, HStack, Text } from '@chakra-ui/react';
 import type { IconType } from 'react-icons';
 import {
+  LuAlignCenterVertical,
+  LuAlignEndVertical,
+  LuAlignHorizontalDistributeCenter,
+  LuAlignStartVertical,
+  LuBringToFront,
   LuCopy,
   LuDownload,
   LuFilePlus2,
   LuFolderOpen,
+  LuGrid3X3,
+  LuGroup,
   LuHand,
   LuImage,
   LuLayoutPanelTop,
@@ -38,6 +48,7 @@ import {
   LuRectangleHorizontal,
   LuRotateCcw,
   LuSave,
+  LuSendToBack,
   LuShapes,
   LuSquare,
   LuStar,
@@ -45,6 +56,7 @@ import {
   LuTrash2,
   LuType,
   LuUndo2,
+  LuUngroup,
 } from 'react-icons/lu';
 
 import { useWireframeHostFocused } from '../hooks/useWireframeHostFocused';
@@ -56,7 +68,15 @@ import type {
   WireframeSectionPreset,
   WireframeShapeKind,
 } from '../model/elements';
-import { getSnapshot, subscribe } from '../store/wireframeDocumentStore';
+import {
+  getSnapshot,
+  isElementMovable,
+  isWholeGroupSelection,
+  primarySelectedId,
+  selectedElements,
+  selectionGroup,
+  subscribe,
+} from '../store/wireframeDocumentStore';
 import {
   WireframeActionButton,
   WireframeInsertMenu,
@@ -108,6 +128,70 @@ const FILE_ACTIONS: readonly { id: string; description: string; icon: IconType }
   { id: 'wireframe.file.exportPng', description: 'Export PNG', icon: LuDownload },
 ];
 
+/**
+ * The four visual sub-chunks inside the ONE Arrange group (UI/UX 2.1). A chunk
+ * boundary renders a thin inner divider so the 10 verbs read as ~4 working-memory
+ * chunks rather than one flat run of ten controls.
+ */
+type ArrangeChunk = 'selection' | 'align' | 'order' | 'mode';
+
+/**
+ * Arrange group in binding order (Spec #3071, ST-6 — UI/UX 2.1). Every row is a
+ * `WIREFRAME_ACTIONS` entry (ST-4 owns the table; this file only renders it).
+ */
+const ARRANGE_ACTIONS: readonly {
+  id: string;
+  description: string;
+  icon: IconType;
+  chunk: ArrangeChunk;
+}[] = [
+  { id: 'wireframe.arrange.group', description: 'Group', icon: LuGroup, chunk: 'selection' },
+  { id: 'wireframe.arrange.ungroup', description: 'Ungroup', icon: LuUngroup, chunk: 'selection' },
+  {
+    id: 'wireframe.arrange.toggleGroupLock',
+    description: 'Lock group',
+    icon: LuLock,
+    chunk: 'selection',
+  },
+  {
+    id: 'wireframe.arrange.alignLeft',
+    description: 'Align left',
+    icon: LuAlignStartVertical,
+    chunk: 'align',
+  },
+  {
+    id: 'wireframe.arrange.alignCenter',
+    description: 'Align centre',
+    icon: LuAlignCenterVertical,
+    chunk: 'align',
+  },
+  {
+    id: 'wireframe.arrange.alignRight',
+    description: 'Align right',
+    icon: LuAlignEndVertical,
+    chunk: 'align',
+  },
+  {
+    id: 'wireframe.arrange.distribute',
+    description: 'Distribute',
+    icon: LuAlignHorizontalDistributeCenter,
+    chunk: 'align',
+  },
+  {
+    id: 'wireframe.arrange.bringForward',
+    description: 'Bring forward',
+    icon: LuBringToFront,
+    chunk: 'order',
+  },
+  {
+    id: 'wireframe.arrange.sendBackward',
+    description: 'Send backward',
+    icon: LuSendToBack,
+    chunk: 'order',
+  },
+  { id: 'wireframe.arrange.toggleSnap', description: 'Snap to grid', icon: LuGrid3X3, chunk: 'mode' },
+];
+
 /** Group separator: one token-coloured rule, decorative only. */
 function GroupSeparator(): React.ReactElement {
   return (
@@ -124,16 +208,57 @@ function GroupSeparator(): React.ReactElement {
   );
 }
 
+/**
+ * Inner divider between the four sub-chunks of the Arrange group (UI/UX 2.1):
+ * the same token-coloured rule as `GroupSeparator`, shorter and tighter so the
+ * group still reads as ONE group.
+ */
+function InnerSeparator(): React.ReactElement {
+  return (
+    <Box
+      aria-hidden="true"
+      w="1px"
+      alignSelf="stretch"
+      minH="16px"
+      my="4px"
+      mx={1}
+      bg="border.subtle"
+      flexShrink={0}
+    />
+  );
+}
+
 export function WireframeToolbar(): React.ReactElement {
-  const { selectedId, canUndo, canRedo, panMode, status, dirty } =
-    useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  // `wireframeDocument`, not `document` — this component also touches the DOM
+  // `document` (post-activation focus).
+  const {
+    document: wireframeDocument,
+    selectedIds,
+    canUndo,
+    canRedo,
+    panMode,
+    snapToGrid,
+    status,
+    dirty,
+  } = state;
   const focused = useWireframeHostFocused();
 
+  // The primary element (the last selected id) keeps driving the shipped
+  // single-element controls; the WHOLE selection drives the arrange controls
+  // (Spec #3071, ST-6 — UI/UX 2.1).
+  const primaryId = primarySelectedId(state);
   const selectedElement =
-    selectedId === null
+    primaryId === null
       ? null
-      : getSnapshot().document.elements.find((element) => element.id === selectedId) ?? null;
-  const hasSelection = selectedElement !== null;
+      : wireframeDocument.elements.find((element) => element.id === primaryId) ?? null;
+  const hasSelection = selectedIds.length > 0;
+  // Align/distribute gate on the MOVABLE count (R-2.8): a locked member (or a
+  // locked group) is not an operand, so it cannot satisfy the minimum.
+  const movableCount = selectedElements(state).filter((element) =>
+    isElementMovable(wireframeDocument, element),
+  ).length;
+  const activeGroup = selectionGroup(wireframeDocument, selectedIds);
   const fileBusy = status !== 'idle';
 
   const [confirmNewOpen, setConfirmNewOpen] = React.useState(false);
@@ -182,18 +307,54 @@ export function WireframeToolbar(): React.ReactElement {
       if (id === 'wireframe.document.new' || id.startsWith('wireframe.file.')) {
         return fileBusy;
       }
-      return false;
+      // Arrange (Spec #3071, ST-6 — UI/UX 2.1). Every minimum is the MOVABLE
+      // count for align/distribute (R-2.8) and the selection count otherwise.
+      switch (id) {
+        case 'wireframe.arrange.group':
+          return (
+            selectedIds.length < 2 ||
+            isWholeGroupSelection(wireframeDocument, selectedIds)
+          );
+        case 'wireframe.arrange.ungroup':
+        case 'wireframe.arrange.toggleGroupLock':
+          return activeGroup === null;
+        case 'wireframe.arrange.alignLeft':
+        case 'wireframe.arrange.alignCenter':
+        case 'wireframe.arrange.alignRight':
+          return movableCount < 2;
+        case 'wireframe.arrange.distribute':
+          return movableCount < 3;
+        case 'wireframe.arrange.bringForward':
+        case 'wireframe.arrange.sendBackward':
+          return selectedIds.length < 1;
+        case 'wireframe.arrange.toggleSnap':
+          // A mode, never disabled — it needs no selection.
+          return false;
+        default:
+          return false;
+      }
     },
-    [canUndo, canRedo, hasSelection, fileBusy],
+    [
+      canUndo,
+      canRedo,
+      hasSelection,
+      fileBusy,
+      selectedIds,
+      wireframeDocument,
+      movableCount,
+      activeGroup,
+    ],
   );
 
   const isPressed = React.useCallback(
     (id: string): boolean | undefined => {
       if (id === 'wireframe.element.toggleLock') return selectedElement?.locked === true;
       if (id === 'wireframe.view.togglePan') return panMode;
+      if (id === 'wireframe.arrange.toggleSnap') return snapToGrid;
+      if (id === 'wireframe.arrange.toggleGroupLock') return activeGroup?.locked === true;
       return undefined;
     },
-    [selectedElement?.locked, panMode],
+    [selectedElement?.locked, panMode, snapToGrid, activeGroup],
   );
 
   /** A menu pick is a pointer flow: drop focus so the next bare key fires. */
@@ -289,6 +450,29 @@ export function WireframeToolbar(): React.ReactElement {
             pressed={isPressed(item.id)}
             onActivate={activate(item.id)}
           />
+        ))}
+      </HStack>
+
+      <GroupSeparator />
+
+      <HStack gap={0.5} flexWrap="wrap" rowGap={1}>
+        {ARRANGE_ACTIONS.map((item, index) => (
+          <React.Fragment key={item.id}>
+            {index > 0 && ARRANGE_ACTIONS[index - 1].chunk !== item.chunk ? (
+              <InnerSeparator />
+            ) : null}
+            <WireframeActionButton
+              actionId={item.id}
+              label={item.description}
+              description={item.description}
+              icon={item.icon}
+              density="compact"
+              focused={focused}
+              disabled={isDisabled(item.id)}
+              pressed={isPressed(item.id)}
+              onActivate={activate(item.id)}
+            />
+          </React.Fragment>
         ))}
       </HStack>
 

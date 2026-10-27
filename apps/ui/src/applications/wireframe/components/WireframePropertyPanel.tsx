@@ -1,11 +1,15 @@
 /**
- * Wireframe property panel (Spec #3070, ST-4, AC3 / UI/UX section 2.5).
+ * Wireframe property panel (Spec #3070, ST-4, AC3 / UI/UX section 2.5;
+ * extended by Spec #3071, ST-6 — UI/UX 2.2).
  *
  * Store-connected, prop-less, contextual panel:
- *   - selection header (kind icon + human name + Locked/Hidden tags, or `Page`);
+ *   - a four-mode selection header (Page / single element / multi-selection /
+ *     Group — see `SelectionHeaderModel`);
  *   - only the sections that apply to the selected element type;
  *   - the shared width/height/visible/lock block for every element;
  *   - the page controls when nothing is selected (`wireframe-page-controls`).
+ * A multi-selection or group selection renders the header ONLY — no field
+ * sections (progressive disclosure: values are ambiguous across a mixed set).
  *
  * Every control writes through the store on its own interaction tick — no
  * submit button and no cross-interaction debounce, so the canvas repaints
@@ -35,6 +39,7 @@ import {
   LuAlignLeft,
   LuAlignRight,
   LuFile,
+  LuGroup,
   LuImage,
   LuLayoutPanelTop,
   LuMinus,
@@ -47,6 +52,7 @@ import {
 } from 'react-icons/lu';
 
 import { ELEMENT_MIN_SIZE } from '../model/geometry';
+import type { WireframeGroup } from '../model/document';
 import {
   WIREFRAME_ELEMENT_LABELS,
   type WireframeAlign,
@@ -61,7 +67,13 @@ import {
   type WireframeTextSize,
   type WireframeTextStyle,
 } from '../model/elements';
-import { dispatch, getSnapshot, subscribe } from '../store/wireframeDocumentStore';
+import {
+  dispatch,
+  getSnapshot,
+  selectedElements,
+  selectionGroup,
+  subscribe,
+} from '../store/wireframeDocumentStore';
 import { tint } from '../../../shared/utils/colorTint';
 import { CornerRadiusField } from './fields/CornerRadiusField';
 import { IconPicker } from './fields/IconPicker';
@@ -180,34 +192,112 @@ function SelectionTag({
   );
 }
 
-function SelectionHeader({ element }: { element: WireframeElement | null }): React.ReactElement {
-  const title = element ? elementTitle(element) : 'Page';
-  const ElementIcon = element ? ELEMENT_ICONS[element.type] : LuFile;
+/**
+ * The four panel header modes (Spec #3071, ST-6 — UI/UX 2.2), driven by the
+ * selection count and the selection's group:
+ *   - `page`    — nothing selected (Page header + the page controls);
+ *   - `element` — exactly one selected element (its kind icon + name + tags);
+ *   - `multi`   — 2+ selected elements that are not one group;
+ *   - `group`   — 2+ selected elements that all belong to ONE group.
+ * The multi/group modes render NO field sections (values are ambiguous across a
+ * mixed selection — progressive disclosure).
+ */
+type SelectionHeaderModel =
+  | { kind: 'page' }
+  | { kind: 'element'; element: WireframeElement }
+  | { kind: 'multi'; count: number }
+  | { kind: 'group'; group: WireframeGroup; memberCount: number };
+
+function SelectionHeader({ model }: { model: SelectionHeaderModel }): React.ReactElement {
+  if (model.kind === 'page') {
+    return (
+      <VStack align="stretch" gap={1} minWidth={0} data-testid="wireframe-panel-header">
+        <HStack gap={2} align="center" minWidth={0} wrap="wrap">
+          <Icon as={LuFile} boxSize={4} color="fg.muted" aria-hidden="true" />
+          <Text
+            fontSize="sm"
+            fontWeight="600"
+            color="fg.default"
+            data-testid="wireframe-panel-title"
+          >
+            Page
+          </Text>
+        </HStack>
+        <Text fontSize="xs" color="fg.muted" data-testid="wireframe-panel-caption">
+          No selection — editing page settings
+        </Text>
+      </VStack>
+    );
+  }
+
+  if (model.kind === 'element') {
+    const { element } = model;
+    return (
+      <VStack align="stretch" gap={1} minWidth={0} data-testid="wireframe-panel-header">
+        <HStack gap={2} align="center" minWidth={0} wrap="wrap">
+          <Icon as={ELEMENT_ICONS[element.type]} boxSize={4} color="fg.muted" aria-hidden="true" />
+          <Text
+            fontSize="sm"
+            fontWeight="600"
+            color="fg.default"
+            data-testid="wireframe-panel-title"
+          >
+            {elementTitle(element)}
+          </Text>
+          {element.locked ? (
+            <SelectionTag testId="wireframe-tag-locked">Locked</SelectionTag>
+          ) : null}
+          {!element.visible ? (
+            <SelectionTag testId="wireframe-tag-hidden">Hidden</SelectionTag>
+          ) : null}
+        </HStack>
+      </VStack>
+    );
+  }
+
+  if (model.kind === 'multi') {
+    return (
+      <VStack align="stretch" gap={1} minWidth={0} data-testid="wireframe-panel-header">
+        <HStack gap={2} align="center" minWidth={0} wrap="wrap">
+          <Icon as={LuShapes} boxSize={4} color="fg.muted" aria-hidden="true" />
+          <Text
+            fontSize="sm"
+            fontWeight="600"
+            color="fg.default"
+            data-testid="wireframe-panel-title"
+          >
+            {`${model.count} elements selected`}
+          </Text>
+        </HStack>
+        <Text fontSize="xs" color="fg.muted" data-testid="wireframe-panel-caption">
+          Arrange, align or group them from the toolbar
+        </Text>
+      </VStack>
+    );
+  }
 
   return (
     <VStack align="stretch" gap={1} minWidth={0} data-testid="wireframe-panel-header">
       <HStack gap={2} align="center" minWidth={0} wrap="wrap">
-        <Icon as={ElementIcon} boxSize={4} color="fg.muted" aria-hidden="true" />
+        <Icon as={LuGroup} boxSize={4} color="fg.muted" aria-hidden="true" />
         <Text
           fontSize="sm"
           fontWeight="600"
           color="fg.default"
           data-testid="wireframe-panel-title"
         >
-          {title}
+          Group
         </Text>
-        {element?.locked ? (
+        <SelectionTag testId="wireframe-tag-group">{`Group · ${model.memberCount}`}</SelectionTag>
+        {model.group.locked ? (
           <SelectionTag testId="wireframe-tag-locked">Locked</SelectionTag>
         ) : null}
-        {element && !element.visible ? (
-          <SelectionTag testId="wireframe-tag-hidden">Hidden</SelectionTag>
-        ) : null}
       </HStack>
-      {element === null ? (
-        <Text fontSize="xs" color="fg.muted" data-testid="wireframe-panel-caption">
-          No selection — editing page settings
-        </Text>
-      ) : null}
+      <Text fontSize="xs" color="fg.muted" data-testid="wireframe-panel-caption">
+        {model.group.locked
+          ? 'Group locked — drag and resize are disabled'
+          : 'Drag or resize to move every unlocked member'}
+      </Text>
     </VStack>
   );
 }
@@ -540,12 +630,20 @@ function ElementFields({
 
 export function WireframePropertyPanel(): React.ReactElement {
   const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-  const { document, selectedId } = state;
+  const { document, selectedIds } = state;
 
-  const element =
-    selectedId === null
-      ? null
-      : document.elements.find((candidate) => candidate.id === selectedId) ?? null;
+  const selected = selectedElements(state);
+  const element = selected.length === 1 ? selected[0] : null;
+  const group = selectionGroup(document, selectedIds);
+
+  const header: SelectionHeaderModel =
+    element !== null
+      ? { kind: 'element', element }
+      : selected.length === 0
+        ? { kind: 'page' }
+        : group !== null
+          ? { kind: 'group', group, memberCount: group.memberIds.length }
+          : { kind: 'multi', count: selected.length };
 
   const update = (patch: WireframeElementPatch): void => {
     if (!element) return;
@@ -571,18 +669,18 @@ export function WireframePropertyPanel(): React.ReactElement {
       borderTopWidth={{ base: '1px', lg: '0' }}
       borderLeftWidth={{ base: '0', lg: '1px' }}
     >
-      <SelectionHeader element={element} />
+      <SelectionHeader model={header} />
 
-      {element === null ? (
+      {selected.length === 0 ? (
         <PageControls />
-      ) : (
+      ) : element !== null ? (
         <ElementFields
           element={element}
           pageWidth={document.page.width}
           pageHeight={document.page.height}
           update={update}
         />
-      )}
+      ) : null}
     </VStack>
   );
 }
