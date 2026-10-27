@@ -184,6 +184,21 @@ function resolveAccentContrastRgb(accent: Rgb): Rgb {
   return againstWhite >= againstDark ? ACCENT_CONTRAST_LIGHT : ACCENT_CONTRAST_DARK;
 }
 
+/**
+ * Spec #3086 — the WCAG-max on-status foreground: the candidate (`white` |
+ * `dark`) that maximises the MINIMUM contrast across every status colour, so a
+ * status pill never pairs white-on-yellow on any preset. Mirrors
+ * `resolveAccentContrastRgb` (one candidate vs one colour) generalised to the
+ * status set (`ThemeProvider.tsx` `--status-on-solids`).
+ */
+export function resolveStatusOnSolidsRgb(statusColors: Rgb[]): Rgb {
+  const worstCase = (candidate: Rgb): number =>
+    Math.min(...statusColors.map((status) => contrast(candidate, status)));
+  const againstWhite = worstCase(ACCENT_CONTRAST_LIGHT);
+  const againstDark = worstCase(ACCENT_CONTRAST_DARK);
+  return againstWhite >= againstDark ? ACCENT_CONTRAST_LIGHT : ACCENT_CONTRAST_DARK;
+}
+
 /** The contract token NAME for a custom property (sources are declared as vars). */
 function tokenNameForVar(varName: string): string {
   const token = TOKEN_BY_VAR.get(varName);
@@ -213,8 +228,14 @@ function resolveTokenRgb(
   seen.add(name);
   const derivation = token.derivation;
   if (derivation.fn === 'wcag-max-contrast') {
-    const source = resolveTokenRgb(tokenNameForVar(derivation.sources[0]), colors, seen);
-    return resolveAccentContrastRgb(source);
+    const sources = derivation.sources.map((varName) =>
+      resolveTokenRgb(tokenNameForVar(varName), colors, seen),
+    );
+    // One source → the on-accent foreground; several → the on-status foreground
+    // (maximises the MINIMUM contrast across the status set, #3086).
+    return sources.length === 1
+      ? resolveAccentContrastRgb(sources[0])
+      : resolveStatusOnSolidsRgb(sources);
   }
   const sources = derivation.sources.map((varName) =>
     resolveTokenRgb(tokenNameForVar(varName), colors, seen),
@@ -243,6 +264,18 @@ interface PresetTokens {
   readonly bodyBg: Rgb;
   readonly cardBg: Rgb;
   readonly headerBg: Rgb;
+  /** `bg.muted` (`--card-hover-bg`) — the slider rail fill (#3086). */
+  readonly cardHoverBg: Rgb;
+  /** `status.error` (`--status-error`) — the Discard fill / banner accent (#3086). */
+  readonly statusError: Rgb;
+  /** `status.onSolids` — the WCAG-max on-status foreground (#3086). */
+  readonly statusOnSolids: Rgb;
+  /** `accent.tint` — the selected-segment indicator fill (#3086). */
+  readonly accentTint: Rgb;
+  /** `status.errorTint` — the solid status-button fill (#3086). */
+  readonly statusErrorTint: Rgb;
+  /** `status.errorStrong` — the deepened error accent (#3086). */
+  readonly statusErrorStrong: Rgb;
 }
 
 function resolveTokens(colors: Record<string, string>): PresetTokens {
@@ -262,6 +295,14 @@ function resolveTokens(colors: Record<string, string>): PresetTokens {
     bodyBg: resolveTokenRgb('bg.canvas', colors),
     cardBg: resolveTokenRgb('bg.surface', colors),
     headerBg: resolveTokenRgb('bg.subtle', colors),
+    // #3086 — the Wireframe control-class tokens: the slider rail fill, the
+    // status fill/foreground pair and the banner composition inputs.
+    cardHoverBg: resolveTokenRgb('bg.muted', colors),
+    statusError: resolveTokenRgb('status.error', colors),
+    statusOnSolids: resolveTokenRgb('status.onSolids', colors),
+    accentTint: resolveTokenRgb('accent.tint', colors),
+    statusErrorTint: resolveTokenRgb('status.errorTint', colors),
+    statusErrorStrong: resolveTokenRgb('status.errorStrong', colors),
   };
 }
 
@@ -286,6 +327,19 @@ const SOLID_HOVER_OPACITY = 0.9;
  * (owned by the surface call sites) must mirror this exact value.
  */
 const RADIO_SELECTED_TINT = 0.08;
+
+/**
+ * Spec #3086 — Wireframe control-class compositions (all `tint()`-derived over
+ * an opaque surface, no Fredo token of their own, so `composed: true`):
+ *  - ghost toolbar button hover `tint(--accent-primary, 10)` and pressed
+ *    `tint(--accent-primary, 18)` over `--card-bg` (`WireframeInsertMenu.tsx:113-115`);
+ *  - file-error banner `tint(--status-error, 10)` over `--body-bg`
+ *    (`WireframeFileError.tsx:31`).
+ * The components must paint the exact same tint (G-366); these are the one home.
+ */
+const GHOST_HOVER_TINT = 0.1;
+const GHOST_ACTIVE_TINT = 0.18;
+const BANNER_ERROR_TINT = 0.1;
 
 /** One pair specification, resolved against a preset's tokens. */
 interface PairSpec {
@@ -361,6 +415,85 @@ const PAIR_SPECS: readonly PairSpec[] = [
   // ── control-solid (system.ts:111,89; AppPresentationSettings.tsx:418-427) ───
   { surface: 'control-solid', state: 'default', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.onAccent', bgToken: 'accent.solid', fg: (t) => t.accentContrast, bg: (t) => t.accent },
   { surface: 'control-solid', state: 'hover', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: true, fgToken: 'fg.onAccent', bgToken: 'accent.solid', fg: (t) => composite(t.accentContrast, t.cardBg, SOLID_HOVER_OPACITY), bg: (t) => composite(t.accent, t.cardBg, SOLID_HOVER_OPACITY) },
+
+  // ── Wireframe control classes (Spec #3086) ──────────────────────────────────
+  // The gate PROJECTION of the six Wireframe contract surfaces. Row identities,
+  // tokens and floors are the binding names block (with the UI/UX painted-token
+  // substitutions folded in): the gated pair is the control's identifiable
+  // BOUNDARY / indicator, not its decorative subtle fill (SC 1.4.11).
+  //
+  // segmented (Chakra SegmentGroup — SegmentedField.tsx)
+  { surface: 'segmented', state: 'default', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.default', bgToken: 'bg.surface', fg: (t) => t.textPrimary, bg: (t) => t.cardBg },
+  { surface: 'segmented', state: 'default', pairId: 'muted', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.muted', bgToken: 'bg.surface', fg: (t) => t.textSecondary, bg: (t) => t.cardBg },
+  { surface: 'segmented', state: 'default', pairId: 'track', kind: 'ui', floor: UI_FLOOR, composed: false, fgToken: 'border.default', bgToken: 'bg.surface', fg: (t) => t.borderColor, bg: (t) => t.cardBg },
+  { surface: 'segmented', state: 'default', pairId: 'border', kind: 'border', floor: UI_FLOOR, composed: false, fgToken: 'border.default', bgToken: 'bg.surface', fg: (t) => t.borderColor, bg: (t) => t.cardBg },
+  { surface: 'segmented', state: 'hover', pairId: 'fill', kind: 'ui', floor: UI_FLOOR, composed: false, fgToken: 'accent.border', bgToken: 'bg.surface', fg: (t) => t.accentBorder, bg: (t) => t.cardBg },
+  { surface: 'segmented', state: 'hover', pairId: 'border', kind: 'border', floor: UI_FLOOR, composed: false, fgToken: 'accent.border', bgToken: 'bg.surface', fg: (t) => t.accentBorder, bg: (t) => t.cardBg },
+  { surface: 'segmented', state: 'selected', pairId: 'indicator', kind: 'ui', floor: UI_FLOOR, composed: false, fgToken: 'accent.strong', bgToken: 'bg.surface', fg: (t) => t.accentStrong, bg: (t) => t.cardBg },
+  // #3086 (G-235 pre-validation) — `accent.strong` cannot host ANY 4.5:1
+  // foreground on several presets (its luminance sits in the band where even the
+  // WCAG-max white/dark tops out at ~4.37), so the selected item's fill is the
+  // bounded `accent.tint` and its label is `fg.default` (worst 5.49, solarized).
+  { surface: 'segmented', state: 'selected', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.default', bgToken: 'accent.tint', fg: (t) => t.textPrimary, bg: (t) => t.accentTint },
+  { surface: 'segmented', state: 'focus', pairId: 'focus-ring', kind: 'focus', floor: UI_FLOOR, composed: false, fgToken: 'accent.focusRing', bgToken: 'bg.surface', fg: (t) => t.accentFocusRing, bg: (t) => t.cardBg },
+  { surface: 'segmented', state: 'disabled', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.subtle', bgToken: 'bg.surface', fg: (t) => t.textSubtle, bg: (t) => t.cardBg },
+
+  // slider (Chakra Slider — NumberSliderField.tsx). The rail BOUNDARY is the
+  // gated pair. #3086 (G-235) — the rail FILL is `bg.subtle`, not `bg.muted`:
+  // `bg.muted` (`--card-hover-bg`) is not preset-authored, so on the 18 built-ins
+  // it falls back to classic's dark grey and NO token clears 3:1 against it
+  // (paper 2.0). `bg.subtle` is preset-authored and clears on every preset.
+  { surface: 'slider', state: 'default', pairId: 'track', kind: 'ui', floor: UI_FLOOR, composed: false, fgToken: 'border.default', bgToken: 'bg.surface', fg: (t) => t.borderColor, bg: (t) => t.cardBg },
+  { surface: 'slider', state: 'default', pairId: 'range', kind: 'ui', floor: UI_FLOOR, composed: false, fgToken: 'accent.strong', bgToken: 'bg.subtle', fg: (t) => t.accentStrong, bg: (t) => t.headerBg },
+  { surface: 'slider', state: 'default', pairId: 'thumb', kind: 'ui', floor: UI_FLOOR, composed: false, fgToken: 'accent.strong', bgToken: 'bg.subtle', fg: (t) => t.accentStrong, bg: (t) => t.headerBg },
+  { surface: 'slider', state: 'hover', pairId: 'thumb', kind: 'ui', floor: UI_FLOOR, composed: false, fgToken: 'accent.border', bgToken: 'bg.subtle', fg: (t) => t.accentBorder, bg: (t) => t.headerBg },
+  { surface: 'slider', state: 'focus', pairId: 'focus-ring', kind: 'focus', floor: UI_FLOOR, composed: false, fgToken: 'accent.focusRing', bgToken: 'bg.surface', fg: (t) => t.accentFocusRing, bg: (t) => t.cardBg },
+  { surface: 'slider', state: 'disabled', pairId: 'range', kind: 'ui', floor: UI_FLOOR, composed: false, fgToken: 'fg.subtle', bgToken: 'bg.subtle', fg: (t) => t.textSubtle, bg: (t) => t.headerBg },
+
+  // number-input (Chakra NumberInput — NumberSliderField.tsx)
+  { surface: 'number-input', state: 'default', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.default', bgToken: 'bg.surface', fg: (t) => t.textPrimary, bg: (t) => t.cardBg },
+  { surface: 'number-input', state: 'default', pairId: 'stepper', kind: 'ui', floor: UI_FLOOR, composed: false, fgToken: 'fg.muted', bgToken: 'bg.surface', fg: (t) => t.textSecondary, bg: (t) => t.cardBg },
+  { surface: 'number-input', state: 'default', pairId: 'border', kind: 'border', floor: UI_FLOOR, composed: false, fgToken: 'border.default', bgToken: 'bg.surface', fg: (t) => t.borderColor, bg: (t) => t.cardBg },
+  { surface: 'number-input', state: 'hover', pairId: 'border', kind: 'border', floor: UI_FLOOR, composed: false, fgToken: 'accent.border', bgToken: 'bg.surface', fg: (t) => t.accentBorder, bg: (t) => t.cardBg },
+  { surface: 'number-input', state: 'focus', pairId: 'focus-ring', kind: 'focus', floor: UI_FLOOR, composed: false, fgToken: 'accent.focusRing', bgToken: 'bg.surface', fg: (t) => t.accentFocusRing, bg: (t) => t.cardBg },
+  { surface: 'number-input', state: 'disabled', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.subtle', bgToken: 'bg.surface', fg: (t) => t.textSubtle, bg: (t) => t.cardBg },
+
+  // control-ghost (variant="ghost" pressable buttons — WireframeInsertMenu.tsx).
+  // The pressed CONTRACT state is `active` (the component expresses "pressed" via
+  // `aria-pressed`/`data-state`); the label stays surface text while the accent
+  // fill intensity carries the hover→pressed signal.
+  { surface: 'control-ghost', state: 'default', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.default', bgToken: 'bg.surface', fg: (t) => t.textPrimary, bg: (t) => t.cardBg },
+  { surface: 'control-ghost', state: 'hover', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: true, fgToken: 'fg.default', bgToken: 'bg.surface', fg: (t) => t.textPrimary, bg: (t) => composite(t.accent, t.cardBg, GHOST_HOVER_TINT) },
+  { surface: 'control-ghost', state: 'active', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: true, fgToken: 'fg.default', bgToken: 'bg.surface', fg: (t) => t.textPrimary, bg: (t) => composite(t.accent, t.cardBg, GHOST_ACTIVE_TINT) },
+  { surface: 'control-ghost', state: 'focus', pairId: 'focus-ring', kind: 'focus', floor: UI_FLOOR, composed: false, fgToken: 'accent.focusRing', bgToken: 'bg.surface', fg: (t) => t.accentFocusRing, bg: (t) => t.cardBg },
+  { surface: 'control-ghost', state: 'disabled', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.subtle', bgToken: 'bg.surface', fg: (t) => t.textSubtle, bg: (t) => t.cardBg },
+
+  // status-solid (status-filled button — Wireframe Discard, #3081 pair).
+  // #3086 (G-235) — `status.error` cannot host ANY 4.5:1 foreground on several
+  // presets (solarized 4.10 with the WCAG-max on-status), so the destructive
+  // fill is the bounded `status.errorTint` with `fg.default` as its label
+  // (worst 4.89, solarized). The row identity is unchanged.
+  { surface: 'status-solid', state: 'default', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.default', bgToken: 'status.errorTint', fg: (t) => t.textPrimary, bg: (t) => t.statusErrorTint },
+  { surface: 'status-solid', state: 'hover', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.default', bgToken: 'status.errorTint', fg: (t) => t.textPrimary, bg: (t) => t.statusErrorTint },
+  { surface: 'status-solid', state: 'focus', pairId: 'focus-ring', kind: 'focus', floor: UI_FLOOR, composed: false, fgToken: 'accent.focusRing', bgToken: 'bg.surface', fg: (t) => t.accentFocusRing, bg: (t) => t.cardBg },
+  { surface: 'status-solid', state: 'disabled', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.subtle', bgToken: 'status.errorTint', fg: (t) => t.textSubtle, bg: (t) => t.statusErrorTint },
+
+  // banner (file-error banner — WireframeFileError.tsx). #3086 (G-235) — the raw
+  // `status.error` is below the 3:1 UI floor against the canvas on several light
+  // presets (arctic 2.84), so the icon + border use the bounded deepened
+  // `status.errorStrong` (still the error hue; worst 4.91/5.46). The label is
+  // `fg.default` (worst 5.24) so the message never relies on colour alone.
+  { surface: 'banner', state: 'default', pairId: 'label', kind: 'body', floor: BODY_FLOOR, composed: true, fgToken: 'fg.default', bgToken: 'bg.canvas', fg: (t) => t.textPrimary, bg: (t) => composite(t.statusError, t.bodyBg, BANNER_ERROR_TINT) },
+  { surface: 'banner', state: 'default', pairId: 'icon', kind: 'ui', floor: UI_FLOOR, composed: true, fgToken: 'status.errorStrong', bgToken: 'bg.canvas', fg: (t) => t.statusErrorStrong, bg: (t) => composite(t.statusError, t.bodyBg, BANNER_ERROR_TINT) },
+  { surface: 'banner', state: 'default', pairId: 'border', kind: 'border', floor: UI_FLOOR, composed: false, fgToken: 'status.errorStrong', bgToken: 'bg.canvas', fg: (t) => t.statusErrorStrong, bg: (t) => t.bodyBg },
+
+  // Wireframe extras: the canvas loading fallback, the status-bar Pan chip and
+  // the Wireframe dialog title/body (all already-rendered pairs, now gated).
+  // #3086 (G-235) — `bg.muted` is not preset-authored, so the fallback/chip fills
+  // move to the preset-authored `bg.subtle` / `bg.surface` (worst 4.67 / 4.58).
+  { surface: 'canvas', state: 'default', pairId: 'fallback-label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.muted', bgToken: 'bg.subtle', fg: (t) => t.textSecondary, bg: (t) => t.headerBg },
+  { surface: 'subtle', state: 'default', pairId: 'chip-label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.muted', bgToken: 'bg.surface', fg: (t) => t.textSecondary, bg: (t) => t.cardBg },
+  { surface: 'surface', state: 'default', pairId: 'overlay-label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.default', bgToken: 'bg.surface', fg: (t) => t.textPrimary, bg: (t) => t.cardBg },
 ];
 
 /** The contract `surface|state` cells (the completeness enumeration). */

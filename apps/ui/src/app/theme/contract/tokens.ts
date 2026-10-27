@@ -192,6 +192,22 @@ export const SEMANTIC_TOKENS: readonly SemanticToken[] = [
   },
   { name: 'accent.subagent', varName: '--accent-subagent', authored: true },
   { name: 'accent.nestedSubagent', varName: '--accent-nested-subagent', authored: true },
+  {
+    // Spec #3086 — the SELECTED-segment indicator fill. A subtle accent tint
+    // (accent over the opaque canvas) so the segment label stays legible on
+    // every preset: the deepened `accent.strong` cannot host ANY 4.5:1
+    // foreground on several presets (its luminance sits in the band where even
+    // the WCAG-max white/dark tops out below 4.5). Bounded, color-mix only —
+    // no engine var (Chakra-only alias of the authored `--accent-primary`).
+    name: 'accent.tint',
+    varName: '--accent-primary',
+    authored: false,
+    derivation: {
+      fn: 'color-mix',
+      sources: ['--accent-primary', '--body-bg'],
+      weights: [0.1, 0.9],
+    },
+  },
 
   // ── Avatar (derived engine var) ──────────────────────────────────────────────
   {
@@ -222,6 +238,36 @@ export const SEMANTIC_TOKENS: readonly SemanticToken[] = [
     derivation: {
       fn: 'wcag-max-contrast',
       sources: ['--status-success', '--status-warning', '--status-error', '--status-info'],
+    },
+  },
+  {
+    // Spec #3086 — the solid status BUTTON fill (Wireframe Discard). The raw
+    // `status.error` cannot host ANY 4.5:1 foreground on several presets (the
+    // status error hues are too light/mid), so the destructive fill is a
+    // bounded error TINT (error over the opaque canvas) with `fg.default` as its
+    // label. Bounded, color-mix only (Chakra-only alias of `--status-error`).
+    name: 'status.errorTint',
+    varName: '--status-error',
+    authored: false,
+    derivation: {
+      fn: 'color-mix',
+      sources: ['--status-error', '--body-bg'],
+      weights: [0.15, 0.85],
+    },
+  },
+  {
+    // Spec #3086 — the deepened error accent (Wireframe file-error banner icon
+    // + border). The raw `status.error` is below the 3:1 UI floor against the
+    // canvas on several light presets (arctic 2.84), so the banner accent is a
+    // bounded deepening of the error toward `fg.default` — still the error hue,
+    // now a boundary the canvas cannot swallow. Chakra-only alias.
+    name: 'status.errorStrong',
+    varName: '--status-error',
+    authored: false,
+    derivation: {
+      fn: 'color-mix',
+      sources: ['--status-error', '--text-primary'],
+      weights: [0.5, 0.5],
     },
   },
 

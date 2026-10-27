@@ -65,8 +65,32 @@ describe('#3034 ST-3 — the contrast gate consumes the contract', () => {
       'accent.focusRing',
       'accent.border',
       'accent.solid',
+      // #3086 — the Wireframe control-class tokens.
+      'accent.tint',
+      'bg.muted',
+      'status.error',
+      'status.errorTint',
+      'status.errorStrong',
     ]) {
       expect(TOKEN_NAMES.has(name), name).toBe(true);
+    }
+  });
+
+  it('covers the Wireframe control-class surfaces in the gate ⊆ contract projection', () => {
+    const matrix = buildContrastMatrix();
+    for (const surface of [
+      'segmented',
+      'slider',
+      'number-input',
+      'control-ghost',
+      'status-solid',
+      'banner',
+    ] as const) {
+      expect(
+        matrix.some((row) => row.surface === surface),
+        `gate projection missing ${surface}`,
+      ).toBe(true);
+      expect(GATE_SURFACES, `vocabulary missing ${surface}`).toContain(surface);
     }
   });
 
