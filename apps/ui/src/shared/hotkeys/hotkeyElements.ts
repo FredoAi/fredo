@@ -18,10 +18,16 @@
  * The one side effect is the observer install + the two body hooks it owns
  * (`data-fredo-hotkey-count`, `data-fredo-hotkey-duplicate`; G-266).
  *
- * DUPLICATE ENFORCEMENT (G-275/G-300): on every flush the listing is scanned for
- * two entries sharing the same grammar key. In `import.meta.env.DEV` this
- * THROWS `DuplicateHotkeyError`; the body hook and a `console.error` are ALWAYS
- * published first, in every environment.
+ * DUPLICATE ENFORCEMENT (G-275/G-300; rule RELAXED by Spec #3071 ST-3): on every
+ * flush the listing is scanned for a colliding binding. Two entries collide when
+ * they share the SAME `grammar.serialized`, OR when one entry's serialized form
+ * is a STRICT PREFIX of another's (a bare binding would shadow the sequence on
+ * its key — the engine's EXACT beats PREFIX, `sequence.ts:72`). A shared FIRST
+ * step alone is NOT a collision: the app-wide first-step budget `[a-z0-9]` is
+ * saturated (36/36, `featureHotkeyKeys.test.ts`), so two-step sequences MUST be
+ * able to share a namespace prefix (e.g. every `g+*` arrange binding). In
+ * `import.meta.env.DEV` a collision THROWS `DuplicateHotkeyError`; the body hook
+ * and a `console.error` are ALWAYS published first, in every environment.
  *
  * REVISION (AGENTS.md #523): `getElementHotkeyRevision()` advances ONLY on a real
  * diff of the listing, and `listElementHotkeys()` keeps its array identity until
@@ -68,13 +74,18 @@ export interface HotkeyElementEntry {
 /** The result of a duplicate-key scan. */
 export interface DuplicateHotkeyResult {
   readonly duplicate: boolean;
-  /** The shared key, or `null` when there is no duplicate. */
+  /**
+   * The colliding serialized unit (the shared sequence, or the SHORTER
+   * serialization of a strict-prefix pair), or `null` when there is no
+   * duplicate. NOTE (Spec #3071 ST-3): this is NO LONGER the first step — a
+   * shared first step alone is not a collision.
+   */
   readonly key: string | null;
-  /** Every entry declaring the duplicated key (empty when no duplicate). */
+  /** Every entry participating in the collision (empty when no duplicate). */
   readonly entries: readonly HotkeyElementEntry[];
 }
 
-/** Thrown in DEV when two mounted elements declare the same key (AC3 / R-3.4). */
+/** Thrown in DEV when two mounted elements declare a colliding binding (AC3 / R-3.4). */
 export class DuplicateHotkeyError extends Error {
   readonly key: string;
   readonly entries: readonly HotkeyElementEntry[];
@@ -125,24 +136,69 @@ export function subscribeElementHotkeys(listener: () => void): () => void {
 // ── Duplicate detection ──────────────────────────────────────────────────────
 
 /**
- * Scan `candidate` (defaults to the current listing) for two entries sharing
- * the same grammar key. PURE — no hooks, no throw; the flush enforces the
- * duplicate via `publishDuplicateHook` + the DEV throw.
+ * Scan `candidate` (defaults to the current listing) for a colliding binding.
+ * PURE — no hooks, no throw; the flush enforces the collision via
+ * `publishDuplicateHook` + the DEV throw.
+ *
+ * COLLISION RULE (Spec #3071 ST-3, replaces the shipped "one binding per first
+ * step" rule): two entries collide ⇔ they share `grammar.serialized`, OR one
+ * entry's serialized form is a STRICT PREFIX of another's. A shared FIRST step
+ * alone is NOT a collision — that is what makes a two-step namespace (e.g. every
+ * `g+*` arrangement binding) mountable while the 36 first-step slots are
+ * saturated. The strict-prefix clause is what still forbids a bare binding from
+ * shadowing a sequence on its key (the engine resolves EXACT before PREFIX,
+ * `sequence.ts:72`).
+ *
+ * The shared-serialization check wins over the prefix check (a true duplicate is
+ * reported first); the first colliding pair in listing order is reported.
  */
 export function detectDuplicateHotkeys(
   candidate?: readonly HotkeyElementEntry[],
 ): DuplicateHotkeyResult {
   const list = candidate ?? entries;
+
+  // 1. Two entries declaring the SAME full serialization are duplicates.
   const groups = new Map<string, HotkeyElementEntry[]>();
   for (const entry of list) {
-    const bucket = groups.get(entry.grammar.key);
+    const bucket = groups.get(entry.grammar.serialized);
     if (bucket) bucket.push(entry);
-    else groups.set(entry.grammar.key, [entry]);
+    else groups.set(entry.grammar.serialized, [entry]);
   }
-  for (const [key, group] of groups) {
-    if (group.length > 1) return { duplicate: true, key, entries: group };
+  for (const [serialized, group] of groups) {
+    if (group.length > 1) return { duplicate: true, key: serialized, entries: group };
   }
+
+  // 2. A binding whose serialization is a STRICT PREFIX of another's shadows it
+  //    (a bare `g` would beat the `g+i` sequence — EXACT beats PREFIX).
+  for (const shorter of list) {
+    for (const longer of list) {
+      if (shorter === longer) continue;
+      if (!isStrictStepPrefix(shorter.grammar.steps, longer.grammar.steps)) continue;
+      return {
+        duplicate: true,
+        key: shorter.grammar.serialized,
+        entries: [shorter, longer],
+      };
+    }
+  }
+
   return { duplicate: false, key: null, entries: [] };
+}
+
+/**
+ * `true` when `shorter` is a STRICT step-wise prefix of `longer`: strictly fewer
+ * steps, each equal. (`['a']` is a strict prefix of `['a', 'b']`; `['a', 'b']`
+ * is not a prefix of `['a', 'c']`; equal lists are not strict.)
+ */
+function isStrictStepPrefix(
+  shorter: readonly string[],
+  longer: readonly string[],
+): boolean {
+  if (shorter.length >= longer.length) return false;
+  for (let i = 0; i < shorter.length; i += 1) {
+    if (shorter[i] !== longer[i]) return false;
+  }
+  return true;
 }
 
 // ── Activation ───────────────────────────────────────────────────────────────
