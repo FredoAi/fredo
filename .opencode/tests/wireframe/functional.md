@@ -788,4 +788,229 @@ Appearance `select[aria-label="Theme presets"]` (reset to default after).
 `resolveOnSolids` min-over-four). No preset is white-on-light. Flagged to the Orchestrator per the
 plan; the two REQ-1 named presets clear 4.5.
 
+## Spec #3071 — Wireframe Layout Intelligence (AC1–AC3)
+
+> Extends the #3070 Slice-1 suite. Scope: multi-select + group; snap-to-grid + align + distribute
+> + smart guides; bring-forward/send-backward; hotkey + Companion parity; groups/stacking
+> persistence. Rows map 1:1 to the Architect's EARS `R-1.1`…`R-3.3` (incl. the convergence
+> clauses R-1.9/R-1.10/R-2.8/R-2.9/R-3.3, pinned at rows F-79…F-83) and bind VERBATIM to the
+> BINDING names block in `.opencode/tmp/3071/triage.md` (action ids, two-step `g` namespace,
+> root/canvas DOM hooks, testids). **Verification policy: live** — DOCUMENT STATE, no
+> `telemetry_spans` receipt expected; per-row evidence is a quoted `tauri_webview_*` result
+> carrying the named testid + the OBSERVED value, plus an uploaded capture for the visual rows.
+>
+> **RE-BASELINE (never delete — G-125).** This slice adds 10 hotkeyed controls, so the Slice-1
+> exact-count assertions change **22 → 32**: `F-37` (all bindings), `F-38` (bar rows),
+> `F-39`/`F-40` (mounted-count deltas), `smoke.md` `S-9`, and `regression.md` `R-1`/`R-2`/`R-3`.
+> The tester re-baselines the COUNT to 32 and keeps every other clause; no assertion is deleted
+> or weakened. The new rows' `data-hotkey-key` is the FIRST step `g` (now repeated across the
+> namespace) and their serialized display is the two-step form.
+>
+> **New hooks asserted:** root `wireframe-root[data-wireframe-selection-ids | -selection-count |
+> -selection-group | -group-count | -snap | -stacking]`; canvas
+> `wireframe-canvas[data-wireframe-guides]`; controls `wireframe-action-arrange-<group|ungroup|
+> toggleGroupLock|toggleSnap|alignLeft|alignCenter|alignRight|distribute|bringForward|
+> sendBackward>`; `wireframe-tag-group`. Unchanged Slice-1 hooks still asserted
+> (`wireframe-selection-id` is now the PRIMARY = last selected id).
+
+- [ ] **F-61 (R-1.1)** Shift-click ADDS to the selection.
+      **Expected:** with A selected, shift-click B then C ⇒ `wireframe-root[data-wireframe-selection-ids]`
+      = `A,B,C` (document order), `-selection-count` 1→3, `wireframe-selection-id` = the
+      last-clicked (C), the Transformer wraps the UNION bounds, `wireframe-tag-group` absent.
+      **Edge:** shift-click the same element twice (add then remove); shift-click with an empty
+      selection (starts one); shift-click a member of an existing group (adds it individually,
+      membership unchanged); an overlapping pair (topmost hit wins).
+- [ ] **F-62 (R-1.2)** Shift-click REMOVES from the selection.
+      **Expected:** shift-click a selected element ⇒ it leaves `-selection-ids`,
+      `-selection-count` decrements; shift-click the last one ⇒ count `0`, `-selection-ids`=`''`,
+      `-selection-id`=`''`, `[data-testid="wireframe-page-controls"]` shown.
+      **Edge:** remove down to empty; remove the primary (primary becomes the new last in
+      document order); remove then re-add; remove all then a plain click selects one.
+- [ ] **F-63 (R-1.3)** Group creates ONE group, geometry unchanged.
+      **Expected:** select ≥2, invoke `wireframe.arrange.group` (hotkey `g+g` / toolbar
+      `wireframe-action-arrange-group` / Companion id) ⇒ `-group-count` +1, `-selection-group` =
+      the NEW group id, `wireframe-tag-group` shown, `-selection-ids` unchanged, and EVERY
+      member's `-selection-geometry` is string-identical pre/post.
+      **Edge:** exactly 2; the whole page; each of the three invokers; members already in another
+      group ⇒ **RE-GROUP (R-1.9)** — selected ids leave their old groups, any old group left with
+      ZERO members is removed (`WIREFRAME_GROUP_MIN_MEMBERS` = 1), ONE new UNLOCKED group is
+      created, and `-group-count` moves by `(1 − removedGroups)` (two singleton groups re-grouped
+      ⇒ 2→1, NOT 2→3); a selection that is exactly ONE whole group is a NO-OP returning `false`
+      (see F-79).
+- [ ] **F-64 (R-1.4)** Group drag/resize applies the delta to every unlocked member.
+      **Expected:** drag the group by (dx,dy) ⇒ every UNLOCKED member's `-selection-geometry`
+      shifts by the same delta (page-space = pointer/scale); exactly ONE `u` restores all;
+      `-selection-group` unchanged.
+      **Edge:** resize the group (delta scales members); one member individually locked (stays —
+      see F-68); at 200 % zoom; abandon mid-gesture (no change).
+- [ ] **F-65 (R-1.5)** Ungroup leaves geometry + stacking unchanged.
+      **Expected:** group selected, `wireframe.arrange.ungroup` ⇒ `-group-count` −1,
+      `-selection-group`=`''`, `wireframe-tag-group` gone, every member keeps its EXACT geometry
+      AND its position in `data-wireframe-stacking`.
+      **Edge:** ungroup a LOCKED group (ungroup is neither a move nor a resize ⇒ it SUCCEEDS —
+      lock covers position+size only, R-1.10); ungroup then undo; ungroup a single non-grouped
+      element (no-op, `runWireframeAction` false).
+- [ ] **F-66 (R-1.6)** Delete group removes group + members in ONE undo step.
+      **Expected:** group selected, delete (`k`) ⇒ group AND every member removed:
+      `-element-count` − n, `-group-count` −1, `-selection-ids`=`''`; exactly ONE `u` restores
+      the group and all members with ids/geometry intact.
+      **Edge:** members include a hidden element; the only group; via Companion `element.delete`;
+      undo then redo.
+- [ ] **F-67 (R-1.7)** `toggleGroupLock` flips; locked group members don't move/resize.
+      **Expected:** group selected, `wireframe.arrange.toggleGroupLock` ⇒ group `locked` flips
+      (toolbar `aria-pressed` + locked affordance + `wireframe-tag-group`); a body drag AND a
+      drag at the FORMER handle coordinates then leave EVERY member's `-selection-geometry`
+      string-identical; the flip commits ONE undo snapshot and flips `-dirty` (the
+      `documentsEqual` trap — a groups-only change must NOT be a silent no-op).
+      **Edge:** toggle twice (flip back); toggle then drag (all members immovable); toggle with a
+      member INDIVIDUALLY locked (its own lock is independent — the group flip is a groups-only
+      mutation that STILL commits and flips `-dirty`; the `documentsEqual` trap); save+reopen
+      preserves group `locked`.
+- [ ] **F-68 (R-1.8)** A locked member in an unlocked group stays immovable.
+      **Expected:** group of 3 with ONE member individually locked (`l`), drag the group ⇒ the two
+      unlocked members move by the delta, the locked member's `-selection-geometry` is
+      string-identical, ONE undo restores.
+      **Edge:** lock 2 of 3; resize the group; the locked member's former handle coordinates do
+      nothing; unlock mid-group and re-drag.
+- [ ] **F-69 (R-2.1)** `toggleSnap` flips + reports state.
+      **Expected:** `wireframe.arrange.toggleSnap` (`g+s` / `wireframe-action-arrange-toggleSnap`
+      / Companion) ⇒ `wireframe-root[data-wireframe-snap]` flips `'false'`↔`'true'` AND the
+      toolbar control's `aria-pressed` matches; `-dirty` and the undo depth UNCHANGED (editor
+      state, not document state).
+      **Edge:** toggle twice; toggle then Save/Open (snap absent from the document); toggle with
+      a selection; each invoker.
+- [ ] **F-70 (R-2.2)** Snap lands the origin on the nearest grid multiple.
+      **Expected:** snap ON, drag an element off-grid ⇒ on release `-selection-geometry` x AND y
+      are exact multiples of `WIREFRAME_GRID_SIZE_PX` (8) and the element is clamped inside
+      `-page`; snap OFF, the same drag keeps its free coordinates.
+      **Edge:** drag near a page edge (clamp wins); snap a group/multi-selection ⇒ **R-2.9**: the
+      UNION-BOX ORIGIN snaps to the nearest `WIREFRAME_GRID_SIZE_PX` (8) multiple and that delta
+      is applied UNIFORMLY to every movable member (inter-element offsets preserved, clamped to
+      `-page`); 200 % zoom; a 1 px nudge rounds to the nearest multiple.
+- [ ] **F-71 (R-2.3)** `alignLeft`/`alignCenter`/`alignRight` line up edges/centres.
+      **Expected:** ≥2 selected: `alignLeft` ⇒ all left edges coincide (min left) in
+      `-selection-geometry`; `alignCenter` ⇒ horizontal centres coincide; `alignRight` ⇒ right
+      edges coincide; every element's w/h UNCHANGED; ONE undo per align.
+      **Edge:** 2 vs 5 elements; a mixed locked/unlocked selection ⇒ **R-2.8**: align operates on
+      the MOVABLE members only, the align TARGET is the WHOLE selection's union bounds (locked
+      members anchor the target edge), and every locked member's `-selection-geometry` is
+      string-identical pre/post — `<2` movable ⇒ no-op returning `false`; already-aligned ⇒
+      **R-2.9 TRUE NO-OP** (value-equal ⇒ no commit, no `-dirty`, no undo step, returns `false`);
+      each invoker.
+- [ ] **F-72 (R-2.4)** `distribute` equalises horizontal gaps; ends unchanged.
+      **Expected:** ≥3 selected: `wireframe.arrange.distribute` ⇒ the horizontal gaps between
+      consecutive selected elements (ordered by left edge) are equal within ±1 px; the leftmost
+      and rightmost elements are geometry-identical pre/post; ONE undo.
+      **Edge:** exactly 3 MOVABLE (minimum — **R-2.8**: the operand set is the movable members, so
+      3 selected with 1 locked ⇒ 2 movable ⇒ no-op `false`); 5; already-even ⇒ **R-2.9 TRUE
+      NO-OP** (value-equal ⇒ no commit, returns `false`); equal-width vs mixed-width (gap =
+      edge-to-edge space, not centre pitch); each invoker.
+- [ ] **F-73 (R-2.5)** Smart alignment guides paint then vanish on drop.
+      **Expected:** drag an element so its left/centre/right is within `ALIGN_GUIDE_THRESHOLD_PX`
+      (6) of another element's corresponding edge/centre ⇒
+      `[data-testid="wireframe-canvas"][data-wireframe-guides]` reads a number > 0 read MID-drag,
+      and returns to `'0'` on drop; no React state is written per pointer move (console clean).
+      **Edge:** approach each axis separately; drag away beyond 6 px (guides `'0'`); several
+      simultaneous guides; guides absent from an exported PNG (see F-78); drag near the page
+      edge.
+- [ ] **F-74 (R-2.6)** `bringForward`/`sendBackward` move one position, clamped.
+      **Expected:** non-empty selection: `bringForward` ⇒ each selected element moves ONE
+      position later in `data-wireframe-stacking`; `sendBackward` ⇒ one position earlier;
+      clamped at the ends (topmost forward / bottommost backward is a no-op); ONE undo.
+      **Edge:** bringForward the top element (clamped ⇒ value-equal ⇒ no commit, returns `false` —
+      R-2.9); sendBackward the bottom (clamped, `false`); multi-select reorder determinism
+      (**R-2.9**: `bringForward` walks selected ids DESCENDING, `sendBackward` ASCENDING, a swap
+      that would cross the array end is skipped, ONE commit, `false` if nothing moved, the
+      selection SURVIVES the reorder); reorder then undo; each invoker; a locked element IS still
+      reorderable (lock covers position+size only — R-1.10).
+- [ ] **F-75 (R-2.7)** Under-sized selection performs nothing; `runWireframeAction` returns false.
+      **Expected:** `group` with 0/1 selected, `align*` with <2, `distribute` with <3,
+      `bringForward`/`sendBackward` with 0 ⇒ NOTHING changes (document, selection, `-group-count`,
+      `-stacking`, undo depth) and `runWireframeAction` returns `false`; the Companion replies
+      "nothing changed".
+      **Edge:** each invoker × each under-sized case; a visibly-disabled toolbar control still
+      no-ops when invoked; the Companion reply text is honest.
+- [ ] **F-76 (R-3.1)** Hotkey / toolbar / Companion parity + bar listing for all 10 actions.
+      **Expected:** for each of the 10 new actions the always-on bar lists a
+      `hotkeys-keybar-row` with `data-hotkey-key`=`g` and the two-step serialized form; the
+      hotkey (ARMED — `document.body[data-fredo-pending-sequence]`=`g` then the second key, with
+      `hotkeys-keybar-pending` shown) produces the SAME visible change as the toolbar
+      `wireframe-action-arrange-*` control and as the Companion action id;
+      `wireframe.companion.listActions` contains all 10 ids with non-empty descriptions.
+      **Edge:** each action × all three invokers; the pending chip after the first `g`; re-bound
+      `zoom.in` `g+i` / `zoom.out` `g+o` still work; a lone `g` does nothing after the 1000 ms
+      timeout; `m` is free (no duplicate).
+- [ ] **F-77 (R-3.2)** Save As…/Open restores groups + stacking.
+      **Expected:** build a document with ≥2 groups (one locked) and a non-default stacking
+      order, Save As…, then `document.new` + Open ⇒ `-group-count` matches, the saved JSON
+      `groups[]` id/memberIds/locked are identical, `data-wireframe-stacking` order is identical
+      to pre-save, and no other document property changed; a Slice-1 file with no `groups`
+      parses to `groups: []`.
+      **Edge:** a legacy (no-`groups`) file at `.opencode/tmp/3071/e2e/fixtures/legacy.wireframe.json`;
+      a file whose `groups[].memberIds` references a missing element ⇒ **R-3.3**:
+      `parseWireframeDocument`/`reconcileDocumentGroups` DROPS the dangling id and removes the
+      group ONLY if it empties, preserving every survivor's `id`/order/`locked`; a duplicate
+      membership keeps the FIRST group in document order; a structurally malformed group entry ⇒
+      `WireframeDocumentError`, nothing changes (see F-83); round-trip twice.
+- [ ] **F-78 (NFR)** Non-functional gate.
+      **Expected:** `pnpm --filter @fredo/ui build` exit 0 zero TS errors;
+      `pnpm --filter @fredo/ui test:run` green; `cargo check` / `cargo clippy -- -D warnings`
+      zero warnings; no `#[allow(...)]`; `contrast:gate` green; **guides never in an exported
+      PNG** (an export right after a guide-bearing drag is byte-identical to one from the same
+      document with no guide ever painted); **no per-pointer-move React state** (50-move drag
+      with a clean console and no re-render storm); no `#rrggbb`/`rgb(`/`hsl(`/`hsla(` and no
+      `var(--x)NN` alpha-append in `applications/wireframe/**`.
+      **Edge:** export mid-guide; theme switch with a selection; 60-element document responsive;
+      the re-baseline rows (F-37/F-38/F-39/F-40) updated to 32 (never deleted).
+
+### Convergence clauses — F-79…F-83 (Architect RESOLUTION A1/A2/A3, B4/B5)
+
+- [ ] **F-79 (R-1.9)** `group` RE-GROUPS already-grouped elements.
+      **Expected:** select ≥2 where ≥1 element already belongs to another group, invoke
+      `wireframe.arrange.group` ⇒ selected ids are REMOVED from their previous `memberIds`, any
+      previous group left with ZERO members is REMOVED (`WIREFRAME_GROUP_MIN_MEMBERS` = 1),
+      exactly ONE new UNLOCKED group is created with `memberIds` = the whole selection in
+      document order and becomes the selection; `-group-count` moves by `(1 − removedGroups)`
+      (two singleton groups ⇒ 2→1, NOT 2→3).
+      **Edge:** two elements drawn from two singleton groups (2→1); an element drawn from a
+      3-member group (old group survives, `-group-count` 2→2); a selection that is exactly ONE
+      whole group ⇒ NO-OP, `runWireframeAction` false, no new group id minted; each invoker.
+- [ ] **F-80 (R-1.10)** Element lock is position+size ONLY.
+      **Expected:** `wireframe.element.toggleLock` with N selected ⇒ every selected element's
+      `locked` flips in ONE commit; a LOCKED element is STILL reorderable
+      (`bringForward`/`sendBackward` move it in `data-wireframe-stacking`) and STILL deleted by
+      the delete action (count −1, ONE undo restores).
+      **Edge:** lock 3 at once (ONE commit, `-dirty` flips); reorder a locked element then undo;
+      delete a locked element then undo; a locked element alone vs inside a group.
+- [ ] **F-81 (R-2.8)** `align*`/`distribute` with a locked member.
+      **Expected:** selection of ≥2 where ≥1 is individually locked (or a locked group):
+      `align*`/`distribute` compute over the MOVABLE members only, leave every locked member's
+      `-selection-geometry` string-identical, and use the WHOLE selection's union bounds as the
+      align target (locked members anchor the target edge).
+      **Edge:** align with 1 of 2 locked ⇒ 1 movable ⇒ NO-OP, `runWireframeAction` false,
+      Companion "nothing changed"; align 2 movable + 1 locked ⇒ the 2 align to the 3-element
+      union edge; distribute with 3 selected / 1 locked ⇒ 2 movable ⇒ no-op; each invoker.
+- [ ] **F-82 (R-2.9)** True no-op + uniform clamped delta.
+      **Expected:** already-aligned / already-distributed / end-clamped reorder ⇒ the document is
+      VALUE-EQUAL ⇒ NOTHING commits (no snapshot, no `-dirty` flip, no undo step) and
+      `runWireframeAction` returns `false`; a multi/group RESIZE applies ONE uniform union-box
+      delta `(dx,dy,dw,dh)` to every movable member (origins `+= dx,dy`, sizes `+= dw,dh`,
+      inter-element offsets preserved), the delta CLAMPED so no movable member falls below
+      `ELEMENT_MIN_SIZE`; snap uses the union-box ORIGIN delta.
+      **Edge:** align an already-aligned set (`false`, no `u` step); distribute an already-even
+      set (`false`); bringForward a clamped top element (`false`); resize a 3-member group near
+      the min size (the clamped delta is applied UNIFORMLY — members do not drift out of relative
+      alignment); multi-select reorder determinism (forward DESC / backward ASC, end-crossing
+      swaps skipped, ONE commit, `false` if nothing moved).
+- [ ] **F-83 (R-3.3)** Dangling `memberIds` reconciliation on Open.
+      **Expected:** a document whose `groups[].memberIds` reference an element not in `elements`
+      ⇒ `parseWireframeDocument` (via `reconcileDocumentGroups`) DROPS each dangling id and
+      removes a group ONLY if it empties, preserving every surviving group's `id`/order/`locked`;
+      a duplicate membership keeps the FIRST group in document order; a structurally malformed
+      group entry (not an object with string `id` + array `memberIds` + boolean `locked`)
+      REJECTS the document (`WireframeDocumentError`, nothing changes).
+      **Edge:** a group of 2 with 1 dangling id ⇒ group survives with 1 member; a group of 1
+      whose only id dangles ⇒ group removed; an id duplicated across two groups ⇒ FIRST keeps it,
+      the second drops it; `groups` present but not an array ⇒ reject; each via the Open seam.
+
 
