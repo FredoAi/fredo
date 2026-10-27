@@ -568,11 +568,24 @@ export function WireframeToolbar(): React.ReactElement {
               >
                 Cancel
               </Button>
+              {/*
+                #3086 ST-4 (G-235 substitution) — the destructive fill is the
+                bounded `status.errorTint` with the `fg.default` label. The
+                #3081 `status.onSolids`-on-`status.error` pair could not clear
+                4.5:1 on every preset (solarized 4.10), so the gated pair
+                (`status-solid|default|label`) is now `fg.default` on
+                `status.errorTint`. `_hover` pins the same fill so the rendered
+                hover state matches the gated `status-solid|hover|label` row.
+                The `data-contrast-pair` anchor lets the live leg recompute the
+                ratio from computed styles.
+              */}
               <Button
                 data-testid="wireframe-new-document-discard"
+                data-contrast-pair="status-solid|default|label"
                 size="sm"
-                bg="status.error"
-                color="status.onSolids"
+                bg="status.errorTint"
+                color="fg.default"
+                _hover={{ bg: 'status.errorTint' }}
                 onClick={startNewDocument}
               >
                 Discard

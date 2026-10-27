@@ -111,7 +111,12 @@ export function WireframeActionButton({
       disabled={disabled}
       onClick={onActivate}
       bg={pressed ? tint('var(--accent-primary)', 18) : undefined}
-      color={pressed ? 'accent.default' : 'fg.default'}
+      // #3086 ST-4 (G-235 substitution) — the label stays `fg.default` in EVERY
+      // state (default / hover / pressed). The accent signal is the FILL
+      // (`control-ghost|hover|label` = 10 % tint, `control-ghost|active|label` =
+      // 18 % tint); `accent.default` on its own faint tint was the sub-floor
+      // pair. The gate validates `fg.default` on the composed accent fill.
+      color="fg.default"
       _hover={{ bg: tint('var(--accent-primary)', 10) }}
     >
       <Icon as={icon} boxSize={3.5} aria-hidden="true" />
