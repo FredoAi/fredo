@@ -18,6 +18,8 @@
  * `duplicateKey`) derived by calling ST-1's EXISTING pure
  * `detectDuplicateHotkeys(entries)` over the same listing — the detector is
  * DOM-free, so the model stays PURE (no re-implementation of detection here).
+ * Spec #3071 ST-3 relaxed that detector's rule to full-sequence / strict-prefix
+ * uniqueness, so a repeated first step (`key`) is no longer a duplicate.
  */
 
 import { detectDuplicateHotkeys } from './hotkeyElements';
@@ -30,7 +32,11 @@ export type HotkeyBarAvailability = 'available' | 'disabled';
 /** One hotkey row in the bar — availability + the storage/display units (G-187). */
 export interface HotkeyBarRow {
   readonly actionId: string;
-  /** `grammar.key` — the FIRST step (the storage / duplicate key). */
+  /**
+   * `grammar.key` — the FIRST step. NOTE (Spec #3071 ST-3): this is NO LONGER a
+   * uniqueness key — two-step bindings may share a first step (the `g` namespace
+   * repeats it), so a repeated `key` is NOT a duplicate.
+   */
   readonly key: string;
   /** `grammar.serialized` — the display unit, e.g. `'a'` | `'a b'`. */
   readonly serialized: string;
@@ -48,9 +54,13 @@ export interface HotkeyBarModel {
   readonly disabled: boolean;
   /** `rows.length === 0` — the caller renders `null` (R-2.2 / G-265). */
   readonly empty: boolean;
-  /** `true` when two mounted elements declare the same key (R-3.4). */
+  /** `true` when two mounted elements declare a colliding binding (R-3.4). */
   readonly duplicate: boolean;
-  /** The shared key, or `null` when there is no duplicate (R-3.4). */
+  /**
+   * The colliding serialized unit, or `null` when there is no duplicate
+   * (R-3.4). Spec #3071 ST-3: the collision unit is the full serialization, not
+   * the shared first step.
+   */
   readonly duplicateKey: string | null;
 }
 

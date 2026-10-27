@@ -3,6 +3,9 @@
  * rows F-96/F-97/F-98). Pins document-order rows, the empty reach-back (G-265),
  * the disabled pair (text-entry / terminal), the pending prefix, and the
  * storage/display units (`key` = first step, `serialized` = full sequence).
+ *
+ * Spec #3071 ST-3: the duplicate channel now follows the RELAXED rule (full
+ * sequence / strict prefix), so a repeated first step is not a duplicate.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -146,5 +149,44 @@ describe('buildHotkeyBarModel — duplicate channel (R-3.4)', () => {
     const none = buildHotkeyBarModel({ entries: [], pending: null, focus: focus('default') });
     expect(none.duplicate).toBe(false);
     expect(none.duplicateKey).toBeNull();
+  });
+
+  // ── Spec #3071 ST-3 — relaxed rule at the bar-model seam ────────────────────
+
+  it('is NOT duplicate for a shared first step with distinct full serializations (the g namespace)', () => {
+    const model = buildHotkeyBarModel({
+      entries: [
+        entry('g+g', 'Group'),
+        entry('g+a', 'Align left'),
+        entry('g+i', 'Zoom in'),
+      ],
+      pending: null,
+      focus: focus('default'),
+    });
+    expect(model.duplicate).toBe(false);
+    expect(model.duplicateKey).toBeNull();
+    // The first-step `key` repeats across the namespace — that is legal now.
+    expect(model.rows.map((row) => row.key)).toEqual(['g', 'g', 'g']);
+    expect(model.rows.map((row) => row.serialized)).toEqual(['g g', 'g a', 'g i']);
+  });
+
+  it('flags a bare binding shadowing a sequence on the same first step', () => {
+    const model = buildHotkeyBarModel({
+      entries: [entry('g', 'Zoom in'), entry('g+i', 'Zoom in alt')],
+      pending: null,
+      focus: focus('default'),
+    });
+    expect(model.duplicate).toBe(true);
+    expect(model.duplicateKey).toBe('g');
+  });
+
+  it('flags two identical two-step serializations as duplicates', () => {
+    const model = buildHotkeyBarModel({
+      entries: [entry('g+a', 'Align left'), entry('g+a', 'Align left again')],
+      pending: null,
+      focus: focus('default'),
+    });
+    expect(model.duplicate).toBe(true);
+    expect(model.duplicateKey).toBe('g a');
   });
 });
