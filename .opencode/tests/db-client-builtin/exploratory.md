@@ -22,3 +22,8 @@ beyond the script.
   row duplicate, or does the second instance report `Failed`/`Attached` as before?
 - Probe: connect the built-in with `FREDO_PG_KEYCHAIN_DISABLED=1` and no `FREDO_PG_PASSWORD_FILE` —
   is the failure typed and prompt-free?
+- Probe (#3080): on the read-only built-in, does `SELECT set_config('default_transaction_read_only','off',false)`
+  defeat the server-side read-only, and if so does a subsequent write succeed until a
+  reconnect re-applies `on`?
+- Probe (#3080): after killing the built-in's backend from a separate managed-`psql` session, does
+  the reconnected physical connection still report `on`, and does the built-in row stay `port=0`?
