@@ -963,9 +963,9 @@ fn mock_gh_api(args: &[&str]) -> anyhow::Result<String> {
 /// `-F k=v` coerces an all-digit `v` to a JSON Int, while `-f k=v` always sends a
 /// raw string. GitHub then validates each value against its GraphQL variable's
 /// declared type — an Int against a `String!` variable is rejected
-/// (`Could not coerce value 98236657 to String`). The `done`/`canceled` Status
+/// (`Could not coerce value 98236657 to String`). The `canceled` Status
 /// option id (`98236657`) is all digits, so passing it with `-F o=` failed the
-/// whole Done leg silently; the machine now passes every id with `-f`. This mock
+/// whole canceled leg silently; the machine now passes every id with `-f`. This mock
 /// enforces the rule so the regression test FAILS if the machine regresses to `-F`
 /// and PASSES with `-f`. It also returns the JSON shape each project-status query
 /// parses, so the full sync runs offline.
@@ -2258,17 +2258,18 @@ fn derive_fix_plan_body(full: &str) -> String {
 
 /// GitHub project (v2) Status sync (PO feedback, #2688): alongside the phase labels,
 /// mirror the issue's phase onto the configured project's Status single-select field
-/// (Backlog → Planning → Coding → E2E → Reviewing → Done). The issue is added to the
+/// (Backlog → Planning → Coding → E2E → Reviewing; `done` stays at `Reviewing` —
+/// awaiting human review — and only `canceled` reaches `Done`). The issue is added to the
 /// project on first sync if it is not already there. **Best-effort and fail-safe:** any
 /// failure (no project access, missing item, an unsupported mock) is recorded as a
 /// `state_machine.failure` event and logged as a `[project-status]` note, but is never
 /// fatal to the create/transition/close it runs alongside. The issue stays OPEN on
-/// `done` (manual human close); only the Status field becomes "Done".
+/// `done` (manual human close) with Status "Reviewing"; only `canceled` becomes "Done".
 ///
 /// **Every id is passed with `-f` (raw string), never `-F`** (#3071): `gh` coerces an
 /// all-digit `-F` value to an Int, and GitHub rejects an Int against a GraphQL `String!`
-/// variable (`Could not coerce value 98236657 to String`). The `done`/`canceled` option
-/// id (`98236657`) is all digits, so `-F o=…` failed the whole Done leg silently; `-f`
+/// variable (`Could not coerce value 98236657 to String`). The `canceled` option
+/// id (`98236657`) is all digits, so `-F o=…` failed the whole canceled leg silently; `-f`
 /// sends the value as a raw string and the mutation is accepted.
 fn sync_project_status(issue: u32, phase: &str) -> anyhow::Result<()> {
     match sync_project_status_inner(issue, phase) {

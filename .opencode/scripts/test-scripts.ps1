@@ -2803,14 +2803,16 @@ Test-Script "Cleanup phase: done-close gated to cleanup" {
   }
 }
 
-# Project Status sync — the `done` leg must actually apply (regression #3071).
-# The `done`/`canceled` option id (`98236657`) is ALL DIGITS; passing it with `gh`'s
-# `-F` makes gh coerce it to an Int, which GitHub rejects against the query's
-# `String!` variable ("Could not coerce value 98236657 to String") — the silent
-# failure that left #3071 stuck in Reviewing. The mock `gh api graphql` simulates
-# that `-F` inference, so the end-to-end close FAILS if the machine regresses to
-# `-F` and PASSES with the raw-string `-f`.
-Test-Script "Project status sync: done leg applies the all-digit option id (raw -f)" {
+# Project Status sync — the close legs must actually apply (regression #3071).
+# The `canceled` option id (`98236657`) is ALL DIGITS; passing it with `gh`'s `-F`
+# makes gh coerce it to an Int, which GitHub rejects against the query's `String!`
+# variable ("Could not coerce value 98236657 to String") — the silent failure that
+# left #3071 stuck. `done` now maps to `Reviewing` (`df73e18b`, alphanumeric — the
+# finished spec awaits human review); `canceled` maps to `Done` (`98236657`, the
+# all-digit id), so the canceled leg carries the all-digit `-f` regression. The mock
+# `gh api graphql` simulates that `-F` inference, so the end-to-end close FAILS if
+# the machine regresses to `-F` and PASSES with the raw-string `-f`.
+Test-Script "Project status sync: done -> Reviewing, canceled -> Done (all-digit id via raw -f)" {
   # (1) Pin the mock's `-F` coercion directly: an all-digit `-F` value against a
   # `String!` variable is rejected (as GitHub does); the raw-string `-f` passes.
   & rust-script $ps --action mock-gh --ghargs 'api graphql -f query=query($o:String!){updateProjectV2ItemFieldValue} -F o=98236657' 2>&1 | Out-Null
@@ -2819,17 +2821,28 @@ Test-Script "Project status sync: done leg applies the all-digit option id (raw 
   $okGql = & rust-script $ps --action mock-gh --ghargs 'api graphql -f query=query($o:String!){updateProjectV2ItemFieldValue} -f o=98236657' 2>&1
   if ($LASTEXITCODE -ne 0) { throw "mock graphql must accept the raw-string -f value, got: $okGql" }
   $global:LASTEXITCODE = 0
-  # (2) End-to-end: closing to `done` must apply the all-digit option id and must
-  # NOT record a sync failure. Drive an issue straight to a done-closeable state
-  # (label `cleanup` + a success audit Decision + a live-policy PASS verdict).
+  # (2) End-to-end done-close: `done` now maps to `Reviewing` (alphanumeric id); the
+  # close must apply it and must NOT record a sync failure. Drive an issue straight to
+  # a done-closeable state (label `cleanup` + a success audit Decision + a live-policy
+  # PASS verdict).
   $url = Mock-IssueCreate "temp: project-status done sync" "project status scratch" "cleanup"
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
   if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
   $issueNum = [int]$m.Groups[1].Value
+  # (3) End-to-end canceled-close: `canceled` maps to the all-digit `Done` id
+  # (`98236657`); the close must apply it via raw `-f` and must NOT record a failure.
+  # (canceled is allowed from any non-done phase — no verdict/cleanup setup needed.)
+  $curl = Mock-IssueCreate "temp: project-status canceled sync" "canceled scratch" ""
+  $global:LASTEXITCODE = 0
+  $curlStr = if ($curl -is [array]) { $curl -join "" } else { "$curl" }
+  $cm = [regex]::Match($curlStr, "issues/(\d+)")
+  if (-not $cm.Success) { throw "Could not parse issue number from: $curlStr" }
+  $cancelNum = [int]$cm.Groups[1].Value
   $dir = ".opencode/tmp/$issueNum"
   $log = ".opencode/state/issues/$issueNum.jsonl"
+  $clog = ".opencode/state/issues/$cancelNum.jsonl"
   try {
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
@@ -2841,16 +2854,27 @@ Test-Script "Project status sync: done leg applies the all-digit option id (raw 
     if ($LASTEXITCODE -ne 0) { throw "close-issue done failed: $outStr" }
     if ($outStr -notmatch "labeled done") { throw "Expected labeled-done, got: $outStr" }
     if ($outStr -notmatch "\[project-status\] #$issueNum") { throw "Expected the done Status sync to run, got: $outStr" }
-    if ($outStr -notmatch "Status 'Done'") { throw "Expected the done Status sync to APPLY (raw-string -f), got: $outStr" }
-    if ($outStr -match "sync failed") { throw "done Status sync must not fail - the all-digit option id must go as a raw string: $outStr" }
+    if ($outStr -notmatch "Status 'Reviewing'") { throw "Expected the done Status sync to set 'Reviewing', got: $outStr" }
+    if ($outStr -match "sync failed") { throw "done Status sync must not fail: $outStr" }
     # A failed sync is recorded in the event log; a clean success leaves no such event.
     if ((Test-Path $log) -and (Select-String -Path $log -Pattern 'sync-project-status' -ErrorAction SilentlyContinue)) {
-      throw "done Status sync recorded a failure event - the option id was not sent as a raw string"
+      throw "done Status sync recorded a failure event"
     }
-    return "done Status sync applied the all-digit option id with -f (no silent failure) (#$issueNum)"
+    # Canceled leg: the all-digit `Done` id must go as a raw string.
+    $cout = & rust-script $ps --issue $cancelNum --agent orchestrator --action close-issue --to-phase canceled 2>&1
+    $coutStr = if ($cout -is [array]) { $cout -join "`n" } else { "$cout" }
+    if ($LASTEXITCODE -ne 0) { throw "close-issue canceled failed: $coutStr" }
+    if ($coutStr -notmatch "\[project-status\] #$cancelNum") { throw "Expected the canceled Status sync to run, got: $coutStr" }
+    if ($coutStr -notmatch "Status 'Done'") { throw "Expected the canceled Status sync to APPLY the all-digit 'Done' id (raw-string -f), got: $coutStr" }
+    if ($coutStr -match "sync failed") { throw "canceled Status sync must not fail - the all-digit option id must go as a raw string: $coutStr" }
+    if ((Test-Path $clog) -and (Select-String -Path $clog -Pattern 'sync-project-status' -ErrorAction SilentlyContinue)) {
+      throw "canceled Status sync recorded a failure event - the option id was not sent as a raw string"
+    }
+    return "done -> Reviewing, canceled -> Done (all-digit id via -f, no silent failure) (#$issueNum/#$cancelNum)"
   } finally {
     Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
     Mock-Cleanup $issueNum
+    Mock-Cleanup $cancelNum
     $global:LASTEXITCODE = 0
   }
 }
