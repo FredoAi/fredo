@@ -65,6 +65,38 @@
 - [ ] **R-12:** inherit and run `.opencode/tests/settings/regression.md` — the settings
   surface the client's auto-discovered settings register into.
 
+## Server-side read-only hardening baseline (#3080)
+
+The server-side layer is **additive** on top of the client-side gate: layer 1
+(`readOnlyBlocked`, `query.rs:103-115`) is unchanged, and the change only moves four leading
+keywords between existing `StatementClass` variants. Links point at the cases that already cover
+each invariant.
+
+- [ ] **R-13 (client-side gate unchanged):** a read-only connection still refuses every
+  non-`read` statement with `readOnlyBlocked` **before** any server contact; `DEFAULT_ACCESS_MODE`
+  stays `ReadOnly`. Overlaps `postgres-client F-9/F-19`, `db-client-builtin R-2`,
+  `sql-studio R-III`.
+  **FAIL** = the gate is bypassed or the default changed.
+- [ ] **R-14 (wire contract unchanged):** `StatementClass` keeps its five variants + `camelCase`
+  serde names; the TS mirror (`apps/ui/.../lib/types.ts:164`) is untouched; no persisted document
+  shape changes. Overlaps `sql-studio R-II`.
+  **FAIL** = a renamed/added variant, a serde-name change, or a TS-mirror edit.
+- [ ] **R-15 (pool semantics unchanged):** `min_connections(0)` / `max_connections(1)` /
+  `acquire_timeout(CONNECT_BOUND)` and the per-connection `access_mode` persistence rules are
+  unchanged; the transient `db_connection_test` probe gets no hook and still runs only
+  `SELECT version()`.
+  **FAIL** = a changed pool bound or a hooked transient probe.
+- [ ] **R-16 (destructive confirmation unchanged):** `ALTER` stays `Destructive` and `INSERT`
+  stays `Write`; the read-write confirmation gate still fires for `Destructive | Unknown` and
+  still executes nothing unconfirmed. Overlaps `postgres-client F-5/F-22`.
+  **FAIL** = a changed class or an unconfirmed execution.
+- [ ] **R-17 (cost + secrecy):** the hook runs once per physical connection (no per-query
+  round-trip); no password appears in any error message, log, or telemetry (the hook failure
+  flows through `sanitize`). Overlaps `postgres-client F-10`.
+  **FAIL** = a per-query `SET`, or a secret in a surface.
+- [ ] **R-18 (build gates):** re-run `R-7` (`cargo check` zero warnings, `cargo nextest run`
+  green). **FAIL** = any warning or failing test.
+
 ## Notes
 
 - The client is additive: it reads/writes user databases through the shared PG pool and must
