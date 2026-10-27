@@ -24,8 +24,10 @@ import {
   select,
   setError,
   setPanMode,
+  setSnapToGrid,
   setStatus,
   setView,
+  toggleSnapToGrid,
   undo,
 } from '../store/wireframeDocumentStore';
 
@@ -209,5 +211,69 @@ describe('serialized dirty state', () => {
     expect(parsed.schemaVersion).toBe(1);
     expect(parsed.app).toBe('fredo.wireframe');
     expect(parsed.elements).toEqual([]);
+  });
+});
+
+describe('groups + snap dirty semantics (Spec #3071, F-67)', () => {
+  /** A saved document with two elements in one unlocked group. */
+  function seedGroup(): void {
+    const base = createNewWireframeDocument('desktop');
+    const elements = ['a', 'b'].map((id) =>
+      createDefaultElement('card', { page: base.page, elements: [], id }),
+    );
+    loadDocument(
+      { ...base, elements, groups: [{ id: 'g1', memberIds: ['a', 'b'], locked: false }] },
+      'C:\\docs\\a.wireframe.json',
+    );
+  }
+
+  it('a groups-only mutation (group-lock) commits, flips dirty and is undoable', () => {
+    seedGroup();
+    expect(getSnapshot().dirty).toBe(false);
+
+    // The documentsEqual trap: without `groups` in the comparison this would be
+    // value-equal and silently no-op (no snapshot, no dirty flip, no repaint).
+    expect(dispatch('group.toggleLock', { groupIds: ['g1'] })).toBe(true);
+    expect(getSnapshot().document.groups[0].locked).toBe(true);
+    expect(getSnapshot().dirty).toBe(true);
+    expect(getSnapshot().canUndo).toBe(true);
+
+    undo();
+    expect(getSnapshot().document.groups[0].locked).toBe(false);
+    expect(getSnapshot().canUndo).toBe(false);
+  });
+
+  it('group.create flips dirty', () => {
+    seedGroup();
+    dispatch('group.ungroup', { groupIds: ['g1'] });
+    markSaved('C:\\docs\\a.wireframe.json');
+    expect(getSnapshot().dirty).toBe(false);
+
+    expect(dispatch('group.create', { ids: ['a', 'b'] })).toBe(true);
+    expect(getSnapshot().dirty).toBe(true);
+  });
+
+  it('snap-to-grid is editor state: never dirty, never undoable', () => {
+    seedGroup();
+    const before = getSnapshot();
+
+    toggleSnapToGrid();
+    expect(getSnapshot().snapToGrid).toBe(true);
+    expect(getSnapshot().dirty).toBe(false);
+    expect(getSnapshot().canUndo).toBe(false);
+    expect(getSnapshot().canRedo).toBe(false);
+    expect(getSnapshot().document).toBe(before.document);
+
+    setSnapToGrid(false);
+    expect(getSnapshot().snapToGrid).toBe(false);
+    expect(getSnapshot().dirty).toBe(false);
+  });
+
+  it('snap is not serialised into the document', () => {
+    seedGroup();
+    toggleSnapToGrid();
+    const parsed = JSON.parse(serializeWireframeDocument(getSnapshot().document));
+    expect(parsed.snapToGrid).toBeUndefined();
+    expect(parsed.groups).toEqual([{ id: 'g1', memberIds: ['a', 'b'], locked: false }]);
   });
 });
