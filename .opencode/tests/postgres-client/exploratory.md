@@ -34,3 +34,12 @@ following slices). A confirmed finding **promotes** to `functional.md` as a new 
   a running query cancel it cleanly?
 - [ ] **E-12:** Are saved connections and history scoped per-app-user, and do they load
   deterministically when the store is large?
+- [ ] **E-13 (#3080):** With the read-only session open, can a `SELECT`-leading form defeat the
+  server-side read-only (`SELECT set_config('default_transaction_read_only','off',false)`), and
+  does the connection remain writable afterwards — or does something re-apply `on`?
+- [ ] **E-14 (#3080):** After a mid-session backend kill (managed-`psql` `pg_terminate_backend`),
+  does the replacement physical connection report `on`, or does the read-only quietly lapse?
+- [ ] **E-15 (#3080):** Does a function whose body performs DML, called via `SELECT`, get
+  rejected `25006`, or does it slip through on the read-only connection?
+- [ ] **E-16 (#3080):** Does the hook failure path (e.g. the server refusing the `SET`) surface a
+  typed error with no password leak, and does a failing hook leave a half-open pool?
