@@ -239,6 +239,28 @@ behaviour is wrong.
       React render storm), does one undo revert a group drag, and does Save/Open round-trip all
       groups + stacking?
 
+## Spec #3087 — new probes (on-control chip removal)
+
+> Unscripted probes for the chip-removal slice. Evidence is LIVE + MEASURED — a quoted
+> `tauri_webview_*` result plus an uploaded capture (document state, no `telemetry_spans`
+> receipt expected). A confirmed finding PROMOTES to `functional.md` as a new `F-` row.
+
+- [ ] **E-34 Chip residue / stale slot after rapid focus churn.** Toggle focus between the
+      Wireframe host and another window 20× (fast), then inspect the toolbar DOM. Does any
+      `wireframe-hotkey-chip` / `hotkeys-keycap` node ever reappear (a stale render, a
+      `visibility` remnant), or does any control keep a `data-hotkey` while unfocused? Record the
+      chip count and the `data-hotkey` count in both states.
+- [ ] **E-35 Bar/duplicate state after the chip deletion.** With Wireframe + Mission Monitor +
+      Diagram open, check `data-fredo-hotkey-count`, `data-fredo-hotkey-duplicate` and the
+      `hotkeys-keybar-row` titles before/after toggling focus. Do the Wireframe titles still read
+      the action label/description (`data-hotkey-label`), never a chip-derived string? A title
+      regression would mean the bar read the wrong source.
+- [ ] **E-36 Insert-menu composite boundary.** Open both insert menus (Section presets, Shape
+      kinds) and confirm their chevrons still carry no `data-hotkey` and no chip, and that the
+      main insert control beside each chevron renders label + icon with no chip. Also confirm the
+      `wireframe.document.new` control (no binding) renders with no chip and no `(hotkey)` suffix
+      in its accessible name.
+
 ## Teardown (run after this suite)
 - [ ] Close every Wireframe window, delete the probe fixtures under
       `.opencode/tmp/3070/e2e/` that are not part of the functional plan, restore the appearance
