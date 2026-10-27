@@ -318,6 +318,68 @@ describe('selection actions (R-2.4)', () => {
   });
 });
 
+describe('multi-element element actions (Spec #3071, R-1.6 / R-1.10)', () => {
+  it('deletes EVERY selected element in one undo step (R-1.6)', () => {
+    const [a, b, c] = seed([
+      { x: 0, y: 0, width: 40, height: 40 },
+      { x: 100, y: 0, width: 40, height: 40 },
+      { x: 200, y: 0, width: 40, height: 40 },
+    ]);
+    expect(elements()).toHaveLength(3);
+
+    expect(runWireframeAction('wireframe.element.delete')).toBe(true);
+    expect(elements()).toHaveLength(0);
+    expect(getSnapshot().selectedIds).toEqual([]);
+
+    // ONE undo restores the WHOLE selection (R-1.6 / NFR-4).
+    expect(runWireframeAction('wireframe.edit.undo')).toBe(true);
+    expect(elements().map((element) => element.id)).toEqual([a, b, c]);
+  });
+
+  it('deletes a selected group together with every member in one undo step (R-1.6)', () => {
+    const [a, b, c] = seed([
+      { x: 0, y: 0, width: 40, height: 40 },
+      { x: 100, y: 0, width: 40, height: 40 },
+      { x: 200, y: 0, width: 40, height: 40 },
+    ]);
+    // Group the first two members, leaving the third ungrouped.
+    selectMany([a, b]);
+    expect(runWireframeAction('wireframe.arrange.group')).toBe(true);
+    const groupId = getSnapshot().document.groups[0].id;
+
+    expect(runWireframeAction('wireframe.element.delete')).toBe(true);
+    // Both members AND the emptied group are gone; only `c` survives.
+    expect(elements().map((element) => element.id)).toEqual([c]);
+    expect(getSnapshot().document.groups).toHaveLength(0);
+    expect(getSnapshot().selectedIds).toEqual([]);
+
+    // ONE undo restores both members and the SAME group (id + membership).
+    expect(runWireframeAction('wireframe.edit.undo')).toBe(true);
+    expect(elements()).toHaveLength(3);
+    expect(getSnapshot().document.groups).toHaveLength(1);
+    expect(getSnapshot().document.groups[0].id).toBe(groupId);
+    expect(getSnapshot().document.groups[0].memberIds).toEqual([a, b]);
+  });
+
+  it('locks EVERY selected element in one undo step (R-1.10)', () => {
+    const [a, b, c] = seed([
+      { x: 0, y: 0, width: 40, height: 40 },
+      { x: 100, y: 0, width: 40, height: 40 },
+      { x: 200, y: 0, width: 40, height: 40 },
+    ]);
+    expect(elements().map((element) => element.locked)).toEqual([false, false, false]);
+
+    expect(runWireframeAction('wireframe.element.toggleLock')).toBe(true);
+    expect(elements().map((element) => element.locked)).toEqual([true, true, true]);
+    // Lock does not drop the selection.
+    expect(getSnapshot().selectedIds).toEqual([a, b, c]);
+
+    // ONE undo unlocks the WHOLE selection.
+    expect(runWireframeAction('wireframe.edit.undo')).toBe(true);
+    expect(elements().map((element) => element.locked)).toEqual([false, false, false]);
+  });
+});
+
 describe('history actions (R-4.1)', () => {
   it('is a false no-op on empty history', () => {
     expect(runWireframeAction('wireframe.edit.undo')).toBe(false);

@@ -72,7 +72,6 @@ import {
   getSnapshot,
   isElementMovable,
   isWholeGroupSelection,
-  primarySelectedId,
   selectedElements,
   selectionGroup,
   subscribe,
@@ -244,18 +243,17 @@ export function WireframeToolbar(): React.ReactElement {
   } = state;
   const focused = useWireframeHostFocused();
 
-  // The primary element (the last selected id) keeps driving the shipped
-  // single-element controls; the WHOLE selection drives the arrange controls
-  // (Spec #3071, ST-6 — UI/UX 2.1).
-  const primaryId = primarySelectedId(state);
-  const selectedElement =
-    primaryId === null
-      ? null
-      : wireframeDocument.elements.find((element) => element.id === primaryId) ?? null;
+  // The WHOLE selection drives the arrange controls (Spec #3071, ST-6 —
+  // UI/UX 2.1) and the multi-element element actions (R-1.6 / R-1.10).
   const hasSelection = selectedIds.length > 0;
+  const selected = selectedElements(state);
+  // Lock is a multi-element action (R-1.10): pressed iff the selection is
+  // non-empty AND every selected element is locked.
+  const allSelectedLocked =
+    selected.length > 0 && selected.every((element) => element.locked);
   // Align/distribute gate on the MOVABLE count (R-2.8): a locked member (or a
   // locked group) is not an operand, so it cannot satisfy the minimum.
-  const movableCount = selectedElements(state).filter((element) =>
+  const movableCount = selected.filter((element) =>
     isElementMovable(wireframeDocument, element),
   ).length;
   const activeGroup = selectionGroup(wireframeDocument, selectedIds);
@@ -348,13 +346,13 @@ export function WireframeToolbar(): React.ReactElement {
 
   const isPressed = React.useCallback(
     (id: string): boolean | undefined => {
-      if (id === 'wireframe.element.toggleLock') return selectedElement?.locked === true;
+      if (id === 'wireframe.element.toggleLock') return allSelectedLocked;
       if (id === 'wireframe.view.togglePan') return panMode;
       if (id === 'wireframe.arrange.toggleSnap') return snapToGrid;
       if (id === 'wireframe.arrange.toggleGroupLock') return activeGroup?.locked === true;
       return undefined;
     },
-    [selectedElement?.locked, panMode, snapToGrid, activeGroup],
+    [allSelectedLocked, panMode, snapToGrid, activeGroup],
   );
 
   /** A menu pick is a pointer flow: drop focus so the next bare key fires. */
