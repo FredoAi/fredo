@@ -26,12 +26,13 @@ flowchart TD
     TEST --> |verdict| ORCH
     ORCH --> |testing → audit| AUD[Auditor]
 
-    AUD --> |success| CLEAN[Orchestrator: cleanup]
-    AUD --> |restart from phase N| ORCH
+    AUD --> |verdict| POST[Orchestrator: post-audit]
+    POST --> |success| CLEAN[Orchestrator: cleanup]
+    POST --> |restart from phase N| ORCH
     CLEAN --> DONE([Done])
 
     ORCH -.-> |tooling gap| TOOL[Toolsmith]
-    AUD -.-> |durable lesson| CUR[Curator]
+    POST -.-> |durable lesson| CUR[Curator]
     ORCH -.-> |machine concern| MACH[Machinist]
 ```
 
@@ -64,7 +65,7 @@ flowchart TD
 | File | Content |
 |------|---------|
 | [principles.md](principles.md) | The non-negotiable design rules: agents as persons, state-machine context, per-phase Goals, playbook-linked agents, GitHub backbone + log, the independent audit gate |
-| [pipeline.md](pipeline.md) | Phase walkthrough: Intake → Triage → Implementation → Testing → Audit → Done |
+| [pipeline.md](pipeline.md) | Phase walkthrough: Intake → Triage → Implementation → Testing → Audit → Post-audit → Cleanup → Done |
 | [artifacts.md](artifacts.md) | Artifact catalog: every document/object produced, with templates |
 | [github.md](github.md) | GitHub conventions: issue templates, labels, branch naming, PR checklist, comment prefixes, automation |
 | [staffing.md](staffing.md) | Staffing heuristics, guardrails, SLAs, traceability |
@@ -118,8 +119,9 @@ Per-agent dispatch briefs — the role's mandate, its phases, its tools, and the
 | 3. Implementation | Orchestrator (setup) + Developer pool | All plan checklist work pushed to `spec/<N>`, CI green | Staff → dispatch devs → worktree on spec branch → push → spec PR | Implementation Plan checklist, spec/<N> branch |
 | 4. Testing | Tester | Verdict posted with evidence; failures re-dispatched | Execute QA Plan → attach evidence → verdict | Test report, verdict comments |
 | **Gate** | Auditor | Verdict: success, or restart phase + root cause | Audit from the record → decide → record verdict | Audit verdict |
-| 5. Cleanup | Orchestrator | Teardown done, feature labeled `done`, human review | Cleanup → doc-sync → human review | Closed work, final status |
-| 6. Done | Orchestrator | Feature `done`, worktrees cleaned, human review | Status updates, cleanup, human review | Closed work, final status |
+| 5. Post-audit | Orchestrator | Self-improvement + gate merge ran: the Curator recorded a lesson, the specialists' edits committed, product docs synced | Dispatch the Curator + specialists → gate doc-sync/commit → `post-audit → cleanup` (success) or `→ <phase>` (restart) | Curator lesson, gate commit |
+| 6. Cleanup | Orchestrator | Teardown done, feature labeled `done`, human review | Cleanup → human review | Closed work, final status |
+| 7. Done | Orchestrator | Feature `done`, worktrees cleaned, human review | Status updates, human review | Closed work, final status |
 
 ---
 
@@ -130,7 +132,7 @@ Per-agent dispatch briefs — the role's mandate, its phases, its tools, and the
 - **Issue model per feature:** one **feature issue** (the single work-tracking artifact). Its `### Sub-issue Decomposition` `- [ ]` lines are the work checklist developers execute on the spec branch — there are **no sub-issues and no tester issue** (`generate-work` was removed).
 - **Branch naming:** one **spec integration branch** `spec/<N>` per spec (never deleted — it carries the evidence trail). No per-developer branches: developers work in worktrees **detached at `spec/<N>`'s tip** and push with `git push origin HEAD:spec/<N>`. The only PR is the spec PR (`spec/<N>` → `main`).
 - **The machine owns the mechanics:** the A2A file is auto-seeded on `intake → triage`; the `triage → implementation` transition auto-assembles the Implementation Plan, persists the QA-seeded test suites, and creates the spec branch. The Orchestrator runs the transitions and dispatches the agents; it never runs these mechanical steps by hand.
-- **Independent audit gate:** the **Auditor** — which neither orchestrated nor built the work — audits every issue after testing from the record; on failure it chooses the restart phase and the Orchestrator re-dispatches from it, while the **Curator** improves the pipeline's root cause before the re-run.
+- **Independent audit gate + post-audit phase:** the **Auditor** — which neither orchestrated nor built the work — audits every issue after testing from the record; its verdict transitions `audit → post-audit`, the phase where the **Curator** distils a durable lesson and the Orchestrator runs the gate merge. On success the flow goes `post-audit → cleanup`; on failure `post-audit → <phase>` re-dispatches from the chosen phase.
 
 ---
 

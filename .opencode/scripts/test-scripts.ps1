@@ -905,20 +905,31 @@ Test-Script "audit-record success -> cleanup, then close-issue -> done" {
     $out = & rust-script $ps --issue $issueNum --agent auditor --action audit-record --verdict success --reason "ok" 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "audit-record failed (exit $LASTEXITCODE): $outStr" }
-    if ($outStr -notmatch "AUDIT PASS -> CLEANUP") { throw "Expected AUDIT PASS -> CLEANUP, got: $outStr" }
-    # After audit success, the issue is OPEN in the cleanup phase (teardown pending).
+    if ($outStr -notmatch "AUDIT PASS -> POST-AUDIT") { throw "Expected AUDIT PASS -> POST-AUDIT, got: $outStr" }
+    # After audit success the issue enters the post-audit phase (self-improvement + gate merge).
     $st = Mock-IssueState $issueNum
-    if ($st.State -ne "OPEN") { throw "Expected OPEN in cleanup, got state $($st.State)" }
-    if ($st.Labels -notcontains "cleanup") { throw "Expected cleanup label, got: $($st.Labels)" }
-    # The SI runs teardown, then labels the issue done from cleanup (human closes).
+    if ($st.State -ne "OPEN") { throw "Expected OPEN in post-audit, got state $($st.State)" }
+    if ($st.Labels -notcontains "post-audit") { throw "Expected post-audit label, got: $($st.Labels)" }
+    # The post-audit exit guard requires the Curator's recorded improvement.
+    $refs = "docs/agentic-pipeline/playbooks/references.md"
+    $refsBackup = Join-Path $env:TEMP ("refs-" + [Guid]::NewGuid().ToString("N") + ".md")
+    Copy-Item -LiteralPath $refs -Destination $refsBackup -Force
+    & rust-script $ps --issue $issueNum --agent curator --action record-improvement --reason "harness: post-audit lesson" 2>&1 | Out-Null
+    $pout = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase cleanup 2>&1
+    $poutStr = if ($pout -is [array]) { $pout -join "`n" } else { "$pout" }
+    if ($poutStr -notmatch "TRANSITIONED: post-audit -> cleanup") { throw "Expected post-audit -> cleanup, got: $poutStr" }
+    $stCleanup = Mock-IssueState $issueNum
+    if ($stCleanup.Labels -notcontains "cleanup") { throw "Expected cleanup label, got: $($stCleanup.Labels)" }
+    # The Orchestrator runs teardown, then labels the issue done from cleanup (human closes).
     $close = & rust-script $ps --issue $issueNum --agent orchestrator --action close-issue --to-phase done 2>&1
     $closeStr = if ($close -is [array]) { $close -join "`n" } else { "$close" }
     if ($closeStr -notmatch "labeled done") { throw "Expected labeled-done, got: $closeStr" }
     $st2 = Mock-IssueState $issueNum
     if ($st2.State -ne "OPEN") { throw "Expected OPEN (human closes manually), got state $($st2.State)" }
     if ($st2.Labels -notcontains "done") { throw "Expected done label, got: $($st2.Labels)" }
-    return "audit-record success -> cleanup -> labeled done (open, human closes) (#$issueNum)"
+    return "audit-record success -> post-audit -> cleanup -> labeled done (open, human closes) (#$issueNum)"
   } finally {
+    if ($refsBackup -and (Test-Path -LiteralPath $refsBackup)) { Copy-Item -LiteralPath $refsBackup -Destination $refs -Force; Remove-Item -LiteralPath $refsBackup -Force -ErrorAction SilentlyContinue }
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
@@ -1125,14 +1136,28 @@ Test-Script "audit-record restart positive path (audit -> implementation)" {
   if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
   $issueNum = [int]$m.Groups[1].Value
   try {
+    $a2aDir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $a2aDir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$a2aDir/triage.md", "# Implementation Plan #$issueNum - scratch`n`n## Summary`ngoal`n`n## Software Architect`nscratch`n`n## UI/UX Expert`nN/A`n`n## QA Expert`nscratch`n`n## Staffing Plan`n1 dev`n`n## Deployment Notes`nnone`n`n## Risks & Mitigations`nnone`n`n## Convergence: agreed`n", [System.Text.UTF8Encoding]::new($false))
     $out = & rust-script $ps --issue $issueNum --agent auditor --action audit-record --verdict restart --phase implementation --reason "rework" 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "audit-record failed (exit $LASTEXITCODE): $outStr" }
-    if ($outStr -notmatch "AUDIT -> implementation") { throw "Expected AUDIT -> implementation, got: $outStr" }
+    if ($outStr -notmatch "AUDIT RESTART -> POST-AUDIT") { throw "Expected AUDIT RESTART -> POST-AUDIT, got: $outStr" }
     $st = Mock-IssueState $issueNum
-    if ($st.Labels -notcontains "ready-for-dev") { throw "Expected ready-for-dev label after restart, got: $($st.Labels)" }
-    return "audit-record restart moved #$issueNum audit -> implementation"
+    if ($st.Labels -notcontains "post-audit") { throw "Expected post-audit label after restart, got: $($st.Labels)" }
+    $refs = "docs/agentic-pipeline/playbooks/references.md"
+    $refsBackup = Join-Path $env:TEMP ("refs-" + [Guid]::NewGuid().ToString("N") + ".md")
+    Copy-Item -LiteralPath $refs -Destination $refsBackup -Force
+    & rust-script $ps --issue $issueNum --agent curator --action record-improvement --reason "harness: restart lesson" 2>&1 | Out-Null
+    $rout = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase implementation 2>&1
+    $routStr = if ($rout -is [array]) { $rout -join "`n" } else { "$rout" }
+    if ($routStr -notmatch "TRANSITIONED: post-audit -> implementation") { throw "Expected post-audit -> implementation, got: $routStr" }
+    $st2 = Mock-IssueState $issueNum
+    if ($st2.Labels -notcontains "ready-for-dev") { throw "Expected ready-for-dev label after restart, got: $($st2.Labels)" }
+    return "audit-record restart moved #$issueNum audit -> post-audit -> implementation"
   } finally {
+    if ($refsBackup -and (Test-Path -LiteralPath $refsBackup)) { Copy-Item -LiteralPath $refsBackup -Destination $refs -Force; Remove-Item -LiteralPath $refsBackup -Force -ErrorAction SilentlyContinue }
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
@@ -2713,9 +2738,23 @@ Test-Script "Cleanup phase: done-close gated to cleanup" {
     & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
     $ar = & rust-script $ps --issue $issueNum --agent auditor --action audit-record --verdict success --reason "ok" 2>&1
     $arStr = if ($ar -is [array]) { $ar -join "`n" } else { "$ar" }
-    if ($arStr -notmatch "AUDIT PASS -> CLEANUP") { throw "Expected audit→cleanup, got: $arStr" }
+    if ($arStr -notmatch "AUDIT PASS -> POST-AUDIT") { throw "Expected audit->post-audit, got: $arStr" }
     $st = Mock-IssueState $issueNum
-    if ($st.Labels -notcontains "cleanup") { throw "Expected cleanup label, got: $($st.Labels)" }
+    if ($st.Labels -notcontains "post-audit") { throw "Expected post-audit label, got: $($st.Labels)" }
+    # Done-close from post-audit is ALSO blocked (only cleanup closes).
+    $blockedPost = & rust-script $ps --issue $issueNum --agent orchestrator --action close-issue --to-phase done 2>&1
+    $blockedPostStr = if ($blockedPost -is [array]) { $blockedPost -join "`n" } else { "$blockedPost" }
+    if ($blockedPostStr -notmatch "only cleanup-phase features can close as done") { throw "Expected cleanup-only block from post-audit, got: $blockedPostStr" }
+    # The post-audit exit guard requires the Curator's recorded improvement.
+    $refs = "docs/agentic-pipeline/playbooks/references.md"
+    $refsBackup = Join-Path $env:TEMP ("refs-" + [Guid]::NewGuid().ToString("N") + ".md")
+    Copy-Item -LiteralPath $refs -Destination $refsBackup -Force
+    & rust-script $ps --issue $issueNum --agent curator --action record-improvement --reason "harness: cleanup-gate lesson" 2>&1 | Out-Null
+    $pout = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase cleanup 2>&1
+    $poutStr = if ($pout -is [array]) { $pout -join "`n" } else { "$pout" }
+    if ($poutStr -notmatch "TRANSITIONED: post-audit -> cleanup") { throw "Expected post-audit -> cleanup, got: $poutStr" }
+    $stC = Mock-IssueState $issueNum
+    if ($stC.Labels -notcontains "cleanup") { throw "Expected cleanup label, got: $($stC.Labels)" }
     # Now the done-label succeeds from cleanup.
     $close = & rust-script $ps --issue $issueNum --agent orchestrator --action close-issue --to-phase done 2>&1
     $closeStr = if ($close -is [array]) { $close -join "`n" } else { "$close" }
@@ -2723,8 +2762,9 @@ Test-Script "Cleanup phase: done-close gated to cleanup" {
     $st2 = Mock-IssueState $issueNum
     if ($st2.State -ne "OPEN") { throw "Expected OPEN (human closes manually), got: $($st2.State)" }
     if ($st2.Labels -notcontains "done") { throw "Expected done label, got: $($st2.Labels)" }
-    return "cleanup phase: done-label gated to cleanup, audit→cleanup→done (open) works"
+    return "cleanup phase: done-label gated to cleanup, audit->post-audit->cleanup->done (open) works"
   } finally {
+    if ($refsBackup -and (Test-Path -LiteralPath $refsBackup)) { Copy-Item -LiteralPath $refsBackup -Destination $refs -Force; Remove-Item -LiteralPath $refsBackup -Force -ErrorAction SilentlyContinue }
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
@@ -2748,7 +2788,15 @@ Test-Script "Reopen removed: done -> planning is refused (terminal)" {
     & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
     $ar = & rust-script $ps --issue $issueNum --agent auditor --action audit-record --verdict success --reason "ok" 2>&1
     $arStr = if ($ar -is [array]) { $ar -join "`n" } else { "$ar" }
-    if ($arStr -notmatch "AUDIT PASS -> CLEANUP") { throw "Expected audit→cleanup, got: $arStr" }
+    if ($arStr -notmatch "AUDIT PASS -> POST-AUDIT") { throw "Expected audit->post-audit, got: $arStr" }
+    # post-audit → cleanup (the Curator's recorded improvement satisfies the exit guard).
+    $refs = "docs/agentic-pipeline/playbooks/references.md"
+    $refsBackup = Join-Path $env:TEMP ("refs-" + [Guid]::NewGuid().ToString("N") + ".md")
+    Copy-Item -LiteralPath $refs -Destination $refsBackup -Force
+    & rust-script $ps --issue $issueNum --agent curator --action record-improvement --reason "harness: reopen-removed lesson" 2>&1 | Out-Null
+    $pout = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase cleanup 2>&1
+    $poutStr = if ($pout -is [array]) { $pout -join "`n" } else { "$pout" }
+    if ($poutStr -notmatch "TRANSITIONED: post-audit -> cleanup") { throw "Expected post-audit -> cleanup, got: $poutStr" }
     $close = & rust-script $ps --issue $issueNum --agent orchestrator --action close-issue --to-phase done 2>&1
     $closeStr = if ($close -is [array]) { $close -join "`n" } else { "$close" }
     if ($closeStr -notmatch "labeled done") { throw "Expected labeled-done, got: $closeStr" }
@@ -2761,6 +2809,7 @@ Test-Script "Reopen removed: done -> planning is refused (terminal)" {
     if ($st.Labels -contains "planning") { throw "planning label must NOT be applied, got: $($st.Labels)" }
     return "reopen removed: done -> planning refused, done label intact (#$issueNum)"
   } finally {
+    if ($refsBackup -and (Test-Path -LiteralPath $refsBackup)) { Copy-Item -LiteralPath $refsBackup -Destination $refs -Force; Remove-Item -LiteralPath $refsBackup -Force -ErrorAction SilentlyContinue }
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }

@@ -32,8 +32,8 @@ By the Orchestrator when a feature reaches the `audit` phase — the spec PR has
 4. **Decide success or restart.** Success only when every acceptance criterion is supported by evidence in the record and the integrity gate passed. If the record is insufficient to judge (missing Tester verdict or evidence, or `verification-ok = false`), **report the gap instead of guessing** — an unsupported verdict is itself a failure.
 5. **On restart, choose the phase and classify the cause.** Pick the phase the pipeline must re-enter (`backlog`/`planning`/`implementation`/`testing`) and a structured `--root-cause` (`defect`|`technique`|`environment`|`scope`), and write `--reason` as the **missed-AC list** the next round must complete — the recorded reason becomes the retry context every re-dispatched agent reads.
 6. **Record the verdict** via `--action audit-record`:
-   - `--verdict success` posts the `Decision` comment and auto-transitions `audit → cleanup`;
-   - `--verdict restart --phase <p> --root-cause <c> --reason "<missed-AC list>"` posts the restart `Decision` and auto-transitions `audit → <p>`.
+   - `--verdict success` posts the `Decision` comment and transitions `audit → post-audit`;
+   - `--verdict restart --phase <p> --root-cause <c> --reason "<missed-AC list>"` posts the restart `Decision` and transitions `audit → post-audit` (the recorded phase is the restart target).
 
 **All GitHub writes go through the state machine** — the `audit-record` action posts the verdict and records the metric event in one write. The Auditor issues no other GitHub write.
 

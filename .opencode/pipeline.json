@@ -1,6 +1,6 @@
 {
   "version": "2.0",
-  "description": "Pipeline configuration for the Fredo agentic state machine. Single source of truth for phases, transitions, labels, and issue types. Loaded by .opencode/scripts/pipeline-state.rs. Contract: docs/agentic-pipeline/state-machine.md. Phase names are STATUS terms (backlog → planning → implementation → testing → audit → cleanup → done); the SI audit verdict is the gate between testing and cleanup, and cleanup is the teardown-only phase before done.",
+  "description": "Pipeline configuration for the Fredo agentic state machine. Single source of truth for phases, transitions, labels, and issue types. Loaded by .opencode/scripts/pipeline-state.rs. Contract: docs/agentic-pipeline/state-machine.md. Phase names are STATUS terms (backlog → planning → implementation → testing → audit → post-audit → cleanup → done); the SI audit verdict is the gate between testing and post-audit, post-audit is where the pipeline's self-improvement + the gate merge run, and cleanup is the teardown-only phase before done.",
 
   "phases": {
     "backlog": {
@@ -33,14 +33,20 @@
       "exit_guard": "Auditor verdict posted: success, or restart phase + improvement",
       "owner": "auditor"
     },
-    "cleanup": {
+    "post-audit": {
       "order": 5,
+      "label": "post-audit",
+      "exit_guard": "The post-audit ran: the Curator recorded the durable lesson (record-improvement — a `pipeline.improvement` event), the specialists' pipeline edits are committed with the product-doc sync (the ONE gate commit/PR), and the product docs are synced",
+      "owner": "orchestrator"
+    },
+    "cleanup": {
+      "order": 6,
       "label": "cleanup",
       "exit_guard": "Teardown complete: worktrees removed, stale branches pruned (spec/* kept as evidence), gitignored scratch cleaned, evidence retained, no leftover dirty state; then the feature is closed as done",
       "owner": "orchestrator"
     },
     "done": {
-      "order": 6,
+      "order": 7,
       "label": "done",
       "exit_guard": "Feature closed, branches cleaned, human review initiated",
       "owner": "orchestrator"
@@ -54,11 +60,12 @@
     "implementation:planning": true,
     "testing:audit": true,
     "testing:implementation": true,
-    "audit:backlog": true,
-    "audit:planning": true,
-    "audit:implementation": true,
-    "audit:testing": true,
-    "audit:cleanup": true
+    "audit:post-audit": true,
+    "post-audit:cleanup": true,
+    "post-audit:backlog": true,
+    "post-audit:planning": true,
+    "post-audit:implementation": true,
+    "post-audit:testing": true
   },
 
   "label_to_phase": {
@@ -69,6 +76,7 @@
     "ready-for-test": "implementation",
     "testing": "testing",
     "audit": "audit",
+    "post-audit": "post-audit",
     "cleanup": "cleanup",
     "done": "done"
   },
@@ -91,6 +99,7 @@
       "implementation": { "status": "Coding",    "option_id": "d1cb6829" },
       "testing":        { "status": "E2E",       "option_id": "07ac1d28" },
       "audit":          { "status": "Reviewing", "option_id": "df73e18b" },
+      "post-audit":     { "status": "Reviewing", "option_id": "df73e18b" },
       "cleanup":        { "status": "Reviewing", "option_id": "df73e18b" },
       "done":           { "status": "Done",      "option_id": "98236657" },
       "canceled":       { "status": "Done",      "option_id": "98236657" }

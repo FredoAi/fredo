@@ -173,7 +173,7 @@ The feature issue's timeline is built from five titled comments that the state m
 | `fix-plan.md` | `## Fix Plan (round N)` | rework re-entry into implementation (`testing → implementation`, or an audit restart) — authored by the **Software Architect** from the tester's FAIL verdict; retry rounds only |
 | `dev-summary.md` | `## Development Summary` | implementation → testing |
 | `tests-runs.md` | `## Tests Runs` | testing — carries the tester's verdict; the verification gate reads it (the only evidence source) |
-| `si-summary.md` | `## Orchestrator Summary` | audit → done |
+| `orchestrator-summary.md` | `## Orchestrator Summary` | post-audit → cleanup |
 
 ### Fix Plan (retry rounds)
 

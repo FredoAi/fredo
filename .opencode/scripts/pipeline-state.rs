@@ -176,17 +176,19 @@ enum Phase {
     Implementation,
     Testing,
     Audit,
+    PostAudit,
     Cleanup,
     Done,
 }
 
 impl Phase {
-    const ORDER: [Phase; 7] = [
+    const ORDER: [Phase; 8] = [
         Phase::Backlog,
         Phase::Planning,
         Phase::Implementation,
         Phase::Testing,
         Phase::Audit,
+        Phase::PostAudit,
         Phase::Cleanup,
         Phase::Done,
     ];
@@ -198,6 +200,7 @@ impl Phase {
             Phase::Implementation => "implementation",
             Phase::Testing => "testing",
             Phase::Audit => "audit",
+            Phase::PostAudit => "post-audit",
             Phase::Cleanup => "cleanup",
             Phase::Done => "done",
         }
@@ -210,6 +213,7 @@ impl Phase {
             "implementation" => Some(Phase::Implementation),
             "testing" => Some(Phase::Testing),
             "audit" => Some(Phase::Audit),
+            "post-audit" => Some(Phase::PostAudit),
             "cleanup" => Some(Phase::Cleanup),
             "done" => Some(Phase::Done),
             _ => None,
@@ -1151,7 +1155,7 @@ fn gh_api_raw_opt(args: &[String]) -> anyhow::Result<Option<String>> {
 /// excluded by title, never by this set.
 const PIPELINE_ISSUE_LABELS: &[&str] = &[
     "backlog", "planning", "ready-for-dev", "in-progress-dev", "ready-for-test",
-    "testing", "audit", "cleanup", "done",
+    "testing", "audit", "post-audit", "cleanup", "done",
 ];
 
 /// Lock an issue's conversation (durable per-conversation comment restriction).
@@ -2904,8 +2908,8 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
         Phase::Testing => {
             // A tester verdict comment must exist to leave testing at all — a FAIL
             // verdict routes BACK to implementation (rework), a PASS continues to
-            // cleanup. The cleanup-specific full verification (policy + live evidence,
-            // fail-closed) is enforced in the transition for the testing→cleanup leg.
+            // audit. The verification (policy + live evidence, fail-closed) is
+            // enforced in the transition for the testing→audit leg.
             let (has_evidence, _, _, _, _, reason) = verification_status(issue);
             (has_evidence, if has_evidence { String::new() } else { reason })
         }
@@ -2919,12 +2923,30 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
             });
             (has, if has { String::new() } else { "no audit verdict found".into() })
         }
+        Phase::PostAudit => {
+            // The post-audit phase is where the pipeline's own self-improvement runs
+            // before teardown/rework: the Curator distills the durable lesson
+            // (`record-improvement` — a `pipeline.improvement` event + the
+            // `## Pipeline Improvement (round N)` comment), the specialists'
+            // pipeline edits (Curator playbooks/references, Machinist machine/config,
+            // Toolsmith scripts/skills) are committed with the product-doc sync (the
+            // ONE gate commit), and the product docs are synced. The deterministic
+            // anchor the machine can verify is the Curator's recorded improvement —
+            // without it the post-audit did not run. (The gate commit and the
+            // doc-sync are the Orchestrator's direct writes; the Auditor verifies
+            // them from the merged diff.)
+            let recorded = read_issue_events(issue)
+                .iter()
+                .any(|e| e.event_name == "pipeline.improvement");
+            (recorded, if recorded { String::new() } else { "no Curator improvement recorded — the post-audit (record-improvement + the gate commit/doc-sync) has not run".into() })
+        }
         Phase::Cleanup => {
             // Teardown-only phase: exit requires the teardown to be complete
             // (worktrees pruned, scratch cleaned, evidence retained, no leftover
             // dirty state) before closing as done. The SI runs the cleanup actions
             // then transitions cleanup → done (close-issue), which closes the issue.
-            // The audit verdict was already recorded as the testing → audit gate.
+            // The success audit verdict was recorded at the audit → post-audit gate
+            // (audit-record) and survives on the issue's Decision comment.
             let comments = get_issue_comments(issue);
             let verdict_ok = comments.iter().any(|b| {
                 let trimmed = b.trim_start();
@@ -3264,9 +3286,15 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
         // "unchanged" (the Fix Plan preamble says the full plan is unchanged, which
         // is false after a rescope). Manual flushes (`from == None`) keep the
         // prior-implementation behavior.
+        // The rework re-entry into implementation: a tester-FAIL rework
+        // (`testing → implementation`) or an audit restart
+        // (`audit → post-audit → implementation`). `post-audit` is a rework source
+        // too — the fix plan authored during the post-audit is posted on the
+        // post-audit → implementation transition. A manual flush (`from == None`)
+        // or the `audit-record` flush keeps the prior-implementation heuristic.
         let is_rework_reentry = match from {
-            Some(src) => src == "testing",           // rework: testing → implementation
-            None => prior_phase_entries(issue, "implementation") > 0, // manual flush / audit restart
+            Some(src) => src == "testing" || src == "post-audit",
+            None => prior_phase_entries(issue, "implementation") > 0, // manual flush / audit-record flush
         };
         let authored_fix_plan = dir.join("fix-plan.md").exists();
         let (post_title, post_body) =         if *fname == "fix-plan.md" {
@@ -3747,11 +3775,12 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 println!("BLOCKED: illegal transition {} -> {}", phase.as_str(), to.as_str());
                 return Ok(());
             }
-            // `done` is reached only through `audit-record --verdict success` (which
-            // closes the issue); a bare `transition` to `done` would relabel without
-            // closing — refuse it.
+            // `done` is reached only through the cleanup close
+            // (`close-issue --to-phase done`), after the audit verdict moved the issue
+            // audit → post-audit and the post-audit ran; a bare `transition` to `done`
+            // would relabel without closing — refuse it.
             if to == Phase::Done {
-                let msg = "transition to done is not allowed — use audit-record --verdict success (audit → cleanup), then close-issue --to-phase done to close as done".to_string();
+                let msg = "transition to done is not allowed — use audit-record --verdict success (audit → post-audit), then transition post-audit → cleanup, then close-issue --to-phase done to close as done".to_string();
                 append_event(issue, "transition", &a.actor, phase.as_str(), "blocked", &msg)?;
                 println!("BLOCKED: {}", msg);
                 return Ok(());
@@ -3845,8 +3874,10 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     // planning` rescope, back up the stale converged file and
                     // re-seed fresh — the retry/rescope cluster must not inherit
                     // the previous round's converged drafts (the fix round
-                    // re-converges a new plan from scratch).
-                    if phase == Phase::Audit || phase == Phase::Implementation {
+                    // re-converges a new plan from scratch). An audit restart now
+                    // routes `audit → post-audit → planning`, so `post-audit` is a
+                    // restart source too.
+                    if phase == Phase::Audit || phase == Phase::PostAudit || phase == Phase::Implementation {
                         let p = triage_a2a_path(issue)?;
                         if p.exists() {
                             let ts = chrono::Utc::now().format("%Y%m%d%H%M%S");
@@ -3983,8 +4014,9 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             }
             if to_str == "done" {
                 // A feature closes as done from the Cleanup phase (teardown complete;
-                // the SI's audit verdict was already recorded as the audit → cleanup
-                // gate). Sub-issues were removed — the plan issue is closed alongside
+                // the SI's success audit verdict was already recorded as the audit →
+                // post-audit gate, and the post-audit ran before cleanup). Sub-issues
+                // were removed — the plan issue is closed alongside
                 // the feature by the cleanup close only (it never holds a phase label).
                 if phase != Phase::Cleanup {
                     let msg = format!("issue is in {}, only cleanup-phase features can close as done", phase.as_str());
@@ -4407,13 +4439,19 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     return Ok(());
                 }
             }
-            // `phase` is derived from --phase for the Decision comment / event message.
+            // `phase` is derived from --phase for the Decision comment / event message
+            // — it is the RECORDED restart target (the phase the post-audit will exit
+            // to once the specialists have run). "audit" (the default) means a success
+            // verdict.
             let phase = a.to_phase.as_deref().unwrap_or("audit");
             let reason = a.reason.as_deref().unwrap_or("");
             // Validate the restart target before any write: only the four real restart
-            // phases are legal. `done` is rejected explicitly (audit:done is a close,
-            // not a restart) — otherwise `--verdict restart --phase done` would leave
-            // the issue open in `done` with no close.
+            // phases are legal, and they are the exits of the POST-AUDIT phase (the
+            // restart now routes audit → post-audit → <phase>; the Orchestrator runs
+            // the post-audit → <phase> transition after the specialists ran). `done`
+            // is rejected explicitly (a close, not a restart) — otherwise
+            // `--verdict restart --phase done` would leave the issue open in `done`
+            // with no close.
             // Structured root cause (SI-decision data): restarts MUST classify WHY —
             // defect (product code), technique (evidence/test method), environment
             // (wedges/wedges-adjacent), scope (AC ambiguity/PO decision) — as an
@@ -4425,7 +4463,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 if to == Phase::Done {
                     anyhow::bail!("illegal restart phase: done");
                 }
-                if !is_legal_transition(Phase::Audit, to) {
+                if !is_legal_transition(Phase::PostAudit, to) {
                     anyhow::bail!("illegal restart phase: {}", phase);
                 }
                 if let Some(rc) = a.root_cause.as_deref() {
@@ -4438,7 +4476,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             } else {
                 None
             };
-            // The Decision comment implies a label swap (+ transition on success) —
+            // The Decision comment implies a label swap (audit → post-audit) —
             // refuse to post it unless the issue is actually in the audit phase, so a
             // failed label swap can never leave a posted verdict behind (no half-state).
             let current = phase_of(a)?;
@@ -4485,45 +4523,27 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // `fix-plan.md`, the Orchestrator Summary, ...) BEFORE the destination
             // `phase.started` is appended below. The plan-comment decision counts
             // prior `implementation` `phase.started` entries to stamp
-            // `## Fix Plan (round N)`; flushing AFTER the restart's own
-            // `implementation` entry double-counted it and stamped an off-by-one
-            // round (#2974: the header read `round 3` while the retry context read
-            // `round 2`). Mirror the `transition` handler's ordering.
+            // `## Fix Plan (round N)`; flushing AFTER the destination entry
+            // double-counted it and stamped an off-by-one round (#2974). Mirror the
+            // `transition` handler's ordering.
             post_pending_comments(issue, &a.actor, "audit", None)?;
-            // The verdict IS the decision — drive the next phase automatically.
+            // The verdict IS the decision — drive the audit → post-audit handoff.
+            // The post-audit phase is where the pipeline's self-improvement + the gate
+            // merge run: the Curator records the durable lesson (record-improvement),
+            // the specialists' pipeline edits are committed with the product-doc sync,
+            // and the product docs are synced. The RECORDED verdict (success, or
+            // restart + target phase — stamped on the `audit.verdict` event above and
+            // in the Decision comment) tells the Orchestrator where the post-audit
+            // exits to once the specialists have run: `transition post-audit →
+            // cleanup` on success, or `transition post-audit → <phase>` on a restart.
+            swap_phase_label(issue, Phase::Audit, Phase::PostAudit)?;
+            append_event(issue, "transition", &a.actor, "post-audit", "success", "audit -> post-audit (audit verdict recorded)")?;
+            append_event_attrs(issue, "phase.completed", &a.actor, "audit", "success", "completed audit", &[("phase", "audit"), ("to", "post-audit")])?;
+            append_event_attrs(issue, "phase.started", &a.actor, "post-audit", "success", "started post-audit", &[("phase", "post-audit"), ("from", "audit")])?;
             if verdict == "success" {
-                // Success transitions audit → cleanup (the teardown-only phase). The
-                // issue stays OPEN; the SI runs the cleanup teardown, then closes as
-                // done via close-issue (cleanup → done).
-                swap_phase_label(issue, Phase::Audit, Phase::Cleanup)?;
-                append_event(issue, "transition", &a.actor, "cleanup", "success", "audit -> cleanup (audit success)")?;
-                append_event_attrs(issue, "phase.completed", &a.actor, "audit", "success", "completed audit", &[("phase", "audit"), ("to", "cleanup")])?;
-                append_event_attrs(issue, "phase.started", &a.actor, "cleanup", "success", "started cleanup", &[("phase", "cleanup"), ("from", "audit")])?;
-                println!("AUDIT PASS -> CLEANUP (auto): #{} entered cleanup", issue);
+                println!("AUDIT PASS -> POST-AUDIT (auto): #{} entered post-audit", issue);
             } else if let Some(to) = restart_to {
-                // A restart supersedes the round's testing — the stale Evidence
-                // verdict lives as a comment on the feature issue; the tester
-                // re-posts a fresh verdict. On a restart → planning, re-seed the A2A
-                // file (the retry cluster must NOT inherit the prior round's
-                // converged drafts) — mirrors the transition's planning side-effect.
-                if to == Phase::Planning {
-                    let p = triage_a2a_path(issue)?;
-                    if p.exists() {
-                        let ts = chrono::Utc::now().format("%Y%m%d%H%M%S");
-                        let backup = p.with_file_name(format!("triage.restart-{}.md", ts));
-                        if std::fs::rename(&p, &backup).is_ok() {
-                            println!("A2A re-seeded (previous file backed up as `{}`)", backup.display());
-                        }
-                    }
-                    if let Some(n) = ensure_triage_a2a(issue, &a.actor)? {
-                        println!("{}", n);
-                    }
-                }
-                swap_phase_label(issue, Phase::Audit, to)?;
-                append_event(issue, "transition", &a.actor, to.as_str(), "success", &format!("audit -> {} (auto restart)", to.as_str()))?;
-                append_event_attrs(issue, "phase.completed", &a.actor, "audit", "success", "completed audit", &[("phase", "audit"), ("to", to.as_str())])?;
-                append_event_attrs(issue, "phase.started", &a.actor, to.as_str(), "success", &format!("started {}", to.as_str()), &[("phase", to.as_str()), ("from", "audit")])?;
-                println!("AUDIT -> {} (auto restart)", to.as_str());
+                println!("AUDIT RESTART -> POST-AUDIT (auto): #{} entered post-audit (recorded target: {})", issue, to.as_str());
             }
             println!("AUDIT RECORDED: {} on #{}", verdict, issue);
         }
@@ -5422,7 +5442,8 @@ fn retry_state(issue: u32) -> (u32, String) {
     // PREVIOUS round and the RETRY marker was missing for the common rework path
     // (observed #2940: the fix-round developer saw "round 1" during the round-2
     // rework). Counting re-entries (implementation `phase.started` whose `from`
-    // is `testing` or `audit`) and taking the max keeps a first pass at round 1
+    // is `testing` or `post-audit` — an audit restart now routes `audit →
+    // post-audit → implementation`) and taking the max keeps a first pass at round 1
     // and stays stable once the next testing entry lands.
     // PO feedback (#2688): previous rounds showed "round 1" across many iterations.
     let testing_entries = read_issue_events(issue)
@@ -5436,7 +5457,7 @@ fn retry_state(issue: u32) -> (u32, String) {
                 && e.phase == "implementation"
                 && matches!(
                     e.attributes.get("from").map(|s| s.as_str()),
-                    Some("testing") | Some("audit")
+                    Some("testing") | Some("post-audit")
                 )
         })
         .count();
