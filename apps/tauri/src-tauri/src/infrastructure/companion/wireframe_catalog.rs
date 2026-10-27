@@ -1,7 +1,7 @@
 //! Wireframe companion catalog (Spec #3070, ST-7, C4).
 //!
 //! The ONE declaration of the `wireframe` skill: its name, its three declared
-//! arguments and the 25-action catalog. The action ids + descriptions are
+//! arguments and the 35-action catalog. The action ids + descriptions are
 //! mirrored **character-for-character** from the frontend command table
 //! (`apps/ui/src/applications/wireframe/actions/wireframeActions.ts`,
 //! `WIREFRAME_ACTIONS`); the TS parity pin
@@ -9,7 +9,7 @@
 //! the two lists are equal.
 //!
 //! Why one skill with an `action` argument (C4): the shipped registry validates
-//! one JSON object per skill (`skills.rs`), so 25 declarations would mean 25
+//! one JSON object per skill (`skills.rs`), so 35 declarations would mean 35
 //! offer rows in every request body. The fail-closed rule is preserved — an
 //! undeclared argument key still fails in [`validate`](super::skills::validate),
 //! while an unknown *action value* is executed by the frontend, which reports
@@ -33,8 +33,10 @@ pub const WIREFRAME_SUMMARY_ARG: &str = "summary";
 
 /// The C4 catalog, in catalog order. `(id, human description)`.
 ///
-/// The first 22 rows are also the toolbar/hotkey command table; the last three
-/// are the document command plus the two Companion-only commands.
+/// The first 22 rows are also the Slice-1 toolbar/hotkey command table; the 10
+/// arrangement rows that follow them carry the two-step `g+` binding (Spec
+/// #3071, ST-4); the last three are the document command plus the two
+/// Companion-only commands.
 pub const WIREFRAME_ACTIONS: &[(&str, &str)] = &[
     ("wireframe.add.text", "Add a text element (body or heading style)"),
     ("wireframe.add.button", "Add a button element"),
@@ -61,6 +63,17 @@ pub const WIREFRAME_ACTIONS: &[(&str, &str)] = &[
     ("wireframe.file.saveAs", "Save the document to a new file"),
     ("wireframe.file.open", "Open a saved wireframe document"),
     ("wireframe.file.exportPng", "Export the page as a PNG"),
+    // ── Arrange (Spec #3071, ST-4) — the `g` namespace, all two-step ─────────
+    ("wireframe.arrange.group", "Group the selected elements"),
+    ("wireframe.arrange.ungroup", "Ungroup the selected group"),
+    ("wireframe.arrange.toggleGroupLock", "Lock or unlock the selected group"),
+    ("wireframe.arrange.toggleSnap", "Toggle snap to grid"),
+    ("wireframe.arrange.alignLeft", "Align the selected elements to the left"),
+    ("wireframe.arrange.alignCenter", "Align the selected elements to the centre"),
+    ("wireframe.arrange.alignRight", "Align the selected elements to the right"),
+    ("wireframe.arrange.distribute", "Distribute the selected elements with equal gaps"),
+    ("wireframe.arrange.bringForward", "Bring the selected elements forward"),
+    ("wireframe.arrange.sendBackward", "Send the selected elements backward"),
     ("wireframe.document.new", "Start a new empty wireframe"),
     (
         "wireframe.companion.listActions",
@@ -129,8 +142,8 @@ mod tests {
     }
 
     #[test]
-    fn the_catalog_has_the_25_c4_actions_in_order_with_unique_ids() {
-        assert_eq!(WIREFRAME_ACTIONS.len(), 25);
+    fn the_catalog_has_the_35_c4_actions_in_order_with_unique_ids() {
+        assert_eq!(WIREFRAME_ACTIONS.len(), 35);
         let ids: Vec<&str> = WIREFRAME_ACTIONS.iter().map(|(id, _)| *id).collect();
         let mut unique = ids.clone();
         unique.sort_unstable();

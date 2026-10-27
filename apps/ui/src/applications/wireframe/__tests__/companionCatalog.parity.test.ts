@@ -1,7 +1,7 @@
 /**
  * Companion catalog parity (Spec #3070, ST-7, C4 / R-6.1 / F-43).
  *
- * The Rust catalog and the TS command table must be the SAME 25 actions with the
+ * The Rust catalog and the TS command table must be the SAME 35 actions with the
  * SAME descriptions, or the Companion's list reply would disagree with the
  * toolbar it invokes. This is a STATIC SOURCE PIN (the `featureHotkeyKeys`
  * pattern): it reads `wireframe_catalog.rs` and compares it with
@@ -54,11 +54,11 @@ function parametersBlock(): string {
 }
 
 describe('Rust catalog <-> TS command table parity', () => {
-  it('declares the same 25 ids, in the same order', () => {
+  it('declares the same 35 ids, in the same order', () => {
     const rustIds = rustActions().map(([id]) => id);
     const tsIds = WIREFRAME_ACTIONS.map((action) => action.id);
 
-    expect(rustIds).toHaveLength(25);
+    expect(rustIds).toHaveLength(35);
     expect(rustIds).toEqual(tsIds);
   });
 
