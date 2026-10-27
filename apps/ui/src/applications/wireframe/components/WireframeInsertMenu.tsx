@@ -43,6 +43,7 @@ import {
 } from 'react-icons/lu';
 
 import { Keycap } from '../../../shared/components/hotkeys/Keycap';
+import { parseDataHotkey } from '../../../shared/hotkeys/hotkeyGrammar';
 import { tint } from '../../../shared/utils/colorTint';
 import {
   findWireframeAction,
@@ -129,7 +130,14 @@ export function WireframeActionButton({
           // never reflows when focus leaves the Wireframe window (UI/UX 3.13).
           visibility={focused ? 'visible' : 'hidden'}
         >
-          <Keycap sequence={hotkey} />
+          {/*
+           * Two-step display conversion (Spec #3071, ST-4): `Keycap` parses its
+           * input with the SPACE-joined `parseSequence`, so a raw `'g+g'` is one
+           * unrepresentable token and renders nothing. `parseDataHotkey` converts
+           * the grammar form to its serialized form (`'g g'` -> chips "G" "G");
+           * `data-hotkey` above keeps the `'g+g'` grammar value.
+           */}
+          <Keycap sequence={parseDataHotkey(hotkey)?.serialized ?? hotkey} />
         </Box>
       ) : null}
     </Button>

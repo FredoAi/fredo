@@ -8,11 +8,16 @@
  * engine clicks the button, and the button calls `runWireframeAction(id)` for
  * the same id the table binds.
  *
- * The 25 ids are the C4 catalog verbatim; the first 22 also carry the single
- * `[a-z0-9]` hotkey step. `wireframe.document.new` is a toolbar-only button
- * (no hotkey); the two `wireframe.companion.*` ids are Companion-only
- * (`toolbar: false`, no hotkey) and are executed by ST-7's companion layer —
- * their `run` is deliberately absent here.
+ * The 35 ids are the C4 catalog verbatim. The first 22 carry the single
+ * `[a-z0-9]` hotkey step; the 10 arrangement ids (Spec #3071, ST-4) carry a
+ * two-step `g+<step>` binding, and the two Slice-1 view ids were RE-BOUND to
+ * two-step `g`-namespace sequences so the saturated first-step budget
+ * (`[a-z0-9]` = 36 slots) still fits every action. `g` is therefore a
+ * PREFIX-ONLY namespace — there is no bare `g` binding anywhere.
+ * `wireframe.document.new` is a toolbar-only button (no hotkey); the two
+ * `wireframe.companion.*` ids are Companion-only (`toolbar: false`, no hotkey)
+ * and are executed by ST-7's companion layer — their `run` is deliberately
+ * absent here.
  *
  * The descriptions are user-facing (the Companion lists them per R-6.1) and
  * ST-7 mirrors them verbatim in the Rust catalog
@@ -25,15 +30,28 @@
 
 import {
   createDefaultElement,
+  type WireframeElement,
+  type WireframeElementPatch,
   type WireframeElementType,
   type WireframeSectionPreset,
   type WireframeShapeKind,
 } from '../model/elements';
 import {
+  alignRects,
+  canAlign,
+  canDistribute,
+  distributeRectsHorizontally,
+  selectionBounds,
+  type WireframeAlignEdge,
+} from '../model/arrange';
+import {
   dispatch,
   getSnapshot,
+  groupOfElement,
+  isElementMovable,
   redo,
   resetForNewDocument,
+  toggleSnapToGrid,
   undo,
 } from '../store/wireframeDocumentStore';
 import { fitPage, resetView, togglePan, zoomIn, zoomOut } from './wireframeViewActions';
@@ -44,7 +62,7 @@ export interface WireframeActionDefinition {
   id: string;
   /** Human description; identical text to the Rust catalog entry. */
   description: string;
-  /** Single-step `[a-z0-9]` binding — only the 22 hotkeyed ids carry one. */
+  /** `data-hotkey` binding: one `[a-z0-9]` step, or a two-step `a+b` sequence. */
   hotkey?: string;
   /** `true` when the action renders a toolbar control. */
   toolbar: boolean;
@@ -217,11 +235,111 @@ function togglePanMode(): boolean {
 }
 
 /* ------------------------------------------------------------------------- */
+/* Arrange implementations (Spec #3071, ST-4)                                  */
+/* ------------------------------------------------------------------------- */
+
+/** The selected elements, in document order (the selection is already ordered). */
+function selectedElementsInOrder(): WireframeElement[] {
+  const { selectedIds, document } = getSnapshot();
+  const selected = new Set(selectedIds);
+  return document.elements.filter((element) => selected.has(element.id));
+}
+
+/** The distinct ids of every group the current selection touches. */
+function selectedGroupIds(): string[] {
+  const { document } = getSnapshot();
+  const ids = new Set<string>();
+  for (const element of selectedElementsInOrder()) {
+    const group = groupOfElement(document, element.id);
+    if (group) ids.add(group.id);
+  }
+  return [...ids];
+}
+
+/**
+ * Group the selection (R-1.3 / R-1.9). The STORE owns the rule — a selection of
+ * fewer than two elements, or one that is exactly a whole existing group, is a
+ * `false` no-op with nothing committed, so this returns the dispatch result.
+ */
+function groupSelection(): boolean {
+  return dispatch('group.create', { ids: getSnapshot().selectedIds });
+}
+
+/** Ungroup every group the selection touches (R-1.5); `false` when it touches none. */
+function ungroupSelection(): boolean {
+  return dispatch('group.ungroup', { groupIds: selectedGroupIds() });
+}
+
+/** Flip the lock of every group the selection touches (R-1.7); `false` when none. */
+function toggleGroupLockSelection(): boolean {
+  return dispatch('group.toggleLock', { groupIds: selectedGroupIds() });
+}
+
+/**
+ * Toggle snap-to-grid (R-2.1). EDITOR state, never a document mutation — it
+ * never commits a snapshot and never flips `dirty`, so it always returns `true`.
+ */
+function toggleSnapMode(): boolean {
+  toggleSnapToGrid();
+  return true;
+}
+
+/**
+ * Align the MOVABLE selected elements to `edge` of the WHOLE selection's union
+ * bounds (R-2.3 / R-2.8 — locked members stay put and still anchor the target).
+ *
+ * Returns `false` when fewer than two elements are movable, and when the
+ * document is already aligned (R-2.9: the store's value-equal guard rejects the
+ * candidate, so nothing commits and no undo step is bought).
+ */
+function alignSelection(edge: WireframeAlignEdge): boolean {
+  const { document } = getSnapshot();
+  const selected = selectedElementsInOrder();
+  const movable = selected.filter((element) => isElementMovable(document, element));
+  if (!canAlign(movable.length)) return false;
+  const bounds = selectionBounds(selected);
+  if (!bounds) return false;
+  const aligned = alignRects(movable, edge, bounds);
+  const patches: Record<string, WireframeElementPatch> = {};
+  movable.forEach((element, index) => {
+    patches[element.id] = { x: aligned[index].x };
+  });
+  return dispatch('elements.update', { patches });
+}
+
+/**
+ * Distribute the MOVABLE selected elements with equal horizontal gaps (R-2.4 /
+ * R-2.8). Returns `false` when fewer than three are movable, and when the
+ * selection is already evenly distributed (R-2.9).
+ */
+function distributeSelection(): boolean {
+  const { document } = getSnapshot();
+  const movable = selectedElementsInOrder().filter((element) =>
+    isElementMovable(document, element),
+  );
+  if (!canDistribute(movable.length)) return false;
+  const distributed = distributeRectsHorizontally(movable);
+  const patches: Record<string, WireframeElementPatch> = {};
+  movable.forEach((element, index) => {
+    patches[element.id] = { x: distributed[index].x };
+  });
+  return dispatch('elements.update', { patches });
+}
+
+/**
+ * Move the selection one step in paint order (R-2.6). Returns `false` for an
+ * empty selection and for a clamped end (R-2.9: nothing moved, nothing commits).
+ */
+function reorderSelection(direction: 'forward' | 'backward'): boolean {
+  return dispatch('element.reorder', { ids: getSnapshot().selectedIds, direction });
+}
+
+/* ------------------------------------------------------------------------- */
 /* The table                                                                   */
 /* ------------------------------------------------------------------------- */
 
 /**
- * The 25-action command catalog (C4 order = the catalog order the Companion
+ * The 35-action command catalog (C4 order = the catalog order the Companion
  * lists). Descriptions match the Rust catalog text verbatim.
  */
 export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
@@ -326,14 +444,16 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.zoom.in',
     description: 'Zoom in',
-    hotkey: 'g',
+    // Re-bound by Spec #3071 ST-4: `g` is the prefix-only arrangement namespace.
+    hotkey: 'g+i',
     toolbar: true,
     run: () => runViewChange(zoomIn),
   },
   {
     id: 'wireframe.zoom.out',
     description: 'Zoom out',
-    hotkey: 'm',
+    // Re-bound by Spec #3071 ST-4 (`m` is now free).
+    hotkey: 'g+o',
     toolbar: true,
     run: () => runViewChange(zoomOut),
   },
@@ -378,6 +498,77 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
     hotkey: 't',
     toolbar: true,
     run: () => runFileAction('exportPng'),
+  },
+  // ── Arrange (Spec #3071, ST-4) — the `g` namespace, all two-step ─────────
+  {
+    id: 'wireframe.arrange.group',
+    description: 'Group the selected elements',
+    hotkey: 'g+g',
+    toolbar: true,
+    run: groupSelection,
+  },
+  {
+    id: 'wireframe.arrange.ungroup',
+    description: 'Ungroup the selected group',
+    hotkey: 'g+u',
+    toolbar: true,
+    run: ungroupSelection,
+  },
+  {
+    id: 'wireframe.arrange.toggleGroupLock',
+    description: 'Lock or unlock the selected group',
+    hotkey: 'g+l',
+    toolbar: true,
+    run: toggleGroupLockSelection,
+  },
+  {
+    id: 'wireframe.arrange.toggleSnap',
+    description: 'Toggle snap to grid',
+    hotkey: 'g+s',
+    toolbar: true,
+    run: toggleSnapMode,
+  },
+  {
+    id: 'wireframe.arrange.alignLeft',
+    description: 'Align the selected elements to the left',
+    hotkey: 'g+a',
+    toolbar: true,
+    run: () => alignSelection('left'),
+  },
+  {
+    id: 'wireframe.arrange.alignCenter',
+    description: 'Align the selected elements to the centre',
+    hotkey: 'g+c',
+    toolbar: true,
+    run: () => alignSelection('center'),
+  },
+  {
+    id: 'wireframe.arrange.alignRight',
+    description: 'Align the selected elements to the right',
+    hotkey: 'g+r',
+    toolbar: true,
+    run: () => alignSelection('right'),
+  },
+  {
+    id: 'wireframe.arrange.distribute',
+    description: 'Distribute the selected elements with equal gaps',
+    hotkey: 'g+d',
+    toolbar: true,
+    run: distributeSelection,
+  },
+  {
+    id: 'wireframe.arrange.bringForward',
+    description: 'Bring the selected elements forward',
+    hotkey: 'g+f',
+    toolbar: true,
+    run: () => reorderSelection('forward'),
+  },
+  {
+    id: 'wireframe.arrange.sendBackward',
+    description: 'Send the selected elements backward',
+    hotkey: 'g+b',
+    toolbar: true,
+    run: () => reorderSelection('backward'),
   },
   {
     id: 'wireframe.document.new',
