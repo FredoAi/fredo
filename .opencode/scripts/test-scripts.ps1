@@ -2221,16 +2221,19 @@ Test-Script "Tests Runs draft without a Verdict: line is not posted" {
     }
   }
 
-# Project Status sync is best-effort and fail-safe: create-issue must succeed even
-# when the `gh api graphql` project-status calls are unsupported (mock mode). The
-# `[project-status]` warning is logged, never fatal.
-Test-Script "Project status sync is best-effort (create-issue survives graphql unsupported)" {
+# Project Status sync is best-effort and fail-safe (#3071 Change 2): create-issue
+# must succeed even when the `gh api graphql` project-status sync FAILS, and the
+# failure must be recorded as a `state_machine.failure` event (site
+# `sync-project-status`) so it is visible in the log/metrics — never silent.
+Test-Script "Project status sync is best-effort + failure recorded (create-issue survives graphql failure)" {
   $url = Mock-IssueCreate "temp: project status best-effort" "project status scratch" ""
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
   if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
-  $issueNum = [int]$m.Groups[1].Value
+  $scratchNum = [int]$m.Groups[1].Value
+  $newNum = 0
+  $env:FREDO_MOCK_GRAPHQL_FAIL = "1"  # force every project-status graphql call to fail
   try {
     $body = ".opencode/tmp/intake.md"
     New-Item -ItemType Directory -Path ".opencode/tmp" -Force | Out-Null
@@ -2239,12 +2242,22 @@ Test-Script "Project status sync is best-effort (create-issue survives graphql u
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "create-issue failed (exit $LASTEXITCODE): $outStr" }
     if ($outStr -notmatch "CREATED:") { throw "expected CREATED:, got: $outStr" }
-    # In mock mode the graphql project-status calls are unsupported -> [project-status] warning, not fatal.
+    # The sync failed but create-issue survived (never blocked), and the failure surfaced.
     if ($outStr -match "BLOCKED") { throw "project-status sync must never block create-issue: $outStr" }
-    return "create-issue succeeded with best-effort project-status sync (#$issueNum)"
+    if ($outStr -notmatch "sync failed") { throw "expected a [project-status] failure note, got: $outStr" }
+    # The failure is recorded on the NEW issue's event log (not silent).
+    $newNum = [int]([regex]::Match($outStr, "issues/(\d+)").Groups[1].Value)
+    $newLog = ".opencode/state/issues/$newNum.jsonl"
+    if (-not (Test-Path $newLog)) { throw "no event log for the created issue #$newNum" }
+    if (-not (Select-String -Path $newLog -Pattern 'sync-project-status' -ErrorAction SilentlyContinue)) {
+      throw "project-status sync failure must be recorded as a state_machine.failure event"
+    }
+    return "create-issue survived a failed Status sync; failure recorded (#$newNum)"
   } finally {
+    $env:FREDO_MOCK_GRAPHQL_FAIL = $null
     Remove-Item ".opencode/tmp/intake.md" -Force -ErrorAction SilentlyContinue
-    Mock-Cleanup $issueNum
+    Mock-Cleanup $scratchNum
+    if ($newNum) { Mock-Cleanup $newNum }
     $global:LASTEXITCODE = 0
   }
 }
@@ -2790,9 +2803,61 @@ Test-Script "Cleanup phase: done-close gated to cleanup" {
   }
 }
 
-# Reopen leg: done → planning (human-review rework). A feature labeled done (left OPEN for
-# manual human close) loops back to planning when the human reports a post-merge defect; the
-# stale converged A2A is backed up and re-seeded fresh so the fix round re-converges.
+# Project Status sync — the `done` leg must actually apply (regression #3071).
+# The `done`/`canceled` option id (`98236657`) is ALL DIGITS; passing it with `gh`'s
+# `-F` makes gh coerce it to an Int, which GitHub rejects against the query's
+# `String!` variable ("Could not coerce value 98236657 to String") — the silent
+# failure that left #3071 stuck in Reviewing. The mock `gh api graphql` simulates
+# that `-F` inference, so the end-to-end close FAILS if the machine regresses to
+# `-F` and PASSES with the raw-string `-f`.
+Test-Script "Project status sync: done leg applies the all-digit option id (raw -f)" {
+  # (1) Pin the mock's `-F` coercion directly: an all-digit `-F` value against a
+  # `String!` variable is rejected (as GitHub does); the raw-string `-f` passes.
+  & rust-script $ps --action mock-gh --ghargs 'api graphql -f query=query($o:String!){updateProjectV2ItemFieldValue} -F o=98236657' 2>&1 | Out-Null
+  if ($LASTEXITCODE -eq 0) { throw "mock graphql must reject an all-digit -F value against a String! variable (the #3071 bug)" }
+  $global:LASTEXITCODE = 0
+  $okGql = & rust-script $ps --action mock-gh --ghargs 'api graphql -f query=query($o:String!){updateProjectV2ItemFieldValue} -f o=98236657' 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "mock graphql must accept the raw-string -f value, got: $okGql" }
+  $global:LASTEXITCODE = 0
+  # (2) End-to-end: closing to `done` must apply the all-digit option id and must
+  # NOT record a sync failure. Drive an issue straight to a done-closeable state
+  # (label `cleanup` + a success audit Decision + a live-policy PASS verdict).
+  $url = Mock-IssueCreate "temp: project-status done sync" "project status scratch" "cleanup"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $dir = ".opencode/tmp/$issueNum"
+  $log = ".opencode/state/issues/$issueNum.jsonl"
+  try {
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
+    [System.IO.File]::WriteAllText("$dir/decision.md", "## Decision`n`nAudit verdict: **success**`n`n*Authored by Auditor*", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --action mock-gh --ghargs "issue comment $issueNum --body-file $dir/decision.md" 2>&1 | Out-Null
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action close-issue --to-phase done 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "close-issue done failed: $outStr" }
+    if ($outStr -notmatch "labeled done") { throw "Expected labeled-done, got: $outStr" }
+    if ($outStr -notmatch "\[project-status\] #$issueNum") { throw "Expected the done Status sync to run, got: $outStr" }
+    if ($outStr -notmatch "Status 'Done'") { throw "Expected the done Status sync to APPLY (raw-string -f), got: $outStr" }
+    if ($outStr -match "sync failed") { throw "done Status sync must not fail - the all-digit option id must go as a raw string: $outStr" }
+    # A failed sync is recorded in the event log; a clean success leaves no such event.
+    if ((Test-Path $log) -and (Select-String -Path $log -Pattern 'sync-project-status' -ErrorAction SilentlyContinue)) {
+      throw "done Status sync recorded a failure event - the option id was not sent as a raw string"
+    }
+    return "done Status sync applied the all-digit option id with -f (no silent failure) (#$issueNum)"
+  } finally {
+    Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# No reopen leg: `done` is terminal. A post-merge defect is handled by a follow-up spec
+# (linked via `revises: #N` / `feature.revised`), never a reopen - so `done -> planning`
+# is refused.
 Test-Script "Reopen removed: done -> planning is refused (terminal)" {
   $url = Mock-IssueCreate "temp: no-reopen leg" "no-reopen scratch" "audit"
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }

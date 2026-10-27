@@ -796,6 +796,12 @@ fn mock_gh_api(args: &[&str]) -> anyhow::Result<String> {
     let repo = mock_repo_name();
     // Normalize the URL: repos/<owner>/<repo>/<api-path>
     let api = url.strip_prefix(&format!("repos/{}/", repo)).unwrap_or(&url);
+    // `gh api graphql …` (the project-status sync). Emulated so the harness can
+    // exercise the real query/mutation shapes offline AND enforce `gh`'s `-F`
+    // type inference (#3071) — see `mock_gh_graphql`.
+    if api == "graphql" {
+        return mock_gh_graphql(rest.get(1..).unwrap_or(&[]));
+    }
     if api.starts_with("contents/") {
         let path_and_branch = &api["contents/".len()..];
         // path may carry `?ref=<branch>`
@@ -949,6 +955,84 @@ fn mock_gh_api(args: &[&str]) -> anyhow::Result<String> {
         return Ok(serde_json::to_string(&pr)?);
     }
     anyhow::bail!("mock gh api: unsupported path `{}`", url)
+}
+
+/// Emulate `gh api graphql -f query=… [-f k=v | -F k=v]…` against the mock.
+///
+/// The one behavior that matters here is `gh`'s **`-F` type inference** (#3071):
+/// `-F k=v` coerces an all-digit `v` to a JSON Int, while `-f k=v` always sends a
+/// raw string. GitHub then validates each value against its GraphQL variable's
+/// declared type — an Int against a `String!` variable is rejected
+/// (`Could not coerce value 98236657 to String`). The `done`/`canceled` Status
+/// option id (`98236657`) is all digits, so passing it with `-F o=` failed the
+/// whole Done leg silently; the machine now passes every id with `-f`. This mock
+/// enforces the rule so the regression test FAILS if the machine regresses to `-F`
+/// and PASSES with `-f`. It also returns the JSON shape each project-status query
+/// parses, so the full sync runs offline.
+fn mock_gh_graphql(rest: &[&str]) -> anyhow::Result<String> {
+    // Test hook (#3071 Change 2): force every project-status graphql call to fail
+    // so the harness can exercise the best-effort + failure-recording path.
+    if std::env::var("FREDO_MOCK_GRAPHQL_FAIL").map(|v| v == "1").unwrap_or(false) {
+        anyhow::bail!("mock gh api graphql forced failure (FREDO_MOCK_GRAPHQL_FAIL=1)");
+    }
+    let mut query = String::new();
+    // (variable name, value, passed-via-`-F`) — `-F` values get type inference.
+    let mut vars: Vec<(String, String, bool)> = Vec::new();
+    let mut i = 0;
+    while i < rest.len() {
+        let flag = rest[i];
+        if flag == "-f" || flag == "-F" {
+            if let Some(kv) = rest.get(i + 1) {
+                if let Some((k, v)) = kv.split_once('=') {
+                    if k == "query" {
+                        query = v.to_string();
+                    } else if k != "operationName" {
+                        vars.push((k.to_string(), v.to_string(), flag == "-F"));
+                    }
+                }
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+
+    // Simulate `gh -F` coercion: an all-digit value becomes a JSON number, and a
+    // number against a `String` (or `[String]`) variable is what GitHub rejects.
+    for (name, value, inferred) in &vars {
+        if !*inferred || value.is_empty() || !value.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let needle = format!("${}:", name);
+        if let Some(pos) = query.find(&needle) {
+            let base: String = query[pos + needle.len()..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '!' || *c == '[' || *c == ']')
+                .filter(|c| *c != '[' && *c != ']' && *c != '!')
+                .collect();
+            if base == "String" {
+                anyhow::bail!("Could not coerce value {} to String", value);
+            }
+        }
+    }
+
+    // Return the JSON shape each project-status query parses.
+    if query.contains("updateProjectV2ItemFieldValue") {
+        return Ok(serde_json::json!({
+            "data": { "updateProjectV2ItemFieldValue": { "projectV2Item": { "id": "PVTI_mock_item" } } }
+        }).to_string());
+    }
+    if query.contains("addProjectV2ItemById") {
+        return Ok(serde_json::json!({
+            "data": { "addProjectV2ItemById": { "item": { "id": "PVTI_mock_item" } } }
+        }).to_string());
+    }
+    if query.contains("items(first:100)") {
+        return Ok(serde_json::json!({
+            "data": { "node": { "items": { "nodes": [] } } }
+        }).to_string());
+    }
+    anyhow::bail!("mock gh api graphql: unrecognized query")
 }
 
 /// Minimal `--jq` support for the handful of selectors the machine/harness use.
@@ -2176,11 +2260,43 @@ fn derive_fix_plan_body(full: &str) -> String {
 /// mirror the issue's phase onto the configured project's Status single-select field
 /// (Backlog → Planning → Coding → E2E → Reviewing → Done). The issue is added to the
 /// project on first sync if it is not already there. **Best-effort and fail-safe:** any
-/// failure (mock mode where `gh api graphql` is unsupported, no project access, missing
-/// item) logs a `[project-status]` note and is never fatal to the create/transition/close
-/// it runs alongside. The issue stays OPEN on `done` (manual human close); only the
-/// Status field becomes "Done".
+/// failure (no project access, missing item, an unsupported mock) is recorded as a
+/// `state_machine.failure` event and logged as a `[project-status]` note, but is never
+/// fatal to the create/transition/close it runs alongside. The issue stays OPEN on
+/// `done` (manual human close); only the Status field becomes "Done".
+///
+/// **Every id is passed with `-f` (raw string), never `-F`** (#3071): `gh` coerces an
+/// all-digit `-F` value to an Int, and GitHub rejects an Int against a GraphQL `String!`
+/// variable (`Could not coerce value 98236657 to String`). The `done`/`canceled` option
+/// id (`98236657`) is all digits, so `-F o=…` failed the whole Done leg silently; `-f`
+/// sends the value as a raw string and the mutation is accepted.
 fn sync_project_status(issue: u32, phase: &str) -> anyhow::Result<()> {
+    match sync_project_status_inner(issue, phase) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // Best-effort, never fatal — but never SILENT either (#3071): a failed
+            // sync is recorded in the event log so a stalled Status transition is
+            // visible in the log/metrics instead of vanishing into a println.
+            let reason = e.to_string();
+            let _ = append_event_attrs(
+                issue,
+                "state_machine.failure",
+                "pipeline-state",
+                phase,
+                "failure",
+                &format!("project-status sync failed ({}): {}", phase, reason),
+                &[("site", "sync-project-status"), ("phase", phase), ("reason", reason.as_str())],
+            );
+            println!("[project-status] #{} → '{}' sync failed ({}) — skipping", issue, phase, reason);
+            Ok(())
+        }
+    }
+}
+
+/// The fallible body of `sync_project_status`. Every failure returns `Err` so the
+/// caller can record it; the only `Ok` early-returns are the legitimate no-ops
+/// (no project configured / no Status mapping for the phase).
+fn sync_project_status_inner(issue: u32, phase: &str) -> anyhow::Result<()> {
     let cfg = load_config()?;
     let project = match cfg.project.as_ref() {
         Some(p) => p,
@@ -2192,56 +2308,45 @@ fn sync_project_status(issue: u32, phase: &str) -> anyhow::Result<()> {
     };
     let owner_repo = gh_repo()?;
     // Resolve the issue's GraphQL node id (REST exposes it as `node_id`).
-    let node_id = match run_gh(&["api", &format!("repos/{}/issues/{}", owner_repo, issue), "--jq", ".node_id"]) {
-        Ok(s) => s.trim().to_string(),
-        Err(e) => { println!("[project-status] cannot resolve #{} node_id ({}) — skipping", issue, e); return Ok(()); }
-    };
+    let node_id = run_gh(&["api", &format!("repos/{}/issues/{}", owner_repo, issue), "--jq", ".node_id"])?
+        .trim()
+        .to_string();
     if node_id.is_empty() {
-        println!("[project-status] empty node_id for #{} — skipping", issue);
-        return Ok(());
+        anyhow::bail!("empty node_id for #{}", issue);
     }
 
-    // Find the project item for this issue.
+    // Find the project item for this issue. `-f` (raw string) for every variable —
+    // see the `-F` coercion note on `sync_project_status`.
     let q_find = "query($p:ID!){ node(id:$p){ ... on ProjectV2 { items(first:100){ nodes{ id content{ ... on Issue { number } } } } } } }";
-    let find = match run_gh(&["api", "graphql", "-f", &format!("query={}", q_find), "-F", &format!("p={}", project.id)]) {
-        Ok(s) => s,
-        Err(e) => { println!("[project-status] find-item query failed ({}) — skipping", e); return Ok(()); }
-    };
-    let item_id: String = match serde_json::from_str::<serde_json::Value>(&find) {
-        Ok(v) => v["data"]["node"]["items"]["nodes"]
+    let find = run_gh(&["api", "graphql", "-f", &format!("query={}", q_find), "-f", &format!("p={}", project.id)])?;
+    let item_id: String = serde_json::from_str::<serde_json::Value>(&find)
+        .ok()
+        .and_then(|v| v["data"]["node"]["items"]["nodes"]
             .as_array()
-            .map(|a| a.iter()
+            .and_then(|a| a.iter()
                 .find(|it| it["content"]["number"].as_i64() == Some(issue as i64))
-                .and_then(|it| it["id"].as_str().map(|s| s.to_string())))
-            .flatten()
-            .unwrap_or_default(),
-        Err(_) => String::new(),
-    };
+                .and_then(|it| it["id"].as_str().map(|s| s.to_string()))))
+        .unwrap_or_default();
 
     // Not in the project yet — add it, then capture the new item id.
     let item_id = if item_id.is_empty() {
         let q_add = "mutation($p:ID!,$c:ID!){ addProjectV2ItemById(input:{projectId:$p,contentId:$c}){ item{ id } } }";
-        match run_gh(&["api", "graphql", "-f", &format!("query={}", q_add), "-F", &format!("p={}", project.id), "-F", &format!("c={}", node_id)]) {
-            Ok(s) => serde_json::from_str::<serde_json::Value>(&s)
-                .ok()
-                .and_then(|v| v["data"]["addProjectV2ItemById"]["item"]["id"].as_str().map(|x| x.to_string()))
-                .unwrap_or_default(),
-            Err(e) => { println!("[project-status] add-item failed (#{}: {}) — skipping", issue, e); return Ok(()); }
-        }
+        let s = run_gh(&["api", "graphql", "-f", &format!("query={}", q_add), "-f", &format!("p={}", project.id), "-f", &format!("c={}", node_id)])?;
+        serde_json::from_str::<serde_json::Value>(&s)
+            .ok()
+            .and_then(|v| v["data"]["addProjectV2ItemById"]["item"]["id"].as_str().map(|x| x.to_string()))
+            .unwrap_or_default()
     } else {
         item_id
     };
     if item_id.is_empty() {
-        println!("[project-status] no project item id for #{} — skipping", issue);
-        return Ok(());
+        anyhow::bail!("no project item id for #{}", issue);
     }
 
     // Set the Status field to the phase's option.
     let q_upd = "mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){ updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{singleSelectOptionId:$o}}){ projectV2Item{ id } } }";
-    match run_gh(&["api", "graphql", "-f", &format!("query={}", q_upd), "-F", &format!("p={}", project.id), "-F", &format!("i={}", item_id), "-F", &format!("f={}", project.status_field_id), "-F", &format!("o={}", entry.option_id)]) {
-        Ok(_) => println!("[project-status] #{} → Status '{}'", issue, entry.status),
-        Err(e) => println!("[project-status] update Status failed ({}) — skipping", e),
-    }
+    run_gh(&["api", "graphql", "-f", &format!("query={}", q_upd), "-f", &format!("p={}", project.id), "-f", &format!("i={}", item_id), "-f", &format!("f={}", project.status_field_id), "-f", &format!("o={}", entry.option_id)])?;
+    println!("[project-status] #{} → Status '{}'", issue, entry.status);
     Ok(())
 }
 
