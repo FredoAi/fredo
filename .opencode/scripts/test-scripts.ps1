@@ -3507,6 +3507,175 @@ Test-Script "error-path-levers.ps1: refusal legs arm the guard (Spec #3066 F-6)"
   return "AssertIsolation guard invocation arms -RequireIsolation; SharedDirRefusal/SentinelRefusal/NoGlobalImageKill present"
 }
 
+# --- set-permission --decision remove (per-pattern + pattern-less flat) ---
+Write-Host "set-permission remove:" -ForegroundColor Cyan
+
+Test-Script "set-permission remove deletes a per-pattern rule (order-preserving, NO-OP absent)" {
+  $scratch = New-PermScratch
+  try {
+    $addA = & rust-script $ps --agent machinist --action set-permission --role developer --tool bash --pattern "zz-remove-a*" --decision allow --config-file $scratch 2>&1
+    $addAStr = if ($addA -is [array]) { $addA -join "`n" } else { "$addA" }
+    if ($addAStr -notmatch "PERMISSION SET") { throw "expected PERMISSION SET for zz-remove-a, got: $addAStr" }
+    $addB = & rust-script $ps --agent machinist --action set-permission --role developer --tool bash --pattern "zz-remove-b*" --decision allow --config-file $scratch 2>&1
+    $addBStr = if ($addB -is [array]) { $addB -join "`n" } else { "$addB" }
+    if ($addBStr -notmatch "PERMISSION SET") { throw "expected PERMISSION SET for zz-remove-b, got: $addBStr" }
+    $withRules = Get-Content $scratch -Raw
+    if ($withRules.IndexOf('"zz-remove-a*"') -lt 0 -or $withRules.IndexOf('"zz-remove-b*"') -lt 0) { throw "rules not added" }
+    # Remove A — order-preserving: B survives and the document still parses.
+    $rem = & rust-script $ps --agent machinist --action set-permission --role developer --tool bash --pattern "zz-remove-a*" --decision remove --config-file $scratch 2>&1
+    $remStr = if ($rem -is [array]) { $rem -join "`n" } else { "$rem" }
+    if ($remStr -notmatch "PERMISSION REMOVED") { throw "expected PERMISSION REMOVED, got: $remStr" }
+    $after = Get-Content $scratch -Raw
+    if ($after.IndexOf('"zz-remove-a*"') -ge 0) { throw "zz-remove-a was not removed" }
+    if ($after.IndexOf('"zz-remove-b*"') -lt 0) { throw "zz-remove-b was lost (not order-preserving)" }
+    $null = $after | ConvertFrom-Json
+    if ($after.IndexOf('"* | *"') -lt 0) { throw "the trailing deny rules vanished" }
+    # Removing an absent rule is a NO-OP.
+    $again = & rust-script $ps --agent machinist --action set-permission --role developer --tool bash --pattern "zz-remove-a*" --decision remove --config-file $scratch 2>&1
+    $againStr = if ($again -is [array]) { $again -join "`n" } else { "$again" }
+    if ($againStr -notmatch "NO-OP") { throw "expected NO-OP on absent remove, got: $againStr" }
+    return "per-pattern remove: deleted + order-preserving + NO-OP absent"
+  } finally {
+    Remove-Item -LiteralPath $scratch -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
+Test-Script "set-permission pattern-less add/remove edits a top-level flat key" {
+  $scratch = New-PermScratch
+  try {
+    # Add a flat top-level key (no --pattern).
+    $add = & rust-script $ps --agent machinist --action set-permission --role developer --tool zzflatkey --decision deny --config-file $scratch 2>&1
+    $addStr = if ($add -is [array]) { $add -join "`n" } else { "$add" }
+    if ($addStr -notmatch "PERMISSION SET") { throw "expected PERMISSION SET, got: $addStr" }
+    $edited = Get-Content $scratch -Raw
+    if ($edited -notmatch '"zzflatkey"\s*:\s*"deny"') { throw "flat key not added" }
+    $null = $edited | ConvertFrom-Json
+    # Remove the flat key (no --pattern).
+    $rem = & rust-script $ps --agent machinist --action set-permission --role developer --tool zzflatkey --decision remove --config-file $scratch 2>&1
+    $remStr = if ($rem -is [array]) { $rem -join "`n" } else { "$rem" }
+    if ($remStr -notmatch "PERMISSION REMOVED") { throw "expected PERMISSION REMOVED, got: $remStr" }
+    $edited2 = Get-Content $scratch -Raw
+    if ($edited2 -match '"zzflatkey"') { throw "flat key not removed" }
+    $null = $edited2 | ConvertFrom-Json
+    # A second remove is a NO-OP.
+    $again = & rust-script $ps --agent machinist --action set-permission --role developer --tool zzflatkey --decision remove --config-file $scratch 2>&1
+    $againStr = if ($again -is [array]) { $again -join "`n" } else { "$again" }
+    if ($againStr -notmatch "NO-OP") { throw "expected NO-OP, got: $againStr" }
+    return "pattern-less: flat key added then removed + NO-OP"
+  } finally {
+    Remove-Item -LiteralPath $scratch -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# --- human.review (the done-window operator decision, PO-gated) ---
+Write-Host "human.review:" -ForegroundColor Cyan
+
+Test-Script "human.review records accept/reject (PO-gated) and improvement counts them" {
+  $url = Mock-IssueCreate "temp: human.review" "human.review scratch" "done"
+  $issueNum = if ($url -match 'issues/(\d+)') { [int]$Matches[1] } else { throw "no issue from mock: $url" }
+  try {
+    # Role gate: only the product-owner records the operator's decision.
+    $deny = & rust-script $ps --issue $issueNum --agent developer --action human.review --decision accept 2>&1
+    $denyStr = if ($deny -is [array]) { $deny -join "`n" } else { "$deny" }
+    if ($denyStr -notmatch "not allowed to human.review") { throw "expected role gate, got: $denyStr" }
+    # An invalid decision is refused.
+    $bad = & rust-script $ps --issue $issueNum --agent product-owner --action human.review --decision maybe 2>&1
+    if ($LASTEXITCODE -eq 0) { throw "invalid decision should fail" }
+    $global:LASTEXITCODE = 0
+    # accept → outcome success, attrs decision/note/reviewer.
+    $acc = & rust-script $ps --issue $issueNum --agent product-owner --action human.review --decision accept --note "looks good" --reviewer "human" 2>&1
+    $accStr = if ($acc -is [array]) { $acc -join "`n" } else { "$acc" }
+    if ($LASTEXITCODE -ne 0) { throw "human.review accept failed: $accStr" }
+    if ($accStr -notmatch "HUMAN REVIEW RECORDED: accept") { throw "expected accept recorded, got: $accStr" }
+    $log = ".opencode/state/issues/$issueNum.jsonl"
+    $accEv = Get-Content $log | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "human.review" } | Select-Object -Last 1
+    if (-not $accEv) { throw "no human.review event recorded" }
+    if ($accEv.outcome -ne "success") { throw "accept should be outcome success, got $($accEv.outcome)" }
+    if ($accEv.attributes.decision -ne "accept") { throw "decision attr wrong: $($accEv.attributes.decision)" }
+    if ($accEv.attributes.reviewer -ne "human") { throw "reviewer attr wrong: $($accEv.attributes.reviewer)" }
+    # reject → outcome failed.
+    $rej = & rust-script $ps --issue $issueNum --agent product-owner --action human.review --decision reject --note "regression" 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "human.review reject failed" }
+    $rejEv = Get-Content $log | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "human.review" } | Select-Object -Last 1
+    if ($rejEv.outcome -ne "failed") { throw "reject should be outcome failed, got $($rejEv.outcome)" }
+    # improvement surfaces the raw accept/reject counts.
+    $imp = & rust-script $ps --action improvement --json 2>&1
+    $impStr = if ($imp -is [array]) { $imp -join "`n" } else { "$imp" }
+    $impJson = $impStr | ConvertFrom-Json
+    if ($null -eq $impJson.human_review) { throw "improvement json missing human_review" }
+    if ([int]$impJson.human_review.accept -lt 1) { throw "expected >=1 accept counted, got $($impJson.human_review.accept)" }
+    if ([int]$impJson.human_review.reject -lt 1) { throw "expected >=1 reject counted, got $($impJson.human_review.reject)" }
+    return "human.review: accept/reject recorded + counted (#$issueNum)"
+  } finally {
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# --- maint-pr (the post-audit gate, per concern) ---
+Write-Host "maint-pr:" -ForegroundColor Cyan
+
+Test-Script "maint-pr opens per-concern PRs (docs auto-merged, pipeline left open)" {
+  $url = Mock-IssueCreate "temp: maint-pr" "maint-pr scratch" "post-audit"
+  $issueNum = if ($url -match 'issues/(\d+)') { [int]$Matches[1] } else { throw "no issue from mock: $url" }
+  $marker = Join-Path $env:FREDO_MOCK_STORE "maint-dirty"
+  try {
+    # Role gate: only the orchestrator may open maintenance PRs.
+    $deny = & rust-script $ps --issue $issueNum --agent developer --action maint-pr --concern docs 2>&1
+    $denyStr = if ($deny -is [array]) { $deny -join "`n" } else { "$deny" }
+    if ($denyStr -notmatch "not allowed to maint-pr") { throw "expected role gate, got: $denyStr" }
+    # Missing --concern is refused.
+    $noConcern = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
+    if ($LASTEXITCODE -eq 0) { throw "maint-pr without --concern should fail" }
+    $global:LASTEXITCODE = 0
+    # An unknown concern is refused.
+    $bad = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr --concern vibes 2>&1
+    $badStr = if ($bad -is [array]) { $bad -join "`n" } else { "$bad" }
+    if ($LASTEXITCODE -eq 0) { throw "unknown concern should fail" }
+    if ($badStr -notmatch "unknown --concern") { throw "expected unknown-concern refusal, got: $badStr" }
+    $global:LASTEXITCODE = 0
+    # A clean concern is a NO-OP, never fatal (no marker → git status empty).
+    $noop = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr --concern docs 2>&1
+    $noopStr = if ($noop -is [array]) { $noop -join "`n" } else { "$noop" }
+    if ($LASTEXITCODE -ne 0) { throw "clean concern should NO-OP, got exit ${LASTEXITCODE}: $noopStr" }
+    if ($noopStr -notmatch "NO-OP: no docs changes") { throw "expected docs NO-OP, got: $noopStr" }
+    # Make the working tree dirty for the named concern paths (mock marker).
+    New-Item -ItemType File -Path $marker -Force | Out-Null
+    # docs → auto-merged.
+    $docs = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr --concern docs 2>&1
+    $docsStr = if ($docs -is [array]) { $docs -join "`n" } else { "$docs" }
+    if ($LASTEXITCODE -ne 0) { throw "maint-pr docs failed: $docsStr" }
+    if ($docsStr -notmatch "MAINT PR OPENED:.*\(docs\)") { throw "expected docs MAINT PR OPENED, got: $docsStr" }
+    if ($docsStr -notmatch "auto-merged") { throw "docs PR should auto-merge, got: $docsStr" }
+    $docsPr = [regex]::Match($docsStr, "/pull/(\d+)").Groups[1].Value
+    if (-not $docsPr) { throw "no docs PR number parsed: $docsStr" }
+    $docsState = (Get-Content (Join-Path $env:FREDO_MOCK_STORE "prs\$docsPr.json") -Raw | ConvertFrom-Json).state
+    if ($docsState -ne "MERGED") { throw "docs PR should be MERGED, got $docsState" }
+    # pipeline → left OPEN for human review.
+    $pipe = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr --concern pipeline 2>&1
+    $pipeStr = if ($pipe -is [array]) { $pipe -join "`n" } else { "$pipe" }
+    if ($LASTEXITCODE -ne 0) { throw "maint-pr pipeline failed: $pipeStr" }
+    if ($pipeStr -notmatch "MAINT PR OPENED:.*\(pipeline\)") { throw "expected pipeline MAINT PR OPENED, got: $pipeStr" }
+    if ($pipeStr -notmatch "awaiting human review") { throw "pipeline PR should await human review, got: $pipeStr" }
+    $pipePr = [regex]::Match($pipeStr, "/pull/(\d+)").Groups[1].Value
+    if (-not $pipePr) { throw "no pipeline PR number parsed: $pipeStr" }
+    $pipeState = (Get-Content (Join-Path $env:FREDO_MOCK_STORE "prs\$pipePr.json") -Raw | ConvertFrom-Json).state
+    if ($pipeState -ne "OPEN") { throw "pipeline PR should be OPEN, got $pipeState" }
+    # The maint-pr event records the concern/branch/merged attrs.
+    $ev = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "maint-pr" -and $_.attributes.concern -eq "pipeline" } | Select-Object -Last 1
+    if (-not $ev) { throw "no maint-pr event for the pipeline concern" }
+    if ($ev.attributes.merged -ne "false") { throw "pipeline maint-pr should record merged=false, got $($ev.attributes.merged)" }
+    return "maint-pr: docs auto-merged, pipeline left open (#$issueNum)"
+  } finally {
+    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # --- Remaining PowerShell scripts (syntax check) ---
 Write-Host "Other scripts:" -ForegroundColor Cyan
 $scripts = @(
@@ -3533,6 +3702,23 @@ Remove-Item -LiteralPath $env:FREDO_MOCK_STORE -Recurse -Force -ErrorAction Sile
 Write-Host "Skills:" -ForegroundColor Cyan
 
 Test-Script-Syntax "pipeline-state skill" ".opencode/skills/pipeline-state/SKILL.md"
+
+Test-Script-Syntax "doc-sync skill" ".opencode/skills/doc-sync/SKILL.md"
+
+# doc-sync content pin: the skill must document the maint-pr gate flow (the two
+# per-concern invocations) and the five product-doc categories, and must NOT
+# prescribe the removed `git push origin main` direct write.
+Test-Script "doc-sync skill pins the maint-pr gate flow + doc categories" {
+  $src = Get-Content ".opencode/skills/doc-sync/SKILL.md" -Raw
+  foreach ($tok in @("maint-pr", "--concern docs", "--concern pipeline")) {
+    if ($src -notmatch [regex]::Escape($tok)) { throw "doc-sync skill missing token: $tok" }
+  }
+  foreach ($c in @("ARCHITECTURE.md", "CLI_GUIDE.md", "SETUP.md", "SECURITY.md", "FAQ.md")) {
+    if ($src -notmatch [regex]::Escape($c)) { throw "doc-sync skill missing product-doc category: $c" }
+  }
+  if ($src -match "git push origin main") { throw "doc-sync skill still references the removed 'git push origin main'" }
+  return "doc-sync skill: maint-pr gate flow + categories present, no removed push"
+}
 
 # --- Summary ---
 Write-Host ""

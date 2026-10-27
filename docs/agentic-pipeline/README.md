@@ -44,7 +44,7 @@ flowchart TD
 |------|------|----------|------------|---------|
 | **Business (You)** | Human | What matters? | Product Owner | Goals, priorities, major tradeoffs |
 | **Product Owner** | Primary agent | What are we building? | Orchestrator | Backlog, acceptance criteria, prioritization |
-| **Orchestrator** | Subagent (×1) | Who does what, when? | Triage cluster, Developer pool, Tester, Auditor | Orchestration, staffing, dependencies, status; dispatches the Auditor; gate doc-sync (product docs); cleanup teardown |
+| **Orchestrator** | Subagent (×1) | Who does what, when? | Triage cluster, Developer pool, Tester, Auditor | Orchestration, staffing, dependencies, status; dispatches the Auditor; gate doc-sync (product docs → `maint-pr`); cleanup teardown |
 | **Triage cluster** | Subagents (×3) | How should we build and prove it? | — | Implementation Plan, Staffing Plan, design, QA Plan |
 | **Developer pool** | Subagents (×N) | Can I implement this plan item? | — | Implementation, verification, CI gates |
 | **Tester** | Subagent (×1) | Does it work? | — | Executes QA Plan, evidence, verdict |
@@ -84,7 +84,7 @@ Per-agent dispatch briefs — the role's mandate, its phases, its tools, and the
 | Playbook | Role |
 |----------|------|
 | [product-owner.md](playbooks/product-owner.md) | Product Owner — intake, backlog, acceptance criteria |
-| [orchestrator.md](playbooks/orchestrator.md) | Orchestrator — dispatch, transitions, staffing, blockers, teardown, the gate doc-sync |
+| [orchestrator.md](playbooks/orchestrator.md) | Orchestrator — dispatch, transitions, staffing, blockers, teardown, the gate doc-sync (`maint-pr`) |
 | [software-architect.md](playbooks/software-architect.md) | Software Architect — research, domain model, task decomposition, fix plans |
 | [ui-ux-expert.md](playbooks/ui-ux-expert.md) | UI/UX Expert — design assets, interaction flows, accessibility |
 | [qa-expert.md](playbooks/qa-expert.md) | QA Expert — the QA Plan and the sole authorship of feature test suites |
@@ -119,7 +119,7 @@ Per-agent dispatch briefs — the role's mandate, its phases, its tools, and the
 | 3. Implementation | Orchestrator (setup) + Developer pool | All plan checklist work pushed to `spec/<N>`, CI green | Staff → dispatch devs → worktree on spec branch → push → spec PR | Implementation Plan checklist, spec/<N> branch |
 | 4. Testing | Tester | Verdict posted with evidence; failures re-dispatched | Execute QA Plan → attach evidence → verdict | Test report, verdict comments |
 | **Gate** | Auditor | Verdict: success, or restart phase + root cause | Audit from the record → decide → record verdict | Audit verdict |
-| 5. Post-audit | Orchestrator | Self-improvement + gate merge ran: the Curator recorded a lesson, the specialists' edits committed, product docs synced | Dispatch the Curator + specialists → gate doc-sync/commit → `post-audit → cleanup` (success) or `→ <phase>` (restart) | Curator lesson, gate commit |
+| 5. Post-audit | Orchestrator | Self-improvement + gate merge ran: the Curator recorded a lesson, the specialists' edits opened as maintenance PRs, product docs synced | Dispatch the Curator + specialists → gate doc-sync → `maint-pr` → `post-audit → cleanup` (success) or `→ <phase>` (restart) | Curator lesson, maint PRs |
 | 6. Cleanup | Orchestrator | Teardown done, feature labeled `done`, human review | Cleanup → human review | Closed work, final status |
 | 7. Done | Orchestrator | Feature `done`, worktrees cleaned, human review | Status updates, human review | Closed work, final status |
 
@@ -146,4 +146,4 @@ Per-agent dispatch briefs — the role's mandate, its phases, its tools, and the
 | Review | Orchestrator reviews + QA runs e2e | Merging by Orchestrator + single Tester |
 | Verification | QA Lead (plan) + QA (execute) | QA Expert (plan + tests in triage) + Tester (execute) |
 | Improvement | Orchestrator gate + 3-gate validation | Independent Auditor gate + Curator/Toolsmith/Machinist improvement roles (implemented) |
-| Docs | Documentation Keeper agent | Orchestrator (gate doc-sync — product docs, fast-forward to `main`) |
+| Docs | Documentation Keeper agent | Orchestrator (gate doc-sync — product docs via `maint-pr`, docs auto-merged) |

@@ -967,6 +967,27 @@ fn mock_git(args: &[&str]) -> anyhow::Result<String> {
             }
             Ok(String::new())
         }
+        "status" => {
+            // git status --porcelain -- <paths>. The mock reports the named paths as
+            // modified when the `maint-dirty` marker exists, so `maint-pr` can be
+            // exercised offline (the test that drives it writes the marker).
+            if mock_file(&["maint-dirty"]).exists() {
+                let mut out = String::new();
+                let mut after = false;
+                for a in args.iter().skip(1) {
+                    if *a == "--" {
+                        after = true;
+                        continue;
+                    }
+                    if after {
+                        out.push_str(&format!(" M {}\n", a));
+                    }
+                }
+                return Ok(out.trim_end().to_string());
+            }
+            Ok(String::new())
+        }
+        "add" | "commit" => Ok(String::new()),
         "ls-remote" => {
             // git ls-remote --exit-code origin refs/heads/<branch>
             if args.iter().any(|a| *a == "--exit-code") {
@@ -1002,10 +1023,13 @@ fn mock_git(args: &[&str]) -> anyhow::Result<String> {
             Ok(String::new())
         }
         "checkout" => {
-            // git checkout -b spec/N main  (create a LOCAL ref) / git checkout main (no-op)
-            if args.iter().any(|a| *a == "-b") {
+            // git checkout -b|-B <branch> [start] (create/reset a LOCAL ref) /
+            // git checkout <branch> (no-op)
+            if args.iter().any(|a| *a == "-b" || *a == "-B") {
                 let branch = args.get(2).copied().unwrap_or("");
-                mock_local_ref_write(branch)?;
+                if !branch.is_empty() {
+                    mock_local_ref_write(branch)?;
+                }
             }
             Ok(String::new())
         }
@@ -1483,8 +1507,9 @@ fn flag_untrusted_comments(issue: u32, flagged: &[serde_json::Value]) {
         if !seen.insert(key.clone()) {
             continue;
         }
-        let _ = append_event(issue, "guard.fired", "pipeline-state", "unknown", "blocked",
-            &format!("untrusted comment author ({}) excluded from agent context", assoc));
+        let _ = append_event_attrs(issue, "guard.fired", "pipeline-state", "unknown", "blocked",
+            &format!("untrusted comment author ({}) excluded from agent context", assoc),
+            &[("guardId", "untrusted_comment_filter"), ("guardKey", "untrusted_comment_filter"), ("failureClass", "untrusted_comment_excluded_from_context"), ("site", "comment-read")]);
         println!("GUARD.FIRED: #{} comment by {} excluded from agent context (author not write-capable)", issue, assoc);
     }
 }
@@ -1720,7 +1745,7 @@ fn ensure_spec_pr_merged(issue: u32) -> anyhow::Result<Option<String>> {
         // delivery artifact is ambiguous and one would never be merged. Fail the
         // transition CLOSED instead of warn-and-continue into audit (audit fix):
         // the human must close all but one PR before the spec can merge.
-        append_event(issue, "guard.fired", "orchestrator", "audit", "blocked", &format!("duplicate spec PRs: {} open {} PRs (#{}); refusing to merge", numbers.len(), head, numbers.join(", #")))?;
+        append_event_attrs(issue, "guard.fired", "orchestrator", "audit", "blocked", &format!("duplicate spec PRs: {} open {} PRs (#{}); refusing to merge", numbers.len(), head, numbers.join(", #")), &[("guardId", "duplicate_spec_pr"), ("guardKey", "duplicate_spec_pr"), ("failureClass", "ambiguous_delivery_artifact"), ("site", "ensure_spec_pr_merged")])?;
         anyhow::bail!(
             "{} open {} PRs (#{}) — expected exactly one; close the duplicates before transitioning to audit",
             numbers.len(), head, numbers.join(", #")
@@ -1740,6 +1765,104 @@ fn ensure_spec_pr_merged(issue: u32) -> anyhow::Result<Option<String>> {
     run_gh(&["pr", "merge", pr, "--squash"])?;
     println!("SPEC PR MERGED: #{}", pr);
     Ok(Some(format!("spec PR #{} merged", pr)))
+}
+
+/// The post-audit gate merge, per concern — replaces the orchestrator's direct
+/// `git push origin main`. Opens a `maint/<N>-<concern>` PR off `main` instead of
+/// fast-forwarding the branch, so each concern is reviewed on its own:
+///   - `pipeline` — the pipeline's own edits (playbooks/references/skills/
+///     state-machine/`pipeline.json`/`opencode.json` permission blocks). This is
+///     the **machine/config** PR: it is NOT auto-merged — it awaits human review.
+///   - `docs` — the product docs (ARCHITECTURE/CLI_GUIDE/SETUP/SECURITY/FAQ). This
+///     is the **docs** PR: it is auto-merged (squash + delete branch).
+/// Only the named concern's paths are committed, so the two are independent. An
+/// empty concern is a NO-OP (never fatal).
+fn post_audit_maint_pr(
+    issue: u32,
+    actor: &str,
+    phase: &str,
+    concern: &str,
+    title: Option<&str>,
+    body_file: Option<&str>,
+) -> anyhow::Result<()> {
+    let paths: &[&str] = match concern {
+        "pipeline" => &[
+            "docs/agentic-pipeline",
+            ".opencode/skills",
+            ".opencode/scripts",
+            ".opencode/pipeline.json",
+            "opencode.json",
+        ],
+        "docs" => &[
+            "docs/ARCHITECTURE.md",
+            "docs/CLI_GUIDE.md",
+            "docs/SETUP.md",
+            "docs/SECURITY.md",
+            "docs/FAQ.md",
+        ],
+        other => anyhow::bail!("maint-pr: unknown --concern '{}' (expected pipeline|docs)", other),
+    };
+    // Anything to commit for this concern?
+    let mut st: Vec<&str> = vec!["status", "--porcelain", "--"];
+    st.extend(paths.iter().copied());
+    if run_cmd("git", &st)?.trim().is_empty() {
+        println!("NO-OP: no {} changes for #{} — nothing to open a maint PR for", concern, issue);
+        append_event(issue, "maint-pr", actor, phase, "unknown", &format!("no {} changes to sync", concern))?;
+        return Ok(());
+    }
+    let branch = format!("maint/{}-{}", issue, concern);
+    // Create/reset the branch at HEAD, carrying the working-tree edits.
+    run_cmd("git", &["checkout", "-B", &branch])?;
+    let mut add: Vec<&str> = vec!["add", "--"];
+    add.extend(paths.iter().copied());
+    run_cmd("git", &add)?;
+    let pr_title = title
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("pipeline(#{}): post-audit {} sync", issue, concern));
+    // Commit message via a file (G-268: an inline `-m` carrying a `#` reference is
+    // sandbox-denied for agents; the file form is uniformly safe for the machine).
+    let msg_file = project_root()?
+        .join(".opencode")
+        .join("tmp")
+        .join(format!("maint-commit-{}.txt", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(msg_file.parent().unwrap())?;
+    std::fs::write(&msg_file, &pr_title)?;
+    run_cmd("git", &["commit", "-F", msg_file.to_str().unwrap()])?;
+    let _ = std::fs::remove_file(&msg_file);
+    run_cmd("git", &["push", "-u", "origin", &branch])?;
+    let body = match body_file {
+        Some(f) => std::fs::read_to_string(f).unwrap_or_else(|_| format!("Post-audit {} sync for #{}.", concern, issue)),
+        None => format!("Post-audit {} sync for #{}.", concern, issue),
+    };
+    let url = run_gh(&["pr", "create", "--base", "main", "--head", &branch, "--title", &pr_title, "--body", &body])?;
+    let url = url.trim().to_string();
+    let pr_n = url.rsplit('/').next().unwrap_or("").to_string();
+    // docs → auto-merge; pipeline (machine/config) → human review, left OPEN.
+    let auto_merge = concern == "docs";
+    if auto_merge {
+        run_gh(&["pr", "merge", &pr_n, "--squash", "--delete-branch"])?;
+    }
+    append_event_attrs(
+        issue,
+        "maint-pr",
+        actor,
+        phase,
+        "success",
+        &format!("opened {} maint PR {} for #{}", concern, url, issue),
+        &[
+            ("concern", concern),
+            ("branch", branch.as_str()),
+            ("pr", pr_n.as_str()),
+            ("merged", if auto_merge { "true" } else { "false" }),
+        ],
+    )?;
+    println!(
+        "MAINT PR OPENED: {} ({}) {}",
+        url,
+        concern,
+        if auto_merge { "— auto-merged (docs)" } else { "— awaiting human review (machine/config)" }
+    );
+    Ok(())
 }
 
 /// Swap an issue's phase label from `from` to `to` (removes the source label,
@@ -2929,12 +3052,12 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
             // (`record-improvement` — a `pipeline.improvement` event + the
             // `## Pipeline Improvement (round N)` comment), the specialists'
             // pipeline edits (Curator playbooks/references, Machinist machine/config,
-            // Toolsmith scripts/skills) are committed with the product-doc sync (the
-            // ONE gate commit), and the product docs are synced. The deterministic
+            // Toolsmith scripts/skills) and the product docs are synced through
+            // per-concern maintenance PRs (`maint-pr` — `maint/<N>-pipeline` left
+            // OPEN for human review, `maint/<N>-docs` auto-merged). The deterministic
             // anchor the machine can verify is the Curator's recorded improvement —
-            // without it the post-audit did not run. (The gate commit and the
-            // doc-sync are the Orchestrator's direct writes; the Auditor verifies
-            // them from the merged diff.)
+            // without it the post-audit did not run. (The gate merge is the machine's
+            // `maint-pr` action; the Auditor verifies the merged diff.)
             let recorded = read_issue_events(issue)
                 .iter()
                 .any(|e| e.event_name == "pipeline.improvement");
@@ -3132,6 +3255,13 @@ struct ActionArgs {
     /// (a `fix` is a rejection of the prior feature; `enhancement` is healthy
     /// evolution). Only meaningful together with `--revises`.
     intent: Option<String>,
+    /// `human.review` operator note (`--note`) recorded on the event.
+    note: Option<String>,
+    /// `human.review` reviewer identity (`--reviewer`) recorded on the event.
+    reviewer: Option<String>,
+    /// `maint-pr --concern pipeline|docs`: which post-audit maintenance PR to open
+    /// (the pipeline's own edits vs the product docs).
+    concern: Option<String>,
 }
 
 /// Working-conventions header prepended to every triage A2A file. The triage
@@ -3239,7 +3369,7 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
         // Anti-spoofing: a timeline draft must carry the template's `*Authored by
         // <Agent>*` footer, else it is never auto-posted as a bot comment.
         if !body.to_lowercase().contains("*authored by") {
-            let _ = append_event(issue, "guard.fired", actor, phase, "blocked", &format!("anti-spoofing: {} lacks an '*Authored by <Agent>*' footer — not posting", fname));
+            let _ = append_event_attrs(issue, "guard.fired", actor, phase, "blocked", &format!("anti-spoofing: {} lacks an '*Authored by <Agent>*' footer — not posting", fname), &[("guardId", "G-223"), ("guardKey", "draft_author_footer_absent"), ("failureClass", "unattributed_draft_posted"), ("site", "post-comments")]);
             println!("WARNING: {} lacks an '*Authored by <Agent>*' footer — not posting (anti-spoofing)", fname);
             continue;
         }
@@ -3251,7 +3381,7 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
         if *fname == "tests-runs.md" {
             let has_verdict = body.lines().any(|l| l.trim_start().to_lowercase().starts_with("verdict:"));
             if !has_verdict {
-                let _ = append_event(issue, "guard.fired", actor, phase, "blocked", "tests-runs draft refused: no literal Verdict: line");
+                let _ = append_event_attrs(issue, "guard.fired", actor, phase, "blocked", "tests-runs draft refused: no literal Verdict: line", &[("guardId", "G-013"), ("guardKey", "tests_runs_verdict_line"), ("failureClass", "unparseable_verdict_comment"), ("site", "post-comments")]);
                 println!("WARNING: tests-runs.md lacks a `Verdict:` line — not posting (template format). Fix the draft, then re-run post-comments.");
                 continue;
             }
@@ -3267,7 +3397,7 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
                     && !t.contains("https://")
             });
             if has_dead_image_ref {
-                let _ = append_event(issue, "guard.fired", actor, phase, "blocked", "tests-runs draft refused: image reference without https:// (unviewable evidence)");
+                let _ = append_event_attrs(issue, "guard.fired", actor, phase, "blocked", "tests-runs draft refused: image reference without https:// (unviewable evidence)", &[("guardId", "G-104"), ("guardKey", "tests_runs_evidence_renderability"), ("failureClass", "unviewable_evidence"), ("site", "post-comments")]);
                 println!("WARNING: tests-runs.md references a screenshot by bare filename or local path — not posting (unviewable evidence). Run `upload-evidence --image <screenshot>` PER AC and paste the returned https:// user-attachment URL into that AC's Screenshot cell; write `n/a — not visually observable` for backend-only ACs. Then re-run post-comments.");
                 continue;
             }
@@ -3299,7 +3429,7 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
         let authored_fix_plan = dir.join("fix-plan.md").exists();
         let (post_title, post_body) =         if *fname == "fix-plan.md" {
             if !is_rework_reentry {
-                let _ = append_event(issue, "guard.fired", actor, phase, "blocked", "stray fix-plan.md on a first implementation entry — not posting");
+                let _ = append_event_attrs(issue, "guard.fired", actor, phase, "blocked", "stray fix-plan.md on a first implementation entry — not posting", &[("guardId", "G-339"), ("guardKey", "stray_fix_plan_first_entry"), ("failureClass", "spurious_fix_plan_posted"), ("site", "post-comments")]);
                 println!("WARNING: fix-plan.md present but this is not a rework re-entry — not posting (kept on disk)");
                 continue;
             }
@@ -3310,7 +3440,7 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
             // draft is kept (never posted) until the Architect classifies it.
             match parse_root_cause_class(&body) {
                 None => {
-                    let _ = append_event(issue, "guard.fired", actor, phase, "blocked", "fix-plan refused: missing/invalid 'Root cause class:' line");
+                    let _ = append_event_attrs(issue, "guard.fired", actor, phase, "blocked", "fix-plan refused: missing/invalid 'Root cause class:' line", &[("guardId", "fix_plan_unclassified"), ("guardKey", "fix_plan_root_cause_class"), ("failureClass", "unclassified_rework_round"), ("site", "post-comments")]);
                     println!("WARNING: fix-plan.md lacks a valid 'Root cause class: defect|technique|environment|scope' line — not posting. The Architect must classify this round's failure; fix the draft, then re-run.");
                     continue;
                 }
@@ -3351,7 +3481,7 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
                 // failed during an API outage and the loss was never surfaced).
                 let _ = append_event_attrs(issue, "guard.fired", actor, phase, "blocked",
                     &format!("timeline comment post failed for {}: {}", fname, e),
-                    &[("guardKey", "timeline_post_failed"), ("failureClass", "timeline_comment_lost")]);
+                    &[("guardId", "G-359"), ("guardKey", "timeline_post_failed"), ("failureClass", "timeline_comment_lost"), ("site", "post-comments")]);
                 println!("WARNING: could not post {} comment ({}): {}", post_title, fname, e);
             }
         }
@@ -3378,7 +3508,7 @@ fn post_one_timeline_comment(issue: u32, actor: &str, phase: &str, p: &std::path
     if title == "Tests Runs" && has_verdict_line(body) {
         let (round, _) = retry_state(issue);
         if count_verdict_comments_in_round(issue, round) > 0 {
-            append_event_attrs(issue, "guard.fired", actor, phase, "blocked", "G-020 timeline dedup: refusing a second verdict-carrying ## Tests Runs post in this round", &[("guardId", "G-020"), ("guardKey", "timeline_dedup"), ("failureClass", "tester_duplicate_verdict_posting")])?;
+            append_event_attrs(issue, "guard.fired", actor, phase, "blocked", "G-020 timeline dedup: refusing a second verdict-carrying ## Tests Runs post in this round", &[("guardId", "G-020"), ("guardKey", "timeline_dedup"), ("failureClass", "tester_duplicate_verdict_posting"), ("site", "post-comments")])?;
             println!("WARNING: a verdict-carrying ## Tests Runs comment already exists for round {} — not posting (G-020). Reconcile into the existing verdict, then re-run.", round);
             return Ok(());
         }
@@ -3496,8 +3626,9 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                         match lock_issue(&gh_repo()?, n) {
                             Ok(()) => println!("LOCKED ON CREATE: #{}", n),
                             Err(e) => {
-                                let _ = append_event(n, "guard.fired", &a.actor, "unknown", "blocked",
-                                    &format!("lock-on-create failed for #{}: {}", n, e));
+                                let _ = append_event_attrs(n, "guard.fired", &a.actor, "unknown", "blocked",
+                                    &format!("lock-on-create failed for #{}: {}", n, e),
+                                    &[("guardId", "lock_on_create"), ("guardKey", "lock_on_create_failed"), ("failureClass", "issue_born_unlocked"), ("site", "create-issue")]);
                                 println!("WARNING: lock-on-create failed for #{}: {}", n, e);
                             }
                         }
@@ -3603,19 +3734,19 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             //   decision reaches the record through `audit-record` or a PO amendment
             //   via `Status`, never as agent prose.
             if prefix == "Evidence" {
-                let _ = append_event(issue, "guard.fired", &a.actor, phase.as_str(), "blocked", "refused --prefix Evidence (removed; verdict goes via tests-runs.md draft)");
+                let _ = append_event_attrs(issue, "guard.fired", &a.actor, phase.as_str(), "blocked", "refused --prefix Evidence (removed; verdict goes via tests-runs.md draft)", &[("guardId", "G-064"), ("guardKey", "evidence_prefix_removed"), ("failureClass", "removed_prefix_used"), ("site", "comment")]);
                 anyhow::bail!(
                     "the `Evidence` comment prefix is removed — post the verdict via the `.opencode/tmp/<issue>/tests-runs.md` draft (the machine posts it round-stamped as `## Tests Runs (round N)`); upload screenshots via `upload-evidence` and paste the raw URLs into the draft"
                 );
             }
             if prefix == "Question" {
-                let _ = append_event(issue, "guard.fired", &a.actor, phase.as_str(), "blocked", "refused --prefix Question (removed; ambiguity = block action)");
+                let _ = append_event_attrs(issue, "guard.fired", &a.actor, phase.as_str(), "blocked", "refused --prefix Question (removed; ambiguity = block action)", &[("guardId", "G-065"), ("guardKey", "question_prefix_removed"), ("failureClass", "removed_prefix_used"), ("site", "comment")]);
                 anyhow::bail!(
                     "the `Question` comment prefix is removed — ambiguity blocks work until answered: request the `block` action with `--reason` (label + SLA + recorded reason), and the orchestrator resolves and re-dispatches with the answer inlined in the brief"
                 );
             }
             if prefix == "Decision" {
-                let _ = append_event(issue, "guard.fired", &a.actor, phase.as_str(), "blocked", "refused free-form Decision (machine-only via audit-record)");
+                let _ = append_event_attrs(issue, "guard.fired", &a.actor, phase.as_str(), "blocked", "refused free-form Decision (machine-only via audit-record)", &[("guardId", "decision_prefix_machine_only"), ("guardKey", "decision_prefix_machine_only"), ("failureClass", "machine_only_prefix_used"), ("site", "comment")]);
                 anyhow::bail!(
                     "`Decision` comments are machine-only (posted by the `audit-record` verdict) — decisions reach the record via `audit-record --reason` or a PO amendment through `--prefix Status`"
                 );
@@ -3679,7 +3810,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             if has_verdict_line(&body) {
                 let (round, _) = retry_state(issue);
                 if count_verdict_comments_in_round(issue, round) > 0 {
-                    let _ = append_event_attrs(issue, "guard.fired", &a.actor, phase.as_str(), "blocked", "G-020: refusing a second verdict-carrying comment in this round", &[("guardId", "G-020"), ("guardKey", "timeline_dedup"), ("failureClass", "tester_duplicate_verdict_posting")]);
+                    let _ = append_event_attrs(issue, "guard.fired", &a.actor, phase.as_str(), "blocked", "G-020: refusing a second verdict-carrying comment in this round", &[("guardId", "G-020"), ("guardKey", "timeline_dedup"), ("failureClass", "tester_duplicate_verdict_posting"), ("site", "comment")]);
                     anyhow::bail!(
                         "refusing a second verdict-carrying comment in round {} — one `## Tests Runs` verdict per round; fold ALL receipts into the single verdict comment (G-020)",
                         round
@@ -3917,7 +4048,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                             if features.is_empty() && section(&a2a, "## QA Expert").contains(FEATURE_TESTS_PREFIX) {
                                 let msg = "QA `**Feature tests:**` marker present but no valid feature names parsed — no suites persisted (write `**Feature tests:** <lowercase-kebab>[, <name>]` and put any prose on a following line)";
                                 notes.push(format!("WARNING: {}", msg));
-                                let _ = append_event_attrs(issue, "guard.fired", &a.actor, to.as_str(), "blocked", msg, &[("guardId", "G-240"), ("guardKey", "feature_tests_marker_token_shape"), ("failureClass", "suite_persistence_silently_skipped")]);
+                                let _ = append_event_attrs(issue, "guard.fired", &a.actor, to.as_str(), "blocked", msg, &[("guardId", "G-240"), ("guardKey", "feature_tests_marker_token_shape"), ("failureClass", "suite_persistence_silently_skipped"), ("site", "transition")]);
                             }
                             for feat in features {
                                 match persist_tests(&feat) {
@@ -4740,8 +4871,12 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             }
             let role = a.role.as_deref().ok_or_else(|| anyhow::anyhow!("set-permission requires --role <agent>"))?;
             let tool = a.tool.as_deref().ok_or_else(|| anyhow::anyhow!("set-permission requires --tool <category>"))?;
-            let pattern = a.pattern.as_deref().ok_or_else(|| anyhow::anyhow!("set-permission requires --pattern <glob>"))?;
-            let decision = a.decision.as_deref().ok_or_else(|| anyhow::anyhow!("set-permission requires --decision allow|ask|deny"))?;
+            // `--pattern` is optional: with it, the rule inside the per-pattern map
+            // `permission.<tool>` is edited; without it, the top-level
+            // `permission.<tool>` member itself is added/replaced/removed (used to
+            // rename a flat tool-namespace glob like `chakra_ui_*`).
+            let pattern = a.pattern.as_deref();
+            let decision = a.decision.as_deref().ok_or_else(|| anyhow::anyhow!("set-permission requires --decision allow|ask|deny|remove"))?;
             let path = match a.config_file.as_deref() {
                 Some(p) => PathBuf::from(p),
                 None => project_root()?.join("opencode.json"),
@@ -4751,6 +4886,53 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             if let Some(issue) = a.issue {
                 append_event(issue, "set-permission", &a.actor, "unknown", "success", &summary)?;
             }
+        }
+        "human.review" => {
+            // The operator's accept/reject at the `done` human-review window
+            // (research/27 §4.1b) — the ONLY action that records the outcome the
+            // acceptance metric pairs with. The human cannot invoke the machine
+            // directly (they have no `--agent` identity in the sandbox), so the
+            // Product Owner — the human-facing intake/hand-off proxy — records the
+            // decision on the operator's behalf. Additive and non-mutating: it never
+            // reopens the issue or changes its phase (a post-merge defect is a
+            // follow-up `revises: #N` spec, never a reopen). `accept` → outcome
+            // `success`; `reject` → outcome `failed` (a revealed rejection even when
+            // no follow-up spec is ever filed).
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
+            let issue = req_issue(a)?;
+            let decision = a.decision.as_deref().unwrap_or("").trim().to_ascii_lowercase();
+            if !matches!(decision.as_str(), "accept" | "reject") {
+                anyhow::bail!("human.review requires --decision accept|reject");
+            }
+            let phase = phase_of(a)?.as_str().to_string();
+            let note = a.note.as_deref().unwrap_or("").trim().to_string();
+            let reviewer = a.reviewer.as_deref().unwrap_or("").trim().to_string();
+            let outcome = if decision == "accept" { "success" } else { "failed" };
+            append_event_attrs(issue, "human.review", &a.actor, &phase, outcome,
+                &format!("human review: {} at the done window", decision),
+                &[("decision", decision.as_str()), ("note", note.as_str()), ("reviewer", reviewer.as_str())])?;
+            println!(
+                "HUMAN REVIEW RECORDED: {} on #{} (reviewer: {})",
+                decision, issue, if reviewer.is_empty() { "unspecified" } else { reviewer.as_str() }
+            );
+        }
+        "maint-pr" => {
+            // The post-audit gate merge, per concern (replaces the orchestrator's
+            // direct `git push origin main`): open a `maint/<N>-<concern>` PR off
+            // main — the docs PR auto-merges, the machine/config PR awaits human
+            // review. See `state-machine.md`.
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action))?;
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
+            let issue = req_issue(a)?;
+            let phase = phase_of(a)?.as_str().to_string();
+            let concern = a.concern.as_deref().ok_or_else(|| anyhow::anyhow!("maint-pr requires --concern pipeline|docs"))?;
+            post_audit_maint_pr(issue, &a.actor, &phase, concern, a.title.as_deref(), a.body_file.as_deref())?;
         }
         other => anyhow::bail!("unknown action: {}", other),
     }
@@ -4790,6 +4972,13 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
         "upload-evidence" => matches!(actor, "tester" | "orchestrator"),
         "post-comments" => matches!(actor, "orchestrator" | "tester"),
         "record-improvement" => actor == "curator",
+        // The operator's accept/reject at the done human-review window: recorded by
+        // the Product Owner — the human-facing proxy (the human has no machine
+        // identity) — never by the machine itself (research/27 §4.1b).
+        "human.review" => actor == "product-owner",
+        // The post-audit gate opens the per-concern maintenance PRs (the gate runner
+        // is the orchestrator).
+        "maint-pr" => actor == "orchestrator",
         "link-revision" => matches!(actor, "orchestrator" | "product-owner"),
         "hardening-lock-open-issues" => actor == "machinist",
         "interaction-limit" => actor == "machinist",
@@ -4961,6 +5150,89 @@ fn json_object_append_member(t: &str, obj_start: usize, obj_end: usize, member: 
     }
 }
 
+/// Remove member `key` from the JSON object spanning `t[obj_start..obj_end]`,
+/// order-preserving. Returns the new document text, or `None` when the key is
+/// absent. A multi-line object loses the member's whole line; a trailing member
+/// also consumes the preceding comma so the object stays valid.
+fn json_object_remove_member(t: &str, obj_start: usize, obj_end: usize, key: &str) -> anyhow::Result<Option<String>> {
+    let bytes = t.as_bytes();
+    // Locate the member (key start .. value end).
+    let mut i = json_skip_ws(bytes, obj_start);
+    if bytes.get(i) != Some(&b'{') {
+        anyhow::bail!("expected '{{' at byte {}", i);
+    }
+    i += 1;
+    let mut span: Option<(usize, usize)> = None;
+    loop {
+        i = json_skip_ws(bytes, i);
+        match bytes.get(i) {
+            Some(b'}') | None => break,
+            Some(b'"') => {
+                let ks = i;
+                let ke = json_skip_string(bytes, i)?;
+                let found = std::str::from_utf8(&bytes[i + 1..ke - 1]).ok() == Some(key);
+                i = json_skip_ws(bytes, ke);
+                if bytes.get(i) != Some(&b':') {
+                    anyhow::bail!("expected ':' at byte {}", i);
+                }
+                i = json_skip_ws(bytes, i + 1);
+                let ve = json_skip_value(bytes, i)?;
+                if found {
+                    span = Some((ks, ve));
+                    break;
+                }
+                i = json_skip_ws(bytes, ve);
+                match bytes.get(i) {
+                    Some(b',') => i += 1,
+                    Some(b'}') | None => break,
+                    _ => anyhow::bail!("expected ',' or '}}' at byte {}", i),
+                }
+            }
+            _ => anyhow::bail!("expected a member key at byte {}", i),
+        }
+    }
+    let (ks, ve) = match span {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+    // Inline (single-line) object: drop the member plus one adjacent comma.
+    if !t[obj_start + 1..obj_end - 1].contains('\n') {
+        let after = json_skip_ws(bytes, ve);
+        if bytes.get(after) == Some(&b',') {
+            let mut end = after + 1;
+            while end < obj_end && matches!(bytes[end], b' ' | b'\t') {
+                end += 1;
+            }
+            return Ok(Some(format!("{}{}", &t[..ks], &t[end..])));
+        }
+        let mut j = ks;
+        while j > obj_start + 1 && matches!(bytes[j - 1], b' ' | b'\t') {
+            j -= 1;
+        }
+        let start = if j > obj_start + 1 && bytes[j - 1] == b',' { j - 1 } else { ks };
+        return Ok(Some(format!("{}{}", &t[..start], &t[ve..])));
+    }
+    // Multi-line object: the member owns its line.
+    let line_start = t[..ks].rfind('\n').map(|p| p + 1).unwrap_or(obj_start + 1);
+    let after = json_skip_ws(bytes, ve);
+    if bytes.get(after) == Some(&b',') {
+        let nl = t[after..].find('\n').map(|p| after + p + 1).unwrap_or(ve);
+        Ok(Some(format!("{}{}", &t[..line_start], &t[nl..])))
+    } else {
+        // Last member: also consume the preceding comma (if any) so no dangling
+        // comma is left before the closing brace.
+        let mut j = ks;
+        while j > obj_start + 1 && matches!(bytes[j - 1], b' ' | b'\t' | b'\r' | b'\n') {
+            j -= 1;
+        }
+        if j > obj_start + 1 && bytes[j - 1] == b',' {
+            Ok(Some(format!("{}{}", &t[..j - 1], &t[ve..])))
+        } else {
+            Ok(Some(format!("{}{}", &t[..ks], &t[ve..])))
+        }
+    }
+}
+
 fn json_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
@@ -4979,11 +5251,22 @@ fn permission_token_ok(s: &str) -> bool {
 
 /// Rewrite one agent permission rule in `opencode.json` and return a summary of
 /// the change (or `NO-OP: ...` when the rule already holds the requested value).
+///
+/// Two shapes are supported:
+/// - `pattern = Some(p)` edits the rule inside the per-pattern map
+///   `permission.<tool>.<p>`; `decision = "remove"` deletes that rule
+///   (order-preserving). A flat `permission.<tool>` string is refused.
+/// - `pattern = None` operates on the top-level `permission.<tool>` member itself:
+///   `allow|ask|deny` sets/replaces a FLAT `"<tool>": "<decision>"` member (an
+///   existing per-pattern map is refused — no accidental clobbering), and
+///   `remove` deletes the whole member (flat or map). This is how a flat
+///   tool-namespace glob (e.g. a mis-spelled `chakra_ui_*`) is renamed: add the
+///   corrected key, then remove the dead one.
 fn set_agent_permission(
     path: &Path,
     role: &str,
     tool: &str,
-    pattern: &str,
+    pattern: Option<&str>,
     decision: &str,
 ) -> anyhow::Result<String> {
     if !permission_token_ok(role) {
@@ -4992,24 +5275,26 @@ fn set_agent_permission(
     if !permission_token_ok(tool) {
         anyhow::bail!("set-permission: invalid --tool '{}'", tool);
     }
-    if !permission_token_ok(pattern) {
-        anyhow::bail!("set-permission: invalid --pattern '{}'", pattern);
+    if let Some(p) = pattern {
+        if !permission_token_ok(p) {
+            anyhow::bail!("set-permission: invalid --pattern '{}'", p);
+        }
     }
-    if !matches!(decision, "allow" | "ask" | "deny") {
-        anyhow::bail!("set-permission: --decision must be allow|ask|deny (got '{}')", decision);
+    if !matches!(decision, "allow" | "ask" | "deny" | "remove") {
+        anyhow::bail!("set-permission: --decision must be allow|ask|deny|remove (got '{}')", decision);
     }
+    let removing = decision == "remove";
     let raw = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("set-permission: cannot read {}: {}", path.display(), e))?;
     let text = raw.strip_prefix('\u{feff}').unwrap_or(&raw).to_string();
     // Validate BEFORE editing so a corrupt config is never compounded.
     let parsed: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| anyhow::anyhow!("set-permission: {} is not valid JSON: {}", path.display(), e))?;
-    let agent_exists = parsed
+    parsed
         .get("agent")
         .and_then(|a| a.get(role))
         .map(|_| ())
         .ok_or_else(|| anyhow::anyhow!("set-permission: no agent '{}' in {}", role, path.display()))?;
-    let _ = agent_exists;
     parsed
         .get("agent")
         .and_then(|a| a.get(role))
@@ -5028,47 +5313,85 @@ fn set_agent_permission(
         anyhow::bail!("set-permission: agent '{}' permission is not an object", role);
     }
 
-    let label = format!("agent '{}'.{}['{}']", role, tool, pattern);
-    let new_text = match json_find_member(bytes, ps, tool)? {
-        Some((vs, ve)) if bytes[vs] == b'"' => {
-            let current: String = serde_json::from_str(&text[vs..ve]).unwrap_or_default();
-            if current == decision {
-                return Ok(format!("NO-OP: {} = '{}' already in {}", label, decision, path.display()));
-            }
-            anyhow::bail!(
-                "set-permission: '{}.{}' is a flat action ('{}') — only per-pattern maps can be edited; \
-                 change the whole category by hand or via a new action",
-                role, tool, current
-            );
+    let (label, verb, new_text) = match pattern {
+        // ── per-pattern rule inside `permission.<tool>` ────────────────────────
+        Some(p) => {
+            let label = format!("agent '{}'.{}['{}']", role, tool, p);
+            let new_text = match json_find_member(bytes, ps, tool)? {
+                Some((vs, _)) if bytes[vs] == b'"' => {
+                    anyhow::bail!(
+                        "set-permission: '{}.{}' is a flat action — only per-pattern maps can be edited; \
+                         pass --tool '{}' with no --pattern to change the whole category",
+                        role, tool, tool
+                    );
+                }
+                Some((vs, ve)) if bytes[vs] == b'{' => match json_find_member(bytes, vs, p)? {
+                    Some((pvs, pve)) => {
+                        if removing {
+                            json_object_remove_member(&text, vs, ve, p)?.ok_or_else(|| {
+                                anyhow::anyhow!("set-permission: '{}.{}' vanished mid-edit", role, tool)
+                            })?
+                        } else {
+                            let current: String = serde_json::from_str(&text[pvs..pve]).unwrap_or_default();
+                            if current == decision {
+                                return Ok(format!("NO-OP: {} = '{}' already in {}", label, decision, path.display()));
+                            }
+                            format!("{}\"{}\"{}", &text[..pvs], decision, &text[pve..])
+                        }
+                    }
+                    None => {
+                        if removing {
+                            return Ok(format!("NO-OP: {} not present in {}", label, path.display()));
+                        }
+                        let member = format!("\"{}\": \"{}\"", json_escape(p), decision);
+                        json_object_append_member(&text, vs, ve, &member, eol)
+                    }
+                },
+                Some(_) => anyhow::bail!("set-permission: '{}.{}' value is not an object or string", role, tool),
+                None => {
+                    if removing {
+                        return Ok(format!("NO-OP: {} not present in {}", label, path.display()));
+                    }
+                    let unit = json_member_indent_unit(bytes, ps, pe);
+                    let close_line_start = text[..pe - 1].rfind('\n').map(|q| q + 1).unwrap_or(0);
+                    let close_indent = &text[close_line_start..pe - 1];
+                    let inner_indent = format!("{}{}", close_indent, unit);
+                    let obj = if text[ps + 1..pe - 1].contains('\n') {
+                        format!("{{{e0}{inner_indent}\"{}\": \"{}\"{e0}{close_indent}}}", json_escape(p), decision, e0 = eol)
+                    } else {
+                        format!("{{ \"{}\": \"{}\" }}", json_escape(p), decision)
+                    };
+                    let member = format!("\"{}\": {}", json_escape(tool), obj);
+                    json_object_append_member(&text, ps, pe, &member, eol)
+                }
+            };
+            (label, if removing { "REMOVED" } else { "SET" }, new_text)
         }
-        Some((vs, ve)) if bytes[vs] == b'{' => {
-            match json_find_member(bytes, vs, pattern)? {
-                Some((pvs, pve)) => {
-                    let current: String = serde_json::from_str(&text[pvs..pve]).unwrap_or_default();
+        // ── the top-level `permission.<tool>` member itself ────────────────────
+        None => {
+            let label = format!("agent '{}'.{}", role, tool);
+            let new_text = match json_find_member(bytes, ps, tool)? {
+                Some((_, _)) if removing => json_object_remove_member(&text, ps, pe, tool)?.ok_or_else(|| {
+                    anyhow::anyhow!("set-permission: '{}.{}' vanished mid-edit", role, tool)
+                })?,
+                Some((vs, ve)) if bytes[vs] == b'"' => {
+                    let current: String = serde_json::from_str(&text[vs..ve]).unwrap_or_default();
                     if current == decision {
                         return Ok(format!("NO-OP: {} = '{}' already in {}", label, decision, path.display()));
                     }
-                    format!("{}\"{}\"{}", &text[..pvs], decision, &text[pve..])
+                    format!("{}\"{}\"{}", &text[..vs], decision, &text[ve..])
                 }
+                Some(_) => anyhow::bail!(
+                    "set-permission: '{}.{}' is a per-pattern map — pass --pattern to edit a rule inside it",
+                    role, tool
+                ),
+                None if removing => return Ok(format!("NO-OP: {} not present in {}", label, path.display())),
                 None => {
-                    let member = format!("\"{}\": \"{}\"", json_escape(pattern), decision);
-                    json_object_append_member(&text, vs, ve, &member, eol)
+                    let member = format!("\"{}\": \"{}\"", json_escape(tool), decision);
+                    json_object_append_member(&text, ps, pe, &member, eol)
                 }
-            }
-        }
-        Some(_) => anyhow::bail!("set-permission: '{}.{}' value is not an object or string", role, tool),
-        None => {
-            let unit = json_member_indent_unit(bytes, ps, pe);
-            let close_line_start = text[..pe - 1].rfind('\n').map(|p| p + 1).unwrap_or(0);
-            let close_indent = &text[close_line_start..pe - 1];
-            let inner_indent = format!("{}{}", close_indent, unit);
-            let obj = if text[ps + 1..pe - 1].contains('\n') {
-                format!("{{{e0}{inner_indent}\"{}\": \"{}\"{e0}{close_indent}}}", json_escape(pattern), decision, e0 = eol)
-            } else {
-                format!("{{ \"{}\": \"{}\" }}", json_escape(pattern), decision)
             };
-            let member = format!("\"{}\": {}", json_escape(tool), obj);
-            json_object_append_member(&text, ps, pe, &member, eol)
+            (label, if removing { "REMOVED" } else { "SET" }, new_text)
         }
     };
 
@@ -5078,7 +5401,7 @@ fn set_agent_permission(
         .map_err(|e| anyhow::anyhow!("set-permission: edit produced invalid JSON, NOT written: {}", e))?;
     std::fs::write(path, new_text.as_bytes())
         .map_err(|e| anyhow::anyhow!("set-permission: cannot write {}: {}", path.display(), e))?;
-    Ok(format!("PERMISSION SET: {} = '{}' in {}", label, decision, path.display()))
+    Ok(format!("PERMISSION {}: {} = '{}' in {}", verb, label, decision, path.display()))
 }
 
 // ── Context block ────────────────────────────────────────────────────────────
@@ -6302,6 +6625,22 @@ fn improvement_report(json: bool) -> anyhow::Result<()> {
             (None, None, 0, 0)
         };
 
+    // Human-review outcome counts (research/27 §4.1b): the operator's explicit
+    // accept/reject at the done window — the outcome signal the acceptance metric
+    // pairs with (a `reject` is a revealed rejection even when no follow-up spec is
+    // ever filed). Raw counts only; never a target.
+    let mut review_accept = 0usize;
+    let mut review_reject = 0usize;
+    for e in &all {
+        if e.event_name == "human.review" {
+            match e.attributes.get("decision").map(|s| s.as_str()) {
+                Some("accept") => review_accept += 1,
+                Some("reject") => review_reject += 1,
+                _ => {}
+            }
+        }
+    }
+
     if json {
         println!("{}", serde_json::to_string_pretty(&serde_json::json!({
             "acceptance": {
@@ -6314,6 +6653,7 @@ fn improvement_report(json: bool) -> anyhow::Result<()> {
             "root_cause_mix_on_restarts": restart_causes,
             "rework_cause_mix_on_rounds": rework_causes,
             "dominant_root_cause_class": dominant_root_cause_class,
+            "human_review": { "accept": review_accept, "reject": review_reject },
             "raw": {
                 "specs_created": created, "accepted": accepted, "revised": revised,
                 "canceled": canceled, "in_flight": in_flight,
@@ -6331,6 +6671,7 @@ fn improvement_report(json: bool) -> anyhow::Result<()> {
             posterior_mean * 100.0, accepted, resolved, ci_lo * 100.0, ci_hi * 100.0);
     }
     println!("Trend (half vs half): {} (delta {:+.0}pp, z {:.2})", decision, delta * 100.0, z);
+    println!("Human review: {} accepted, {} rejected (raw counts)", review_accept, review_reject);
     match beta_amsaa {
         Some(b) => println!("Reliability growth (Crow-AMSAA beta): {:.2} ({})", b, if b < 0.95 { "growing" } else if b > 1.05 { "degrading" } else { "stable" }),
         None => println!("Reliability growth (Crow-AMSAA beta): insufficient revision events (need >= 3)"),
@@ -6389,6 +6730,9 @@ fn parse_args() -> ActionArgs {
         human_authorized: args.iter().any(|a| a == "--human-authorized"),
         revises: val("--revises").and_then(|s| s.parse().ok()),
         intent: val("--intent"),
+        note: val("--note"),
+        reviewer: val("--reviewer"),
+        concern: val("--concern"),
     }
 }
 

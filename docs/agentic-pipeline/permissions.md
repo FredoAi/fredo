@@ -48,13 +48,18 @@ the state machine's `set-permission` action:
 
 ```
 rust-script .opencode/scripts/pipeline-state.rs --agent machinist --action set-permission \
-  --role <agent> --tool <category> --pattern "<glob>" --decision allow|deny
+  --role <agent> --tool <category> [--pattern "<glob>"] --decision allow|ask|deny|remove
 ```
 
 - Scope is **agent `permission` blocks only** — the action refuses anything else and refuses
   a role/category that does not exist. It is text-surgical and order-preserving, because
   opencode evaluates permission rules **last-match-wins**; a new rule is appended (so an
   `allow` beats the preceding catch-all `deny`), and the document is re-validated before write.
+- `--pattern` is **optional**: with it, the rule inside the per-pattern map `permission.<tool>` is
+  set (`allow`/`ask`/`deny`) or deleted (`remove`, order-preserving); **without it, the top-level
+  `permission.<tool>` member itself is set/replaced (flat) or deleted** — the way a flat
+  tool-namespace glob (e.g. a mis-spelled `chakra_ui_*`) is renamed: add the corrected key, then
+  `--decision remove` the dead one. A flat category is refused only when `--pattern` is given.
 - The rest of `opencode.json` (models, MCP servers, tool wiring, top-level settings) and
   `AGENTS.md` remain **human-owned**. A change there is proposed to the human, not applied.
 - Runtime note: `opencode.json` is read at startup, so a permission change takes effect on the
@@ -98,7 +103,7 @@ written. Four layers stop a loop; keep all four enabled:
 | `qa-expert` | tmp + refs + `.opencode/tests/**` | `telemetry-query.ps1` (read-only PostgreSQL telemetry) | Writes only under `.opencode/tests/`; sole test-suite author. |
 | `developer` | **allow (all files)** | `git checkout/switch/add/commit/rebase/stash`, `git push origin HEAD:spec/<N>` (never main/master/force), `cargo/pnpm/npm/npx/node/rustc`, `copilot*` (Copilot CLI live-capture leg, spec #2933), `Remove-Item .opencode/*` | NO `gh pr create/edit`, NO `git push` to main/master/force, NO `git merge main/master`, NO `git commit --no-verify`. |
 | `tester` | tmp + refs + `.opencode/tests/**` | `dev-env.ps1`, `test-scripts.ps1`, `telemetry-query.ps1`, `git checkout/add/commit`, `git push origin HEAD:spec/<N>`, `bun/npm/pnpm`, `cargo check/clippy/test` (CI-parity re-run of the Rust gates), `copilot*` (Copilot CLI live-capture leg, spec #2933), `Test-Path`, `fredo`, `Copy-Item/New-Item/Remove-Item/Set-Content .opencode/*`, `$env:OPENCODE_ENABLE_TELEMETRY=...` | NO raw `Remove-Item` outside `.opencode/*` - the store is reset via `dev-env.ps1 -Action Clean`, NOT a direct path (sandbox denies it, G-009). NO gh writes, NO command chains. NO direct `opencode` CLI invocation — live opencode sessions are launched ONLY through Fredo's Terminal feature (write_pty_input, never `opencode run`). `external_directory` **denies by default** — only the app-data directory and the installed-plugin path are re-allowed (G-009), so no out-of-repo read/write is reachable. |
-| `orchestrator` | **allow** | `dev-env.ps1`, `test-scripts.ps1`, `git add/commit/push`, `git push origin main` (doc-sync ONLY), `git merge` (never main/master), `git checkout`, `git push origin HEAD:spec/<N>`, `bun/npm/pnpm/cargo`, `.opencode/*` file ops, `$env:OPENCODE_ENABLE_TELEMETRY=...` | NO force-push, NO `git push origin main` except the doc-sync, NO merge of main/master, NO gh writes. NO direct `opencode` CLI invocation — live opencode sessions run only via Fredo's Terminal feature. |
+| `orchestrator` | **allow** | `dev-env.ps1`, `test-scripts.ps1`, `git add/commit/push`, `git merge` (never main/master), `git checkout`, `git push origin HEAD:spec/<N>`, `bun/npm/pnpm/cargo`, `.opencode/*` file ops, `$env:OPENCODE_ENABLE_TELEMETRY=...` | NO `git push origin main` (denied — the post-audit gate opens the `maint/<N>-*` PRs through the machine's `maint-pr` action instead), NO force-push, NO merge of main/master, NO gh writes. NO direct `opencode` CLI invocation — live opencode sessions run only via Fredo's Terminal feature. |
 | `auditor` | tmp only | (baseline only) | Read-only verification gate — no code/plan/test/record edits; its only output is the `audit-record` verdict. No gh/git writes. |
 | `curator` | tmp + `docs/agentic-pipeline/**` (`principles.md` denied) | (baseline only) | Durable lessons only — edits playbooks/`references.md`/pipeline docs; never product source. No gh/git writes. |
 | `toolsmith` | tmp + `.opencode/skills/**` + `.opencode/scripts/**` (`pipeline-state.rs` denied) + `.opencode/tests/**` | `test-scripts.ps1` | Reusable capability only — every script ships with its skill + a test. No gh/git writes. |

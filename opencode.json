@@ -119,7 +119,6 @@
                 "webfetch": "allow",
                 "glob": "allow",
                 "grep": "allow",
-                "chakra_ui_*": "allow",
                 "reactbits_*": "allow",
                 "task": "deny",
                 "question": "deny",
@@ -152,7 +151,8 @@
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny"
-            }
+            },
+                "chakra-ui_*": "allow"
             }
         },
         "qa-expert": {
@@ -218,7 +218,6 @@
                 "task": "deny",
                 "question": "deny",
                 "tauri_*": "deny",
-                "chakra_ui_*": "allow",
                 "reactbits_*": "deny",
                 "doom_loop": "allow",
                 "skill": {
@@ -333,7 +332,8 @@
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny"
-            }
+            },
+                "chakra-ui_*": "allow"
             }
         },
         "tester": {
@@ -353,7 +353,6 @@
                 "task": "deny",
                 "question": "deny",
                 "tauri_*": "allow",
-                "chakra_ui_*": "deny",
                 "reactbits_*": "deny",
                 "doom_loop": "allow",
                 "skill": {
@@ -443,7 +442,8 @@
                 "~/AppData/Roaming/com.fredo.app/**": "allow",
                 "~/AppData/Local/com.fredo.app/**": "allow",
                 "~/.config/opencode/plugins/**": "allow"
-            }
+            },
+                "chakra-ui_*": "deny"
             }
         },
         "machinist": {
@@ -459,7 +459,8 @@
                         ".opencode/scripts/pipeline-state.rs": "allow",
                         ".opencode/pipeline.json": "allow",
                         ".opencode/skills/pipeline-state/**": "allow",
-                        "docs/agentic-pipeline/state-machine.md": "allow"
+                        "docs/agentic-pipeline/state-machine.md": "allow",
+                        ".opencode/scripts/test-scripts.ps1": "allow"
                 },
                 "read": "allow",
                 "webfetch": "allow",
@@ -695,14 +696,14 @@
                 },
                 "question": "deny",
                 "tauri_*": "deny",
-                "chakra_ui_*": "deny",
                 "reactbits_*": "deny",
                 "doom_loop": "allow",
                 "skill": {
                     "*": "deny",
                     "pipeline-state": "allow",
                     "retro-analysis": "allow",
-                    "dev-environment": "allow"
+                    "dev-environment": "allow",
+                    "doc-sync": "allow"
                 },
                 "bash": {
                     "*": "deny",
@@ -731,7 +732,7 @@
                     "git push origin --prune*": "deny",
                     "git push origin main*": "deny",
                     "git push origin master*": "deny",
-                    "git push origin main": "allow",
+                    "git push origin main": "deny",
                     "git push origin main:*": "deny",
                     "git push origin +main*": "deny",
                     "git push origin +master*": "deny",
@@ -799,7 +800,8 @@
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny"
-            }
+            },
+                "chakra-ui_*": "deny"
             }
         }
     },
