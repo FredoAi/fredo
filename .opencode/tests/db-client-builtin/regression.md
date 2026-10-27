@@ -36,3 +36,18 @@ The "must not change" baseline for the built-in-connection slice. Every spec tou
 - [ ] **R-6 (supervisor port policy unchanged):** port policy, pinned-port collision handling, and
   config persistence are untouched; `port=0`/unset still means OS-assigned ephemeral.
   **FAIL** = a port-policy change.
+
+## Server-side read-only hardening baseline (#3080)
+
+The server-side layer is **additive**: the built-in's client-side `readOnlyBlocked` refusal
+(F-9) is unchanged, and no wire/persisted shape changes.
+
+- [ ] **R-7 (built-in client-side refusal unchanged):** the built-in connection still refuses
+  every non-`read` statement with `readOnlyBlocked` **before** server contact (F-9); the built-in
+  row stays `builtin=true` / `accessMode=readOnly` / `port=0` sentinel.
+  **FAIL** = the refusal or the seeded row changed.
+- [ ] **R-8 (no wire / document change):** `StatementClass` variants + serde names unchanged; the
+  `Fredo_dbclient_connections.json` document parses as before (`builtin` serde-defaulted).
+  **FAIL** = a document that fails to parse or a renamed variant.
+- [ ] **R-9 (build gates):** `cargo check` zero warnings (no `#[allow]`); `cargo nextest run`
+  green. **FAIL** = any warning or failing test.
