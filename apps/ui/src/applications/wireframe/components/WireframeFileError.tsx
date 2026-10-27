@@ -30,22 +30,37 @@ export function WireframeFileError(): React.ReactElement | null {
       flexShrink={0}
       bg={tint('var(--status-error)', 10)}
       borderTopWidth="1px"
-      borderColor="status.error"
+      // #3086 ST-4 (G-235 substitution) — the raw `status.error` is below the
+      // 3:1 UI floor against the tinted canvas on light presets (arctic 2.84),
+      // so the banner's identifiable boundary is the deepened
+      // `status.errorStrong` (gate row `banner|default|border`).
+      borderColor="status.errorStrong"
     >
       <Icon
         as={LuTriangleAlert}
         boxSize="4"
-        color="status.error"
+        // `banner|default|icon` = `status.errorStrong` on the 10 % error tint.
+        color="status.errorStrong"
         aria-hidden="true"
         flexShrink={0}
       />
-      <Text fontSize="sm" color="status.error" flex="1" minW={0}>
+      <Text
+        fontSize="sm"
+        // `banner|default|label` = `fg.default` on the 10 % error tint — the
+        // message never relies on colour alone (the red icon + border carry the
+        // error semantics). The `data-contrast-pair` anchor lets the live leg
+        // recompute the ratio from computed styles.
+        data-contrast-pair="banner|default|label"
+        color="fg.default"
+        flex="1"
+        minW={0}
+      >
         {error}
       </Text>
       <Button
         size="xs"
         variant="ghost"
-        color="status.error"
+        color="status.errorStrong"
         aria-label="Dismiss file error"
         onClick={() => setError(null)}
         flexShrink={0}

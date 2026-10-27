@@ -94,10 +94,15 @@ export function WireframeStatusBar(): React.ReactElement {
         {panMode ? (
           <Box
             as="span"
+            data-contrast-pair="subtle|default|chip-label"
             px={2}
             py={0.5}
             borderRadius="sm"
-            bg="bg.muted"
+            // #3086 ST-4 — the chip fill is the preset-authored `bg.surface`
+            // (the gate row `subtle|default|chip-label` is `fg.muted` on
+            // `bg.surface`; the former `bg.muted` is not preset-authored and
+            // could not clear the body floor on every preset).
+            bg="bg.surface"
             color="fg.muted"
             fontSize="xs"
           >
