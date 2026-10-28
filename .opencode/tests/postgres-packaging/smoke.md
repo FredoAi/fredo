@@ -38,9 +38,19 @@ core-path sanity plus the packaging quick paths. Full detail lives in `functiona
 - [ ] **S-12:** Mission Monitor renders a live session's chat / tools / tokens / graph after the
   packaging change — cross-check `telemetry_spans` at the same instant (F-13).
 
+## #3076 static quick paths (no live receipt required)
+
+- [ ] **S-13:** `cargo test --manifest-path apps/tauri/src-tauri/Cargo.toml --lib
+  applications::pg_supervisor` is green (`0 failed`) on the tip — the domain suite did not rot
+  behind the trusted-install change (F-15/F-28).
+- [ ] **S-14:** `cargo check --manifest-path apps/tauri/src-tauri/Cargo.toml` prints ZERO warnings
+  (default feature set) — the fast build-hygiene gate (F-26).
+
 ## Smoke-level pass/fail
 
-PASS = S-1..S-3 and S-6..S-12 green; S-4/S-5 green or a named blocker. A mode not build-time
+PASS = S-1..S-3 and S-6..S-12 green; S-4/S-5 green or a named blocker. For a **#3076 round**, S-13
+and S-14 are additional required legs and are **static** — a `cargo test`/`cargo check` output tail
+is their evidence, and a live receipt is NOT required for them. A mode not build-time
 enforced, a corrupt/truncated acquisition that extracts, a first-run failure that leaves a partial
 tree, a console flash, no log tail, a static-only receipt on S-12, or an unbounded wait = **FAIL**.
 
