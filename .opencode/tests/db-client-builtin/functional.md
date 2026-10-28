@@ -126,7 +126,7 @@ headroom this feature connects on).
 
 Slice on top of #3029. The built-in **"Fredo"** connection is `ReadOnly` and targets the embedded
 cluster as the **`postgres` superuser** — the exact superuser-on-a-"read-only"-connection case
-`SECURITY_AUDIT.md` Finding #5 names. This makes it the **live AC1/AC2 lever**: PostgreSQL itself
+`research/34-security-audit-2026-10-22.md` Finding #5 names. This makes it the **live AC1/AC2 lever**: PostgreSQL itself
 now enforces read-only for it (`SET default_transaction_read_only = on` per physical connection
 via `PgPoolOptions::after_connect`, `connect.rs`). F-9 (client-side refusal) is unchanged and is
 now the *first* of two layers.
