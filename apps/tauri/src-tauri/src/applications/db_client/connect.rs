@@ -92,6 +92,21 @@ pub const MAX_OPEN_CONNECTIONS: usize =
 /// only by an explicit later edit.
 pub const DEFAULT_ACCESS_MODE: AccessMode = AccessMode::ReadOnly;
 
+/// Session SQL applied to every NEW physical connection of a read-only pool
+/// (layer 2 — the server-side read-only guard, R-1.1/R-2.1).
+pub(crate) const READ_ONLY_SESSION_SQL: &str = "SET default_transaction_read_only = on";
+
+/// The read-only session hook for a pool of `access_mode`: `Some(sql)` for
+/// [`AccessMode::ReadOnly`], `None` for [`AccessMode::ReadWrite`]
+/// (R-2.1/R-2.2). This is the pure seam the unit pins assert; the live receipt
+/// proves the effect.
+pub(crate) fn read_only_session_sql(access_mode: AccessMode) -> Option<&'static str> {
+    match access_mode {
+        AccessMode::ReadOnly => Some(READ_ONLY_SESSION_SQL),
+        AccessMode::ReadWrite => None,
+    }
+}
+
 // ── Built-in "Fredo" connection (Spec #3029, ST-2) ────────────────────────────
 
 /// The stable id of the seeded built-in connection to Fredo's own embedded
@@ -327,6 +342,7 @@ fn forced_failure(stage: Option<ForceFailStage>) -> Option<ProbeError> {
 
 async fn open_bounded(
     options: PgConnectOptions,
+    access_mode: AccessMode,
     force_fail: Option<ForceFailStage>,
     password: Option<&str>,
 ) -> Result<(PgPool, String), ProbeError> {
@@ -334,10 +350,23 @@ async fn open_bounded(
         return Err(error);
     }
     let attempt = async {
-        let pool = PgPoolOptions::new()
+        let mut pool_options = PgPoolOptions::new()
             .min_connections(0)
             .max_connections(1)
-            .acquire_timeout(CONNECT_BOUND)
+            .acquire_timeout(CONNECT_BOUND);
+        // Layer 2 (R-2.1/R-2.2): applied to EVERY physical connection a
+        // read-only pool creates, so it also covers a replacement connection
+        // created after a drop (R-2.3). A read-write pool attaches no hook and
+        // behaves byte-identically to before.
+        if let Some(sql) = read_only_session_sql(access_mode) {
+            pool_options = pool_options.after_connect(move |conn, _meta| {
+                Box::pin(async move {
+                    sqlx::query(sql).execute(&mut *conn).await?;
+                    Ok(())
+                })
+            });
+        }
+        let pool = pool_options
             .connect_with(options)
             .await
             .map_err(|e| classify_sqlx_error(&e, password))?;
@@ -493,7 +522,10 @@ pub async fn probe(args: DbConnectionTestArgs, force_fail: Option<ForceFailStage
         password,
         args.ssl_mode,
     );
-    match open_bounded(options, force_fail, password).await {
+    // The transient `db_connection_test` probe is not a session and carries no
+    // access mode (`DbConnectionTestArgs`), so it gets no hook (R-2 scopes the
+    // hook to read-only sessions); it runs `SELECT version()` only.
+    match open_bounded(options, AccessMode::ReadWrite, force_fail, password).await {
         Ok((pool, version)) => {
             pool.close().await;
             DbTestResult {
@@ -734,9 +766,14 @@ pub async fn connect_with(
         target.password.as_deref(),
         target.ssl_mode,
     );
-    let (pool, server_version) = open_bounded(options, state.force_fail(), target.password.as_deref())
-        .await
-        .map_err(|e| e.to_messages())?;
+    let (pool, server_version) = open_bounded(
+        options,
+        view.access_mode,
+        state.force_fail(),
+        target.password.as_deref(),
+    )
+    .await
+    .map_err(|e| e.to_messages())?;
 
     if let Some(replaced) = state.insert_pool(view.id.clone(), pool).await {
         replaced.close().await;
