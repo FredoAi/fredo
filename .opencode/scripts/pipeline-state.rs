@@ -754,6 +754,19 @@ fn mock_gh_pr(args: &[&str]) -> anyhow::Result<String> {
             mock_write_pr(n, &pr)?;
             Ok(format!("https://github.com/{}/pull/{}", mock_repo_name(), n))
         }
+        "close" => {
+            // gh pr close <n> — the maint-pr failed-attempt recovery path closes a
+            // stale OPEN `maint/<N>` PR before recreating it (#3075).
+            let p = args.get(2).ok_or_else(|| anyhow::anyhow!("mock gh pr close: no pr number"))?.to_string();
+            let n = p.trim_start_matches('#').parse::<u32>().map_err(|_| anyhow::anyhow!("mock gh pr close: bad pr `{}`", p))?;
+            if !mock_pr_path(n).exists() {
+                anyhow::bail!("mock gh pr close #{}: not found", n);
+            }
+            let mut pr = mock_read_pr(n);
+            pr["state"] = serde_json::json!("CLOSED");
+            mock_write_pr(n, &pr)?;
+            Ok(String::new())
+        }
         "merge" => {
             let p = args.get(2).ok_or_else(|| anyhow::anyhow!("mock gh pr merge: no pr number"))?.to_string();
             let n = p.trim_start_matches('#').parse::<u32>().map_err(|_| anyhow::anyhow!("mock gh pr merge: bad pr `{}`", p))?;
@@ -1130,6 +1143,24 @@ fn mock_git(args: &[&str]) -> anyhow::Result<String> {
                 if !branch.is_empty() {
                     mock_local_ref_write(branch)?;
                 }
+                // Record the start point so the harness can assert the maint branch
+                // was based on `origin/main` rather than the spec tip/HEAD (#3075).
+                if let Some(start) = args.get(3) {
+                    mock_write(&mock_file(&["checkout-base"]), start)?;
+                }
+            }
+            Ok(String::new())
+        }
+        "diff" => {
+            // git diff --name-only HEAD origin/main -- <paths>: the mock does not
+            // model commit trees, so an identical tree is the default. The
+            // `maint-base-diverged` marker models main having moved a gate-edited
+            // path, driving the loud-failure (G-1976) branch deterministically.
+            if args.iter().any(|a| *a == "--name-only") {
+                if mock_file(&["maint-base-diverged"]).exists() {
+                    return Ok("docs/ARCHITECTURE.md".to_string());
+                }
+                return Ok(String::new());
             }
             Ok(String::new())
         }
@@ -1944,8 +1975,10 @@ fn ensure_spec_pr_merged(issue: u32) -> anyhow::Result<Option<String>> {
 }
 
 /// The post-audit **SPEC MAINT PR** — replaces the orchestrator's former direct
-/// `git push origin main`. Opens ONE `maint/<N>` PR off `main` carrying ALL
-/// post-audit paths in a single commit:
+/// `git push origin main`. Opens ONE `maint/<N>` PR **based on the current
+/// `origin/main`** (never HEAD — the spec PR was squash-merged, so the spec tip is
+/// not a descendant of main and replaying it would carry the whole spec diff)
+/// carrying ALL post-audit paths in a single commit:
 ///   - the pipeline's own edits — `docs/agentic-pipeline/`, `.opencode/skills/`,
 ///     `.opencode/scripts/`, `.opencode/pipeline.json`, `opencode.json`; and
 ///   - the product docs — ARCHITECTURE/CLI_GUIDE/SETUP/SECURITY/FAQ.
@@ -1957,6 +1990,8 @@ fn ensure_spec_pr_merged(issue: u32) -> anyhow::Result<Option<String>> {
 /// `maint-pr` event (`merged: true`). A PR that is not MERGED (closed unmerged) or a
 /// bounded timeout is an ERROR — the post-audit gate must fail so `done` stays
 /// unreachable. An empty change set is a NO-OP (never fatal): no PR, no merged event.
+/// An already-open `maint/<N>` PR (a failed earlier attempt) is closed and its stale
+/// head dropped before a clean PR is opened and merged (idempotent recovery).
 fn post_audit_maint_pr(
     issue: u32,
     actor: &str,
@@ -1981,14 +2016,53 @@ fn post_audit_maint_pr(
     // Anything to commit at all?
     let mut st: Vec<&str> = vec!["status", "--porcelain", "--"];
     st.extend(PATHS.iter().copied());
-    if run_cmd("git", &st)?.trim().is_empty() {
+    let dirty = run_cmd("git", &st)?;
+    if dirty.trim().is_empty() {
         println!("NO-OP: no post-audit changes for #{} — nothing to open a SPEC MAINT PR for", issue);
         append_event_attrs(issue, "maint-pr", actor, phase, "success", &format!("no post-audit changes to sync for #{}", issue), &[("merged", "false"), ("noop", "true")])?;
         return Ok(());
     }
     let branch = format!("maint/{}", issue);
-    // Create/reset the branch at HEAD, carrying the working-tree edits.
-    run_cmd("git", &["checkout", "-B", &branch])?;
+    // Base the branch on the CURRENT `origin/main`, NOT `HEAD` (G-406 / #3075).
+    //
+    // The gate runs with the repo root on the spec branch (`doc-sync` Step 1), and
+    // the spec PR is SQUASH-merged into main at `testing → audit`. A squash merge
+    // creates a NEW commit whose tree equals the spec tip but which is NOT a
+    // descendant of it. Building the branch at HEAD therefore replays the WHOLE
+    // spec diff on the PR (PR #3095: +1639/−361 instead of the ~6 gate-edited
+    // docs) and conflicts whenever both sides changed a file differently. Base on
+    // `origin/main` so the PR carries ONLY the post-audit paths.
+    run_cmd("git", &["fetch", "origin", "main"])?;
+    // Safety (G-1976): switching the base rewrites every path that differs between
+    // HEAD and `origin/main`. If one of those paths also carries a pending
+    // working-tree edit, the checkout would refuse — and a forced one would lose
+    // the edit. Fail loudly instead of silently discarding the gate's edits.
+    let mut diff_args: Vec<&str> = vec!["diff", "--name-only", "HEAD", "origin/main", "--"];
+    diff_args.extend(PATHS.iter().copied());
+    let base_changed = run_cmd("git", &diff_args)?;
+    // `git status --porcelain` lines are `XY <path>` (path starts at column 3).
+    let dirty_paths: Vec<String> = dirty
+        .lines()
+        .filter_map(|line| line.get(3..).map(|p| p.trim().to_string()))
+        .filter(|p| !p.is_empty())
+        .collect();
+    let mut clobbered: Vec<String> = base_changed
+        .lines()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty() && dirty_paths.iter().any(|d| d == p))
+        .collect();
+    clobbered.sort();
+    clobbered.dedup();
+    if !clobbered.is_empty() {
+        anyhow::bail!(
+            "cannot base the SPEC MAINT PR for #{} on origin/main: pending post-audit edit(s) overlap path(s) changed on main: {}. Preserve them (commit, or copy under .opencode/tmp/{}/) and reconcile before re-running `maint-pr` — refusing to discard them (G-1976); the post-audit gate failed",
+            issue,
+            clobbered.join(", "),
+            issue
+        );
+    }
+    // Create/reset the branch on origin/main, carrying the working-tree edits.
+    run_cmd("git", &["checkout", "-B", &branch, "origin/main"])?;
     let mut add: Vec<&str> = vec!["add", "--"];
     add.extend(PATHS.iter().copied());
     run_cmd("git", &add)?;
@@ -2005,6 +2079,37 @@ fn post_audit_maint_pr(
     std::fs::write(&msg_file, &pr_title)?;
     run_cmd("git", &["commit", "-F", msg_file.to_str().unwrap()])?;
     let _ = std::fs::remove_file(&msg_file);
+    // Idempotency / failed-attempt recovery: a previous attempt can leave an OPEN
+    // PR for `maint/<N>` (e.g. its forced merge hit a conflict). Reusing it would
+    // replay the stale spec-diff commit and `gh pr create` would fail with "a pull
+    // request for branch … already exists". Chosen strategy: CLOSE the stale PR,
+    // delete the stale remote head, then push the freshly-based branch and open a
+    // clean PR. Closing before deleting keeps the PR from dangling; because the
+    // old head is gone, the new push is a plain fast-forward-free create — no
+    // force-push is needed (the alternative, force-updating the branch in place,
+    // does). The end state is the same either way: `maint/<N>` = origin/main + only
+    // the post-audit edits, and the PR is MERGED.
+    let open = run_gh(&["pr", "list", "--head", &branch, "--state", "open", "--json", "number"])?;
+    let stale: Vec<String> = serde_json::from_str::<serde_json::Value>(&open)
+        .ok()
+        .and_then(|v| v.as_array().cloned())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|p| p.get("number").and_then(|n| n.as_u64()).map(|n| n.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    if !stale.is_empty() {
+        for n in &stale {
+            run_gh(&["pr", "close", n])?;
+        }
+        println!("closed stale SPEC MAINT PR(s) {:?} for {}", stale, branch);
+    }
+    // Drop any stale remote head (an interrupted attempt can leave the branch
+    // pushed without an open PR). The push below must be a clean create, never a
+    // non-fast-forward rejection onto the old spec-tip commit. Best-effort: an
+    // absent head is not an error (git exits non-zero, which we ignore).
+    let _ = run_cmd("git", &["push", "origin", "--delete", &branch]);
     run_cmd("git", &["push", "-u", "origin", &branch])?;
     let body = match body_file {
         Some(f) => std::fs::read_to_string(f).unwrap_or_else(|_| format!("Post-audit maintenance sync for #{}.", issue)),

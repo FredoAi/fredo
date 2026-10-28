@@ -4084,6 +4084,79 @@ Test-Script "maint-pr opens ONE SPEC MAINT PR and force-merges it (--admin)" {
   }
 }
 
+# Regression #3075 (G-406): a FAILED first attempt leaves an OPEN `maint/<N>` PR
+# whose head replays the squash-merged spec diff. The second invocation must NOT
+# fail on `gh pr create` ("a pull request for branch … already exists") and must
+# NOT replay the spec tip: it closes the stale PR, deletes its stale head, bases
+# the fresh branch on `origin/main`, opens a clean PR, and merges it.
+Test-Script "maint-pr recovers an open maint/<N> PR onto origin/main and merges" {
+  $url = Mock-IssueCreate "temp: maint-pr recovery" "maint-pr recovery scratch" "post-audit"
+  $issueNum = if ($url -match 'issues/(\d+)') { [int]$Matches[1] } else { throw "no issue from mock: $url" }
+  $marker = Join-Path $env:FREDO_MOCK_STORE "maint-dirty"
+  $pending = Join-Path $env:FREDO_MOCK_STORE "maint-merge-pending"
+  $diverged = Join-Path $env:FREDO_MOCK_STORE "maint-base-diverged"
+  $baseFile = Join-Path $env:FREDO_MOCK_STORE "checkout-base"
+  try {
+    New-Item -ItemType File -Path $marker -Force | Out-Null
+    Remove-Item -LiteralPath $baseFile -Force -ErrorAction SilentlyContinue
+    $env:FREDO_MAINT_MERGE_ATTEMPTS = "1"
+    # First attempt: the PR opens + pushes, but the (mock) merge stays OPEN → the
+    # bounded verification times out → the action errors (the gate fails).
+    New-Item -ItemType File -Path $pending -Force | Out-Null
+    $first = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
+    $firstStr = if ($first -is [array]) { $first -join "`n" } else { "$first" }
+    if ($LASTEXITCODE -eq 0) { throw "first attempt should fail on the unmerged PR, got: $firstStr" }
+    if ($firstStr -notmatch "did not merge within the timeout") { throw "expected timeout error, got: $firstStr" }
+    $global:LASTEXITCODE = 0
+    Remove-Item -LiteralPath $pending -Force -ErrorAction SilentlyContinue
+    # The failed attempt left exactly ONE OPEN maint PR — the recovery input.
+    $open = @(Mock-PrList "maint/$issueNum" "open")
+    if ($open.Count -ne 1) { throw "expected the failed attempt to leave ONE open maint PR, got $($open.Count)" }
+    $staleN = $open[0]
+    # Second attempt: recover. No merge marker → it must end MERGED.
+    $second = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
+    $secondStr = if ($second -is [array]) { $second -join "`n" } else { "$second" }
+    if ($LASTEXITCODE -ne 0) { throw "second maint-pr failed: $secondStr" }
+    if ($secondStr -notmatch "SPEC MAINT PR MERGED") { throw "expected SPEC MAINT PR MERGED, got: $secondStr" }
+    # The branch was based on the CURRENT origin/main, not the spec tip/HEAD.
+    if (-not (Test-Path -LiteralPath $baseFile)) { throw "maint-pr never recorded a checkout base - branch was not based on origin/main" }
+    $base = (Get-Content -LiteralPath $baseFile -Raw).Trim()
+    if ($base -ne "origin/main") { throw "maint branch must be based on origin/main, got '$base'" }
+    # The stale PR was closed; a NEW clean PR was opened and merged.
+    $stale = Get-Content (Join-Path $env:FREDO_MOCK_STORE "prs\$staleN.json") -Raw | ConvertFrom-Json
+    if ($stale.state -ne "CLOSED") { throw "stale PR #$staleN should be CLOSED, got $($stale.state)" }
+    $merged = @(Mock-PrList "maint/$issueNum" "merged")
+    if ($merged.Count -ne 1) { throw "expected ONE merged maint PR after recovery, got $($merged.Count)" }
+    $newN = $merged[0]
+    if ("$newN" -eq "$staleN") { throw "recovery must open a NEW PR (closed stale #$staleN), not reuse it" }
+    # Event: merged:true + the NEW pr number + branch (the contract is preserved).
+    $ev = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "maint-pr" -and $_.attributes.merged -eq "true" } | Select-Object -Last 1
+    if (-not $ev) { throw "no merged maint-pr event recorded after recovery" }
+    if ("$($ev.attributes.pr)" -ne "$newN") { throw "event pr wrong: $($ev.attributes.pr) vs $newN" }
+    if ($ev.attributes.branch -ne "maint/$issueNum") { throw "event branch wrong: $($ev.attributes.branch)" }
+    # G-1976 loud failure: if origin/main changed a path that still carries a
+    # pending edit, refuse (do NOT clobber) and fail the gate.
+    New-Item -ItemType File -Path $diverged -Force | Out-Null
+    $clobber = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
+    $clobberStr = if ($clobber -is [array]) { $clobber -join "`n" } else { "$clobber" }
+    if ($LASTEXITCODE -eq 0) { throw "a diverged base with pending edits must fail loudly, got: $clobberStr" }
+    if ($clobberStr -notmatch "cannot base the SPEC MAINT PR" -or $clobberStr -notmatch "docs/ARCHITECTURE.md") {
+      throw "expected the G-1976 clobber refusal, got: $clobberStr"
+    }
+    $global:LASTEXITCODE = 0
+    return "maint-pr recovery: stale maint/$issueNum PR closed, fresh branch on origin/main merged (event merged:true); diverged base refused (#$issueNum)"
+  } finally {
+    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $pending -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $diverged -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $baseFile -Force -ErrorAction SilentlyContinue
+    Remove-Item Env:\FREDO_MAINT_MERGE_ATTEMPTS -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # The success exit (post-audit -> cleanup) is gated on the merged SPEC MAINT PR:
 # with the Curator improvement recorded but NO maint-pr, the transition is BLOCKED
 # (so `done` is unreachable). A restart exit is NOT gated (covered by the
