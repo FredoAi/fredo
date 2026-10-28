@@ -3620,18 +3620,71 @@ fn recover_missing_triage_plan(issue: u32, actor: &str, phase: &str) {
     }
 }
 
+/// The per-developer verification draft convention: a file named
+/// `dev-verify-<ST-id>.md` maps to the comment title
+/// `Developer <ST-id> — verification`. Shared by the transition flush AND the
+/// `comment` action so both documented channels produce the SAME documented
+/// top-level header (G-405 — the `comment` action's Status-only prefix gate
+/// cannot otherwise reach it). `None` when `name` is not a dev-verify draft.
+fn dev_verify_title(name: &str) -> Option<String> {
+    name.strip_prefix("dev-verify-")
+        .and_then(|s| s.strip_suffix(".md"))
+        .filter(|st| !st.is_empty())
+        .map(|st| format!("Developer {} — verification", st))
+}
+
+/// Discover the per-developer verification drafts
+/// (`.opencode/tmp/<issue>/dev-verify-<ST-id>.md`) for the timeline flush. The
+/// `<ST-id>` varies per developer, so the flush list cannot be a static const;
+/// the comment title is DERIVED from the filename (`dev_verify_title`). Sorted by
+/// filename so the flush order is deterministic (and therefore idempotent across
+/// repeated flushes).
+fn dev_verify_drafts(dir: &std::path::Path) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return out,
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if let Some(title) = dev_verify_title(&name) {
+            out.push((name, title));
+        }
+    }
+    out.sort();
+    out
+}
+
+/// True when the issue already carries a per-developer verification comment with
+/// this title. Makes the `dev-verify-*.md` flush idempotent against a draft
+/// already posted through the documented `comment` action — the two channels
+/// never double-post the same developer's record (G-405).
+fn dev_verify_posted(issue: u32, title: &str) -> bool {
+    let needle = format!("## {}", title);
+    get_issue_comments(issue).iter().any(|b| b.trim_start().starts_with(&needle))
+}
+
 fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str>) -> anyhow::Result<()> {
-    const TIMELINE: &[(&str, &str)] = &[
-        ("triage-plan.md", "Triage Plan"),
-        ("fix-plan.md", "Fix Plan"),
-        ("dev-summary.md", "Development Summary"),
-        ("tests-runs.md", "Tests Runs"),
-    ];
     let dir = project_root()?.join(".opencode").join("tmp").join(issue.to_string());
     if !dir.is_dir() {
         return Ok(());
     }
-    for (fname, title) in TIMELINE {
+    // The flush work list: the static phase drafts in fixed order, with the
+    // per-developer verification drafts (`dev-verify-<ST-id>.md`, discovered
+    // dynamically — the `<ST-id>` varies) inserted BEFORE the assembled roll-up so
+    // each developer's record precedes `## Development Summary`. G-405: the
+    // `comment` action can only produce `## Status`, so this flush path is what
+    // makes the documented `## Developer <ST-id> — verification` header reachable.
+    let mut work: Vec<(String, String)> = vec![
+        ("triage-plan.md".to_string(), "Triage Plan".to_string()),
+        ("fix-plan.md".to_string(), "Fix Plan".to_string()),
+    ];
+    work.extend(dev_verify_drafts(&dir));
+    work.push(("dev-summary.md".to_string(), "Development Summary".to_string()));
+    work.push(("tests-runs.md".to_string(), "Tests Runs".to_string()));
+    for (fname, title) in &work {
+        let fname = fname.as_str();
+        let title = title.as_str();
         let p = dir.join(fname);
         if !p.exists() {
             continue;
@@ -3647,12 +3700,19 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
             println!("WARNING: {} lacks an '*Authored by <Agent>*' footer — not posting (anti-spoofing)", fname);
             continue;
         }
+        // G-405 idempotency: a per-developer draft already posted through the
+        // documented `comment` action is consumed, never re-posted as a duplicate.
+        if fname.starts_with("dev-verify-") && dev_verify_posted(issue, title) {
+            let _ = std::fs::remove_file(&p);
+            println!("SKIPPED: {} — the `{}` comment is already posted", fname, title);
+            continue;
+        }
         // PO feedback (#2688): a `## Tests Runs` draft MUST carry a literal `Verdict:`
         // line (template format) before it is posted. A malformed header like
         // `## Tests Runs -- PASS 7/7` with no `Verdict:` line is REFUSED (the draft is
         // kept for the tester to fix) so the timeline never receives an unparseable
         // verdict comment.
-        if *fname == "tests-runs.md" {
+        if fname == "tests-runs.md" {
             let has_verdict = body.lines().any(|l| l.trim_start().to_lowercase().starts_with("verdict:"));
             if !has_verdict {
                 let _ = append_event_attrs(issue, "guard.fired", actor, phase, "blocked", "tests-runs draft refused: no literal Verdict: line", &[("guardId", "G-013"), ("guardKey", "tests_runs_verdict_line"), ("failureClass", "unparseable_verdict_comment"), ("site", "post-comments")]);
@@ -3701,7 +3761,7 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
             None => prior_phase_entries(issue, "implementation") > 0, // manual flush / audit-record flush
         };
         let authored_fix_plan = dir.join("fix-plan.md").exists();
-        let (post_title, post_body) =         if *fname == "fix-plan.md" {
+        let (post_title, post_body) =         if fname == "fix-plan.md" {
             if !is_rework_reentry {
                 let _ = append_event_attrs(issue, "guard.fired", actor, phase, "blocked", "stray fix-plan.md on a first implementation entry — not posting", &[("guardId", "G-339"), ("guardKey", "stray_fix_plan_first_entry"), ("failureClass", "spurious_fix_plan_posted"), ("site", "post-comments")]);
                 println!("WARNING: fix-plan.md present but this is not a rework re-entry — not posting (kept on disk)");
@@ -3725,7 +3785,7 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
                 }
             }
             (format!("Fix Plan (round {})", prior_phase_entries(issue, "implementation") + 1), body)
-        } else if *fname == "triage-plan.md" {
+        } else if fname == "triage-plan.md" {
             if is_rework_reentry && (authored_fix_plan || fix_plan_round_posted(issue)) {
                 // The Architect-authored Fix Plan replaces the derived compaction —
                 // consume the plan draft so it is never double-posted later. This is
@@ -4093,11 +4153,25 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             }
             let tmp = project_root()?.join(".opencode").join("tmp").join(format!("comment-{}.md", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(tmp.parent().unwrap())?;
-            // Skip the header prepend when the drafted body already starts with the
-            // `## <prefix>` heading (agents sometimes include it — a duplicate header
-            // produced `## Status\n\n## Status\n\n...` on #2734's closing comment).
+            // Header selection. Normally the machine owns the `## <prefix>` heading
+            // (skip the prepend when the drafted body already starts with it — a
+            // duplicate header produced `## Status\n\n## Status\n\n...` on #2734's
+            // closing comment). G-405: the per-developer verification comment's
+            // DOCUMENTED header is `## Developer <ST-id> — verification`, which the
+            // Status-only prefix cannot produce — so honour it when the drafted body
+            // already carries a `## Developer …` heading, OR derive it from a
+            // `dev-verify-<ST-id>.md` body file. The prefix gate is UNCHANGED
+            // (arbitrary prose still gets `## Status`; a non-`Status` prefix is still
+            // refused) — only this one documented header bypasses the prepend.
             let header = format!("## {}", prefix);
-            let content = if body.trim_start().starts_with(&header) {
+            let starts_dev = body.trim_start().starts_with("## Developer ");
+            let starts_status = body.trim_start().starts_with(&header);
+            let dev_title = dev_verify_title(&body_file_name);
+            let content = if starts_dev {
+                body
+            } else if let Some(t) = dev_title {
+                format!("## {}\n\n{}", t, body)
+            } else if starts_status {
                 body
             } else {
                 format!("## {}\n\n{}", prefix, body)
