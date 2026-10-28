@@ -30,15 +30,22 @@ summary. If you find a mismatch, report it - do not work around the sandbox.
 - **Out-of-repo access is DENY-by-default (`external_directory`).** Each agent's block also
   carries an `external_directory` map. opencode defaults that category to `ask` — which is NOT a
   hard block (it auto-approves in `--auto`, and a single "always" approval re-opens the path for
-  the whole session), so an agent can reach out-of-repo files unless a rule DENIES them. The only
-  sanctioned out-of-repo paths are the **app-data directory** (`%APPDATA%\com.fredo.app`,
-  or `%LOCALAPPDATA%` on non-roaming installs — it holds the embedded PostgreSQL cluster) and the **installed-plugin path**
-  (`~/.config/opencode/plugins/`); everything else must be denied. **An explicit deny for one path
+  the whole session), so an agent can reach out-of-repo files unless a rule DENIES them. The
+  sanctioned out-of-repo paths are the **app-data directory** (`%APPDATA%\com.fredo.app`, or
+  `%LOCALAPPDATA%` on non-roaming installs — it holds the embedded PostgreSQL cluster), the
+  **installed-plugin path** (`~/.config/opencode/plugins/`), and — for `software-architect`,
+  `developer`, and `tester` only — the **local Cargo registry source tree**
+  (`~/.cargo/registry/src/**`) so an agent can read a pinned dependency's actual source during
+  research/implementation; everything else must be denied. **An explicit deny for one path
   is not repo-scoping** (G-009 default-deny variant): the map must deny by default and re-allow
   only those documented paths. The Machinist owns this map via
   `set-permission --tool external_directory`.
   A flat `read: "allow"` is unscoped and the action refuses flat categories, so
-  `external_directory` is the lever that scopes reads to the repo.
+  `external_directory` is the lever that scopes reads to the repo. **`external_directory` has no
+  read/write split** — a path rule re-allows the whole path, not one verb — so the Cargo entry is
+  a *path*-scoped re-allow (the registry source tree only), not a verb-scoped read-only exception.
+  Keep it that narrow: never widen it to `~/.cargo/**`, and grant it to no role outside the three
+  named here.
 
 ## Editing agent permissions (the Machinist owns this)
 
@@ -98,11 +105,11 @@ written. Four layers stop a loop; keep all four enabled:
 | Agent | edit | extra bash (beyond baseline) | gotchas / what is DENIED |
 |-------|------|-----------------------------|--------------------------|
 | `product-owner` | tmp + refs | (baseline only) | GitHub output: `create-issue` + `Status` comments (PO amendments, #2734); never gate artifacts. |
-| `software-architect` | tmp + refs | `telemetry-query.ps1` (read-only PostgreSQL telemetry) | Research/planning only - no code edits, no gh/git writes. |
+| `software-architect` | tmp + refs | `telemetry-query.ps1` (read-only PostgreSQL telemetry) | Research/planning only - no code edits, no gh/git writes. `external_directory` denies opencode's runtime dir and re-allows `~/.cargo/registry/src/**` (pinned dependency sources, path-scoped) - no other path is granted. |
 | `ui-ux-expert` | tmp + refs | (baseline only) | Design assets only - no code edits. |
 | `qa-expert` | tmp + refs + `.opencode/tests/**` | `telemetry-query.ps1` (read-only PostgreSQL telemetry) | Writes only under `.opencode/tests/`; sole test-suite author. |
-| `developer` | **allow (all files)** | `git checkout/switch/add/commit/rebase/stash`, `git push origin HEAD:spec/<N>` (never main/master/force), `cargo/pnpm/npm/npx/node/rustc`, `copilot*` (Copilot CLI live-capture leg, spec #2933), `Remove-Item .opencode/*` | NO `gh pr create/edit`, NO `git push` to main/master/force, NO `git merge main/master`, NO `git commit --no-verify`. |
-| `tester` | tmp + refs + `.opencode/tests/**` | `dev-env.ps1`, `test-scripts.ps1`, `telemetry-query.ps1`, `git checkout/add/commit`, `git push origin HEAD:spec/<N>`, `bun/npm/pnpm`, `cargo check/clippy/test` (CI-parity re-run of the Rust gates), `copilot*` (Copilot CLI live-capture leg, spec #2933), `Test-Path`, `fredo`, `Copy-Item/New-Item/Remove-Item/Set-Content .opencode/*`, `$env:OPENCODE_ENABLE_TELEMETRY=...` | NO raw `Remove-Item` outside `.opencode/*` - the store is reset via `dev-env.ps1 -Action Clean`, NOT a direct path (sandbox denies it, G-009). NO gh writes, NO command chains. NO direct `opencode` CLI invocation — live opencode sessions are launched ONLY through Fredo's Terminal feature (write_pty_input, never `opencode run`). `external_directory` **denies by default** — only the app-data directory and the installed-plugin path are re-allowed (G-009), so no out-of-repo read/write is reachable. |
+| `developer` | **allow (all files)** | `git checkout/switch/add/commit/rebase/stash`, `git push origin HEAD:spec/<N>` (never main/master/force), `cargo/pnpm/npm/npx/node/rustc`, `copilot*` (Copilot CLI live-capture leg, spec #2933), `Remove-Item .opencode/*` | NO `gh pr create/edit`, NO `git push` to main/master/force, NO `git merge main/master`, NO `git commit --no-verify`. `external_directory` denies opencode's runtime dir and re-allows `~/.cargo/registry/src/**` (pinned dependency sources, path-scoped) - no other path is granted. |
+| `tester` | tmp + refs + `.opencode/tests/**` | `dev-env.ps1`, `test-scripts.ps1`, `telemetry-query.ps1`, `git checkout/add/commit`, `git push origin HEAD:spec/<N>`, `bun/npm/pnpm`, `cargo check/clippy/test` (CI-parity re-run of the Rust gates), `copilot*` (Copilot CLI live-capture leg, spec #2933), `Test-Path`, `fredo`, `Copy-Item/New-Item/Remove-Item/Set-Content .opencode/*`, `$env:OPENCODE_ENABLE_TELEMETRY=...` | NO raw `Remove-Item` outside `.opencode/*` - the store is reset via `dev-env.ps1 -Action Clean`, NOT a direct path (sandbox denies it, G-009). NO gh writes, NO command chains. NO direct `opencode` CLI invocation — live opencode sessions are launched ONLY through Fredo's Terminal feature (write_pty_input, never `opencode run`). `external_directory` **denies by default** — the app-data directory, the installed-plugin path, and `~/.cargo/registry/src/**` (pinned dependency sources, path-scoped) are the only re-allowed paths (G-009), so no other out-of-repo read/write is reachable. |
 | `orchestrator` | **allow** | `dev-env.ps1`, `test-scripts.ps1`, `git add/commit/push`, `git merge` (never main/master), `git checkout`, `git push origin HEAD:spec/<N>`, `bun/npm/pnpm/cargo`, `.opencode/*` file ops, `$env:OPENCODE_ENABLE_TELEMETRY=...` | NO `git push origin main` (denied — the post-audit gate opens + force-merges (`--admin`) the single `maint/<N>` SPEC MAINT PR through the machine's `maint-pr` action instead), NO force-push, NO merge of main/master, NO gh writes. NO direct `opencode` CLI invocation — live opencode sessions run only via Fredo's Terminal feature. |
 | `auditor` | tmp only | (baseline only) | Read-only verification gate — no code/plan/test/record edits; its only output is the `audit-record` verdict. No gh/git writes. |
 | `curator` | tmp + `docs/agentic-pipeline/**` (`principles.md` denied) | (baseline only) | Durable lessons only — edits playbooks/`references.md`/pipeline docs; never product source. No gh/git writes. |
