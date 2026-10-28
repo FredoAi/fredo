@@ -92,15 +92,15 @@ use crate::infrastructure::rtdb::ingest::{
 };
 use crate::infrastructure::rtdb::store::RowKind;
 use crate::infrastructure::storage::engine::{begin_read_only, CanonicalReader, EngineHandle};
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::SettingsStore;
 
-/// AppStore KV marker set after one successful backfill pass over an
+/// SettingsStore KV marker set after one successful backfill pass over an
 /// existing `telemetry_spans` table. Later startups skip the re-derivation
 /// (post-cutover spans are always classified live, so the pass covered all
 /// pre-cutover history there ever was).
 pub const BACKFILL_COMPLETED_KEY: &str = "rtdb.backfill.completed";
 
-/// AppStore KV marker for the INDEPENDENT one-shot provider re-derivation pass
+/// SettingsStore KV marker for the INDEPENDENT one-shot provider re-derivation pass
 /// (Spec #2932 ST-6). Deliberately separate from [`BACKFILL_COMPLETED_KEY`]: an
 /// install that latched the original marker before the canonical `provider`
 /// column existed would otherwise never re-derive provider attribution for its
@@ -297,7 +297,7 @@ pub async fn backfill_from_telemetry(
 /// startup never blocks. Tolerates a missing/empty telemetry tier; malformed
 /// spans are skipped inside [`backfill_from_telemetry`], never a panic.
 pub async fn run_startup_backfill(app: &tauri::AppHandle, engine: Arc<EngineHandle>) {
-    let app_store = app.state::<Arc<AppStore>>();
+    let app_store = app.state::<Arc<SettingsStore>>();
     if matches!(app_store.get(BACKFILL_COMPLETED_KEY).await, Ok(Some(_))) {
         tracing::debug!(
             target: "fredo::rtdb::backfill",
@@ -426,7 +426,7 @@ async fn collect_unresolved_rows_pg(
 /// empty `telemetry_spans`) leaves the marker UNSET so the next startup
 /// re-checks — never a false "done".
 async fn provider_rebackfill_pass(
-    app_store: &AppStore,
+    app_store: &SettingsStore,
     classifier: &IngestClassifier,
     engine: &EngineHandle,
 ) -> Result<Option<ProviderReattributionSummary>> {
@@ -505,7 +505,7 @@ async fn provider_rebackfill_pass(
 /// key reproducibility — the round-2 identity fix removes that dependency.
 /// Spawned by lib.rs; tolerates a missing/empty telemetry tier.
 pub async fn run_startup_provider_rebackfill(app: &tauri::AppHandle, engine: Arc<EngineHandle>) {
-    let app_store = app.state::<Arc<AppStore>>();
+    let app_store = app.state::<Arc<SettingsStore>>();
     if matches!(app_store.get(BACKFILL_PROVIDER_COMPLETED_KEY).await, Ok(Some(_))) {
         tracing::debug!(
             target: "fredo::rtdb::backfill",

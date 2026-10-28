@@ -5,7 +5,7 @@
 //!
 //! 1. **Retention** — [`prune_declared_tables`] bounds every persisted declared
 //!    table by its declared `retention: { maxRows?, ttlDays? }`, falling back to
-//!    the `AppStore` knobs `application_data.default_max_rows` /
+//!    the `SettingsStore` knobs `application_data.default_max_rows` /
 //!    `application_data.default_retention_days` and then to the contract defaults
 //!    [`DEFAULT_MAX_ROWS`] / [`DEFAULT_RETENTION_DAYS`]. Eviction is
 //!    **oldest-first by `latestAt`** (the `_updated_at` reserved column for a
@@ -18,7 +18,7 @@
 //!    **Retention is idle when `maxRows` is null** (binding contract): the cap
 //!    is the master switch, so an explicit `maxRows: null` normalizes the whole
 //!    bound to unbounded ([`EffectiveRetention`] `{ None, None }`). A declaration
-//!    that omits `retention` entirely gets the AppStore knob / contract default.
+//!    that omits `retention` entirely gets the SettingsStore knob / contract default.
 //!
 //! 2. **Tombstone-aware projection** — [`is_tombstoned`] is the reusable guard
 //!    for a key deleted by `application_data_delete`. It serializes the key with the
@@ -36,8 +36,8 @@ use anyhow::{anyhow, Result};
 use serde_json::{Map, Value as JsonValue};
 
 use crate::infrastructure::rtdb::project::rfc3339_now;
-use crate::infrastructure::storage::application_store::ApplicationStore;
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::application_store::DynamicTableStore;
+use crate::infrastructure::storage::SettingsStore;
 
 use super::declaration::{is_reserved_column, ApplicationDataTableDeclaration};
 use super::projection::{DeclaredChangeKind, DeclaredRowChange};
@@ -48,9 +48,9 @@ pub const DEFAULT_MAX_ROWS: u64 = 10_000;
 /// Contract default TTL for a declared table (non-behavioral requirement).
 pub const DEFAULT_RETENTION_DAYS: u64 = 30;
 
-/// `AppStore` knob overriding [`DEFAULT_MAX_ROWS`].
+/// `SettingsStore` knob overriding [`DEFAULT_MAX_ROWS`].
 pub const KNOB_DEFAULT_MAX_ROWS: &str = "application_data.default_max_rows";
-/// `AppStore` knob overriding [`DEFAULT_RETENTION_DAYS`].
+/// `SettingsStore` knob overriding [`DEFAULT_RETENTION_DAYS`].
 pub const KNOB_DEFAULT_RETENTION_DAYS: &str = "application_data.default_retention_days";
 
 /// The oldest-first eviction order column used when a declared table has it.
@@ -98,7 +98,7 @@ impl EffectiveRetention {
 }
 
 /// Resolve a declaration's effective retention:
-/// declared `retention` → `AppStore` knob → contract default.
+/// declared `retention` → `SettingsStore` knob → contract default.
 ///
 /// A present `retention` object is authoritative: an unspecified bound is idle.
 /// An absent `retention` object consults the knobs, then
@@ -106,7 +106,7 @@ impl EffectiveRetention {
 /// `maxRows: null` makes the whole bound idle.
 pub fn resolve_retention(
     declaration: &ApplicationDataTableDeclaration,
-    app: &AppStore,
+    app: &SettingsStore,
 ) -> Result<EffectiveRetention> {
     let (max_rows, ttl_days) = match &declaration.retention {
         Some(retention) => (retention.max_rows, retention.ttl_days),
@@ -126,7 +126,7 @@ pub fn resolve_retention(
     Ok(EffectiveRetention { max_rows, ttl_days })
 }
 
-fn knob_u64(app: &AppStore, key: &str) -> Result<Option<u64>> {
+fn knob_u64(app: &SettingsStore, key: &str) -> Result<Option<u64>> {
     Ok(match app.cached_get(key)? {
         Some(raw) => raw.trim().parse::<u64>().ok(),
         None => None,
@@ -143,8 +143,8 @@ fn knob_u64(app: &AppStore, key: &str) -> Result<Option<u64>> {
 /// for the caller to convert into `remove` notifications. It emits nothing.
 pub fn prune_declared_tables(
     meta: &ApplicationDataStore,
-    tables: &ApplicationStore,
-    app: &AppStore,
+    tables: &DynamicTableStore,
+    app: &SettingsStore,
 ) -> Result<Vec<DeclaredRowChange>> {
     prune_declared_tables_at(meta, tables, app, &rfc3339_now())
 }
@@ -153,8 +153,8 @@ pub fn prune_declared_tables(
 /// TTL boundary is evaluated against `now`; RFC3339). Public for tests.
 pub fn prune_declared_tables_at(
     meta: &ApplicationDataStore,
-    tables: &ApplicationStore,
-    app: &AppStore,
+    tables: &DynamicTableStore,
+    app: &SettingsStore,
     now: &str,
 ) -> Result<Vec<DeclaredRowChange>> {
     let metas = meta.list_tables()?;
@@ -197,7 +197,7 @@ pub fn prune_declared_tables_at(
 /// Prune one declared table. Returns its evictions, oldest-first.
 fn prune_declared_table(
     meta: &ApplicationDataStore,
-    tables: &ApplicationStore,
+    tables: &DynamicTableStore,
     table_meta: &TableMeta,
     declaration: &ApplicationDataTableDeclaration,
     retention: &EffectiveRetention,
@@ -285,7 +285,7 @@ fn retention_order_column(declaration: &ApplicationDataTableDeclaration) -> &'st
     }
 }
 
-/// The `order_by` string the prune passes to [`ApplicationStore::query`]
+/// The `order_by` string the prune passes to [`DynamicTableStore::query`]
 /// (Spec #3075 ST-4): the resolved order column plus `ASC`, bare — the sink is
 /// the single quoting point, so `latestAt` is emitted UNQUOTED here and the sink
 /// validates+quotes it against the physical (case-sensitive) column.
@@ -326,7 +326,7 @@ fn primary_key_values(
         .collect()
 }
 
-/// `pk column → value` in declaration order (the `ApplicationStore::delete` filter).
+/// `pk column → value` in declaration order (the `DynamicTableStore::delete` filter).
 fn key_where_cols(
     declaration: &ApplicationDataTableDeclaration,
     key: &[JsonValue],

@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::SettingsStore;
 
 /// Persist a setting through the engine-selected data plane.
 #[tauri::command]
 pub async fn save_setting(
     key: String,
     value: String,
-    store: tauri::State<'_, Arc<AppStore>>,
+    store: tauri::State<'_, Arc<SettingsStore>>,
 ) -> Result<(), String> {
     store.set(&key, &value).await.map_err(|e| e.to_string())
 }
@@ -17,7 +17,7 @@ pub async fn save_setting(
 #[tauri::command]
 pub async fn get_setting(
     key: String,
-    store: tauri::State<'_, Arc<AppStore>>,
+    store: tauri::State<'_, Arc<SettingsStore>>,
 ) -> Result<Option<String>, String> {
     store.get(&key).await.map_err(|e| e.to_string())
 }
@@ -31,7 +31,7 @@ pub async fn get_setting(
 #[tauri::command]
 pub async fn get_control_setting(
     key: String,
-    store: tauri::State<'_, Arc<AppStore>>,
+    store: tauri::State<'_, Arc<SettingsStore>>,
 ) -> Result<Option<String>, String> {
     store.cached_get(&key).map_err(|e| e.to_string())
 }
@@ -42,7 +42,7 @@ pub async fn get_control_setting(
 pub async fn save_control_setting(
     key: String,
     value: String,
-    store: tauri::State<'_, Arc<AppStore>>,
+    store: tauri::State<'_, Arc<SettingsStore>>,
 ) -> Result<(), String> {
     store.cached_set(&key, &value).map_err(|e| e.to_string())
 }

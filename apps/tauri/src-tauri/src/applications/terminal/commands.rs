@@ -17,8 +17,8 @@ use crate::applications::terminal::state::{
     TerminalErrorKind, TerminalSession, TerminalSessionStatus, TerminalState, OUTPUT_BUFFER_CAP,
 };
 use crate::infrastructure::app_window::{app_presentation, AppPresentation};
-use crate::infrastructure::storage::application_store::ApplicationStore;
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::application_store::DynamicTableStore;
+use crate::infrastructure::storage::SettingsStore;
 
 /// The native terminal window label (window-targeted events + lifecycle).
 pub const WINDOW_LABEL: &str = "terminal";
@@ -607,7 +607,7 @@ fn emit_session_exited(app: &AppHandle, id: &str) {
 
     // Self-exit does not remove the record: stamp its last-active time and keep
     // it resumable (R-1.4/R-2.2).
-    if let Some(application_store) = app.try_state::<Arc<ApplicationStore>>() {
+    if let Some(application_store) = app.try_state::<Arc<DynamicTableStore>>() {
         if let Err(e) = persistence::touch(application_store.inner(), id, now_ms()) {
             tracing::error!(target: "fredo::terminal", error = %e, "touch record on exit failed");
         }
@@ -661,7 +661,7 @@ fn emit_terminal_open_request(app: &AppHandle, payload: TerminalOpenRequestPaylo
 /// never a persisted record). The title is minted once from the existing
 /// records and persisted, so ordinals never renumber on restart.
 fn persist_new_record(
-    application_store: &ApplicationStore,
+    application_store: &DynamicTableStore,
     app: &AppHandle,
     id: &str,
     cli: SessionKind,
@@ -788,7 +788,7 @@ fn capture_cli_session_id(
             else {
                 continue;
             };
-            let Some(application_store) = app.try_state::<Arc<ApplicationStore>>() else {
+            let Some(application_store) = app.try_state::<Arc<DynamicTableStore>>() else {
                 return;
             };
             match persistence::set_cli_session_id(application_store.inner(), &session_id, &native_id) {
@@ -1105,7 +1105,7 @@ fn window_close_handler(
                 let mut guard = s.lock().unwrap();
                 guard.drain_sessions()
             };
-            let application_store = app.try_state::<Arc<ApplicationStore>>();
+            let application_store = app.try_state::<Arc<DynamicTableStore>>();
             let closed_at = now_ms();
             for session in drained {
                 if let Some(store) = application_store.as_ref() {
@@ -1225,11 +1225,11 @@ pub async fn spawn_terminal_session(
     app: AppHandle,
     state: tauri::State<'_, Mutex<TerminalState>>,
 ) -> Result<String, String> {
-    // AppStore / ApplicationStore are injected state, NOT wire arguments — reading
+    // SettingsStore / DynamicTableStore are injected state, NOT wire arguments — reading
     // them off the handle keeps the command's wire shape unchanged and its
     // argument count under clippy's limit.
-    let store = app.state::<Arc<AppStore>>();
-    let application_store = app.state::<Arc<ApplicationStore>>();
+    let store = app.state::<Arc<SettingsStore>>();
+    let application_store = app.state::<Arc<DynamicTableStore>>();
 
     let cwd = work_dir
         .filter(|s| !s.trim().is_empty())
@@ -1407,7 +1407,7 @@ pub async fn close_terminal_session(
     session_id: String,
     app: AppHandle,
     state: tauri::State<'_, Mutex<TerminalState>>,
-    application_store: tauri::State<'_, Arc<ApplicationStore>>,
+    application_store: tauri::State<'_, Arc<DynamicTableStore>>,
 ) -> Result<(), String> {
     let removed = {
         let mut guard = state.lock().unwrap();
@@ -1434,7 +1434,7 @@ pub async fn close_terminal_session(
 pub async fn close_terminal_window(
     app: AppHandle,
     state: tauri::State<'_, Mutex<TerminalState>>,
-    application_store: tauri::State<'_, Arc<ApplicationStore>>,
+    application_store: tauri::State<'_, Arc<DynamicTableStore>>,
 ) -> Result<(), String> {
     let drained = {
         let mut guard = state.lock().unwrap();
@@ -1461,7 +1461,7 @@ pub async fn close_terminal_window(
 /// source of truth for the "Previous sessions" group.
 #[tauri::command]
 pub fn list_persisted_terminal_sessions(
-    application_store: tauri::State<'_, Arc<ApplicationStore>>,
+    application_store: tauri::State<'_, Arc<DynamicTableStore>>,
 ) -> Result<Vec<PersistedSession>, String> {
     persistence::list(&application_store).map_err(|e| e.to_string())
 }
@@ -1482,8 +1482,8 @@ pub async fn resume_terminal_session(
     rows: Option<u16>,
     app: AppHandle,
     state: tauri::State<'_, Mutex<TerminalState>>,
-    store: tauri::State<'_, Arc<AppStore>>,
-    application_store: tauri::State<'_, Arc<ApplicationStore>>,
+    store: tauri::State<'_, Arc<SettingsStore>>,
+    application_store: tauri::State<'_, Arc<DynamicTableStore>>,
 ) -> Result<ResumeResult, String> {
     let preflight_started = Instant::now();
     let (grid_cols, grid_rows) = resolve_grid(cols, rows);
@@ -1581,7 +1581,7 @@ pub async fn delete_terminal_session_record(
     session_id: String,
     app: AppHandle,
     state: tauri::State<'_, Mutex<TerminalState>>,
-    application_store: tauri::State<'_, Arc<ApplicationStore>>,
+    application_store: tauri::State<'_, Arc<DynamicTableStore>>,
 ) -> Result<(), String> {
     let is_live = {
         let guard = state.lock().unwrap();
@@ -1601,7 +1601,7 @@ pub async fn delete_terminal_session_record(
 /// The name is the session's ONLY editable field. `name` is trimmed; a blank /
 /// whitespace-only value is refused with `Err` (R-2.3) and no row is touched.
 /// The write is an atomic `title` UPDATE on the record's own row
-/// ([`persistence::rename`], the same `ApplicationStore::update` path as
+/// ([`persistence::rename`], the same `DynamicTableStore::update` path as
 /// `touch`/`set_cli_session_id`) — never delete+insert — so a rename cannot end
 /// the session, clear scrollback, or change the record's key
 /// (`id`/`created_at`/`cli`/`work_dir`/`cli_session_id` unchanged, one row, no
@@ -1614,7 +1614,7 @@ pub fn rename_terminal_session_record(
     session_id: String,
     name: String,
     app: AppHandle,
-    application_store: tauri::State<'_, Arc<ApplicationStore>>,
+    application_store: tauri::State<'_, Arc<DynamicTableStore>>,
 ) -> Result<(), String> {
     let trimmed = name.trim();
     if trimmed.is_empty() {

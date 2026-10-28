@@ -24,7 +24,7 @@
 //! ## Retention
 //!
 //! The writer task prunes at a 60-minute interval (and lib.rs prunes at
-//! startup), re-reading the AppStore knobs `rtdb.retention_days` /
+//! startup), re-reading the SettingsStore knobs `rtdb.retention_days` /
 //! `rtdb.max_rows` fresh at every cycle via [`read_knobs`]. Since P2.3 the
 //! prune's evicted keys route `kind: remove` deliveries through the [`Rtdb`]
 //! orchestrator (R-2d: retention eviction is the ONLY remove producer).
@@ -38,7 +38,7 @@ use tauri::Manager;
 use crate::infrastructure::rtdb::commands::{Rtdb, RtdbState};
 use crate::infrastructure::rtdb::rows::{AgentSessionRow, ChatRow, ToolUseRow};
 use crate::infrastructure::rtdb::store::{RowKind, RtdbStore};
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::SettingsStore;
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -466,7 +466,7 @@ impl RtdbCache {
 /// (Spec #2992) calls this directly because it has no `AppHandle`.
 pub async fn run_writer_task_core(
     cache: Arc<RtdbCache>,
-    app_store: Arc<AppStore>,
+    app_store: Arc<SettingsStore>,
     rtdb: Option<Arc<Rtdb>>,
     mut rx: tokio::sync::mpsc::Receiver<PendingWrite>,
 ) {
@@ -504,7 +504,7 @@ pub async fn run_writer_task(
     let Some(cache) = app.try_state::<Arc<RtdbCache>>() else {
         return;
     };
-    let app_store = app.state::<Arc<AppStore>>();
+    let app_store = app.state::<Arc<SettingsStore>>();
     let rtdb = app.try_state::<RtdbState>();
     run_writer_task_core(
         cache.inner().clone(),
@@ -529,13 +529,13 @@ async fn flush_rtdb_batch_core(cache: &RtdbCache, batch: Vec<PendingWrite>) {
     }
 }
 
-/// AppHandle-free core of one prune cycle: reads the AppStore knobs, prunes
+/// AppHandle-free core of one prune cycle: reads the SettingsStore knobs, prunes
 /// the store, and routes every eviction through the RTDB orchestrator (`Rtdb`,
 /// when running) as a `kind: remove` delivery — R-2d. Since P2.3, retention
 /// eviction is the ONLY remove producer.
 pub async fn prune_with_knobs_core(
     cache: &RtdbCache,
-    app_store: &AppStore,
+    app_store: &SettingsStore,
     rtdb: Option<&Arc<Rtdb>>,
 ) {
     let (retention_days, max_rows) = read_knobs(app_store);
@@ -562,14 +562,14 @@ pub async fn prune_with_knobs_core(
     }
 }
 
-/// Run one prune cycle using the current AppStore knob values (GUI wrapper):
+/// Run one prune cycle using the current SettingsStore knob values (GUI wrapper):
 /// resolves the AppHandle-free dependencies from Tauri state and delegates to
 /// [`prune_with_knobs_core`].
 pub async fn prune_with_knobs(app: &tauri::AppHandle) {
     let Some(cache) = app.try_state::<Arc<RtdbCache>>() else {
         return;
     };
-    let app_store = app.state::<Arc<AppStore>>();
+    let app_store = app.state::<Arc<SettingsStore>>();
     let rtdb = app.try_state::<RtdbState>();
     prune_with_knobs_core(
         cache.inner(),
@@ -579,9 +579,9 @@ pub async fn prune_with_knobs(app: &tauri::AppHandle) {
     .await;
 }
 
-/// Read the retention knobs fresh from the AppStore (defaults when unset or
-/// unparseable). The binding config-first mechanism: AppStore KV keys.
-pub fn read_knobs(app_store: &AppStore) -> (i64, i64) {
+/// Read the retention knobs fresh from the SettingsStore (defaults when unset or
+/// unparseable). The binding config-first mechanism: SettingsStore KV keys.
+pub fn read_knobs(app_store: &SettingsStore) -> (i64, i64) {
     use crate::infrastructure::rtdb::store::{
         RTDB_DEFAULT_MAX_ROWS, RTDB_DEFAULT_RETENTION_DAYS, RTDB_MAX_ROWS_KEY,
         RTDB_RETENTION_DAYS_KEY,
@@ -636,15 +636,15 @@ mod tests {
         }
     }
 
-    /// A cache + synchronous-settings AppStore over a PENDING data-plane handle
+    /// A cache + synchronous-settings SettingsStore over a PENDING data-plane handle
     /// (no PostgreSQL pool is installed in unit tests). The TempDir is returned so
     /// the app-data dir outlives the store.
-    fn make_cache() -> (Arc<RtdbCache>, Arc<AppStore>, tempfile::TempDir) {
+    fn make_cache() -> (Arc<RtdbCache>, Arc<SettingsStore>, tempfile::TempDir) {
         let engine = EngineHandle::new_pending();
         let store = Arc::new(RtdbStore::open(engine.clone()).expect("RtdbStore::open"));
         let (cache, _rx) = RtdbCache::with_capacity(store, 8, 8);
         let dir = tempfile::tempdir().expect("tempdir");
-        let app_store = Arc::new(AppStore::open(engine, dir.path()).expect("AppStore::open"));
+        let app_store = Arc::new(SettingsStore::open(engine, dir.path()).expect("SettingsStore::open"));
         (cache, app_store, dir)
     }
 
@@ -652,7 +652,7 @@ mod tests {
     fn read_knobs_defaults_then_reads_app_store_overrides() {
         let engine = EngineHandle::new_pending();
         let dir = tempfile::tempdir().expect("tempdir");
-        let app_store = AppStore::open(engine, dir.path()).expect("AppStore::open");
+        let app_store = SettingsStore::open(engine, dir.path()).expect("SettingsStore::open");
         assert_eq!(
             read_knobs(&app_store),
             (RTDB_DEFAULT_RETENTION_DAYS, RTDB_DEFAULT_MAX_ROWS)

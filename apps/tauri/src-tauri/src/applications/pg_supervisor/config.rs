@@ -4,7 +4,7 @@
 //! The supervisor is configured from Settings with two values that MUST be
 //! readable BEFORE the cluster starts: the bind `port` (ephemeral `None` or a
 //! pinned one) and the log verbosity. They cannot live in the PG-backed
-//! `AppStore`/`settings` KV — reading the port would require the very cluster the
+//! `SettingsStore`/`settings` KV — reading the port would require the very cluster the
 //! port configures (chicken-and-egg). They therefore live in a small typed JSON
 //! file, `<app_data_dir>/postgres-supervisor.json`, written atomically (temp file
 //! then rename) and read synchronously on the boot path — the direct precedent of

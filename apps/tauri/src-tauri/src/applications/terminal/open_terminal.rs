@@ -25,7 +25,7 @@ use crate::applications::terminal::state::{
 use crate::infrastructure::app_open::{confirm_application_open, AppOpenOutcome};
 use crate::infrastructure::app_window::{app_presentation, AppPresentation};
 use crate::infrastructure::ipc::CliResponse;
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::SettingsStore;
 
 /// The saved working directory a new session defaults to (mirrors the UI's
 /// `WORK_DIR_KEY`, `apps/ui/src/applications/terminal/settings.ts`).
@@ -177,7 +177,7 @@ pub async fn dispatch_open_terminal(
     // is a plain open (`opened`, no session).
     let has_args = cli.is_some() || work_dir.is_some();
 
-    let store = app.try_state::<Arc<AppStore>>();
+    let store = app.try_state::<Arc<SettingsStore>>();
     let stored_cli = store
         .as_ref()
         .and_then(|state| state.cached_get(TERMINAL_DEFAULT_CLI_KEY).ok().flatten())

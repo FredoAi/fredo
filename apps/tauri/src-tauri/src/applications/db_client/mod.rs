@@ -20,7 +20,7 @@
 //! * No `sqlx` pool is opened, no `pg_catalog` SQL is issued, and no credential
 //!   is read or written here — [`connect`], [`schema`] and [`query`] fill their
 //!   own module bodies in ST-2/ST-3/ST-4.
-//! * `AppStore`/`EngineHandle` and the embedded-PostgreSQL supervisor are
+//! * `SettingsStore`/`EngineHandle` and the embedded-PostgreSQL supervisor are
 //!   untouched.
 //! * The wiring files (`mod.rs`, `commands.rs`, `state.rs`, `types.rs`,
 //!   `seam.rs`, `applications/mod.rs`, `lib.rs`) are owned by ST-1 only; later

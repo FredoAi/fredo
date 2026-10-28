@@ -1,7 +1,7 @@
 //! PostgreSQL storage regression suite (Spec #2975 ST-6; PG-only since Spec
 //! #2979 CU-2).
 //!
-//! This integration binary drives the migrated `AppStore` / `ApplicationStore` /
+//! This integration binary drives the migrated `SettingsStore` / `DynamicTableStore` /
 //! `ApplicationDataStore` against the REAL embedded PostgreSQL server (the slice-1
 //! bounded `PgRuntime`) and pins the consolidated PostgreSQL behavior:
 //! schema init, quoted identifiers, declared-table quoting, the Mission Monitor
@@ -54,10 +54,10 @@ use fredo_lib::infrastructure::storage::engine::{
     begin_read_only, ensure_settings_schema, StorageEngineState,
 };
 use fredo_lib::infrastructure::storage::application_store::{
-    ApplicationStore, ColumnDef, ColumnType, IdentifierError,
+    DynamicTableStore, ColumnDef, ColumnType, IdentifierError,
 };
 use fredo_lib::infrastructure::storage::{
-    AppStore, EngineHandle, PgEngine, StoreEngine,
+    SettingsStore, EngineHandle, PgEngine, StoreEngine,
 };
 use fredo_lib::PgRuntime;
 
@@ -203,8 +203,8 @@ async fn postgres_fixture_scenario(url: &str, schema: &str) {
     // PostgreSQL pool once the server is ready.
     let app_scratch = tempfile::tempdir().expect("tempdir");
     let handle = EngineHandle::new_pending();
-    let app = AppStore::open(handle.clone(), app_scratch.path()).expect("app store");
-    let applications = ApplicationStore::open(handle.clone()).expect("application store");
+    let app = SettingsStore::open(handle.clone(), app_scratch.path()).expect("app store");
+    let applications = DynamicTableStore::open(handle.clone()).expect("application store");
     let data = ApplicationDataStore::open(handle.clone()).expect("data store");
 
     let pool = build_pool(url, schema).await;
@@ -263,7 +263,7 @@ async fn postgres_fixture_scenario(url: &str, schema: &str) {
 /// identifier would be folded to lowercase by PostgreSQL).
 async fn quoted_identifier_scenario(url: &str, schema: &str) {
     let handle = EngineHandle::new_pending();
-    let applications = ApplicationStore::open(handle.clone()).expect("application store");
+    let applications = DynamicTableStore::open(handle.clone()).expect("application store");
 
     let pool = build_pool(url, schema).await;
     handle.install(StoreEngine::Postgres(Arc::new(PgEngine {
@@ -410,7 +410,7 @@ async fn declared_table_quoting_scenario(url: &str, schema: &str) {
     })));
 
     let data = Arc::new(ApplicationDataStore::open(handle.clone()).expect("data store"));
-    let applications = Arc::new(ApplicationStore::open(handle.clone()).expect("application store"));
+    let applications = Arc::new(DynamicTableStore::open(handle.clone()).expect("application store"));
     data.ensure_schema()
         .expect("create the application-data schema on the candidate pool");
 
@@ -496,7 +496,7 @@ async fn declared_table_quoting_scenario(url: &str, schema: &str) {
         "the declared primary key must physically key on the case-preserved `sessionId`"
     );
 
-    // (iii) The quoted write path (ApplicationStore::upsert) agrees with the created
+    // (iii) The quoted write path (DynamicTableStore::upsert) agrees with the created
     // schema — the exact write that failed on the folded table.
     let mut row = Map::new();
     row.insert("sessionId".to_string(), json!("s1"));
@@ -560,7 +560,7 @@ async fn legacy_ignore_scenario(url: &str, schema: &str) {
     let before = std::fs::read(&legacy).expect("read the legacy file before boot");
 
     let handle = EngineHandle::new_pending();
-    let app = AppStore::open(handle.clone(), app_dir.path()).expect("app store");
+    let app = SettingsStore::open(handle.clone(), app_dir.path()).expect("app store");
     let pool = build_pool(url, schema).await;
 
     // The post-migration install order: schema inits on the candidate pool, then
@@ -700,8 +700,8 @@ async fn order_by_validation_scenario(url: &str, schema: &str) {
 
     let app_scratch = tempfile::tempdir().expect("tempdir");
     let handle = EngineHandle::new_pending();
-    let app = AppStore::open(handle.clone(), app_scratch.path()).expect("app store");
-    let applications = ApplicationStore::open(handle.clone()).expect("application store");
+    let app = SettingsStore::open(handle.clone(), app_scratch.path()).expect("app store");
+    let applications = DynamicTableStore::open(handle.clone()).expect("application store");
     let data = ApplicationDataStore::open(handle.clone()).expect("data store");
 
     let pool = build_pool(url, schema).await;
@@ -1016,7 +1016,7 @@ async fn assert_no_sql_executed(pool: &sqlx::PgPool, full_table: &str, label: &s
 
 /// Drive one valid `order_by` through the sink and assert the exact row order.
 fn assert_ordered(
-    applications: &ApplicationStore,
+    applications: &DynamicTableStore,
     table: &str,
     order_by: Option<&str>,
     expected: &[&str],
@@ -1160,8 +1160,8 @@ fn mm_sessions_declaration() -> ApplicationDataDeclaration {
 /// Run the fixture against one engine's store set and return a sorted list of
 /// `name=value` observables.
 async fn run_fixture(
-    app: &AppStore,
-    applications: &ApplicationStore,
+    app: &SettingsStore,
+    applications: &DynamicTableStore,
     data: &ApplicationDataStore,
 ) -> Vec<String> {
     let mut out = Vec::new();

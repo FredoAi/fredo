@@ -36,8 +36,8 @@ use crate::infrastructure::application_data::watch::{
 };
 use crate::infrastructure::rtdb::cache::read_knobs;
 use crate::infrastructure::rtdb::store::{RowKind, RtdbStore};
-use crate::infrastructure::storage::application_store::ApplicationStore;
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::application_store::DynamicTableStore;
+use crate::infrastructure::storage::SettingsStore;
 
 // ── Shared state ────────────────────────────────────────────────────────────
 
@@ -48,9 +48,9 @@ pub struct ApplicationDataState {
     /// `feature_data_tables` / `feature_data_tombstones` metadata.
     pub meta: Arc<ApplicationDataStore>,
     /// The application-scoped typed-column table store (declared table DML).
-    pub tables: Arc<ApplicationStore>,
-    /// AppStore (retention knobs + `resolve_retention`).
-    pub app_store: Arc<AppStore>,
+    pub tables: Arc<DynamicTableStore>,
+    /// SettingsStore (retention knobs + `resolve_retention`).
+    pub app_store: Arc<SettingsStore>,
     /// Declaration persistence + materialization.
     pub registry: Arc<DeclarationRegistry>,
     /// Canonical → declared-row projection engine (also a `RowUpsertObserver`).
@@ -259,7 +259,7 @@ fn canonical_kind(table: &str) -> Result<RowKind, Vec<String>> {
     }
 }
 
-/// `[{ field, eq }]` → a `ApplicationStore::query` WHERE map.
+/// `[{ field, eq }]` → a `DynamicTableStore::query` WHERE map.
 fn eq_map(filters: &[EqFilter]) -> Option<Map<String, JsonValue>> {
     if filters.is_empty() {
         return None;
@@ -280,7 +280,7 @@ fn eq_matches(values: &Map<String, JsonValue>, filters: &[EqFilter]) -> bool {
     })
 }
 
-/// Primary-key values in declaration order → a `ApplicationStore` WHERE map.
+/// Primary-key values in declaration order → a `DynamicTableStore` WHERE map.
 fn key_map(
     declaration: &ApplicationDataTableDeclaration,
     key: &[JsonValue],

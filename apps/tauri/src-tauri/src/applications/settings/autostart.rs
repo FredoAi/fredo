@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::SettingsStore;
 
 /// The per-user (HKCU) login auto-start registry key.
 pub const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
@@ -138,7 +138,7 @@ async fn read_view() -> Result<IngestAutostartView, String> {
 }
 
 /// Mirror the effective registry state onto the `ingest.autostart` KV key.
-fn mirror_autostart(store: &Arc<AppStore>, enabled: bool) -> Result<(), String> {
+fn mirror_autostart(store: &Arc<SettingsStore>, enabled: bool) -> Result<(), String> {
     store
         .cached_set(AUTOSTART_KEY, if enabled { "true" } else { "false" })
         .map_err(|e| e.to_string())
@@ -147,7 +147,7 @@ fn mirror_autostart(store: &Arc<AppStore>, enabled: bool) -> Result<(), String> 
 /// Read the effective per-user login auto-start state.
 #[tauri::command]
 pub async fn ingest_autostart_get(
-    store: tauri::State<'_, Arc<AppStore>>,
+    store: tauri::State<'_, Arc<SettingsStore>>,
 ) -> Result<IngestAutostartView, String> {
     let view = read_view().await?;
     mirror_autostart(store.inner(), view.enabled)?;
@@ -159,7 +159,7 @@ pub async fn ingest_autostart_get(
 #[tauri::command]
 pub async fn ingest_autostart_set(
     enabled: bool,
-    store: tauri::State<'_, Arc<AppStore>>,
+    store: tauri::State<'_, Arc<SettingsStore>>,
 ) -> Result<IngestAutostartView, String> {
     if enabled {
         let exe = std::env::current_exe()

@@ -83,9 +83,9 @@ use infrastructure::rtdb::store::{
 };
 use infrastructure::rtdb::subscriptions::SubscriptionRegistry;
 use infrastructure::storage::engine::{EngineHandle, StorageEngineState};
-use infrastructure::storage::application_store::{self, ApplicationStore};
+use infrastructure::storage::application_store::{self, DynamicTableStore};
 use infrastructure::storage::span_store::SpanStore;
-use infrastructure::storage::AppStore;
+use infrastructure::storage::SettingsStore;
 use infrastructure::telemetry::metrics_collector::MetricCollector;
 use infrastructure::telemetry::log::{LogBridgeLayer, LogCollector, LOG_COLLECTOR_CELL};
 use infrastructure::telemetry::SpanCollector;
@@ -213,12 +213,12 @@ pub fn run() {
             let engine_handle = EngineHandle::new_pending();
 
             // -- Settings store (Spec #3005 ST-2) ------------------------------
-            // `AppStore` holds the volatile, PG-hydrated synchronous settings
+            // `SettingsStore` holds the volatile, PG-hydrated synchronous settings
             // cache plus the JSON boot KV. The async data plane (`get`/`set`) sits
             // ON the shared handle; the setup closure below reads config via the
             // synchronous cache (hydrated on pool-ready in the supervisor).
             let app_store = Arc::new(
-                AppStore::open(engine_handle.clone(), &data_dir)
+                SettingsStore::open(engine_handle.clone(), &data_dir)
                     .expect("Failed to open settings store"),
             );
             app.manage(app_store.clone());
@@ -245,7 +245,7 @@ pub fn run() {
             // (fail-closed — a failed init installs nothing), so a Doom resume
             // read/write resolves the table without an ad-hoc create. Mirrors the
             // Terminal precedent above; `ensure_table_on_pg` delegates to the ONE
-            // `ApplicationStore` DDL builder.
+            // `DynamicTableStore` DDL builder.
             storage_state.register_pg_schema_init(Arc::new(|pool: &sqlx::PgPool| {
                 applications::doom::save::ensure_table_on_pg(pool)
             }));
@@ -264,12 +264,12 @@ pub fn run() {
             // the webview shell renders while PostgreSQL starts.
             applications::pg_supervisor::start_supervisor(app.handle());
 
-            // -- ApplicationStore (generic typed-column store for applications) --------
+            // -- DynamicTableStore (generic typed-column store for applications) --------
             // Spec #2975 ST-4: the store holds an `Arc<EngineHandle>` clone of the
             // ONE shared engine; its SQLite statements are byte-identical to the
             // incumbent path, PostgreSQL is the 1:1 translated dialect.
             let application_store = Arc::new(
-                ApplicationStore::open(engine_handle.clone()).expect("Failed to open ApplicationStore"),
+                DynamicTableStore::open(engine_handle.clone()).expect("Failed to open DynamicTableStore"),
             );
             app.manage(application_store.clone());
 
@@ -304,7 +304,7 @@ pub fn run() {
                     .with(LogBridgeLayer::new())
                     .init();
 
-                app.state::<Arc<AppStore>>()
+                app.state::<Arc<SettingsStore>>()
                     .set_log_level_sink(Box::new(move |level: &str| {
                         if let Ok(filter) = EnvFilter::try_new(level) {
                             let _ = reload_handle.reload(filter);
@@ -455,7 +455,7 @@ pub fn run() {
             // ST-2: `hydrate` seeds each default ONLY when PostgreSQL has no row
             // for the key, so a persisted user value survives a restart (R-2.1).
             {
-                let store_ref = app.state::<Arc<AppStore>>();
+                let store_ref = app.state::<Arc<SettingsStore>>();
                 store_ref.register_default("tracing.enabled", "true");
                 store_ref.register_default("tracing.retention_days", "7");
                 store_ref.register_default("tracing.metrics_enabled", "true");
@@ -465,7 +465,7 @@ pub fn run() {
             }
 
             // REQ-9: Run retention cleanup on startup (pre-hydration reads default).
-            let store_ref = app.state::<Arc<AppStore>>();
+            let store_ref = app.state::<Arc<SettingsStore>>();
             let retention_days: i64 = store_ref
                 .cached_get("tracing.retention_days")
                 .ok()
@@ -484,12 +484,12 @@ pub fn run() {
             // Create MetricCollector and register as Tauri state.
             let metric_collector = Arc::new(MetricCollector::new(
                 span_store.clone(),
-                Arc::clone(&*app.state::<Arc<AppStore>>()),
+                Arc::clone(&*app.state::<Arc<SettingsStore>>()),
             ));
             app.manage(metric_collector.clone());
 
             // Create SpanCollector and register as Tauri state.
-            let collector = Arc::new(SpanCollector::new(span_store.clone(), Arc::clone(&*app.state::<Arc<AppStore>>())));
+            let collector = Arc::new(SpanCollector::new(span_store.clone(), Arc::clone(&*app.state::<Arc<SettingsStore>>())));
             app.manage(collector.clone());
 
             // -- LogCollector (Spec #408) -------------------------------------
@@ -497,7 +497,7 @@ pub fn run() {
             // OnceLock so the LogBridgeLayer (initialized earlier) starts capturing.
             let log_collector = Arc::new(LogCollector::new(
                 span_store.clone(),
-                Arc::clone(&*app.state::<Arc<AppStore>>()),
+                Arc::clone(&*app.state::<Arc<SettingsStore>>()),
             ));
             // Set the global OnceLock for the LogBridgeLayer
             let _ = LOG_COLLECTOR_CELL.set(log_collector.clone());
@@ -715,11 +715,11 @@ pub fn run() {
                 run_flush_task(rtdb_flush_task).await;
             });
 
-            // Register RTDB retention defaults (AppStore KV keys — the binding
+            // Register RTDB retention defaults (SettingsStore KV keys — the binding
             // config-first mechanism). Spec #3005 ST-2: seeded by `hydrate` only
             // when PostgreSQL has no row, so a persisted override survives.
             {
-                let store_ref = app.state::<Arc<AppStore>>();
+                let store_ref = app.state::<Arc<SettingsStore>>();
                 store_ref.register_default(
                     RTDB_RETENTION_DAYS_KEY,
                     &RTDB_DEFAULT_RETENTION_DAYS.to_string(),
@@ -1029,7 +1029,7 @@ pub fn run() {
             applications::wireframe::intent::wireframe_intent,
             applications::wireframe::intent::wireframe_intent_take,
             applications::wireframe::intent::wireframe_intent_result,
-            // ApplicationStore (Spec #339)
+            // DynamicTableStore (Spec #339)
             application_store::application_store_ensure_table,
             application_store::application_store_insert,
             application_store::application_store_query,

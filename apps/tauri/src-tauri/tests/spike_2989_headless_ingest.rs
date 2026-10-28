@@ -45,7 +45,7 @@
 //! # Isolation (R-4.5) + safety
 //!
 //! Throwaway data dir `.opencode/tmp/2989/pgdata` via `FREDO_PG_DATA_DIR` and a
-//! temp control-plane `AppStore` (`tempfile::tempdir()`); the app's real data
+//! temp control-plane `SettingsStore` (`tempfile::tempdir()`); the app's real data
 //! dir and its settings are never touched. The one-shot backfill markers
 //! (`rtdb.backfill.completed`, `rtdb.backfill.provider.completed.v2`) are never
 //! read or written. Every start/stop/wait is finitely bounded by `PgRuntime`
@@ -71,7 +71,7 @@ use fredo_lib::infrastructure::storage::engine::{
     build_pg_pool, EngineHandle, StoreEngine,
 };
 use fredo_lib::infrastructure::storage::span_store::SpanStore;
-use fredo_lib::infrastructure::storage::AppStore;
+use fredo_lib::infrastructure::storage::SettingsStore;
 use fredo_lib::infrastructure::telemetry::SpanCollector;
 use fredo_lib::PgRuntime;
 
@@ -305,7 +305,7 @@ async fn spike_2989_headless_ingest() {
     let span_store = Arc::new(SpanStore::open(engine.clone()).expect("SpanStore::open"));
     span_store.ensure_schema().await.expect("telemetry_spans schema");
     let app_store = Arc::new(
-        AppStore::open(engine.clone(), app_scratch.path()).expect("temp control-plane AppStore"),
+        SettingsStore::open(engine.clone(), app_scratch.path()).expect("temp control-plane SettingsStore"),
     );
     let collector = SpanCollector::new(span_store.clone(), app_store.clone());
     let raw_session = marker("spike2989-raw-session");

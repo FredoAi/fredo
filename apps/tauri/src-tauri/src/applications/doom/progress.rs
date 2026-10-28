@@ -9,11 +9,11 @@
 //! Write failures are **best-effort**: a failed save is logged and ignored, and
 //! NEVER fails the autoplay run (NFR-3). The writer holds no `AppHandle` — the
 //! loop stays engine-agnostic; the composition root injects a writer built over
-//! the shared `ApplicationStore` (the dedicated `feature_doom_save` PG table).
+//! the shared `DynamicTableStore` (the dedicated `feature_doom_save` PG table).
 
 use std::sync::Arc;
 
-use crate::infrastructure::storage::application_store::ApplicationStore;
+use crate::infrastructure::storage::application_store::DynamicTableStore;
 
 use super::save::{self, DoomCampaign, DoomSave};
 
@@ -45,7 +45,7 @@ impl DoomProgressWriter {
     /// Build a writer that persists through [`save::store`] — the dedicated
     /// `feature_doom_save` PostgreSQL table (atomic single-row upsert), or the
     /// `FREDO_DOOM_SAVE_STATE_DIR` test-only seam when set.
-    pub fn for_store(store: Arc<ApplicationStore>) -> Self {
+    pub fn for_store(store: Arc<DynamicTableStore>) -> Self {
         DoomProgressWriter::new(move |save| save::store(&store, save))
     }
 
@@ -173,7 +173,7 @@ mod tests {
     #[test]
     fn for_store_builds_a_writer_over_the_application_store() {
         let store = Arc::new(
-            ApplicationStore::open(EngineHandle::new_pending()).expect("application store"),
+            DynamicTableStore::open(EngineHandle::new_pending()).expect("application store"),
         );
         let writer = DoomProgressWriter::for_store(store);
         // Cheap to clone so it can be moved into the autoplay loop.

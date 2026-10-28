@@ -13,7 +13,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use tauri::{AppHandle, Manager};
 
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::SettingsStore;
 
 use super::config::LlamaServerConfig;
 use super::state::ManagedServer;
@@ -62,7 +62,7 @@ pub fn resolve_companion_dir(app: &AppHandle) -> Result<PathBuf, String> {
             .app_data_dir()
             .map_err(|e| format!("could not resolve the app data dir: {e}"))?,
     );
-    let store = app.state::<Arc<AppStore>>();
+    let store = app.state::<Arc<SettingsStore>>();
     let configured = store
         .cached_get(LLAMA_SERVER_COMPANION_DIR_KEY)
         .ok()
@@ -86,16 +86,16 @@ const LLAMA_SERVER_IMAGE: &str = "llama-server.exe";
 
 /// Persist the managed server PID marker; `None` clears it.
 ///
-/// AppStore is the single source of truth for the marker — this helper owns the
+/// SettingsStore is the single source of truth for the marker — this helper owns the
 /// key so the write and clear paths cannot drift. A failed write is ignored: the
 /// marker is best-effort recovery metadata, never load-bearing state.
-pub fn persist_pid(store: &AppStore, pid: Option<u32>) {
+pub fn persist_pid(store: &SettingsStore, pid: Option<u32>) {
     let value = pid.map(|pid| pid.to_string()).unwrap_or_default();
     let _ = store.cached_set(LLAMA_SERVER_PID_KEY, &value);
 }
 
 /// Read the persisted managed server PID marker (blank / malformed => `None`).
-pub fn persisted_pid(store: &AppStore) -> Option<u32> {
+pub fn persisted_pid(store: &SettingsStore) -> Option<u32> {
     store
         .cached_get(LLAMA_SERVER_PID_KEY)
         .ok()
@@ -183,8 +183,8 @@ pub fn kill_pid_tree(pid: u32) {
 /// marker, a gone process, and a reused PID are all safe no-kill paths, so the
 /// sweep can never terminate an unrelated process.
 pub fn sweep_orphan(app: &AppHandle) {
-    let store = app.state::<Arc<AppStore>>();
-    let store: &AppStore = store.inner();
+    let store = app.state::<Arc<SettingsStore>>();
+    let store: &SettingsStore = store.inner();
     let Some(pid) = persisted_pid(store) else {
         return;
     };

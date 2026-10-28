@@ -15,7 +15,7 @@
 //! 3. for a `sessionRollup` source, recompute the one affected group (bounded
 //!    per-key SQL over the canonical `*_rows` tables — [`session_rollup`]);
 //! 4. `INSERT ... ON CONFLICT(pk) DO UPDATE` the declared row (via
-//!    [`ApplicationStore::upsert`]) with a per-record `_row_version` bump and a
+//!    [`DynamicTableStore::upsert`]) with a per-record `_row_version` bump and a
 //!    table-scope `feature_data_tables.last_version` bump per applied change;
 //! 5. hand the change to the installed [`DeclaredRowObserver`] — the ST-4
 //!    watch-registry seam, which fans it out to table/record/field watches.
@@ -36,7 +36,7 @@
 //! The engine uses the SHARED read-only SQLite connection (Spec #2975 ST-5) and
 //! only ever SELECTs the canonical `*_rows` tables (NFR-6 — canonical contents
 //! and the classifier's extraction rules are untouched). Declared-table writes
-//! go through [`ApplicationStore`] on the active engine.
+//! go through [`DynamicTableStore`] on the active engine.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -50,7 +50,7 @@ use serde_json::{json, Map, Value as JsonValue};
 use crate::infrastructure::rtdb::commands::IngestRow;
 use crate::infrastructure::rtdb::project::rfc3339_now;
 use crate::infrastructure::storage::engine::{CanonicalReader, EngineHandle};
-use crate::infrastructure::storage::application_store::ApplicationStore;
+use crate::infrastructure::storage::application_store::DynamicTableStore;
 
 use super::declaration::{
     is_reserved_column, ActivitySource, ColumnOwner, DataSource, ApplicationDataTableDeclaration,
@@ -183,10 +183,10 @@ pub struct ProjectionEngine {
     /// The shared engine handle (Spec #2976 ST-6): canonical `*_rows` reads
     /// follow the ACTIVE engine through [`StoreEngine::canonical_reader`] — the
     /// PostgreSQL pool wrapped in a READ ONLY transaction. Never a per-engine
-    /// `Connection::open`. Declared-table writes go through [`ApplicationStore`].
+    /// `Connection::open`. Declared-table writes go through [`DynamicTableStore`].
     engine: Arc<EngineHandle>,
     meta: Arc<ApplicationDataStore>,
-    tables: Arc<ApplicationStore>,
+    tables: Arc<DynamicTableStore>,
     observer: Mutex<Option<Arc<dyn DeclaredRowObserver>>>,
     observed: Mutex<ObservedState>,
     /// Serializes projection runs. An async mutex (Spec #2976 ST-6): the guard
@@ -200,11 +200,11 @@ pub struct ProjectionEngine {
 
 impl ProjectionEngine {
     /// Wrap the shared engine handle. Canonical reads use the engine-selected
-    /// read-only handle; declared writes go through the shared `ApplicationStore`.
+    /// read-only handle; declared writes go through the shared `DynamicTableStore`.
     pub fn new(
         engine: Arc<EngineHandle>,
         meta: Arc<ApplicationDataStore>,
-        tables: Arc<ApplicationStore>,
+        tables: Arc<DynamicTableStore>,
     ) -> Result<Self> {
         Ok(ProjectionEngine {
             engine,

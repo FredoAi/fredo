@@ -139,7 +139,7 @@ pub struct DeleteArgs {
     pub where_cols: serde_json::Map<String, JsonValue>,
 }
 
-// ── ApplicationStore ──────────────────────────────────────────────────────────────
+// ── DynamicTableStore ──────────────────────────────────────────────────────────────
 
 /// A generic, engine-selected store for application-scoped tables (Spec #2975 ST-4).
 ///
@@ -150,7 +150,7 @@ pub struct DeleteArgs {
 /// identifiers are quoted, types use the C1 map (`TEXT→text`, `INTEGER→bigint`,
 /// `REAL→double precision`, `BLOB→bytea`), and probes use the PostgreSQL catalogs
 /// (`to_regclass`, `information_schema.columns`).
-pub struct ApplicationStore {
+pub struct DynamicTableStore {
     engine: Arc<EngineHandle>,
 }
 
@@ -222,10 +222,10 @@ impl std::fmt::Display for IdentifierError {
 
 impl std::error::Error for IdentifierError {}
 
-impl ApplicationStore {
+impl DynamicTableStore {
     /// Wrap the shared engine handle.
     pub fn open(engine: Arc<EngineHandle>) -> Result<Self> {
-        Ok(ApplicationStore { engine })
+        Ok(DynamicTableStore { engine })
     }
 
     /// Build the full table name: `feature_{applicationId}_{tableName}`.
@@ -999,7 +999,7 @@ fn pg_row_to_json(row: &sqlx::postgres::PgRow) -> Result<Map<String, JsonValue>>
 /// REQ-1: Create an application-namespaced table.
 #[tauri::command]
 pub fn application_store_ensure_table(
-    state: tauri::State<'_, Arc<ApplicationStore>>,
+    state: tauri::State<'_, Arc<DynamicTableStore>>,
     application_id: String,
     table_name: String,
     columns: Vec<ColumnDef>,
@@ -1012,7 +1012,7 @@ pub fn application_store_ensure_table(
 /// REQ-2: Insert rows into an application-namespaced table.
 #[tauri::command]
 pub async fn application_store_insert(
-    state: tauri::State<'_, Arc<ApplicationStore>>,
+    state: tauri::State<'_, Arc<DynamicTableStore>>,
     application_id: String,
     table_name: String,
     rows: Vec<serde_json::Map<String, JsonValue>>,
@@ -1025,7 +1025,7 @@ pub async fn application_store_insert(
 /// REQ-3: Query rows with optional WHERE, ORDER BY, LIMIT.
 #[tauri::command]
 pub fn application_store_query(
-    state: tauri::State<'_, Arc<ApplicationStore>>,
+    state: tauri::State<'_, Arc<DynamicTableStore>>,
     application_id: String,
     table_name: String,
     where_cols: Option<serde_json::Map<String, JsonValue>>,
@@ -1046,7 +1046,7 @@ pub fn application_store_query(
 /// REQ-4: Update rows matching WHERE clause.
 #[tauri::command]
 pub async fn application_store_update(
-    state: tauri::State<'_, Arc<ApplicationStore>>,
+    state: tauri::State<'_, Arc<DynamicTableStore>>,
     application_id: String,
     table_name: String,
     set_cols: serde_json::Map<String, JsonValue>,
@@ -1060,7 +1060,7 @@ pub async fn application_store_update(
 /// REQ-5: Delete rows matching WHERE clause.
 #[tauri::command]
 pub async fn application_store_delete(
-    state: tauri::State<'_, Arc<ApplicationStore>>,
+    state: tauri::State<'_, Arc<DynamicTableStore>>,
     application_id: String,
     table_name: String,
     where_cols: serde_json::Map<String, JsonValue>,
@@ -1101,14 +1101,14 @@ mod tests {
 
         // Dash sanitization + prefix, exactly as shipped.
         assert_eq!(
-            ApplicationStore::full_table_name("mission-monitor", "sessions"),
+            DynamicTableStore::full_table_name("mission-monitor", "sessions"),
             "feature_mission_monitor_sessions"
         );
 
         // The terminal sessions table (namespace `terminal`, table `sessions`)
         // resolves to the frozen literal.
         assert_eq!(
-            ApplicationStore::full_table_name("terminal", "sessions"),
+            DynamicTableStore::full_table_name("terminal", "sessions"),
             LEGACY_TERMINAL_SESSIONS_TABLE
         );
         assert_eq!(LEGACY_TERMINAL_SESSIONS_TABLE, "feature_terminal_sessions");
@@ -1117,7 +1117,7 @@ mod tests {
     #[test]
     fn namespace_validation_uses_the_frozen_prefix() {
         assert_eq!(
-            ApplicationStore::validate_namespace("mission-monitor", "sessions").unwrap(),
+            DynamicTableStore::validate_namespace("mission-monitor", "sessions").unwrap(),
             "feature_mission_monitor_sessions"
         );
     }
@@ -1128,7 +1128,7 @@ mod tests {
     fn parse_order_by_defaults_to_ascending_and_accepts_both_directions() {
         let cols = test_columns();
         assert_eq!(
-            ApplicationStore::parse_order_by("id", &cols).unwrap(),
+            DynamicTableStore::parse_order_by("id", &cols).unwrap(),
             ValidatedOrderBy {
                 column: "id".to_string(),
                 descending: false,
@@ -1145,7 +1145,7 @@ mod tests {
             ("id  desc", true),
         ] {
             assert_eq!(
-                ApplicationStore::parse_order_by(input, &cols).unwrap(),
+                DynamicTableStore::parse_order_by(input, &cols).unwrap(),
                 ValidatedOrderBy {
                     column: "id".to_string(),
                     descending,
@@ -1167,7 +1167,7 @@ mod tests {
         ] {
             assert!(
                 matches!(
-                    ApplicationStore::parse_order_by(payload, &cols),
+                    DynamicTableStore::parse_order_by(payload, &cols),
                     Err(IdentifierError::InvalidOrderBy { .. })
                 ),
                 "{payload:?} must be InvalidOrderBy"
@@ -1175,7 +1175,7 @@ mod tests {
         }
         for payload in ["id;", "id;--"] {
             assert_eq!(
-                ApplicationStore::parse_order_by(payload, &cols),
+                DynamicTableStore::parse_order_by(payload, &cols),
                 Err(IdentifierError::UnknownOrderColumn {
                     column: payload.to_string(),
                 }),
@@ -1188,14 +1188,14 @@ mod tests {
     fn parse_order_by_rejects_parens_and_subqueries() {
         let cols = test_columns();
         assert_eq!(
-            ApplicationStore::parse_order_by("id)", &cols),
+            DynamicTableStore::parse_order_by("id)", &cols),
             Err(IdentifierError::UnknownOrderColumn {
                 column: "id)".to_string(),
             })
         );
         // A single-token function call (no whitespace) is an unknown column.
         assert_eq!(
-            ApplicationStore::parse_order_by("pg_read_file('/etc/passwd')", &cols),
+            DynamicTableStore::parse_order_by("pg_read_file('/etc/passwd')", &cols),
             Err(IdentifierError::UnknownOrderColumn {
                 column: "pg_read_file('/etc/passwd')".to_string(),
             })
@@ -1208,7 +1208,7 @@ mod tests {
         ] {
             assert!(
                 matches!(
-                    ApplicationStore::parse_order_by(payload, &cols),
+                    DynamicTableStore::parse_order_by(payload, &cols),
                     Err(IdentifierError::InvalidOrderBy { .. })
                 ),
                 "{payload:?} must be InvalidOrderBy"
@@ -1222,7 +1222,7 @@ mod tests {
         for payload in ["a, b", "a , b"] {
             assert!(
                 matches!(
-                    ApplicationStore::parse_order_by(payload, &cols),
+                    DynamicTableStore::parse_order_by(payload, &cols),
                     Err(IdentifierError::InvalidOrderBy { .. })
                 ),
                 "{payload:?} must be InvalidOrderBy"
@@ -1230,7 +1230,7 @@ mod tests {
         }
         for payload in ["a,b", "id,"] {
             assert_eq!(
-                ApplicationStore::parse_order_by(payload, &cols),
+                DynamicTableStore::parse_order_by(payload, &cols),
                 Err(IdentifierError::UnknownOrderColumn {
                     column: payload.to_string(),
                 }),
@@ -1245,7 +1245,7 @@ mod tests {
         for payload in ["id SIDEWAYS", "id ASC extra", "id ASC, DESC"] {
             assert!(
                 matches!(
-                    ApplicationStore::parse_order_by(payload, &cols),
+                    DynamicTableStore::parse_order_by(payload, &cols),
                     Err(IdentifierError::InvalidOrderBy { .. })
                 ),
                 "{payload:?} must be InvalidOrderBy"
@@ -1258,14 +1258,14 @@ mod tests {
         let cols = test_columns();
         for payload in ["nope", "ID", "latestat"] {
             assert_eq!(
-                ApplicationStore::parse_order_by(payload, &cols),
+                DynamicTableStore::parse_order_by(payload, &cols),
                 Err(IdentifierError::UnknownOrderColumn {
                     column: payload.to_string(),
                 }),
                 "physical columns are case-sensitive: {payload:?}"
             );
         }
-        let error = ApplicationStore::parse_order_by("nope", &cols).unwrap_err();
+        let error = DynamicTableStore::parse_order_by("nope", &cols).unwrap_err();
         assert!(error.to_string().contains("nope"), "{error}");
     }
 
@@ -1275,7 +1275,7 @@ mod tests {
         for payload in ["", "   ", "\t", "\n", " \t\n "] {
             assert!(
                 matches!(
-                    ApplicationStore::parse_order_by(payload, &cols),
+                    DynamicTableStore::parse_order_by(payload, &cols),
                     Err(IdentifierError::InvalidOrderBy { .. })
                 ),
                 "{payload:?} must be a typed rejection (never a bare ORDER BY)"
@@ -1286,7 +1286,7 @@ mod tests {
     #[test]
     fn order_by_sql_quotes_the_exact_camel_case_column() {
         let cols = test_columns();
-        let order = ApplicationStore::parse_order_by("latestAt", &cols).unwrap();
+        let order = DynamicTableStore::parse_order_by("latestAt", &cols).unwrap();
         assert_eq!(
             order,
             ValidatedOrderBy {
@@ -1294,13 +1294,13 @@ mod tests {
                 descending: false,
             }
         );
-        assert_eq!(ApplicationStore::order_by_sql(&order), "\"latestAt\" ASC");
+        assert_eq!(DynamicTableStore::order_by_sql(&order), "\"latestAt\" ASC");
 
-        let order = ApplicationStore::parse_order_by("latestAt DESC", &cols).unwrap();
-        assert_eq!(ApplicationStore::order_by_sql(&order), "\"latestAt\" DESC");
+        let order = DynamicTableStore::parse_order_by("latestAt DESC", &cols).unwrap();
+        assert_eq!(DynamicTableStore::order_by_sql(&order), "\"latestAt\" DESC");
 
-        let order = ApplicationStore::parse_order_by("id", &cols).unwrap();
-        assert_eq!(ApplicationStore::order_by_sql(&order), "\"id\" ASC");
+        let order = DynamicTableStore::parse_order_by("id", &cols).unwrap();
+        assert_eq!(DynamicTableStore::order_by_sql(&order), "\"id\" ASC");
     }
 
     // ── Spec #3075 ST-2: namespace charset gate ──────────────────────────────
@@ -1319,7 +1319,7 @@ mod tests {
             "terminal_sessions",
         ] {
             assert_eq!(
-                ApplicationStore::validate_identifier_charset("applicationId", ok),
+                DynamicTableStore::validate_identifier_charset("applicationId", ok),
                 Ok(()),
                 "{ok:?} must be accepted"
             );
@@ -1337,7 +1337,7 @@ mod tests {
             "app)",
         ] {
             assert_eq!(
-                ApplicationStore::validate_identifier_charset("applicationId", bad),
+                DynamicTableStore::validate_identifier_charset("applicationId", bad),
                 Err(IdentifierError::InvalidNamespaceIdentifier {
                     kind: "applicationId",
                     value: bad.to_string(),
@@ -1351,7 +1351,7 @@ mod tests {
     fn validate_namespace_rejects_out_of_charset_identifiers() {
         for bad_application in ["a b", "app;drop", "app\"", "", "app.dot", "app/slash", "appü"]
         {
-            let error = ApplicationStore::validate_namespace(bad_application, "sessions")
+            let error = DynamicTableStore::validate_namespace(bad_application, "sessions")
                 .expect_err("an out-of-charset application_id must be rejected");
             assert!(
                 error.to_string().contains("applicationId"),
@@ -1359,7 +1359,7 @@ mod tests {
             );
         }
         for bad_table in ["a b", "app;drop", "", "app.dot", "app/slash", "appü"] {
-            let error = ApplicationStore::validate_namespace("mission-monitor", bad_table)
+            let error = DynamicTableStore::validate_namespace("mission-monitor", bad_table)
                 .expect_err("an out-of-charset table_name must be rejected");
             assert!(
                 error.to_string().contains("tableName"),
@@ -1385,17 +1385,17 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                ApplicationStore::full_table_name(application, table),
+                DynamicTableStore::full_table_name(application, table),
                 expected,
                 "the generator output is the frozen on-disk contract"
             );
             assert_eq!(
-                ApplicationStore::validate_namespace(application, table).unwrap(),
+                DynamicTableStore::validate_namespace(application, table).unwrap(),
                 expected
             );
         }
         assert_eq!(
-            ApplicationStore::validate_namespace("terminal", "sessions").unwrap(),
+            DynamicTableStore::validate_namespace("terminal", "sessions").unwrap(),
             LEGACY_TERMINAL_SESSIONS_TABLE
         );
     }
@@ -1407,12 +1407,12 @@ mod tests {
         let cols = test_columns();
 
         assert_eq!(
-            ApplicationStore::validate_where_columns(&Map::new(), &cols),
+            DynamicTableStore::validate_where_columns(&Map::new(), &cols),
             Ok(()),
             "an empty WHERE map is valid"
         );
         assert_eq!(
-            ApplicationStore::validate_where_columns(
+            DynamicTableStore::validate_where_columns(
                 &where_map(&[
                     ("id", serde_json::json!("a")),
                     ("latestAt", serde_json::json!(1)),
@@ -1423,7 +1423,7 @@ mod tests {
             "every physical column is valid"
         );
 
-        let error = ApplicationStore::validate_where_columns(
+        let error = DynamicTableStore::validate_where_columns(
             &where_map(&[("nope", serde_json::json!(1))]),
             &cols,
         )
@@ -1437,7 +1437,7 @@ mod tests {
         assert!(error.to_string().contains("nope"), "{error}");
 
         // One unknown key among known ones still rejects, naming the offender.
-        let error = ApplicationStore::validate_where_columns(
+        let error = DynamicTableStore::validate_where_columns(
             &where_map(&[
                 ("id", serde_json::json!("a")),
                 ("nope", serde_json::json!(1)),
@@ -1453,7 +1453,7 @@ mod tests {
         );
 
         // Case-mismatched keys are unknown too (physical names are exact).
-        let error = ApplicationStore::validate_where_columns(
+        let error = DynamicTableStore::validate_where_columns(
             &where_map(&[("ID", serde_json::json!("a"))]),
             &cols,
         )

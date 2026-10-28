@@ -14,7 +14,7 @@
 //!    `FREDO_DATA_DIR`.
 //! 2. `PgDataDirLock::acquire_in(resolve_lock_dir(app_data_dir))` — a held lock is
 //!    a clear fail-fast (exit 1), no cluster started.
-//! 3. `AppStore::open` → `ensure_password` (the shared OS-keychain credential).
+//! 3. `SettingsStore::open` → `ensure_password` (the shared OS-keychain credential).
 //! 4. `PgRuntime` setup → knobs → start → database-identity migration →
 //!    `probe_ready`; the `HeadlessDescriptor`
 //!    is published ONLY after readiness succeeds.
@@ -58,7 +58,7 @@ use crate::infrastructure::rtdb::subscriptions::SubscriptionRegistry;
 use crate::infrastructure::storage::engine::{build_pg_pool, EngineHandle, StoreEngine};
 use crate::infrastructure::storage::boot_config::resolve_app_data_dir;
 use crate::infrastructure::storage::span_store::SpanStore;
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::SettingsStore;
 
 use super::config::PgSupervisorConfig;
 use super::credentials::PgCredential;
@@ -126,11 +126,11 @@ pub enum ShutdownCause {
 struct DaemonCleanup {
     lock: Option<PgDataDirLock>,
     lock_dir: PathBuf,
-    app_store: Arc<AppStore>,
+    app_store: Arc<SettingsStore>,
 }
 
 impl DaemonCleanup {
-    fn new(lock: PgDataDirLock, lock_dir: PathBuf, app_store: Arc<AppStore>) -> Self {
+    fn new(lock: PgDataDirLock, lock_dir: PathBuf, app_store: Arc<SettingsStore>) -> Self {
         Self {
             lock: Some(lock),
             lock_dir,
@@ -188,7 +188,7 @@ pub async fn run_ingest_daemon(args: IngestDaemonArgs) -> Result<()> {
     // ── 3. Shared credential (the SAME OS keychain the GUI uses) ──────────────
     let engine = EngineHandle::new_pending();
     let app_store = Arc::new(
-        AppStore::open(engine.clone(), &app_data_dir)
+        SettingsStore::open(engine.clone(), &app_data_dir)
             .context("open the settings store")?,
     );
     let password = ensure_password(&PgCredential::keyring());

@@ -1,7 +1,7 @@
 //! Persisted Terminal session records (Spec #2935 ST-2).
 //!
 //! Each spawned Terminal session is recorded in the PostgreSQL store as a
-//! [`ApplicationStore`] table (`feature_terminal_sessions`, application id `terminal`)
+//! [`DynamicTableStore`] table (`feature_terminal_sessions`, application id `terminal`)
 //! so it survives a window close and an app restart and can be offered for
 //! resume. The record carries **only** identity + timing + the optional
 //! CLI-native session id — never credentials, launch args, environment, or
@@ -15,7 +15,7 @@ use anyhow::Result;
 use serde_json::{json, Map, Value};
 
 use crate::applications::terminal::state::SessionKind;
-use crate::infrastructure::storage::application_store::{ColumnDef, ColumnType, ApplicationStore};
+use crate::infrastructure::storage::application_store::{ColumnDef, ColumnType, DynamicTableStore};
 
 /// The owning application namespace (`feature_terminal_sessions`).
 pub const FEATURE_ID: &str = "terminal";
@@ -26,7 +26,7 @@ pub const TABLE_NAME: &str = "sessions";
 /// bound.
 pub const MAX_RECORDS: usize = 100;
 
-/// The `order_by` the record list passes to [`ApplicationStore::query`]
+/// The `order_by` the record list passes to [`DynamicTableStore::query`]
 /// (Spec #3075 ST-4): newest `last_active_at` first. Bare — the sink is the
 /// single quoting point and validates/quotes the physical column.
 const LIST_ORDER_BY: &str = "last_active_at DESC";
@@ -57,7 +57,7 @@ pub struct PersistedSession {
 }
 
 impl PersistedSession {
-    /// Column definitions for `ApplicationStore::ensure_table` (TEXT/INTEGER only).
+    /// Column definitions for `DynamicTableStore::ensure_table` (TEXT/INTEGER only).
     pub fn columns() -> Vec<ColumnDef> {
         vec![
             column("id", ColumnType::TEXT, false, true),
@@ -70,7 +70,7 @@ impl PersistedSession {
         ]
     }
 
-    /// Project this record onto a `ApplicationStore` row map.
+    /// Project this record onto a `DynamicTableStore` row map.
     pub fn to_row(&self) -> Map<String, Value> {
         let mut row = Map::new();
         row.insert("id".into(), json!(self.id));
@@ -89,7 +89,7 @@ impl PersistedSession {
         row
     }
 
-    /// Parse a `ApplicationStore` row map back into a record. Returns `None` for a
+    /// Parse a `DynamicTableStore` row map back into a record. Returns `None` for a
     /// malformed row (missing id/fields or an unknown `cli`).
     pub fn from_row(row: &Map<String, Value>) -> Option<Self> {
         Some(Self {
@@ -122,20 +122,20 @@ fn column(
 }
 
 /// Create the record table if it does not exist (idempotent).
-pub fn ensure_table(store: &ApplicationStore) -> Result<()> {
+pub fn ensure_table(store: &DynamicTableStore) -> Result<()> {
     store.ensure_table(FEATURE_ID, TABLE_NAME, &PersistedSession::columns())
 }
 
 /// Create the record table on a PostgreSQL pool (idempotent) — the startup
 /// schema-init registry entry (`lib.rs`), delegating to the ONE DDL-builder
-/// source on [`ApplicationStore`] so the terminal table exists on PostgreSQL before
+/// source on [`DynamicTableStore`] so the terminal table exists on PostgreSQL before
 /// any terminal operation (Spec #2975 ST-2 rework).
 pub fn ensure_table_on_pg(pool: &sqlx::PgPool) -> Result<()> {
-    ApplicationStore::ensure_table_on_pg(pool, FEATURE_ID, TABLE_NAME, &PersistedSession::columns())
+    DynamicTableStore::ensure_table_on_pg(pool, FEATURE_ID, TABLE_NAME, &PersistedSession::columns())
 }
 
 /// Every persisted record, newest `last_active_at` first.
-pub fn list(store: &ApplicationStore) -> Result<Vec<PersistedSession>> {
+pub fn list(store: &DynamicTableStore) -> Result<Vec<PersistedSession>> {
     let rows = store.query(
         FEATURE_ID,
         TABLE_NAME,
@@ -150,7 +150,7 @@ pub fn list(store: &ApplicationStore) -> Result<Vec<PersistedSession>> {
 }
 
 /// One record by id.
-pub fn get(store: &ApplicationStore, id: &str) -> Result<Option<PersistedSession>> {
+pub fn get(store: &DynamicTableStore, id: &str) -> Result<Option<PersistedSession>> {
     let mut where_cols = Map::new();
     where_cols.insert("id".into(), json!(id));
     let rows = store.query(
@@ -164,14 +164,14 @@ pub fn get(store: &ApplicationStore, id: &str) -> Result<Option<PersistedSession
 }
 
 /// Insert a record, then evict the oldest beyond [`MAX_RECORDS`].
-pub fn insert(store: &ApplicationStore, record: &PersistedSession) -> Result<()> {
+pub fn insert(store: &DynamicTableStore, record: &PersistedSession) -> Result<()> {
     store.insert(FEATURE_ID, TABLE_NAME, &[record.to_row()])?;
     evict_oldest_beyond_max(store)?;
     Ok(())
 }
 
 /// Refresh a record's `last_active_at` (window close / session close / self-exit).
-pub fn touch(store: &ApplicationStore, id: &str, at: u64) -> Result<()> {
+pub fn touch(store: &DynamicTableStore, id: &str, at: u64) -> Result<()> {
     let mut set_cols = Map::new();
     set_cols.insert("last_active_at".into(), json!(at));
     let mut where_cols = Map::new();
@@ -181,7 +181,7 @@ pub fn touch(store: &ApplicationStore, id: &str, at: u64) -> Result<()> {
 }
 
 /// Persist a captured CLI-native session id onto a record.
-pub fn set_cli_session_id(store: &ApplicationStore, id: &str, cli_session_id: &str) -> Result<()> {
+pub fn set_cli_session_id(store: &DynamicTableStore, id: &str, cli_session_id: &str) -> Result<()> {
     let mut set_cols = Map::new();
     set_cols.insert("cli_session_id".into(), json!(cli_session_id));
     let mut where_cols = Map::new();
@@ -193,14 +193,14 @@ pub fn set_cli_session_id(store: &ApplicationStore, id: &str, cli_session_id: &s
 /// Rename a record's session name (Spec #2942 ST-3).
 ///
 /// The name is the record's `title` and the ONLY editable field. The write is an
-/// atomic column UPDATE through `ApplicationStore::update` — the SAME path as
+/// atomic column UPDATE through `DynamicTableStore::update` — the SAME path as
 /// [`touch`]/[`set_cli_session_id`], never a delete+insert — so the record's key
 /// identity is untouched (`id`, `created_at`, `cli`, `work_dir`, `cli_session_id`
 /// all stay byte-identical; exactly one row keeps the same `id`, never an orphan
 /// or duplicate — G-242).
 ///
 /// Returns the number of rows updated (`0` when no record has that `id`).
-pub fn rename(store: &ApplicationStore, id: &str, name: &str) -> Result<u64> {
+pub fn rename(store: &DynamicTableStore, id: &str, name: &str) -> Result<u64> {
     let mut set_cols = Map::new();
     set_cols.insert("title".into(), json!(name));
     let mut where_cols = Map::new();
@@ -209,7 +209,7 @@ pub fn rename(store: &ApplicationStore, id: &str, name: &str) -> Result<u64> {
 }
 
 /// Delete one record by id (user-requested removal).
-pub fn delete(store: &ApplicationStore, id: &str) -> Result<u64> {
+pub fn delete(store: &DynamicTableStore, id: &str) -> Result<u64> {
     let mut where_cols = Map::new();
     where_cols.insert("id".into(), json!(id));
     store.delete(FEATURE_ID, TABLE_NAME, &where_cols)
@@ -219,7 +219,7 @@ pub fn delete(store: &ApplicationStore, id: &str) -> Result<u64> {
 /// Returns the number evicted.
 ///
 /// Private: called by [`insert`] after the row is written.
-fn evict_oldest_beyond_max(store: &ApplicationStore) -> Result<u64> {
+fn evict_oldest_beyond_max(store: &DynamicTableStore) -> Result<u64> {
     let all = list(store)?;
     if all.len() <= MAX_RECORDS {
         return Ok(0);

@@ -30,7 +30,7 @@ use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::Layer;
 
 use crate::infrastructure::storage::span_store::SpanStore;
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::SettingsStore;
 use crate::infrastructure::telemetry::backoff::ErrorBackoff;
 
 /// R-5 (Spec #3067): per-site back-off gating the log-store flush error
@@ -98,12 +98,12 @@ struct CollectorInner {
 /// Collects `LogRecord` entries, buffers them, and flushes to `SpanStore::insert_logs()`.
 ///
 /// Follows the same pattern as `SpanCollector` and `MetricCollector`:
-/// - Holds `Arc<SpanStore>` + `Arc<AppStore>` for persistence and settings access.
-/// - Uses an `enabled_cache` `AtomicBool` to avoid AppStore reads on every event.
+/// - Holds `Arc<SpanStore>` + `Arc<SettingsStore>` for persistence and settings access.
+/// - Uses an `enabled_cache` `AtomicBool` to avoid SettingsStore reads on every event.
 /// - Buffers records and flushes at threshold (500 records) or timer (5 seconds).
 pub struct LogCollector {
     store: Arc<SpanStore>,
-    app_store: Arc<AppStore>,
+    app_store: Arc<SettingsStore>,
     inner: Mutex<CollectorInner>,
     /// Cached value of `tracing.logging_enabled`, checked before every push.
     pub(crate) enabled_cache: AtomicBool,
@@ -111,8 +111,8 @@ pub struct LogCollector {
 
 impl LogCollector {
     /// Create a new LogCollector with the given store and app store.
-    /// Reads `tracing.logging_enabled` from AppStore to initialize the cache.
-    pub fn new(store: Arc<SpanStore>, app_store: Arc<AppStore>) -> Self {
+    /// Reads `tracing.logging_enabled` from SettingsStore to initialize the cache.
+    pub fn new(store: Arc<SpanStore>, app_store: Arc<SettingsStore>) -> Self {
         let enabled = app_store
             .cached_get("tracing.logging_enabled")
             .ok()
@@ -130,7 +130,7 @@ impl LogCollector {
         }
     }
 
-    /// Refresh the enabled cache from AppStore.
+    /// Refresh the enabled cache from SettingsStore.
     pub fn refresh_enabled(&self) {
         let enabled = self
             .app_store
@@ -238,7 +238,7 @@ impl LogCollector {
     /// Currently a no-op on the collector itself (the subscriber layer handles filtering).
     pub fn set_level_str(&self, _level: &str) {
         // The actual level filtering is done by `tracing_subscriber::EnvFilter` at the
-        // subscriber level. This method stores the preference in AppStore; the subscriber
+        // subscriber level. This method stores the preference in SettingsStore; the subscriber
         // level is updated separately in lib.rs.
     }
 

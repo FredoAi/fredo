@@ -1,6 +1,6 @@
 //! Out-of-process companion inference via a managed `llama-server` (Spec #2857).
 //!
-//! ST-2 owns the PURE launch-configuration model ([`config`]) and the AppStore
+//! ST-2 owns the PURE launch-configuration model ([`config`]) and the SettingsStore
 //! key constants every other sub-task consumes. ST-3 adds the process lifecycle
 //! ([`state`], [`process`], [`health`], [`commands`]); ST-4 adds chat routing
 //! ([`chat`]) and registers the commands in `lib.rs`. The exit hook mechanism
@@ -24,9 +24,9 @@ use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 
 use crate::infrastructure::env::EnvConfig;
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::SettingsStore;
 
-// ── AppStore keys (AppStore remains the single source of truth) ────────────────
+// ── SettingsStore keys (SettingsStore remains the single source of truth) ────────────────
 //
 // These are the persisted setting names the launch flow reads/writes. ST-2
 // declares them; ST-3/ST-4 own their persistence — never hard-code a literal at
@@ -123,7 +123,7 @@ pub fn apply_companion_env_overrides(app: &AppHandle, env: &EnvConfig) {
     let Some(overrides) = companion_env_overrides(env) else {
         return;
     };
-    let store = app.state::<Arc<AppStore>>();
+    let store = app.state::<Arc<SettingsStore>>();
     if let Err(error) = store.cached_set(LLAMA_SERVER_PORT_KEY, &overrides.port.to_string()) {
         tracing::warn!(
             target: "fredo::llm_server",

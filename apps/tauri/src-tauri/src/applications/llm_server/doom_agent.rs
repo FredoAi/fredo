@@ -37,7 +37,7 @@
 //! composition root (`lib.rs`) passes `applications/doom/actions::action_vocabulary_json()`.
 //! The dataset capture env seams ([`DOOM_DATASET_RAW_ENV`] /
 //! [`DOOM_DATASET_REASONING_ENV`]) and the persisted server settings are read
-//! directly here (an env var / the AppStore is not a cross-application import).
+//! directly here (an env var / the SettingsStore is not a cross-application import).
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -51,7 +51,7 @@ use crate::infrastructure::companion::doom_decision::{
     parse_doom_plan, DoomDecisionError, DoomDecisionSource, DoomDecisionTrace, DoomPlan,
     DOOM_PLAN_DISTANCE_MAX, DOOM_PLAN_MAX_STEPS, DOOM_PLAN_SCHEMA_NAME, DOOM_PLAN_TICS_MAX,
 };
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::SettingsStore;
 
 use super::chat::{self, ChatStreamEvent, LlmMessage};
 use super::config::LlamaServerConfig;
@@ -374,7 +374,7 @@ impl ModelDoomDecisionSource {
     /// persisted server settings (an absent setting yields `None` / the config
     /// default). Never fails a decision.
     fn model_metadata(&self) -> (Option<String>, Option<String>) {
-        let store = self.app.state::<Arc<AppStore>>();
+        let store = self.app.state::<Arc<SettingsStore>>();
         let model_path = store.cached_get(LLAMA_SERVER_MODEL_PATH_KEY).ok().flatten();
         let args_json = store.cached_get(LLAMA_SERVER_ARGS_KEY).ok().flatten();
         (

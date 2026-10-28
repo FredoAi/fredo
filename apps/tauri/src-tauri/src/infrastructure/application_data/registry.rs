@@ -5,7 +5,7 @@
 //! [`ApplicationDataStore`]) and materializes the physical table
 //! (`CREATE TABLE IF NOT EXISTS feature_<sanitized applicationId>_<table>` + the
 //! backend-managed reserved columns `_row_version` / `_updated_at`), reusing
-//! [`ApplicationStore::validate_namespace`] for the isolation prefix.
+//! [`DynamicTableStore::validate_namespace`] for the isolation prefix.
 //!
 //! Migration is **additive-only**:
 //! - unchanged declaration → no-op (the table is still ensured, never dropped);
@@ -23,7 +23,7 @@ use anyhow::Result;
 use serde_json::Value as JsonValue;
 
 use crate::infrastructure::storage::engine::quote_ident;
-use crate::infrastructure::storage::application_store::{ColumnType, ApplicationStore, PhysicalColumn};
+use crate::infrastructure::storage::application_store::{ColumnType, DynamicTableStore, PhysicalColumn};
 
 use super::declaration::{
     is_reserved_column, DeclaredColumn, DeclaredColumnType, ApplicationDataDeclaration,
@@ -82,12 +82,12 @@ struct PlannedTable<'a> {
 /// Declaration registry — persisted declarations + idempotent materialization.
 pub struct DeclarationRegistry {
     meta: Arc<ApplicationDataStore>,
-    store: Arc<ApplicationStore>,
+    store: Arc<DynamicTableStore>,
 }
 
 impl DeclarationRegistry {
     /// Build a registry over the metadata store and the application-scoped table store.
-    pub fn new(meta: Arc<ApplicationDataStore>, store: Arc<ApplicationStore>) -> Self {
+    pub fn new(meta: Arc<ApplicationDataStore>, store: Arc<DynamicTableStore>) -> Self {
         DeclarationRegistry { meta, store }
     }
 
@@ -121,7 +121,7 @@ impl DeclarationRegistry {
         let mut planned: Vec<PlannedTable<'_>> = Vec::new();
         for declaration in declarations {
             for table in &declaration.tables {
-                let full = match ApplicationStore::validate_namespace(&declaration.feature_id, &table.name)
+                let full = match DynamicTableStore::validate_namespace(&declaration.feature_id, &table.name)
                 {
                     Ok(full) => full,
                     Err(e) => {
@@ -226,7 +226,7 @@ impl DeclarationRegistry {
                     }
                 };
 
-            let full = match ApplicationStore::validate_namespace(&meta.feature_id, &meta.table_name) {
+            let full = match DynamicTableStore::validate_namespace(&meta.feature_id, &meta.table_name) {
                 Ok(full) => full,
                 Err(e) => {
                     errors.push(format!(
@@ -336,7 +336,7 @@ impl DeclarationRegistry {
         table: &ApplicationDataTableDeclaration,
         plan: MigrationPlan,
     ) -> Result<MaterializedTable> {
-        let full = ApplicationStore::validate_namespace(feature_id, &table.name)?;
+        let full = DynamicTableStore::validate_namespace(feature_id, &table.name)?;
         let existed_before = self.store.table_exists(&full)?;
         let declaration_json = serde_json::to_string(table)?;
         // A rebuild creates the declared schema anew (the name was occupied by a
@@ -527,7 +527,7 @@ impl DeclarationRegistry {
         // reserved column and undeclared columns), so the declared layer is
         // rebuilt without dropping the foreign table.
         if !declared_layer_shaped(table, persisted.as_ref(), physical) {
-            let full = ApplicationStore::validate_namespace(feature_id, &table.name)
+            let full = DynamicTableStore::validate_namespace(feature_id, &table.name)
                 .map_err(|e| vec![format!("application '{feature_id}' table '{}': {e}", table.name)])?;
             let quarantine = self.quarantine_name(&full)?;
             return Ok(MigrationPlan::RebuildLegacy { quarantine });
@@ -605,7 +605,7 @@ impl DeclarationRegistry {
     /// Idempotent (the tombstone upsert keyed on `(application, table, key_json)`),
     /// and the legacy table is READ-ONLY here — never mutated, never dropped.
     fn migrate_legacy_deletion_tombstones(&self) -> Result<()> {
-        let legacy_full = ApplicationStore::validate_namespace("mission-monitor", "deleted_sessions")?;
+        let legacy_full = DynamicTableStore::validate_namespace("mission-monitor", "deleted_sessions")?;
         if !self.store.table_exists(&legacy_full)? {
             return Ok(());
         }
@@ -835,7 +835,7 @@ mod tests {
         let handle = EngineHandle::new_pending();
         DeclarationRegistry::new(
             Arc::new(ApplicationDataStore::open(handle.clone()).expect("data store")),
-            Arc::new(ApplicationStore::open(handle).expect("application store")),
+            Arc::new(DynamicTableStore::open(handle).expect("application store")),
         )
     }
 

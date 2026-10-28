@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::SettingsStore;
 
 /// Whether an app renders inside the main Fredo window or in its own OS window.
 ///
@@ -37,7 +37,7 @@ pub enum AppPresentation {
     NewWindow,
 }
 
-/// The AppStore control-plane KV key holding the persisted per-app map.
+/// The SettingsStore control-plane KV key holding the persisted per-app map.
 pub const APP_WINDOW_PRESENTATION_KEY: &str = "app_window_presentation";
 
 /// The legacy Terminal-only key (#2947). Read as a one-way fallback, NEVER
@@ -134,7 +134,7 @@ fn resolve_presentation(
 /// Terminal path, so the per-chunk [`crate::applications::terminal::commands::terminal_host_label`]
 /// hot path stays a single lookup + small parse in steady state.
 pub fn app_presentation(app: &AppHandle, app_id: &str) -> AppPresentation {
-    let Some(store) = app.try_state::<Arc<AppStore>>() else {
+    let Some(store) = app.try_state::<Arc<SettingsStore>>() else {
         return DEFAULT_APP_PRESENTATION;
     };
     let map = parse_presentation_map(

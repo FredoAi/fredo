@@ -39,7 +39,7 @@
 //!   gate and the wire.
 //! * An unconfirmed `destructive`/`unknown` statement executes nothing.
 //! * One `db_query_execute` call in `Single` mode executes at most one statement.
-//! * `AppStore` / `EngineHandle` and the embedded-PostgreSQL supervisor are
+//! * `SettingsStore` / `EngineHandle` and the embedded-PostgreSQL supervisor are
 //!   untouched; the result cache is local to this module.
 //!
 //! # Row mapping

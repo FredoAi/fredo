@@ -3,7 +3,7 @@
 //! This module is deliberately side-effect free: it owns the reference parameter
 //! set (the human-provided `.bat` defaults), a single deterministic argv builder,
 //! and the Windows `.bat` renderer. It performs NO process spawn, NO HTTP, NO
-//! Tauri command work, and NEVER touches `AppStore` — the caller (ST-3/ST-4)
+//! Tauri command work, and NEVER touches `SettingsStore` — the caller (ST-3/ST-4)
 //! reads persisted settings and fills [`LlamaServerConfig`] before calling
 //! [`LlamaServerConfig::to_args`] / [`LlamaServerConfig::to_bat`].
 //!

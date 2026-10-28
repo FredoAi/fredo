@@ -21,7 +21,7 @@
 //! recorded, not assumed.
 //!
 //! **Read-only contract (ST-1 non-goals):** the probe opens no window, mutates no
-//! `AppStore` state (it only reads the configured host/port/log path), launches
+//! `SettingsStore` state (it only reads the configured host/port/log path), launches
 //! nothing, and NEVER emits `llm-token`. The live invocation is driven by the
 //! Tester through the sanctioned app path; the pure request builders and the
 //! transcript observers are unit-tested here.
@@ -35,7 +35,7 @@ use futures_util::StreamExt;
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::SettingsStore;
 use crate::infrastructure::voice::{SttAudioCapability, SttAudioCapabilityState};
 
 use super::chat::{self, LlmMessage};
@@ -367,7 +367,7 @@ impl StreamOutcome {
 }
 
 fn store_string(app: &AppHandle, key: &str) -> Option<String> {
-    app.state::<Arc<AppStore>>().cached_get(key).ok().flatten()
+    app.state::<Arc<SettingsStore>>().cached_get(key).ok().flatten()
 }
 
 /// Read the server port WITHOUT mutating any state: the live active port when
@@ -480,7 +480,7 @@ async fn run_stream_probe(
 /// Reads `/props` (tool-aware template?), the server log's `Chat format:` line,
 /// then issues one streaming `tools` request and one `response_format` request,
 /// returning the raw transcripts + the derived verdict. Never opens a window,
-/// never writes `AppStore` state, never emits `llm-token`.
+/// never writes `SettingsStore` state, never emits `llm-token`.
 ///
 /// `Err` only when the managed server is unreachable / `/props` fails — start the
 /// managed server first, then re-invoke.

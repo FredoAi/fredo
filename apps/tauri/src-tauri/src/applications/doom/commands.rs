@@ -21,8 +21,8 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use crate::infrastructure::comm::bus::EventBus;
 use crate::infrastructure::companion::doom_decision::DoomDecisionSourceState;
 use crate::infrastructure::companion::PerformanceModeState;
-use crate::infrastructure::storage::application_store::ApplicationStore;
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::application_store::DynamicTableStore;
+use crate::infrastructure::storage::SettingsStore;
 
 use super::agent::{run_continuous_loop_with_writer, AutoplayControl, AutoplayRun, DoomAutoplayConfig};
 use super::dataset::{
@@ -147,19 +147,19 @@ where
 // ── State helpers ─────────────────────────────────────────────────────────────
 
 fn set_last_error(app: &AppHandle, message: &str, code: DoomErrorCode) {
-    let store = app.state::<Arc<AppStore>>();
+    let store = app.state::<Arc<SettingsStore>>();
     let _ = store.cached_set(DOOM_LAST_ERROR_KEY, message);
     let _ = store.cached_set(DOOM_LAST_ERROR_CODE_KEY, code.as_str());
 }
 
 fn clear_last_error(app: &AppHandle) {
-    let store = app.state::<Arc<AppStore>>();
+    let store = app.state::<Arc<SettingsStore>>();
     let _ = store.cached_set(DOOM_LAST_ERROR_KEY, "");
     let _ = store.cached_set(DOOM_LAST_ERROR_CODE_KEY, "");
 }
 
 fn read_last_error(app: &AppHandle) -> (Option<String>, Option<DoomErrorCode>) {
-    let store = app.state::<Arc<AppStore>>();
+    let store = app.state::<Arc<SettingsStore>>();
     let message = store
         .cached_get(DOOM_LAST_ERROR_KEY)
         .ok()
@@ -628,7 +628,7 @@ pub async fn start_doom_autoplay(
     // `export_in_progress` guard defers eviction for both (AC3). OFF ⇒ no writer
     // is built and no dataset file is ever created.
     let dataset_enabled =
-        dataset_enabled_from_store(app.state::<Arc<AppStore>>().inner().as_ref());
+        dataset_enabled_from_store(app.state::<Arc<SettingsStore>>().inner().as_ref());
     let dataset_writer =
         dataset_enabled.then(|| app.state::<Arc<DoomDatasetState>>().writer());
 
@@ -637,7 +637,7 @@ pub async fn start_doom_autoplay(
     // A `completed:true` save is preserved and reported terminal at start
     // (G-321) — never a silent fresh run. The save lives in the dedicated
     // `feature_doom_save` PostgreSQL feature table (Spec #3011).
-    let store = app.state::<Arc<ApplicationStore>>().inner().clone();
+    let store = app.state::<Arc<DynamicTableStore>>().inner().clone();
     let campaign = save::resolve_start_campaign(
         fresh_start,
         save::load(&store).map(|saved| saved.to_campaign()),
@@ -719,7 +719,7 @@ pub async fn start_doom_autoplay(
 /// corrupt, or unreadable save reports `hasSave:false` with every coordinate null.
 #[tauri::command]
 pub fn get_doom_save(app: AppHandle) -> DoomSaveStatus {
-    let store = app.state::<Arc<ApplicationStore>>().inner().clone();
+    let store = app.state::<Arc<DynamicTableStore>>().inner().clone();
     save::load(&store)
         .map(|saved| DoomSaveStatus::from_save(&saved))
         .unwrap_or_else(DoomSaveStatus::absent)
@@ -729,7 +729,7 @@ pub fn get_doom_save(app: AppHandle) -> DoomSaveStatus {
 /// reports `hasSave:false` afterwards. A clear failure is logged, never fatal.
 #[tauri::command]
 pub fn reset_doom_save(app: AppHandle) -> DoomSaveStatus {
-    let store = app.state::<Arc<ApplicationStore>>().inner().clone();
+    let store = app.state::<Arc<DynamicTableStore>>().inner().clone();
     if let Err(detail) = save::clear(&store) {
         tracing::warn!(
             target: "fredo::doom",
@@ -762,7 +762,7 @@ pub fn get_doom_autoplay_status(app: AppHandle) -> DoomAutoplayStatus {
 
 // ── Fine-tuning dataset opt-in + export (Spec #3032 ST-3) ─────────────────────
 //
-// The capture gate's SINGLE source of truth is the Rust-readable AppStore KV
+// The capture gate's SINGLE source of truth is the Rust-readable SettingsStore KV
 // [`DOOM_DATASET_ENABLED_KEY`] (`doom_dataset_enabled`), written by
 // `set_doom_dataset_enabled` and read by the start path; the
 // [`DOOM_DATASET_ENABLED_ENV`] env seam overrides it for tests (G-275, inert when
@@ -857,7 +857,7 @@ pub fn dataset_enabled_from(kv_value: Option<&str>, env_value: Option<&str>) -> 
 }
 
 /// Read the capture gate from the persisted store KV + the process env override.
-pub fn dataset_enabled_from_store(store: &AppStore) -> bool {
+pub fn dataset_enabled_from_store(store: &SettingsStore) -> bool {
     let kv = store
         .cached_get(DOOM_DATASET_ENABLED_KEY)
         .ok()
@@ -897,7 +897,7 @@ pub fn export_dataset(
 /// The on-disk scan runs off the main thread; it never creates a file.
 #[tauri::command]
 pub async fn get_doom_dataset_status(app: AppHandle) -> DoomDatasetStatus {
-    let enabled = dataset_enabled_from_store(app.state::<Arc<AppStore>>().inner().as_ref());
+    let enabled = dataset_enabled_from_store(app.state::<Arc<SettingsStore>>().inner().as_ref());
     let state = app.state::<Arc<DoomDatasetState>>().inner().clone();
     let fallback_dir = state.dir().to_string_lossy().into_owned();
     tauri::async_runtime::spawn_blocking(move || state.status(enabled))
@@ -915,7 +915,7 @@ pub async fn get_doom_dataset_status(app: AppHandle) -> DoomDatasetStatus {
 /// records (retention is the only deletion path).
 #[tauri::command]
 pub async fn set_doom_dataset_enabled(app: AppHandle, enabled: bool) -> DoomDatasetStatus {
-    let store = app.state::<Arc<AppStore>>().inner().clone();
+    let store = app.state::<Arc<SettingsStore>>().inner().clone();
     let state = app.state::<Arc<DoomDatasetState>>().inner().clone();
     let fallback_dir = state.dir().to_string_lossy().into_owned();
     tauri::async_runtime::spawn_blocking(move || {
@@ -1296,8 +1296,8 @@ mod tests {
     use super::*;
     use crate::infrastructure::storage::engine::EngineHandle;
 
-    fn open_store(dir: &std::path::Path) -> AppStore {
-        AppStore::open(EngineHandle::new_pending(), dir).expect("open app store")
+    fn open_store(dir: &std::path::Path) -> SettingsStore {
+        SettingsStore::open(EngineHandle::new_pending(), dir).expect("open app store")
     }
 
     #[test]
