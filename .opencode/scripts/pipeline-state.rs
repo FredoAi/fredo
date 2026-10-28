@@ -3659,9 +3659,18 @@ fn dev_verify_drafts(dir: &std::path::Path) -> Vec<(String, String)> {
 /// this title. Makes the `dev-verify-*.md` flush idempotent against a draft
 /// already posted through the documented `comment` action — the two channels
 /// never double-post the same developer's record (G-405).
+///
+/// The match is LINE-ANCHORED, not only at the body start: an older
+/// `## Status`-headed verification carries the documented header NESTED on its
+/// own line below `## Status` (observed on #3080, where the `comment` action
+/// prepended `## Status` and the developer's
+/// `## Developer <ST-id> — verification` heading sat under it). A body-start-only
+/// check would miss it and re-post the stale draft as a duplicate.
 fn dev_verify_posted(issue: u32, title: &str) -> bool {
     let needle = format!("## {}", title);
-    get_issue_comments(issue).iter().any(|b| b.trim_start().starts_with(&needle))
+    get_issue_comments(issue)
+        .iter()
+        .any(|b| b.lines().any(|l| l.trim_start().starts_with(&needle)))
 }
 
 fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str>) -> anyhow::Result<()> {
@@ -3673,8 +3682,10 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
     // per-developer verification drafts (`dev-verify-<ST-id>.md`, discovered
     // dynamically — the `<ST-id>` varies) inserted BEFORE the assembled roll-up so
     // each developer's record precedes `## Development Summary`. G-405: the
-    // `comment` action can only produce `## Status`, so this flush path is what
-    // makes the documented `## Developer <ST-id> — verification` header reachable.
+    // `comment` action posts the per-developer verification at implementation
+    // (the primary channel), and this flush is the transition-time safety net —
+    // both produce the documented `## Developer <ST-id> — verification` header,
+    // and `dev_verify_posted` keeps them idempotent (never a duplicate).
     let mut work: Vec<(String, String)> = vec![
         ("triage-plan.md".to_string(), "Triage Plan".to_string()),
         ("fix-plan.md".to_string(), "Fix Plan".to_string()),
@@ -3872,7 +3883,14 @@ fn post_one_timeline_comment(issue: u32, actor: &str, phase: &str, p: &std::path
     };
     let tmp = project_root()?.join(".opencode").join("tmp").join(format!("timeline-{}.md", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(tmp.parent().unwrap())?;
-    std::fs::write(&tmp, format!("## {}\n\n{}", header, body))?;
+    // G-405 no-double-head: never prepend a header the draft already carries on
+    // its own line. A `dev-verify-<ST-id>.md` draft may include the documented
+    // `## Developer <ST-id> — verification` heading itself; unconditionally
+    // prepending it produced a doubled header on #3080
+    // (`## Developer ST-1 — verification` twice).
+    let already_headed = body.lines().any(|l| l.trim_start().starts_with(&format!("## {}", header)));
+    let content = if already_headed { body.to_string() } else { format!("## {}\n\n{}", header, body) };
+    std::fs::write(&tmp, content)?;
     run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
     let _ = std::fs::remove_file(&tmp);
     let _ = std::fs::remove_file(p);
@@ -4164,10 +4182,14 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // (arbitrary prose still gets `## Status`; a non-`Status` prefix is still
             // refused) — only this one documented header bypasses the prepend.
             let header = format!("## {}", prefix);
-            let starts_dev = body.trim_start().starts_with("## Developer ");
+            // G-405 no-double-head: the documented `## Developer …` header may
+            // already be present — at the body start (the developer authored it)
+            // OR nested (a legacy draft whose top line is `## Status`). Detect it
+            // on ANY line so the machine never prepends a second copy.
+            let has_dev_header = body.lines().any(|l| l.trim_start().starts_with("## Developer "));
             let starts_status = body.trim_start().starts_with(&header);
             let dev_title = dev_verify_title(&body_file_name);
-            let content = if starts_dev {
+            let content = if has_dev_header {
                 body
             } else if let Some(t) = dev_title {
                 format!("## {}\n\n{}", t, body)

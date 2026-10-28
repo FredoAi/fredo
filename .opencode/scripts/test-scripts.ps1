@@ -2849,6 +2849,85 @@ Test-Script "comment action produces the documented Developer header (G-405)" {
   }
 }
 
+# G-405 no-double-head: a `dev-verify-<ST-id>.md` draft that ALREADY carries the
+# documented top-level header (`## Developer <ST-id> -- verification`) must flush
+# with a SINGLE header, never a second prepended copy (observed on #3080: the
+# late flush produced `## Developer ST-1 -- verification` twice).
+Test-Script "dev-verify draft with its own header does not double-head (G-405)" {
+  $ps = ".opencode/scripts/pipeline-state.rs"
+  $dash = [char]0x2014
+  $url = Mock-IssueCreate "temp: dev-verify double-head" "dev-verify scratch" ""
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $dir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    # The draft carries its own documented header already.
+    $body = "## Developer ST-4 $dash verification`n`nFiles changed: hook.rs`n`n*Authored by Developer*"
+    [System.IO.File]::WriteAllText("$dir/dev-verify-ST-4.md", $body, [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action post-comments 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "post-comments failed: $outStr" }
+    $storeFile = Mock-StorePath "issues\$issueNum.json"
+    $p = [System.IO.File]::ReadAllText($storeFile, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $joined = @($p.comments | ForEach-Object { $_.body }) -join "`n"
+    $hdrCount = ([regex]::Matches($joined, "(?m)^## Developer ST-4 $dash verification")).Count
+    if ($hdrCount -ne 1) { throw "expected exactly ONE '## Developer ST-4 -- verification' header, got ${hdrCount}: $joined" }
+    return "dev-verify draft with its own header flushes with a single header (no double-head)"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# G-405 idempotency vs an older `## Status`-headed verification: a legacy
+# `## Status` comment with the documented `## Developer <ST-id> -- verification`
+# header NESTED inside (the pre-fix shape on #3080) is recognized, so the flush
+# consumes the stale draft and posts NO duplicate.
+Test-Script "dev-verify flush recognizes a nested Status verification (G-405)" {
+  $ps = ".opencode/scripts/pipeline-state.rs"
+  $dash = [char]0x2014
+  $url = Mock-IssueCreate "temp: dev-verify nested status" "dev-verify scratch" ""
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $dir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    # Seed the pre-fix #3080 shape: a `## Status` comment whose body NESTS the
+    # documented `## Developer ST-5 -- verification` heading (the old `comment`
+    # action prepended `## Status` over a draft that already had the heading).
+    $legacy = "## Status`n`n## Developer ST-5 $dash verification`n`nFiles changed: x.rs`n`n*Authored by Developer*"
+    $seed = "$dir/status-nested.md"
+    [System.IO.File]::WriteAllText($seed, $legacy, [System.Text.UTF8Encoding]::new($false))
+    $seedOut = & rust-script $ps --issue $issueNum --agent orchestrator --action comment --prefix Status --body-file $seed 2>&1
+    $seedStr = if ($seedOut -is [array]) { $seedOut -join "`n" } else { "$seedOut" }
+    if ($LASTEXITCODE -ne 0) { throw "seeding the nested Status comment failed: $seedStr" }
+    # A stale draft for the same developer is still on disk.
+    [System.IO.File]::WriteAllText("$dir/dev-verify-ST-5.md", "Files changed: x.rs`n`n*Authored by Developer*", [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action post-comments 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "post-comments failed: $outStr" }
+    if (Test-Path "$dir/dev-verify-ST-5.md") { throw "the stale dev-verify draft should be consumed (recognized as already posted)" }
+    $storeFile = Mock-StorePath "issues\$issueNum.json"
+    $p2 = [System.IO.File]::ReadAllText($storeFile, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $joined = @($p2.comments | ForEach-Object { $_.body }) -join "`n"
+    $hdrCount = ([regex]::Matches($joined, "(?m)^## Developer ST-5 $dash verification")).Count
+    if ($hdrCount -ne 1) { throw "the nested Status verification must not be duplicated, got ${hdrCount} headers: $joined" }
+    return "nested ## Status verification recognized; stale draft consumed, no duplicate"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # Development Summary round stamp (#2788 audit fix): the summary documents the fix
 # round whose testing entry is being CREATED — stamp = testing-entry count + 1.
 # A fresh issue (0 entries) stamps round 1; two fabricated testing entries stamp
