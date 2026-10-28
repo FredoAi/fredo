@@ -140,7 +140,7 @@ Voice input is **local-only by hard requirement**. Microphone capture is native 
 
 ## Tauri Capabilities
 
-Tauri v2 uses a capability system (`capabilities/default.json`) to declare the minimum set of permissions the webview requires. Fredo follows least-privilege:
+Tauri v2 uses a capability system to declare the minimum set of permissions the webview requires. The production set lives in `capabilities/default.json`; the debug bridge's permission lives in a separate dev-only file, `capabilities/mcp-bridge-dev.json`. Fredo follows least-privilege:
 
 | Permission | Why required |
 |-----------|-------------|
@@ -151,12 +151,12 @@ Tauri v2 uses a capability system (`capabilities/default.json`) to declare the m
 | `core:window:allow-close` | Backend closes the terminal window when the PTY process exits |
 | `core:window:allow-start-dragging` | Webview supports native window drag (title bar region) |
 | `core:window:allow-set-title` | Backend updates window title dynamically (agent session name) |
-| `shell:allow-open` | Open external URLs in the system browser (e.g., docs links) |
-| `shell:allow-spawn` | Spawn shell processes for PTY sessions (terminal, CLI agents) |
-| `shell:allow-execute` | Execute child processes (agent sessions run via shell) |
-| `mcp-bridge:default` | Debug/driver support: enables the MCP Bridge plugin for development automation |
 
-No filesystem permissions are granted to the webview. All filesystem operations are performed by the Rust backend via Tauri commands, not by the webview directly.
+No filesystem or shell permissions are granted to the webview. All filesystem operations — and all process spawning — are performed by the Rust backend via Tauri commands and `std::process::Command` / `portable_pty`, never by the webview directly. The shell plugin is still registered by the backend (`tauri_plugin_shell::init()` in `src/lib.rs:167`), but no capability grants any `plugin:shell|*` command, so every shell invocation — `open`, `spawn` and `execute` included — is rejected by the ACL. `shell:allow-open` was removed for the same reason: no product source calls the shell plugin, and `window.open(url, '_blank')` is a pre-existing no-op in this WebView2 app (there is no opener plugin and no `on_new_window` handler, so wry cancels the new-window request) — the permission was never on that path.
+
+**Dev-only debug bridge.** `mcp-bridge:default` (which expands to the plugin's command set, including `execute_js`, `execute_command` and `capture_native_screenshot`) is granted only by `capabilities/mcp-bridge-dev.json`. That file is inert in a release build: the plugin itself is registered under `#[cfg(debug_assertions)]` (`src/lib.rs:169-179`), so a release binary never binds the bridge port and never exposes those commands. The tauri MCP driver still reaches the bridge in a dev build.
+
+**CSP and global Tauri.** The production CSP (`app.security.csp`) is `default-src 'self'; script-src 'self' blob: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost; worker-src blob:` — `script-src` does **not** contain `'unsafe-inline'`, so an injected inline script cannot execute. `style-src` retains `'unsafe-inline'` because Chakra UI v3 / emotion inject runtime `<style>` elements. `app.security.devCsp` is the dev-only policy and the only place `script-src … 'unsafe-inline'` remains (Vite HMR needs the inline preamble). `app.withGlobalTauri` is `false`, so a shipped webview has no `window.__TAURI__` handle; product code reaches native APIs only through `__TAURI_INTERNALS__` (the dynamic imports in `TauriAdapter.ts` / `adapterBridge.ts`). The dev-only override `tauri.dev.conf.json` (merged by `tauri dev --config`) re-enables `withGlobalTauri` in development only, because the pinned MCP bridge returns its `execute_js` results through `window.__TAURI__.core.invoke`; the `build` and `dev:release` paths do not pass it.
 
 ---
 
@@ -207,7 +207,7 @@ The React UI renders all agent-provided content via React's JSX (no `dangerously
 ## Process Isolation
 
 - The Rust backend and the React webview run in separate processes (Tauri architecture)
-- The webview has no access to the filesystem, PTY, or IPC socket — only to declared Tauri commands and events
+- The webview has no access to the filesystem, PTY, or IPC socket — only to declared Tauri commands and events. No capability grants a shell-plugin command (no `open`/`spawn`/`execute`), and a production build sets `withGlobalTauri: false` with a `script-src` that forbids inline script, so a compromised webview cannot pivot to OS execution or a privileged native API surface
 - The communication layer (`infrastructure/comm/`) and the RTDB row pipeline (`infrastructure/rtdb/`) provide the security boundary between agent input and frontend applications. OTLP receivers persist raw spans and the ingest classifier maps them onto canonical rows; `fredo emit` CLI events are enriched by `InternalAdapter` and fed through the same classifier. `EventBus.emit_row_delivery_batch` emits `RowDeliveryBatch` envelopes on the `fredo-stream-event` IPC channel; raw `FredoEvent` never crosses IPC.
 - The application-owned data layer (`infrastructure/application_data/`) sits ON TOP of the canonical rows: an application declares its structure and source mapping, and the backend materializes/writes its declared tables on the same active engine (`feature_<sanitized featureId>_<table>`; the embedded PostgreSQL cluster). Every read/watch/write is validated against the requesting `applicationId`, so one application never observes or mutates another's data; canonical rows are READ-ONLY to the projection. Notifications ride the same `fredo-stream-event` channel as `ApplicationDeliveryBatch` envelopes, discriminated in `AppProvider` before the RTDB validators.
 - The PTY terminal spawns child processes as the same OS user; no privilege escalation occurs
