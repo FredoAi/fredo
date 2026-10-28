@@ -179,7 +179,7 @@ The `capture_screen_region` command captures physical screen pixels via the `xca
 Settings are persisted as plain key-value pairs in the PostgreSQL `settings` table. A synchronous, volatile settings cache in `AppStore` is hydrated once from that table and write-throughs on every change; it holds no persistent state. The embedded PostgreSQL cluster lives in the Tauri app data directory (`%APPDATA%\fredo` on Windows, `~/.local/share/fredo` on Linux, `~/Library/Application Support/fredo` on macOS).
 
 - No credentials or secrets are stored in the settings database. The one application that handles a user secret — the built-in SQL Studio client (`applications/db_client`) — stores the connection password in the **OS keychain** (`keyring`); the settings KV holds only secret-free connection metadata, history, saved queries, and preferences.
-- All SQL queries use parameterized statements — no string interpolation (the PostgreSQL `sqlx` path)
+- Every SQL **value** is bound as a parameter — never interpolated (the PostgreSQL `sqlx` path). Dynamic **identifiers** (table and column names) cannot be parameterized, so they are charset-gated to `[A-Za-z0-9_-]`, validated against the target table's real physical columns (`information_schema.columns`), and only then `quote_ident`-quoted. An invalid identifier (including an unknown `order_by` column or `where_cols` key) is rejected with a typed error before any SQL text is built.
 - Session history in the Mission Monitor is persisted via the RTDB row store on the embedded PostgreSQL cluster, applied to the module-scoped `StreamContext` row store in-memory. Live rows are unbounded; persistence retention is bounded by the `rtdb.retention_days` / `rtdb.max_rows` knobs.
 
 ---
@@ -193,7 +193,7 @@ The IPC socket accepts newline-delimited JSON `CliCommand` messages with one var
 All payloads are deserialized via `serde_json`. Unrecognized fields are ignored, and missing required fields cause a deserialization error. The Rust type system prevents injection at the IPC boundary.
 
 ### Tauri Commands
-Tauri command arguments are passed through Tauri's built-in deserialization, not constructed from raw strings. SQL queries to `AppStore` use parameterized statements via `sqlx` — no string interpolation.
+Tauri command arguments are passed through Tauri's built-in deserialization, not constructed from raw strings. SQL queries to `AppStore` bind every value as a parameter via `sqlx` — no value interpolation. Identifiers cannot be parameterized, so a caller-supplied namespace component is charset-gated to `[A-Za-z0-9_-]` and a caller-supplied `order_by` / `where_cols` key is validated against the target table's physical columns; anything invalid is rejected with a typed error before the statement is built, and only then is the identifier `quote_ident`-quoted — the storage sink is the single quoting point.
 
 ### OTLP Input
 OTLP protobuf and JSON payloads are deserialized via `opentelemetry-proto` generated types. Received signals are persisted raw on receipt and classified into canonical rows by the RTDB ingest classifier — no standalone `FredoEvent` in the OTLP delivery path. Invalid or malformed OTLP payloads are dropped without processing.
