@@ -373,3 +373,55 @@ unbounded — see the plan's Risks note).
 - **F-2/F-9:** PASS (default/docs) / **UNVERIFIED bundled boot** — named tooling gap (no `dev-env` feature lever).
 - **Number correction:** `PG_FIRST_RUN_DOWNLOAD_BYTES` is the EXTRACTED payload; the real first-run transfer
   is **54,068,902 B**.
+
+## Round — #3076 (2026-10-28, `spec/3076 @ 227dd07`, static) — PASS
+
+Commands (exact, `--locked`, CI-parity `cargo test` — `cargo-nextest` is not installed locally, disclosed):
+`cargo test --manifest-path apps/tauri/src-tauri/Cargo.toml --locked --lib applications::pg_supervisor`
+→ `134 passed; 0 failed`; narrow `…::extraction` → `7 passed; 0 failed` twice back-to-back;
+`cargo check … --locked` and `… --locked --features bundled` → both exit 0, zero warnings.
+
+- **F-15:** PASS — baseline recorded **pre-edit** by the developer: `FAILED. 120 passed; 1 failed` (one
+  pre-existing credential-env race, `endpoint.rs:178`), repaired inside the 1-point reserve; same command
+  on the final tip `134 passed; 0 failed` (121 + 13 new).
+- **F-16:** PASS — `runtime.rs:641-653` `setup()` calls `ensure_verified_install(&self.install_dir)` at
+  `:643` before `run_bounded(PG_SETUP_BOUND, "pg.setup", …)` at `:648`; `acquisition.rs:280-286` binds
+  and consumes the `PathBuf` inside an awaited `tauri::async_runtime::spawn_blocking`; `state.rs:511-519`
+  block gone (single `acquire_pg_archive` caller crate-wide); `extract_verified_archive_writes_the_marker_and_reports_current … ok`.
+- **F-17:** PASS — `runtime_download_settings_trust_the_install_dir_and_pin_the_exact_version … ok`
+  (trust `true`, `=18.6.0`, `installation_dir == install_dir`, `binary_dir() == install_dir/bin`);
+  `pinned_version_req_is_the_exact_pinned_release … ok` (matches `18.6.0`, rejects `18.6.1`/`18.7.0`).
+- **F-18:** PASS — `ensure_verified_install_skips_when_the_marker_is_current … ok` (no `archives/`);
+  `extract_verified_archive_is_idempotent_when_the_marker_is_current … ok` (length+bytes+**mtime**
+  snapshot identical). Hex-case assert carried by `extract_verified_archive_writes_the_marker_and_reports_current`
+  (`extraction.rs:521-526`).
+- **F-19:** PASS — `trusted_install_is_current_requires_the_marker_and_the_required_binaries … ok`
+  (absent/blank/`version=`-less/`sha256=`-less/mismatches, each binary removed in turn; extra `bin/` file inert).
+- **F-20:** PASS — `extract_verified_archive_refuses_a_digest_mismatch_without_writing_binaries … ok`
+  (`[pg:extract] … SHA-256 mismatch`, `!install.exists()`, parent snapshot identical, archive untouched).
+- **F-21:** PASS — `bundled_mode_settings_leave_the_crate_install_inference_untouched … ok` (trust
+  `false`, version `"*"`, `settings == before`, not feature-gated) + `--features bundled` check exit 0.
+- **F-22:** PASS — `setup_never_reaches_the_crate_install_path_and_makes_no_fetch … ok`: positive control
+  `connections() == 1` then reset (`runtime.rs:1250-1264`), then zero + no `archives/`/`lib/`/`share/`/`18.6.0`,
+  byte-identical seed, trust/`installation_dir`/`version`/`binary_dir()` all asserted (`:1277-1302`).
+- **F-23:** PASS — `trusted_install_path_is_runtime_download_and_windows_x86_64_only … ok`;
+  `acquisition.rs:95` `cfg!(all(target_os = "windows", target_arch = "x86_64"))`, single predicate `:103-105`,
+  consumers `runtime.rs:379` + `:642` only. Non-Windows not claimed (docs follow-up named).
+- **F-24:** PASS — `extract_verified_archive_strips_the_single_top_level_component … ok` (`bin/`/`lib/`/`share/`
+  directly under the install dir, no `<top>`, `binary_dir()` resolves).
+- **F-25:** PASS — `strip_top_component_rejects_parent_dir_root_and_prefix_components … ok` +
+  `extract_verified_archive_rejects_a_divergent_top_level_component … ok` (divergent **last** entry still
+  writes nothing; parent tempdir identical).
+- **F-26:** PASS — both `cargo check` runs exit 0 with zero warnings; zero `#[allow(` in
+  `applications/pg_supervisor/`; zero `.unwrap()` outside `#[cfg(test)]`; only the documented
+  `LazyLock` literal `expect` (`runtime.rs:43-46`).
+- **F-27:** PASS — `extraction.rs` zero `std::env`/`set_var`; all pin-reading tests hold
+  `PG_ARCHIVE_ENV_LOCK`; two consecutive `7 passed` runs; 64 KiB chunked `Sha256` + `GzDecoder` +
+  `tar::Archive`, no `read_to_end`/whole-`Vec`, `postgresql_archive::extract` never called;
+  `spawn_blocking` (`acquisition.rs:282`), never `tokio::spawn`.
+- **F-28:** PASS — `134 passed; 0 failed`; diff vs `origin/main` shows no deleted/`#[ignore]`d/weakened
+  pre-existing test — the only pre-existing-test delta is the intended `PG_CREDENTIAL_ENV_LOCK` baseline
+  repair (3 tests hold the shared lock); `state::tests` green after the acquisition-block removal.
+
+**Edges promoted:** none — no new edge found beyond the planned `..`/root/prefix/divergent-top,
+digest-mismatch, crashed-marker and idempotence rows already covered by F-19/F-20/F-25/F-28.
