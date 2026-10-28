@@ -62,6 +62,12 @@ prost = "0.13"
 bytes = "1"
 # Streaming SHA-256 verification for model-file acquisition (Spec #2856)
 sha2 = "0.10"
+# Fredo-owned verified-archive extraction (Spec #3076 ST-1): a streaming
+# `flate2::bufread::GzDecoder` + `tar::Archive` unpack of the SHA-256-verified
+# PostgreSQL archive. Both were already transitive at these versions; they are
+# direct because `pg_supervisor::extraction` owns the extract now.
+flate2 = "1"
+tar = "0.4"
 schemars = "1"
 # PostgreSQL (for observability tools)
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "json", "chrono"] }
