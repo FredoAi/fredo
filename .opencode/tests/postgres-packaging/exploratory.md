@@ -52,3 +52,40 @@ the origin note). The Tester adds probes below beyond the script.
   (the #2948 teardown-orphan class)? Record PIDs + ports.
 - [ ] **E-14:** Does the acquisition + first boot complete within the finite bound on a slow/idle
   connection (the real 164,026,008 B class), or does it exceed the budget with no progress?
+
+## #3076 prompts — Fredo-owned extraction of the verified archive (STATIC probes)
+
+> **Policy: static** — these probes read code/test behaviour; they do not need a live boot. A probe
+> that reveals a gap **promotes** to `functional.md` as a new `F-` row.
+
+- [ ] **E-15:** What if the archive's entries disagree about the top-level component — does a
+  divergent LAST entry abort the whole extraction with `[pg:extract]` and leave the earlier,
+  already-unpacked entries behind? Confirm nothing is written at all (hash pass first, unpack
+  second), not merely that the error is returned.
+- [ ] **E-16:** What if the marker is current but the binaries are later removed (manual cleanup,
+  antivirus quarantine, a partial user copy)? Does the next boot re-extract, or does it proceed to
+  `initdb` and fail there with an unhelpful error? `trusted_install_is_current` should say
+  `false` — check the predicate, not just the boot message.
+- [ ] **E-17:** What if the process is killed mid-extraction? Is the marker absent (temp-file +
+  rename), is a stale temp marker left behind, and does the next boot re-extract cleanly over the
+  partial tree rather than trusting it?
+- [ ] **E-18:** With a pre-fix tree at `<install_dir>/18.6.0/**` still on disk, which tree actually
+  runs? Confirm the stale tree is neither deleted nor trusted, and that `<install_dir>/bin` is what
+  `binary_dir()` resolves to.
+- [ ] **E-19:** What if the disk fills during extraction? Does the error carry `[pg:extract]` with an
+  actionable message, is the partial tree untrusted afterwards, and does the next boot retry
+  cleanly?
+- [ ] **E-20:** What about archives containing symlinks or hard links — are they unpacked as links
+  that can point outside the install dir, or refused? Check `tar`'s link handling is not a
+  zip-slip window.
+- [ ] **E-21:** With `FREDO_PG_INSTALL_DIR` set, do acquisition AND extraction use the SAME resolved
+  dir (and does `settings.installation_dir`/`binary_dir()` agree), or can they diverge and extract
+  where `initdb` is not looked for?
+- [ ] **E-22:** If `FREDO_PG_ARCHIVE_SHA256` changes between boots, does the marker comparison flip
+  to "not current" and force a re-extract of the newly-pinned bytes — or does the old extraction
+  survive under a stale marker?
+- [ ] **E-23:** On a Windows install dir containing spaces and non-ASCII characters, does the
+  extraction + marker round-trip cleanly (no mojibake in the marker, no truncated path)?
+- [ ] **E-24:** During the extraction, is the async runtime still responsive? A heartbeat task
+  alongside `ensure_verified_install` should keep ticking — if it stalls, the extract is blocking
+  the reactor rather than being `spawn_blocking`'d.
