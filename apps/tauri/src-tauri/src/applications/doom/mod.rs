@@ -5,7 +5,7 @@
 //! no vendored GPL source, and no from-source provisioning. This module owns:
 //!
 //! * [`state`] — the shared contract (phase / error vocabularies, launch/status
-//!   wire models, bounded-timeout constants, AppStore/env keys).
+//!   wire models, bounded-timeout constants, SettingsStore/env keys).
 //! * [`engine`] — the in-process engine adapter (`DoomEngineState` / `DoomSession`)
 //!   over `neurodoom::ClassicEngine`, loading the bundled `DOOM1.WAD` with the
 //!   typed `wadMissing` / `wadCorrupt` / `engineStartFailed` failure surface.

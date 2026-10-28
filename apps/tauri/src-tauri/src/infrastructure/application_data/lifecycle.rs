@@ -5,7 +5,7 @@
 //!
 //! 1. **Retention** — [`prune_declared_tables`] bounds every persisted declared
 //!    table by its declared `retention: { maxRows?, ttlDays? }`, falling back to
-//!    the `AppStore` knobs `application_data.default_max_rows` /
+//!    the `SettingsStore` knobs `application_data.default_max_rows` /
 //!    `application_data.default_retention_days` and then to the contract defaults
 //!    [`DEFAULT_MAX_ROWS`] / [`DEFAULT_RETENTION_DAYS`]. Eviction is
 //!    **oldest-first by `latestAt`** (the `_updated_at` reserved column for a
@@ -18,7 +18,7 @@
 //!    **Retention is idle when `maxRows` is null** (binding contract): the cap
 //!    is the master switch, so an explicit `maxRows: null` normalizes the whole
 //!    bound to unbounded ([`EffectiveRetention`] `{ None, None }`). A declaration
-//!    that omits `retention` entirely gets the AppStore knob / contract default.
+//!    that omits `retention` entirely gets the SettingsStore knob / contract default.
 //!
 //! 2. **Tombstone-aware projection** — [`is_tombstoned`] is the reusable guard
 //!    for a key deleted by `application_data_delete`. It serializes the key with the
@@ -36,8 +36,8 @@ use anyhow::{anyhow, Result};
 use serde_json::{Map, Value as JsonValue};
 
 use crate::infrastructure::rtdb::project::rfc3339_now;
-use crate::infrastructure::storage::application_store::ApplicationStore;
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::application_store::DynamicTableStore;
+use crate::infrastructure::storage::SettingsStore;
 
 use super::declaration::{is_reserved_column, ApplicationDataTableDeclaration};
 use super::projection::{DeclaredChangeKind, DeclaredRowChange};
@@ -48,9 +48,9 @@ pub const DEFAULT_MAX_ROWS: u64 = 10_000;
 /// Contract default TTL for a declared table (non-behavioral requirement).
 pub const DEFAULT_RETENTION_DAYS: u64 = 30;
 
-/// `AppStore` knob overriding [`DEFAULT_MAX_ROWS`].
+/// `SettingsStore` knob overriding [`DEFAULT_MAX_ROWS`].
 pub const KNOB_DEFAULT_MAX_ROWS: &str = "application_data.default_max_rows";
-/// `AppStore` knob overriding [`DEFAULT_RETENTION_DAYS`].
+/// `SettingsStore` knob overriding [`DEFAULT_RETENTION_DAYS`].
 pub const KNOB_DEFAULT_RETENTION_DAYS: &str = "application_data.default_retention_days";
 
 /// The oldest-first eviction order column used when a declared table has it.
@@ -98,7 +98,7 @@ impl EffectiveRetention {
 }
 
 /// Resolve a declaration's effective retention:
-/// declared `retention` → `AppStore` knob → contract default.
+/// declared `retention` → `SettingsStore` knob → contract default.
 ///
 /// A present `retention` object is authoritative: an unspecified bound is idle.
 /// An absent `retention` object consults the knobs, then
@@ -106,7 +106,7 @@ impl EffectiveRetention {
 /// `maxRows: null` makes the whole bound idle.
 pub fn resolve_retention(
     declaration: &ApplicationDataTableDeclaration,
-    app: &AppStore,
+    app: &SettingsStore,
 ) -> Result<EffectiveRetention> {
     let (max_rows, ttl_days) = match &declaration.retention {
         Some(retention) => (retention.max_rows, retention.ttl_days),
@@ -126,7 +126,7 @@ pub fn resolve_retention(
     Ok(EffectiveRetention { max_rows, ttl_days })
 }
 
-fn knob_u64(app: &AppStore, key: &str) -> Result<Option<u64>> {
+fn knob_u64(app: &SettingsStore, key: &str) -> Result<Option<u64>> {
     Ok(match app.cached_get(key)? {
         Some(raw) => raw.trim().parse::<u64>().ok(),
         None => None,
@@ -143,8 +143,8 @@ fn knob_u64(app: &AppStore, key: &str) -> Result<Option<u64>> {
 /// for the caller to convert into `remove` notifications. It emits nothing.
 pub fn prune_declared_tables(
     meta: &ApplicationDataStore,
-    tables: &ApplicationStore,
-    app: &AppStore,
+    tables: &DynamicTableStore,
+    app: &SettingsStore,
 ) -> Result<Vec<DeclaredRowChange>> {
     prune_declared_tables_at(meta, tables, app, &rfc3339_now())
 }
@@ -153,8 +153,8 @@ pub fn prune_declared_tables(
 /// TTL boundary is evaluated against `now`; RFC3339). Public for tests.
 pub fn prune_declared_tables_at(
     meta: &ApplicationDataStore,
-    tables: &ApplicationStore,
-    app: &AppStore,
+    tables: &DynamicTableStore,
+    app: &SettingsStore,
     now: &str,
 ) -> Result<Vec<DeclaredRowChange>> {
     let metas = meta.list_tables()?;
@@ -197,7 +197,7 @@ pub fn prune_declared_tables_at(
 /// Prune one declared table. Returns its evictions, oldest-first.
 fn prune_declared_table(
     meta: &ApplicationDataStore,
-    tables: &ApplicationStore,
+    tables: &DynamicTableStore,
     table_meta: &TableMeta,
     declaration: &ApplicationDataTableDeclaration,
     retention: &EffectiveRetention,
@@ -208,7 +208,7 @@ fn prune_declared_table(
         &table_meta.feature_id,
         &table_meta.table_name,
         None,
-        Some(&format!("{order_column} ASC")),
+        Some(&retention_order_by(declaration)),
         None,
     )?;
     if rows.is_empty() {
@@ -285,6 +285,14 @@ fn retention_order_column(declaration: &ApplicationDataTableDeclaration) -> &'st
     }
 }
 
+/// The `order_by` string the prune passes to [`DynamicTableStore::query`]
+/// (Spec #3075 ST-4): the resolved order column plus `ASC`, bare — the sink is
+/// the single quoting point, so `latestAt` is emitted UNQUOTED here and the sink
+/// validates+quotes it against the physical (case-sensitive) column.
+fn retention_order_by(declaration: &ApplicationDataTableDeclaration) -> String {
+    format!("{} ASC", retention_order_column(declaration))
+}
+
 /// `now - days`, parsed as RFC3339 to keep the comparison timezone-correct.
 fn cutoff_before(now: &str, days: u64) -> Result<chrono::DateTime<chrono::FixedOffset>> {
     let now = chrono::DateTime::parse_from_rfc3339(now)
@@ -318,7 +326,7 @@ fn primary_key_values(
         .collect()
 }
 
-/// `pk column → value` in declaration order (the `ApplicationStore::delete` filter).
+/// `pk column → value` in declaration order (the `DynamicTableStore::delete` filter).
 fn key_where_cols(
     declaration: &ApplicationDataTableDeclaration,
     key: &[JsonValue],
@@ -344,3 +352,73 @@ fn non_reserved_names(row: &Map<String, JsonValue>) -> Vec<String> {
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infrastructure::application_data::declaration::{
+        ColumnOwner, DeclaredColumn, DeclaredColumnType,
+    };
+
+    /// A declared table with the given extra (non-PK) column names.
+    fn declaration(extra_columns: &[&str]) -> ApplicationDataTableDeclaration {
+        let mut columns = vec![DeclaredColumn {
+            name: "id".to_string(),
+            col_type: DeclaredColumnType::Text,
+            nullable: false,
+            owner: ColumnOwner::Backend,
+        }];
+        for name in extra_columns {
+            columns.push(DeclaredColumn {
+                name: (*name).to_string(),
+                col_type: DeclaredColumnType::Text,
+                nullable: true,
+                owner: ColumnOwner::Backend,
+            });
+        }
+        ApplicationDataTableDeclaration {
+            name: "sessions".to_string(),
+            primary_key: vec!["id".to_string()],
+            columns,
+            source: None,
+            retention: None,
+        }
+    }
+
+    // ── Spec #3075 ST-4: the prune's caller wiring through the fixed sink ──
+
+    #[test]
+    fn retention_order_by_uses_the_declared_camel_case_latest_at() {
+        // The declared-read/prune caller passes a BARE `latestAt ASC`; the sink
+        // validates it case-sensitively and emits the quoted `"latestAt" ASC`
+        // (Spec #3075 REQ-2.2/REQ-2.3). Quoting here would double-quote.
+        let decl = declaration(&["latestAt"]);
+        assert_eq!(retention_order_column(&decl), "latestAt");
+        assert_eq!(retention_order_by(&decl), "latestAt ASC");
+        assert!(
+            !retention_order_by(&decl).contains('"'),
+            "the prune must pass the column bare — the sink is the single quoting point"
+        );
+    }
+
+    #[test]
+    fn retention_order_by_falls_back_to_the_reserved_updated_at() {
+        // No declared `latestAt` → the backend-managed `_updated_at` fallback,
+        // which is always physically present (a reserved column).
+        let decl = declaration(&[]);
+        assert_eq!(retention_order_by(&decl), "_updated_at ASC");
+        assert_eq!(UPDATED_AT_COLUMN, "_updated_at");
+        assert!(
+            is_reserved_column(UPDATED_AT_COLUMN),
+            "the fallback order column must be a physically-present reserved column"
+        );
+    }
+
+    #[test]
+    fn retention_constants_are_pinned_to_the_contract_names() {
+        // Frozen declared/reserved column names the sink validates against.
+        assert_eq!(RETENTION_ORDER_COLUMN, "latestAt");
+        assert_eq!(UPDATED_AT_COLUMN, "_updated_at");
+    }
+}
+

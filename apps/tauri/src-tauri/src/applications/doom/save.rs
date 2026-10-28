@@ -10,10 +10,10 @@
 //!
 //! The save lives in the dedicated typed PostgreSQL feature table
 //! `feature_doom_save` (application `doom`, table `save`) owned through
-//! [`ApplicationStore`] over the ONE shared pool (#2975/#3005). Exactly ONE row
+//! [`DynamicTableStore`] over the ONE shared pool (#2975/#3005). Exactly ONE row
 //! is ever held, keyed [`DOOM_SAVE_ROW_ID`] = `"singleton"`; repeated writes are
 //! one atomic `INSERT ... ON CONFLICT(id) DO UPDATE`
-//! ([`ApplicationStore::upsert`]) — never delete-then-insert. `updatedAt` is an
+//! ([`DynamicTableStore::upsert`]) — never delete-then-insert. `updatedAt` is an
 //! RFC3339 timestamp serialized camelCase over the IPC wire.
 //!
 //! ## Test-only induction levers (G-275/G-300; inert when unset)
@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
-use crate::infrastructure::storage::application_store::{ApplicationStore, ColumnDef, ColumnType};
+use crate::infrastructure::storage::application_store::{DynamicTableStore, ColumnDef, ColumnType};
 
 // ── Pinned constants (G-255 names block — do not rename) ─────────────────────
 
@@ -50,9 +50,9 @@ use crate::infrastructure::storage::application_store::{ApplicationStore, Column
 /// four-episode surface to the bundled shareware `DOOM1.WAD` single-episode set
 /// (E1M1–E1M9), so a legacy `1` save must parse to "no save" (a clean run).
 pub const DOOM_SAVE_VERSION: u32 = 2;
-/// The [`ApplicationStore`] namespace application id (`feature_doom_save`).
+/// The [`DynamicTableStore`] namespace application id (`feature_doom_save`).
 pub const DOOM_SAVE_FEATURE_ID: &str = "doom";
-/// The [`ApplicationStore`] table name within the `doom` namespace.
+/// The [`DynamicTableStore`] table name within the `doom` namespace.
 pub const DOOM_SAVE_TABLE_NAME: &str = "save";
 /// The record key of the single save row (`id = "singleton"`).
 pub const DOOM_SAVE_ROW_ID: &str = "singleton";
@@ -480,10 +480,10 @@ fn active_save_file_path() -> Option<PathBuf> {
 
 /// Create the `feature_doom_save` table if it does not exist (idempotent) — the
 /// startup schema-init registry entry (`lib.rs`), delegating to the ONE DDL
-/// builder on [`ApplicationStore`] so the table exists on PostgreSQL before any
+/// builder on [`DynamicTableStore`] so the table exists on PostgreSQL before any
 /// Doom save read/write.
 pub fn ensure_table_on_pg(pool: &sqlx::PgPool) -> anyhow::Result<()> {
-    ApplicationStore::ensure_table_on_pg(
+    DynamicTableStore::ensure_table_on_pg(
         pool,
         DOOM_SAVE_FEATURE_ID,
         DOOM_SAVE_TABLE_NAME,
@@ -496,7 +496,7 @@ pub fn ensure_table_on_pg(pool: &sqlx::PgPool) -> anyhow::Result<()> {
 /// Uses the state-dir seam when set, else the PG feature table. `read`-stage
 /// fault injection reports no-save. Never fails: any read/parse problem is
 /// "no save".
-pub fn load(store: &ApplicationStore) -> Option<DoomSave> {
+pub fn load(store: &DynamicTableStore) -> Option<DoomSave> {
     if let Some(path) = active_save_file_path() {
         return read_save_file(&path);
     }
@@ -521,7 +521,7 @@ pub fn load(store: &ApplicationStore) -> Option<DoomSave> {
 ///
 /// The key COLUMN is `id` (declared `PRIMARY KEY` in [`DoomSave::columns`] and
 /// written by [`DoomSave::to_row`]); [`DOOM_SAVE_ROW_ID`] (`"singleton"`) is the
-/// VALUE held in that column. [`ApplicationStore::upsert`] treats this list as
+/// VALUE held in that column. [`DynamicTableStore::upsert`] treats this list as
 /// column names verbatim, so passing the row value here emitted
 /// `ON CONFLICT("singleton")` → PostgreSQL `column "singleton" does not exist` →
 /// every save failed (best-effort) and NO row ever persisted (Spec #3011
@@ -537,7 +537,7 @@ fn save_primary_key_columns() -> [String; 1] {
 /// Uses the state-dir seam when set (temp-file-then-rename), else the atomic
 /// single-row upsert on `feature_doom_save`. `write`-stage fault injection
 /// returns `Err` with NO PG write.
-pub fn store(store: &ApplicationStore, save: &DoomSave) -> Result<(), String> {
+pub fn store(store: &DynamicTableStore, save: &DoomSave) -> Result<(), String> {
     if let Some(path) = active_save_file_path() {
         return write_save_file_atomic(&path, save);
     }
@@ -582,7 +582,7 @@ pub fn resolve_start_campaign(
 /// is set. Idempotent — an absent save is a no-op. A real failure is returned for
 /// the caller to log; the command still reports `hasSave:false` afterwards
 /// because a missing row parses as "no save".
-pub fn clear(store: &ApplicationStore) -> Result<(), String> {
+pub fn clear(store: &DynamicTableStore) -> Result<(), String> {
     if let Some(path) = active_save_file_path() {
         return match std::fs::remove_file(&path) {
             Ok(()) => Ok(()),
@@ -705,7 +705,7 @@ mod tests {
 
     /// Regression pin (Spec #3011 round 2): `store`'s upsert key list is the PK
     /// **column** `id`, never the row **value** `"singleton"`. The pre-fix code
-    /// passed `[DOOM_SAVE_ROW_ID.to_string()]`, so `ApplicationStore::upsert`
+    /// passed `[DOOM_SAVE_ROW_ID.to_string()]`, so `DynamicTableStore::upsert`
     /// emitted `ON CONFLICT("singleton")` and every save failed with
     /// `column "singleton" does not exist`. A future column/value swap now fails
     /// `cargo test`.

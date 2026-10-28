@@ -260,7 +260,7 @@ impl EngineHandle {
 /// Double-quote a dynamic SQL identifier, doubling any embedded `"` (Q-9).
 ///
 /// The ONLY identifier-quoting rule; identifiers are derived solely from
-/// [`crate::infrastructure::storage::application_store::ApplicationStore::validate_namespace`].
+/// [`crate::infrastructure::storage::application_store::DynamicTableStore::validate_namespace`].
 pub fn quote_ident(ident: &str) -> String {
     format!("\"{}\"", ident.replace('"', "\"\""))
 }

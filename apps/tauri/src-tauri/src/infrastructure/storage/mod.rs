@@ -38,7 +38,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use self::application_store::block_on_pg;
 
 /// The settings key whose value drives the tracing subscriber's log level;
-/// [`AppStore::hydrate`] applies it through the retained reload handle (R-2.4).
+/// [`SettingsStore::hydrate`] applies it through the retained reload handle (R-2.4).
 pub const LOG_LEVEL_KEY: &str = "tracing.logging_level";
 
 /// A boxed sink that applies a log level to the retained tracing reload handle.
@@ -73,7 +73,7 @@ async fn upsert_settings(pool: &sqlx::PgPool, key: &str, value: &str) -> Result<
 ///
 /// Exactly ONE key is readable before PostgreSQL exists and lives outside both
 /// planes: the postmaster PID marker in [`BootConfig`] (`<app_data_dir>/boot-config.json`).
-pub struct AppStore {
+pub struct SettingsStore {
     /// The shared swap-once engine handle (data plane).
     engine: Arc<EngineHandle>,
     /// The volatile synchronous settings cache (hydrated from PostgreSQL).
@@ -90,13 +90,13 @@ pub struct AppStore {
     log_level_sink: Mutex<Option<LogLevelSink>>,
 }
 
-impl AppStore {
+impl SettingsStore {
     /// Wrap the shared engine handle and target `<app_data_dir>` for the boot KV.
     ///
     /// No file database is created: the synchronous plane is the volatile
     /// [`SettingsCache`], hydrated from PostgreSQL once the pool is ready.
     pub fn open(engine: Arc<EngineHandle>, app_data_dir: &Path) -> Result<Self> {
-        Ok(AppStore {
+        Ok(SettingsStore {
             engine,
             cache: SettingsCache::new(),
             boot: BootConfig::open(app_data_dir)?,
@@ -295,10 +295,10 @@ mod tests {
 
     /// Build a tempdir-backed store over a PENDING data-plane handle (the
     /// PostgreSQL pool is not installed in these tests).
-    fn make_store() -> (tempfile::TempDir, AppStore) {
+    fn make_store() -> (tempfile::TempDir, SettingsStore) {
         let dir = tempfile::tempdir().unwrap();
         let handle = EngineHandle::new_pending();
-        let store = AppStore::open(handle, dir.path()).unwrap();
+        let store = SettingsStore::open(handle, dir.path()).unwrap();
         (dir, store)
     }
 
@@ -331,7 +331,7 @@ mod tests {
             .collect();
         assert!(
             db_files.is_empty(),
-            "AppStore::open must create no database file, found {db_files:?}"
+            "SettingsStore::open must create no database file, found {db_files:?}"
         );
     }
 
@@ -439,7 +439,7 @@ mod tests {
         // (unreachable) PostgreSQL pool: it never dials the pool.
         let dir = tempfile::tempdir().unwrap();
         let handle = EngineHandle::new_pending();
-        let store = AppStore::open(handle.clone(), dir.path()).unwrap();
+        let store = SettingsStore::open(handle.clone(), dir.path()).unwrap();
         handle.install(StoreEngine::Postgres(Arc::new(make_pg_engine(
             "postgres://postgres:secret@127.0.0.1:1/none",
         ))));

@@ -1,7 +1,7 @@
 //! PostgreSQL storage regression suite (Spec #2975 ST-6; PG-only since Spec
 //! #2979 CU-2).
 //!
-//! This integration binary drives the migrated `AppStore` / `ApplicationStore` /
+//! This integration binary drives the migrated `SettingsStore` / `DynamicTableStore` /
 //! `ApplicationDataStore` against the REAL embedded PostgreSQL server (the slice-1
 //! bounded `PgRuntime`) and pins the consolidated PostgreSQL behavior:
 //! schema init, quoted identifiers, declared-table quoting, the Mission Monitor
@@ -46,14 +46,18 @@ use fredo_lib::infrastructure::application_data::declaration::{
     ApplicationDataTableDeclaration, Retention, SessionRollupKind, SessionRollupProjection,
 };
 use fredo_lib::infrastructure::application_data::registry::DeclarationRegistry;
+use fredo_lib::infrastructure::application_data::lifecycle::prune_declared_tables_at;
+use fredo_lib::infrastructure::application_data::projection::DeclaredChangeKind;
 use fredo_lib::infrastructure::application_data::store::{ApplicationDataStore, TableMeta, Tombstone};
 use fredo_lib::infrastructure::rtdb::rows::RowState;
 use fredo_lib::infrastructure::storage::engine::{
     begin_read_only, ensure_settings_schema, StorageEngineState,
 };
-use fredo_lib::infrastructure::storage::application_store::{ColumnDef, ColumnType, ApplicationStore};
+use fredo_lib::infrastructure::storage::application_store::{
+    DynamicTableStore, ColumnDef, ColumnType, IdentifierError,
+};
 use fredo_lib::infrastructure::storage::{
-    AppStore, EngineHandle, PgEngine, StoreEngine,
+    SettingsStore, EngineHandle, PgEngine, StoreEngine,
 };
 use fredo_lib::PgRuntime;
 
@@ -126,6 +130,15 @@ async fn postgres_storage_suite() {
         .start()
         .await
         .expect("embedded PostgreSQL start (bounded)");
+    // Spec #3036 renamed the bootstrap database `postgres` → `fredo`. Every real
+    // owner path runs this migration between `start` and `probe_ready`; the
+    // harness must too, or a fresh cluster probes a database that does not exist
+    // yet (the ST-4 round-1 readiness failure). Idempotent on an already-migrated
+    // cluster — a pure read.
+    runtime
+        .migrate_database_identity()
+        .await
+        .expect("database-identity migration (bounded): bootstrap postgres → fredo");
     runtime
         .probe_ready()
         .await
@@ -154,6 +167,13 @@ async fn postgres_storage_suite() {
     // `START TRANSACTION READ ONLY` (`begin_read_only`), so a write through the
     // canonical reader's transaction must be rejected (G-290).
     read_only_seam_scenario(&url, &unique_schema("read_only")).await;
+    // Phase 7 (Spec #3075 ST-4): the order_by / where_cols sink at the REAL
+    // PostgreSQL boundary — every injection payload class rejected with NO SQL
+    // executed, every verified caller's order_by (declared-read bare
+    // `field ASC|DESC`, retention `latestAt ASC` / `_updated_at ASC`, terminal
+    // `last_active_at DESC`) ordered correctly through the quoted sink, the
+    // `None` legs unaffected, and `where_cols` values still parameterized.
+    order_by_validation_scenario(&url, &unique_schema("order_by")).await;
 
     // ── G-263 teardown: finite bound + guaranteed hard-kill + no orphan ──────
     let started = Instant::now();
@@ -183,8 +203,8 @@ async fn postgres_fixture_scenario(url: &str, schema: &str) {
     // PostgreSQL pool once the server is ready.
     let app_scratch = tempfile::tempdir().expect("tempdir");
     let handle = EngineHandle::new_pending();
-    let app = AppStore::open(handle.clone(), app_scratch.path()).expect("app store");
-    let applications = ApplicationStore::open(handle.clone()).expect("application store");
+    let app = SettingsStore::open(handle.clone(), app_scratch.path()).expect("app store");
+    let applications = DynamicTableStore::open(handle.clone()).expect("application store");
     let data = ApplicationDataStore::open(handle.clone()).expect("data store");
 
     let pool = build_pool(url, schema).await;
@@ -243,7 +263,7 @@ async fn postgres_fixture_scenario(url: &str, schema: &str) {
 /// identifier would be folded to lowercase by PostgreSQL).
 async fn quoted_identifier_scenario(url: &str, schema: &str) {
     let handle = EngineHandle::new_pending();
-    let applications = ApplicationStore::open(handle.clone()).expect("application store");
+    let applications = DynamicTableStore::open(handle.clone()).expect("application store");
 
     let pool = build_pool(url, schema).await;
     handle.install(StoreEngine::Postgres(Arc::new(PgEngine {
@@ -390,7 +410,7 @@ async fn declared_table_quoting_scenario(url: &str, schema: &str) {
     })));
 
     let data = Arc::new(ApplicationDataStore::open(handle.clone()).expect("data store"));
-    let applications = Arc::new(ApplicationStore::open(handle.clone()).expect("application store"));
+    let applications = Arc::new(DynamicTableStore::open(handle.clone()).expect("application store"));
     data.ensure_schema()
         .expect("create the application-data schema on the candidate pool");
 
@@ -476,7 +496,7 @@ async fn declared_table_quoting_scenario(url: &str, schema: &str) {
         "the declared primary key must physically key on the case-preserved `sessionId`"
     );
 
-    // (iii) The quoted write path (ApplicationStore::upsert) agrees with the created
+    // (iii) The quoted write path (DynamicTableStore::upsert) agrees with the created
     // schema — the exact write that failed on the folded table.
     let mut row = Map::new();
     row.insert("sessionId".to_string(), json!("s1"));
@@ -540,7 +560,7 @@ async fn legacy_ignore_scenario(url: &str, schema: &str) {
     let before = std::fs::read(&legacy).expect("read the legacy file before boot");
 
     let handle = EngineHandle::new_pending();
-    let app = AppStore::open(handle.clone(), app_dir.path()).expect("app store");
+    let app = SettingsStore::open(handle.clone(), app_dir.path()).expect("app store");
     let pool = build_pool(url, schema).await;
 
     // The post-migration install order: schema inits on the candidate pool, then
@@ -652,6 +672,437 @@ async fn read_only_seam_scenario(url: &str, schema: &str) {
     pool.close().await;
 }
 
+// ── Phase 7: order_by / where_cols at the real sink + caller wiring (ST-4) ───
+
+/// Spec #3075 ST-4 — the caller-integration + gated sink regression suite.
+///
+/// Drives the PUBLIC sink methods (`ensure_table` / `insert` / `query` /
+/// `update` / `delete`) against the real embedded PostgreSQL server so the
+/// hardening is proven at the boundary, not just on the pure parse/render legs
+/// (ST-1's unit tests):
+///
+/// 1. a declared-shaped table whose camelCase column is physically `"latestAt"`;
+/// 2. every injection payload class returns a typed [`IdentifierError`] AND
+///    executes no SQL (the table still resolves, the row count is unchanged);
+/// 3. every VALID order the verified callers pass (`id`, `latestAt`,
+///    `last_active_at`, `_updated_at`) returns rows in the requested order;
+/// 4. `None` / `Some("")` emit no `ORDER BY` (the result set is unaffected);
+/// 5. `where_cols`: an unknown key is rejected before any SQL, a valid key
+///    matches, a VALUE carrying `'; DROP … --` binds as a parameter;
+/// 6. the REAL retention prune (`lifecycle`) evicts the oldest row by the
+///    quoted camelCase `latestAt` — the latent pre-fix failure.
+async fn order_by_validation_scenario(url: &str, schema: &str) {
+    eprintln!("storage_engine_pg: phase order_by_validation_scenario (schema {schema}) starting");
+    const TABLE: &str = "order_probe";
+    const FULL: &str = "feature_mission_monitor_order_probe";
+    const RETENTION_TABLE: &str = "retention_probe";
+    const RETENTION_FULL: &str = "feature_mission_monitor_retention_probe";
+
+    let app_scratch = tempfile::tempdir().expect("tempdir");
+    let handle = EngineHandle::new_pending();
+    let app = SettingsStore::open(handle.clone(), app_scratch.path()).expect("app store");
+    let applications = DynamicTableStore::open(handle.clone()).expect("application store");
+    let data = ApplicationDataStore::open(handle.clone()).expect("data store");
+
+    let pool = build_pool(url, schema).await;
+    handle.install(StoreEngine::Postgres(Arc::new(PgEngine {
+        pool: pool.clone(),
+        url: url.to_string(),
+    })));
+
+    // (1) The declared-shaped table: `latestAt` is created quoted, so PostgreSQL
+    // stores it case-preserved (`"latestAt"`) rather than folding it.
+    applications
+        .ensure_table(FEATURE_ID, TABLE, &order_probe_columns())
+        .expect("create the order-probe table");
+    let types = pg_column_types(&pool, schema, FULL).await;
+    assert!(
+        types.contains_key("latestAt"),
+        "the physical column must be the case-preserved `latestAt`, saw {types:?}"
+    );
+    assert!(
+        !types.contains_key("latestat"),
+        "PostgreSQL must NOT fold `latestAt`, saw {types:?}"
+    );
+
+    // Insert order (a, c, b) deliberately differs from every asserted order, so
+    // each assertion proves the ORDER BY rather than the heap/insertion order.
+    let seed = vec![
+        probe_row("a", T1, 100, T1),
+        probe_row("c", T2, 300, T2),
+        probe_row("b", T0, 200, T0),
+    ];
+    assert_eq!(
+        applications
+            .insert(FEATURE_ID, TABLE, &seed)
+            .expect("seed the order-probe table"),
+        3
+    );
+    assert_eq!(pg_row_count(&pool, FULL).await, 3);
+
+    // (2) Every injection payload class: a typed IdentifierError at the String
+    // boundary, and NO SQL executed (table resolves, row count unchanged).
+    for payload in [
+        // statement terminator / extra tokens
+        "id; DROP TABLE feature_mission_monitor_order_probe",
+        "id ;",
+        "id\n;",
+        "id\n; DROP TABLE x",
+        // paren / subquery
+        "id) DROP TABLE x",
+        "(SELECT 1)",
+        "id, (SELECT 1)",
+        "(SELECT pg_read_file('/etc/passwd'))",
+        // multi-column
+        "a, b",
+        "a , b",
+        // bad direction / third token
+        "id SIDEWAYS",
+        "id ASC extra",
+        // whitespace-only (never a bare ORDER BY)
+        "   ",
+    ] {
+        assert_rejected(
+            applications
+                .query(FEATURE_ID, TABLE, None, Some(payload), None)
+                .map(|_| ()),
+            payload,
+            RejectionClass::InvalidOrderBy,
+        );
+        assert_no_sql_executed(&pool, FULL, payload).await;
+    }
+    for payload in [
+        // a single token that is not a physical column
+        "id;",
+        "id;--",
+        "id)",
+        "a,b",
+        "a,",
+        "id,",
+        "nope",
+        // case mismatch: the physical column is `latestAt`
+        "latestat",
+    ] {
+        assert_rejected(
+            applications
+                .query(FEATURE_ID, TABLE, None, Some(payload), None)
+                .map(|_| ()),
+            payload,
+            RejectionClass::UnknownOrderColumn,
+        );
+        assert_no_sql_executed(&pool, FULL, payload).await;
+    }
+
+    // (3) Every valid order the verified callers pass, through the real sink.
+    // `latestAt` is the latent pre-fix failure (unquoted → folded → missing col).
+    assert_ordered(&applications, TABLE, Some("id ASC"), &["a", "b", "c"], "id ASC");
+    assert_ordered(&applications, TABLE, Some("id DESC"), &["c", "b", "a"], "id DESC");
+    assert_ordered(&applications, TABLE, Some("id"), &["a", "b", "c"], "id (default ASC)");
+    assert_ordered(
+        &applications,
+        TABLE,
+        Some("latestAt ASC"),
+        &["b", "a", "c"],
+        "latestAt ASC (camelCase repair)",
+    );
+    assert_ordered(
+        &applications,
+        TABLE,
+        Some("latestAt DESC"),
+        &["c", "a", "b"],
+        "latestAt DESC",
+    );
+    assert_ordered(
+        &applications,
+        TABLE,
+        Some("last_active_at DESC"),
+        &["c", "b", "a"],
+        "terminal list `last_active_at DESC`",
+    );
+    assert_ordered(
+        &applications,
+        TABLE,
+        Some("_updated_at ASC"),
+        &["b", "a", "c"],
+        "retention `_updated_at ASC` fallback",
+    );
+
+    // (4) `None` / `Some("")` emit no ORDER BY — the result set is unaffected
+    // (all three rows, in any order).
+    for order_by in [None, Some("")] {
+        let rows = applications
+            .query(FEATURE_ID, TABLE, None, order_by, None)
+            .expect("an absent/empty order_by must be accepted");
+        let mut got = row_ids(&rows);
+        got.sort();
+        assert_eq!(
+            got,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            "{order_by:?} must return the whole unchanged set (no ORDER BY)"
+        );
+    }
+
+    // (5) where_cols: a valid key matches; an unknown key is rejected with NO SQL
+    // (query, update, and delete); a VALUE stays a bound parameter.
+    let rows = applications
+        .query(FEATURE_ID, TABLE, Some(&where_eq(&[("id", "b")])), None, None)
+        .expect("a valid where key must query");
+    assert_eq!(row_ids(&rows), vec!["b".to_string()]);
+
+    for (label, result) in [
+        (
+            "query",
+            applications
+                .query(FEATURE_ID, TABLE, Some(&where_eq(&[("nope", "x")])), None, None)
+                .map(|_| ()),
+        ),
+        (
+            "update",
+            applications
+                .update(
+                    FEATURE_ID,
+                    TABLE,
+                    &where_eq(&[("latestAt", T2)]),
+                    &where_eq(&[("nope", "x")]),
+                )
+                .map(|_| ()),
+        ),
+        (
+            "delete",
+            applications
+                .delete(FEATURE_ID, TABLE, &where_eq(&[("nope", "x")]))
+                .map(|_| ()),
+        ),
+    ] {
+        assert_rejected(result, "unknown where key", RejectionClass::UnknownWhereColumnNamed("nope"));
+        assert_no_sql_executed(&pool, FULL, label).await;
+    }
+
+    // A VALUE carrying a statement terminator binds as `$1` — never executed.
+    let injected_value = "x'; DROP TABLE feature_mission_monitor_order_probe --";
+    let rows = applications
+        .query(
+            FEATURE_ID,
+            TABLE,
+            Some(&where_eq(&[("id", injected_value)])),
+            None,
+            None,
+        )
+        .expect("a where VALUE is always a bound parameter");
+    assert!(
+        rows.is_empty(),
+        "the injected VALUE must match literally (zero rows), saw {rows:?}"
+    );
+    assert_no_sql_executed(&pool, FULL, "parameterized where value").await;
+
+    // (6) The REAL retention prune: a declared `latestAt` table with `maxRows: 2`
+    // must evict the oldest row by the quoted camelCase column (b @ T0) — the
+    // exact caller leg the unquoted pre-fix SQL failed.
+    applications
+        .ensure_table(FEATURE_ID, RETENTION_TABLE, &retention_probe_columns())
+        .expect("create the retention-probe table");
+    let seed = vec![
+        latest_row("a", T1),
+        latest_row("c", T2),
+        latest_row("b", T0),
+    ];
+    assert_eq!(
+        applications
+            .insert(FEATURE_ID, RETENTION_TABLE, &seed)
+            .expect("seed the retention-probe table"),
+        3
+    );
+    data.ensure_schema().expect("create the application-data schema");
+    let declaration = retention_probe_declaration();
+    let mut table_meta = meta(FEATURE_ID, RETENTION_TABLE, true, 0);
+    table_meta.declaration_json =
+        serde_json::to_string(&declaration).expect("serialize the retention declaration");
+    data.put_table(&table_meta)
+        .expect("persist the retention declaration");
+    let evicted = prune_declared_tables_at(&data, &applications, &app, T2)
+        .expect("the declared-latestAt prune must order by the quoted camelCase column");
+    assert_eq!(
+        evicted.len(),
+        1,
+        "maxRows: 2 over three rows evicts exactly the cap excess, saw {evicted:?}"
+    );
+    assert_eq!(evicted[0].kind, DeclaredChangeKind::Remove);
+    assert_eq!(
+        evicted[0].key,
+        vec![json!("b")],
+        "the oldest by `latestAt` (b @ {T0}) must be the evicted row, saw {evicted:?}"
+    );
+    assert_ordered(
+        &applications,
+        RETENTION_TABLE,
+        Some("id ASC"),
+        &["a", "c"],
+        "rows remaining after the declared-latestAt prune",
+    );
+    assert_eq!(pg_row_count(&pool, RETENTION_FULL).await, 2);
+
+    eprintln!(
+        "storage_engine_pg: phase order_by_validation_scenario PASSED — \
+         21 rejection payloads (typed IdentifierError, no SQL), 7 valid orders, \
+         None/empty unaffected, where_cols accept/reject/parameterized, \
+         declared-latestAt prune evicted the oldest row"
+    );
+
+    pool.close().await;
+}
+
+/// Which typed error class a rejected call must surface.
+enum RejectionClass {
+    /// Any `IdentifierError::InvalidOrderBy`.
+    InvalidOrderBy,
+    /// Any `IdentifierError::UnknownOrderColumn` (the Display must name it).
+    UnknownOrderColumn,
+    /// `IdentifierError::UnknownWhereColumn` whose column is the given name.
+    UnknownWhereColumnNamed(&'static str),
+}
+
+/// Assert a sink call failed with the expected typed error class, and that the
+/// String boundary (`map_err(|e| e.to_string())`) carries a non-empty message.
+fn assert_rejected(result: anyhow::Result<()>, label: &str, class: RejectionClass) {
+    let error = result.expect_err(&format!("{label:?} must be rejected"));
+    let boundary = error.to_string();
+    assert!(
+        !boundary.is_empty(),
+        "{label:?} must surface a non-empty String at the IPC boundary"
+    );
+    let typed = error
+        .downcast::<IdentifierError>()
+        .unwrap_or_else(|e| panic!("{label:?} must be a typed IdentifierError, got: {e}"));
+    match class {
+        RejectionClass::InvalidOrderBy => assert!(
+            matches!(typed, IdentifierError::InvalidOrderBy { .. }),
+            "{label:?} must be InvalidOrderBy, saw {typed:?}"
+        ),
+        RejectionClass::UnknownOrderColumn => {
+            let IdentifierError::UnknownOrderColumn { column } = &typed else {
+                panic!("{label:?} must be UnknownOrderColumn, saw {typed:?}");
+            };
+            assert!(
+                boundary.contains(column.as_str()),
+                "{label:?}: the boundary message must name the column, saw {boundary:?}"
+            );
+        }
+        RejectionClass::UnknownWhereColumnNamed(expected) => {
+            let IdentifierError::UnknownWhereColumn { column } = &typed else {
+                panic!("{label:?} must be UnknownWhereColumn, saw {typed:?}");
+            };
+            assert_eq!(column, expected, "{label:?}");
+            assert!(
+                boundary.contains(column.as_str()),
+                "{label:?}: the boundary message must name the column, saw {boundary:?}"
+            );
+        }
+    }
+}
+
+/// Assert the rejected call executed no SQL: the target table still resolves and
+/// the row count is unchanged.
+async fn assert_no_sql_executed(pool: &sqlx::PgPool, full_table: &str, label: &str) {
+    assert!(
+        table_resolves(pool, full_table).await,
+        "{label:?} must execute no SQL — {full_table} no longer resolves"
+    );
+    assert_eq!(
+        pg_row_count(pool, full_table).await,
+        3,
+        "{label:?} must execute no SQL — the row count changed"
+    );
+}
+
+/// Drive one valid `order_by` through the sink and assert the exact row order.
+fn assert_ordered(
+    applications: &DynamicTableStore,
+    table: &str,
+    order_by: Option<&str>,
+    expected: &[&str],
+    label: &str,
+) {
+    let rows = applications
+        .query(FEATURE_ID, table, None, order_by, None)
+        .unwrap_or_else(|e| panic!("order by {label} must succeed: {e}"));
+    let got = row_ids(&rows);
+    let want: Vec<String> = expected.iter().map(|id| (*id).to_string()).collect();
+    assert_eq!(got, want, "order by {label} must return {expected:?}, saw {got:?}");
+}
+
+fn row_ids(rows: &[Map<String, JsonValue>]) -> Vec<String> {
+    rows.iter()
+        .map(|row| row.get("id").and_then(JsonValue::as_str).unwrap_or_default().to_string())
+        .collect()
+}
+
+/// A row for the order-probe table (camelCase `latestAt` + terminal/retention
+/// order columns).
+fn probe_row(
+    id: &str,
+    latest_at: &str,
+    last_active_at: i64,
+    updated_at: &str,
+) -> Map<String, JsonValue> {
+    let mut row = Map::new();
+    row.insert("id".to_string(), json!(id));
+    row.insert("latestAt".to_string(), json!(latest_at));
+    row.insert("last_active_at".to_string(), json!(last_active_at));
+    row.insert("_updated_at".to_string(), json!(updated_at));
+    row
+}
+
+fn latest_row(id: &str, latest_at: &str) -> Map<String, JsonValue> {
+    let mut row = Map::new();
+    row.insert("id".to_string(), json!(id));
+    row.insert("latestAt".to_string(), json!(latest_at));
+    row
+}
+
+fn order_probe_columns() -> Vec<ColumnDef> {
+    vec![
+        column("id", ColumnType::TEXT, false, true),
+        column("latestAt", ColumnType::TEXT, true, false),
+        column("last_active_at", ColumnType::INTEGER, true, false),
+        column("_updated_at", ColumnType::TEXT, true, false),
+    ]
+}
+
+fn retention_probe_columns() -> Vec<ColumnDef> {
+    vec![
+        column("id", ColumnType::TEXT, false, true),
+        column("latestAt", ColumnType::TEXT, true, false),
+    ]
+}
+
+/// The declared retention table the prune scenario materializes: `latestAt`
+/// declared (so the prune must order by the camelCase column) and `maxRows: 2`.
+fn retention_probe_declaration() -> ApplicationDataTableDeclaration {
+    ApplicationDataTableDeclaration {
+        name: "retention_probe".to_string(),
+        primary_key: vec!["id".to_string()],
+        columns: vec![
+            DeclaredColumn {
+                name: "id".to_string(),
+                col_type: DeclaredColumnType::Text,
+                nullable: false,
+                owner: ColumnOwner::Backend,
+            },
+            DeclaredColumn {
+                name: "latestAt".to_string(),
+                col_type: DeclaredColumnType::Text,
+                nullable: true,
+                owner: ColumnOwner::Backend,
+            },
+        ],
+        source: None,
+        retention: Some(Retention {
+            max_rows: Some(2),
+            ttl_days: None,
+        }),
+    }
+}
+
 /// The MM-shaped declaration whose unquoted DDL PostgreSQL folded — mirrors the
 /// registry unit-test declaration: mixed-case PK `sessionId`, mixed-case column
 /// `chatRowCount`.
@@ -709,8 +1160,8 @@ fn mm_sessions_declaration() -> ApplicationDataDeclaration {
 /// Run the fixture against one engine's store set and return a sorted list of
 /// `name=value` observables.
 async fn run_fixture(
-    app: &AppStore,
-    applications: &ApplicationStore,
+    app: &SettingsStore,
+    applications: &DynamicTableStore,
     data: &ApplicationDataStore,
 ) -> Vec<String> {
     let mut out = Vec::new();
@@ -976,6 +1427,25 @@ async fn pg_has_table(pool: &sqlx::PgPool, schema: &str, table: &str) -> bool {
     .await
     .expect("information_schema.tables probe");
     found.is_some()
+}
+
+/// `true` when the fully-qualified table still resolves (the "no SQL executed"
+/// probe for a rejected dynamic identifier).
+async fn table_resolves(pool: &sqlx::PgPool, full_table: &str) -> bool {
+    let found: Option<String> = sqlx::query_scalar("SELECT to_regclass($1)::text")
+        .bind(full_table)
+        .fetch_one(pool)
+        .await
+        .expect("to_regclass probe");
+    found.is_some()
+}
+
+/// Row count of the fully-qualified table (unchanged after a rejected call).
+async fn pg_row_count(pool: &sqlx::PgPool, full_table: &str) -> i64 {
+    sqlx::query_scalar(&format!("SELECT COUNT(*) FROM \"{full_table}\""))
+        .fetch_one(pool)
+        .await
+        .expect("COUNT(*) probe")
 }
 
 async fn pg_column_types(pool: &sqlx::PgPool, schema: &str, table: &str) -> HashMap<String, String> {

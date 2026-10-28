@@ -27,7 +27,7 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::SettingsStore;
 
 use super::commands::launch_llama_server;
 use super::{DEFAULT_LLAMA_SERVER_HOST, LLAMA_SERVER_HOST_KEY};
@@ -486,7 +486,7 @@ async fn ensure_healthy(app: &AppHandle) -> Result<u16, String> {
 /// The configured bind host (localhost in the reference deployment).
 fn server_host(app: &AppHandle) -> String {
     let configured = app
-        .state::<Arc<AppStore>>()
+        .state::<Arc<SettingsStore>>()
         .cached_get(LLAMA_SERVER_HOST_KEY)
         .ok()
         .flatten();

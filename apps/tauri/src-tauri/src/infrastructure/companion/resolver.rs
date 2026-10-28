@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::SettingsStore;
 
 pub const LLAMA_SERVER_BIN: &str = "llama-server";
 pub const LLAMA_SERVER_SETTING_KEY: &str = "llama_server_path";
@@ -77,7 +77,7 @@ pub fn resolve_llama_server_order(
 /// reported as `Error` — "could not determine" — never as `Missing`).
 pub fn resolve_llama_server(app: &AppHandle) -> Result<Option<PathBuf>, String> {
     let configured = app
-        .state::<Arc<AppStore>>()
+        .state::<Arc<SettingsStore>>()
         .cached_get(LLAMA_SERVER_SETTING_KEY)
         .map_err(|e| e.to_string())?;
     Ok(resolve_llama_server_order(

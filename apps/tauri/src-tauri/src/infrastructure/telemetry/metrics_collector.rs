@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::infrastructure::comm::event::EventState;
 pub use crate::infrastructure::comm::event::FredoEvent;
 pub use crate::infrastructure::storage::span_store::SpanStore;
-pub use crate::infrastructure::storage::AppStore;
+pub use crate::infrastructure::storage::SettingsStore;
 use crate::infrastructure::telemetry::backoff::ErrorBackoff;
 
 /// R-5 (Spec #3067): per-site back-off gating the metric-store flush error
@@ -55,7 +55,7 @@ pub enum MetricType {
 /// MetricCollector observes FredoEvents in parallel with SpanCollector.
 pub struct MetricCollector {
     pub(crate) store: Arc<SpanStore>,
-    pub(crate) app_store: Arc<AppStore>,
+    pub(crate) app_store: Arc<SettingsStore>,
     pub(crate) inner: Mutex<CollectorInner>,
     pub(crate) enabled_cache: AtomicBool,
 }
@@ -78,7 +78,7 @@ pub(crate) struct CollectorInner {
 }
 
 impl MetricCollector {
-    pub fn new(store: Arc<SpanStore>, app_store: Arc<AppStore>) -> Self {
+    pub fn new(store: Arc<SpanStore>, app_store: Arc<SettingsStore>) -> Self {
         let enabled = app_store
             .cached_get("tracing.metrics_enabled")
             .ok()

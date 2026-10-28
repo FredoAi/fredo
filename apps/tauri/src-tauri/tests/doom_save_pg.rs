@@ -6,7 +6,7 @@
 //!
 //! The round-1 defect: `store` passed the row VALUE `"singleton"`
 //! (`DOOM_SAVE_ROW_ID`) as the primary-key COLUMN list, so
-//! `ApplicationStore::upsert` emitted `ON CONFLICT("singleton")` and PostgreSQL
+//! `DynamicTableStore::upsert` emitted `ON CONFLICT("singleton")` and PostgreSQL
 //! rejected it with `column "singleton" does not exist` — every save failed
 //! (best-effort) and NO row ever persisted. This pin fails if the PK list and
 //! the row value are ever conflated again: the first `store` would return `Err`.
@@ -38,7 +38,7 @@ use fredo_lib::doom::save::{
     self, DoomSave, DOOM_DEFAULT_SEED, DOOM_DEFAULT_SKILL, DOOM_SAVE_FEATURE_ID, DOOM_SAVE_ROW_ID,
     DOOM_SAVE_STATE_DIR_ENV, DOOM_SAVE_TABLE_NAME, DOOM_SAVE_VERSION,
 };
-use fredo_lib::infrastructure::storage::application_store::ApplicationStore;
+use fredo_lib::infrastructure::storage::application_store::DynamicTableStore;
 use fredo_lib::infrastructure::storage::{EngineHandle, PgEngine, StoreEngine};
 use fredo_lib::PgRuntime;
 
@@ -110,7 +110,7 @@ async fn doom_save_round_trips_through_the_id_keyed_upsert(pool: &sqlx::PgPool, 
     );
 
     let handle = EngineHandle::new_pending();
-    let store = ApplicationStore::open(handle.clone()).expect("application store");
+    let store = DynamicTableStore::open(handle.clone()).expect("application store");
     handle.install(StoreEngine::Postgres(Arc::new(PgEngine {
         pool: pool.clone(),
         url: url.to_string(),

@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-// ── Persistence key contract (settingsService → AppStore KV; NO secret) ───────
+// ── Persistence key contract (settingsService → SettingsStore KV; NO secret) ───────
 //
 // The connection metadata / history / saved-query / preference documents are
 // secret-free by construction — the password lives only in the OS keychain

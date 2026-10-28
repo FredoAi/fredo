@@ -35,7 +35,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-// ── AppStore `settings` KV keys (AppStore remains the single source of truth) ──
+// ── SettingsStore `settings` KV keys (SettingsStore remains the single source of truth) ──
 
 /// PID marker for the managed postmaster (decimal; blank = cleared).
 pub const PG_PID_KEY: &str = "postgres_pid";

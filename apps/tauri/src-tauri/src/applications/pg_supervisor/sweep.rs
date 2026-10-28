@@ -3,7 +3,7 @@
 //!
 //! The `RunEvent::Exit` hook cannot run on a hard-kill (Task Manager / power
 //! loss), so a managed `postgres.exe` can outlive Fredo. The start flow persists
-//! its postmaster PID into the AppStore marker (`postgres_pid`); on the next
+//! its postmaster PID into the SettingsStore marker (`postgres_pid`); on the next
 //! startup we inspect that PID and reclaim it — but ONLY after confirming the
 //! live image is `postgres.exe`, so an OS-reused PID (or a wiped data dir with a
 //! stale marker) is never killed (R-3.1/R-3.2/R-4.4).
@@ -25,7 +25,7 @@
 
 use std::path::Path;
 
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::SettingsStore;
 
 use super::runtime::{kill_pid_tree, read_postmaster_pid, KillTreeFn};
 use super::{PG_PID_KEY, POSTGRES_IMAGE};
@@ -37,13 +37,13 @@ use super::{PG_PID_KEY, POSTGRES_IMAGE};
 /// write and clear paths can never drift. It is the ONLY pre-PostgreSQL key. A
 /// failed write is ignored: the marker is best-effort recovery metadata, never
 /// load-bearing state.
-pub fn persist_pid(store: &AppStore, pid: Option<u32>) {
+pub fn persist_pid(store: &SettingsStore, pid: Option<u32>) {
     let value = pid.map(|pid| pid.to_string()).unwrap_or_default();
     let _ = store.boot().set(PG_PID_KEY, &value);
 }
 
 /// Read the persisted postmaster PID marker (blank / malformed => `None`).
-pub fn persisted_pid(store: &AppStore) -> Option<u32> {
+pub fn persisted_pid(store: &SettingsStore) -> Option<u32> {
     store
         .boot()
         .get(PG_PID_KEY)
@@ -107,21 +107,21 @@ fn parse_tasklist_image_name(output: &str) -> Option<&str> {
     }
 }
 
-/// Startup sweep of the AppStore PID marker.
+/// Startup sweep of the SettingsStore PID marker.
 ///
 /// Reads the persisted PID; kills that PID ONLY when its live image is
 /// `postgres.exe` (the PID-reuse guard), then clears the marker UNCONDITIONALLY
 /// (R-3.3). A missing marker, a gone process, a malformed marker, and a reused
 /// PID are all safe no-kill paths, so the sweep can never terminate an unrelated
 /// process (R-3.2/R-4.4). Returns the reclaimed PID when a kill was performed.
-pub fn sweep_orphan(store: &AppStore) -> Option<u32> {
+pub fn sweep_orphan(store: &SettingsStore) -> Option<u32> {
     sweep_orphan_with(store, process_image_name, kill_pid_tree)
 }
 
 /// Test seam for [`sweep_orphan`]: the image query and kill primitive are
 /// injectable so the no-kill / kill paths are deterministic without a real
 /// `postgres.exe`.
-fn sweep_orphan_with<F>(store: &AppStore, image_query: F, kill: KillTreeFn) -> Option<u32>
+fn sweep_orphan_with<F>(store: &SettingsStore, image_query: F, kill: KillTreeFn) -> Option<u32>
 where
     F: Fn(u32) -> Option<String>,
 {
@@ -182,9 +182,9 @@ mod tests {
         KILLS.lock().expect("kill recorder").clear();
     }
 
-    fn open_store(dir: &Path) -> AppStore {
+    fn open_store(dir: &Path) -> SettingsStore {
         use crate::infrastructure::storage::engine::EngineHandle;
-        AppStore::open(EngineHandle::new_pending(), dir).expect("open app store")
+        SettingsStore::open(EngineHandle::new_pending(), dir).expect("open app store")
     }
 
     #[test]

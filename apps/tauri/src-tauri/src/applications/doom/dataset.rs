@@ -86,7 +86,7 @@ pub const DOOM_DATASET_MAX_RECORDS: u64 = 500_000;
 pub const DOOM_DATASET_REASONING_MAX_BYTES: usize = 4096;
 /// The exports subdirectory under the dataset dir.
 pub const DOOM_DATASET_EXPORT_DIR: &str = "exports";
-/// The AppStore settings KV key that is the SINGLE source of truth for the opt-in
+/// The SettingsStore settings KV key that is the SINGLE source of truth for the opt-in
 /// (Rust-readable; written by `set_doom_dataset_enabled`, read by the loop).
 pub const DOOM_DATASET_ENABLED_KEY: &str = "doom_dataset_enabled";
 

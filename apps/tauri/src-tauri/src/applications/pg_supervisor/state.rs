@@ -43,7 +43,7 @@ use tauri::{AppHandle, Manager};
 use crate::infrastructure::storage::engine::{
     build_pg_pool, PgPoolStage, StorageEngineState, StoreEngine,
 };
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::SettingsStore;
 
 use super::config::{PgLogVerbosity, PgSupervisorConfig};
 use super::credentials::PgCredential;
@@ -343,7 +343,7 @@ pub fn pool_force_fail_stage() -> Option<PgPoolStage> {
 /// where `lock_dir` honours the **G-275** [`super::PG_LOCK_DIR_ENV`] override
 /// ([`super::resolve_lock_dir`]); the **data dir** honours the FS-1
 /// [`super::PG_DATA_DIR_ENV`] override (`super::resolve_data_dir`).
-fn bootstrap(app_data_dir: &Path, store: &AppStore) -> Bootstrap {
+fn bootstrap(app_data_dir: &Path, store: &SettingsStore) -> Bootstrap {
     // FS-1: one shared rule also used by `PgRuntime` and the status view.
     let data_dir = super::resolve_data_dir(app_data_dir);
     // R-4.5: the exclusive data-dir lock is acquired BEFORE any sweep, so a
@@ -376,7 +376,7 @@ pub(crate) fn ensure_password(credential: &PgCredential) -> String {
 /// If the flag is not `"true"` this returns immediately having created no lock,
 /// run no sweep, and spawned no task (R-1.4).
 pub fn start_supervisor(app: &AppHandle) {
-    let store = match app.try_state::<Arc<AppStore>>() {
+    let store = match app.try_state::<Arc<SettingsStore>>() {
         Some(store) => store.inner().clone(),
         None => return,
     };
@@ -484,7 +484,7 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf) {
         Some(state) => state,
         None => return,
     };
-    let store = match app.try_state::<Arc<AppStore>>() {
+    let store = match app.try_state::<Arc<SettingsStore>>() {
         Some(store) => store.inner().clone(),
         None => return,
     };
@@ -993,7 +993,7 @@ async fn restart_cluster_inner(
     let state = app
         .try_state::<Arc<PgSupervisorState>>()
         .context("embedded PostgreSQL supervisor is not running")?;
-    let store = app.try_state::<Arc<AppStore>>().map(|s| s.inner().clone());
+    let store = app.try_state::<Arc<SettingsStore>>().map(|s| s.inner().clone());
     let engine = app
         .try_state::<Arc<StorageEngineState>>()
         .map(|s| s.inner().clone());
@@ -1256,7 +1256,7 @@ pub async fn pg_database_reset(app: AppHandle) -> PgDatabaseResetResult {
 }
 
 async fn reset_database_inner(app: &AppHandle, state: &Arc<PgSupervisorState>) -> Result<u16> {
-    let store = app.try_state::<Arc<AppStore>>().map(|s| s.inner().clone());
+    let store = app.try_state::<Arc<SettingsStore>>().map(|s| s.inner().clone());
     let os_app_data_dir = app
         .path()
         .app_data_dir()
@@ -1331,7 +1331,7 @@ async fn run_attach(app: AppHandle, headless: HeadlessDescriptor) {
         Some(state) => state,
         None => return,
     };
-    let store = match app.try_state::<Arc<AppStore>>() {
+    let store = match app.try_state::<Arc<SettingsStore>>() {
         Some(store) => store.inner().clone(),
         None => return,
     };
@@ -1434,7 +1434,7 @@ pub fn stop_on_exit(app: &AppHandle) {
         );
     }
     if owns_data_dir {
-        if let Some(store) = app.try_state::<Arc<AppStore>>() {
+        if let Some(store) = app.try_state::<Arc<SettingsStore>>() {
             // Marker backstop — also covers a hard-killed / mid-boot postmaster.
             sweep_orphan(&store);
         }
@@ -1577,9 +1577,9 @@ mod tests {
         PG_DATA_SUBDIR, PG_LOCK_FILENAME, PG_POOL_FORCE_FAIL_ENV,
     };
 
-    fn open_store(dir: &Path) -> AppStore {
+    fn open_store(dir: &Path) -> SettingsStore {
         use crate::infrastructure::storage::engine::EngineHandle;
-        AppStore::open(EngineHandle::new_pending(), dir).expect("open app store")
+        SettingsStore::open(EngineHandle::new_pending(), dir).expect("open app store")
     }
 
     /// ST-7 (G-290): re-homed from the old password-in-control-plane coverage. The

@@ -2,7 +2,7 @@
 //!
 //! This module is the SINGLE producer of the Doom runtime contract every other
 //! Doom sub-task compiles against: the phase/error vocabularies, the
-//! launch/status wire models, the bounded-timeout constants, and the AppStore/env
+//! launch/status wire models, the bounded-timeout constants, and the SettingsStore/env
 //! keys.
 //!
 //! Spec #3023 ST-2 moved the runtime onto the native in-process engine adapter
@@ -33,7 +33,7 @@ pub const DOOM_EXIT_HOOK_BOUND: u64 = 5;
 /// Bound on a single engine request.
 pub const DOOM_REQUEST_TIMEOUT_S: u64 = 10;
 
-// ── AppStore keys (AppStore remains the single source of truth) ───────────────
+// ── SettingsStore keys (SettingsStore remains the single source of truth) ───────────────
 
 /// Last runtime error message, surfaced by `get_doom_status`.
 pub const DOOM_LAST_ERROR_KEY: &str = "doom_last_error";

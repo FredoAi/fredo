@@ -18,7 +18,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::infrastructure::companion::performance_mode::PerformanceModeState;
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::SettingsStore;
 use crate::infrastructure::voice::capture::{self, AudioMsg};
 use crate::infrastructure::voice::state::{
     SttAudioCapability, SttAudioCapabilityState, SttAudioClip, SttAudioClipResult, SttErrorCode,
@@ -164,7 +164,7 @@ pub(crate) fn parse_device_id(value: Option<&str>) -> Option<String> {
 /// rule.
 pub(crate) fn voice_enabled(app: &AppHandle) -> bool {
     let value = app
-        .state::<std::sync::Arc<AppStore>>()
+        .state::<std::sync::Arc<SettingsStore>>()
         .cached_get(VOICE_ENABLED_KEY)
         .ok()
         .flatten();
@@ -178,7 +178,7 @@ pub(crate) fn voice_enabled(app: &AppHandle) -> bool {
 /// is the typed `NoDevice` naming it instead of a silent fallback (AC4).
 pub(crate) fn persisted_device(app: &AppHandle) -> Option<String> {
     let value = app
-        .state::<std::sync::Arc<AppStore>>()
+        .state::<std::sync::Arc<SettingsStore>>()
         .cached_get(VOICE_DEVICE_KEY)
         .ok()
         .flatten();

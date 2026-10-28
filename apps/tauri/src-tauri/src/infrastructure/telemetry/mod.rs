@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use crate::infrastructure::comm::event::{EventState, FredoEvent};
 use crate::infrastructure::storage::span_store::SpanStore;
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::SettingsStore;
 
 pub mod backoff;
 pub mod log;
@@ -200,10 +200,10 @@ impl SpanBuffer {
 /// Derives spans from FredoEvents and buffers them for persistence.
 ///
 /// The collector is an observer — it reads events but does not emit new ones.
-/// It respects the `tracing.enabled` AppStore key (REQ-10).
+/// It respects the `tracing.enabled` SettingsStore key (REQ-10).
 pub struct SpanCollector {
     store: Arc<SpanStore>,
-    app_store: Arc<AppStore>,
+    app_store: Arc<SettingsStore>,
     inner: Mutex<CollectorInner>,
     /// Cached value of tracing.enabled, checked before every batch.
     enabled_cache: AtomicBool,
@@ -219,7 +219,7 @@ struct CollectorInner {
 
 impl SpanCollector {
     /// Create a new SpanCollector.
-    pub fn new(store: Arc<SpanStore>, app_store: Arc<AppStore>) -> Self {
+    pub fn new(store: Arc<SpanStore>, app_store: Arc<SettingsStore>) -> Self {
         let enabled = app_store
             .cached_get("tracing.enabled")
             .ok()
@@ -239,7 +239,7 @@ impl SpanCollector {
         }
     }
 
-    /// Refresh the enabled cache from AppStore.
+    /// Refresh the enabled cache from SettingsStore.
     pub fn refresh_enabled(&self) {
         let enabled = self
             .app_store

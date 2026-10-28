@@ -27,12 +27,12 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::SettingsStore;
 
-/// AppStore key holding the user-configurable model base directory.
+/// SettingsStore key holding the user-configurable model base directory.
 pub const MODELS_DIR_KEY: &str = "models_dir";
 
-/// AppStore key holding an optional whole-manifest JSON override (#2856 test seam).
+/// SettingsStore key holding an optional whole-manifest JSON override (#2856 test seam).
 pub const MODEL_MANIFEST_PATH_KEY: &str = "model_manifest_path";
 
 /// Fixed disk layout subfolder for the QAT model set (distinct from the legacy
@@ -194,7 +194,7 @@ pub fn parse_manifest(json: &str) -> Result<ModelManifest> {
 }
 
 /// Resolve the manifest: an override JSON when supplied (non-blank), else the
-/// compiled default. `model_manifest_path` is the AppStore override key.
+/// compiled default. `model_manifest_path` is the SettingsStore override key.
 pub fn load_manifest(override_json: Option<&str>) -> Result<ModelManifest> {
     match override_json {
         Some(json) if !json.trim().is_empty() => parse_manifest(json),
@@ -314,11 +314,11 @@ pub fn is_step_complete(models_dir: &Path, manifest: &ModelManifest) -> bool {
     !manifest.files.is_empty() && missing_files(models_dir, manifest).is_empty()
 }
 
-/// Resolve the configured `models_dir` from AppStore, falling back to
+/// Resolve the configured `models_dir` from SettingsStore, falling back to
 /// `{home}/fredo-models`. Shared by BOTH applications (one rule).
 pub fn resolve_models_dir(app: &AppHandle) -> PathBuf {
     let configured = app
-        .state::<Arc<AppStore>>()
+        .state::<Arc<SettingsStore>>()
         .cached_get(MODELS_DIR_KEY)
         .ok()
         .flatten();
@@ -334,12 +334,12 @@ pub fn resolve_models_dir(app: &AppHandle) -> PathBuf {
         .join("fredo-models")
 }
 
-/// Resolve the acquisition manifest: the AppStore `model_manifest_path` JSON
+/// Resolve the acquisition manifest: the SettingsStore `model_manifest_path` JSON
 /// override when present and valid, else the compiled [`default_manifest`].
 /// An invalid override never breaks the probe — it logs and falls back.
 pub fn resolve_manifest(app: &AppHandle) -> ModelManifest {
     let override_json = app
-        .state::<Arc<AppStore>>()
+        .state::<Arc<SettingsStore>>()
         .cached_get(MODEL_MANIFEST_PATH_KEY)
         .ok()
         .flatten();

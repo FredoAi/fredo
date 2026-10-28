@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use crate::infrastructure::telemetry::metrics_collector::{MetricCollector, TelemetryStatsExt};
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::SettingsStore;
 use crate::infrastructure::storage::span_store::SpanStore;
 use crate::infrastructure::telemetry::log::LogCollector;
 use crate::infrastructure::telemetry::SpanCollector;
@@ -30,11 +30,11 @@ pub async fn telemetry_purge(
 }
 
 /// REQ-12: Enable or disable span collection.
-/// Writes the `tracing.enabled` key to AppStore.
+/// Writes the `tracing.enabled` key to SettingsStore.
 #[tauri::command]
 pub fn telemetry_toggle(
     enabled: bool,
-    app_store: tauri::State<'_, Arc<AppStore>>,
+    app_store: tauri::State<'_, Arc<SettingsStore>>,
     collector: tauri::State<'_, Arc<SpanCollector>>,
 ) -> Result<(), String> {
     let value = if enabled { "true" } else { "false" };
@@ -46,11 +46,11 @@ pub fn telemetry_toggle(
 }
 
 /// REQ-15: Enable or disable metrics collection.
-/// Writes the `tracing.metrics_enabled` key to AppStore and refreshes the cache.
+/// Writes the `tracing.metrics_enabled` key to SettingsStore and refreshes the cache.
 #[tauri::command]
 pub async fn telemetry_metrics_toggle(
     enabled: bool,
-    app_store: tauri::State<'_, Arc<AppStore>>,
+    app_store: tauri::State<'_, Arc<SettingsStore>>,
     metric_collector: tauri::State<'_, Arc<MetricCollector>>,
 ) -> Result<(), String> {
     let value = if enabled { "true" } else { "false" };
@@ -66,12 +66,12 @@ pub async fn telemetry_metrics_toggle(
 }
 
 /// REQ-7: Enable or disable log collection.
-/// Writes the `tracing.logging_enabled` key to AppStore and refreshes the cache.
+/// Writes the `tracing.logging_enabled` key to SettingsStore and refreshes the cache.
 /// When toggling off, flushes buffered records before stopping.
 #[tauri::command]
 pub async fn telemetry_logging_toggle(
     enabled: bool,
-    app_store: tauri::State<'_, Arc<AppStore>>,
+    app_store: tauri::State<'_, Arc<SettingsStore>>,
     log_collector: tauri::State<'_, Arc<LogCollector>>,
 ) -> Result<(), String> {
     let value = if enabled { "true" } else { "false" };
@@ -87,12 +87,12 @@ pub async fn telemetry_logging_toggle(
 }
 
 /// REQ-7: Set minimum log level for the tracing subscriber.
-/// Writes the `tracing.logging_level` key to AppStore.
+/// Writes the `tracing.logging_level` key to SettingsStore.
 /// Accepted levels: TRACE, DEBUG, INFO, WARN, ERROR.
 #[tauri::command]
 pub fn telemetry_logging_set_level(
     level: String,
-    app_store: tauri::State<'_, Arc<AppStore>>,
+    app_store: tauri::State<'_, Arc<SettingsStore>>,
 ) -> Result<(), String> {
     let valid_levels = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"];
     if !valid_levels.contains(&level.as_str()) {

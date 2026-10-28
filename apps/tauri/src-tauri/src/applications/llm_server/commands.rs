@@ -27,7 +27,7 @@ use crate::infrastructure::companion::models::{
 };
 use crate::infrastructure::companion::resolve_llama_server;
 use crate::infrastructure::companion::PerformanceModeState;
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::SettingsStore;
 use crate::infrastructure::voice::{SttAudioCapability, VoiceError, VoiceState};
 
 use super::chat::{self, LlmMessage};
@@ -47,7 +47,7 @@ use super::{
 
 // ── Internal settings keys ────────────────────────────────────────────────────
 
-/// AppStore key for the last launch error, surfaced by `get_llama_server_status`.
+/// SettingsStore key for the last launch error, surfaced by `get_llama_server_status`.
 /// Internal to this application — not part of the persisted-settings contract.
 const LLAMA_SERVER_LAST_ERROR_KEY: &str = "llama_server_last_error";
 
@@ -113,10 +113,10 @@ pub struct LlamaServerConfigPreview {
     pub contents: String,
 }
 
-// ── Settings access (AppStore is the single source of truth) ──────────────────
+// ── Settings access (SettingsStore is the single source of truth) ──────────────────
 
 fn get_setting(app: &AppHandle, key: &str) -> Option<String> {
-    app.state::<Arc<AppStore>>()
+    app.state::<Arc<SettingsStore>>()
         .cached_get(key)
         .ok()
         .flatten()
@@ -125,7 +125,7 @@ fn get_setting(app: &AppHandle, key: &str) -> Option<String> {
 }
 
 fn set_setting(app: &AppHandle, key: &str, value: &str) {
-    let _ = app.state::<Arc<AppStore>>().cached_set(key, value);
+    let _ = app.state::<Arc<SettingsStore>>().cached_set(key, value);
 }
 
 fn get_u16(app: &AppHandle, key: &str, default: u16) -> u16 {
@@ -418,7 +418,7 @@ fn stop_managed(app: &AppHandle) {
 /// implementation in [`process::persist_pid`], so the launch WRITE and the stop
 /// CLEAR cannot drift (NFR-6, one implementation per rule).
 fn persist_managed_pid(app: &AppHandle, pid: Option<u32>) {
-    let store = app.state::<Arc<AppStore>>();
+    let store = app.state::<Arc<SettingsStore>>();
     process::persist_pid(store.inner(), pid);
 }
 

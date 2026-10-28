@@ -5,8 +5,8 @@
 //! metrics collector, the retention knobs) and the tracing subscriber is
 //! initialized before the pool exists, so they cannot await. This cache is the
 //! synchronous seam: a process-local, volatile `HashMap<String, String>` that
-//! [`super::AppStore::hydrate`] fills ONCE from the PostgreSQL `settings` table
-//! and that [`super::AppStore::cached_set`] write-throughs back to PostgreSQL.
+//! [`super::SettingsStore::hydrate`] fills ONCE from the PostgreSQL `settings` table
+//! and that [`super::SettingsStore::cached_set`] write-throughs back to PostgreSQL.
 //!
 //! It holds no persistent state of its own - a process restart starts empty and
 //! re-hydrates. A read of an unknown key returns `None` (consumers keep their

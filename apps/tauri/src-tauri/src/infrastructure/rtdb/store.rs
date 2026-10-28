@@ -28,7 +28,7 @@
 //!
 //! ## Retention
 //!
-//! Two AppStore KV knobs (the binding config-first mechanism, mirroring
+//! Two SettingsStore KV knobs (the binding config-first mechanism, mirroring
 //! `contracts.retention_days` / `tracing.retention_days`):
 //! - [`RTDB_RETENTION_DAYS_KEY`] `rtdb.retention_days` (default
 //!   [`RTDB_DEFAULT_RETENTION_DAYS`]) — age-based prune on `updated_at`
@@ -56,9 +56,9 @@ use crate::infrastructure::storage::{EngineHandle, StoreEngine};
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-/// AppStore key: retention window in days for RTDB rows.
+/// SettingsStore key: retention window in days for RTDB rows.
 pub const RTDB_RETENTION_DAYS_KEY: &str = "rtdb.retention_days";
-/// AppStore key: global row cap across all RTDB tables.
+/// SettingsStore key: global row cap across all RTDB tables.
 pub const RTDB_MAX_ROWS_KEY: &str = "rtdb.max_rows";
 /// Default retention window (days).
 pub const RTDB_DEFAULT_RETENTION_DAYS: i64 = 7;

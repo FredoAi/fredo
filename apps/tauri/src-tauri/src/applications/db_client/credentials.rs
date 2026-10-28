@@ -8,7 +8,7 @@
 //!
 //! # Secrecy invariants (R-5.5 / R-1.5)
 //!
-//! * A password never enters `settingsService`/AppStore, tracing/telemetry, a
+//! * A password never enters `settingsService`/SettingsStore, tracing/telemetry, a
 //!   CSV export, or a returned [`crate::applications::db_client::types::DbConnectionView`]
 //!   (the view carries `has_password` only).
 //! * Every read/write goes through the [`CredentialStore`] seam so tests inject
