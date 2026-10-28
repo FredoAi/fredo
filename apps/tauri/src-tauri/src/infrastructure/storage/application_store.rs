@@ -676,6 +676,24 @@ impl ApplicationStore {
         )
     }
 
+    /// Validate every `where_cols` key against the physical columns (REQ-4.1).
+    ///
+    /// Values stay parameterized; only the KEY surface is validated. An empty map
+    /// is valid.
+    fn validate_where_columns(
+        where_cols: &serde_json::Map<String, JsonValue>,
+        columns: &HashMap<String, ColumnType>,
+    ) -> Result<(), IdentifierError> {
+        for key in where_cols.keys() {
+            if !columns.contains_key(key.as_str()) {
+                return Err(IdentifierError::UnknownWhereColumn {
+                    column: key.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+
     // ── REQ-3: query ───────────────────────────────────────────────────────────
 
     /// Query rows with optional WHERE, ORDER BY, and LIMIT.
@@ -694,13 +712,16 @@ impl ApplicationStore {
             StoreEngine::Postgres(pg) => {
                 let col_types = Self::column_types_pg(&pg.pool, &full)?;
 
-                // Spec #3075 (REQ-1.1–1.5): reject an invalid `order_by` BEFORE
-                // any SQL text is built. An absent/empty `order_by` still emits no
-                // `ORDER BY` clause (REQ-1.6).
+                // Spec #3075 (REQ-1.1–1.5, REQ-4.1): reject an invalid `order_by`
+                // or WHERE key BEFORE any SQL text is built. An absent/empty
+                // `order_by` still emits no `ORDER BY` clause (REQ-1.6).
                 let validated_order = match order_by {
                     Some(ob) if !ob.is_empty() => Some(Self::parse_order_by(ob, &col_types)?),
                     _ => None,
                 };
+                if let Some(wc) = where_cols {
+                    Self::validate_where_columns(wc, &col_types)?;
+                }
 
                 let mut sql = format!("SELECT * FROM {}", quote_ident(&full));
                 if let Some(wc) = where_cols {
@@ -754,6 +775,9 @@ impl ApplicationStore {
             
             StoreEngine::Postgres(pg) => {
                 let col_types = Self::column_types_pg(&pg.pool, &full)?;
+                // Spec #3075 (REQ-4.1): reject an unknown WHERE key before any SQL
+                // text is built. `set_cols` behavior is unchanged.
+                Self::validate_where_columns(where_cols, &col_types)?;
                 let set_clauses: Vec<String> = set_cols
                     .keys()
                     .enumerate()
@@ -802,6 +826,9 @@ impl ApplicationStore {
             
             StoreEngine::Postgres(pg) => {
                 let col_types = Self::column_types_pg(&pg.pool, &full)?;
+                // Spec #3075 (REQ-4.1): reject an unknown WHERE key before any SQL
+                // text is built.
+                Self::validate_where_columns(where_cols, &col_types)?;
                 let where_clauses: Vec<String> = where_cols
                     .keys()
                     .enumerate()
@@ -1057,6 +1084,13 @@ mod tests {
             ("last_active_at".to_string(), ColumnType::TEXT),
             ("_updated_at".to_string(), ColumnType::TEXT),
         ])
+    }
+
+    fn where_map(entries: &[(&str, JsonValue)]) -> Map<String, JsonValue> {
+        entries
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), value.clone()))
+            .collect()
     }
 
     #[test]
@@ -1363,6 +1397,72 @@ mod tests {
         assert_eq!(
             ApplicationStore::validate_namespace("terminal", "sessions").unwrap(),
             LEGACY_TERMINAL_SESSIONS_TABLE
+        );
+    }
+
+    // ── Spec #3075 ST-3: where_cols key validation ───────────────────────────
+
+    #[test]
+    fn validate_where_columns_accepts_physical_columns_and_rejects_unknown() {
+        let cols = test_columns();
+
+        assert_eq!(
+            ApplicationStore::validate_where_columns(&Map::new(), &cols),
+            Ok(()),
+            "an empty WHERE map is valid"
+        );
+        assert_eq!(
+            ApplicationStore::validate_where_columns(
+                &where_map(&[
+                    ("id", serde_json::json!("a")),
+                    ("latestAt", serde_json::json!(1)),
+                ]),
+                &cols,
+            ),
+            Ok(()),
+            "every physical column is valid"
+        );
+
+        let error = ApplicationStore::validate_where_columns(
+            &where_map(&[("nope", serde_json::json!(1))]),
+            &cols,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            IdentifierError::UnknownWhereColumn {
+                column: "nope".to_string(),
+            }
+        );
+        assert!(error.to_string().contains("nope"), "{error}");
+
+        // One unknown key among known ones still rejects, naming the offender.
+        let error = ApplicationStore::validate_where_columns(
+            &where_map(&[
+                ("id", serde_json::json!("a")),
+                ("nope", serde_json::json!(1)),
+            ]),
+            &cols,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            IdentifierError::UnknownWhereColumn {
+                column: "nope".to_string(),
+            }
+        );
+
+        // Case-mismatched keys are unknown too (physical names are exact).
+        let error = ApplicationStore::validate_where_columns(
+            &where_map(&[("ID", serde_json::json!("a"))]),
+            &cols,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            IdentifierError::UnknownWhereColumn {
+                column: "ID".to_string(),
+            }
         );
     }
 }
