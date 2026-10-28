@@ -2758,6 +2758,97 @@ Test-Script "timeline comments posted from tmp drafts (post-comments)" {
   }
 }
 
+# G-405: per-developer verification drafts (`dev-verify-<ST-id>.md`) flush with the
+# DOCUMENTED top-level header `## Developer <ST-id> -- verification` (em-dash). The
+# title is DERIVED from the filename. One per developer; the anti-spoofing footer
+# gate still applies (an unattributed draft is refused and KEPT for its author).
+Test-Script "dev-verify drafts flush as Developer <ST-id> verification (G-405)" {
+  $ps = ".opencode/scripts/pipeline-state.rs"
+  $dash = [char]0x2014
+  $url = Mock-IssueCreate "temp: dev-verify flush" "dev-verify scratch" ""
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $dir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    # Two developers -> two attributed drafts; one unattributed (must be refused + kept).
+    [System.IO.File]::WriteAllText("$dir/dev-verify-ST-1.md", "Files changed: connect.rs`n`n*Authored by Developer*", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText("$dir/dev-verify-ST-2.md", "Files changed: classify.rs`n`n*Authored by Developer*", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText("$dir/dev-verify-ST-3.md", "No footer here.", [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action post-comments 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "post-comments failed: $outStr" }
+    if ($outStr -notmatch "COMMENTED: Developer ST-1 ") { throw "expected the ST-1 developer comment, got: $outStr" }
+    if ($outStr -notmatch "COMMENTED: Developer ST-2 ") { throw "expected the ST-2 developer comment, got: $outStr" }
+    if ($outStr -match "Developer ST-3") { throw "an unattributed dev-verify draft must NOT post, got: $outStr" }
+    # Attributed drafts consumed; the unattributed one kept.
+    if (Test-Path "$dir/dev-verify-ST-1.md") { throw "ST-1 draft not consumed" }
+    if (Test-Path "$dir/dev-verify-ST-2.md") { throw "ST-2 draft not consumed" }
+    if (-not (Test-Path "$dir/dev-verify-ST-3.md")) { throw "unattributed ST-3 draft should be kept" }
+    # The posted comments carry the DOCUMENTED top-level header (never `## Status`).
+    # Read the store with an explicit UTF-8 decode so the em-dash in the header survives
+    # (PS 5.1's default Get-Content decode is ANSI, which mojibakes the native UTF-8 output).
+    $storeFile = Mock-StorePath "issues\$issueNum.json"
+    $p = [System.IO.File]::ReadAllText($storeFile, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $joined = @($p.comments | ForEach-Object { $_.body }) -join "`n"
+    if ($joined -notmatch "(?m)^## Developer ST-1 $dash verification") { throw "ST-1 did not carry the documented top-level header: $joined" }
+    if ($joined -notmatch "(?m)^## Developer ST-2 $dash verification") { throw "ST-2 did not carry the documented top-level header: $joined" }
+    if ($joined -match "(?m)^## Status") { throw "dev-verify must NOT post a ## Status header: $joined" }
+    return "dev-verify: ST-1/ST-2 flushed with the documented header; unattributed ST-3 refused + kept"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# G-405: the `comment` action honours the documented per-developer header too -- a
+# `dev-verify-<ST-id>.md` body file (or any body starting `## Developer ...`) posts
+# as `## Developer <ST-id> -- verification`, NOT `## Status`. The prefix gate is
+# unchanged (arbitrary prose still gets `## Status`). The transition flush is then
+# idempotent: a draft already posted via `comment` is consumed, never duplicated.
+Test-Script "comment action produces the documented Developer header (G-405)" {
+  $ps = ".opencode/scripts/pipeline-state.rs"
+  $dash = [char]0x2014
+  $url = Mock-IssueCreate "temp: dev-verify comment" "dev-verify comment scratch" ""
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $dir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    $bodyFile = "$dir/dev-verify-ST-7.md"
+    [System.IO.File]::WriteAllText($bodyFile, "Files changed: query.rs`n`n*Authored by Developer*", [System.Text.UTF8Encoding]::new($false))
+    # The documented channel: post the dev-verify draft via `comment`.
+    $out = & rust-script $ps --issue $issueNum --agent developer --action comment --prefix Status --body-file $bodyFile 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "comment failed: $outStr" }
+    $storeFile = Mock-StorePath "issues\$issueNum.json"
+    $p = [System.IO.File]::ReadAllText($storeFile, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $joined = @($p.comments | ForEach-Object { $_.body }) -join "`n"
+    if ($joined -notmatch "(?m)^## Developer ST-7 $dash verification") { throw "comment did not produce the documented header: $joined" }
+    if ($joined -match "(?m)^## Status") { throw "comment must NOT prepend ## Status for a dev-verify draft: $joined" }
+    # The flush is idempotent: the draft is already posted -> consumed, not re-posted.
+    $flush = & rust-script $ps --issue $issueNum --agent orchestrator --action post-comments 2>&1
+    $flushStr = if ($flush -is [array]) { $flush -join "`n" } else { "$flush" }
+    if ($LASTEXITCODE -ne 0) { throw "post-comments failed: $flushStr" }
+    if (Test-Path $bodyFile) { throw "a dev-verify draft already posted via comment should be consumed by the idempotent flush" }
+    $p2 = [System.IO.File]::ReadAllText($storeFile, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $devComments = @($p2.comments | Where-Object { $_.body -like "## Developer ST-7*" })
+    if ($devComments.Count -ne 1) { throw "expected exactly ONE Developer ST-7 comment, got $($devComments.Count)" }
+    return "comment action posts the documented Developer header; flush is idempotent (no duplicate)"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # Development Summary round stamp (#2788 audit fix): the summary documents the fix
 # round whose testing entry is being CREATED — stamp = testing-entry count + 1.
 # A fresh issue (0 entries) stamps round 1; two fabricated testing entries stamp
