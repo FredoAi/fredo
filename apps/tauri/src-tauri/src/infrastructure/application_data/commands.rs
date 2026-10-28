@@ -519,6 +519,29 @@ pub async fn read(
     }
 }
 
+/// The `(where_cols, order_by, limit)` a declared-table watch snapshot queries
+/// with.
+///
+/// Spec #3075 ST-4: the watch-snapshot caller passes `order_by = None` for every
+/// scope (Table / Record / Query), so the sink emits no `ORDER BY` — extracted so
+/// the caller wiring is unit-testable without a live database.
+type DeclaredQueryArgs = (
+    Option<Map<String, JsonValue>>,
+    Option<String>,
+    Option<u64>,
+);
+
+fn scope_query_args(
+    declaration: &ApplicationDataTableDeclaration,
+    scope: &WatchScopeArg,
+) -> Result<DeclaredQueryArgs, Vec<String>> {
+    match scope {
+        WatchScopeArg::Table => Ok((None, None, None)),
+        WatchScopeArg::Record { key } => Ok((Some(key_map(declaration, key)?), None, None)),
+        WatchScopeArg::Query { r#where } => Ok((eq_map(r#where), None, None)),
+    }
+}
+
 fn declared_snapshot(
     state: &ApplicationDataState,
     feature_id: &str,
@@ -526,18 +549,7 @@ fn declared_snapshot(
     declaration: &ApplicationDataTableDeclaration,
     scope: &WatchScopeArg,
 ) -> Result<Vec<Map<String, JsonValue>>, Vec<String>> {
-    let (where_cols, order_by, limit): (
-        Option<Map<String, JsonValue>>,
-        Option<String>,
-        Option<u64>,
-    ) = match scope {
-        WatchScopeArg::Table => (None, None, None),
-        WatchScopeArg::Record { key } => {
-            let map = key_map(declaration, key)?;
-            (Some(map), None, None)
-        }
-        WatchScopeArg::Query { r#where } => (eq_map(r#where), None, None),
-    };
+    let (where_cols, order_by, limit) = scope_query_args(declaration, scope)?;
     let mut rows = state
         .tables
         .query(
@@ -924,3 +936,144 @@ pub async fn application_data_declare(
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infrastructure::application_data::declaration::{
+        ColumnOwner, DeclaredColumn, DeclaredColumnType,
+    };
+
+    /// A declared table with a PK `id` and the given extra column names.
+    fn declaration(extra_columns: &[&str]) -> ApplicationDataTableDeclaration {
+        let mut columns = vec![DeclaredColumn {
+            name: "id".to_string(),
+            col_type: DeclaredColumnType::Text,
+            nullable: false,
+            owner: ColumnOwner::Backend,
+        }];
+        for name in extra_columns {
+            columns.push(DeclaredColumn {
+                name: (*name).to_string(),
+                col_type: DeclaredColumnType::Text,
+                nullable: true,
+                owner: ColumnOwner::Backend,
+            });
+        }
+        ApplicationDataTableDeclaration {
+            name: "sessions".to_string(),
+            primary_key: vec!["id".to_string()],
+            columns,
+            source: None,
+            retention: None,
+        }
+    }
+
+    // ── Spec #3075 ST-4: the declared-read caller wiring ────────────────────
+
+    #[test]
+    fn declared_read_passes_the_order_bare_and_unchanged() {
+        // Spec #3075 REQ-2.3 / the single-quoting-point rule: the declared read
+        // passes a BARE `field ASC|DESC`; the sink validates it against the
+        // physical columns and quotes it exactly once.
+        let decl = declaration(&["latestAt"]);
+        assert_eq!(
+            validated_order_by(&decl, Some("latestAt DESC")),
+            Ok(Some("latestAt DESC".to_string()))
+        );
+        assert_eq!(
+            validated_order_by(&decl, Some("id ASC")),
+            Ok(Some("id ASC".to_string()))
+        );
+        let resolved = validated_order_by(&decl, Some("latestAt DESC"))
+            .expect("declared order must be accepted")
+            .expect("a non-empty order must resolve");
+        assert!(
+            !resolved.contains('"'),
+            "validated_order_by must NOT quote — quoting only happens at the sink"
+        );
+    }
+
+    #[test]
+    fn declared_read_maps_the_row_version_alias_to_the_physical_column() {
+        // `_rowVersion` is the camelCase wire alias; the physical column is
+        // `_row_version`, so the sink's physical-column check requires the map.
+        let decl = declaration(&[]);
+        assert_eq!(
+            validated_order_by(&decl, Some("_rowVersion DESC")),
+            Ok(Some("_row_version DESC".to_string()))
+        );
+        // The reserved `_updated_at` is accepted as-is (declared allowlist).
+        assert_eq!(
+            validated_order_by(&decl, Some("_updated_at ASC")),
+            Ok(Some("_updated_at ASC".to_string()))
+        );
+    }
+
+    #[test]
+    fn declared_read_is_orderless_for_absent_or_blank_input() {
+        let decl = declaration(&["latestAt"]);
+        for order_by in [None, Some(""), Some("   ")] {
+            assert_eq!(
+                validated_order_by(&decl, order_by),
+                Ok(None),
+                "{order_by:?} must not emit an ORDER BY"
+            );
+        }
+    }
+
+    #[test]
+    fn declared_read_rejects_an_undeclared_column_before_the_sink() {
+        let decl = declaration(&["latestAt"]);
+        let errors = validated_order_by(&decl, Some("nope DESC"))
+            .expect_err("an undeclared column must be rejected");
+        assert_eq!(
+            errors,
+            vec!["orderBy column 'nope' is not declared on table 'sessions'".to_string()]
+        );
+    }
+
+    // ── Spec #3075 ST-4: the watch-snapshot (None) caller wiring ────────────
+
+    #[test]
+    fn watch_snapshot_passes_no_order_by_for_every_scope() {
+        let decl = declaration(&["latestAt"]);
+
+        let (where_cols, order_by, limit) =
+            scope_query_args(&decl, &WatchScopeArg::Table).expect("table scope");
+        assert!(where_cols.is_none());
+        assert_eq!(order_by, None, "the watch snapshot must pass order_by = None");
+        assert_eq!(limit, None);
+
+        let (where_cols, order_by, limit) =
+            scope_query_args(&decl, &WatchScopeArg::Record { key: vec![json!("s1")] })
+                .expect("record scope");
+        assert_eq!(where_cols, Some(one_field_map("id", json!("s1"))));
+        assert_eq!(order_by, None, "the watch snapshot must pass order_by = None");
+        assert_eq!(limit, None);
+
+        let (where_cols, order_by, limit) = scope_query_args(
+            &decl,
+            &WatchScopeArg::Query {
+                r#where: vec![EqFilter {
+                    field: "latestAt".to_string(),
+                    eq: json!("2026-09-27T00:00:00Z"),
+                }],
+            },
+        )
+        .expect("query scope");
+        assert_eq!(
+            where_cols,
+            Some(one_field_map("latestAt", json!("2026-09-27T00:00:00Z")))
+        );
+        assert_eq!(order_by, None, "the watch snapshot must pass order_by = None");
+        assert_eq!(limit, None);
+    }
+
+    fn one_field_map(field: &str, value: JsonValue) -> Map<String, JsonValue> {
+        let mut map = Map::new();
+        map.insert(field.to_string(), value);
+        map
+    }
+}
+

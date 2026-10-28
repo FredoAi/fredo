@@ -208,7 +208,7 @@ fn prune_declared_table(
         &table_meta.feature_id,
         &table_meta.table_name,
         None,
-        Some(&format!("{order_column} ASC")),
+        Some(&retention_order_by(declaration)),
         None,
     )?;
     if rows.is_empty() {
@@ -285,6 +285,14 @@ fn retention_order_column(declaration: &ApplicationDataTableDeclaration) -> &'st
     }
 }
 
+/// The `order_by` string the prune passes to [`ApplicationStore::query`]
+/// (Spec #3075 ST-4): the resolved order column plus `ASC`, bare — the sink is
+/// the single quoting point, so `latestAt` is emitted UNQUOTED here and the sink
+/// validates+quotes it against the physical (case-sensitive) column.
+fn retention_order_by(declaration: &ApplicationDataTableDeclaration) -> String {
+    format!("{} ASC", retention_order_column(declaration))
+}
+
 /// `now - days`, parsed as RFC3339 to keep the comparison timezone-correct.
 fn cutoff_before(now: &str, days: u64) -> Result<chrono::DateTime<chrono::FixedOffset>> {
     let now = chrono::DateTime::parse_from_rfc3339(now)
@@ -344,3 +352,73 @@ fn non_reserved_names(row: &Map<String, JsonValue>) -> Vec<String> {
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infrastructure::application_data::declaration::{
+        ColumnOwner, DeclaredColumn, DeclaredColumnType,
+    };
+
+    /// A declared table with the given extra (non-PK) column names.
+    fn declaration(extra_columns: &[&str]) -> ApplicationDataTableDeclaration {
+        let mut columns = vec![DeclaredColumn {
+            name: "id".to_string(),
+            col_type: DeclaredColumnType::Text,
+            nullable: false,
+            owner: ColumnOwner::Backend,
+        }];
+        for name in extra_columns {
+            columns.push(DeclaredColumn {
+                name: (*name).to_string(),
+                col_type: DeclaredColumnType::Text,
+                nullable: true,
+                owner: ColumnOwner::Backend,
+            });
+        }
+        ApplicationDataTableDeclaration {
+            name: "sessions".to_string(),
+            primary_key: vec!["id".to_string()],
+            columns,
+            source: None,
+            retention: None,
+        }
+    }
+
+    // ── Spec #3075 ST-4: the prune's caller wiring through the fixed sink ──
+
+    #[test]
+    fn retention_order_by_uses_the_declared_camel_case_latest_at() {
+        // The declared-read/prune caller passes a BARE `latestAt ASC`; the sink
+        // validates it case-sensitively and emits the quoted `"latestAt" ASC`
+        // (Spec #3075 REQ-2.2/REQ-2.3). Quoting here would double-quote.
+        let decl = declaration(&["latestAt"]);
+        assert_eq!(retention_order_column(&decl), "latestAt");
+        assert_eq!(retention_order_by(&decl), "latestAt ASC");
+        assert!(
+            !retention_order_by(&decl).contains('"'),
+            "the prune must pass the column bare — the sink is the single quoting point"
+        );
+    }
+
+    #[test]
+    fn retention_order_by_falls_back_to_the_reserved_updated_at() {
+        // No declared `latestAt` → the backend-managed `_updated_at` fallback,
+        // which is always physically present (a reserved column).
+        let decl = declaration(&[]);
+        assert_eq!(retention_order_by(&decl), "_updated_at ASC");
+        assert_eq!(UPDATED_AT_COLUMN, "_updated_at");
+        assert!(
+            is_reserved_column(UPDATED_AT_COLUMN),
+            "the fallback order column must be a physically-present reserved column"
+        );
+    }
+
+    #[test]
+    fn retention_constants_are_pinned_to_the_contract_names() {
+        // Frozen declared/reserved column names the sink validates against.
+        assert_eq!(RETENTION_ORDER_COLUMN, "latestAt");
+        assert_eq!(UPDATED_AT_COLUMN, "_updated_at");
+    }
+}
+

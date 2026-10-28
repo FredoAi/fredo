@@ -26,6 +26,11 @@ pub const TABLE_NAME: &str = "sessions";
 /// bound.
 pub const MAX_RECORDS: usize = 100;
 
+/// The `order_by` the record list passes to [`ApplicationStore::query`]
+/// (Spec #3075 ST-4): newest `last_active_at` first. Bare — the sink is the
+/// single quoting point and validates/quotes the physical column.
+const LIST_ORDER_BY: &str = "last_active_at DESC";
+
 /// One persisted Terminal session record.
 ///
 /// This is BOTH the storage mapping and the UI wire record (`list_persisted_terminal_sessions`
@@ -135,7 +140,7 @@ pub fn list(store: &ApplicationStore) -> Result<Vec<PersistedSession>> {
         FEATURE_ID,
         TABLE_NAME,
         None,
-        Some("last_active_at DESC"),
+        Some(LIST_ORDER_BY),
         None,
     )?;
     Ok(rows
@@ -463,8 +468,27 @@ mod tests {
 
     // ── Lifecycle helpers ───────────────────────────────────────────────────
 
-    // ── OpenCode session-id capture parser ──────────────────────────────────
+    // ── Spec #3075 ST-4: the list's caller wiring through the fixed sink ────
 
+    #[test]
+    fn list_orders_by_the_physical_last_active_at_column() {
+        // The terminal list passes a BARE `last_active_at DESC`; the sink
+        // validates it against the physical columns and emits the quoted
+        // `"last_active_at" DESC` (Spec #3075 REQ-2.3). Quoting here would
+        // double-quote and break the sink's physical-column check.
+        assert_eq!(LIST_ORDER_BY, "last_active_at DESC");
+        assert!(
+            !LIST_ORDER_BY.contains('"'),
+            "the caller must pass the column bare — the sink is the single quoting point"
+        );
+        let field = LIST_ORDER_BY.split_whitespace().next().unwrap();
+        assert!(
+            PersistedSession::columns().iter().any(|c| c.name == field),
+            "the list order column `{field}` must be a physical column so the sink accepts it"
+        );
+    }
+
+    // ── OpenCode session-id capture parser ──────────────────────────────────
     /// A trimmed, real-shaped fixture from the ST-1 probe output
     /// (`opencode session list --format json`).
     const OPENCODE_LIST: &str = r#"[
