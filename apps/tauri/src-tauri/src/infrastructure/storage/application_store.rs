@@ -240,7 +240,14 @@ impl ApplicationStore {
 
     /// Validate that the given full table name is properly namespaced to the
     /// application. The ONLY source of a dynamic identifier.
+    ///
+    /// Spec #3075 (REQ-3.1): both components are charset-gated first, so a
+    /// dynamic identifier can never carry SQL metacharacters — that makes the
+    /// prefix check below meaningful rather than a tautology. `full_table_name`
+    /// output is unchanged (byte-identical to the shipped generator).
     pub(crate) fn validate_namespace(application_id: &str, table_name: &str) -> Result<String> {
+        Self::validate_identifier_charset("applicationId", application_id)?;
+        Self::validate_identifier_charset("tableName", table_name)?;
         let sanitized = application_id.replace('-', "_");
         let full = Self::full_table_name(application_id, table_name);
         let expected_prefix = format!("{LEGACY_TABLE_PREFIX}_{}_", sanitized);
@@ -252,6 +259,23 @@ impl ApplicationStore {
             );
         }
         Ok(full)
+    }
+
+    /// Charset gate for one namespace component (Spec #3075, REQ-3.1): non-empty,
+    /// and every character inside `[A-Za-z0-9_-]`.
+    fn validate_identifier_charset(kind: &'static str, value: &str) -> Result<(), IdentifierError> {
+        let valid = !value.is_empty()
+            && value
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        if valid {
+            Ok(())
+        } else {
+            Err(IdentifierError::InvalidNamespaceIdentifier {
+                kind,
+                value: value.to_string(),
+            })
+        }
     }
 
     // ── REQ-1: ensure_table ────────────────────────────────────────────────────
@@ -1243,5 +1267,102 @@ mod tests {
 
         let order = ApplicationStore::parse_order_by("id", &cols).unwrap();
         assert_eq!(ApplicationStore::order_by_sql(&order), "\"id\" ASC");
+    }
+
+    // ── Spec #3075 ST-2: namespace charset gate ──────────────────────────────
+
+    #[test]
+    fn validate_identifier_charset_gates_the_namespace_charset() {
+        for ok in [
+            "mission-monitor",
+            "app_1",
+            "App-2",
+            "doom",
+            "terminal",
+            "sessions",
+            "save",
+            "deleted_sessions",
+            "terminal_sessions",
+        ] {
+            assert_eq!(
+                ApplicationStore::validate_identifier_charset("applicationId", ok),
+                Ok(()),
+                "{ok:?} must be accepted"
+            );
+        }
+        for bad in [
+            "a b",
+            "app;drop",
+            "app\"",
+            "",
+            "app.dot",
+            "app/slash",
+            "app\nline",
+            "appü",
+            "app'",
+            "app)",
+        ] {
+            assert_eq!(
+                ApplicationStore::validate_identifier_charset("applicationId", bad),
+                Err(IdentifierError::InvalidNamespaceIdentifier {
+                    kind: "applicationId",
+                    value: bad.to_string(),
+                }),
+                "{bad:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_namespace_rejects_out_of_charset_identifiers() {
+        for bad_application in ["a b", "app;drop", "app\"", "", "app.dot", "app/slash", "appü"]
+        {
+            let error = ApplicationStore::validate_namespace(bad_application, "sessions")
+                .expect_err("an out-of-charset application_id must be rejected");
+            assert!(
+                error.to_string().contains("applicationId"),
+                "{bad_application:?}: {error}"
+            );
+        }
+        for bad_table in ["a b", "app;drop", "", "app.dot", "app/slash", "appü"] {
+            let error = ApplicationStore::validate_namespace("mission-monitor", bad_table)
+                .expect_err("an out-of-charset table_name must be rejected");
+            assert!(
+                error.to_string().contains("tableName"),
+                "{bad_table:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_namespace_keeps_the_byte_identical_full_names() {
+        for (application, table, expected) in [
+            (
+                "mission-monitor",
+                "sessions",
+                "feature_mission_monitor_sessions",
+            ),
+            ("doom", "save", "feature_doom_save"),
+            ("terminal", "sessions", "feature_terminal_sessions"),
+            (
+                "mission-monitor",
+                "deleted_sessions",
+                "feature_mission_monitor_deleted_sessions",
+            ),
+        ] {
+            assert_eq!(
+                ApplicationStore::full_table_name(application, table),
+                expected,
+                "the generator output is the frozen on-disk contract"
+            );
+            assert_eq!(
+                ApplicationStore::validate_namespace(application, table).unwrap(),
+                expected
+            );
+        }
+        assert_eq!(
+            ApplicationStore::validate_namespace("terminal", "sessions").unwrap(),
+            LEGACY_TERMINAL_SESSIONS_TABLE
+        );
     }
 }
