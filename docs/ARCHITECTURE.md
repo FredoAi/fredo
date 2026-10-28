@@ -325,7 +325,7 @@ src-tauri/src/
 
 ### DynamicTableStore — Typed Application-Level Store (embedded PostgreSQL)
 
-The `DynamicTableStore` (`infrastructure/storage/application_store.rs`) provides a generic, typed-column store for any application, backed by the shared embedded-PostgreSQL engine (the shipped default since Spec #2979; the SQLite data path was removed). Each application gets namespaced tables (`application_{applicationId}_*`) with column types TEXT, INTEGER, REAL, or BLOB. Cross-application isolation is enforced — an application cannot access tables belonging to another application.
+The `DynamicTableStore` (`infrastructure/storage/application_store.rs`) provides a generic, typed-column store for any application, backed by the shared embedded-PostgreSQL engine (the shipped default since Spec #2979; the SQLite data path was removed). Each application gets namespaced tables (`feature_{application_id}_*`, the frozen `LEGACY_TABLE_PREFIX` — byte-identical to the pre-rename on-disk tables; NO-MIGRATE) with column types TEXT, INTEGER, REAL, or BLOB. Cross-application isolation is enforced — an application cannot access tables belonging to another application.
 
 **Tauri commands** (registered in `lib.rs`):
 | Command | Description |
