@@ -62,6 +62,14 @@ pub const PG_PASSWORD_FILE_ENV: &str = "FREDO_PG_PASSWORD_FILE";
 /// documented [`PG_LOOPBACK_FALLBACK_PASSWORD`] path. Inert when unset.
 pub const PG_KEYCHAIN_DISABLED_ENV: &str = "FREDO_PG_KEYCHAIN_DISABLED";
 
+/// G-222 serialization seam (cfg(test) only): the ONE lock every test that reads
+/// OR mutates the process-global credential env seams must hold. Shared by the
+/// credentials env test and every consumer test that resolves through
+/// [`PgCredential::resolve`], so a concurrent override can never flake them.
+/// No production surface.
+#[cfg(test)]
+pub(crate) static PG_CREDENTIAL_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// The credential seam every managed-PostgreSQL secret read/write goes through.
 pub trait PgCredentialStore: Send + Sync {
     /// Store (or replace) the loopback password.
@@ -311,10 +319,6 @@ fn keychain_disabled_with(value: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    /// Serialises the env-mutating tests in this module (G-222).
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// RAII: remove the two induction-seam env vars on drop, even on panic.
     struct SeamEnvGuard;
@@ -482,7 +486,9 @@ mod tests {
 
     #[test]
     fn resolve_is_driven_by_the_env_seams_end_to_end() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _lock = PG_CREDENTIAL_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let credential =
             PgCredential::with_store(Arc::new(MemoryPgCredential::new()));
 

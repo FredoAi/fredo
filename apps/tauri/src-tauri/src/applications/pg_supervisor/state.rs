@@ -509,19 +509,13 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf) {
     );
 
     let started = async {
-        // Spec #2978 S2: on the `runtime-download` path, acquire + verify the
-        // PostgreSQL archive through Fredo's ONE streaming engine BEFORE `setup()`
-        // extracts it. A failed acquisition returns a retryable `[pg:archive] …`
-        // error and stops the boot BEFORE any extraction, so no half-extracted
-        // distribution is left behind (REQ-4.1). The `bundled` path carries the
-        // archive in the binary and must not fetch at runtime (REQ-4.2).
-        if super::acquisition::ACQUISITION_MODE
-            == super::acquisition::PgAcquisitionMode::RuntimeDownload
-        {
-            super::acquisition::acquire_pg_archive(&os_app_data_dir)
-                .await
-                .map_err(|error| ("acquisition", error))?;
-        }
+        // Spec #3076 ST-3: acquisition moved to the SINGLE choke point —
+        // `PgRuntime::setup()` materialises the SHA-256-verified install (its
+        // `ensure_verified_install` leg) before the crate's setup. The former
+        // owner-path block here called `acquire_pg_archive` and DISCARDED the
+        // returned archive path, so the crate self-fetched anyway. Do not
+        // reintroduce a second acquisition path: the restart and headless owner
+        // paths now get the verified install through this same `setup()`.
         runtime.setup().await.map_err(|error| ("setup", error))?;
         // Spec #2975 ST-2 (REQ-5/EARS-5.1): overlay the desktop server-memory
         // knobs onto the `initdb`-created postgresql.conf AFTER setup and BEFORE
@@ -1587,8 +1581,15 @@ mod tests {
     /// the synchronous settings cache.
     #[test]
     fn the_postgres_password_resolves_from_the_keychain_not_the_cache() {
-        use crate::applications::pg_supervisor::credentials::MemoryPgCredential;
+        use crate::applications::pg_supervisor::credentials::{
+            MemoryPgCredential, PG_CREDENTIAL_ENV_LOCK,
+        };
 
+        // `resolve()` reads the process-global credential env seams, so hold the
+        // shared G-222 lock: the env-mutating credentials test must not overlap.
+        let _lock = PG_CREDENTIAL_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::tempdir().expect("tempdir");
         let store = open_store(dir.path());
         let credential = PgCredential::with_store(Arc::new(MemoryPgCredential::with_password(

@@ -22,18 +22,28 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
-use postgresql_embedded::{PostgreSQL, Settings};
+use postgresql_embedded::{PostgreSQL, Settings, VersionReq};
 use sqlx::Connection as _;
 
+use super::acquisition::{PgAcquisitionMode, PG_VERSION};
 use super::config::PgSupervisorConfig;
 use super::{
     PG_BOOTSTRAP_DATABASE, PG_CONNECT_TIMEOUT, PG_CONTROL_TIMEOUT, PG_DATABASE,
     PG_MAINTENANCE_DATABASE, PG_READY_BOUND, PG_SETUP_BOUND, PG_START_BOUND, PG_SUPERUSER,
 };
+
+/// The pinned, EXACT PostgreSQL version requirement (`=18.6.0`). `LazyLock`
+/// mirrors the crate's own `V18` static; the literal is compile-time known, so
+/// the `expect` cannot fire in a shipped build. Exactness is what removes the
+/// crate's per-boot `get_version()` network round-trip.
+pub(crate) static PG_VERSION_REQ: LazyLock<VersionReq> = LazyLock::new(|| {
+    VersionReq::parse(&format!("={PG_VERSION}"))
+        .expect("the pinned PostgreSQL version requirement must parse")
+});
 
 /// Marker line that makes the [`PgRuntime::apply_server_knobs`] overlay
 /// idempotent (never appended twice).
@@ -343,9 +353,104 @@ pub fn rename_database_statement() -> String {
 pub struct PgRuntime {
     pg: PostgreSQL,
     data_dir: PathBuf,
+    /// The caller's PRISTINE installation dir (pre-version-suffix). This is the
+    /// SAME path `build_settings` puts on `settings.installation_dir`, so the
+    /// verified archive is extracted exactly where the crate looks for `bin/`.
+    install_dir: PathBuf,
     stopped: bool,
     kill: KillTreeFn,
     stop: StopFn,
+}
+
+/// Apply the acquisition-mode settings to `settings` (Spec #3076 ST-2).
+///
+/// Sets `trust_installation_dir = true` and the EXACT
+/// [`PG_VERSION_REQ`] IFF [`super::acquisition::trusted_install_path_enabled`]
+/// says the trusted install path is active. Pure, infallible, mode-injectable, so
+/// BOTH branches are unit-testable on one build (G-402).
+///
+/// **Load-bearing ordering (G-404):** this MUST run BEFORE `PostgreSQL::new`.
+/// The constructor is what appends the version suffix to `installation_dir` when
+/// the requirement is exact and the dir is not trusted; setting trust afterwards
+/// would leave `installation_dir` version-suffixed while `installed_dir()`
+/// returns that same suffixed path, so `binary_dir()` would point at a directory
+/// Fredo never populated.
+pub(crate) fn apply_acquisition_mode(settings: &mut Settings, mode: PgAcquisitionMode) {
+    if super::acquisition::trusted_install_path_enabled(mode) {
+        settings.trust_installation_dir = true;
+        settings.version = (*PG_VERSION_REQ).clone();
+    }
+}
+
+/// The ONE place `Settings` is assembled (Spec #3076 ST-2). Every constructor
+/// funnels through here, and [`apply_acquisition_mode`] runs BEFORE the caller's
+/// `PostgreSQL::new` (G-404).
+fn build_settings(
+    data_dir: &Path,
+    install_dir: &Path,
+    password: String,
+    port: u16,
+    log_min_messages: Option<&str>,
+) -> Settings {
+    let mut settings = Settings::new();
+    settings.data_dir = data_dir.to_path_buf();
+    settings.installation_dir = install_dir.to_path_buf();
+    // Ephemeral loopback by default: `port = 0` requests an OS-assigned port,
+    // so no fixed-port collision is possible with OTLP 4317/4318 or the MCP
+    // 9223. A pinned port (ST-2 `with_config`) overrides this.
+    settings.port = port;
+    settings.temporary = false;
+    settings.password = password;
+    // G-263: a finite bound on EVERY `pg_ctl` control command. Leaving this
+    // `None` is exactly what let `pg_ctl -w stop` wait ~11 h in #2948.
+    settings.timeout = Some(PG_CONTROL_TIMEOUT);
+    // Q-17 (S4): point the crate-spawned postmaster's logging collector at
+    // `<data_dir>/log/postgres.log` through the crate's server-configuration
+    // hook. This is the surface `pg_server_log_tail` reads (REQ-3.2).
+    for &(key, value) in PG_LOG_COLLECTOR_CONFIG {
+        settings
+            .configuration
+            .insert(key.to_string(), value.to_string());
+    }
+    // ST-2 hardening (Spec #3022 round-2): force English/ASCII server
+    // messages with the `C` locale, so a server message always decodes as
+    // UTF-8 — the drift readiness error otherwise surfaced a non-UTF-8
+    // placeholder. Applied to the assembled settings for every path.
+    settings
+        .configuration
+        .insert("lc_messages".to_string(), "C".to_string());
+    // ST-2 (#3022, R-3.2/R-4): the config-selected log verbosity is the
+    // PostgreSQL `log_min_messages` server value, applied alongside the
+    // collector configuration so the restart honours it.
+    if let Some(log_min_messages) = log_min_messages {
+        settings
+            .configuration
+            .insert("log_min_messages".to_string(), log_min_messages.to_string());
+    }
+    // Q-17: surface the documented console-flash deviation on the live boot
+    // path (the crate exposes no creation-flag hook), so it is recorded in
+    // the app log rather than silently shipped (AC3.1 gate).
+    tracing::warn!(
+        target: "fredo::pg_supervisor",
+        deviation = PG_CONSOLE_FLASH_DEVIATION,
+        "embedded-PostgreSQL Q-17 deviation recorded"
+    );
+    // NOTE: `settings.username` is intentionally left at the crate default
+    // ("postgres") — see the spike's empirically verified finding: the field
+    // only builds `url()`, while `initdb` still creates the `postgres`
+    // superuser, so overriding it yields a URL whose user does not exist.
+    //
+    // Spec #3036: the ROLE is unchanged (`PG_SUPERUSER`); only the DATABASE is
+    // Fredo-named. Pin that the crate default username IS the recorded role so
+    // the URL user and the recorded decision can never silently diverge.
+    debug_assert_eq!(
+        settings.username, PG_SUPERUSER,
+        "the crate default username must equal PG_SUPERUSER (the role is not renamed)"
+    );
+    // Spec #3076 ST-2: trust + exact pin ONLY on the trusted install path
+    // (runtime-download on Windows x86_64). The bundled path is untouched.
+    apply_acquisition_mode(&mut settings, super::acquisition::ACQUISITION_MODE);
+    settings
 }
 
 impl PgRuntime {
@@ -445,67 +550,46 @@ impl PgRuntime {
         log_min_messages: Option<&str>,
     ) -> Self {
         let data_dir = data_dir.to_path_buf();
-        let mut settings = Settings::new();
-        settings.data_dir = data_dir.clone();
-        settings.installation_dir = install_dir.to_path_buf();
-        // Ephemeral loopback by default: `port = 0` requests an OS-assigned port,
-        // so no fixed-port collision is possible with OTLP 4317/4318 or the MCP
-        // 9223. A pinned port (ST-2 `with_config`) overrides this.
-        settings.port = port;
-        settings.temporary = false;
-        settings.password = password;
-        // G-263: a finite bound on EVERY `pg_ctl` control command. Leaving this
-        // `None` is exactly what let `pg_ctl -w stop` wait ~11 h in #2948.
-        settings.timeout = Some(PG_CONTROL_TIMEOUT);
-        // Q-17 (S4): point the crate-spawned postmaster's logging collector at
-        // `<data_dir>/log/postgres.log` through the crate's server-configuration
-        // hook. This is the surface `pg_server_log_tail` reads (REQ-3.2).
-        for &(key, value) in PG_LOG_COLLECTOR_CONFIG {
-            settings
-                .configuration
-                .insert(key.to_string(), value.to_string());
-        }
-        // ST-2 hardening (Spec #3022 round-2): force English/ASCII server
-        // messages with the `C` locale, so a server message always decodes as
-        // UTF-8 — the drift readiness error otherwise surfaced a non-UTF-8
-        // placeholder. Applied to the assembled settings for every path.
-        settings
-            .configuration
-            .insert("lc_messages".to_string(), "C".to_string());
-        // ST-2 (#3022, R-3.2/R-4): the config-selected log verbosity is the
-        // PostgreSQL `log_min_messages` server value, applied alongside the
-        // collector configuration so the restart honours it.
-        if let Some(log_min_messages) = log_min_messages {
-            settings
-                .configuration
-                .insert("log_min_messages".to_string(), log_min_messages.to_string());
-        }
-        // Q-17: surface the documented console-flash deviation on the live boot
-        // path (the crate exposes no creation-flag hook), so it is recorded in
-        // the app log rather than silently shipped (AC3.1 gate).
-        tracing::warn!(
-            target: "fredo::pg_supervisor",
-            deviation = PG_CONSOLE_FLASH_DEVIATION,
-            "embedded-PostgreSQL Q-17 deviation recorded"
-        );
-        // NOTE: `settings.username` is intentionally left at the crate default
-        // ("postgres") — see the spike's empirically verified finding: the field
-        // only builds `url()`, while `initdb` still creates the `postgres`
-        // superuser, so overriding it yields a URL whose user does not exist.
-        //
-        // Spec #3036: the ROLE is unchanged (`PG_SUPERUSER`); only the DATABASE is
-        // Fredo-named. Pin that the crate default username IS the recorded role so
-        // the URL user and the recorded decision can never silently diverge.
-        debug_assert_eq!(
-            settings.username, PG_SUPERUSER,
-            "the crate default username must equal PG_SUPERUSER (the role is not renamed)"
+        let install_dir = install_dir.to_path_buf();
+        let settings = build_settings(
+            &data_dir,
+            &install_dir,
+            password,
+            port,
+            log_min_messages,
         );
         Self {
             pg: PostgreSQL::new(settings),
             data_dir,
+            install_dir,
             stopped: false,
             kill,
             stop,
+        }
+    }
+
+    /// The AC3 induction seam (cfg(test) only, no production surface): builds the
+    /// SAME settings via [`build_settings`] + [`apply_acquisition_mode`], then
+    /// overrides `settings.releases_url` BEFORE `PostgreSQL::new`, so any crate
+    /// fetch would land on the test's loopback probe instead of GitHub.
+    #[cfg(test)]
+    fn with_test_releases_url(
+        data_dir: &Path,
+        install_dir: &Path,
+        password: String,
+        releases_url: String,
+    ) -> Self {
+        let data_dir = data_dir.to_path_buf();
+        let install_dir = install_dir.to_path_buf();
+        let mut settings = build_settings(&data_dir, &install_dir, password, 0, None);
+        settings.releases_url = releases_url;
+        Self {
+            pg: PostgreSQL::new(settings),
+            data_dir,
+            install_dir,
+            stopped: false,
+            kill: kill_pid_tree,
+            stop: pg_stop_with_env_hook,
         }
     }
 
@@ -543,8 +627,23 @@ impl PgRuntime {
         read_postmaster_pid(&self.data_dir)
     }
 
-    /// Bounded `setup()` (download/extract + initdb on first run).
+    /// Bounded `setup()`: materialise the trusted install (runtime-download),
+    /// then the crate's install/initdb leg.
+    ///
+    /// Spec #3076 ST-2: on the trusted install path THIS is the single choke
+    /// point every owner path reaches (GUI boot, config-apply restart, headless
+    /// `fredo ingest`). [`super::acquisition::ensure_verified_install`] acquires
+    /// and extracts the archive Fredo itself SHA-256-verified — or short-circuits
+    /// when the marker is current — BEFORE the crate's `setup()`, because a
+    /// trusted install dir makes `installed_dir()` return `Some` unconditionally
+    /// (the crate will not create the tree for us). The crate performs no
+    /// download on this path.
     pub async fn setup(&mut self) -> Result<()> {
+        if super::acquisition::trusted_install_path_enabled(super::acquisition::ACQUISITION_MODE) {
+            super::acquisition::ensure_verified_install(&self.install_dir)
+                .await
+                .context("preparing the SHA-256-verified PostgreSQL distribution")?;
+        }
         let pg = &mut self.pg;
         run_bounded(PG_SETUP_BOUND, "pg.setup", async move {
             pg.setup().await?;
@@ -939,6 +1038,268 @@ mod tests {
         );
         let expected = dir.path().join(PG_DATA_SUBDIR);
         assert_eq!(runtime.data_dir(), expected.as_path());
+    }
+
+    // ── Spec #3076 ST-2: ONE trusted install path ────────────────────────────
+
+    /// A loopback TCP endpoint that counts accepted connections — the AC3
+    /// fetch probe. It is a REAL listener (the test drives one connection as a
+    /// positive control) so the later zero is a measured absence.
+    struct LoopbackFetchProbe {
+        address: std::net::SocketAddr,
+        connections: Arc<std::sync::atomic::AtomicUsize>,
+        shutdown: Arc<AtomicBool>,
+    }
+
+    impl LoopbackFetchProbe {
+        fn start() -> Self {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind probe");
+            let address = listener.local_addr().expect("probe address");
+            let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let counter = Arc::clone(&connections);
+            let stop = Arc::clone(&shutdown);
+            let listener = listener.try_clone().expect("clone probe listener");
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(stream) = stream else { break };
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    drop(stream);
+                    if stop.load(Ordering::SeqCst) {
+                        break;
+                    }
+                }
+            });
+            Self {
+                address,
+                connections,
+                shutdown,
+            }
+        }
+
+        fn url(&self) -> String {
+            format!("http://{}/", self.address)
+        }
+
+        fn connections(&self) -> usize {
+            self.connections.load(Ordering::SeqCst)
+        }
+
+        fn reset(&self) {
+            self.connections.store(0, Ordering::SeqCst);
+        }
+
+        /// One deliberate connection (the positive control).
+        fn touch(&self) {
+            let _ = std::net::TcpStream::connect(self.address);
+        }
+    }
+
+    impl Drop for LoopbackFetchProbe {
+        fn drop(&mut self) {
+            self.shutdown.store(true, Ordering::SeqCst);
+            let _ = std::net::TcpStream::connect(self.address);
+        }
+    }
+
+    /// `relative path -> bytes` for every file under `root` (the byte-identity
+    /// snapshot the AC3 assertions compare).
+    fn snapshot_tree(root: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+        fn walk(
+            root: &Path,
+            current: &Path,
+            into: &mut std::collections::BTreeMap<String, Vec<u8>>,
+        ) {
+            let Ok(entries) = std::fs::read_dir(current) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Ok(metadata) = entry.metadata() else {
+                    continue;
+                };
+                if metadata.is_dir() {
+                    walk(root, &path, into);
+                    continue;
+                }
+                let Ok(bytes) = std::fs::read(&path) else {
+                    continue;
+                };
+                let relative = path
+                    .strip_prefix(root)
+                    .unwrap_or(&path)
+                    .display()
+                    .to_string();
+                into.insert(relative, bytes);
+            }
+        }
+        let mut snapshot = std::collections::BTreeMap::new();
+        walk(root, root, &mut snapshot);
+        snapshot
+    }
+
+    #[test]
+    fn trusted_install_path_is_runtime_download_and_windows_x86_64_only() {
+        use crate::applications::pg_supervisor::acquisition::{
+            trusted_install_path_enabled, PgAcquisitionMode, TRUSTED_INSTALL_ENABLED,
+        };
+
+        assert_eq!(
+            TRUSTED_INSTALL_ENABLED,
+            cfg!(all(target_os = "windows", target_arch = "x86_64")),
+            "the trusted install path is compile-time-gated to Windows x86_64"
+        );
+        assert_eq!(
+            trusted_install_path_enabled(PgAcquisitionMode::RuntimeDownload),
+            TRUSTED_INSTALL_ENABLED,
+            "runtime-download is the trusted path wherever it is implemented"
+        );
+        assert!(
+            !trusted_install_path_enabled(PgAcquisitionMode::Bundled),
+            "bundled must never take the trusted install path"
+        );
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            assert!(TRUSTED_INSTALL_ENABLED);
+            assert!(trusted_install_path_enabled(PgAcquisitionMode::RuntimeDownload));
+        }
+    }
+
+    #[test]
+    fn runtime_download_settings_trust_the_install_dir_and_pin_the_exact_version() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata");
+        let install_dir = dir.path().join("postgres-install");
+        let runtime = PgRuntime::with_paths(&data_dir, &install_dir, "pw".to_string());
+        let settings = runtime.pg.settings();
+
+        assert!(settings.trust_installation_dir, "the install dir must be trusted");
+        assert_eq!(settings.version.to_string(), "=18.6.0");
+        assert_eq!(
+            settings.installation_dir, install_dir,
+            "trust applied BEFORE PostgreSQL::new ⇒ no version-suffixed dir"
+        );
+        assert_eq!(settings.binary_dir(), install_dir.join("bin"));
+    }
+
+    #[test]
+    fn bundled_mode_settings_leave_the_crate_install_inference_untouched() {
+        use crate::applications::pg_supervisor::acquisition::PgAcquisitionMode;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata");
+        let install_dir = dir.path().join("postgres-install");
+        let mut settings = build_settings(&data_dir, &install_dir, "pw".to_string(), 0, None);
+        // Reset to the crate defaults the BUNDLED branch must preserve, so the
+        // bundled branch is exercised in this (default runtime-download) build.
+        settings.trust_installation_dir = false;
+        settings.version = VersionReq::STAR;
+        let before = settings.clone();
+
+        apply_acquisition_mode(&mut settings, PgAcquisitionMode::Bundled);
+
+        assert!(!settings.trust_installation_dir);
+        assert_eq!(settings.version.to_string(), "*");
+        assert_eq!(
+            settings, before,
+            "the bundled path must change NO Settings field (byte-for-byte unchanged)"
+        );
+    }
+
+    #[test]
+    fn pinned_version_req_is_the_exact_pinned_release() {
+        use postgresql_embedded::Version;
+
+        assert_eq!(PG_VERSION_REQ.to_string(), "=18.6.0");
+        assert_eq!(
+            PG_VERSION_REQ.to_string(),
+            format!("={PG_VERSION}"),
+            "the requirement can never diverge from the pinned PG_VERSION"
+        );
+        assert!(PG_VERSION_REQ.matches(&Version::new(18, 6, 0)));
+        assert!(!PG_VERSION_REQ.matches(&Version::new(18, 6, 1)));
+        assert!(!PG_VERSION_REQ.matches(&Version::new(18, 7, 0)));
+    }
+
+    /// AC3 (Spec #3076): with a CURRENT pre-seeded trusted install (the R-1a
+    /// idempotence path) and the crate's release URL pointed at a loopback probe,
+    /// `setup()` completes with ZERO probe connections — the crate's
+    /// `install()`/`get_archive` path is unreachable — and the seeded tree is
+    /// byte-identical afterwards.
+    #[tokio::test]
+    async fn setup_never_reaches_the_crate_install_path_and_makes_no_fetch() {
+        use crate::applications::pg_supervisor::acquisition::{
+            effective_pin, PG_ARCHIVE_ENV_LOCK, PG_ARCHIVE_SUBDIR, PG_VERSION,
+        };
+        use crate::applications::pg_supervisor::extraction::seed_trusted_install;
+
+        let _lock = PG_ARCHIVE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let pin = effective_pin();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata");
+        let install_dir = dir.path().join("postgres-install");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        seed_trusted_install(&install_dir, &pin).expect("seed a current trusted install");
+        // `is_initialized()` is true, so the crate's `initialize()` is skipped.
+        std::fs::write(data_dir.join("postgresql.conf"), "# initialized\n")
+            .expect("seed postgresql.conf");
+        let seeded_before = snapshot_tree(&install_dir);
+
+        let probe = LoopbackFetchProbe::start();
+        assert_eq!(probe.connections(), 0, "a fresh probe has no connections");
+        probe.touch();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while probe.connections() == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            probe.connections(),
+            1,
+            "positive control: the probe must observe a real connection (a \
+             vacuous zero would prove nothing)"
+        );
+        probe.reset();
+        assert_eq!(probe.connections(), 0);
+
+        let mut runtime = PgRuntime::with_test_releases_url(
+            &data_dir,
+            &install_dir,
+            "pw".to_string(),
+            probe.url(),
+        );
+        runtime
+            .setup()
+            .await
+            .expect("setup must succeed offline on a current trusted install");
+
+        assert_eq!(
+            probe.connections(),
+            0,
+            "the crate must make no version/archive request"
+        );
+        assert!(
+            !install_dir.join(PG_ARCHIVE_SUBDIR).exists(),
+            "the marker short-circuited ensure_verified_install (no acquisition)"
+        );
+        assert!(!install_dir.join("lib").exists(), "no extraction ran");
+        assert!(!install_dir.join("share").exists(), "no extraction ran");
+        assert!(
+            !install_dir.join(PG_VERSION).exists(),
+            "no version-suffixed crate install dir was created"
+        );
+        assert_eq!(
+            snapshot_tree(&install_dir),
+            seeded_before,
+            "the seeded bin/ sentinels and marker are byte-identical"
+        );
+
+        let settings = runtime.pg.settings();
+        assert!(settings.trust_installation_dir);
+        assert_eq!(settings.installation_dir, install_dir);
+        assert_eq!(settings.version.to_string(), "=18.6.0");
+        assert_eq!(settings.binary_dir(), install_dir.join("bin"));
     }
 
     /// ST-1 (#3036, R-2d): the pool URL addresses the Fredo application database

@@ -259,8 +259,9 @@ pub fn resolve_data_dir(app_data_dir: &Path) -> PathBuf {
 
 /// Resolve the managed distribution/installation dir (Spec #2978 S2): the
 /// non-blank [`PG_INSTALL_DIR_ENV`] override when set, else
-/// `<app_data_dir>/<PG_INSTALL_SUBDIR>`. ONE shared rule so [`runtime::PgRuntime`]
-/// and [`acquisition::acquire_pg_archive`] can never diverge.
+/// `<app_data_dir>/<PG_INSTALL_SUBDIR>`. ONE shared rule so [`runtime::PgRuntime`],
+/// [`acquisition::acquire_pg_archive`], and [`extraction::extract_verified_archive`]
+/// can never diverge.
 pub fn resolve_install_dir(app_data_dir: &Path) -> PathBuf {
     match std::env::var(PG_INSTALL_DIR_ENV) {
         Ok(value) if !value.trim().is_empty() => PathBuf::from(value.trim()),
@@ -352,6 +353,7 @@ pub mod config; // ST-1 (#3022): typed port + verbosity config (pre-PostgreSQL)
 pub mod credentials; // ST-7 (#3005): OS-keychain loopback password
 pub mod descriptor; // CU-1/ST-1 (#2992): headless daemon descriptor
 pub mod endpoint; // ST-3 (#3029): the embedded-endpoint seam adapter (db_client)
+pub mod extraction; // ST-1 (#3076): Fredo-owned verified-archive extraction
 pub mod headless; // ST-5 (#2992): the `fredo ingest` daemon
 pub mod runtime; // ST-1
 pub mod sweep; // ST-2

@@ -89,7 +89,9 @@ impl EmbeddedPgEndpointProvider for PgSupervisorEndpointProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::applications::pg_supervisor::credentials::MemoryPgCredential;
+    use crate::applications::pg_supervisor::credentials::{
+        MemoryPgCredential, PG_CREDENTIAL_ENV_LOCK,
+    };
 
     fn supervisor_state() -> Arc<PgSupervisorState> {
         Arc::new(PgSupervisorState::new(
@@ -173,6 +175,11 @@ mod tests {
 
     #[test]
     fn loopback_password_resolves_from_the_keychain_only() {
+        // `resolve()` reads the process-global credential env seams, so hold the
+        // shared G-222 lock: the env-mutating credentials test must not overlap.
+        let _lock = PG_CREDENTIAL_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let supervisor = supervisor_state();
         let provider = provider_with_password(supervisor, "stored-loopback-secret");
         assert_eq!(
