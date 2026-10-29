@@ -170,6 +170,7 @@ export function WorkspacePane({
   return (
     <Box
       data-testid={`workspace-pane-${win.id}`}
+      data-fredo-app-id={win.id}
       data-zone-id={zoneId}
       data-zone-layout-id={layoutId}
       data-zone-window-id={win.id}

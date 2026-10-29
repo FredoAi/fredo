@@ -120,6 +120,7 @@ describe('WindowManager — render partition (R-4.3, R-5.2)', () => {
     const { container } = renderWithChakra(<WindowManager />);
 
     expect(screen.getByTestId('window-frame-a')).toBeTruthy();
+    expect(screen.getByTestId('window-frame-a').getAttribute('data-fredo-app-id')).toBe('a');
     expect(screen.queryByTestId('workspace-pane-a')).toBeNull();
     expect(container.querySelector('[data-testid="workspace-layout"]')).not.toBeNull();
   });
@@ -169,6 +170,7 @@ describe('WorkspacePane — binding DOM contract', () => {
     renderWithChakra(<WindowManager />);
 
     const pane = screen.getByTestId('workspace-pane-a');
+    expect(pane.getAttribute('data-fredo-app-id')).toBe('a');
     expect(pane.getAttribute('data-zone-id')).toBe(ZONES[0].id);
     expect(pane.getAttribute('data-zone-layout-id')).toBe(LAYOUT_ID);
     expect(pane.getAttribute('data-zone-window-id')).toBe('a');

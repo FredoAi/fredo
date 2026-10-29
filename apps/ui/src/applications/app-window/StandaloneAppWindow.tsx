@@ -31,6 +31,7 @@ import { Flex, Heading, Icon, Text } from '@chakra-ui/react';
 import { LuTriangleAlert } from 'react-icons/lu';
 
 import { WindowSystemProvider } from '../../shared/window-system/WindowSystemProvider';
+import { resetApplicationMode } from '../../shared/hotkeys/commandSurfaceStore';
 import { dedupeByApplicationId, getApplications } from '../applicationRegistry';
 import type { FredoApplicationClass } from '../../shared/classes/FredoApplicationClass';
 // Side-effect import: registers every feature into the registry (the standalone
@@ -92,6 +93,9 @@ export const StandaloneAppWindow: React.FC<StandaloneAppWindowProps> = ({ appId 
       );
     }
     return () => {
+      // R-3.4 — closing the own-window route discards this application's mode
+      // stack + open prompt (keyed by the app root's identity attribute).
+      resetApplicationMode(feature.id);
       const unmounted = feature.onUnmount?.();
       if (unmounted instanceof Promise) {
         unmounted.catch((err) =>
@@ -130,6 +134,7 @@ export const StandaloneAppWindow: React.FC<StandaloneAppWindowProps> = ({ appId 
   return (
     <Flex
       data-testid={STANDALONE_APP_WINDOW_ROOT_TESTID}
+      data-fredo-app-id={feature.id}
       direction="column"
       h="100vh"
       w="100%"

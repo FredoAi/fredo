@@ -338,6 +338,7 @@ export function WindowFrame({ window: win }: WindowFrameProps) {
       role="group"
       aria-label={win.title}
       data-testid={`window-frame-${win.id}`}
+      data-fredo-app-id={win.id}
       data-focused={win.focused ? 'true' : 'false'}
       data-focused-window={win.focused ? 'true' : undefined}
       data-zone-drag={zoneDragging ? 'true' : undefined}

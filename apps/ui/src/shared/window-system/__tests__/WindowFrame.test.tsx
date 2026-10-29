@@ -185,6 +185,13 @@ describe('WindowFrame — born full-bleed surface (REQ-1, REQ-5)', () => {
     expect(surface.getAttribute('aria-label')).toBe('Sessions');
   });
 
+  it('exposes the window id as the application root identity (Spec #3097 ST-5)', () => {
+    openEntry();
+    const surface = getSurface(renderFrame());
+
+    expect(surface.getAttribute('data-fredo-app-id')).toBe(WINDOW_ID);
+  });
+
   it('renders zero resize grips while maximized (only header + content)', () => {
     openEntry();
     const surface = getSurface(renderFrame());
