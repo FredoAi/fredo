@@ -26,6 +26,7 @@ Core product and engineering documentation.
 | [FAQ](FAQ.md) | Common questions and troubleshooting |
 | [GenAI Telemetry Reference](telemetry-reference.md) | What Fredo actually receives — every `gen_ai.*` attribute by signal type, grounded in live `telemetry_spans`/`telemetry_metrics`/`telemetry_logs` and cross-referenced against the OTel GenAI semantic conventions. Start here when a row is missing, empty, or non-conformant |
 | [Navigation Fluency Research](UX_FLUENCY_RESEARCH.md) | Research report (spike #3115): the navigation design-principle set with sources, the reproducible current-state teardown of every shipped surface, the repo-anchored heuristic evaluation, and the gated moderated-session method. Stage 1 — results pending Gate H |
+| [NavigationEngine Contract](NAVIGATION_ENGINE.md) | The written navigation contract P3 builds against: 13 normative sections (places, verbs, key resolution, dispatch, journal, context envelope, derivations, risk policy, validation codes, migration deadlines) plus seven decision records under [`docs/adr/`](adr/) |
 | [CI Gate Contract](CI_GATE_CONTRACT.md) | What runs on a PR to `main` and which check gates the merge (`validate` is the only required status check; per-stack path-filter gating) |
 | [agentic-pipeline](agentic-pipeline/README.md) | Agentic SDD pipeline: agent catalog, phases, artifacts, scripts, skills, metrics — the full development workflow from intake to improvement |
 

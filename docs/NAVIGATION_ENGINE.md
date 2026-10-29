@@ -15,7 +15,7 @@
 11. Metrics
 12. Migration strategy
 13. Testing strategy
-Open questions (non-normative)
+Open questions
 
 **Normative keywords.** `MUST`, `MUST NOT` and `SHOULD` state binding requirements; `MAY` states an option. A clause without a keyword is descriptive and is never an acceptance target, and a later `MAY` never softens an earlier `MUST NOT`.
 
