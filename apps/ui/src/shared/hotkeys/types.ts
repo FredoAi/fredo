@@ -135,18 +135,42 @@ export interface ResolvedBinding {
 export type FocusContext = 'text-entry' | 'terminal' | 'modal' | 'interactive' | 'default';
 
 /**
+ * A resolved application command (Spec #3097). `promptAction: 'commit'` means the
+ * stroke was Enter inside the open inline value prompt — the engine commits that
+ * prompt instead of invoking the executor with a bare command id (calling both
+ * would run the handler twice).
+ */
+export interface ResolvedCommandDispatch {
+  readonly appId: string;
+  readonly commandId: string;
+  readonly promptAction: 'none' | 'commit';
+}
+
+/**
  * A pure dispatch decision.
  *
  * `consumed: true` ⇒ the engine calls `preventDefault()` + `stopPropagation()`.
- *  - `match`        — a binding fired (`action` is set)
- *  - `arm-sequence` — the stroke starts a multi-key sequence
- *  - `pending`      — a pending sequence accepted the stroke and is still incomplete
- *  - `suppress`     — no action, but the key is consumed (invalid sequence)
- *  - `passthrough`  — no action and the key is left native
+ *  - `match`         — a binding fired (`action` is set)
+ *  - `arm-sequence`  — the stroke starts a multi-key sequence
+ *  - `pending`       — a pending sequence accepted the stroke and is still incomplete
+ *  - `suppress`      — no action, but the key is consumed (invalid sequence)
+ *  - `passthrough`   — no action and the key is left native
+ *  - `command`       — an application command fired (`command` is set) — Spec #3097
+ *  - `mode-pop`      — Escape leaves one application mode layer — Spec #3097
+ *  - `prompt-cancel` — Escape closes the open inline value prompt — Spec #3097
  */
 export interface DispatchDecision {
-  readonly outcome: 'match' | 'arm-sequence' | 'pending' | 'suppress' | 'passthrough';
+  readonly outcome:
+    | 'match'
+    | 'arm-sequence'
+    | 'pending'
+    | 'suppress'
+    | 'passthrough'
+    | 'command'
+    | 'mode-pop'
+    | 'prompt-cancel';
   readonly action?: RegisteredHotkeyAction;
+  readonly command?: ResolvedCommandDispatch;
   readonly consumed: boolean;
   readonly reason: string;
 }
