@@ -11,9 +11,9 @@
  *
  * The script takes an operations seam (the production default reads the store
  * and the ONE command table) so the stop-on-failure rule is unit pinned
- * without a rendering harness. This module is the ONE implementation shared by
- * the published surface command (Spec #3099 ST-3) and the retired
- * `wireframeCompanion` executor until ST-6 removes it.
+ * without a rendering harness. This module is the ONE implementation behind
+ * the published `wireframe.companion.draftApp` surface command (Spec #3099
+ * ST-3); the companion path reaches it only through `executeCommand`.
  */
 
 import {
