@@ -866,30 +866,130 @@ pub fn dataset_enabled_from_store(store: &SettingsStore) -> bool {
     dataset_enabled_from(kv.as_deref(), env.as_deref())
 }
 
-/// Resolve an export target path: a relative `out` is joined to the dataset dir
-/// (never the process CWD); an absolute `out` is honoured verbatim; `None` uses
-/// ST-1's default `<dir>/exports/…` path. Pure.
-pub fn resolve_export_target(writer: &DoomDatasetWriter, out: Option<&str>) -> Option<PathBuf> {
-    let out = out?;
-    let path = Path::new(out);
-    if path.is_absolute() {
-        Some(path.to_path_buf())
-    } else {
-        Some(writer.dir().join(path))
+// ── Export target confinement + seams (Spec #3078 ST-3) ──────────────────────
+//
+// Two DIFFERENT callers with two DIFFERENT trust levels:
+//
+// - the WEBVIEW calls [`export_doom_dataset`], which exposes NO path argument at
+//   all — the target is whatever the user picks in the native save dialog (or a
+//   test env seam). A compromised webview can therefore name no path.
+// - the HEADLESS CLI calls [`export_doom_dataset_cli`], which accepts `--out` and
+//   confines it to `<dataset_dir>/exports/` through [`resolve_cli_export_target`]
+//   (relative only; absolute, drive/UNC-prefixed and `..` paths are refused).
+//
+// This closes the arbitrary-file-write hole (`resolve_export_target` used to
+// honour an absolute `out` verbatim).
+
+/// Test seam (mirrors `FREDO_WIREFRAME_EXPORT_PATH`): when non-blank, the webview
+/// export writes to this exact path instead of opening the native dialog.
+pub const DOOM_EXPORT_PATH_ENV: &str = "FREDO_DOOM_EXPORT_PATH";
+/// Test seam (mirrors `FREDO_WIREFRAME_CANCEL`): when trimmed to `"1"`, the
+/// webview export returns the cancel outcome without opening a dialog.
+pub const DOOM_EXPORT_CANCEL_ENV: &str = "FREDO_DOOM_EXPORT_CANCEL";
+
+/// CLI refusal: the requested `out` is absolute.
+pub const EXPORT_ABSOLUTE_REFUSED: &str =
+    "dataset export refused: `out` must be relative (absolute paths are not allowed)";
+/// CLI refusal: the requested `out` carries a drive/UNC prefix.
+pub const EXPORT_PREFIX_REFUSED: &str =
+    "dataset export refused: `out` must not contain a drive/UNC prefix";
+/// CLI refusal: the requested `out` contains a `..` component.
+pub const EXPORT_PARENT_REFUSED: &str =
+    "dataset export refused: `out` must not contain `..` components";
+
+/// Which route a webview export command takes. Precedence is binding:
+/// `Cancelled` > `Path` > `Dialog`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DoomExportSeam {
+    /// No seam is active — open the native save dialog.
+    Dialog,
+    /// `FREDO_DOOM_EXPORT_CANCEL=1` — write nothing, return `Ok(None)`.
+    Cancelled,
+    /// `FREDO_DOOM_EXPORT_PATH=<path>` — write to exactly this path, no dialog.
+    Path(PathBuf),
+}
+
+/// Resolve the webview export seam from the two env values. Pure (the caller
+/// reads the process environment once per invocation, so unit tests never mutate
+/// it). Blank values are inert; only a trimmed `"1"` cancels.
+pub fn export_seam_outcome(env_path: Option<&str>, env_cancel: Option<&str>) -> DoomExportSeam {
+    if matches!(env_cancel.map(str::trim), Some("1")) {
+        return DoomExportSeam::Cancelled;
+    }
+    match env_path.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(path) => DoomExportSeam::Path(PathBuf::from(path)),
+        None => DoomExportSeam::Dialog,
     }
 }
 
+/// The CLI/IPC confinement rule for `--out` (pure, unit-testable).
+///
+/// `None`/blank → `Ok(None)`, meaning the default `<dir>/exports/…` path.
+/// Otherwise the refusal predicates are evaluated IN THIS BINDING ORDER and the
+/// FIRST match returns exactly one message constant:
+///
+/// 1. [`Path::is_absolute`] → [`EXPORT_ABSOLUTE_REFUSED`] (a UNC
+///    `\\server\share\…` is absolute, so it reports this one);
+/// 2. any [`std::path::Component::Prefix`] → [`EXPORT_PREFIX_REFUSED`]
+///    (drive-relative `C:evil.jsonl`; absolute forms already matched at 1);
+/// 3. any [`std::path::Component::ParentDir`] → [`EXPORT_PARENT_REFUSED`];
+///
+/// else `Ok(Some(<dataset_dir>/exports/<out>))`. The order is binding (never
+/// reorder, never skip, never concatenate two messages) so each form has exactly
+/// one statable refusal. Component-based only: an existing symlink/junction
+/// inside `exports/` is a documented, out-of-scope residual.
+pub fn resolve_cli_export_target(
+    dataset_dir: &Path,
+    out: Option<&str>,
+) -> Result<Option<PathBuf>, DoomCommandError> {
+    let Some(out) = out else {
+        return Ok(None);
+    };
+    if out.trim().is_empty() {
+        return Ok(None);
+    }
+    let path = Path::new(out);
+    if path.is_absolute() {
+        return Err(DoomCommandError::new(
+            DoomErrorCode::RequestFailed,
+            EXPORT_ABSOLUTE_REFUSED,
+        ));
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, std::path::Component::Prefix(_)))
+    {
+        return Err(DoomCommandError::new(
+            DoomErrorCode::RequestFailed,
+            EXPORT_PREFIX_REFUSED,
+        ));
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(DoomCommandError::new(
+            DoomErrorCode::RequestFailed,
+            EXPORT_PARENT_REFUSED,
+        ));
+    }
+    Ok(Some(
+        dataset_dir.join(dataset::DOOM_DATASET_EXPORT_DIR).join(path),
+    ))
+}
+
 /// Drive ST-1's exporter for the command surface (IPC-free so it is unit
-/// testable): resolve a relative `out`, map the typed dataset error onto
-/// [`DoomCommandError`]. Writes ONLY the target file locally (no egress).
+/// testable) to a target the caller has ALREADY resolved (dialog pick, seam path,
+/// or the confined CLI rule). `None` writes ST-1's default
+/// `<dir>/exports/doom-dataset-<ts>.<ext>`. Writes ONLY the target file locally
+/// (no egress).
 pub fn export_dataset(
     writer: &DoomDatasetWriter,
     format: DoomDatasetFormat,
-    out: Option<&str>,
+    target: Option<&Path>,
 ) -> Result<DoomDatasetExportResult, DoomCommandError> {
-    let target = resolve_export_target(writer, out);
     writer
-        .export(format, target.as_deref())
+        .export(format, target)
         .map_err(DoomCommandError::from_dataset)
 }
 
@@ -943,20 +1043,37 @@ pub async fn set_doom_dataset_enabled(app: AppHandle, enabled: bool) -> DoomData
     })
 }
 
-/// Export the dataset locally in `format` (default `raw`) to `out` (default
-/// ST-1's `<dir>/exports/…` path). LOCAL-ONLY: no network I/O; the source files
-/// are never mutated; an empty dataset is a typed error with no partial file
-/// (R-4).
-#[tauri::command]
-pub async fn export_doom_dataset(
-    app: AppHandle,
-    format: Option<DoomDatasetFormat>,
-    out: Option<String>,
+/// Open the native Save dialog off the UI thread (the `rfd` precedent from
+/// `applications/wireframe/commands.rs`). `None` = the user cancelled.
+async fn save_dialog(default_name: String) -> Result<Option<PathBuf>, DoomCommandError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        rfd::FileDialog::new()
+            .set_title("Export Doom dataset")
+            .set_file_name(default_name.as_str())
+            .save_file()
+    })
+    .await
+    .map_err(|error| {
+        DoomCommandError::new(
+            DoomErrorCode::RequestFailed,
+            format!("the dataset export dialog failed: {error}"),
+        )
+    })
+}
+
+/// Run one export for the command surface: build/borrow the ONE shared writer off
+/// the async thread and write to the already-resolved `target` (`None` = the
+/// default `<dir>/exports/…` path). The `export_in_progress` guard, the atomic
+/// temp-then-rename write, and capture/rotation/retention all live in the writer
+/// and are unchanged.
+async fn run_export(
+    state: Arc<DoomDatasetState>,
+    format: DoomDatasetFormat,
+    target: Option<PathBuf>,
 ) -> Result<DoomDatasetExportResult, DoomCommandError> {
-    let state = app.state::<Arc<DoomDatasetState>>().inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let writer = state.writer();
-        export_dataset(&writer, format.unwrap_or_default(), out.as_deref())
+        export_dataset(&writer, format, target.as_deref())
     })
     .await
     .unwrap_or_else(|join_error| {
@@ -965,6 +1082,53 @@ pub async fn export_doom_dataset(
             format!("the dataset export task failed: {join_error}"),
         ))
     })
+}
+
+/// Export the dataset locally in `format` (default `raw`) — the WEBVIEW entry
+/// (Spec #3078 ST-3, R-4).
+///
+/// **No path argument.** The target is the path the user picks in the native
+/// save dialog, or (test seam) `FREDO_DOOM_EXPORT_PATH` — never anything an IPC
+/// payload can name. `Ok(None)` = cancelled; nothing is written. LOCAL-ONLY: no
+/// network I/O; the source files are never mutated; an empty dataset is a typed
+/// error with no partial file.
+#[tauri::command]
+pub async fn export_doom_dataset(
+    app: AppHandle,
+    format: Option<DoomDatasetFormat>,
+) -> Result<Option<DoomDatasetExportResult>, DoomCommandError> {
+    let format = format.unwrap_or_default();
+    let seam = export_seam_outcome(
+        std::env::var(DOOM_EXPORT_PATH_ENV).ok().as_deref(),
+        std::env::var(DOOM_EXPORT_CANCEL_ENV).ok().as_deref(),
+    );
+    let target = match seam {
+        DoomExportSeam::Cancelled => return Ok(None),
+        DoomExportSeam::Path(path) => Some(path),
+        DoomExportSeam::Dialog => match save_dialog(dataset::default_export_name(format)).await? {
+            Some(path) => Some(path),
+            None => return Ok(None),
+        },
+    };
+    let state = app.state::<Arc<DoomDatasetState>>().inner().clone();
+    run_export(state, format, target).await.map(Some)
+}
+
+/// Export the dataset in `format` (default `raw`) to a CONFINED `out` — the
+/// HEADLESS CLI/IPC entry (Spec #3078 ST-3, R-5). Never called by the webview.
+///
+/// `out` is validated by [`resolve_cli_export_target`]: `None`/blank → the
+/// default `<dir>/exports/…` path; a plain relative path → `<dir>/exports/<out>`;
+/// absolute, drive/UNC-prefixed and `..`-bearing paths are typed refusals and
+/// write nothing.
+pub async fn export_doom_dataset_cli(
+    app: AppHandle,
+    format: Option<DoomDatasetFormat>,
+    out: Option<String>,
+) -> Result<DoomDatasetExportResult, DoomCommandError> {
+    let state = app.state::<Arc<DoomDatasetState>>().inner().clone();
+    let target = resolve_cli_export_target(&state.dir(), out.as_deref())?;
+    run_export(state, format.unwrap_or_default(), target).await
 }
 
 // ── Teardown entry points (window close + app exit) ──────────────────────────
@@ -1292,7 +1456,9 @@ pub fn get_doom_mode_status(app: AppHandle) -> DoomModeStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::dataset::{DoomDatasetRecord, DOOM_DATASET_FILE, DOOM_DATASET_SUBDIR};
+    use super::dataset::{
+        DoomDatasetRecord, DOOM_DATASET_EXPORT_DIR, DOOM_DATASET_FILE, DOOM_DATASET_SUBDIR,
+    };
     use super::*;
     use crate::infrastructure::storage::engine::EngineHandle;
 
@@ -1679,19 +1845,198 @@ mod tests {
         assert_eq!(status.bytes, 0);
     }
 
+    // ── Webview seam + CLI confinement (Spec #3078 ST-3) ─────────────────────
+
     #[test]
-    fn export_writes_the_target_file_and_returns_the_typed_result() {
+    fn export_seam_constants_name_the_doom_export_seams() {
+        assert_eq!(DOOM_EXPORT_PATH_ENV, "FREDO_DOOM_EXPORT_PATH");
+        assert_eq!(DOOM_EXPORT_CANCEL_ENV, "FREDO_DOOM_EXPORT_CANCEL");
+    }
+
+    #[test]
+    fn export_seam_outcome_precedence_is_cancel_then_path_then_dialog() {
+        // No seam → the native dialog (the webview's ONLY route to a path).
+        assert_eq!(export_seam_outcome(None, None), DoomExportSeam::Dialog);
+        // Blank values are inert.
+        assert_eq!(export_seam_outcome(Some(""), None), DoomExportSeam::Dialog);
+        assert_eq!(export_seam_outcome(Some("   "), None), DoomExportSeam::Dialog);
+        assert_eq!(export_seam_outcome(None, Some("")), DoomExportSeam::Dialog);
+        assert_eq!(export_seam_outcome(None, Some("  ")), DoomExportSeam::Dialog);
+        // Only the trimmed `"1"` cancels — every other value is inert.
+        assert_eq!(
+            export_seam_outcome(None, Some("1")),
+            DoomExportSeam::Cancelled
+        );
+        assert_eq!(
+            export_seam_outcome(None, Some(" 1 ")),
+            DoomExportSeam::Cancelled
+        );
+        assert_eq!(export_seam_outcome(None, Some("0")), DoomExportSeam::Dialog);
+        assert_eq!(
+            export_seam_outcome(None, Some("true")),
+            DoomExportSeam::Dialog
+        );
+        assert_eq!(
+            export_seam_outcome(None, Some("yes")),
+            DoomExportSeam::Dialog
+        );
+        // A non-blank path seam is honoured verbatim ...
+        assert_eq!(
+            export_seam_outcome(Some("C:/tmp/picked.jsonl"), None),
+            DoomExportSeam::Path(PathBuf::from("C:/tmp/picked.jsonl"))
+        );
+        // ... and CANCEL beats a path seam (binding precedence).
+        assert_eq!(
+            export_seam_outcome(Some("C:/tmp/picked.jsonl"), Some("1")),
+            DoomExportSeam::Cancelled
+        );
+    }
+
+    #[test]
+    fn export_seam_cancel_writes_nothing() {
+        // R-4.b: a cancelled export returns `Ok(None)` before any writer is
+        // engaged — even when a path seam is also set, no file is written.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let picked = dir.path().join("picked.jsonl");
+        let seam = export_seam_outcome(Some(picked.to_str().expect("utf8")), Some("1"));
+        assert_eq!(seam, DoomExportSeam::Cancelled);
+        assert!(!picked.exists(), "a cancelled export writes no file");
+        assert!(
+            !dir.path().join(DOOM_DATASET_EXPORT_DIR).exists(),
+            "a cancelled export creates no export directory"
+        );
+    }
+
+    #[test]
+    fn cli_export_target_defaults_for_absent_and_blank_out() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // R-5.c: absent or blank → the writer's default
+        // `<dir>/exports/doom-dataset-<ts>.<ext>` target (`None`).
+        assert_eq!(
+            resolve_cli_export_target(dir.path(), None).expect("an absent out is allowed"),
+            None
+        );
+        assert_eq!(
+            resolve_cli_export_target(dir.path(), Some("")).expect("a blank out is allowed"),
+            None
+        );
+        assert_eq!(
+            resolve_cli_export_target(dir.path(), Some("   ")).expect("a blank out is allowed"),
+            None
+        );
+    }
+
+    #[test]
+    fn cli_export_target_confines_a_plain_relative_out_under_exports() {
+        // R-5.b: a plain relative `out` lands under `<dataset dir>/exports/`
+        // — never the dataset-dir root, never the process CWD.
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            resolve_cli_export_target(dir.path(), Some("out.jsonl")).expect("relative is allowed"),
+            Some(dir.path().join(DOOM_DATASET_EXPORT_DIR).join("out.jsonl"))
+        );
+        assert_eq!(
+            resolve_cli_export_target(dir.path(), Some("nested/a.jsonl"))
+                .expect("relative is allowed"),
+            Some(
+                dir.path()
+                    .join(DOOM_DATASET_EXPORT_DIR)
+                    .join("nested/a.jsonl")
+            )
+        );
+    }
+
+    #[test]
+    fn cli_export_target_refuses_an_absolute_out() {
+        // R-5.a: an absolute `out` is refused with the absolute constant and
+        // writes nothing (the old `resolve_export_target` honoured it verbatim).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let absolute = dir.path().join("abs.jsonl");
+        let error =
+            resolve_cli_export_target(dir.path(), Some(absolute.to_str().expect("utf8")))
+                .expect_err("an absolute out is refused");
+        assert_eq!(error.code, DoomErrorCode::RequestFailed);
+        assert_eq!(error.message, EXPORT_ABSOLUTE_REFUSED);
+        assert!(!absolute.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cli_export_target_refuses_a_unc_out_as_absolute() {
+        // A UNC path is `is_absolute()`, so the BINDING ORDER reports the
+        // absolute constant (never the prefix one).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let error = resolve_cli_export_target(dir.path(), Some(r"\\server\share\evil.jsonl"))
+            .expect_err("a UNC out is refused");
+        assert_eq!(error.code, DoomErrorCode::RequestFailed);
+        assert_eq!(error.message, EXPORT_ABSOLUTE_REFUSED);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cli_export_target_refuses_a_drive_relative_out_with_the_prefix_constant() {
+        // `C:evil.jsonl` is NOT absolute (no root) but carries a drive prefix.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let error = resolve_cli_export_target(dir.path(), Some(r"C:evil.jsonl"))
+            .expect_err("a drive-relative out is refused");
+        assert_eq!(error.code, DoomErrorCode::RequestFailed);
+        assert_eq!(error.message, EXPORT_PREFIX_REFUSED);
+        // Prefix is evaluated BEFORE `..`, so a prefix+parent path reports prefix.
+        let error = resolve_cli_export_target(dir.path(), Some(r"C:..\evil.jsonl"))
+            .expect_err("a drive-relative parent path is refused");
+        assert_eq!(error.message, EXPORT_PREFIX_REFUSED);
+    }
+
+    #[test]
+    fn cli_export_target_refuses_a_parent_dir_out() {
+        // R-5.a: ANY `..` component is refused — not just a leading one.
+        let dir = tempfile::tempdir().expect("tempdir");
+        for out in [
+            "../evil.jsonl",
+            "nested/../../evil.jsonl",
+            "nested/../a.jsonl",
+        ] {
+            let error = resolve_cli_export_target(dir.path(), Some(out))
+                .expect_err("a `..` component is refused");
+            assert_eq!(error.code, DoomErrorCode::RequestFailed, "out = {out}");
+            assert_eq!(error.message, EXPORT_PARENT_REFUSED, "out = {out}");
+        }
+    }
+
+    #[test]
+    fn cli_export_target_refusal_order_is_absolute_before_parent() {
+        // The absolute predicate wins over the `..` predicate (binding order).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let absolute_with_parent = dir.path().join("nested").join("..").join("evil.jsonl");
+        let error = resolve_cli_export_target(
+            dir.path(),
+            Some(absolute_with_parent.to_str().expect("utf8")),
+        )
+        .expect_err("an absolute out with `..` is refused");
+        assert_eq!(error.message, EXPORT_ABSOLUTE_REFUSED);
+    }
+
+    // ── Export writes to the resolved/dialog-scoped target ───────────────────
+
+    #[test]
+    fn export_writes_the_confined_target_file_and_returns_the_typed_result() {
         let dir = tempfile::tempdir().expect("tempdir");
         let writer = DoomDatasetWriter::new(DoomDatasetConfig::new(dir.path()));
         let record = DoomDatasetRecord::from_json_line(&sample_record_line()).expect("record");
         writer.append(&record).expect("append");
         // The active file is ST-1's canonical re-serialization of the record.
         let expected = record.json_line().expect("re-serialize");
-        // A relative `out` resolves against the DATASET DIR (never the CWD).
-        let result =
-            export_dataset(&writer, DoomDatasetFormat::Raw, Some("out.jsonl")).expect("export");
+        // A relative CLI `out` is CONFINED to `<dir>/exports/` by the shared rule.
+        let target = resolve_cli_export_target(dir.path(), Some("out.jsonl"))
+            .expect("relative is allowed")
+            .expect("a relative out yields a target");
+        let result = export_dataset(&writer, DoomDatasetFormat::Raw, Some(target.as_path()))
+            .expect("export");
         assert_eq!(result.format, DoomDatasetFormat::Raw);
-        assert_eq!(Path::new(&result.path), dir.path().join("out.jsonl"));
+        assert_eq!(
+            Path::new(&result.path),
+            dir.path().join(DOOM_DATASET_EXPORT_DIR).join("out.jsonl")
+        );
         assert_eq!(result.records, 1);
         assert!(result.bytes > 0);
         let written = std::fs::read_to_string(&result.path).expect("read export");
@@ -1699,36 +2044,64 @@ mod tests {
     }
 
     #[test]
+    fn an_absent_out_exports_to_the_default_exports_path() {
+        // R-5.c end-to-end: `None` (absent/blank) writes ST-1's default
+        // `<dir>/exports/doom-dataset-<ts>.<ext>` — the same name the save
+        // dialog suggests.
+        let (dir, writer) = seeded_writer();
+        let result = export_dataset(&writer, DoomDatasetFormat::Sft, None).expect("export");
+        let path = Path::new(&result.path);
+        assert!(
+            path.starts_with(dir.path().join(DOOM_DATASET_EXPORT_DIR)),
+            "the default target lives under exports/: {}",
+            path.display()
+        );
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("utf8 file name");
+        assert!(
+            name.starts_with("doom-dataset-"),
+            "the default name is `doom-dataset-<ts>`: {name}"
+        );
+        assert!(
+            name.ends_with(".sft.jsonl"),
+            "the default extension follows the format: {name}"
+        );
+    }
+
+    #[test]
+    fn a_seam_path_is_honoured_verbatim_outside_the_dataset_dir() {
+        // R-4.c: the `FREDO_DOOM_EXPORT_PATH` seam writes to EXACTLY that path
+        // (the trusted test seam — not a webview-supplied argument).
+        let (dir, writer) = seeded_writer();
+        let picked_dir = tempfile::tempdir().expect("picked dir");
+        let picked = picked_dir.path().join("deep").join("picked.jsonl");
+        let seam = export_seam_outcome(Some(picked.to_str().expect("utf8")), None);
+        let DoomExportSeam::Path(path) = seam else {
+            panic!("a non-blank path seam must resolve to DoomExportSeam::Path");
+        };
+        let result = export_dataset(&writer, DoomDatasetFormat::Raw, Some(path.as_path()))
+            .expect("export");
+        assert_eq!(Path::new(&result.path), picked);
+        assert!(picked.exists(), "the export is written to the seam path");
+        assert!(
+            !dir.path().join(DOOM_DATASET_EXPORT_DIR).exists(),
+            "a seam path export never falls back to the dataset dir"
+        );
+    }
+
+    #[test]
     fn export_of_an_empty_dataset_is_a_typed_error_with_no_partial_file() {
         let dir = tempfile::tempdir().expect("tempdir");
         let writer = DoomDatasetWriter::new(DoomDatasetConfig::new(dir.path()));
-        let target = dir.path().join("empty.jsonl");
-        let error = export_dataset(
-            &writer,
-            DoomDatasetFormat::Raw,
-            Some(target.to_str().expect("utf8")),
-        )
-        .expect_err("an empty dataset exports to a typed error");
+        let target = dir.path().join(DOOM_DATASET_EXPORT_DIR).join("empty.jsonl");
+        let error = export_dataset(&writer, DoomDatasetFormat::Raw, Some(target.as_path()))
+            .expect_err("an empty dataset exports to a typed error");
         assert_eq!(error.code, DoomErrorCode::RequestFailed);
         assert!(error.message.contains("empty"));
         // The empty path never writes a partial file.
         assert!(!target.exists());
-    }
-
-    #[test]
-    fn a_relative_out_never_escapes_to_the_process_cwd() {
-        let (dir, writer) = seeded_writer();
-        assert_eq!(
-            resolve_export_target(&writer, Some("nested/a.jsonl")),
-            Some(dir.path().join("nested/a.jsonl"))
-        );
-        let absolute = dir.path().join("abs.jsonl");
-        assert_eq!(
-            resolve_export_target(&writer, Some(absolute.to_str().expect("utf8"))),
-            Some(absolute)
-        );
-        // No `out` falls through to ST-1's default `<dir>/exports/…` path.
-        assert_eq!(resolve_export_target(&writer, None), None);
     }
 
     #[test]
@@ -1741,11 +2114,14 @@ mod tests {
         let (dir, writer) = seeded_writer();
         let source = dir.path().join(DOOM_DATASET_FILE);
         let before = std::fs::read(&source).expect("read source");
-        let result =
-            export_dataset(&writer, DoomDatasetFormat::Raw, Some("copy.jsonl")).expect("export");
+        let target = resolve_cli_export_target(dir.path(), Some("copy.jsonl"))
+            .expect("relative is allowed")
+            .expect("a relative out yields a target");
+        let result = export_dataset(&writer, DoomDatasetFormat::Raw, Some(target.as_path()))
+            .expect("export");
         let after = std::fs::read(&source).expect("read source");
         assert_eq!(before, after, "the export never mutates a source file");
-        assert!(Path::new(&result.path).starts_with(dir.path()));
+        assert!(Path::new(&result.path).starts_with(dir.path().join(DOOM_DATASET_EXPORT_DIR)));
         assert_eq!(
             std::fs::read(&result.path).expect("read export"),
             before,
