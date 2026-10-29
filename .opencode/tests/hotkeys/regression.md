@@ -413,4 +413,53 @@ disclosed).
       the ONE shipped `hotkeys-announcer` remains the only `aria-live` channel (the bar is NOT
       `aria-live`). Cross-ref F-106.
 
+## Spec #3097 additions (application command surface — slice A)
+
+> The #3097 slice is **purely additive**: an optional `commandSurface` on `FredoApplicationClass`,
+> one executor, a module-scoped mode/prompt store, per-scope duplicate uniquification and a bar that
+> renders a badge / mode rows / an inline prompt **only** for an application that opts in. No shipped
+> app opts in. **Verification policy: live** — receipt = a `tauri_webview_*` result (this slice emits
+> no shortcut telemetry by contract; the `telemetry_spans` wording in the header above belongs to the
+> #2946-era rows). Baseline recipe for the carry-forward rows: isolated env on `main`, record; repeat
+> on `spec/3097`.
+
+- [ ] **R-50 (every non-opting decision is unchanged — carry R-39/R-40/R-42/R-43/R-49):** with no
+      application declaring a `commandSurface`, the dispatch decision for every stroke equals today's —
+      terminal passthrough, `aria-modal` Escape ownership, text-entry passthrough + global modifier
+      chords, native-consumer precedence, element activation, the three kept globals
+      (`primary+space`, `primary+tab`, `primary+shift+tab` — `defaults.ts:38-56`), pending sequences
+      and timeouts — with no new outcome, no extra `preventDefault` and no extra action run.
+      Cross-ref F-111/F-112, `.opencode/tests/terminal/`, `.opencode/tests/launcher/`. A new
+      `preventDefault` or a changed branch decision is a FAIL.
+- [ ] **R-51 (existing hotkey suites pass UNMODIFIED — carry R-47):**
+      `pnpm --filter @fredo/ui test:run -- src/shared/hotkeys` green over all 17 suites, with only
+      additive new `command*`/`applicationFocus` artifacts in the diff. Cross-ref F-114. Requires the
+      G-406 first-green record from ST-2 work bullet (a).
+- [ ] **R-52 (app-global duplicate rule intact):** in a webview where NO application declares a
+      `commandSurface`, `detectDuplicateHotkeys()` keeps the app-global rule (full-serialization
+      equality or strict step-prefix) and publishes `data-fredo-hotkey-duplicate` exactly as today;
+      `detectDuplicateHotkeys(candidate)` with one argument is byte-identical. Cross-ref F-113;
+      static: `hotkeyElements.test.ts` unmodified. A duplicate that stops being reported (or a
+      false positive across app roots) is a FAIL.
+- [ ] **R-53 (bar DOM unchanged when nobody opts in):** `hotkeys-keybar` stays `role="region"`,
+      `aria-label="Available hotkeys"`, `pointerEvents:none`, 34 px, zero focusable descendants, the
+      same rows/testids/document order and the pending-chip placement; no badge and no prompt node
+      exists anywhere in the DOM. Cross-ref F-112, F-106. Additional rows/badge = FAIL.
+- [ ] **R-54 (one keydown listener / one live region / no new listener — carry R-39/R-49):** the
+      webview still has exactly the engine dispatch listener + the `traversal.ts` Tab boundary; any
+      new module under `shared/hotkeys/` is covered by `themeHygiene.test.ts`'s directory-wide
+      listener scan; the hotkeys subsystem still declares exactly one `aria-live` region. Cross-ref
+      F-127. A third listener or a second hotkey live region = FAIL. (Note: `themeHygiene.test.ts`'s
+      explicit `FILES` array does NOT list the new files — token/`aria-live` hygiene for them is
+      asserted directly by F-135 and the document-wide count in F-127; see QA Discussion Q-6.)
+- [ ] **R-55 (no persistence, no IPC, no new dependency, no new telemetry — carry R-33/R-45/R-46):**
+      mode/prompt state is in-memory module scope only (no `localStorage`, no AppStore key, no DB, no
+      IPC on the keydown path); no `package.json` / lockfile change; no Tauri global-shortcut
+      registration; no span/event/metric carrying mode, keymap or command identity. Cross-ref F-134,
+      F-135. A storage write or invoke during dispatch is a FAIL.
+- [ ] **R-56 (`data-fredo-app-id` is purely additive on every window surface — carry R-47):** the
+      WindowFrame, WorkspacePane and StandaloneAppWindow roots gain only the attribute — no layout,
+      focus, role or testid change — and their existing suites (plus `WindowManager.test.tsx`) keep
+      passing with only new assertions. Cross-ref F-122, ST-5. A changed rect/role/testid is a FAIL.
+
 
