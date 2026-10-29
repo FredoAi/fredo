@@ -13,7 +13,9 @@ import {
   COMMAND_MODE_KEY_PATTERN,
   getApplicationCommandMode,
   getRootCommandMode,
+  validateCommandArgs,
   validateCommandSurface,
+  type ApplicationCommandArg,
   type ApplicationCommandMode,
   type ApplicationCommandSpec,
   type ApplicationCommandSurface,
@@ -154,6 +156,132 @@ describe('validateCommandSurface — ids', () => {
     expect(result.valid).toBe(false);
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0]).toContain('duplicate command id "capture"');
+  });
+});
+
+// ── Spec #3099 — declared argument contract ──────────────────────────────────
+
+describe('validateCommandSurface — declared args (Spec #3099)', () => {
+  it('rejects a duplicate declared arg name within one command', () => {
+    const surface: ApplicationCommandSurface = {
+      modes: [mode('browse', null)],
+      commands: [
+        command('create', { args: [{ name: 'fill' }, { name: 'fill', required: true }] }),
+      ],
+    };
+    const result = validateCommandSurface(surface);
+    expect(result.valid).toBe(false);
+    expect(result.errors).toEqual(['duplicate arg name "fill" in command "create"']);
+  });
+
+  it('allows the same arg name on different commands', () => {
+    const surface: ApplicationCommandSurface = {
+      modes: [mode('browse', null)],
+      commands: [
+        command('first', { args: [{ name: 'value' }] }),
+        command('second', { args: [{ name: 'value' }] }),
+      ],
+    };
+    expect(validateCommandSurface(surface)).toEqual({ valid: true, errors: [] });
+  });
+
+  it('does not require a description (absent means not published, not invalid)', () => {
+    expect(validateCommandSurface(validSurface())).toEqual({ valid: true, errors: [] });
+    expect(command('capture').description).toBeUndefined();
+  });
+});
+
+function arg(name: string, extras: Partial<ApplicationCommandArg> = {}): ApplicationCommandArg {
+  return { name, ...extras };
+}
+
+describe('validateCommandArgs — the ONE declared-argument rule', () => {
+  it('accepts a satisfied contract (required present, optional omitted)', () => {
+    const cmd = command('create', { args: [arg('fill', { required: true }), arg('note')] });
+    expect(validateCommandArgs(cmd, { fill: 'accent' })).toEqual({ ok: true });
+    expect(validateCommandArgs(cmd, { fill: 'accent', note: 'hi' })).toEqual({ ok: true });
+  });
+
+  it('treats `undefined` as `{}` so a required argument fails', () => {
+    const cmd = command('create', { args: [arg('fill', { required: true })] });
+    expect(validateCommandArgs(cmd, undefined)).toEqual({
+      ok: false,
+      reason: 'missing-required',
+      detail: 'missing required argument "fill"',
+    });
+  });
+
+  it('rejects a missing required argument', () => {
+    const cmd = command('create', { args: [arg('fill', { required: true })] });
+    expect(validateCommandArgs(cmd, {})).toMatchObject({
+      ok: false,
+      reason: 'missing-required',
+    });
+  });
+
+  it.each([null, [], 'text', 7, true])('rejects a non-object arguments value (%j)', (args) => {
+    const cmd = command('create', { args: [arg('fill')] });
+    expect(validateCommandArgs(cmd, args)).toMatchObject({ ok: false, reason: 'not-an-object' });
+  });
+
+  it('rejects an undeclared key', () => {
+    const cmd = command('create', { args: [arg('fill')] });
+    expect(validateCommandArgs(cmd, { fill: 'accent', extra: 'x' })).toEqual({
+      ok: false,
+      reason: 'undeclared-key',
+      detail: 'undeclared argument "extra"',
+    });
+  });
+
+  it('rejects a non-string value', () => {
+    const cmd = command('create', { args: [arg('fill')] });
+    expect(validateCommandArgs(cmd, { fill: 42 })).toMatchObject({
+      ok: false,
+      reason: 'not-a-string',
+    });
+  });
+
+  it.each(['', '   '])('rejects a blank value (%j)', (value) => {
+    const cmd = command('create', { args: [arg('fill')] });
+    expect(validateCommandArgs(cmd, { fill: value })).toMatchObject({
+      ok: false,
+      reason: 'blank',
+    });
+  });
+
+  it('rejects a declared validate guard returning false and receives the RAW value', () => {
+    const guard = (value: string) => value.trim() === 'accent';
+    const cmd = command('create', { args: [arg('fill', { validate: guard })] });
+    expect(validateCommandArgs(cmd, { fill: ' accent ' })).toEqual({ ok: true });
+    expect(validateCommandArgs(cmd, { fill: 'chartreuse' })).toEqual({
+      ok: false,
+      reason: 'failed-guard',
+      detail: 'argument "fill" failed its guard',
+    });
+  });
+
+  it('passes an undeclared contract by default (Spec #3097 legacy pass-through)', () => {
+    const cmd = command('legacy');
+    expect(cmd.args).toBeUndefined();
+    expect(validateCommandArgs(cmd, { anything: 'goes' })).toEqual({ ok: true });
+    expect(validateCommandArgs(cmd, undefined)).toEqual({ ok: true });
+  });
+
+  it('opts in when an EMPTY args array is declared (no keys accepted)', () => {
+    const cmd = command('noargs', { args: [] });
+    expect(validateCommandArgs(cmd, {})).toEqual({ ok: true });
+    expect(validateCommandArgs(cmd, undefined)).toEqual({ ok: true });
+    expect(validateCommandArgs(cmd, { extra: 'x' })).toMatchObject({
+      ok: false,
+      reason: 'undeclared-key',
+    });
+  });
+
+  it('does not mutate the supplied arguments', () => {
+    const cmd = command('create', { args: [arg('fill', { required: true })] });
+    const args = { fill: 'accent' };
+    validateCommandArgs(cmd, args);
+    expect(args).toEqual({ fill: 'accent' });
   });
 });
 

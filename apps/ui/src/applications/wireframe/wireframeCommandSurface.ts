@@ -51,6 +51,10 @@ import {
   WIREFRAME_ACTIONS,
   runWireframeAction,
 } from './actions/wireframeActions';
+import {
+  WIREFRAME_DRAFT_APP_ID,
+  runWireframeDraft,
+} from './actions/wireframeDraft';
 import { WIREFRAME_APP_ID } from './model/document';
 import {
   createShapeElementAtRect,
@@ -138,7 +142,7 @@ export function applyWireframeFill(fill: WireframeColorToken): boolean {
 // ── Command behaviors ────────────────────────────────────────────────────────
 
 /** `wireframe.togglePan` — keep the mode stack in sync with the pan flag. */
-function runTogglePan(): void {
+function runTogglePan(): boolean {
   const enabling = !getSnapshot().panMode;
   runWireframeAction(WIREFRAME_TOGGLE_PAN_COMMAND_ID);
   if (enabling) {
@@ -146,6 +150,7 @@ function runTogglePan(): void {
   } else {
     resetApplicationMode(WIREFRAME_APP_ID);
   }
+  return true;
 }
 
 function isDrawKind(value: string | undefined): value is WireframeShapeDrawKind {
@@ -157,16 +162,16 @@ function isDrawKind(value: string | undefined): value is WireframeShapeDrawKind 
  * mode; `{ shape, x, y, width, height }` creates at the explicit bounds. A
  * below-minimum rect is a no-op (mode unchanged).
  */
-function runCreateElement(args?: ApplicationCommandArgs): void {
+function runCreateElement(args?: ApplicationCommandArgs): boolean {
   const shape = args?.shape;
-  if (!isDrawKind(shape)) return;
+  if (!isDrawKind(shape)) return false;
   const x = args?.x;
   const y = args?.y;
   const width = args?.width;
   const height = args?.height;
   if (x === undefined || y === undefined || width === undefined || height === undefined) {
     beginWireframeShapeCreate(shape);
-    return;
+    return true;
   }
   const rect = {
     x: Number(x),
@@ -181,10 +186,12 @@ function runCreateElement(args?: ApplicationCommandArgs): void {
     !Number.isFinite(rect.width) ||
     !Number.isFinite(rect.height)
   ) {
-    return;
+    return false;
   }
   const created = createWireframeShapeAt({ shape, rect });
-  if (created !== null) resetApplicationMode(WIREFRAME_APP_ID);
+  if (created === null) return false;
+  resetApplicationMode(WIREFRAME_APP_ID);
+  return true;
 }
 
 /**
@@ -193,13 +200,14 @@ function runCreateElement(args?: ApplicationCommandArgs): void {
  * Valid → apply to the primary shape, then return to Select even when there is
  * nothing to fill (the prompt still closes).
  */
-function runEditFill(args?: ApplicationCommandArgs): void {
+function runEditFill(args?: ApplicationCommandArgs): boolean {
   const raw = args?.fill ?? args?.value;
-  if (raw === undefined) return;
+  if (raw === undefined) return false;
   const candidate = raw.trim();
-  if (!isWireframeColorToken(candidate)) return;
-  applyWireframeFill(candidate);
+  if (!isWireframeColorToken(candidate)) return false;
+  const applied = applyWireframeFill(candidate);
   resetApplicationMode(WIREFRAME_APP_ID);
+  return applied;
 }
 
 // ── Mode keymaps ─────────────────────────────────────────────────────────────
@@ -305,6 +313,17 @@ const PAN_MODE: ApplicationCommandMode = {
 
 // ── Commands ─────────────────────────────────────────────────────────────────
 
+/**
+ * The model-facing DIRECTIVE for the published `wireframe` skill (Spec #3099,
+ * ST-3). It names the REQUEST CLASS the model has to recognise — create, draft,
+ * sketch, mock up or visualize an app/screen/page/dashboard — and the ONE
+ * action that satisfies it (the deterministic `draftApp`), then bounds the
+ * skill to Wireframe requests (the F-47 lesson: ids alone are answered in
+ * prose). The generated offer appends the published action ids (ST-4).
+ */
+export const WIREFRAME_COMPANION_DESCRIPTION =
+  'Create or edit a wireframe in the Fredo Wireframe app. Call this whenever the user asks to create, draft, sketch, mock up or visualize an app/screen/page/dashboard — including "let\'s create a new wireframe for <app>" or "I would like a way to visualize <thing>": use action=wireframe.companion.draftApp with app_name set to the app the user named, then the page is drafted for you. Use ONLY for Wireframe requests.';
+
 /** One command per toolbar row — SAME id, SAME handler (no second table). */
 const TABLE_COMMANDS: readonly ApplicationCommandSpec[] = WIREFRAME_ACTIONS.filter(
   (action) => action.toolbar,
@@ -312,6 +331,10 @@ const TABLE_COMMANDS: readonly ApplicationCommandSpec[] = WIREFRAME_ACTIONS.filt
   id: action.id,
   // The SHORT toolbar label — never the long `description`.
   title: action.title ?? action.id,
+  // D1: the SAME model-facing sentence the retired Rust catalog mirrored.
+  description: action.description,
+  // A table row consumes no arguments (Spec #3099: declare `[]`, never omit).
+  args: [],
   run:
     action.id === WIREFRAME_TOGGLE_PAN_COMMAND_ID
       ? runTogglePan
@@ -322,33 +345,92 @@ const SURFACE_COMMANDS: readonly ApplicationCommandSpec[] = [
   {
     id: WIREFRAME_SELECT_MODE_COMMAND_ID,
     title: 'Select',
-    run: () => resetApplicationMode(WIREFRAME_APP_ID),
+    description: 'Switch to Select mode so clicks and drags select and move elements',
+    args: [],
+    run: () => {
+      resetApplicationMode(WIREFRAME_APP_ID);
+      return true;
+    },
   },
   {
     id: WIREFRAME_DRAW_RECT_COMMAND_ID,
     title: 'Rectangle',
-    run: () => beginWireframeShapeCreate('rect'),
+    description: 'Arm the rectangle draw tool so the next drag creates a rectangle',
+    args: [],
+    run: () => {
+      beginWireframeShapeCreate('rect');
+      return true;
+    },
   },
   {
     id: WIREFRAME_DRAW_ELLIPSE_COMMAND_ID,
     title: 'Ellipse',
-    run: () => beginWireframeShapeCreate('ellipse'),
+    description: 'Arm the ellipse draw tool so the next drag creates an ellipse',
+    args: [],
+    run: () => {
+      beginWireframeShapeCreate('ellipse');
+      return true;
+    },
   },
   {
     id: WIREFRAME_CREATE_ELEMENT_COMMAND_ID,
     title: 'Create shape',
+    description:
+      'Create a rectangle or ellipse at explicit page bounds, or arm the matching draw tool when only the shape is given',
+    args: [
+      {
+        name: 'shape',
+        required: true,
+        description: 'Shape kind: rect or ellipse',
+        validate: isDrawKind,
+      },
+      { name: 'x', description: 'Page-space left edge in px' },
+      { name: 'y', description: 'Page-space top edge in px' },
+      { name: 'width', description: 'Page-space width in px' },
+      { name: 'height', description: 'Page-space height in px' },
+    ],
     run: runCreateElement,
   },
   {
     id: WIREFRAME_EDIT_FILL_COMMAND_ID,
     title: 'Fill',
+    description: 'Set the fill token of the selected shape',
     prompt: {
       label: 'Fill token',
       placeholder:
         'surface | muted | border | text | textMuted | accent | success | warning | error | info',
       validate: (value) => isWireframeColorToken(value.trim()),
     },
+    // The companion path supplies `fill` and therefore SKIPS the inline prompt.
+    args: [
+      {
+        name: 'fill',
+        required: true,
+        description:
+          'Fill token: surface, muted, border, text, textMuted, accent, success, warning, error or info',
+        validate: (value) => isWireframeColorToken(value.trim()),
+      },
+    ],
     run: runEditFill,
+  },
+  {
+    id: WIREFRAME_DRAFT_APP_ID,
+    title: 'Draft app',
+    description:
+      'Draft a deterministic starter wireframe for a named app: a navbar, a heading with the app name, and a report card',
+    args: [
+      {
+        name: 'app_name',
+        required: true,
+        description:
+          'The app name the user named; used for the heading and the report card label',
+      },
+      {
+        name: 'summary',
+        description: 'Optional context; the deterministic draft does not use it',
+      },
+    ],
+    run: (args) => runWireframeDraft(args).length > 0,
   },
 ];
 
@@ -356,4 +438,7 @@ const SURFACE_COMMANDS: readonly ApplicationCommandSpec[] = [
 export const wireframeCommandSurface: ApplicationCommandSurface = {
   modes: [SELECT_MODE, DRAW_RECT_MODE, DRAW_ELLIPSE_MODE, PAN_MODE],
   commands: [...TABLE_COMMANDS, ...SURFACE_COMMANDS],
+  companion: {
+    description: WIREFRAME_COMPANION_DESCRIPTION,
+  },
 };

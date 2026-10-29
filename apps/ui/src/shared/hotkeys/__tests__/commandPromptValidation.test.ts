@@ -39,6 +39,7 @@ const APP_ID = 'prompt-validate-app';
 
 const applyFill = vi.fn();
 const plainRun = vi.fn();
+const contractRun = vi.fn();
 /** Raw-draft guard: trims, so `' accent '` is accepted and only real tokens pass. */
 const validateFill = vi.fn((value: string) => value.trim() === 'accent');
 
@@ -59,6 +60,15 @@ function surface(): ApplicationCommandSurface {
       title: 'Plain',
       prompt: { label: 'Plain value' },
       run: plainRun,
+    },
+    {
+      // Spec #3099 — a prompt command behind a declared arg contract. The
+      // inline prompt still commits `{ value }` and bypasses the contract.
+      id: 'edit-fill-contract',
+      title: 'Fill (contract)',
+      prompt: { label: 'Fill token' },
+      args: [{ name: 'fill', required: true }],
+      run: contractRun,
     },
   ];
   return {
@@ -105,6 +115,7 @@ beforeEach(() => {
   resetHotkeyAnnouncer();
   applyFill.mockClear();
   plainRun.mockClear();
+  contractRun.mockClear();
   validateFill.mockClear();
   app = mountApp();
 });
@@ -229,5 +240,37 @@ describe('cancelCommandPrompt — a guarded prompt still cancels', () => {
     expect(document.body.hasAttribute(BODY_COMMAND_PROMPT_ATTR)).toBe(false);
     expect(document.activeElement).toBe(app.button);
     release();
+  });
+});
+
+// ── Spec #3099 — prompt path vs the declared-argument contract ───────────────
+
+describe('#3099 — the prompt path is unchanged and bypasses the arg contract', () => {
+  it('returns prompt-required when args are absent and a prompt is declared', () => {
+    const outcome = executeCommand(APP_ID, 'plain');
+
+    expect(outcome).toEqual({ status: 'rejected', reason: 'prompt-required' });
+    expect(getOpenCommandPrompt(APP_ID)).toMatchObject({ commandId: 'plain' });
+    expect(plainRun).not.toHaveBeenCalled();
+  });
+
+  it('commits { value } even when the command declares a different required arg', () => {
+    executeCommand(APP_ID, 'edit-fill-contract');
+    expect(getOpenCommandPrompt(APP_ID)).toMatchObject({ commandId: 'edit-fill-contract' });
+
+    setCommandPromptValue(APP_ID, 'accent');
+    commitCommandPrompt(APP_ID);
+
+    expect(contractRun).toHaveBeenCalledTimes(1);
+    expect(contractRun).toHaveBeenCalledWith({ value: 'accent' });
+    expect(getOpenCommandPrompt(APP_ID)).toBeNull();
+  });
+
+  it('rejects an explicit args call that violates the declared contract BEFORE run', () => {
+    const outcome = executeCommand(APP_ID, 'edit-fill-contract', { value: 'accent' });
+
+    expect(outcome).toEqual({ status: 'rejected', reason: 'invalid-arguments' });
+    expect(contractRun).not.toHaveBeenCalled();
+    expect(getOpenCommandPrompt(APP_ID)).toBeNull();
   });
 });

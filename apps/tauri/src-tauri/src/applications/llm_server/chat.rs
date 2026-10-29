@@ -461,8 +461,9 @@ async fn run_audio_chat(
     // Spec #3073 ST-1 (R-1/R-2): the audio path obtains its offer from the ONE
     // shared accessor, so the spoken and typed offers can never drift. It used
     // to construct `SkillRegistry::with_app_control_and_doom()` here — three
-    // skills, no `wireframe` — which silently diverged from the typed offer.
-    let registry = super::status::companion_skill_registry();
+    // skills, no generated surface skill — which silently diverged from the
+    // typed offer.
+    let registry = super::status::companion_skill_registry(app);
     let body = super::skills::build_audio_skill_request_body(&messages, &audio_base64, &registry);
     super::skills::run_skill_stream(app, &registry, &body).await
 }
@@ -1121,25 +1122,36 @@ mod tests {
     /// order (the audio analogue of F-47 in `status.rs`).
     ///
     /// `run_audio_chat` sources its registry from the ONE shared accessor
-    /// (`companion_skill_registry()`, #3073 ST-1), so the audio body must offer
-    /// the four skills — `open_app`, `close_app`, `doom_mode`, `wireframe`, in
-    /// that order — with a `wireframe` declaration carrying the three C4
-    /// arguments and a DIRECTIVE description naming the request class and every
-    /// catalog id. It must be EQUAL to the typed offer: a drift (drop
-    /// `wireframe`, reorder, drop an argument) fails here.
+    /// (`companion_skill_registry(app)`, #3073 ST-1 / #3099 ST-4), so the audio
+    /// body must offer the static three — `open_app`, `close_app`, `doom_mode` —
+    /// FIRST, then one generated skill per published surface (`wireframe` here),
+    /// with a `wireframe` declaration carrying the generated `action` enum and an
+    /// open `arguments` object. It must be EQUAL to the typed offer: a drift
+    /// (drop `wireframe`, reorder, drop an id) fails here.
     #[test]
-    fn the_audio_path_offer_carries_the_wireframe_skill_at_typed_parity() {
+    fn the_audio_path_offer_carries_the_generated_wireframe_skill_at_typed_parity() {
         use crate::applications::llm_server::skills::{
             build_audio_skill_request_body, build_skill_request_body,
         };
-        use crate::applications::llm_server::status::companion_skill_registry;
-        use crate::infrastructure::companion::wireframe_catalog::{
-            WIREFRAME_ACTIONS, WIREFRAME_ACTION_ARG, WIREFRAME_APP_NAME_ARG, WIREFRAME_SUMMARY_ARG,
+        use crate::infrastructure::companion::surface_registry::{
+            build_companion_skill_registry, CompanionManifest,
         };
 
+        #[derive(serde::Deserialize)]
+        struct GoldenFixture {
+            manifest: CompanionManifest,
+        }
+
+        let fixture: GoldenFixture = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../ui/src/shared/companion/fixtures/wireframe.companion.golden.json"
+        )))
+        .expect("the golden fixture parses");
+        let surfaces = fixture.manifest.surfaces;
+        let registry = build_companion_skill_registry(&surfaces);
+
         let messages = vec![text_message("user", "")];
-        let audio_body =
-            build_audio_skill_request_body(&messages, "UklGRg==", &companion_skill_registry());
+        let audio_body = build_audio_skill_request_body(&messages, "UklGRg==", &registry);
 
         let tools = audio_body["tools"]
             .as_array()
@@ -1151,7 +1163,7 @@ mod tests {
         assert_eq!(
             names,
             vec!["open_app", "close_app", "doom_mode", "wireframe"],
-            "the audio offer must register the wireframe skill last (R-3)"
+            "the audio offer must register the generated wireframe skill last (R-3)"
         );
 
         let wireframe = tools
@@ -1160,25 +1172,31 @@ mod tests {
             .expect("the wireframe function is offered on the audio turn");
         let parameters = &wireframe["function"]["parameters"];
         assert_eq!(parameters["type"], "object");
-        assert_eq!(
-            parameters["required"],
-            serde_json::json!([WIREFRAME_ACTION_ARG])
-        );
+        assert_eq!(parameters["required"], serde_json::json!(["action"]));
         let properties = parameters["properties"]
             .as_object()
             .expect("the declared properties object");
         let mut keys: Vec<&str> = properties.keys().map(String::as_str).collect();
         keys.sort_unstable();
-        let mut expected = vec![
-            WIREFRAME_ACTION_ARG,
-            WIREFRAME_APP_NAME_ARG,
-            WIREFRAME_SUMMARY_ARG,
-        ];
-        expected.sort_unstable();
-        assert_eq!(keys, expected, "the C4 arguments are action/app_name/summary");
-        for key in expected {
-            assert_eq!(properties[key]["type"], "string", "{key} must be a string");
-        }
+        assert_eq!(keys, vec!["action", "arguments"]);
+        assert_eq!(properties["action"]["type"], "string");
+        assert_eq!(
+            properties["arguments"],
+            serde_json::json!({ "type": "object" })
+        );
+        let offered: Vec<&str> = properties["action"]["enum"]
+            .as_array()
+            .expect("the action enum is an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        let expected: Vec<&str> = surfaces[0]
+            .commands
+            .iter()
+            .map(|command| command.id.as_str())
+            .chain(std::iter::once("listActions"))
+            .collect();
+        assert_eq!(offered, expected, "every published id then listActions");
 
         let description = wireframe["function"]["description"]
             .as_str()
@@ -1190,17 +1208,17 @@ mod tests {
                 "the description must name the request class ({word}): {description}"
             );
         }
-        assert!(
-            description.contains("wireframe.companion.draftApp"),
-            "the description must name the draft action: {description}"
-        );
-        for (id, _) in WIREFRAME_ACTIONS {
-            assert!(description.contains(id), "description is missing {id}");
+        for command in &surfaces[0].commands {
+            assert!(
+                description.contains(&command.id),
+                "description is missing {}",
+                command.id
+            );
         }
 
         // EQUALITY with the typed offer — the audio and typed bodies differ ONLY
         // in the last user message's content, never in their `tools`.
-        let typed_body = build_skill_request_body(&messages, &companion_skill_registry());
+        let typed_body = build_skill_request_body(&messages, &registry);
         assert_eq!(
             audio_body["tools"], typed_body["tools"],
             "the audio offer must be byte-equal to the typed offer (R-3)"

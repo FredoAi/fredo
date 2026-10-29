@@ -11,7 +11,9 @@
  *
  * ONE EXECUTOR (binding): `executeCommand` is the ONLY site that invokes a
  * command's `run`. A declared mode key, a toolbar control and a companion
- * intent all funnel through it, so AC5 (exactly once) cannot double-fire.
+ * intent all funnel through it, so AC5 (exactly once) cannot double-fire. Since
+ * Spec #3099 it also RETURNS what happened (`performed` / `noop` / `rejected` /
+ * `failed`) and re-runs the declared-argument rule before `run`.
  *
  * INVOCATION-TIME RETURN: every command captures the mode that was active at
  * INVOCATION. After a non-throwing invocation (sync return or resolved promise)
@@ -33,6 +35,7 @@ import { announce } from './announcer';
 import {
   getApplicationCommandMode,
   getRootCommandMode,
+  validateCommandArgs,
   type ApplicationCommandArgs,
   type ApplicationCommandMode,
   type ApplicationCommandSpec,
@@ -70,6 +73,26 @@ export interface CommandSurfaceSnapshot {
   readonly modePath: readonly string[];
   readonly prompt: CommandPromptState | null;
 }
+
+// ── Executor outcome (Spec #3099) ────────────────────────────────────────────
+
+/** Why an `executeCommand` call performed nothing (Spec #3099). */
+export type ApplicationCommandRejection =
+  | 'unknown-application'
+  | 'unknown-command'
+  | 'prompt-required'
+  | 'invalid-arguments';
+
+/**
+ * What an `executeCommand` call actually did (Spec #3099). `noop` is a `run`
+ * that returned `false` (nothing performed); `failed` is a `run` that threw or
+ * rejected; `rejected` is a call refused BEFORE `run`.
+ */
+export type ApplicationCommandOutcome =
+  | { readonly status: 'performed' }
+  | { readonly status: 'noop' }
+  | { readonly status: 'rejected'; readonly reason: ApplicationCommandRejection }
+  | { readonly status: 'failed' };
 
 // ── Module state ─────────────────────────────────────────────────────────────
 
@@ -397,29 +420,42 @@ export function commitCommandPrompt(appId: string): void {
 /**
  * Execute `commandId` for `appId` — the SINGLE `run` invocation site.
  *
- * - Unknown app / surface / command → no-op.
- * - No args + a prompt spec → open the inline prompt (no run).
- * - Otherwise → run exactly once, then auto-return a non-sticky non-root
- *   invocation mode to its parent on a non-throwing invocation.
+ * - Unknown app / surface / command → `rejected` (`unknown-application` /
+ *   `unknown-command`), no state change.
+ * - No args + a prompt spec → open the inline prompt (no run) and return
+ *   `rejected` (`prompt-required`). The prompt path is UNCHANGED and bypasses
+ *   the declared-argument contract (the inline prompt commits `{ value }`).
+ * - Otherwise `validateCommandArgs` runs BEFORE `run` (Spec #3099, layer 2 of
+ *   the ONE arg rule) → `rejected` (`invalid-arguments`) on failure.
+ * - `run` throwing/rejecting → `failed`; returning `false` → `noop`; otherwise
+ *   `performed`. A non-sticky non-root invocation mode auto-returns on a
+ *   non-throwing invocation, exactly as before.
+ *
+ * Synchronous commands return the outcome directly; async commands return a
+ * promise that resolves to it. Void-returning callers are unaffected.
  */
 export function executeCommand(
   appId: string,
   commandId: string,
   args?: ApplicationCommandArgs,
-): void {
+): ApplicationCommandOutcome | Promise<ApplicationCommandOutcome> {
   const surface = resolveCommandSurface(appId);
-  if (surface === null) return;
+  if (surface === null) return { status: 'rejected', reason: 'unknown-application' };
   const command = surface.commands.find((candidate) => candidate.id === commandId);
-  if (command === undefined) return;
+  if (command === undefined) return { status: 'rejected', reason: 'unknown-command' };
 
   const invocationPath = getModePath(appId);
 
   if (args === undefined && command.prompt !== undefined) {
     openPrompt(appId, command, invocationPath);
-    return;
+    return { status: 'rejected', reason: 'prompt-required' };
   }
 
-  invokeRun(appId, command, args, invocationPath);
+  if (!validateCommandArgs(command, args).ok) {
+    return { status: 'rejected', reason: 'invalid-arguments' };
+  }
+
+  return invokeRun(appId, command, args, invocationPath);
 }
 
 function openPrompt(
@@ -445,7 +481,8 @@ function openPrompt(
 
 /**
  * Invoke `command.run` ONCE and settle the invocation-mode return. A thrown or
- * rejected run changes no mode; async rejections are swallowed.
+ * rejected run changes no mode; async rejections are swallowed and reported as
+ * `failed`. A `false` return is an honest `noop` (nothing performed).
  */
 function invokeRun(
   appId: string,
@@ -453,29 +490,36 @@ function invokeRun(
   args: ApplicationCommandArgs | undefined,
   invocationPath: readonly string[],
   restoreElement?: Element | null,
-): void {
-  let result: void | Promise<void>;
+): ApplicationCommandOutcome | Promise<ApplicationCommandOutcome> {
+  let result: void | boolean | Promise<void | boolean>;
   try {
     result = command.run(args);
   } catch {
     restoreFocus(restoreElement ?? null);
-    return;
+    return { status: 'failed' };
   }
   if (isPromiseLike(result)) {
-    Promise.resolve(result).then(
-      () => {
+    return Promise.resolve(result).then(
+      (value) => {
         applyAutoReturn(appId, invocationPath);
         restoreFocus(restoreElement ?? null);
+        return outcomeOf(value);
       },
       () => {
         // A rejected run changes no mode — never surface an unhandled rejection.
         restoreFocus(restoreElement ?? null);
+        return { status: 'failed' } as const;
       },
     );
-    return;
   }
   applyAutoReturn(appId, invocationPath);
   restoreFocus(restoreElement ?? null);
+  return outcomeOf(result);
+}
+
+/** `false` is the command's honest "nothing performed" signal. */
+function outcomeOf(value: void | boolean): ApplicationCommandOutcome {
+  return value === false ? { status: 'noop' } : { status: 'performed' };
 }
 
 /**
@@ -513,7 +557,7 @@ function samePath(left: readonly string[], right: readonly string[]): boolean {
   return true;
 }
 
-function isPromiseLike(value: unknown): value is Promise<void> {
+function isPromiseLike(value: unknown): value is Promise<void | boolean> {
   return (
     value !== null &&
     typeof value === 'object' &&

@@ -20,7 +20,7 @@ import { useKonamiCode } from '../../../shared/hooks/useKonamiCode';
 import { useSecretCode } from '../../../shared/hooks/useSecretCode';
 import { DOOM_SECRET_CODE, useDoomMode, useDoomModeSkill } from '../../../shared/doom-mode';
 import { useAppOpenRequests } from '../hooks/useAppOpenRequests';
-import { useWireframeSkill } from '../hooks/useWireframeSkill';
+import { useAppCommandSkill } from '../hooks/useAppCommandSkill';
 import { PgRecoveryBanner } from '../../postgres/components/PgRecoveryBanner';
 import type { FredoApplicationClass } from '../../../shared/classes/FredoApplicationClass';
 
@@ -239,10 +239,12 @@ const HomeDesktop: React.FC<HomeDesktopProps> = ({ registerOpenFeature }) => {
   // `llm-skill-call` channel without cross-talk.
   useDoomModeSkill();
 
-  // Spec #3070 ST-7 — the companion `wireframe` dispatcher: list answers work
-  // with the app closed, every other action opens Wireframe through the ONE
-  // `openApp` and relays a host-persisted intent to the editor (G-124).
-  useWireframeSkill({ openFeatureWindow: openApp, features: SHOWABLE_FEATURES });
+  // Spec #3099 ST-6 — the ONE generic application-skill dispatcher (replaces
+  // the Wireframe-only `useWireframeSkill`): every published surface's list
+  // answer works with the app closed; every command is validated host-side
+  // against the PUBLISHED registry, then the app is opened through the ONE
+  // `openApp` and the intent is relayed to the owning application (G-124).
+  useAppCommandSkill({ openFeatureWindow: openApp, features: SHOWABLE_FEATURES });
 
   // Keep the refs in sync so transition callbacks always call the latest version,
   // and register the presentation-aware opener with the Home-level ref so the

@@ -21,12 +21,46 @@ import type { FredoApplicationClass } from '../shared/classes';
 
 const _registry: FredoApplicationClass[] = [];
 
+/**
+ * Spec #3099 ST-2 — additive registration subscription.
+ *
+ * Registration stays a plain PUSH (the #2826 double-registration contract is
+ * unchanged); the listeners fire AFTER the push, so a listener that reads
+ * `getApplications()` sees the new application. The publisher uses this to
+ * republish the companion manifest whenever a feature registers.
+ */
+const _listeners = new Set<() => void>();
+
 export function registerApplication(feature: FredoApplicationClass): void {
   _registry.push(feature);
+  // Copy before iterating so an unsubscribe during notification is safe.
+  for (const listener of [..._listeners]) listener();
 }
 
 export function getApplications(): FredoApplicationClass[] {
   return _registry;
+}
+
+/**
+ * Subscribe to application registration. Returns an unsubscribe function.
+ * Notification fires AFTER the feature has been pushed into the registry.
+ */
+export function subscribeApplications(listener: () => void): () => void {
+  _listeners.add(listener);
+  return () => {
+    _listeners.delete(listener);
+  };
+}
+
+/**
+ * Test-only reset: empties the registry AND the subscription set so one test
+ * file's registrations/publisher installations cannot leak into the next.
+ * The registry array is mutated in place because `getApplications()` hands out
+ * the live reference.
+ */
+export function resetApplicationRegistryForTests(): void {
+  _registry.length = 0;
+  _listeners.clear();
 }
 
 /**

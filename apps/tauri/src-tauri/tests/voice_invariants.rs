@@ -660,18 +660,20 @@ fn model_audio_surfaces_stay_on_their_ipc_side_of_the_boundary() {
 /// offer registry.
 ///
 /// The audio defect was `run_audio_chat` constructing its own
-/// `SkillRegistry::with_app_control_and_doom()` (three skills, no `wireframe`).
-/// This scan pins the audio path's registry SOURCE to `companion_skill_registry()`
-/// and asserts the companion-offer constructors live only in their definitions
-/// file and the ONE shared accessor. Positive-controlled: the scan must SEE the
-/// shipped constructor definitions, so a scan matching nothing can never pass.
+/// `SkillRegistry::with_app_control_and_doom()` (three skills, no surface skill).
+/// This scan pins the audio path's registry SOURCE to
+/// `companion_skill_registry(app)`, pins that ONE accessor to the pure
+/// `build_companion_skill_registry` builder (Spec #3099 ST-4), and asserts the
+/// deleted hand-written four-skill constructor/catalog are gone. Positive-
+/// controlled: the scan must SEE the builder definition, so a scan matching
+/// nothing can never pass.
 #[test]
 fn the_model_audio_path_obtains_its_offer_from_the_one_shared_registry() {
     // (1) The audio path's registry source is the ONE shared accessor.
     let chat = source_code("applications/llm_server/chat.rs");
     let audio = item_span(&chat, "async fn run_audio_chat(");
     assert!(
-        audio.contains("companion_skill_registry()"),
+        audio.contains("companion_skill_registry(app)"),
         "run_audio_chat must obtain its offer from the ONE shared accessor (R-2): {audio}"
     );
     assert!(
@@ -679,61 +681,74 @@ fn the_model_audio_path_obtains_its_offer_from_the_one_shared_registry() {
         "run_audio_chat must not build its own companion offer (R-2): {audio}"
     );
 
-    // (2) The shared accessor is the ONE production home of the four-skill offer.
-    //     `status.rs` production carries `'"'` / `'{'` char literals that `mask()`
-    //     does not handle, so this file is read RAW and sliced at its first test
-    //     module rather than through the masked helpers.
+    // (2) The shared accessor reads the managed registry and delegates to the
+    //     PURE builder — it constructs no skill itself. `status.rs` production
+    //     carries `'"'` / `'{'` char literals that `mask()` does not handle, so
+    //     this file is read RAW and sliced at its first test module.
     let status = source_text("applications/llm_server/status.rs");
     let status_production = status.split(TEST_ATTR).next().unwrap_or(&status);
     assert!(
         status_production.contains("fn companion_skill_registry("),
         "status.rs must define the ONE shared companion offer accessor (R-2)"
     );
+    let accessor = item_span(status_production, "fn companion_skill_registry(");
     assert!(
-        status_production.contains("SkillRegistry::with_app_control_doom_and_wireframe()"),
-        "companion_skill_registry must build the four-skill offer (R-2)"
+        accessor.contains("AppCommandSurfaceRegistry"),
+        "the accessor must read the managed published-surface registry: {accessor}"
     );
-    assert_eq!(
-        occurrences(status_production, "SkillRegistry::with_app_control_and_doom("),
-        0,
-        "status.rs production must not build the 3-skill offer registry directly (R-2)"
+    assert!(
+        accessor.contains("build_companion_skill_registry(&surfaces)"),
+        "the accessor must delegate to the pure builder (Spec #3099 ST-4): {accessor}"
     );
-    assert_eq!(
-        occurrences(
-            status_production,
-            "SkillRegistry::with_app_control_doom_and_wireframe("
-        ),
-        1,
-        "the 4-skill offer must be constructed in exactly ONE status.rs place — the accessor (R-2)"
+    assert!(
+        !accessor.contains("SkillRegistry::with_"),
+        "the accessor must not build a registry inline: {accessor}"
     );
 
-    // (3) No OTHER production file builds a companion offer registry. The offer
-    //     constructors (`with_app_control_and_doom` / `with_app_control_doom_and_
-    //     wireframe`) may live ONLY in the definitions file (they chain there);
-    //     status.rs is covered by (2).
-    let mut offer_files: Vec<String> = Vec::new();
+    // (3) The pure builder lives in the surface registry and composes the three
+    //     static skills FIRST, then one generated skill per surface.
+    let surface_registry = production_text("infrastructure/companion/surface_registry.rs");
+    let builder = item_span(&surface_registry, "pub fn build_companion_skill_registry(");
+    assert!(
+        builder.contains("SkillRegistry::with_app_control_and_doom()"),
+        "the builder must lead with the shipped static three: {builder}"
+    );
+    assert!(
+        builder.contains("surface_skill("),
+        "the builder must generate one skill per surface: {builder}"
+    );
+
+    // (4) No OTHER production file builds a companion offer registry. The offer
+    //     constructors may live ONLY in the definitions file (they chain there)
+    //     and the pure builder (surface_registry.rs); status.rs is covered by (2).
+    let allowed = [
+        "applications/llm_server/status.rs",
+        "infrastructure/companion/skills.rs",
+        "infrastructure/companion/surface_registry.rs",
+    ];
     for (file, production) in crate_production_sources() {
-        if file == "applications/llm_server/status.rs" {
+        if allowed.contains(&file.as_str()) {
             continue;
         }
-        if production.contains("with_app_control_and_doom(")
-            || production.contains("with_app_control_doom_and_wireframe(")
-        {
-            offer_files.push(file.clone());
-        }
+        assert_eq!(
+            occurrences(&production, "SkillRegistry::with_"),
+            0,
+            "{file} must not build a companion offer registry — the companion offer is built in ONE place (R-2)"
+        );
     }
 
-    // Positive control (mirrors `model_audio_surfaces_stay_on_their_ipc_side_of_the_boundary`):
-    // the scan must SEE the shipped constructor definitions, so a scan that
-    // matches nothing can never pass.
-    assert!(
-        offer_files.contains(&"infrastructure/companion/skills.rs".to_string()),
-        "the offer scan must see the shipped companion-offer constructors: {offer_files:?}"
-    );
-    for file in &offer_files {
+    // (5) The hand-written four-skill constructor and its mirrored catalog are
+    //     DELETED (Spec #3099 ST-4, G-412): one source of the action list remains.
+    for (file, production) in crate_production_sources() {
         assert_eq!(
-            file, "infrastructure/companion/skills.rs",
-            "{file} must not build a companion offer registry — the companion offer is built in ONE place (R-2)"
+            occurrences(&production, "with_app_control_doom_and_wireframe"),
+            0,
+            "{file} still carries the deleted four-skill constructor"
+        );
+        assert_eq!(
+            occurrences(&production, "wireframe_catalog"),
+            0,
+            "{file} still references the deleted wireframe catalog"
         );
     }
 }

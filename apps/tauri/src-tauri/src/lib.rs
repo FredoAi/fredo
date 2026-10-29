@@ -55,6 +55,14 @@ pub use applications::doom;
 #[doc(hidden)]
 pub use applications::llm_server::doom_agent;
 
+// Spec #3099 ST-4 — test seam. The durable companion-manifest suite
+// (`tests/companion_manifest.rs`) renders the offer through the SAME renderer the
+// live paths use (`render_tools`), so the golden fixture is asserted against the
+// real wire shape, not a test-local copy. `mod applications` is private, so the
+// renderer is re-exported here. `#[doc(hidden)]`: not part of the app surface.
+#[doc(hidden)]
+pub use applications::llm_server::skills::render_tools as render_companion_tools;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use applications::terminal::state::TerminalState;
@@ -806,13 +814,25 @@ pub fn run() {
             // the frontend owns the one resolution rule.
             app.manage(infrastructure::app_open::AppOpenRegistry::new());
 
-            // -- Wireframe companion intent relay (Spec #3070 ST-7) -----------
-            // `llm-skill-call` reaches the main window ONCE; the editor may
-            // mount later (open-first) or live in another webview (new-window).
-            // The bounded host queue holds the intent until the editor drains
-            // it on mount (`wireframe_intent_take`), so no draft is ever lost
+            // -- Generic app command intent relay (Spec #3099 ST-5) ------------
+            // A published-surface `llm-skill-call` reaches the main window
+            // ONCE; the owning application may mount later (open-first) or live
+            // in another webview (multi-window). The bounded host queue holds
+            // the intent until the application drains its own `appId` entries
+            // on mount (`app_command_intent_take`), so no command is ever lost
             // (G-124).
-            app.manage(applications::wireframe::intent::WireframeIntentState::new());
+            app.manage(infrastructure::app_command::AppCommandIntentState::new());
+
+            // -- Published application command surfaces (Spec #3099 ST-4) ------
+            // The frontend publishes every application's command surface here
+            // (`register_app_command_surfaces`); the companion offer reads this
+            // registry ON EVERY turn, and the read-only `app_command_surfaces`
+            // view lets the dispatcher resolve a surface from the PUBLISHED state
+            // (never a local rebuild). The three static skills are always offered;
+            // one generated skill follows per surface with at least one command.
+            app.manage(
+                infrastructure::companion::surface_registry::AppCommandSurfaceRegistry::new(),
+            );
 
             // -- Built-in PostgreSQL client state (Spec #2950 ST-1) ------------
             // The single managed state every `db_*` command takes. ST-1 resolves
@@ -1023,12 +1043,17 @@ pub fn run() {
             applications::wireframe::commands::wireframe_save_as,
             applications::wireframe::commands::wireframe_open_document,
             applications::wireframe::commands::wireframe_export_png,
-            // Wireframe Companion intent relay (Spec #3070 ST-7): persist +
-            // broadcast an intent, drain the queue on editor mount, and report
-            // the performed subset (`wireframe-intent` / `-result`, C5).
-            applications::wireframe::intent::wireframe_intent,
-            applications::wireframe::intent::wireframe_intent_take,
-            applications::wireframe::intent::wireframe_intent_result,
+            // Generic application command intent relay (Spec #3099 ST-5):
+            // persist + broadcast an intent, drain one application's queue on
+            // mount, and report the outcome (`app-command-intent` / `-result`).
+            infrastructure::app_command::app_command_intent,
+            infrastructure::app_command::app_command_intent_take,
+            infrastructure::app_command::app_command_intent_result,
+            // Published application command surfaces (Spec #3099 ST-4): the
+            // frontend publish (upsert by appId, fail-closed) and the READ-ONLY
+            // view the dispatcher resolves its surface from (D12).
+            infrastructure::companion::surface_registry::register_app_command_surfaces,
+            infrastructure::companion::surface_registry::app_command_surfaces,
             // DynamicTableStore (Spec #339)
             application_store::application_store_ensure_table,
             application_store::application_store_insert,

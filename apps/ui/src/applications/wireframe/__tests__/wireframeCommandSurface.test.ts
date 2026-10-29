@@ -47,6 +47,7 @@ import {
   resetHotkeyElementDiscoveryForTests,
 } from '@/shared/hotkeys/hotkeyElements';
 import { WIREFRAME_ACTIONS } from '../actions/wireframeActions';
+import { WIREFRAME_DRAFT_APP_ID } from '../actions/wireframeDraft';
 import { WIREFRAME_APP_ID } from '../model/document';
 import { WIREFRAME_COLOR_TOKENS } from '../model/elements';
 import {
@@ -72,6 +73,7 @@ import {
   WIREFRAME_SELECT_MODE_COMMAND_ID,
   WIREFRAME_SELECT_MODE_ID,
   WIREFRAME_TOGGLE_PAN_COMMAND_ID,
+  WIREFRAME_COMPANION_DESCRIPTION,
   applyWireframeFill,
   beginWireframeShapeCreate,
   createWireframeShapeAt,
@@ -277,6 +279,231 @@ describe('table commands', () => {
     expect(commandById(WIREFRAME_DRAW_ELLIPSE_COMMAND_ID).title).toBe('Ellipse');
     expect(commandById(WIREFRAME_EDIT_FILL_COMMAND_ID).title).toBe('Fill');
     expect(commandById(WIREFRAME_CREATE_ELEMENT_COMMAND_ID).title).toBe('Create shape');
+  });
+});
+
+// ── Published companion contract (Spec #3099 ST-3) ───────────────────────────
+
+/**
+ * The 33 toolbar commands' model-facing contract, moved from the retired
+ * `companionCatalog.parity.test.ts` (the Rust catalog it mirrored is deleted in
+ * ST-4; the shared golden fixture asserts the same values cross-language).
+ * `[id, title, description]`.
+ */
+const EXPECTED_TABLE_COMMANDS: ReadonlyArray<readonly [string, string, string]> = [
+  ['wireframe.add.text', 'Text', 'Add a text element (body or heading style)'],
+  ['wireframe.add.button', 'Button', 'Add a button element'],
+  ['wireframe.add.input', 'Input', 'Add an input field element'],
+  ['wireframe.add.image', 'Image', 'Add an image placeholder frame'],
+  ['wireframe.add.icon', 'Icon', 'Add an icon from the curated set'],
+  ['wireframe.add.card', 'Card', 'Add a card/container element'],
+  [
+    'wireframe.add.section',
+    'Section',
+    'Add a site frame section (header, nav bar, sidebar, footer)',
+  ],
+  ['wireframe.add.shape', 'Shape', 'Add a basic shape'],
+  ['wireframe.add.line', 'Line', 'Add a line'],
+  ['wireframe.element.duplicate', 'Duplicate', 'Duplicate the selected element'],
+  ['wireframe.element.delete', 'Delete', 'Delete the selected element'],
+  ['wireframe.element.toggleLock', 'Lock', 'Lock or unlock the selected element'],
+  ['wireframe.edit.undo', 'Undo', 'Undo the last change'],
+  ['wireframe.edit.redo', 'Redo', 'Redo the last undone change'],
+  ['wireframe.zoom.in', 'Zoom in', 'Zoom in'],
+  ['wireframe.zoom.out', 'Zoom out', 'Zoom out'],
+  ['wireframe.view.fitPage', 'Fit page', 'Fit the page to the screen'],
+  ['wireframe.view.resetView', 'Reset view', 'Reset to 100% and centre the page'],
+  ['wireframe.view.togglePan', 'Pan tool', 'Toggle the pan tool'],
+  ['wireframe.file.saveAs', 'Save As', 'Save the document to a new file'],
+  ['wireframe.file.open', 'Open', 'Open a saved wireframe document'],
+  ['wireframe.file.exportPng', 'Export PNG', 'Export the page as a PNG'],
+  ['wireframe.arrange.group', 'Group', 'Group the selected elements'],
+  ['wireframe.arrange.ungroup', 'Ungroup', 'Ungroup the selected group'],
+  ['wireframe.arrange.toggleGroupLock', 'Lock group', 'Lock or unlock the selected group'],
+  ['wireframe.arrange.toggleSnap', 'Snap to grid', 'Toggle snap to grid'],
+  ['wireframe.arrange.alignLeft', 'Align left', 'Align the selected elements to the left'],
+  [
+    'wireframe.arrange.alignCenter',
+    'Align centre',
+    'Align the selected elements to the centre',
+  ],
+  [
+    'wireframe.arrange.alignRight',
+    'Align right',
+    'Align the selected elements to the right',
+  ],
+  [
+    'wireframe.arrange.distribute',
+    'Distribute',
+    'Distribute the selected elements with equal gaps',
+  ],
+  [
+    'wireframe.arrange.bringForward',
+    'Bring forward',
+    'Bring the selected elements forward',
+  ],
+  [
+    'wireframe.arrange.sendBackward',
+    'Send backward',
+    'Send the selected elements backward',
+  ],
+  ['wireframe.document.new', 'New', 'Start a new empty wireframe'],
+];
+
+describe('published companion contract', () => {
+  it('publishes the exact 33 toolbar commands: id, title and description', () => {
+    // Table commands are declared first, in WIREFRAME_ACTIONS order.
+    const actual = wireframeCommandSurface.commands
+      .slice(0, EXPECTED_TABLE_COMMANDS.length)
+      .map((command) => [command.id, command.title, command.description]);
+    expect(actual).toEqual(EXPECTED_TABLE_COMMANDS.map((row) => [...row]));
+  });
+
+  it('publishes 39 commands: the 33 table rows, 5 surface commands and draftApp', () => {
+    const rows = toolbarRows();
+    expect(rows).toHaveLength(33);
+    expect(wireframeCommandSurface.commands).toHaveLength(39);
+    expect(wireframeCommandSurface.commands.map((command) => command.id)).toEqual([
+      ...rows.map((row) => row.id),
+      WIREFRAME_SELECT_MODE_COMMAND_ID,
+      WIREFRAME_DRAW_RECT_COMMAND_ID,
+      WIREFRAME_DRAW_ELLIPSE_COMMAND_ID,
+      WIREFRAME_CREATE_ELEMENT_COMMAND_ID,
+      WIREFRAME_EDIT_FILL_COMMAND_ID,
+      WIREFRAME_DRAFT_APP_ID,
+    ]);
+  });
+
+  it('gives every command a non-blank description and a declared args array', () => {
+    for (const command of wireframeCommandSurface.commands) {
+      expect(command.description?.trim(), command.id).toBeTruthy();
+      expect(Array.isArray(command.args), command.id).toBe(true);
+    }
+  });
+
+  it('uses the SAME sentences as the table for the 33 toolbar commands', () => {
+    for (const row of toolbarRows()) {
+      expect(commandById(row.id).description, row.id).toBe(row.description);
+      expect(commandById(row.id).args, row.id).toEqual([]);
+    }
+  });
+
+  it('declares each surface command argument contract', () => {
+    for (const id of [
+      WIREFRAME_SELECT_MODE_COMMAND_ID,
+      WIREFRAME_DRAW_RECT_COMMAND_ID,
+      WIREFRAME_DRAW_ELLIPSE_COMMAND_ID,
+    ]) {
+      expect(commandById(id).args, id).toEqual([]);
+    }
+
+    expect(
+      commandById(WIREFRAME_CREATE_ELEMENT_COMMAND_ID).args?.map((arg) => [
+        arg.name,
+        arg.required ?? false,
+      ]),
+    ).toEqual([
+      ['shape', true],
+      ['x', false],
+      ['y', false],
+      ['width', false],
+      ['height', false],
+    ]);
+
+    expect(
+      commandById(WIREFRAME_EDIT_FILL_COMMAND_ID).args?.map((arg) => [
+        arg.name,
+        arg.required ?? false,
+      ]),
+    ).toEqual([['fill', true]]);
+
+    expect(
+      commandById(WIREFRAME_DRAFT_APP_ID).args?.map((arg) => [
+        arg.name,
+        arg.required ?? false,
+      ]),
+    ).toEqual([
+      ['app_name', true],
+      ['summary', false],
+    ]);
+  });
+
+  it('declares the companion DIRECTIVE that names the request class', () => {
+    expect(wireframeCommandSurface.companion?.description).toBe(
+      WIREFRAME_COMPANION_DESCRIPTION,
+    );
+    for (const word of [
+      'create',
+      'draft',
+      'sketch',
+      'mock up',
+      'visualize',
+      'app/screen/page/dashboard',
+    ]) {
+      expect(WIREFRAME_COMPANION_DESCRIPTION).toContain(word);
+    }
+    expect(WIREFRAME_COMPANION_DESCRIPTION).toContain('Use ONLY for Wireframe requests.');
+    // Default listing wording (`${appName} actions`) — no override declared.
+    expect(wireframeCommandSurface.companion?.listLabel).toBeUndefined();
+  });
+
+  it('never declares the retired wireframe.companion.listActions command', () => {
+    expect(
+      wireframeCommandSurface.commands.some(
+        (command) => command.id === 'wireframe.companion.listActions',
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('honest boolean returns', () => {
+  it('mode commands report performed', () => {
+    expect(executeCommand(WIREFRAME_APP_ID, WIREFRAME_SELECT_MODE_COMMAND_ID)).toEqual({
+      status: 'performed',
+    });
+    expect(executeCommand(WIREFRAME_APP_ID, WIREFRAME_DRAW_RECT_COMMAND_ID)).toEqual({
+      status: 'performed',
+    });
+    expect(executeCommand(WIREFRAME_APP_ID, WIREFRAME_DRAW_ELLIPSE_COMMAND_ID)).toEqual({
+      status: 'performed',
+    });
+  });
+
+  it('create rejects a guarded shape before run (invalid-arguments)', () => {
+    const outcome = executeCommand(WIREFRAME_APP_ID, WIREFRAME_CREATE_ELEMENT_COMMAND_ID, {
+      shape: 'triangle',
+      x: '10',
+      y: '10',
+      width: '100',
+      height: '100',
+    });
+    expect(outcome).toEqual({ status: 'rejected', reason: 'invalid-arguments' });
+    expect(getSnapshot().document.elements).toHaveLength(0);
+  });
+
+  it('create reports noop below the minimum size', () => {
+    const outcome = executeCommand(WIREFRAME_APP_ID, WIREFRAME_CREATE_ELEMENT_COMMAND_ID, {
+      shape: 'rect',
+      x: '10',
+      y: '10',
+      width: '3',
+      height: '10',
+    });
+    expect(outcome).toEqual({ status: 'noop' });
+  });
+
+  it('editFill reports noop when there is no shape to fill', () => {
+    const outcome = executeCommand(WIREFRAME_APP_ID, WIREFRAME_EDIT_FILL_COMMAND_ID, {
+      fill: 'accent',
+    });
+    expect(outcome).toEqual({ status: 'noop' });
+    expect(getModePath(WIREFRAME_APP_ID)).toEqual([WIREFRAME_SELECT_MODE_ID]);
+  });
+
+  it('a table command that performs nothing reports noop', () => {
+    expect(executeCommand(WIREFRAME_APP_ID, 'wireframe.element.delete')).toEqual({
+      status: 'noop',
+    });
   });
 });
 
@@ -516,9 +743,11 @@ describe('wireframe.element.editFill', () => {
 
   it('reads the prompt commit encoding (`value`) and trims the draft', () => {
     const id = createShape();
-    executeCommand(WIREFRAME_APP_ID, WIREFRAME_EDIT_FILL_COMMAND_ID, {
-      value: '  success  ',
-    });
+    // The prompt commit path bypasses the declared-argument contract and
+    // supplies `{ value }`; `runEditFill` still trims it.
+    executeCommand(WIREFRAME_APP_ID, WIREFRAME_EDIT_FILL_COMMAND_ID);
+    setCommandPromptValue(WIREFRAME_APP_ID, '  success  ');
+    commitCommandPrompt(WIREFRAME_APP_ID);
     expect(getSnapshot().document.elements.find((element) => element.id === id)).toMatchObject({
       fill: 'success',
     });

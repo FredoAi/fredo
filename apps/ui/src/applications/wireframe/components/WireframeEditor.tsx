@@ -23,7 +23,7 @@ import { HOTKEY_BAR_HEIGHT_PX } from '../../../shared/hotkeys/HotkeyBar';
 import { useActiveCommandMode } from '../../../shared/hotkeys/commandSurfaceStore';
 import { formatGeometry } from '../model/geometry';
 import { WIREFRAME_APP_ID } from '../model/document';
-import { useWireframeIntent } from '../hooks/useWireframeIntent';
+import { useAppCommandIntent } from '../../../shared/companion/useAppCommandIntent';
 import { WIREFRAME_PAN_MODE_ID } from '../wireframeCommandSurface';
 import {
   getSnapshot,
@@ -39,9 +39,11 @@ import { WireframeStatusBar } from './WireframeStatusBar';
 import { WireframeToolbar } from './WireframeToolbar';
 
 export function WireframeEditor(): React.ReactElement {
-  // Spec #3070 ST-7 — the Companion relay: one `wireframe-intent` listener plus
-  // the take-on-mount drain (the app may have been opened by the request).
-  useWireframeIntent();
+  // Spec #3099 ST-6 — the generic Companion relay (replaces
+  // `useWireframeIntent`): one `app-command-intent` listener plus the
+  // take-on-mount drain (the app may have been opened by the request), both
+  // filtered to THIS app id and executed exactly once through `executeCommand`.
+  useAppCommandIntent(WIREFRAME_APP_ID);
   const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const { document, selectedIds, snapToGrid, view, filePath, dirty } = state;
 
