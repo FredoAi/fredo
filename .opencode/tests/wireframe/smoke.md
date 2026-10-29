@@ -45,6 +45,11 @@
       `llm-skill-call {skill:"wireframe", arguments:{action:"wireframe.companion.draftApp", app_name:"Reporter"}}`.
       **Expected:** the app opens with `-element-count` ≥ 3 and the reply names only the
       performed actions; capture uploaded; console clean.
+  - **#3099 amendment (G-136):** the payload is now NESTED —
+    `{skill:"wireframe", arguments:{action:"wireframe.companion.draftApp", arguments:{app_name:"Reporter"}}}`
+    — and the reply is the generic `Performed in Wireframe: …` copy instead of #3070's
+    `Started a new wireframe for Reporter: …`. See `.opencode/tests/companion/` F-148 for the
+    authoritative row.
 - [ ] **S-9: Bar quick path** — with Wireframe focused, `[data-testid="hotkeys-keybar-row"]`
       lists 32 wireframe bindings (21 distinct `data-hotkey-key` first-step values; each of the
       12 `g`-namespace rows renders two chips) and
