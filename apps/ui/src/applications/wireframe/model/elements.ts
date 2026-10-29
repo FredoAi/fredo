@@ -12,7 +12,14 @@
  */
 
 import type { WireframePage } from './document';
-import { centredRect, clampRectToPage, rectsIntersect, type WireframeRect } from './geometry';
+import {
+  ELEMENT_MIN_SIZE,
+  centredRect,
+  clampRectToPage,
+  rectsIntersect,
+  roundTo1dp,
+  type WireframeRect,
+} from './geometry';
 
 export type WireframeElementType =
   | 'text'
@@ -58,6 +65,28 @@ export type WireframeIconId =
   | 'star'
   | 'check'
   | 'arrowRight';
+
+/** The canonical ten fill tokens, in swatch-grid order (UI/UX section 2.5). */
+export const WIREFRAME_COLOR_TOKENS: readonly WireframeColorToken[] = [
+  'surface',
+  'muted',
+  'border',
+  'text',
+  'textMuted',
+  'accent',
+  'success',
+  'warning',
+  'error',
+  'info',
+] as const;
+
+/**
+ * Narrow a user- or command-supplied string to a fill token. Used by the
+ * create/fill commands so validation never imports the swatch UI.
+ */
+export function isWireframeColorToken(value: string): value is WireframeColorToken {
+  return (WIREFRAME_COLOR_TOKENS as readonly string[]).includes(value);
+}
 
 interface WireframeElementBase {
   id: string;
@@ -307,6 +336,71 @@ export function createDefaultElement(
     default:
       return { ...base, type: 'line' };
   }
+}
+
+/** The two shape kinds a draw mode can produce. */
+export type WireframeShapeDrawKind = 'rect' | 'ellipse';
+
+/** The app-side create payload (shape kind + dragged page rect). */
+export interface WireframeCreateElementRequest {
+  shape: WireframeShapeDrawKind;
+  rect: WireframeRect;
+}
+
+/**
+ * Builder input: the create payload plus the page the origin must stay on.
+ * The page is a separate field (not part of the command payload) because the
+ * builder is pure and the app helper supplies the live document's page.
+ */
+export interface WireframeCreateShapeAtRectOptions extends WireframeCreateElementRequest {
+  page: WireframePage;
+}
+
+/**
+ * Build one `shape` element from a dragged page-space rect — the ONE create path
+ * shared by the canvas operator and the `wireframe.element.create` command.
+ *
+ * Pure: it never dispatches, cascades or touches the store. The rect is
+ * normalized (min origin, positive size), the normalized size must reach
+ * `ELEMENT_MIN_SIZE` on BOTH axes (below → `null`), the origin is clamped onto
+ * the page, and every value is rounded to 1 dp. Defaults match
+ * `createDefaultElement`: `fill: 'muted'`, `border: 'thin'`, `radius: 'm'`.
+ */
+export function createShapeElementAtRect(
+  options: WireframeCreateShapeAtRectOptions,
+): WireframeElement | null {
+  const { shape, rect, page } = options;
+  const x = Math.min(rect.x, rect.x + rect.width);
+  const y = Math.min(rect.y, rect.y + rect.height);
+  const width = Math.abs(rect.width);
+  const height = Math.abs(rect.height);
+
+  if (width < ELEMENT_MIN_SIZE || height < ELEMENT_MIN_SIZE) return null;
+
+  const clamped = clampRectToPage(
+    {
+      x: roundTo1dp(x),
+      y: roundTo1dp(y),
+      width: roundTo1dp(width),
+      height: roundTo1dp(height),
+    },
+    page,
+  );
+
+  return {
+    id: createElementId(),
+    type: 'shape',
+    shape,
+    x: clamped.x,
+    y: clamped.y,
+    width: clamped.width,
+    height: clamped.height,
+    visible: true,
+    locked: false,
+    fill: 'muted',
+    border: 'thin',
+    radius: 'm',
+  };
 }
 
 /**

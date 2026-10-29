@@ -14,21 +14,7 @@
 import React from 'react';
 import { Flex, SimpleGrid, Text, chakra } from '@chakra-ui/react';
 
-import type { WireframeColorToken } from '../../model/elements';
-
-/** The token order used by the swatch grid (UI/UX section 2.5). */
-export const WIREFRAME_COLOR_TOKENS: readonly WireframeColorToken[] = [
-  'surface',
-  'muted',
-  'border',
-  'text',
-  'textMuted',
-  'accent',
-  'success',
-  'warning',
-  'error',
-  'info',
-] as const;
+import { WIREFRAME_COLOR_TOKENS, type WireframeColorToken } from '../../model/elements';
 
 /** Human names for the swatch `aria-label`s. */
 export const WIREFRAME_COLOR_LABELS: Readonly<Record<WireframeColorToken, string>> = {
