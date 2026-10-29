@@ -19,6 +19,13 @@ Verdict: **PASS** (N/N ACs)
      `static` allowed ONLY if the plan declares `> Verification policy: static`.
      A case you could not run live is UNVERIFIED/FAIL, never PASS.
 
+     A row the spec's own PR cannot discriminate (no diff can produce the leg — a skipped
+     leg, a rejected leg, a single-stack filter match) is pre-authorized by the plan as
+     `logic-verified, no discriminating run`: quote the post-change logic that carries the
+     property beside it and state why the leg is unproducible. Use that literal phrase so the
+     Auditor recognises the pre-authorized shape; never induce a red required check and never
+     open a throwaway PR to manufacture a leg (G-410).
+
      ONE screenshot per AC: every AC row carries its own `upload-evidence` image
      as the https:// raw URL the action prints (committed to `.opencode/evidence/<issue>/`
      on `spec/<N>`). NEVER a bare filename or a local `.opencode/tmp/` path — those are
