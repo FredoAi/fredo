@@ -1527,4 +1527,301 @@ the tester's synthetic `document`-dispatched Escape events (harness artifact).
     references (#3007 scope, not flagged); a retired name appearing inside an allowlist literal
     (still flagged unless it names the removal itself).
 
+---
+
+## Spec #3097 — application command surface (slice A: platform only)
+
+> Live-plan extension for issue #3097. Rows F-111..F-135 map 1:1 to the QA Plan in
+> `.opencode/tmp/3097/triage.md` `## QA Expert` (`R-1.1`…`R-5.1` + the two NFR rows). Names bind
+> to the Architect's BINDING names block: `commandSurface` on `FredoApplicationClass`,
+> `executeCommand(appId, commandId, args?)`, `pushMode`/`popMode`/`resetApplicationMode`/
+> `getModePath`/`useActiveCommandMode`, `getCommandSurfaceSnapshot`/`subscribeCommandSurface`/
+> `useCommandSurface`, `APP_ROOT_ATTR = data-fredo-app-id`, body hooks
+> `data-fredo-active-mode` / `data-fredo-command-prompt`, bar hooks `hotkeys-keybar-mode`
+> (`data-mode-id`/`data-mode-app`/`data-mode-path`), `hotkeys-keybar-row` +
+> `data-hotkey-mode-id`, `hotkeys-keybar-prompt`/`-prompt-input`, existing
+> `hotkeys-keybar-list`/`-pending`, announcements `${mode.label} mode` /
+> `${command.title} value`.
+>
+> **Receipt for this section (policy override, disclosed):** a `tauri_webview_*` tool result —
+> `tauri_webview_execute_js` returned JSON, `dom_snapshot`, `screenshot`, `keyboard` — captured
+> against the isolated env's `ports.mcp`. **No `telemetry_spans` receipt applies**: this slice
+> emits no shortcut/mode telemetry by contract (R-9 / R-45 of this suite). The "every case
+> carries a telemetry_spans receipt" header above belongs to the #2946-era rows.
+>
+> **Env:** `dev-env.ps1 -Action Up -Spec 3097 -EnvId <id> -EnvSlot <n> -RequireIsolation`;
+> resolve `ports.vite`/`ports.mcp` from `.opencode/tmp/envs/<id>/manifest.json`; then
+> `tauri_driver_session start {host:"127.0.0.1", port: ports.mcp}`. NEVER the legacy
+> 5173/5174 + 9223 path, and never a `pnpm dev:ui` browser tab (no MCP bridge there).
+>
+> **Fixture (DEV only):** `shared/hotkeys/commandSurfaceFixture.tsx`, apps
+> `command-fixture-alpha` / `command-fixture-beta`, activated by
+> `window.__fredoCommandSurfaceFixture.activate()` (ST-6; the `?commandSurfaceFixture=1` boot
+> param is the auto-activate variant). Controls: `command-fixture-root`,
+> `command-fixture-tool`, `command-fixture-element` (`data-hotkey="x"`), `command-fixture-value`
+> (+ `data-command-runs` / `data-command-args-capture`). Open it idempotently — a second `activate()`
+> must not duplicate the windows.
+
+## F-111 (R-1.1 / AC1) — A non-opting application is untouched (precedence pins)
+
+- [ ] F-111: With the fixture NOT activated, drive on shipped apps: `Ctrl+Space`; `Ctrl+Tab` /
+      `Ctrl+Shift+Tab` with ≥2 windows; `spawn_terminal_session{cli:"shell"}` + focus the session +
+      press `x`; focus `TEXTAREA[data-testid="launcher-command-input"]` + type `rx`; Settings →
+      `[data-testid="settings-postgres-section"]` → `[data-testid="settings-postgres-reset"]` →
+      `Escape`. **Expected:** launcher opens with focus in the launcher textarea; one window flips
+      `data-focused="true"` per cycle stroke; terminal shows `data-fredo-passthrough="true"`, the PTY
+      buffer grows, no hotkey fires; the field value becomes `rx` with
+      `data-fredo-focus-context="text-entry"` and `data-fredo-pending-sequence` null; the modal reads
+      `data-fredo-focus-context="modal"` and Escape closes `[data-testid="settings-postgres-reset-dialog"]`
+      without touching `data-fredo-active-mode`. `document.body` never carries
+      `data-fredo-active-mode`/`data-fredo-command-prompt`, and no `hotkeys-keybar-mode` badge renders.
+      **Data:** per-stroke `defaultPrevented` (tester capture-phase array), `data-fredo-*` hooks,
+      PTY buffer delta, announcer text. *(live receipt)*
+  - **Edge:** `input`/`contenteditable` as well as the launcher textarea; `Ctrl+Space` from
+    text-entry (fires) vs the terminal (suppressed); the layout delete dialog is
+    `role="alertdialog"` and is NOT a `modal` context — use the postgres reset dialog for that leg.
+
+## F-112 (R-1.1 / AC1) — Element activation + bar DOM unchanged for non-opting apps
+
+- [ ] F-112: `Ctrl+Space` → type `Dev Mode` → Enter; give a non-text focus in its frame; read
+      `data-fredo-hotkey-count` + the bar; press `x`; re-read. **Expected:**
+      `[data-testid="dev-mode-clear-events"][data-hotkey="x"]` activates (event count → 0); the
+      count is unchanged; the bar root is still `role="region"`, `aria-label="Available hotkeys"`,
+      `pointer-events:none`, 34 px, zero focusable descendants, with no mode badge and no prompt.
+      **Data:** the button's observable, the count hook, the bar's computed styles + testids.
+      *(live receipt)*
+  - **Edge:** a window with zero `data-hotkey` elements (bar absent, `count="0"`); My Work Items
+    `r` / Diagram `d` as alternates; a pending prefix present.
+
+## F-113 (R-1.2 / AC1) — The app-global duplicate rule still governs non-opting documents
+
+- [ ] F-113: Inject two `<span data-hotkey="zz">` into `document.body`; read the hook + console;
+      remove both. **Expected:** `data-fredo-hotkey-duplicate="true"`, the count rises by 2 (the
+      positive control proving the flush ran), a duplicate diagnostic reaches the console; after
+      removal the attribute is absent and the count returns to baseline. **Data:** the body hooks +
+      `tauri_read_logs(level="error")`. *(live receipt)*
+  - **Edge:** same-level duplicate vs a strict step-prefix shadow; elements outside every app root
+    (scope `null`).
+
+## F-114 (R-1.3 / AC1) — The existing hotkey suites pass UNMODIFIED
+
+- [ ] F-114: `pnpm --filter @fredo/ui test:run -- src/shared/hotkeys` from the repo root; then
+      `git diff --name-only main...HEAD -- apps/ui/src/shared/hotkeys/__tests__`. **Expected:** all
+      17 suites (announcer, describe, engine, featureHotkeyKeys, focusContext, HotkeyBar,
+      hotkeyBarModel, hotkeyElements, hotkeyGrammar, HotkeysProvider, keys, registry, sequence,
+      servedEntryMount, terminalMode, themeHygiene, traversal) green; the diff names only the NEW
+      `command*`/`applicationFocus` artifacts. **PASS** requires the G-406 precondition: a recorded
+      green run of this command on the pre-change tip (ST-2 work bullet a). **Data:** test output +
+      the diff. *(static receipt for the suite; the live receipt for AC1 comes from F-111/F-112)*
+  - **Edge:** a skipped/deleted existing assertion is a FAIL; a flaky unrelated suite is reported
+    separately, never silently re-run until green.
+
+## F-115 (R-2.1 / AC2) — Both apps bind `c`; only the focused app's scope resolves
+
+- [ ] F-115: `activate()`; focus beta frame (`data-focused="true"`), press `t`; focus alpha, press
+      `t`; with alpha focused press `c`; type `42`; Enter. **Expected:** the prompt is
+      `data-app-id="command-fixture-alpha"` and the badge `data-mode-app="command-fixture-alpha"`;
+      alpha's sink reads `42` and alpha's `data-command-runs` +1; beta's sink/counter unchanged;
+      no `data-fredo-hotkey-duplicate`; no `DuplicateHotkeyError` in the console. **Data:** prompt
+      attrs, badge attrs, per-app sinks/counters, console. *(live receipt)*
+  - **Edge:** both in `tool` vs only one; focus set by the real frame pointer-down path;
+    `data-fredo-app-id` on the WindowFrame root is the scope identity.
+
+## F-116 (R-2.1 / AC2) — Element fallback is scope-filtered for the focused opting app
+
+- [ ] F-116: With alpha focused at root, click `command-fixture-element`, press `x`; focus beta,
+      press `x` again. **Expected:** alpha's `x` element activates exactly once when alpha is
+      focused — its `onClick` side effect writes the alpha sink / bumps `data-command-runs`
+      (`activateHotkeyElement` calls `.click()`, which does NOT move focus, so `document.activeElement`
+      is never the receipt); with beta focused the same stroke does not activate alpha's element
+      (sink/counter unchanged). **Data:** the sink + counter, not activeElement. *(live receipt)*
+  - **Edge:** an app-less element (launcher chrome) while an opting app is focused; a non-opting
+    app focused alongside (app-global listing restored).
+
+## F-117 (R-2.2 / AC2) — Bottom bar = focused app's active-mode rows + leading badge
+
+- [ ] F-117: With alpha in `tool` + focused, read `hotkeys-keybar-mode`, every
+      `hotkeys-keybar-row`, and the geometry; then focus beta and re-read. **Expected:** badge
+      `data-mode-id="tool"` / `data-mode-app="command-fixture-alpha"` / `data-mode-path="browse>tool"`;
+      exactly the keymap's rows (1: `c`) with `data-hotkey-mode-id="tool"`,
+      `data-hotkey-action="command:command-fixture-alpha.capture"`; the element row `x` is not
+      listed while a mode is active; the badge's `left` < the list's `left`; after refocusing beta
+      the same shape names beta — never both apps in one render. **Data:** badge/row attrs + rects,
+      `hotkeys-keybar-list` scroll metrics. *(live receipt)*
+  - **Edge:** a multi-entry keymap (declaration order); 1280 px width (no clip);
+    `scrollWidth == clientWidth` on the list.
+
+## F-118 (R-2.3 / AC2) — In-scope collision still errors; cross-scope does not
+
+- [ ] F-118: (i) F-113 control. (ii) With alpha focused, append `<span data-hotkey="x">` INSIDE
+      `[data-fredo-app-id="command-fixture-alpha"]`; read hook/console/bar; remove. (iii) Append the
+      same span inside beta's root; read again. **Expected:** (ii) `data-fredo-hotkey-duplicate="true"`,
+      `hotkeys-duplicate-error` renders, a DEV `DuplicateHotkeyError` is logged, and
+      `command-fixture-element` is still present; after removal the hook clears. (iii) With one `x`
+      per app the hook is absent and no error is logged (the count proves the flush ran).
+      **Data:** hooks, console, count. *(live receipt)*
+  - **Edge:** `?hotkeyDupProbe=1` mounts at `document.body` only (scope `null`) and therefore cannot
+    produce an in-scope collision. Run (ii) LAST (a DEV throw can abort the coalesced flush) and
+    reload the webview afterwards.
+
+## F-119 (R-3.1 / AC3) — A non-sticky command returns to the parent mode
+
+- [ ] F-119: From `browse` press `t` (badge `tool`), press `c`, type `42`, Enter. **Expected:**
+      badge `browse` / `data-mode-path="browse"`, the `c` row gone, and pressing `t` pushes `tool`
+      again (only possible from root — `t` is unbound inside `tool`). **Data:** badge/path/rows +
+      the `t` discriminator. *(live receipt)*
+  - **Edge:** auto-return after a direct `executeCommand`; a throwing command must not pop.
+
+## F-120 (R-3.2 / AC3) — A sticky mode stays active
+
+- [ ] F-120: Enter `pin` (root `p → open-pin` or `command-fixture-pin`), press `n`. **Expected:**
+      badge `pin` / `data-mode-path="browse>pin"`; after `n` the handler ran once and the mode is
+      STILL `pin` with the `n` row listed; `t` (root-only) does nothing. **Data:** badge/path/rows +
+      sink/counter. *(live receipt)*
+  - **Edge:** a throwing sticky command; `sticky` default FALSE (ST-1 pin).
+
+## F-121 (R-3.3 / AC3) — Blur/return leaves mode + keymap unchanged
+
+- [ ] F-121: Enter `tool`; sample `data-fredo-active-mode`, the badge path, the row key list and the
+      announcer text; `tauri_manage_window minimize` on `main`, wait ~2 s, `focus`, re-sample; dwell
+      5 s and re-sample. **Expected:** all samples identical, no reset, no re-announcement, no prompt
+      side effect. **Data:** four samples + announcer text. *(live receipt)*
+  - **Edge:** prompt open across blur/return (draft kept); minimize vs focus another app window;
+    theme switch while blurred. Fallback: synthetic `blur`/`focus` (`focusout`) — disclose it.
+
+## F-122 (R-3.4 / AC3) — Closing the application resets its mode stack
+
+- [ ] F-122: Enter `tool` in alpha (beta at `browse`); click
+      `[data-testid="window-frame-command-fixture-alpha"] button[aria-label^="Close "]`. **Expected:**
+      the frame is absent; no badge with `data-mode-app="command-fixture-alpha"`;
+      `data-fredo-active-mode` is no longer `tool`; beta untouched;
+      `__fredoCommandSurfaceFixture.getModePath('command-fixture-alpha')` is `[]`. **Data:** frame
+      presence, badge attrs, body hook, bridge read. *(live receipt)*
+  - **Edge:** close while not focused; close with the prompt open (no handler run); close the last
+    opting app (no badge at all).
+
+## F-123 (R-3.4 / AC3, G-409-owned pin) — Standalone-route unmount resets (STATIC PIN)
+
+- [ ] F-123: Read ST-6's `__tests__/commandSurfaceLifecycle.test.tsx`. **Expected:** it asserts
+      `resetApplicationMode(appId)` in the standalone route's unmount cleanup and the store dropping
+      the app's stack + prompt; green. **Disclosure:** no shipped app declares a `commandSurface`,
+      so this leg cannot be driven live in this slice — it is proven only by the named artifact.
+      **Data:** the suite file + its output. *(static pin — declared non-live leg)*
+
+## F-124 (R-3.5a / AC3) — Escape leg 1: the prompt closes, the mode stays, the key is consumed
+
+- [ ] F-124: In `tool`, click `command-fixture-element`, press `c`, press `Escape` once. **Expected:**
+      `hotkeys-keybar-prompt` and `data-fredo-command-prompt` absent; badge still `tool`;
+      `hotkeys-keybar-list` back; sink/counter unchanged; the tester's window-bubble
+      `__escSeen` unchanged (consumed); focus still `command-fixture-element`. **Data:** DOM attrs +
+      `__escSeen` + `defaultPrevented`. *(live receipt)*
+  - **Edge:** non-empty draft (discarded); rapid double Escape (the second is leg 2); focus stolen by
+    the window while the prompt is open.
+
+## F-125 (R-3.5b / AC3) — Escape leg 2: one mode pop
+
+- [ ] F-125: Immediately after F-124 press `Escape` again. **Expected:** badge `browse` /
+      `data-mode-path="browse"`, the `c` row gone, the announcer text becomes the parent's
+      `${label} mode`; `__escSeen` unchanged; exactly one level popped. **Data:** badge/path/rows +
+      announcer + `__escSeen`. *(live receipt)*
+  - **Edge:** a 3-level chain; a pending prefix present (the mode chain never arms the pending
+    machine — R-12/R-35 of this suite).
+
+## F-126 (R-3.5c / AC3) — Escape leg 3: root Escape is a consumed no-op
+
+- [ ] F-126: Press `Escape` a third time at the root mode. **Expected:** mode id, path, rows and
+      announcer text byte-identical to the F-125 sample; `__escSeen` unchanged; the stroke is
+      consumed (`defaultPrevented === true`); no window closes, no dialog opens, focus unchanged.
+      **Data:** the four samples + `__escSeen` + `defaultPrevented`. *(live receipt)*
+  - **Edge:** root Escape with a modal open (the modal wins); root Escape in a non-opting app
+    (native — F-111).
+
+## F-127 (R-3.6 / AC3) — Mode transitions announce through the ONE channel
+
+- [ ] F-127: Count `document.querySelectorAll('[aria-live]').length` before activation; push `tool`,
+      pop to root; re-count; read `[data-testid="hotkeys-announcer"]`. **Expected:** the announcer
+      reads `Tool mode` then `Browse mode`; the document-wide `[aria-live]` count is identical
+      before/after; the bar carries no `aria-live`. **Data:** announcer text + the count.
+      *(live receipt)*
+  - **Edge:** rapid push/pop (no stale announcement); a transition inside a modal context.
+
+## F-128 (R-4.1 / AC4) — The prompt replaces the rows and is the only focusable
+
+- [ ] F-128: In `tool` press `c`; read the bar. **Expected:** `hotkeys-keybar-list` absent;
+      `hotkeys-keybar-prompt` present with `data-command-id="capture"`, `data-app-id="command-fixture-alpha"`,
+      computed `pointer-events:auto`; the bar root is still `none`;
+      `bar.querySelectorAll('button, [tabindex], [href], input, textarea, select').length === 1`;
+      `document.activeElement` is `hotkeys-keybar-prompt-input`, whose `aria-label` is the prompt
+      label and whose value is the seeded draft; `hotkeys-keybar-pending` absent. **Data:** the
+      bar subtree + computed styles + activeElement. *(live receipt)*
+  - **Edge:** `initialValue` seed; placeholder; pending chip suppressed (inject `data-hotkey="a+b"`,
+    press `a`, then open the prompt); long label at 34 px.
+
+## F-129 (R-4.2 / AC4) — Enter commits the value exactly once
+
+- [ ] F-129: Type `42` into `hotkeys-keybar-prompt-input`, press `Enter`. **Expected:** alpha's sink
+      reads `42`; `data-command-runs` +1 exactly; `data-command-args-capture` = `{"value":"42"}`;
+      `data-fredo-command-prompt` absent; the input unmounted. **Data:** sink + counter + args JSON.
+      *(live receipt)*
+  - **Edge:** empty value (commits `''`); spaces/CJK; an IME-composition Enter must not double-commit.
+
+## F-130 (R-4.3 / AC4) — Escape cancels with no handler and no announcement
+
+- [ ] F-130: Re-open the prompt, type `99`, press `Escape`. **Expected:** prompt gone;
+      `data-fredo-command-prompt` absent; sink and `data-command-runs` unchanged; announcer text
+      unchanged; `__escSeen` unchanged. **Data:** the four observables. *(live receipt)*
+  - **Edge:** a second Escape (mode pop — F-125); reopen after a cancel (draft re-seeded).
+
+## F-131 (R-4.4 / AC4) — Focus returns to the pre-prompt element
+
+- [ ] F-131: Click `command-fixture-element`, confirm it is `document.activeElement`, press `c`, then
+      Enter; repeat the cycle pressing `Escape`. **Expected:** after both closes `document.activeElement`
+      is the same node (`isConnected === true`), not `body`, not the wrapper, not a re-created node.
+      **Data:** activeElement identity before/after. *(live receipt)*
+  - **Edge:** the pre-prompt element removed while the prompt is open (no crash, no detached focus —
+    exploratory E-71); prompt opened with `body` focused (restore = body, documented).
+
+## F-132 (R-4.5 / AC4) — Args ⇒ no prompt, handler receives exactly those args
+
+- [ ] F-132: Call `__fredoCommandSurfaceFixture.executeCommand('command-fixture-alpha','capture',
+      {value:'direct'})`. **Expected:** no `hotkeys-keybar-prompt` ever appears and
+      `data-fredo-command-prompt` is never set (sample immediately + after 100 ms);
+      `data-command-runs` +1; `data-command-args-capture` = `{"value":"direct"}`. **Data:** the sampled hooks.
+      *(live receipt)*
+  - **Edge:** `args = {}` must NOT open the prompt; a command without `prompt` called with no args
+    runs directly.
+
+## F-133 (R-5.1 / AC5) — One handler run per trigger; identical args on both paths
+
+- [ ] F-133: (a) note `data-command-runs` (N), press `c`, type `42`, Enter; (b) note N+1, call
+      `executeCommand(alpha,'capture',{value:'42'})`; (c) read ST-3's
+      `__tests__/commandSingleExecution.test.ts`. **Expected:** (a) delta 1, args `{"value":"42"}`;
+      (b) delta 1, args `{"value":"42"}` — deep-equal; one announcer change and one prompt toggle per
+      trigger; (c) green with a once-per-trigger spy assertion on both paths. **Data:** counters +
+      args JSON + the suite. *(live receipt for a/b; static for c)*
+  - **Edge:** the prompt-commit vs direct path; a non-prompt command; key auto-repeat recorded, not
+    asserted as a bug.
+
+## F-134 (NFR / AC1-AC5) — Synchronous path, no loop, console clean
+
+- [ ] F-134: Install `__invokes` (wrapping `window.__TAURI_INTERNALS__.invoke`) and
+      `__storageWrites` (wrapping `Storage.prototype.setItem`); push `tool`, press `c`, type, Enter,
+      Escape×3, pop; read the console. **Expected:** both counters are 0 across the drive; no
+      `Maximum update depth exceeded`/`Uncaught`/`Error:` (except the intentional F-118 DEV throw in
+      its own session); each transition repaints within a frame. **Data:** counters, console, timings.
+      *(live receipt)*
+  - **Edge:** heavy streaming in parallel; 10 rapid pushes; theme switch mid-drive.
+
+## F-135 (NFR / hygiene) — Build gates, no new dependency, tokens only
+
+- [ ] F-135: Run `pnpm --filter @fredo/ui build`, `cargo check` (from `apps/tauri/src-tauri/`),
+      `git diff --name-only main...HEAD -- '**/package.json' '**/pnpm-lock.yaml'`, and grep the
+      changed files for colour literals. **Expected:** exit 0 with zero TS errors; `cargo check` zero
+      warnings; empty package/lock diff; zero hex/rgb/hsl and zero `var(--x)NN` in the changed files;
+      light + dark screenshots of the badged bar and the open prompt captured under
+      `.opencode/tmp/3097/e2e/`. **Data:** build/test output, the diff, the grep, the screenshots.
+      *(live receipt for the light/dark legs; static for the gates)*
+  - **Edge:** `pnpm --filter @fredo/tauri build:webview` parity; 1280 px + zoomed viewport; an accent
+    change restyles badge + prompt.
+
 
