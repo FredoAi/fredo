@@ -24,7 +24,7 @@
 import { useSyncExternalStore } from 'react';
 
 import { FOCUS_NEXT_ACTION_ID, FOCUS_PREVIOUS_ACTION_ID, KEPT_GLOBAL_BINDINGS, LAUNCHER_TOGGLE_ACTION_ID } from './defaults';
-import { getElementApplicationId, resolveFocusedApplicationId } from './applicationFocus';
+import { findApplication, isElementInActiveCommandScope, resolveFocusedApplicationId } from './applicationFocus';
 import {
   cancelCommandPrompt,
   commitCommandPrompt,
@@ -177,34 +177,35 @@ export function elementHotkeyToBinding(entry: HotkeyElementEntry): ResolvedBindi
  * hotkey. This is the ONLY binding source for BOTH the keydown decision and the
  * bar.
  *
- * Spec #3097: when `focusedAppId` is supplied AND that application declares a
- * `commandSurface`, element bindings are SCOPED to it — an element inside a
- * DIFFERENT application root is dropped, while an element outside every app root
- * (launcher / desktop chrome) stays global. With no argument (every existing
- * caller) the list is exactly today's.
+ * Spec #3097: when `focusedAppId` is supplied, element bindings are SCOPED —
+ * an element owned by a different application root is dropped, while an element
+ * outside every app root (launcher / desktop chrome) stays global.
+ *
+ * Spec #3098 ST-1 (A1): the SAME scoping now applies when the focused
+ * application declares NO surface (a scoped element owned by a surface app that
+ * is not the displayed app is dropped) and when no application is focused at
+ * all (`null`): a hidden carrier's bindings must not dispatch off-screen.
+ * `null`-scoped elements keep today's behaviour byte-identically, and a
+ * no-argument call (every pre-#3097 direct caller) is still exactly today's
+ * list. An id that names no registered application carries no scope to enforce
+ * (synthetic/legacy ids) and also keeps today's list.
  */
 export function resolveActiveBindings(
   focusedAppId?: string | null,
 ): readonly ResolvedBinding[] {
   registerDefaultFredoActions();
-  if (focusedAppId === undefined || focusedAppId === null) {
+  if (focusedAppId === undefined) {
     return [...keptGlobalBindings(), ...listElementHotkeys().map(elementHotkeyToBinding)];
   }
-  if (resolveCommandSurface(focusedAppId) === null) {
+  if (focusedAppId !== null && findApplication(focusedAppId) === null) {
     return [...keptGlobalBindings(), ...listElementHotkeys().map(elementHotkeyToBinding)];
   }
   return [
     ...keptGlobalBindings(),
     ...listElementHotkeys()
-      .filter((entry) => isElementInCommandScope(entry.element, focusedAppId))
+      .filter((entry) => isElementInActiveCommandScope(entry.element, focusedAppId))
       .map(elementHotkeyToBinding),
   ];
-}
-
-/** An element is in scope when it sits inside the app's root, or outside every root. */
-function isElementInCommandScope(element: HTMLElement, appId: string): boolean {
-  const owner = getElementApplicationId(element);
-  return owner === null || owner === appId;
 }
 
 // ── Application command-surface scope (Spec #3097) ───────────────────────────
@@ -517,7 +518,12 @@ export function handleHotkeyKeydown(event: KeyboardEvent): DispatchDecision {
 
   const focusedFeatureId = getFocusedFeatureId();
   const commandScope = buildCommandScope();
-  const bindings = resolveActiveBindings(commandScope === null ? undefined : commandScope.appId);
+  // Spec #3098 ST-1 (A1): always hand the resolution the displayed/focused
+  // application id — `null` when none — so a surface-owned carrier cannot keep
+  // dispatching while another application (opting or not) owns focus.
+  const activeAppId =
+    commandScope === null ? resolveFocusedApplicationId() : commandScope.appId;
+  const bindings = resolveActiveBindings(activeAppId);
   const active = readActiveElement();
 
   const decision = decideDispatch({

@@ -22,11 +22,13 @@
  * Contract (Spec #3097 ST-4R): the model MUTATES NOTHING and reads NO STORE —
  * the registry lookups behind the mode/badge projection are plain module state,
  * and `FocusSnapshot` is a TYPE-ONLY import (erased at compile time) so the model
- * has no runtime dependency on the engine. Its ONLY DOM read is the ancestor
- * scope lookup for the duplicate channel (`getCommandSurfaceScopeId`), which is
+ * has no runtime dependency on the engine. Its ONLY DOM reads are the ancestor
+ * scope lookup for the duplicate channel (`getCommandSurfaceScopeId`) — which is
  * deliberately THE SAME function the runtime flush uses
  * (`hotkeyElements.ts` flush → `detectDuplicateHotkeys(entries, { scopeOf })`),
- * so the bar banner and the body hook can never diverge.
+ * so the bar banner and the body hook can never diverge — and the focused-app
+ * derivation for the Spec #3098 A1 element scope, which defaults inside the
+ * model so no caller can forget it.
  *
  * Defined rules: `empty` is `rows.length === 0` for the element listing (G-265
  * reach-back → the caller renders `null`); the disabled pair covers a text-entry
@@ -54,7 +56,9 @@ import { detectDuplicateHotkeys } from './hotkeyElements';
 import { getApplicationCommandMode } from './commandSurface';
 import {
   getCommandSurfaceScopeId,
+  isElementInActiveCommandScope,
   resolveApplicationCommandSurface,
+  resolveFocusedApplicationId,
 } from './applicationFocus';
 import type { FocusSnapshot } from './engine';
 import type { HotkeyElementEntry } from './hotkeyElements';
@@ -139,6 +143,15 @@ export interface HotkeyBarModelInput {
   readonly activeMode?: HotkeyBarModeView | null;
   /** Spec #3097 ST-4 — the open inline prompt (optional; absent ⇒ today). */
   readonly prompt?: HotkeyBarPromptView | null;
+  /**
+   * Spec #3098 ST-1 (A1) — the application whose surface is DISPLAYED. Element
+   * rows owned by a different surface-owning application are dropped.
+   *
+   * Optional by design: when omitted, the model derives the focused application
+   * itself ({@link resolveFocusedApplicationId}), so the scope has ONE default
+   * and no caller can forget it. The provider therefore needs no extra input.
+   */
+  readonly scopeAppId?: string | null;
 }
 
 /**
@@ -155,9 +168,14 @@ function focusDisablesHotkeys(focus: FocusSnapshot): boolean {
 }
 
 /**
- * Project the active mode's declared keymap into bar rows, in `Object.entries`
- * (declaration) order. Availability is the SAME focus-derived value as element
- * rows, so mode rows grey out exactly like the rest of the legend.
+ * Project the active mode's declared keymap into bar rows.
+ *
+ * Spec #3098 ST-1 (A2): when the mode declares `keymapOrder`, rows follow that
+ * order (keys absent from `keymap` are skipped, and a repeated key is rendered
+ * once); absent ⇒ today's `Object.entries` (declaration) order. Presentation
+ * only — the keymap stays the one binding source. Availability is the SAME
+ * focus-derived value as element rows, so mode rows grey out exactly like the
+ * rest of the legend.
  */
 function buildModeRows(
   activeMode: HotkeyBarModeView,
@@ -167,7 +185,19 @@ function buildModeRows(
   if (surface === null) return [];
   const mode = getApplicationCommandMode(surface, activeMode.modeId);
   if (mode === null) return [];
-  return Object.entries(mode.keymap).map(([stroke, commandId]) => {
+  const entries: Array<[string, string]> = [];
+  if (mode.keymapOrder === undefined) {
+    entries.push(...Object.entries(mode.keymap));
+  } else {
+    const seen = new Set<string>();
+    for (const stroke of mode.keymapOrder) {
+      if (seen.has(stroke)) continue;
+      if (!Object.prototype.hasOwnProperty.call(mode.keymap, stroke)) continue;
+      seen.add(stroke);
+      entries.push([stroke, mode.keymap[stroke]]);
+    }
+  }
+  return entries.map(([stroke, commandId]) => {
     const command = surface.commands.find((candidate) => candidate.id === commandId);
     return {
       actionId: `command:${activeMode.appId}.${commandId}`,
@@ -181,18 +211,29 @@ function buildModeRows(
   });
 }
 
-/** Project the element listing in document order (unchanged pre-#3097 path). */
+/**
+ * Project the element listing in document order (unchanged pre-#3097 path).
+ *
+ * Spec #3098 ST-1 (A1): an element owned by a surface-owning application that
+ * is NOT the displayed one is dropped here — the SAME predicate the engine uses
+ * ({@link isElementInActiveCommandScope}), so the legend and the keydown
+ * decision can never diverge. `null`-scoped elements are listed unchanged in
+ * every state.
+ */
 function buildElementRows(
   entries: readonly HotkeyElementEntry[],
   availability: HotkeyBarAvailability,
+  scopeAppId: string | null,
 ): HotkeyBarRow[] {
-  return entries.map((entry) => ({
-    actionId: entry.actionId,
-    key: entry.grammar.key,
-    serialized: entry.grammar.serialized,
-    title: entry.title,
-    availability,
-  }));
+  return entries
+    .filter((entry) => isElementInActiveCommandScope(entry.element, scopeAppId))
+    .map((entry) => ({
+      actionId: entry.actionId,
+      key: entry.grammar.key,
+      serialized: entry.grammar.serialized,
+      title: entry.title,
+      availability,
+    }));
 }
 
 /**
@@ -207,9 +248,13 @@ export function buildHotkeyBarModel(input: HotkeyBarModelInput): HotkeyBarModel 
   const promptView = prompt ?? null;
   const disabled = focusDisablesHotkeys(focus);
   const availability: HotkeyBarAvailability = disabled ? 'disabled' : 'available';
+  // Spec #3098 ST-1 (A1): ONE default for the displayed-app scope — the caller
+  // may override it, but omitting it can never forget the filter.
+  const scopeAppId =
+    input.scopeAppId !== undefined ? input.scopeAppId : resolveFocusedApplicationId();
   const rows =
     mode === null
-      ? buildElementRows(entries, availability)
+      ? buildElementRows(entries, availability, scopeAppId)
       : buildModeRows(mode, availability);
   // R-3.4 — reuse ST-1's pure detector (do NOT re-implement it here). The
   // duplicate channel stays element-listing-derived: mode keymaps are contract

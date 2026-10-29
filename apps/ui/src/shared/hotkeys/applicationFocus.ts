@@ -110,3 +110,23 @@ export function getCommandSurfaceScopeId(el: Element | null): string | null {
   if (appId === null) return null;
   return resolveApplicationCommandSurface(appId) !== null ? appId : null;
 }
+
+/**
+ * True when an element binding belongs to the application currently
+ * focused/displayed (Spec #3098 ST-1 / A1 — the ONE predicate for BOTH the
+ * keydown resolution and the bar listing).
+ *
+ *  - a `null`-scoped element (owner declares no surface, or no app root at all)
+ *    is ALWAYS in scope — today's behaviour, byte-identically;
+ *  - a scoped element is in scope only for its own surface-owning application;
+ *  - `focusedAppId === null` means no application is displayed, so a scoped
+ *    element is never in scope (the off-screen carrier must stay dead).
+ */
+export function isElementInActiveCommandScope(
+  el: Element | null,
+  focusedAppId: string | null,
+): boolean {
+  const scopeId = getCommandSurfaceScopeId(el);
+  if (scopeId === null) return true;
+  return focusedAppId !== null && scopeId === focusedAppId;
+}
