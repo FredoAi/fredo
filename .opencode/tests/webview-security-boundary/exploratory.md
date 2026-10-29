@@ -20,3 +20,75 @@ bundle — no new fixtures.
 - [ ] E-10: **External link double activation.** Click a link twice quickly. EXPECT: no queued second window, no duplicate shell probe, console clean (baseline parity).
 
 _Confirmed probes promote to `functional.md`; a probe blocked by a sandbox/tooling limit is recorded `UNVERIFIED` with a named blocker — never a PASS._
+
+---
+
+# #3078 probes — seam-hardening edges (verification policy: **static**)
+
+These are headless probes against the pure rules and headless fixtures (no running app, no MCP
+drive). A confirmed FINDING promotes to `functional.md`; a probe whose expectation the plan does
+not pin is recorded with the observed behaviour and reported to the QA Expert at convergence — it
+is not a FAIL on its own.
+
+- [ ] **E-11 — whitespace class of a sensitive value.** Probe `"\t\n "`, `"\u{00A0}"` (NBSP),
+  `"\u{200B}"` (zero-width space) through `validate_setting_value`.
+  - EXPECT: `"\t\n "` and NBSP clear (`trim().is_empty()`), `"\u{200B}"` is NOT whitespace and NOT a
+    control char (< U+0020 / = U+007F) and is not absolute ⇒ `… path must be absolute`. Record the
+    three outcomes.
+  - WHY: the "empty (or whitespace-only) clears" reading must not silently widen to
+    "invisible-but-non-empty clears".
+
+- [ ] **E-12 — a pasted path with a stray space.** `" C:\x\copilot.exe"` and
+  `"C:\x\copilot.exe "` through the settings rule.
+  - EXPECT: both rejected `path must be absolute` (a leading/trailing space makes the path
+    non-absolute on Windows). Record the UX consequence: a user who pastes a path with a trailing
+    space now gets a rejection instead of a silently-wonky stored value — this is the intended
+    strictness, not a bug, but it should be surfaced in the error if the UI ever shows it.
+
+- [ ] **E-13 — Windows prefix forms, both rules.** `\\?\C:\x\a.exe`, `\\.\C:\x\a.exe`,
+  `\\server\share\a.exe`, `C:foo\a.exe`, `\foo\a.exe`, through (a) `validate_setting_value` and
+  (b) `resolve_cli_export_target`.
+  - EXPECT: record each outcome. Anticipated — settings: extended/verbatim and UNC forms are
+    `is_absolute()` on Windows ⇒ ACCEPTED; `C:foo` and `\foo` ⇒ rejected "must be absolute". Export:
+    the first three ⇒ `EXPORT_ABSOLUTE_REFUSED` or `EXPORT_PREFIX_REFUSED` (record which), `C:foo` ⇒
+    `EXPORT_PREFIX_REFUSED`, `\foo` ⇒ record (it has a root but no prefix).
+  - WHY: this is the shape of the unpinned export check order surfaced in the plan's Discussion. A
+    form the plan does not classify is reported, not failed.
+
+- [ ] **E-14 — odd but legal relative `out` values.** `out` = `"."`, `".\x.jsonl"`, `"a//b.jsonl"`,
+  `"CON"`, `"nul.jsonl"`, `"x."`, `"%TEMP%\x.jsonl"`, `"$env:TEMP\x.jsonl"`.
+  - EXPECT: none contains `..` and none is absolute ⇒ all `Ok`, resolved under `<dir>/exports/` with
+    no environment-variable expansion (`%TEMP%` / `$env:` stay literal path segments). Record each
+    resulting path; a Windows device name (`CON`) may still fail at the write with an IO error —
+    record the typed `requestFailed`, not a confinement bypass.
+
+- [ ] **E-15 — junction/symlink inside `exports/` (KNOWN RESIDUAL).** Read
+  `resolve_cli_export_target`'s implementation, then create a junction with
+  `New-Item -ItemType Junction -Path .opencode/tmp/3078/qa/dataset/exports/escape -Target C:\Windows\Temp`
+  (user-level, no admin).
+  - EXPECT: the rule is purely component-based — `Path::components()` / `Component::ParentDir` only,
+    **no** `canonicalize` / `fs::metadata` / symlink resolution — therefore a pre-existing junction
+    inside `exports/` is NOT closed by this spec. Record "known residual confirmed
+    (source-level)", **not** a FAIL.
+  - WHY: the plan records this residual explicitly so a later reader does not mistake it for a
+    missed gap or try to "fix" it inside this scope.
+
+- [ ] **E-16 — unwritable export target.** Headless form (no app, no env mutation): call
+  `export_dataset(&writer, fmt, Some(<target>))` with the target set to (a) an existing DIRECTORY
+  (`.opencode/tmp/3078/qa/export`) and (b) an unwritable path
+  (`C:\Windows\System32\fredo-3078.jsonl`). The env-seam wire-up itself is a pure read already
+  covered by F-29/F-30.
+  - EXPECT: typed `requestFailed` (`dataset export failed: …`), NO partial/temp file left at either
+    target, and the seeded source dataset byte-identical afterwards. Record the exact message shape.
+  - WHY: G-300 — an error-path edge needs an induction lever; the explicit pre-resolved target IS
+    the lever and no elevated permission is needed for the directory case.
+
+- [ ] **E-17 — cancel flag value domain.** `FREDO_DOOM_EXPORT_CANCEL` = `"1"`, `" 1 "`, `"01"`,
+  `"true"`, `"0"`, `""`.
+  - EXPECT: `"1"` and `" 1 "` cancel (trimmed `"1"`); `"01"`, `"true"`, `"0"`, `""` do NOT cancel
+    (the path seam / dialog route is taken instead). Record all six outcomes against
+    `export_seam_outcome`.
+
+_Confirmed probes promote to `functional.md`; a probe blocked by a sandbox/tooling limit is recorded
+`UNVERIFIED` with a named blocker — never a PASS._
+
