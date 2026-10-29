@@ -24,3 +24,37 @@ the whole app shell + the capability/CSP boundary).
 S-1..S-6 all PASS on the spec tip. Any capability-denied error on a `main`/`terminal`/`doom`/`app-*`
 window is a regression (see `regression.md`) — do not dismiss it as an environment wedge until the
 G-046/G-067 ladder has been tried and disclosed.
+
+---
+
+## #3078 smoke — static legs (NO instance required)
+
+#3078's verification policy is `static`: these three legs replace the app-boot smoke for that spec.
+Do not start a DEV instance or attach a driver for them.
+
+- [ ] **S-7 — the new seam test groups exist and are green.** `cargo nextest run
+  --manifest-path apps/tauri/src-tauri/Cargo.toml -E 'test(seam) or test(validate_setting) or
+  test(export_seam) or test(cli_export_target)'`.
+  - EXPECT: `EXITCODE=0`; quote the summary (`N tests run: N passed, 0 failed`) and the listed test
+    names — at least one per group: terminal seam presence/absence, `validate_setting_value`, the
+    export seam decision, and the CLI target rule.
+  - EDGE: a zero-match filter is recorded and reported (a missing group is a suite gap, not a
+    silent pass); if `nextest` is unavailable, `cargo test` with the same filters is an acceptable
+    substitute — record which ran.
+
+- [ ] **S-8 — the #3077 static boundary baseline still reads the same.** Re-read F-1, F-3, F-6, F-9,
+  F-10 (capabilities, mcp-bridge, `shell:allow-open`, CSP + `withGlobalTauri`, `__TAURI__`).
+  - EXPECT: identical results to their last recorded evidence; #3078 adds no capability/CSP change
+    (R-26 in `regression.md`).
+  - EDGE: any drift is a cross-spec regression — report it against the config surface, not #3078's
+    seams.
+
+- [ ] **S-9 — both build profiles are clean.** Re-run `cargo check` and `cargo check --release` and
+  quote both `EXITCODE` values plus the `warning:` line count (0/0).
+  - EXPECT: `0`/`0`; no `#[allow(...)]` added.
+  - EDGE: a cached release run is corroborated by F-18's `cargo test --release --lib`.
+
+## Expected outcome (#3078)
+
+S-7..S-9 all PASS on the spec tip. S-1..S-6 remain the #3077 smoke and are not re-run for a
+static-policy spec.
