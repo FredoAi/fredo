@@ -1,11 +1,16 @@
-//! `fredo doom export-dataset` (Spec #3032 ST-5).
+//! `fredo doom export-dataset` (Spec #3032 ST-5; confined by Spec #3078 ST-3).
 //!
 //! The local export surface for the Doom fine-tuning dataset. The CLI parses
 //! `--format raw|sft|dpo` (default `raw`) and `--out <path>`, then forwards a
 //! [`CliCommand::DoomExportDataset`](crate::infrastructure::ipc::CliCommand)
-//! to the running app over the local socket, which calls ST-3's
-//! `export_doom_dataset` IPC command. LOCAL-ONLY: the CLI performs no network
+//! to the running app over the local socket, which calls the CLI/IPC export
+//! entry (`export_doom_dataset_cli`). LOCAL-ONLY: the CLI performs no network
 //! I/O — the export is a local file write.
+//!
+//! `--out` is CONFINED to `<dataset dir>/exports/`: a plain relative path is
+//! joined under it; absolute paths, drive/UNC-prefixed paths and any path with a
+//! `..` component are refused; a blank/omitted `--out` writes the default
+//! `<dataset dir>/exports/doom-dataset-<ts>.<ext>`.
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
@@ -21,12 +26,14 @@ pub struct DoomArgs {
 pub enum DoomCommand {
     /// Export the fine-tuning dataset locally (no upload)
     ///
-    /// A relative `--out` resolves under the dataset directory; `--out` omitted
-    /// writes to `<dataset_dir>/exports/`.
+    /// `--out` is confined to `<dataset_dir>/exports/`: a relative path is
+    /// joined under it; absolute, drive/UNC-prefixed and `..`-bearing paths are
+    /// refused; `--out` omitted (or blank) writes
+    /// `<dataset_dir>/exports/doom-dataset-<ts>.<ext>`.
     ///
     /// Exit codes:
     ///   0  the export was written
-    ///   1  invalid format, an empty dataset, or a write failure
+    ///   1  invalid format, a refused `--out`, an empty dataset, or a write failure
     ///   2  app-not-running
     ExportDataset(DoomExportArgs),
 }
@@ -38,8 +45,9 @@ pub struct DoomExportArgs {
     #[arg(long, value_enum, default_value = "raw", value_name = "raw|sft|dpo")]
     pub format: DoomExportFormat,
 
-    /// Target file path. A relative path resolves under the dataset directory;
-    /// omitted writes to `<dataset_dir>/exports/`
+    /// Target file path, RELATIVE to `<dataset_dir>/exports/`. Absolute paths,
+    /// drive/UNC prefixes and `..` components are refused; omitted (or blank)
+    /// writes `<dataset_dir>/exports/doom-dataset-<ts>.<ext>`
     #[arg(long, value_name = "PATH")]
     pub out: Option<String>,
 }

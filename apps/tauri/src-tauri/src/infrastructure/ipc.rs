@@ -49,10 +49,14 @@ pub enum CliCommand {
         cli: Option<String>,
         work_dir: Option<String>,
     },
-    /// Export the Doom fine-tuning dataset to a LOCAL path (Spec #3032 ST-5).
-    /// `format` is the canonical lowercase token (`raw|sft|dpo`; default `raw`);
-    /// `out` may be relative (resolved under the dataset dir) or absent. The
-    /// server calls ST-3's `export_doom_dataset` — no network I/O.
+    /// Export the Doom fine-tuning dataset to a CONFINED local path (Spec #3032
+    /// ST-5; confined by Spec #3078 ST-3). `format` is the canonical lowercase
+    /// token (`raw|sft|dpo`; default `raw`); `out` may be a plain relative path
+    /// (resolved under `<dataset dir>/exports/`) or absent (default
+    /// `<dataset dir>/exports/doom-dataset-<ts>.<ext>`). Absolute,
+    /// drive/UNC-prefixed and `..`-bearing paths are typed refusals. The server
+    /// calls [`export_doom_dataset_cli`](crate::applications::doom::commands::export_doom_dataset_cli)
+    /// — never the webview command — and performs no network I/O.
     DoomExportDataset {
         format: Option<String>,
         out: Option<String>,
@@ -171,9 +175,11 @@ async fn dispatch_command(cmd: CliCommand, app: &AppHandle) -> CliResponse {
 }
 
 /// Handle one `CliCommand::DoomExportDataset` from the IPC server: validate the
-/// format token against the declared value set (G-254), run ST-3's LOCAL export
-/// command, and translate the typed outcome into the CLI response (`ok` → exit 0;
-/// a typed error → exit 1). The CLI performs no network I/O.
+/// format token against the declared value set (G-254), run the CLI/IPC export
+/// entry (confined to `<dataset dir>/exports/` by the shared rule — Spec #3078
+/// ST-3), and translate the typed outcome into the CLI response (`ok` → exit 0;
+/// a typed error, including a refused `out`, → exit 1). The CLI performs no
+/// network I/O.
 async fn dispatch_doom_export_dataset(
     format: Option<String>,
     out: Option<String>,
@@ -191,7 +197,8 @@ async fn dispatch_doom_export_dataset(
         None => None,
     };
 
-    match crate::applications::doom::commands::export_doom_dataset(app.clone(), format, out).await {
+    match crate::applications::doom::commands::export_doom_dataset_cli(app.clone(), format, out).await
+    {
         Ok(result) => {
             CliResponse::ok(serde_json::to_value(result).unwrap_or(serde_json::Value::Null))
         }

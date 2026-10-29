@@ -483,6 +483,19 @@ impl DoomDatasetFormat {
     }
 }
 
+/// The default export filename for `format`: `doom-dataset-<ts>.<ext>`.
+///
+/// The default target is `<dataset dir>/exports/<this name>`. Shared by the
+/// native save dialog's suggested name and [`DoomDatasetWriter::export`]'s
+/// default target so the two can never drift (Spec #3078 ST-3).
+pub fn default_export_name(format: DoomDatasetFormat) -> String {
+    let ts = chrono::Utc::now()
+        .format("%Y%m%dT%H%M%S%3fZ")
+        .to_string()
+        .replace('.', "");
+    format!("doom-dataset-{ts}.{}", format.extension())
+}
+
 /// A successful export result.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -724,14 +737,10 @@ impl DoomDatasetWriter {
 
     /// The default export path: `<dir>/exports/doom-dataset-<ts>.<ext>`.
     fn default_export_path(&self, format: DoomDatasetFormat) -> PathBuf {
-        let ts = chrono::Utc::now()
-            .format("%Y%m%dT%H%M%S%3fZ")
-            .to_string()
-            .replace('.', "");
         self.inner
             .dir
             .join(DOOM_DATASET_EXPORT_DIR)
-            .join(format!("doom-dataset-{ts}.{}", format.extension()))
+            .join(default_export_name(format))
     }
 
     /// Export the dataset in `format` to `out` (or the default

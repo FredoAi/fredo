@@ -820,7 +820,7 @@ fn prepare_session(
     cwd: &str,
     binary_override: Option<String>,
     pwsh: &str,
-    test_override: Option<&SpawnTestOverride>,
+    test_pwsh_major: Option<u32>,
 ) -> Result<LaunchForm, (TerminalErrorKind, String)> {
     let bin = resolve_binary(cli, binary_override.as_deref())
         .map_err(|msg| (TerminalErrorKind::MissingBinary, msg))?;
@@ -834,14 +834,11 @@ fn prepare_session(
     // plain Shell must NOT be gated on pwsh — its candidate chain falls back to
     // `powershell.exe`/`cmd.exe`, which are not PowerShell-6+ shells.
     #[cfg(target_os = "windows")]
-    if cli == SessionKind::Copilot {
-        let override_major = test_override.and_then(|o| o.pwsh_major);
-        if powershell_gate_applies(&form, override_major) {
-            check_powershell_prereq(pwsh, override_major)
-                .map_err(|msg| (TerminalErrorKind::Prereq, msg))?;
-        }
+    if cli == SessionKind::Copilot && powershell_gate_applies(&form, test_pwsh_major) {
+        check_powershell_prereq(pwsh, test_pwsh_major)
+            .map_err(|msg| (TerminalErrorKind::Prereq, msg))?;
     }
-    let _ = test_override;
+    let _ = test_pwsh_major;
 
     Ok(form)
 }
@@ -1194,12 +1191,21 @@ pub async fn open_terminal_window(app: AppHandle) -> Result<(), String> {
 /// TEST-ONLY override seam for the AC4 negative rows. Never set by the
 /// production UI: it deterministically forces a missing binary or an unmet
 /// PowerShell prerequisite without touching the host PATH.
+///
+/// Debug/test builds only (Spec #3078 ST-1): a shipped release build must be
+/// unable to name the executable a PTY is pointed at, so this wire type does not
+/// exist when `debug_assertions = false`.
+#[cfg(debug_assertions)]
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpawnTestOverride {
     pub binary: Option<String>,
     pub pwsh_major: Option<u32>,
 }
+
+/// Compile-time capability marker: `true` exactly when the TEST-ONLY spawn seam
+/// is compiled in. Read by the profile-pinning tests; never a runtime switch.
+pub const SPAWN_TEST_SEAM_COMPILED_IN: bool = cfg!(debug_assertions);
 
 /// Spawn a new CLI session in its own PTY and start streaming its output.
 ///
@@ -1215,21 +1221,35 @@ pub struct SpawnTestOverride {
 /// `cols`/`rows` (Spec #2942 ST-5): the pane grid the webview last applied, so
 /// the PTY is born at pane size instead of a hardcoded 80×24. Omitting them
 /// keeps the historical 80×24 default.
-#[tauri::command]
-pub async fn spawn_terminal_session(
+///
+/// `test_seam` packs the two TEST-ONLY inputs as plain `Option`s so
+/// [`SpawnTestOverride`] can stay debug-only; they are a tuple (not two
+/// parameters) only to stay under clippy's argument-count ceiling.
+async fn spawn_terminal_session_impl(
     cli: String,
     work_dir: Option<String>,
     cols: Option<u16>,
     rows: Option<u16>,
-    test_override: Option<SpawnTestOverride>,
+    test_seam: (Option<String>, Option<u32>),
     app: AppHandle,
     state: tauri::State<'_, Mutex<TerminalState>>,
 ) -> Result<String, String> {
+    let (test_binary, test_pwsh_major) = test_seam;
+
     // SettingsStore / DynamicTableStore are injected state, NOT wire arguments — reading
     // them off the handle keeps the command's wire shape unchanged and its
     // argument count under clippy's limit.
     let store = app.state::<Arc<SettingsStore>>();
     let application_store = app.state::<Arc<DynamicTableStore>>();
+
+    // Release-absence defence in depth (Spec #3078 ST-1): a build that did not
+    // compile the TEST-ONLY seam in cannot honour test inputs, even if a future
+    // caller supplies them. In a debug/test build this is a pass-through.
+    let (test_binary, test_pwsh_major) = if SPAWN_TEST_SEAM_COMPILED_IN {
+        (test_binary, test_pwsh_major)
+    } else {
+        (None, None)
+    };
 
     let cwd = work_dir
         .filter(|s| !s.trim().is_empty())
@@ -1278,7 +1298,7 @@ pub async fn spawn_terminal_session(
 
     // Diagnostic override settings (unrendered). The TEST-ONLY seam wins over
     // the stored Copilot path (which only applies to a Copilot session).
-    let binary_override = test_override.as_ref().and_then(|o| o.binary.clone()).or_else(|| {
+    let binary_override = test_binary.or_else(|| {
         if cli == SessionKind::Copilot {
             store.cached_get(COPILOT_PATH_KEY).ok().flatten()
         } else {
@@ -1290,7 +1310,7 @@ pub async fn spawn_terminal_session(
     let created_at = now_ms();
 
     // ── Pre-flight: resolve / validate / plan / Copilot prereq gate ────────
-    let form = match prepare_session(cli, &cwd, binary_override, &pwsh, test_override.as_ref()) {
+    let form = match prepare_session(cli, &cwd, binary_override, &pwsh, test_pwsh_major) {
         Ok(form) => form,
         Err((kind, msg)) => {
             tracing::error!(target: "fredo::terminal", error = %msg, "launch preparation failed");
@@ -1315,6 +1335,58 @@ pub async fn spawn_terminal_session(
     }
 
     Ok(session_id)
+}
+
+/// Spawn a new CLI session in its own PTY and start streaming its output
+/// (debug/test build — Spec #3078 ST-1).
+///
+/// This is the SAME command symbol/path registered in `lib.rs`; only its wire
+/// shape is profile-dependent. A debug/test build keeps the TEST-ONLY
+/// `testOverride` argument so the committed terminal recipes (F-14/F-16) stay
+/// reachable; the shared body lives in [`spawn_terminal_session_impl`].
+#[cfg(debug_assertions)]
+#[tauri::command]
+pub async fn spawn_terminal_session(
+    cli: String,
+    work_dir: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+    test_override: Option<SpawnTestOverride>,
+    app: AppHandle,
+    state: tauri::State<'_, Mutex<TerminalState>>,
+) -> Result<String, String> {
+    let test_binary = test_override.as_ref().and_then(|o| o.binary.clone());
+    let test_pwsh_major = test_override.and_then(|o| o.pwsh_major);
+    spawn_terminal_session_impl(
+        cli,
+        work_dir,
+        cols,
+        rows,
+        (test_binary, test_pwsh_major),
+        app,
+        state,
+    )
+    .await
+}
+
+/// Spawn a new CLI session in its own PTY and start streaming its output
+/// (release build — Spec #3078 ST-1).
+///
+/// This is the SAME command symbol/path registered in `lib.rs`; only its wire
+/// shape is profile-dependent. A shipped build declares NO `testOverride`
+/// argument, so no IPC payload can name the executable a PTY is pointed at:
+/// the binary comes only from the stored Copilot path or PATH resolution.
+#[cfg(not(debug_assertions))]
+#[tauri::command]
+pub async fn spawn_terminal_session(
+    cli: String,
+    work_dir: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+    app: AppHandle,
+    state: tauri::State<'_, Mutex<TerminalState>>,
+) -> Result<String, String> {
+    spawn_terminal_session_impl(cli, work_dir, cols, rows, (None, None), app, state).await
 }
 
 /// Session list — the mount-time source of truth for the window (and the QA's
@@ -2209,5 +2281,47 @@ mod tests {
     fn default_presentation_targets_the_main_host() {
         // Spec #2955 decision 1 — the platform default is the main window.
         assert_eq!(host_label_for(AppPresentation::SameWindow), MAIN_WINDOW_LABEL);
+    }
+
+    // ── Release-absent spawn test seam (Spec #3078 ST-1, R-2.a/R-2.b) ───────
+    //
+    // The seam must be present in debug/test builds (R-2.b, the committed
+    // terminal recipes keep working) and absent in a release build (R-2.a).
+    // Every test that names `SpawnTestOverride` is debug-gated so the inline
+    // module still COMPILES under `debug_assertions = false`.
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn spawn_terminal_debug_has_test_seam_compiled_in() {
+        let seam_compiled_in = SPAWN_TEST_SEAM_COMPILED_IN;
+        assert!(seam_compiled_in, "the debug/test build keeps the seam");
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn spawn_terminal_debug_test_override_deserializes_wire_keys() {
+        // The EXACT wire payload recipe F-14 sends: camelCase keys.
+        let parsed: SpawnTestOverride = serde_json::from_str(
+            r#"{"binary":"C:\\Nonexistent\\copilot.exe","pwshMajor":5}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.binary.as_deref(), Some(r"C:\Nonexistent\copilot.exe"));
+        assert_eq!(parsed.pwsh_major, Some(5));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn spawn_terminal_debug_test_override_empty_payload_is_inert() {
+        // `Default` must survive so an omitted/empty `testOverride` still works.
+        let parsed: SpawnTestOverride = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(parsed.binary.is_none());
+        assert!(parsed.pwsh_major.is_none());
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn spawn_terminal_release_has_no_test_seam() {
+        let seam_compiled_in = SPAWN_TEST_SEAM_COMPILED_IN;
+        assert!(!seam_compiled_in, "a shipped build must not compile the seam in");
     }
 }
