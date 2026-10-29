@@ -34,6 +34,10 @@ jobs:
           filters: |
             ui:
               - 'apps/ui/**'
+              # The OpenCode plugin is built by tauri.conf.json's
+              # beforeDevCommand/beforeBuildCommand, so a plugin break breaks the app.
+              # Real coverage: ui-validate also builds it (below).
+              - 'apps/opencode-plugin/**'
               # The SERVED webview entry is `apps/tauri` (index.html → src/main.tsx,
               # served by `pnpm dev:webview` / built by `build:webview`). A change to
               # the served entry must trigger ui-validate so the served build cannot
@@ -69,7 +73,18 @@ jobs:
           node-version: 20
           cache: 'pnpm'
           cache-dependency-path: pnpm-lock.yaml
-      - run: pnpm install --filter @fredo/ui... --filter @fredo/tauri...
+      # bun builds the OpenCode plugin — same SHA-pinned action as release.yml:36.
+      # No other validate.yml job installs bun today.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      # Deterministic install (AC2). The plugin filter is REQUIRED: @fredo/ui and
+      # @fredo/tauri have no dependency edge on @fredo/fredo-opencode-plugin
+      # (apps/tauri/package.json:14-21, apps/ui/package.json:16-33), so the previous
+      # ui+tauri filter never prepared apps/opencode-plugin/node_modules.
+      - run: pnpm install --frozen-lockfile --filter @fredo/ui... --filter @fredo/tauri... --filter @fredo/fredo-opencode-plugin...
+      # Real plugin coverage (AC3): the plugin build is a Tauri build hook
+      # (apps/tauri/src-tauri/tauri.conf.json:7-8); a compile break must fail the gate.
+      - name: Build OpenCode plugin
+        run: pnpm --filter @fredo/fredo-opencode-plugin build
       - run: pnpm --filter @fredo/ui typecheck
       - run: pnpm --filter @fredo/ui build
       - run: pnpm --filter @fredo/ui test:run
@@ -106,15 +121,38 @@ jobs:
       - run: cargo clippy --manifest-path apps/tauri/src-tauri/Cargo.toml --locked -- -D warnings
 
   # validate — THE required check; always runs so it never goes "Expected" (AC2/AC3).
+  # Fail-closed: a non-success `paths` result, or any leg result other than exactly
+  # `success`/`skipped`, turns this check red. `if: always()` is load-bearing — without it
+  # adding `paths` to `needs` would make this job skip when the discriminator fails.
   validate:
-    needs: [ui-validate, rust-validate]
+    needs: [paths, ui-validate, rust-validate]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Check results
+        env:
+          PATHS_RESULT: ${{ needs.paths.result }}
+          UI_RESULT: ${{ needs.ui-validate.result }}
+          RUST_RESULT: ${{ needs.rust-validate.result }}
         run: |
-          if [ "${{ needs.ui-validate.result }}" = "failure" ] || [ "${{ needs.rust-validate.result }}" = "failure" ]; then
+          status=0
+          if [ "$PATHS_RESULT" != "success" ]; then
+            echo "::error::paths discriminator result was '$PATHS_RESULT' (expected success) - failing closed"
+            status=1
+          fi
+          for entry in "ui-validate=$UI_RESULT" "rust-validate=$RUST_RESULT"; do
+            leg="${entry%%=*}"
+            result="${entry#*=}"
+            case "$result" in
+              success|skipped) ;;
+              *)
+                echo "::error::$leg result was '$result' (only success or skipped is accepted) - failing closed"
+                status=1
+                ;;
+            esac
+          done
+          if [ "$status" -ne 0 ]; then
             exit 1
           fi
           echo "All checks passed"
