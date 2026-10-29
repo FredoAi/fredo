@@ -68,6 +68,13 @@ it satisfies, and the files it owns. Developers work these checklist items on th
 > rendering) MUST stay `live`: the testing exit gate and audit fail-closed unless the
 > tester's Evidence references `telemetry_spans` (a live-query result) for live-policy
 > plans. A static PASS for a live-policy plan is a false PASS.
+>
+> **A CI-workflow-logic spec is `static`:** when the deliverable is workflow source and its gate
+> semantics (path filters, job graph, aggregator logic, required-check identity) there is no app,
+> webview, or telemetry surface, so `live` is unsatisfiable. Declare `static` AND bind a real CI
+> run of the workflow on the spec PR's final head SHA as the receipt, and pre-authorize the
+> literal disclosure `logic-verified, no discriminating run` for any row this spec's own PR
+> cannot discriminate (G-410).
 
 ### QA Plan
 

@@ -246,6 +246,29 @@ Fredo ships installable builds from a dedicated protected release branch (`relea
 - `release.yml` (`.github/workflows/release.yml`) triggers on a push to `release/stable`, builds the platform artifacts, and publishes them to a **draft** GitHub Release (`releaseDraft: true`) so the owner reviews and publishes them. The release workflow never triggers on `main` and is never a required check on `main`.
 - The release approval gate and the full owner-manual cut procedure are documented in [`docs/release-process.md`](release-process.md). The `release/stable` branch protection and ruleset are repo-admin **settings** that the owner applies (they are not a checked-in file).
 
+## Merge Gate (Spec #3079)
+
+The `main` merge gate is the other non-bypassable control, and it is **fail-closed**:
+
+- **`validate`** (`.github/workflows/validate.yml`) is the **only** required status check. It runs
+  `if: always()`, so it always produces a real conclusion, and it **fails** when the `paths`
+  discriminator did not succeed or when either per-stack leg (`ui-validate`, `rust-validate`)
+  reports anything other than exactly `success` or `skipped`. A `cancelled`, failed, or otherwise
+  abnormal leg therefore turns the required check **red** — it cannot be merged through a
+  timeout, a manual cancellation, or a broken path filter.
+- **Dependencies are resolved deterministically:** both in-scope installs use
+  `pnpm install --frozen-lockfile`, so a drifted `pnpm-lock.yaml` fails the gate instead of
+  silently resolving different versions.
+- **The OpenCode plugin is covered by the gate:** `apps/opencode-plugin/**` selects the UI leg,
+  which installs the plugin workspace and builds `@fredo/fredo-opencode-plugin` — the plugin is a
+  Tauri build hook, so a plugin compile break would break the shipped app.
+- **`fast-validate`** (`.github/workflows/validate-fast.yml`) is an explicitly **non-gating**
+  early signal — it is never a required check and never short-circuits the thorough gate.
+
+[`docs/CI_GATE_CONTRACT.md`](CI_GATE_CONTRACT.md) is the authoritative description of the
+per-stack behaviour; the branch-protection rule that points at `validate` is a repo-admin
+**setting**, not a checked-in file.
+
 ## Reporting Security Issues
 
 Report security vulnerabilities privately via the GitHub repository's Security tab (private advisory). Do not open public issues for security-sensitive findings.
