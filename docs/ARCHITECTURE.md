@@ -960,9 +960,12 @@ Defined in `capabilities/default.json`:
 | `core:window:allow-close` | Backend closes the terminal window |
 | `core:window:allow-start-dragging` | Window drag support |
 | `core:window:allow-set-title` | Dynamic window title updates |
-| `shell:allow-open` | Open external URLs in system browser |
-| `shell:allow-spawn` | Spawn child processes (PTY terminal) |
-| `shell:allow-execute` | Execute shell commands (PTY terminal) |
+
+`mcp-bridge:default` is **not** part of the production capability: it lives only in `capabilities/mcp-bridge-dev.json`. That capability is inert in a release build because the plugin is registered under `#[cfg(debug_assertions)]` (`src/lib.rs:169-179`) — no bridge port is bound and no bridge command exists. Both capability files are auto-loaded in every build (no explicit `app.security.capabilities` list is used), so release-absence comes from that runtime gate.
+
+No capability grants a shell-plugin command: `shell:allow-open`, `shell:allow-spawn` and `shell:allow-execute` were removed because no product source calls the shell plugin (`tauri_plugin_shell::init()` remains registered at `src/lib.rs:167` but is inert without a grant). Backend process spawning uses `std::process::Command` / `portable_pty`.
+
+**CSP and global Tauri.** The production CSP (`app.security.csp`) keeps `script-src 'self' blob: 'wasm-unsafe-eval'` (no `'unsafe-inline'`), retains `style-src 'self' 'unsafe-inline'` for Chakra UI v3 / emotion runtime styles, and leaves `img-src`, `connect-src` and `worker-src blob:` unchanged. `app.security.devCsp` is the dev-only policy that still permits `script-src 'unsafe-inline'` for Vite HMR. `app.withGlobalTauri` is `false`, so a shipped webview has no `window.__TAURI__`; product code uses `__TAURI_INTERNALS__` only. The dev-only `tauri.dev.conf.json` override (merged by `tauri dev --config`) restores `withGlobalTauri: true` for the MCP driver in development.
 
 ---
 

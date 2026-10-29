@@ -721,7 +721,7 @@ function Invoke-EnvUp {
   # Tauri devUrl override: the static tauri.conf.json points at 5174; this
   # per-env config merges the env's Vite port (ST-3 proved the CLI merge).
   $confPath = Join-Path $EnvRoot "tauri.env.conf.json"
-  $confJson = (@{ build = @{ devUrl = "http://localhost:$VitePort" } } | ConvertTo-Json -Depth 4)
+  $confJson = (@{ build = @{ devUrl = "http://localhost:$VitePort" }; app = @{ withGlobalTauri = $true } } | ConvertTo-Json -Depth 4)
   [System.IO.File]::WriteAllText($confPath, $confJson, (New-Object System.Text.UTF8Encoding($false)))
 
   # Inject the Names-Block environment (the app + every opencode session it
