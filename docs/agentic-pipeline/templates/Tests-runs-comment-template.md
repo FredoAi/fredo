@@ -3,6 +3,11 @@
 > Drafted by the **Tester** as `.opencode/tmp/<issue>/tests-runs.md`, auto-posted by the testing → audit transition (or via `post-comments`). The verification gate reads `## Tests Runs` for the verdict + `telemetry_spans` evidence. This is the only verdict path — the `--prefix Evidence` alias was removed.
 
 <!-- V1 — verdict line MUST be the first content line: "Verdict: **PASS**" or "Verdict: **FAIL**" -->
+<!-- Do NOT add a `## Tests Runs` heading below the verdict line. The machine prepends and
+     round-stamps that heading; a heading written lower in the body is posted verbatim and the
+     verdict reader — which reads the comment's LEADING line — never finds it, blocking the
+     exit gate ("no tester Evidence / Tests Runs comment found"). Write no heading, or make it
+     the very first line (G-013). -->
 
 Verdict: **PASS** (N/N ACs)
 
