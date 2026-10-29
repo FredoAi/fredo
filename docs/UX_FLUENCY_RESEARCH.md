@@ -1,4 +1,6 @@
-> **Status:** STAGE 1 — method + model; results pending Gate H.
+> **Status:** Desk research, clickable prototype and reusable session kit delivered. User evidence
+> and the numeric Gate H go/no-go decision are **deferred to #3120** (real-pilot evaluation); the
+> deferral is a scope decision, not a failed gate.
 
 # Fredo Navigation Fluency Research (Issue #3115)
 
@@ -17,20 +19,21 @@ Four workstreams, in order:
 | A | Principle synthesis | §2 of this report — each principle with an external source and a Fredo-specific rule |
 | B | Current-state teardown + heuristic evaluation | §3 and §4 — a reproducible matrix over nine shipped surfaces, then repo-anchored findings |
 | C | Clickable prototype | §5 + a throwaway static prototype under `spikes/3115-navigation-engine/prototype/` |
-| D | Moderated sessions + baseline metrics | §6–§10 — protocol, task set, metrics, RQ answers, per-participant evidence |
+| D | Reusable session kit | §6–§10 — protocol, task script, question set, metric definitions and falsifiable hypotheses; the human evidence and the numeric gate are deferred to #3120 |
 
-**The gate is the deliverable.** A **NO-GO** (or REDESIGN) verdict is a successful outcome: it
-names the failed threshold, what participants actually did instead, and one concrete redesign
-hypothesis, so the owner can make a funded decision *not* to build. No retry is scheduled to
-"get a GO". P2 (the framework spec) does not start without the recorded human decision.
+**The gate is specified, not run here.** The six gate lines live verbatim in the session kit (§6.1,
+§9.1) as the #3120 instrument. When they are run, a **NO-GO** (or REDESIGN) outcome is a successful
+research outcome: it names the failed threshold, what participants actually did instead, and one
+concrete redesign hypothesis, so the owner can make a funded decision *not* to build. No retry is
+scheduled to "get a GO". P2 (the framework spec) does not start without the recorded human decision.
 
-**No results exist yet.** This document is Stage 1: the principle set, the teardown and the
-heuristic evaluation are complete; the prototype, protocol, metrics, research-question answers,
-verdict and per-participant appendix are *methods awaiting data*. The human-only session stage
-(Gate H) has not produced data, so every results section carries an explicit pending-gate marker
-that Stage 2 replaces with transcribed human data. No participant, rating, quote or "typical
-finding" in this document is real; fabricating one would corrupt the funding decision the spike
-exists to inform.
+**No user results exist, by design.** The desk research (§2–§4), the clickable prototype (§5) and
+the reusable session kit (§6) are delivered; the research questions are recorded as falsifiable
+hypotheses (§8) with no evidence claim of any kind. The human-only session stage (Gate H) is **not
+run in this spike** — the user evidence, the participant-mix verification and the numeric go/no-go
+decision are deferred to **#3120**, which reuses this spike's task script (T1–T7) and question set
+unchanged on the real pilot. No participant, rating, quote or "typical finding" in this document is
+real; fabricating one would corrupt the funding decision the spike exists to inform.
 
 **Explicit limitation, stated up front.** The sessions run on the prototype only — the issue
 forbids driving the shipped app — so this design **cannot** measure a controlled improvement over
@@ -453,85 +456,172 @@ supports; (e) `n/a` concerns are stated, not silently omitted.
 
 ### 5.1 Prototype Overview
 
-> STATUS: PENDING GATE H — NO DATA
+The prototype is **delivered and committed** at
+`spikes/3115-navigation-engine/prototype/` — `index.html`, `prototype.css`, `prototype.js` and a
+`README.md`. It opens directly from `file://` (no server, no install) and is a low-fidelity greybox
+of the proposed place model. It covers:
+
+- the place tree (`Canvas` root → Create / Edit / Arrange / Style / View / File);
+- the root direct aliases;
+- the place rail (breadcrumb + contextual verbs + `/ Ask` + `? Map`);
+- the `?` navigation map;
+- selection-aware verbs;
+- the launcher conversation (natural language, a `>` palette whose rows carry a place path, key and
+  risk level, and Escape popping one layer);
+- an attributed undo for a companion change.
+
+The prototype is a research stimulus, not a measured result: no session has been run against it in
+this spike, and no observation in this report comes from it.
 
 ### 5.2 Task-to-Affordance Coverage
 
-> STATUS: PENDING GATE H — NO DATA
+Coverage is stated **statically**, from the committed files — not from a driven session. The
+prototype exposes an affordance for every task in the kit's script:
+
+- **T1 (find what you can create)** — the place tree, the root direct aliases and the `?` map.
+- **T2 (create and move a rectangle)** — the Create place verbs / `r` alias, plus canvas
+  pointer-drag positioning.
+- **T3 (arrange three elements)** — the Arrange place verbs (align left/centre, distribute, group),
+  enabled only when the selection meets their requirement.
+- **T4 (change a fill)** — the Style place (`f` set fill, copy/paste/reset style) and the fill
+  swatches.
+- **T5 (save/export)** — the File place (Save, Save as, Export, Export PNG); the greybox announces
+  the result and writes no file, by design.
+- **T6 (companion change, then undo exactly that change)** — the launcher's natural-language path,
+  the change announcement, and the attributed undo toast that names the target and property.
+- **T7 (recall after the distractor)** — the `?` map is the recall stimulus; the distractor itself
+  is protocol §9, not prototype behaviour.
+
+The proof that "a participant can complete T1–T6 unaided" is **human evidence deferred to #3120**.
+It is explicitly **not** a #3115 condition and no such claim is made here.
 
 ### 5.3 Throwaway Boundary
 
-> STATUS: PENDING GATE H — NO DATA
+`spikes/3115-navigation-engine/prototype/` is **THROWAWAY** and is deleted whole at P8. It is a
+disposable stimulus, not product code: it imports nothing from `apps/`, uses no Fredo theme tokens,
+adds no build or workspace wiring, emits no telemetry, writes no file and makes no network call.
+Nothing in it is meant to survive the spike; the report and the session kit are the durable
+artifacts.
 
 ## 6. Method and Session Protocol
 
 ### 6.1 Protocol Reference
 
-> STATUS: PENDING GATE H — NO DATA
+The **deliverable** is the committed protocol at
+`spikes/3115-navigation-engine/session-protocol.md` — the normative, ready-to-use instrument for
+#3120, not a pending step. It fixes, verbatim: consent and anonymisation, the recruitment quota,
+the moderator rules, the task script T1–T7, the question set (Q-WHERE, the two UMUX-Lite items,
+Q-TRUST, Q-SYS, Q-RECALL), the metric columns, the distractor, and the six gate lines GO-1…GO-4,
+PRE-1, PRE-2. #3120 reuses it unchanged; this report does not paraphrase it.
 
 ### 6.2 Participant Mix and Recruitment
 
-> STATUS: PENDING GATE H — NO DATA
+The recruitment quota is carried by the kit (§3 of `session-protocol.md`) and is a **#3120
+requirement**: ≥2 keyboard-first/vim-comfortable, ≥2 non-vim, ≥2 new to Wireframe, and ≥1
+non-keyboard-first completion (PRE-2). No participant exists in #3115, so no mix can be satisfied
+or violated here; participant-mix verification is deferred to #3120.
 
 ### 6.3 Consent, Anonymisation and Moderator Rules
 
-> STATUS: PENDING GATE H — NO DATA
+Consent, anonymisation and moderator rules are specified in the kit (§2 and §4 of
+`session-protocol.md`): participants are referenced only as `P1`–`P8`, no identifying detail is
+committed, a participant without recorded consent contributes no row, recording is opt-in and
+defaults to no, and the moderator follows a fixed script without teaching. The blank
+per-participant input template is
+`spikes/3115-navigation-engine/session-kit/gate-h-input-template.md` — P1–P8 blocks with every
+field an empty placeholder and no example rows, ratings or quotes.
 
 ## 7. Metrics
 
 ### 7.1 Metric Definitions
 
-> STATUS: PENDING GATE H — NO DATA
+The metric definitions (column names and domains) are **normative in
+`spikes/3115-navigation-engine/session-protocol.md` §7** and are not restated here. No metric data
+exists in #3115 by design; results are deferred to #3120.
 
 ### 7.2 Aggregated Results
 
-> STATUS: PENDING GATE H — NO DATA
+No aggregated results exist in #3115 by design — no sessions were run. The aggregated table is
+produced from #3120 session data using the column contract in `session-protocol.md` §7; nothing is
+prefilled here.
 
 ### 7.3 Per-Participant Raw Data
 
-> STATUS: PENDING GATE H — NO DATA
+No per-participant rows exist in #3115 by design. #3120 fills
+`spikes/3115-navigation-engine/session-kit/gate-h-input-template.md` per participant; no row is
+transcribed into this report at this stage.
 
 ## 8. Research Question Answers
 
 ### 8.1 RQ1 — Does the place tree improve felt flow?
 
-> STATUS: PENDING GATE H — NO DATA
+**Hypothesis (predicted direction).** Participants navigate the place model with less recall than
+the documented flat-key baseline.
+
+**Method that will answer it.** #3120 sessions: Q-WHERE plus unaided success on T1–T5. The
+comparator is the §3 teardown's documented flat-key surface (36 simultaneous bindings, hidden mode
+set) — qualitative only, because no measured improvement is possible (§11.1 limitation 3).
+
+**Falsifier.** Where-rating and unaided success at or below the documented baseline behaviour.
 
 ### 8.2 RQ2 — Does launcher-only conversation feel connected?
 
-> STATUS: PENDING GATE H — NO DATA
+**Hypothesis (predicted direction).** Participants treat launcher conversation as part of the same
+system, not a separate app.
+
+**Method that will answer it.** #3120 sessions: Q-SYS plus the T6 conversation-to-undo flow.
+
+**Falsifier.** A majority of participants describe the launcher conversation as a separate app.
 
 ### 8.3 RQ3 — Does auto-apply with visible undo build trust?
 
-> STATUS: PENDING GATE H — NO DATA
+**Hypothesis (predicted direction).** Participants trust the change because it is attributed and
+reversible in one step.
+
+**Method that will answer it.** #3120 sessions: Q-TRUST plus the T6 first-attempt undo and trail
+inspection.
+
+**Falsifier.** A failed first-attempt undo, or a trust rating at or below neutral.
+
+**#3115 answers no research question and asserts no evidence.** The hypotheses above are the #3120
+instrument; they are not results.
 
 ## 9. Go/No-Go Verdict
 
 ### 9.1 Gate Lines
 
-> STATUS: PENDING GATE H — NO DATA
+The six gate lines (GO-1…GO-4, PRE-1, PRE-2) live **verbatim** in
+`spikes/3115-navigation-engine/session-protocol.md` §8 as the #3120 instrument. They are not
+applied, scored or reproduced with an outcome in this report.
 
 ### 9.2 Verdict
 
-> STATUS: PENDING GATE H — NO DATA
+The numeric go/no-go decision is **deferred to #3120**, which runs this spike's task script (T1–T7)
+and question set **unchanged** on the real pilot. No gate outcome is produced, recorded or implied
+in #3115.
 
 ### 9.3 Human Decision
 
-> STATUS: PENDING GATE H — NO DATA
+The deferral is a **scope decision, not a failed gate**: no threshold was missed, no participant was
+recruited, and no result was suppressed or hidden. The human chose to measure real users on the real
+Wireframe pilot (#3120) rather than on the greybox prototype (§11.1 limitation 5). This report
+states the deferral and contains no gate outcome.
 
 ## 10. Appendix — Per-Participant Evidence
 
 ### 10.1 Per-Participant Notes
 
-> STATUS: PENDING GATE H — NO DATA
+No participant evidence exists in #3115 **by design**: no sessions were run, and participant-mix
+verification is deferred to #3120. There are no per-participant notes, ratings or quotes here.
 
 ### 10.2 Quote Index
 
-> STATUS: PENDING GATE H — NO DATA
+No quote index exists in #3115 by design. A quote index belongs to the #3120 session evidence.
 
 ### 10.3 Session Deviations
 
-> STATUS: PENDING GATE H — NO DATA
+No session deviations exist in #3115 by design — no session was run. Deviations are recorded by the
+moderator per participant (protocol §4 rule 7) during #3120.
 
 ## 11. Limitations and Threats to Validity
 
