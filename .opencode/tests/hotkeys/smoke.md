@@ -327,4 +327,35 @@ errors.
       `pnpm --filter @fredo/tauri build:webview` leg. **Expected:** all pass with no
       weakened/disabled assertion. Cross-ref `regression.md` R-47.
 
+## Spec #3097 quick paths (application command surface — slice A)
+
+> Live-plan quick paths for issue #3097. **Receipt:** a `tauri_webview_*` result (this slice emits
+> no shortcut telemetry by contract — the `telemetry_spans` wording in the header above belongs to
+> the #2946-era rows). Env: `dev-env.ps1 -Up -Spec 3097 -EnvId <id> -EnvSlot <n> -RequireIsolation`;
+> ports from `.opencode/tmp/envs/<id>/manifest.json`; `tauri_driver_session start {port: ports.mcp}`.
+> Names: `hotkeys-keybar-mode` / `-row` / `-prompt` / `-prompt-input`, body hooks
+> `data-fredo-active-mode` / `data-fredo-command-prompt`, app root `data-fredo-app-id`.
+
+- [ ] S-31: **App boots + engine + bar coherent.** Load the isolated env's webview and read
+      `document.documentElement[data-fredo-hotkeys-engine]`, `data-fredo-hotkey-count` and the bar.
+      **Expected:** `#root` mounts, the engine hook is `"1"`, the count equals the mounted valid
+      `data-hotkey` elements, the bar's presence matches (count ≥ 1 ⇒ present), no
+      `vite-error-overlay`; console clean. *(live receipt)*
+- [ ] S-32: **The fixture activates without a reload.** Call
+      `window.__fredoCommandSurfaceFixture.activate()`. **Expected:** exactly two
+      `[data-fredo-app-id^="command-fixture-"]` roots render through the real `WindowFrame`, both
+      `[data-testid="command-fixture-root"]` present, no duplicate window on a second `activate()`,
+      console clean. *(live receipt)*
+- [ ] S-33: **Mode badge + rows quick path.** Focus alpha, press `t`. **Expected:**
+      `hotkeys-keybar-mode` renders with `data-mode-id="tool"` / `data-mode-app="command-fixture-alpha"`
+      / `data-mode-path="browse>tool"`, one `hotkeys-keybar-row` for `c`, screenshot succeeds.
+      *(live receipt)*
+- [ ] S-34: **Prompt quick path.** Press `c`, type `hi`, Enter. **Expected:** the bar shows
+      `hotkeys-keybar-prompt` with its input (list absent), then the value reaches the app's sink and
+      the mode returns to `browse`; screenshot succeeds; console clean. *(live receipt)*
+- [ ] S-35: **CI-parity gate.** `pnpm --filter @fredo/ui test:run -- src/shared/hotkeys`,
+      `pnpm --filter @fredo/ui build`, `cargo check` (from `apps/tauri/src-tauri/`),
+      `pnpm --filter @fredo/tauri build:webview`. **Expected:** all pass with no weakened/disabled
+      assertion and no new dependency. Cross-ref `regression.md` R-51/R-55/R-56. *(static)*
+
 
