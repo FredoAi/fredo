@@ -65,6 +65,7 @@ By the Orchestrator when a feature reaches the `audit` phase — the spec PR has
 - **Never research code or telemetry** to judge an issue — code/telemetry research is the Software Architect's scope; if the record cannot support a verdict, report the gap.
 - **Never touch the record.** The event log, verdicts, and error log are append-only; the Auditor reads them and never rewrites, edits, or backdates them.
 - **`verify` before `audit`.** Never derive a verdict from a record the integrity gate did not clear.
+- **The bundle's `live-telemetry-evidence` signal is a REFERENCE signal, not a result (G-099).** It reports that the record MENTIONS a spans query, not that a query returned rows — a round whose only span query returned zero can still show `true`. Corroborate it against the record's actual query output before crediting it, and when the span count is zero under a live policy, judge the live-evidence clause on the other recorded receipts (live webview/DOM reads, screenshots) and disclose the zero-span leg as a named caveat. Never let the boolean alone clear a live-policy gate; tightening the scan is the Machinist's lever.
 
 ## References
 
