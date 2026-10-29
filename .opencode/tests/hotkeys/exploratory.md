@@ -562,5 +562,55 @@ Teardown (run after this suite): remove every injected probe element
 (`tauri_webview_execute_js`), confirm `data-fredo-hotkey-count` returns to the shipped baseline and
 `data-fredo-hotkey-duplicate` is absent; no persisted binding exists (the new model is config-free).
 
+## Spec #3097 — application command surface probes
+
+> Live-plan probes for issue #3097. Names bind to the Architect's BINDING names block (see the
+> `#3097` header in `functional.md`). Receipt = a `tauri_webview_*` result. A confirmed finding
+> PROMOTES to `functional.md` as a new `F-` row (keep the origin note). Every dynamic lever here is
+> `tauri_webview_execute_js` / `tauri_webview_keyboard`; the fixture must first be activated via
+> `__fredoCommandSurfaceFixture.activate()` (ST-6 bridge).
+
+- [ ] E-66: **Prompt across a real window blur.** Open the prompt, type a draft, minimize + refocus
+      the app window. Does the prompt survive with its draft (module-owned value), is focus returned
+      to the input, and does no handler run? A lost draft / closed prompt promotes to F-121/F-128.
+- [ ] E-67: **Activation idempotency.** Call `activate()` twice (and once after `deactivate()`).
+      Does the number of `[data-fredo-app-id^="command-fixture-"]` roots stay 2 (no duplicate stub
+      app in the persistent registry, `applicationRegistry.ts:24-26`), and does `deactivate()` remove
+      both without a stale mode/badge? A duplicated window or stale state promotes to F-115.
+- [ ] E-68: **Empty mode keymap.** Declare a mode with `keymap: {}` (fixture variant or the ST-4 model
+      test). Is the badge rendered with zero rows and `empty` false (badge present), and does a key
+      fall through to the element fallback / globals rather than getting swallowed? Promotes to
+      F-117.
+- [ ] E-69: **Long titles + narrow bar.** Give a command a very long `title` and open its mode at
+      1280 px. Does the row ellipsize at the existing clamp with the `minWidth` floor (never 0) while
+      the badge keeps a non-zero width and the list does not clip? Promotes to F-117/F-135.
+- [ ] E-70: **Mode key while a FOREIGN text input is focused.** Focus
+      `TEXTAREA[data-testid="launcher-command-input"]` (outside every app root) while alpha is the
+      last-focused app; press `c`. Does the character land in the field verbatim (text-entry precedence,
+      `resolveFocusedApplicationId()` → `null`) with no command/prompt? A fired command promotes to
+      F-111/F-124.
+- [ ] E-71: **Pre-prompt element removed while the prompt is open.** Focus `command-fixture-element`,
+      open the prompt, then remove that element from the DOM and commit. Does focus land on a live
+      node (never a detached one) with no throw? A stranded/detached focus promotes to F-131.
+- [ ] E-72: **Rapid push/pop + focus churn.** Hammer `t`/`c`/Escape and alternate focus alpha↔beta
+      ten times. Does the badge/path/row set always match the focused app's stack, with no stale row,
+      no double pop and no `Maximum update depth exceeded`? Promotes to F-117/F-126/F-134.
+- [ ] E-73: **Pending prefix armed, then the prompt opens.** Inject `data-hotkey="a+b"`, press `a`
+      (pending chip + `data-fredo-pending-sequence="a"`), then open the prompt. Is the chip suppressed
+      while the prompt is open, and does closing the prompt leave no stale chip (the pending was
+      abandoned by the focus change)? Promotes to F-128.
+- [ ] E-74: **IME-composition Enter in the prompt.** Compose (e.g. Japanese) text and press Enter to
+      commit the composition, then Enter again. Does the first Enter only close the composition (no
+      handler run) and the second commit exactly once? A double-commit promotes to F-129/F-133.
+- [ ] E-75: **Two windows, one opting / one not.** With the fixture active, open a shipped app (e.g.
+      Mission Monitor) and focus it. Does the bar return to the app-global element listing with no
+      badge, and do that app's own `data-hotkey` keys still fire while the opting app's mode keys are
+      inert? Cross-promotes to F-111/F-112/R-50.
+
+Teardown (run after this suite): `__fredoCommandSurfaceFixture.deactivate()`, remove every injected
+`data-hotkey` probe span, confirm `data-fredo-active-mode` / `data-fredo-command-prompt` /
+`data-fredo-hotkey-duplicate` are absent and `data-fredo-hotkey-count` is at baseline; no persisted
+mode/keymap exists (the slice is config-free).
+
 
 
