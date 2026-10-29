@@ -62,12 +62,16 @@ it satisfies, and the files it owns. Developers work these checklist items on th
 
 ## QA Expert
 
-> **Verification policy: live** — replace `live` with `static` ONLY if every AC in this
-> plan is genuinely verifiable without observing a running system (pure unit-testable
-> logic). Emission/observability features (telemetry, spans, events, metrics, UI
-> rendering) MUST stay `live`: the testing exit gate and audit fail-closed unless the
-> tester's Evidence references `telemetry_spans` (a live-query result) for live-policy
-> plans. A static PASS for a live-policy plan is a false PASS.
+> **Verification policy: live** — replace `live` with `static` if every AC in this plan is
+> genuinely verifiable without observing a running system. That includes a **prove-a-negative
+> / static-config AC** (the absence of a privilege or debug surface, or a build-profile/config
+> value such as CSP, `withGlobalTauri`, a capability grant, or `#[cfg(debug_assertions)]`
+> gating) — those MUST be `static`, verified from the source/config/built artifact via
+> `Read`/`Grep` plus the committed gate wrapper (`run-exitcode.ps1`). `live` is ONLY for a
+> genuine runtime behaviour a user can observe. Emission/observability features (telemetry,
+> spans, events, metrics, UI rendering) MUST stay `live`: the testing exit gate and audit
+> fail-closed unless the tester's Evidence references `telemetry_spans` (a live-query result)
+> for live-policy plans. A static PASS for a live-policy plan is a false PASS.
 >
 > **A CI-workflow-logic spec is `static`:** when the deliverable is workflow source and its gate
 > semantics (path filters, job graph, aggregator logic, required-check identity) there is no app,

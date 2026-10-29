@@ -3090,6 +3090,66 @@ Test-Script "Cleanup phase: done-close gated to cleanup" {
   }
 }
 
+# Ad-hoc-script surfacing (the #3077 lesson): scripts an agent improvised under
+# `.opencode/tmp/<issue>/` must be listed deterministically at the cleanup/close
+# boundary so recurring ones can be routed to the Toolsmith. The scan is additive
+# and best-effort: it prints the inventory, records an `ad-hoc-scripts` event
+# (count + comma-joined paths), folds a `## Ad-hoc Scripts` section into the
+# `## Final Status`, filters to .ps1/.js/.ts (never .md/.json), and never blocks.
+Test-Script "ad-hoc scripts surfaced at the done close (list + event + final status)" {
+  $url = Mock-IssueCreate "temp: adhoc script surface" "adhoc scratch" "cleanup"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $dir = ".opencode/tmp/$issueNum"
+  $log = ".opencode/state/issues/$issueNum.jsonl"
+  try {
+    # Three improvised scripts (nested + extension-case) and two non-script files
+    # that must NOT be listed.
+    New-Item -ItemType Directory -Path "$dir/e2e" -Force | Out-Null
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText("$dir/e2e/probe.ps1", "Write-Host probe", $utf8)
+    [System.IO.File]::WriteAllText("$dir/e2e/helper.js", "console.log('helper')", $utf8)
+    [System.IO.File]::WriteAllText("$dir/notes.TS", "export const n = 1", $utf8)
+    [System.IO.File]::WriteAllText("$dir/e2e/data.json", "{}", $utf8)
+    [System.IO.File]::WriteAllText("$dir/e2e/REPORT.md", "# report", $utf8)
+    # Prerequisites for the done close: a PASS verdict + a posted success Audit Verdict.
+    [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", $utf8)
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
+    [System.IO.File]::WriteAllText("$dir/verdict-draft.md", "## Audit Verdict`n`nVerdict: **SUCCESS**`n`n*Authored by Auditor*", $utf8)
+    & rust-script $ps --action mock-gh --ghargs "issue comment $issueNum --body-file $dir/verdict-draft.md" 2>&1 | Out-Null
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action close-issue --to-phase done 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "close-issue done failed: $outStr" }
+    if ($outStr -notmatch "labeled done") { throw "Expected labeled-done, got: $outStr" }
+    # (1) printed inventory — exactly the three scripts, repo-relative, filtered.
+    if ($outStr -notmatch "AD-HOC SCRIPTS \(3\)") { throw "Expected a 3-script inventory, got: $outStr" }
+    foreach ($p in @("e2e/probe.ps1", "e2e/helper.js", "notes.TS")) {
+      if ($outStr -notmatch [regex]::Escape($p)) { throw "Expected $p in the printed inventory, got: $outStr" }
+    }
+    if ($outStr -match "data\.json") { throw "Non-script files must not be listed, got: $outStr" }
+    if ($outStr -match "REPORT\.md") { throw "Non-script files must not be listed, got: $outStr" }
+    # (2) recorded event — count + paths.
+    if (-not (Test-Path $log)) { throw "event log missing for scratch issue" }
+    $evt = Select-String -Path $log -Pattern '"event_name":"ad-hoc-scripts"' -ErrorAction SilentlyContinue
+    if (-not $evt) { throw "Expected an ad-hoc-scripts event in the log" }
+    if ("$($evt.Line)" -notmatch '"count":"3"') { throw "Expected count=3 on the event, got: $($evt.Line)" }
+    if ("$($evt.Line)" -notmatch "e2e/probe\.ps1") { throw "Expected the script paths on the event, got: $($evt.Line)" }
+    # (3) folded into the ONE Final Status comment.
+    $comments = (Mock-IssueComments $issueNum) -join "`n"
+    if ($comments -notmatch "## Final Status") { throw "Expected a Final Status comment" }
+    if ($comments -notmatch "## Ad-hoc Scripts") { throw "Expected the Final Status ad-hoc section" }
+    if ($comments -notmatch "e2e/probe\.ps1") { throw "Expected the script path inside the Final Status ad-hoc section" }
+    return "ad-hoc scripts surfaced at the done close (3 listed, event count+paths, Final Status folded) (#$issueNum)"
+  } finally {
+    Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # Project Status sync — the close legs must actually apply (regression #3071).
 # The `canceled` option id (`98236657`) is ALL DIGITS; passing it with `gh`'s `-F`
 # makes gh coerce it to an Int, which GitHub rejects against the query's `String!`
@@ -4206,7 +4266,9 @@ $scripts = @(
   "dev-env.ps1",
   "pre-commit.ps1",
   "wait-telemetry.ps1",
-  "process-hygiene.ps1"
+  "process-hygiene.ps1",
+  "launch-artifact-probe.ps1",
+  "inspect-webview-config.ps1"
 )
 # ST-7 (R-1.3/R-2.3): include the continuous isolation checker only when it
 # landed — the pin stays green whether or not CU-C has shipped it yet.
@@ -4266,6 +4328,84 @@ Test-Script "dev-environment skill pins the run-complete env teardown" {
     throw "dev-environment skill still carries the unconditional 'Do NOT stop the dev:tauri instance' instruction"
   }
   return "dev-environment skill: run-complete teardown + lease lookup + G-401 present; unconditional stop removed"
+}
+
+# --- Webview-security evidence probes (toolsmith, #3077 promotion) ---
+# The static inspector is READ-ONLY and deterministic, so it is executed against
+# the real config here: a green pin proves the tool works AND the shipped
+# boundary still matches the expected values.
+Test-Script "inspect-webview-config.ps1: current config is hardened" {
+  $out = & powershell -NoProfile -File ".opencode/scripts/inspect-webview-config.ps1" 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($LASTEXITCODE -ne 0) { throw "expected exit 0, got $LASTEXITCODE`n$outStr" }
+  if ($outStr -notmatch "RESULT=PASS") { throw "missing RESULT=PASS`n$outStr" }
+  if ($outStr -notmatch "SUMMARY checks=\d+ passed=\d+ failed=0") { throw "unexpected summary`n$outStr" }
+  $global:LASTEXITCODE = 0
+  return "inspector: RESULT=PASS"
+}
+
+# The live probe cannot run in the offline harness (it needs a built release
+# artifact and launches a GUI), so pin its contract instead: debug refusal, the
+# fast BeginConnect probe, the bridge scan, and the orphan report.
+Test-Script "launch-artifact-probe.ps1: debug refusal + fast probe + teardown" {
+  $probePath = ".opencode/scripts/launch-artifact-probe.ps1"
+  $src = Get-Content $probePath -Raw
+  foreach ($tok in @(
+    "BeginConnect",
+    "-RequireClosed",
+    "FREDO_MCP_BASE_PORT",
+    "WebSocket server listening",
+    "ORPHANS_LEFT",
+    "Stop-Process",
+    "HasExited",
+    "600"
+  )) {
+    if (-not $src.Contains($tok)) { throw "launch-artifact-probe missing token: $tok" }
+  }
+  # The warning comment legitimately names Test-NetConnection; fail only on an
+  # actual call (AST CommandAst), never on prose.
+  $tokens = $null
+  $parseErrors = $null
+  $ast = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $probePath).Path, [ref]$tokens, [ref]$parseErrors)
+  $calls = @($ast.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq "Test-NetConnection"
+  }, $true))
+  if ($calls.Count -gt 0) { throw "launch-artifact-probe must not call Test-NetConnection (it stalls on CLOSED ports)" }
+  if (-not $src.Contains("\debug\")) { throw "launch-artifact-probe must refuse a \debug\ exe" }
+  return "launch-artifact-probe: debug refusal + BeginConnect(600ms) + bridge scan + teardown"
+}
+
+Test-Script-Syntax "webview-security-evidence skill" ".opencode/skills/webview-security-evidence/SKILL.md"
+
+Test-Script "webview-security-evidence skill documents both probes" {
+  $src = Get-Content ".opencode/skills/webview-security-evidence/SKILL.md" -Raw
+  foreach ($tok in @(
+    "inspect-webview-config.ps1",
+    "launch-artifact-probe.ps1",
+    "-Exe",
+    "-Ports",
+    "-RequireClosed",
+    "Test-NetConnection",
+    "ORPHANS_LEFT"
+  )) {
+    if (-not $src.Contains($tok)) { throw "webview-security-evidence skill missing token: $tok" }
+  }
+  if (-not $src.Contains("\debug\")) { throw "webview-security-evidence skill must document the \debug\ refusal" }
+  return "webview-security-evidence: static + live invocations + failure modes"
+}
+
+# Guard the recurrence directly: the durable suite must point at the committed
+# probes, not the hand-written Test-NetConnection launch that hung in #3077.
+Test-Script "webview-security-boundary suite uses the committed probes" {
+  $src = Get-Content ".opencode/tests/webview-security-boundary/functional.md" -Raw
+  foreach ($tok in @("launch-artifact-probe.ps1", "inspect-webview-config.ps1", "-RequireClosed")) {
+    if (-not $src.Contains($tok)) { throw "webview-security-boundary suite missing committed-tool token: $tok" }
+  }
+  if ($src.Contains("Test-NetConnection 127.0.0.1 -Port 16932")) {
+    throw "F-5 still prescribes the Test-NetConnection launch that hung in #3077"
+  }
+  return "webview-security-boundary suite: committed probes referenced, old launch removed"
 }
 
 # --- Summary ---

@@ -29,7 +29,7 @@
 
 ## QA Plan
 
-> **Verification policy: live** (or `static` ONLY if every AC is verifiable without a running system).
+> **Verification policy: live** (or `static` when every AC is verifiable without a running system — including any prove-a-negative / static-config AC: an absent privilege/debug surface, or a build-profile/config value such as CSP, `withGlobalTauri`, a capability grant, or `#[cfg(debug_assertions)]` gating). A `static` row is verified from the source/config/built artifact + the committed gate wrapper; `live` is only for a genuine runtime behaviour a user can observe.
 
 | REQ | Test case | Expected | Edge cases |
 |-----|-----------|----------|------------|

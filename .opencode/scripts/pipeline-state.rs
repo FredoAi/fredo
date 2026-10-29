@@ -1835,6 +1835,106 @@ fn final_metrics_text(issue: u32) -> String {
     )
 }
 
+/// Deterministically inventory the ad-hoc scripts an agent improvised under the
+/// issue's scratch directory (the #3077 lesson: the tester wrote throwaway
+/// `e2e/*.ps1` scripts and nothing ever surfaced them for promotion into the
+/// tooling library).
+///
+/// Walks `.opencode/tmp/<issue>/**` and returns repo-relative, forward-slashed,
+/// sorted paths of every `*.ps1` / `*.js` / `*.ts` file (`node_modules` is not
+/// descended into — an improvised script may have installed one). Deterministic
+/// and best-effort: a missing or unreadable directory/entry yields an empty list,
+/// never an error, and surface never blocks a transition or a close.
+fn adhoc_scripts(issue: u32) -> Vec<String> {
+    let root = match project_root() {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    let mut out: Vec<String> = Vec::new();
+    let mut stack: Vec<PathBuf> = vec![root.join(".opencode").join("tmp").join(issue.to_string())];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let file_type = match entry.file_type() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            let path = entry.path();
+            if file_type.is_dir() {
+                if entry.file_name().to_string_lossy().eq_ignore_ascii_case("node_modules") {
+                    continue;
+                }
+                stack.push(path);
+            } else if file_type.is_file() {
+                let ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if matches!(ext.as_str(), "ps1" | "js" | "ts") {
+                    if let Ok(rel) = path.strip_prefix(&root) {
+                        out.push(rel.to_string_lossy().replace('\\', "/"));
+                    }
+                }
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Print + record the ad-hoc-script inventory for an issue. Prints the list (or a
+/// `none` line) and appends an additive `ad-hoc-scripts` event carrying `count` and
+/// the comma-joined `scripts` paths so the Orchestrator can route recurring ones to
+/// the Toolsmith. Every failure is swallowed — surfacing is instrumentation, never a
+/// gate.
+fn surface_adhoc_scripts(issue: u32, actor: &str, phase: &str) {
+    let scripts = adhoc_scripts(issue);
+    if scripts.is_empty() {
+        println!("AD-HOC SCRIPTS: none under .opencode/tmp/{}/ (no .ps1/.js/.ts to promote)", issue);
+    } else {
+        println!("AD-HOC SCRIPTS ({}): {}", scripts.len(), scripts.join(", "));
+    }
+    let count = scripts.len().to_string();
+    let paths = scripts.join(",");
+    let message = format!("{} ad-hoc script(s) under .opencode/tmp/{}", scripts.len(), issue);
+    let _ = append_event_attrs(
+        issue,
+        "ad-hoc-scripts",
+        actor,
+        phase,
+        "success",
+        &message,
+        &[("count", count.as_str()), ("scripts", paths.as_str())],
+    );
+}
+
+/// The machine-computed `## Ad-hoc Scripts` block for the `## Final Status`
+/// comment: the deterministic closing inventory so a recurring improvised script is
+/// visible at the end of the run (#3077) instead of vanishing with the scratch dir.
+fn final_adhoc_text(issue: u32) -> String {
+    let scripts = adhoc_scripts(issue);
+    if scripts.is_empty() {
+        return format!(
+            "None — no `.ps1` / `.js` / `.ts` scripts under `.opencode/tmp/{}/`.",
+            issue
+        );
+    }
+    let mut text = format!(
+        "{} ad-hoc script(s) under `.opencode/tmp/{}/` — promote recurring ones to the toolsmith's tooling library:\n",
+        scripts.len(),
+        issue
+    );
+    for s in &scripts {
+        text.push_str(&format!("\n- `{}`", s));
+    }
+    text
+}
+
 /// Post the ONE `## Final Status` closing comment for a completed issue (the
 /// `close-issue --to-phase done` path). It folds the Orchestrator's outcome/doc-sync
 /// draft (`--body-file`, else the conventional `.opencode/tmp/<issue>/final-status.md`)
@@ -1860,6 +1960,15 @@ fn post_final_status(issue: u32, body_file: Option<&str>) -> anyhow::Result<()> 
         content = format!("## Metrics\n\n{}", metrics);
     } else {
         content = format!("{}\n\n## Metrics\n\n{}", content.trim_end(), metrics);
+    }
+    // Machine-computed ad-hoc-script inventory (#3077): a deterministic closing note
+    // listing scripts improvised under the issue's scratch dir. Folded in place when
+    // the Orchestrator's draft already carries the section, else appended.
+    let adhoc = final_adhoc_text(issue);
+    if content.lines().any(|l| l.trim() == "## Ad-hoc Scripts") {
+        content = replace_section(&content, "ad-hoc-scripts", &adhoc)?;
+    } else {
+        content = format!("{}\n\n## Ad-hoc Scripts\n\n{}", content.trim_end(), adhoc);
     }
     let body = ensure_author_footer(&format!("## Final Status\n\n{}", content), "orchestrator");
     let tmp = project_root()?.join(".opencode").join("tmp").join(format!("final-status-{}.md", uuid::Uuid::new_v4()));
@@ -4586,6 +4695,14 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     if let Some(n) = ensure_spec_pr(issue)? { notes.push(n); }
                 }
                 Phase::Audit => { if phase == Phase::Testing { if let Some(n) = ensure_spec_pr_merged(issue)? { notes.push(n); } } }
+                Phase::Cleanup => {
+                    // Deterministic ad-hoc-script surfacing (the #3077 lesson): at the
+                    // cleanup boundary list every script an agent improvised under
+                    // `.opencode/tmp/<issue>/` and record it, so the Orchestrator can
+                    // route recurring ones to the Toolsmith before the run closes.
+                    // Best-effort and additive — it never blocks the transition.
+                    surface_adhoc_scripts(issue, &a.actor, to.as_str());
+                }
                 _ => {}
             }
             swap_phase_label(issue, phase, to)?;
@@ -4703,6 +4820,11 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 swap_phase_label(issue, Phase::Cleanup, Phase::Done)?;
                 append_event_attrs(issue, "phase.completed", &a.actor, "cleanup", "success", "completed cleanup", &[("phase", "cleanup"), ("to", "done")])?;
                 append_event_attrs(issue, "phase.started", &a.actor, "done", "success", "started done", &[("phase", "done"), ("from", "cleanup")])?;
+                // Deterministic ad-hoc-script surfacing (#3077): re-run at the close
+                // so the printed list + the `ad-hoc-scripts` event reflect the final
+                // scratch tree even when the cleanup entry predates it. Additive and
+                // best-effort — it never blocks the close.
+                surface_adhoc_scripts(issue, &a.actor, phase.as_str());
                 // Post the ONE `## Final Status` closing comment: the Orchestrator's
                 // outcome/doc-sync draft (`--body-file`) + the machine's final metrics.
                 let _ = post_final_status(issue, a.body_file.as_deref());

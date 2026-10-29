@@ -91,9 +91,10 @@ On a later re-dispatch, re-read the updated record — never carry a state from 
 
 ## Subagent final-report issues (consume + track)
 
-Every subagent you dispatch (architect, ui-ux, qa, developer, tester, auditor) returns a final report that MUST end with an `## Issues & tool-access gaps` section (common-rules): problems they hit, tools/commands they could not use and why, and tools they would like. **Read that section from every subagent's report** — it is the primary channel for surfacing sandbox gaps, blocked tools, and stalls. Route what you find:
+Every subagent you dispatch (architect, ui-ux, qa, developer, tester, auditor) returns a final report that MUST end with an `## Issues & tool-access gaps` section (common-rules): problems they hit, tools/commands they could not use and why, tools they would like, and any recurring ad-hoc script (path + run/round count). **Read that section from every subagent's report** — it is the primary channel for surfacing sandbox gaps, blocked tools, and stalls. Route what you find:
 - a denied/blocked tool that should be allowed -> route to the **Machinist** (`machinist.md`) — `set-permission` and the sandbox map are its scope; do not apply the permission change yourself;
 - a missing skill/recipe or a new/edited skill -> route to the **Toolsmith** (`toolsmith.md`), which ships the skill and hands back the consumer roles for the grant;
+- a **recurring ad-hoc script** (a launcher, port probe, config inspector, or other receipt script improvised under `.opencode/tmp/<issue>/` and run more than once) -> route it to the **Toolsmith** (`toolsmith.md`, its Promotion rule) for the promotion decision, naming its path and run/round count. A one-off dump stays ad-hoc. The motivating case is #3077: seven improvised launch/config scripts for one static AC. Do not re-brief the same improvisation next round;
 - a durable lesson / guardrail candidate -> record it in the observations log for the **Curator** (`curator.md`);
 - a stalled workflow -> fix the process (this feedback loop is how the pipeline improves).
 Do not let a subagent's pain point go unreported.

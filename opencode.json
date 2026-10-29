@@ -97,7 +97,9 @@
                     "*|*": "deny",
                     "* || *": "deny",
                     "* ; *": "deny",
-                    "* | *": "deny"
+                    "* | *": "deny",
+                    "powershell -File .opencode/scripts/launch-artifact-probe.ps1*": "allow",
+                    "powershell -File .opencode/scripts/inspect-webview-config.ps1*": "allow"
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny",
@@ -336,7 +338,9 @@
                     "git apply*": "allow",
                     "Test-Path*": "allow",
                     "git worktree add*": "allow",
-                    "git worktree remove*": "allow"
+                    "git worktree remove*": "allow",
+                    "powershell -File .opencode/scripts/launch-artifact-probe.ps1*": "allow",
+                    "powershell -File .opencode/scripts/inspect-webview-config.ps1*": "allow"
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny",
@@ -446,7 +450,9 @@
                     "powershell -File .opencode/scripts/check-sqlite-retired.ps1*": "allow",
                     "powershell -File .opencode/tmp/*": "allow",
                     "git worktree add*": "allow",
-                    "git worktree remove*": "allow"
+                    "git worktree remove*": "allow",
+                    "powershell -File .opencode/scripts/launch-artifact-probe.ps1*": "allow",
+                    "powershell -File .opencode/scripts/inspect-webview-config.ps1*": "allow"
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny",

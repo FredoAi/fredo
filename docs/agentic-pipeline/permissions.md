@@ -129,7 +129,8 @@ Every agent's **final report** back to the Orchestrator MUST end with an
 
 1. **problems** you hit (blockers, stalls, confusing behavior),
 2. **tools/commands you could NOT use** (and why - permission denied? not installed? wrong path?),
-3. **tools you would like to have** (and what you would use them for).
+3. **tools you would like to have** (and what you would use them for),
+4. **recurring ad-hoc scripts** — any launcher, port probe, config inspector, or receipt script you improvised under `.opencode/tmp/<issue>/`, with its path and how many runs/rounds it recurred (a one-off dump stays ad-hoc; a script run more than once is a promotion candidate the Orchestrator routes to the Toolsmith; the motivating case is #3077).
 
 This is the channel by which the Orchestrator learns about subagent pain points. If you had no issues,
 state that explicitly ("none"). The Orchestrator reads this section and routes/tracks the gaps.
