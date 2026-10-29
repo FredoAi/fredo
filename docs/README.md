@@ -25,6 +25,7 @@ Core product and engineering documentation.
 | [Security](SECURITY.md) | IPC socket security, OTLP, Tauri capabilities, input handling, process isolation |
 | [FAQ](FAQ.md) | Common questions and troubleshooting |
 | [GenAI Telemetry Reference](telemetry-reference.md) | What Fredo actually receives — every `gen_ai.*` attribute by signal type, grounded in live `telemetry_spans`/`telemetry_metrics`/`telemetry_logs` and cross-referenced against the OTel GenAI semantic conventions. Start here when a row is missing, empty, or non-conformant |
+| [Navigation Fluency Research](UX_FLUENCY_RESEARCH.md) | Research report (spike #3115): the navigation design-principle set with sources, the reproducible current-state teardown of every shipped surface, the repo-anchored heuristic evaluation, and the gated moderated-session method. Stage 1 — results pending Gate H |
 | [CI Gate Contract](CI_GATE_CONTRACT.md) | What runs on a PR to `main` and which check gates the merge (`validate` is the only required status check; per-stack path-filter gating) |
 | [agentic-pipeline](agentic-pipeline/README.md) | Agentic SDD pipeline: agent catalog, phases, artifacts, scripts, skills, metrics — the full development workflow from intake to improvement |
 
@@ -56,7 +57,8 @@ purpose.
 
 ## Spikes
 
-Research that **is part of a spec**, filed flat as `spikes/<issue-number>-<slug>.md`. These are
+Research that **is part of a spec**, filed as `spikes/<issue-number>-<slug>.md` — or as a
+`spikes/<issue-number>-<slug>/` directory when the spike ships several artifacts. These are
 **records, not code** — a spike's PoC crate and raw measurements are disposable; the decision and
 its rationale are what survive. Indexed at [`spikes/README.md`](../spikes/README.md).
 
@@ -66,6 +68,7 @@ its rationale are what survive. Indexed at [`spikes/README.md`](../spikes/README
 | [#2964 — the migration approach](../spikes/2964-postgres-migration-approach.md) | The migration is **mandated** — so how? The full written approach, with the four section designs absorbed into it |
 | [#2897 — model-audio feasibility](../spikes/2897-model-audio-feasibility.md) | The ST-0 gating record for speech input. Model audio shipped; it is the only speech path |
 | [#2876 — local-first streaming STT engine](../spikes/2876-stt-engine-selection.md) | **SUPERSEDED** by #2914 — kept verbatim as the spike's historical record |
+| [#3115 — navigation fluency research](../spikes/3115-navigation-engine/README.md) | Does place-based navigation improve felt flow, connected conversation and trust in auto-apply? Stage 1 method + model; results pending Gate H |
 
 ## Research
 
