@@ -806,13 +806,14 @@ pub fn run() {
             // the frontend owns the one resolution rule.
             app.manage(infrastructure::app_open::AppOpenRegistry::new());
 
-            // -- Wireframe companion intent relay (Spec #3070 ST-7) -----------
-            // `llm-skill-call` reaches the main window ONCE; the editor may
-            // mount later (open-first) or live in another webview (new-window).
-            // The bounded host queue holds the intent until the editor drains
-            // it on mount (`wireframe_intent_take`), so no draft is ever lost
+            // -- Generic app command intent relay (Spec #3099 ST-5) ------------
+            // A published-surface `llm-skill-call` reaches the main window
+            // ONCE; the owning application may mount later (open-first) or live
+            // in another webview (multi-window). The bounded host queue holds
+            // the intent until the application drains its own `appId` entries
+            // on mount (`app_command_intent_take`), so no command is ever lost
             // (G-124).
-            app.manage(applications::wireframe::intent::WireframeIntentState::new());
+            app.manage(infrastructure::app_command::AppCommandIntentState::new());
 
             // -- Built-in PostgreSQL client state (Spec #2950 ST-1) ------------
             // The single managed state every `db_*` command takes. ST-1 resolves
@@ -1023,12 +1024,12 @@ pub fn run() {
             applications::wireframe::commands::wireframe_save_as,
             applications::wireframe::commands::wireframe_open_document,
             applications::wireframe::commands::wireframe_export_png,
-            // Wireframe Companion intent relay (Spec #3070 ST-7): persist +
-            // broadcast an intent, drain the queue on editor mount, and report
-            // the performed subset (`wireframe-intent` / `-result`, C5).
-            applications::wireframe::intent::wireframe_intent,
-            applications::wireframe::intent::wireframe_intent_take,
-            applications::wireframe::intent::wireframe_intent_result,
+            // Generic application command intent relay (Spec #3099 ST-5):
+            // persist + broadcast an intent, drain one application's queue on
+            // mount, and report the outcome (`app-command-intent` / `-result`).
+            infrastructure::app_command::app_command_intent,
+            infrastructure::app_command::app_command_intent_take,
+            infrastructure::app_command::app_command_intent_result,
             // DynamicTableStore (Spec #339)
             application_store::application_store_ensure_table,
             application_store::application_store_insert,

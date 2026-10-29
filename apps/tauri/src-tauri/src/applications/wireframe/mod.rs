@@ -4,9 +4,9 @@
 //! (env-seam precedence, document validation, PNG decoding) and `commands`
 //! exposes the three Tauri commands registered in `lib.rs`.
 //!
-//! ST-7 owns the Companion relay: `intent` holds the bounded host-side queue
-//! plus the `wireframe-intent` / `wireframe-intent-result` commands (G-124).
+//! The companion intent relay is application-agnostic since Spec #3099 ST-5:
+//! it lives in `infrastructure::app_command` (`app-command-intent` /
+//! `app-command-intent-result`, G-124).
 
 pub mod commands;
 pub mod files;
-pub mod intent;
