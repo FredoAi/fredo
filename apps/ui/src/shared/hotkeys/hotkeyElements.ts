@@ -29,12 +29,19 @@
  * `import.meta.env.DEV` a collision THROWS `DuplicateHotkeyError`; the body hook
  * and a `console.error` are ALWAYS published first, in every environment.
  *
+ * PER-SCOPE (Spec #3097 ST-2): the flush buckets entries by the command-surface
+ * scope of their element (`getCommandSurfaceScopeId`), so two applications that
+ * both bind `c` do not collide while a duplicate INSIDE one opting application's
+ * scope is still enforced. `detectDuplicateHotkeys(candidate)` with one argument
+ * keeps the unchanged single global bucket.
+ *
  * REVISION (AGENTS.md #523): `getElementHotkeyRevision()` advances ONLY on a real
  * diff of the listing, and `listElementHotkeys()` keeps its array identity until
  * such a diff — so a `useSyncExternalStore` consumer never sees a fresh snapshot
  * on an unrelated mutation.
  */
 
+import { getCommandSurfaceScopeId } from './applicationFocus';
 import { DATA_HOTKEY_PATTERN, parseDataHotkey, type HotkeyGrammar } from './hotkeyGrammar';
 
 /** The declared attribute this module discovers. */
@@ -83,6 +90,19 @@ export interface DuplicateHotkeyResult {
   readonly key: string | null;
   /** Every entry participating in the collision (empty when no duplicate). */
   readonly entries: readonly HotkeyElementEntry[];
+}
+
+/**
+ * Optional per-entry scope for duplicate detection (Spec #3097 ST-2).
+ *
+ * When omitted the scan is EXACTLY today's single global bucket. When supplied,
+ * entries with the same NON-NULL scope are uniquified only within that scope,
+ * entries with different non-null scopes never collide, and `null`-scope
+ * entries keep today's global bucket (so non-opted-in applications still
+ * collide with each other, but never with an opted-in application's scope).
+ */
+export interface DetectDuplicateHotkeysOptions {
+  readonly scopeOf?: (entry: HotkeyElementEntry) => string | null;
 }
 
 /** Thrown in DEV when two mounted elements declare a colliding binding (AC3 / R-3.4). */
@@ -149,14 +169,43 @@ export function subscribeElementHotkeys(listener: () => void): () => void {
  * shadowing a sequence on its key (the engine resolves EXACT before PREFIX,
  * `sequence.ts:72`).
  *
+ * SCOPING (Spec #3097 ST-2): with NO `options.scopeOf` the scan is EXACTLY the
+ * global rule above (one bucket, byte-identical result). With `scopeOf`, the
+ * same rule is applied per bucket — one bucket per non-null scope plus the
+ * global bucket for `null`-scope entries. Two applications that both bind `c`
+ * therefore never collide, while a collision inside one application's scope is
+ * still reported.
+ *
  * The shared-serialization check wins over the prefix check (a true duplicate is
  * reported first); the first colliding pair in listing order is reported.
  */
 export function detectDuplicateHotkeys(
   candidate?: readonly HotkeyElementEntry[],
+  options?: DetectDuplicateHotkeysOptions,
 ): DuplicateHotkeyResult {
   const list = candidate ?? entries;
+  const scopeOf = options?.scopeOf;
+  if (scopeOf === undefined) return detectWithinBucket(list);
 
+  // One bucket per scope (null entries keep the global bucket). Bucket insertion
+  // order follows first appearance in the listing, so the first colliding pair
+  // in listing order still wins.
+  const buckets = new Map<string | null, HotkeyElementEntry[]>();
+  for (const entry of list) {
+    const scope = scopeOf(entry);
+    const bucket = buckets.get(scope);
+    if (bucket !== undefined) bucket.push(entry);
+    else buckets.set(scope, [entry]);
+  }
+  for (const bucket of buckets.values()) {
+    const result = detectWithinBucket(bucket);
+    if (result.duplicate) return result;
+  }
+  return { duplicate: false, key: null, entries: [] };
+}
+
+/** The unchanged global collision rule for one bucket of entries. */
+function detectWithinBucket(list: readonly HotkeyElementEntry[]): DuplicateHotkeyResult {
   // 1. Two entries declaring the SAME full serialization are duplicates.
   const groups = new Map<string, HotkeyElementEntry[]>();
   for (const entry of list) {
@@ -360,7 +409,9 @@ function runFlush(): void {
 
   publishCountHook(entries.length);
 
-  const result = detectDuplicateHotkeys(entries);
+  const result = detectDuplicateHotkeys(entries, {
+    scopeOf: (entry) => getCommandSurfaceScopeId(entry.element),
+  });
   publishDuplicateHook(result);
   if (result.duplicate) {
     const error = new DuplicateHotkeyError(result);

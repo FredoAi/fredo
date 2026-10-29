@@ -68,6 +68,27 @@ export {
   subscribeElementHotkeys,
 } from './shared/hotkeys/hotkeyElements';
 export type { HotkeyElementEntry, DuplicateHotkeyResult } from './shared/hotkeys/hotkeyElements';
+export type { DetectDuplicateHotkeysOptions } from './shared/hotkeys/hotkeyElements';
+
+// ── Hotkeys: application command surface (Spec #3097 ST-2) ───────────────────
+export {
+  executeCommand,
+  pushMode,
+  popMode,
+  resetApplicationMode,
+  useActiveCommandMode,
+  useCommandSurface,
+  resolveCommandSurface,
+} from './shared/hotkeys/commandSurfaceStore';
+export { APP_ROOT_ATTR, resolveFocusedApplicationId } from './shared/hotkeys/applicationFocus';
+export type {
+  ApplicationCommandArgs,
+  ApplicationCommandMode,
+  ApplicationCommandPrompt,
+  ApplicationCommandSpec,
+  ApplicationCommandSurface,
+} from './shared/hotkeys/commandSurface';
+
 
 // ── Hotkeys: the always-on bar (Spec #3009 ST-2) ─────────────────────────────
 export { HotkeyBar } from './shared/hotkeys/HotkeyBar';
