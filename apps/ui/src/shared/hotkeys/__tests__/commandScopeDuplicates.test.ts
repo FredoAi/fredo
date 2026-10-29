@@ -20,11 +20,14 @@ import { registerApplication } from '@/applications/applicationRegistry';
 import { FredoApplicationClass } from '@/shared/classes';
 import type { ApplicationCommandSurface } from '../commandSurface';
 import { parseDataHotkey } from '../hotkeyGrammar';
+import { buildHotkeyBarModel } from '../hotkeyBarModel';
+import type { FocusSnapshot } from '../engine';
 import {
   BODY_HOTKEY_DUPLICATE_ATTR,
   DuplicateHotkeyError,
   detectDuplicateHotkeys,
   flushElementHotkeys,
+  listElementHotkeys,
   resetHotkeyElementDiscoveryForTests,
   type HotkeyElementEntry,
 } from '../hotkeyElements';
@@ -247,5 +250,84 @@ describe('flushElementHotkeys — scope-aware enforcement', () => {
     second.remove();
     flushElementHotkeys();
     expect(document.body.hasAttribute(BODY_HOTKEY_DUPLICATE_ATTR)).toBe(false);
+  });
+});
+
+// ── The BAR banner channel (ST-4R regression) ────────────────────────────────
+
+/**
+ * Flush the REAL listing for the bar model. DEV throws a `DuplicateHotkeyError`
+ * for a collision — AFTER publishing the listing and the body hook — so the
+ * throw is expected and must not abort the fixture (the file's precedent).
+ */
+function flushListing(): void {
+  try {
+    flushElementHotkeys();
+  } catch (error) {
+    if (!(error instanceof DuplicateHotkeyError)) throw error;
+  }
+}
+
+const DEFAULT_FOCUS: FocusSnapshot = {
+  context: 'default',
+  nativeConsumes: false,
+  textEntry: false,
+};
+
+/** The bar model over the flushed listing — the shipped input shape. */
+function barModel() {
+  return buildHotkeyBarModel({
+    entries: listElementHotkeys(),
+    pending: null,
+    focus: DEFAULT_FOCUS,
+  });
+}
+
+describe('buildHotkeyBarModel — the banner uses the runtime per-scope buckets', () => {
+  it('stays silent for the same key in two different command-surface scopes', () => {
+    appendHotkey('x', appendAppRoot('scope-a'));
+    appendHotkey('x', appendAppRoot('scope-b'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    flushListing();
+
+    const model = barModel();
+    expect(model.duplicate).toBe(false);
+    expect(model.duplicateKey).toBeNull();
+  });
+
+  it('reports the same key twice INSIDE one scope', () => {
+    const root = appendAppRoot('scope-a');
+    appendHotkey('x', root);
+    appendHotkey('x', root);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    flushListing();
+
+    const model = barModel();
+    expect(model.duplicate).toBe(true);
+    expect(model.duplicateKey).toBe('x');
+  });
+
+  it('reports two null-scope elements (global bucket)', () => {
+    appendHotkey('x');
+    appendHotkey('x');
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    flushListing();
+
+    const model = barModel();
+    expect(model.duplicate).toBe(true);
+    expect(model.duplicateKey).toBe('x');
+  });
+
+  it('reports an app WITHOUT a surface colliding through the global bucket', () => {
+    // `scope-plain` is registered but declares no command surface, so its
+    // element keeps the null bucket — exactly as the runtime flush buckets it.
+    appendHotkey('x', appendAppRoot('scope-plain'));
+    appendHotkey('x');
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    flushListing();
+
+    const model = barModel();
+    expect(model.duplicate).toBe(true);
+    expect(model.duplicateKey).toBe('x');
   });
 });

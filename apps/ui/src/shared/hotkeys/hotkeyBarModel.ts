@@ -19,9 +19,14 @@
  * `activeMode`/`prompt` are optional inputs: every pre-#3097 caller omits them
  * and gets byte-identical rows/pending/disabled/duplicate output.
  *
- * PURE enough for the bar: no DOM read, no React, no engine runtime read — the
- * registry lookup is plain module state. `FocusSnapshot` is a TYPE-ONLY import
- * (erased at compile time) so the model has no runtime dependency on the engine.
+ * Contract (Spec #3097 ST-4R): the model MUTATES NOTHING and reads NO STORE —
+ * the registry lookups behind the mode/badge projection are plain module state,
+ * and `FocusSnapshot` is a TYPE-ONLY import (erased at compile time) so the model
+ * has no runtime dependency on the engine. Its ONLY DOM read is the ancestor
+ * scope lookup for the duplicate channel (`getCommandSurfaceScopeId`), which is
+ * deliberately THE SAME function the runtime flush uses
+ * (`hotkeyElements.ts` flush → `detectDuplicateHotkeys(entries, { scopeOf })`),
+ * so the bar banner and the body hook can never diverge.
  *
  * Defined rules: `empty` is `rows.length === 0` for the element listing (G-265
  * reach-back → the caller renders `null`); the disabled pair covers a text-entry
@@ -30,15 +35,27 @@
  *
  * R-3.4 (ST-2R): the model carries a duplicate channel (`duplicate` +
  * `duplicateKey`) derived by calling ST-1's EXISTING pure
- * `detectDuplicateHotkeys(entries)` over the same listing — the detector is
- * DOM-free, so the model stays PURE (no re-implementation of detection here).
- * Spec #3071 ST-3 relaxed that detector's rule to full-sequence / strict-prefix
- * uniqueness, so a repeated first step (`key`) is no longer a duplicate.
+ * `detectDuplicateHotkeys(entries, { scopeOf })` over the same listing — the
+ * detector is DOM-free, so the model stays PURE (no re-implementation of
+ * detection here). Spec #3071 ST-3 relaxed that detector's rule to
+ * full-sequence / strict-prefix uniqueness, so a repeated first step (`key`) is
+ * no longer a duplicate.
+ *
+ * PER-SCOPE channel (Spec #3097 ST-4R): `scopeOf` resolves each entry's
+ * command-surface scope via `getCommandSurfaceScopeId(entry.element)`, exactly
+ * like the runtime flush, so the banner reports the SOURCE the body hook
+ * enforces: two applications that both bind a key never collide, while a
+ * collision inside one application's scope is still reported. `null`-scope
+ * entries (an element outside every opted-in application root) keep the global
+ * bucket, so they collide with each other but never with a scoped application.
  */
 
 import { detectDuplicateHotkeys } from './hotkeyElements';
 import { getApplicationCommandMode } from './commandSurface';
-import { resolveApplicationCommandSurface } from './applicationFocus';
+import {
+  getCommandSurfaceScopeId,
+  resolveApplicationCommandSurface,
+} from './applicationFocus';
 import type { FocusSnapshot } from './engine';
 import type { HotkeyElementEntry } from './hotkeyElements';
 
@@ -197,7 +214,11 @@ export function buildHotkeyBarModel(input: HotkeyBarModelInput): HotkeyBarModel 
   // R-3.4 — reuse ST-1's pure detector (do NOT re-implement it here). The
   // duplicate channel stays element-listing-derived: mode keymaps are contract
   // data keyed by unique object keys and never enter the DOM grammar.
-  const duplicateResult = detectDuplicateHotkeys(entries);
+  // Spec #3097 ST-4R — partition EXACTLY like the runtime flush
+  // (`hotkeyElements.ts`), so the banner and the body hook cannot diverge.
+  const duplicateResult = detectDuplicateHotkeys(entries, {
+    scopeOf: (entry) => getCommandSurfaceScopeId(entry.element),
+  });
   return {
     rows,
     pendingPrefix: pending,
