@@ -46,6 +46,7 @@ import type Konva from 'konva';
 import {
   ELEMENT_MIN_SIZE,
   clamp,
+  clampRectToPage,
   roundTo1dp,
   type WireframeRect,
 } from '../model/geometry';
@@ -62,6 +63,7 @@ import type {
   WireframeElementPatch,
   WireframeRadius,
   WireframeSectionPreset,
+  WireframeShapeDrawKind,
   WireframeTextSize,
 } from '../model/elements';
 import { findWireframeIcon } from '../model/icons';
@@ -85,6 +87,19 @@ import {
   registerWireframeStage,
 } from '../canvas/wireframeCanvasRegistry';
 import { useCanvasPalette, type CanvasPalette } from '../theme/useCanvasPalette';
+import {
+  getActiveCommandMode,
+  resetApplicationMode,
+  subscribeCommandSurface,
+} from '../../../shared/hotkeys/commandSurfaceStore';
+import { WIREFRAME_APP_ID } from '../model/document';
+import {
+  WIREFRAME_CREATE_OPERATOR,
+  WIREFRAME_DRAW_CURSOR,
+  WIREFRAME_DRAW_ELLIPSE_MODE_ID,
+  WIREFRAME_DRAW_RECT_MODE_ID,
+  createWireframeShapeAt,
+} from '../wireframeCommandSurface';
 
 /**
  * Pointer modifier that toggles an element in/out of the selection (R-1.1 /
@@ -117,6 +132,31 @@ function isSelectionToggle(
 interface DragSession {
   start: Map<string, { x: number; y: number }>;
 }
+
+/** A point in PAGE space (the artboard's logical coordinate system). */
+interface PagePoint {
+  x: number;
+  y: number;
+}
+
+/**
+ * One create-drag GESTURE (Spec #3098, ST-4). Transient and closure-scoped:
+ * the start + latest pointer positions live in a ref, never in React state, so a
+ * move writes no state and commits nothing (the shipped drag contract).
+ */
+interface CreateGesture {
+  start: PagePoint;
+  current: PagePoint;
+}
+
+/**
+ * The shape a draw mode produces. Only the two create-operator modes declare a
+ * kind; any other mode (select, pan) is not a create operator and maps to none.
+ */
+const SHAPE_BY_MODE_ID: Readonly<Record<string, WireframeShapeDrawKind>> = {
+  [WIREFRAME_DRAW_RECT_MODE_ID]: 'rect',
+  [WIREFRAME_DRAW_ELLIPSE_MODE_ID]: 'ellipse',
+};
 
 /** Logical text size per `WireframeTextSize` preset (UI/UX section 1.5). */
 export const TEXT_SIZE_PX: Readonly<Record<WireframeTextSize, number>> = {
@@ -615,11 +655,36 @@ function roundPositive(value: number): number {
   return Math.max(ELEMENT_MIN_SIZE, roundTo1dp(value));
 }
 
+/** Normalize a two-point drag into a min-origin, positive-size page rect. */
+function normalizeCreateRect(start: PagePoint, end: PagePoint): WireframeRect {
+  return {
+    x: Math.min(start.x, end.x),
+    y: Math.min(start.y, end.y),
+    width: Math.abs(end.x - start.x),
+    height: Math.abs(end.y - start.y),
+  };
+}
+
 export function WireframeCanvasImpl(): ReactElement {
   const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const { document: wireframe, selectedIds, view, panMode, captureView, snapToGrid } = state;
   const primaryId = primarySelectedId(state);
   const palette = useCanvasPalette();
+
+  // ── Active command mode → app-side create operator (Spec #3098, ST-4) ─────
+  // Read through the command-surface store's OWN subscription path
+  // (`useSyncExternalStore`, no effect and no per-move state). The engine never
+  // sees pointer input: a mode's opaque `operator` id is what turns this canvas
+  // into a create surface for the duration of that mode.
+  const activeCommandMode = useSyncExternalStore(
+    subscribeCommandSurface,
+    () => getActiveCommandMode(WIREFRAME_APP_ID),
+    () => getActiveCommandMode(WIREFRAME_APP_ID),
+  );
+  const createOperatorActive = activeCommandMode?.operator === WIREFRAME_CREATE_OPERATOR;
+  const drawShape: WireframeShapeDrawKind | null = createOperatorActive
+    ? (SHAPE_BY_MODE_ID[activeCommandMode?.id ?? ''] ?? null)
+    : null;
 
   const containerRef = useRef<HTMLDivElement>(null);
   // Mutable: the capture registry is bound from the same ref callback the
@@ -636,6 +701,12 @@ export function WireframeCanvasImpl(): ReactElement {
   // store commit fires when this returns to 0 (R-1.4 / NFR-4).
   const activeDragCountRef = useRef(0);
   const transformStartBoxRef = useRef<WireframeRect | null>(null);
+  // Create-operator gesture (Spec #3098, ST-4): transient, never React state.
+  const createGestureRef = useRef<CreateGesture | null>(null);
+  // A completed create drag is followed by Konva's `click` on the Stage; that
+  // click must NOT clear the selection the drag just made (nor the selection a
+  // below-minimum drag must leave untouched). Set on release, consumed once.
+  const suppressStageClickRef = useRef(false);
   const measuredRef = useRef<CanvasSize>({ width: 0, height: 0 });
   const didFitRef = useRef(false);
 
@@ -727,11 +798,19 @@ export function WireframeCanvasImpl(): ReactElement {
     registerWireframeStage(node);
   }, []);
 
-  // ── Stage cursor (pan mode) ──────────────────────────────────────────────
+  // ── Stage cursor (draw operator / pan mode) ──────────────────────────────
+  // The artwork is non-interactive while the create operator is active, so no
+  // element hover can overwrite the crosshair mid-gesture.
   useEffect(() => {
     const container = stageRef.current?.container();
-    if (container) container.style.cursor = panMode ? 'grab' : 'default';
-  }, [panMode, size.width, size.height]);
+    if (container) {
+      container.style.cursor = createOperatorActive
+        ? WIREFRAME_DRAW_CURSOR
+        : panMode
+          ? 'grab'
+          : 'default';
+    }
+  }, [createOperatorActive, panMode, size.width, size.height]);
 
   // ── Transformer attachment (the WHOLE selection) ─────────────────────────
   // ONE Transformer is bound to every VISIBLE selected node; it is shown while
@@ -816,12 +895,96 @@ export function WireframeCanvasImpl(): ReactElement {
 
   const handleStageClick = useCallback(
     (event: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
+      // Konva fires `click` on the Stage right after a create drag's pointerup;
+      // that click is the tail of the gesture, never a selection gesture.
+      if (suppressStageClickRef.current) {
+        suppressStageClickRef.current = false;
+        return;
+      }
+      // While the create operator is active the canvas is a create surface: a
+      // click there never clears the selection.
+      if (drawShape !== null) return;
       if (panMode) return;
       const stage = event.target.getStage();
       if (stage && event.target === stage) clearSelection();
     },
-    [panMode],
+    [panMode, drawShape],
   );
+
+  // ── Create operator (Spec #3098, ST-4) ───────────────────────────────────
+  // Pointer capture lives on the Konva Stage. Stage → page uses the LIVE view
+  // transform (the same one the view group paints with); the release commits
+  // exactly ONE `element.add` step and returns the mode to Select. Below the
+  // minimum (or a zero-area gesture) nothing is created and the draw mode stays.
+  const stageToPagePoint = useCallback(
+    (event: Konva.KonvaEventObject<PointerEvent>): PagePoint | null => {
+      const stage = event.target.getStage() ?? stageRef.current;
+      const pointer = stage === null ? null : stage.getPointerPosition();
+      if (pointer === null) return null;
+      return { x: (pointer.x - view.x) / scale, y: (pointer.y - view.y) / scale };
+    },
+    [view.x, view.y, scale],
+  );
+
+  const handleCreatePointerDown = useCallback(
+    (event: Konva.KonvaEventObject<PointerEvent>): void => {
+      // A fresh gesture always starts with click suppression cleared, so a
+      // release that never produced a click cannot swallow a later one.
+      suppressStageClickRef.current = false;
+      if (drawShape === null) return;
+      // Primary button / first contact only: a mouse reports 1 (middle) or 2
+      // (right) here, while a touch pointer carries no `button` at all.
+      if (event.evt.button > 0) return;
+      const point = stageToPagePoint(event);
+      if (point === null) return;
+      createGestureRef.current = { start: point, current: point };
+    },
+    [drawShape, stageToPagePoint],
+  );
+
+  const handleCreatePointerMove = useCallback(
+    (event: Konva.KonvaEventObject<PointerEvent>): void => {
+      const gesture = createGestureRef.current;
+      if (gesture === null) return;
+      const point = stageToPagePoint(event);
+      if (point === null) return;
+      // Ref write only — no React state, no store commit, no drag preview.
+      gesture.current = point;
+    },
+    [stageToPagePoint],
+  );
+
+  const handleCreatePointerUp = useCallback(
+    (event: Konva.KonvaEventObject<PointerEvent>): void => {
+      const gesture = createGestureRef.current;
+      if (gesture === null) return;
+      createGestureRef.current = null;
+      suppressStageClickRef.current = true;
+      if (drawShape === null) return;
+      const point = stageToPagePoint(event) ?? gesture.current;
+      const rect = normalizeCreateRect(gesture.start, point);
+      if (rect.width < ELEMENT_MIN_SIZE || rect.height < ELEMENT_MIN_SIZE) return;
+      const { page } = getSnapshot().document;
+      const created = createWireframeShapeAt({
+        shape: drawShape,
+        rect: clampRectToPage(rect, page),
+      });
+      // ONE created element ⇒ ONE add step, auto-selected by the store; the
+      // gesture then returns the mode to Select. A failed create leaves the
+      // draw mode active (nothing to return from).
+      if (created !== null) resetApplicationMode(WIREFRAME_APP_ID);
+    },
+    [drawShape, stageToPagePoint],
+  );
+
+  const handleCreatePointerCancel = useCallback((): void => {
+    createGestureRef.current = null;
+  }, []);
+
+  // Leaving the operator mode abandons any in-flight gesture (no commit).
+  useEffect(() => {
+    if (!createOperatorActive) createGestureRef.current = null;
+  }, [createOperatorActive]);
 
   /**
    * Reset every node in `ids` back to its committed model geometry. Konva's
@@ -1222,7 +1385,7 @@ export function WireframeCanvasImpl(): ReactElement {
       minH={0}
       overflow="hidden"
       bg="bg.muted"
-      cursor={panMode ? 'grab' : 'default'}
+      cursor={createOperatorActive ? WIREFRAME_DRAW_CURSOR : panMode ? 'grab' : 'default'}
       onPointerDown={handlePointerDown}
       onKeyDown={handleKeyDown}
     >
@@ -1237,8 +1400,18 @@ export function WireframeCanvasImpl(): ReactElement {
           height={size.height}
           onClick={handleStageClick}
           onTap={handleStageClick}
+          onPointerDown={handleCreatePointerDown}
+          onPointerMove={handleCreatePointerMove}
+          onPointerUp={handleCreatePointerUp}
+          onPointerCancel={handleCreatePointerCancel}
         >
-          <Layer>
+          {/*
+           * While the create operator is active the artwork layer is NOT
+           * listening: element handlers cannot steal the drag over the page and
+           * no element hover can overwrite the crosshair mid-gesture. The Stage
+           * still receives the pointer events (nothing is hit).
+           */}
+          <Layer listening={!createOperatorActive}>
             <Group
               name="wireframe-view"
               x={paintView.x}
