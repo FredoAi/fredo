@@ -13,8 +13,11 @@
  * no roving-tabindex code is needed.
  *
  * Focus rules:
- * - `useWireframeHostFocused()` gates every `data-hotkey` (R-5.4); the controls
- *   carry no on-control keychip — the always-on bottom hotkey bar is the single
+ * - Spec #3098 ST-5: no control carries `data-hotkey`/`data-hotkey-label` and
+ *   there is NO host-focus plumbing. The `g+*` grammar lives on the hidden
+ *   `WireframeHotkeyCarrier`, the mode keys live in the declared command
+ *   surface, and every control invokes its command through the ONE executor
+ *   (`executeCommand`), so the always-on bottom hotkey bar is the single
  *   shortcut-discovery surface (#3087);
  * - a pointer activation blurs the control so the next bare key is in the
  *   `default` context (G-327 / UI/UX 3.14); a keyboard activation keeps focus
@@ -60,11 +63,16 @@ import {
   LuUngroup,
 } from 'react-icons/lu';
 
-import { useWireframeHostFocused } from '../hooks/useWireframeHostFocused';
 import {
   addWireframeElement,
-  runWireframeAction,
 } from '../actions/wireframeActions';
+import { executeCommand } from '../../../shared/hotkeys/commandSurfaceStore';
+import { WIREFRAME_APP_ID } from '../model/document';
+// Side effect: registering the Wireframe application is what makes its declared
+// command surface resolvable by `executeCommand`. Importing the barrel is a
+// no-op on the normal Home -> allApplications path (ESM caches it) and keeps
+// the toolbar correct when imported in isolation (component tests / lazy chunk).
+import '../index';
 import type {
   WireframeSectionPreset,
   WireframeShapeKind,
@@ -242,7 +250,6 @@ export function WireframeToolbar(): React.ReactElement {
     status,
     dirty,
   } = state;
-  const focused = useWireframeHostFocused();
 
   // The WHOLE selection drives the arrange controls (Spec #3071, ST-6 —
   // UI/UX 2.1) and the multi-element element actions (R-1.6 / R-1.10).
@@ -286,7 +293,9 @@ export function WireframeToolbar(): React.ReactElement {
         setConfirmNewOpen(true);
         return;
       }
-      runWireframeAction(id);
+      // One invocation path (Spec #3098 ST-3/ST-5): the toolbar runs the SAME
+      // command id the mode key / carrier binding runs.
+      executeCommand(WIREFRAME_APP_ID, id);
       applyPostActivationFocus(event);
     },
     [dirty, applyPostActivationFocus],
@@ -368,7 +377,7 @@ export function WireframeToolbar(): React.ReactElement {
   const startNewDocument = React.useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
       setConfirmNewOpen(false);
-      runWireframeAction('wireframe.document.new');
+      executeCommand(WIREFRAME_APP_ID, 'wireframe.document.new');
       if (event.detail > 0) {
         window.setTimeout(() => {
           const active = document.activeElement;
@@ -401,7 +410,6 @@ export function WireframeToolbar(): React.ReactElement {
             <WireframeInsertMenu
               key={item.actionId}
               kind={item.type}
-              focused={focused}
               onAddDefault={activate(item.actionId)}
               onAddOption={(value) =>
                 addFromMenu(() => {
@@ -425,7 +433,6 @@ export function WireframeToolbar(): React.ReactElement {
               description={item.label}
               icon={item.icon}
               density="full"
-              focused={focused}
               disabled={isDisabled(item.actionId)}
               onActivate={activate(item.actionId)}
             />
@@ -444,7 +451,6 @@ export function WireframeToolbar(): React.ReactElement {
             description={item.description}
             icon={item.icon}
             density="compact"
-            focused={focused}
             disabled={isDisabled(item.id)}
             pressed={isPressed(item.id)}
             onActivate={activate(item.id)}
@@ -466,7 +472,6 @@ export function WireframeToolbar(): React.ReactElement {
               description={item.description}
               icon={item.icon}
               density="compact"
-              focused={focused}
               disabled={isDisabled(item.id)}
               pressed={isPressed(item.id)}
               onActivate={activate(item.id)}
@@ -486,7 +491,6 @@ export function WireframeToolbar(): React.ReactElement {
             description={item.description}
             icon={item.icon}
             density="compact"
-            focused={focused}
             disabled={isDisabled(item.id)}
             onActivate={activate(item.id)}
           />
@@ -504,7 +508,6 @@ export function WireframeToolbar(): React.ReactElement {
             description={item.description}
             icon={item.icon}
             density="compact"
-            focused={focused}
             disabled={isDisabled(item.id)}
             pressed={isPressed(item.id)}
             onActivate={activate(item.id)}
@@ -523,7 +526,6 @@ export function WireframeToolbar(): React.ReactElement {
             description={item.description}
             icon={item.icon}
             density="compact"
-            focused={focused}
             disabled={isDisabled(item.id)}
             onActivate={activate(item.id)}
           />

@@ -10,12 +10,11 @@
  * - a real `<button>` (Chakra `Button`) — the shipped hotkey activator clicks
  *   buttons, and the element is a normal Tab stop (the toolbar is a `group`,
  *   never an ARIA `toolbar` with roving tabindex);
- * - `data-hotkey` exists ONLY while `useWireframeHostFocused()` is true. An
- *   OPEN but unfocused window stays mounted, so leaving the attribute mounted
- *   would list this app's shortcuts in the always-on bar and dispatch them
- *   into the wrong window (R-5.4). The binding lives only in the attribute —
- *   the always-on bottom hotkey bar is the single shortcut-discovery surface
- *   (#3087): controls carry no on-control keychip;
+ * - controls carry NO `data-hotkey`/`data-hotkey-label` (Spec #3098 ST-5): the
+ *   `g+*` grammar lives on the hidden `WireframeHotkeyCarrier` and the mode keys
+ *   live in the declared command surface, so the always-on bottom hotkey bar is
+ *   the single shortcut-discovery surface with no per-host focus plumbing. The
+ *   row's `hotkey` metadata still drives the accessible name / tooltip;
  * - a POINTER activation (`event.detail > 0`) blurs the control after running
  *   its action so the next bare key is in the `default` context (G-327,
  *   UI/UX 3.14); a keyboard activation (`detail === 0`) keeps focus for Tab
@@ -58,8 +57,6 @@ export interface WireframeActionButtonProps {
   readonly icon: IconType;
   /** `full` = icon + label (Insert); `compact` = icon only. */
   readonly density: 'full' | 'compact';
-  /** True while the Wireframe host owns focus (controls `data-hotkey`). */
-  readonly focused: boolean;
   readonly disabled?: boolean;
   /** Toggle state (`aria-pressed`); `undefined` for a plain button. */
   readonly pressed?: boolean;
@@ -67,8 +64,9 @@ export interface WireframeActionButtonProps {
 }
 
 /**
- * One action control. The binding, testid and accessible name all derive from
- * the table row, so a new entry needs no markup change beyond its icon/label.
+ * One action control. The testid and accessible name derive from the table row,
+ * so a new entry needs no markup change beyond its icon/label. The control is a
+ * plain `data-hotkey`-free button — its keyboard path is the command surface.
  */
 export function WireframeActionButton({
   actionId,
@@ -76,7 +74,6 @@ export function WireframeActionButton({
   description,
   icon,
   density,
-  focused,
   disabled = false,
   pressed,
   onActivate,
@@ -93,12 +90,6 @@ export function WireframeActionButton({
   const button = (
     <Button
       data-testid={testId}
-      // Attribute REMOVAL is what the shipped MutationObserver watches, so the
-      // unfocused state must omit the attribute entirely (never `''`).
-      data-hotkey={focused && hotkey ? hotkey : undefined}
-      // The always-on bar prefers this over the accessible name, so a row reads
-      // "Duplicate" beside the P chip instead of "Duplicate (p)" (R-5.2).
-      data-hotkey-label={hotkey ? (density === 'full' ? label : description) : undefined}
       size="sm"
       variant="ghost"
       px={2}
@@ -201,8 +192,6 @@ const INSERT_MENUS: Readonly<Record<InsertMenuKind, InsertMenuSpec>> = {
 
 export interface WireframeInsertMenuProps {
   readonly kind: InsertMenuKind;
-  /** True while the Wireframe host owns focus. */
-  readonly focused: boolean;
   /**
    * Activate the main button (adds the default preset/kind). Receives the DOM
    * event so the toolbar can apply the pointer-activation blur rule.
@@ -219,7 +208,6 @@ export interface WireframeInsertMenuProps {
  */
 export function WireframeInsertMenu({
   kind,
-  focused,
   onAddDefault,
   onAddOption,
 }: WireframeInsertMenuProps): React.ReactElement {
@@ -233,7 +221,6 @@ export function WireframeInsertMenu({
         description={spec.label}
         icon={spec.icon}
         density="full"
-        focused={focused}
         onActivate={onAddDefault}
       />
       <Menu.Root positioning={{ placement: 'bottom-start' }}>
