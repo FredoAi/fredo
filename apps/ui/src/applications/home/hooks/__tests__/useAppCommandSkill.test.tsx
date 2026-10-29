@@ -36,7 +36,7 @@ vi.mock('../../../../shared/window-system/windowStore', () => ({
 }));
 
 import { registerAppOpenReplyPusher } from '../../../../shared/components/companion/skillBridge';
-import type { CompanionManifest } from '../../../../shared/companion/manifest';
+import type { CompanionManifest, CompanionSurfaceManifest } from '../../../../shared/companion/manifest';
 import type { FredoApplicationClass } from '../../../../shared/classes/FredoApplicationClass';
 import {
   APP_COMMAND_INTENT_COMMAND,
@@ -185,6 +185,33 @@ describe('listActions with the app CLOSED (R-4a)', () => {
       kind: 'success',
       text: expect.stringMatching(/^Demo capabilities: /),
     });
+  });
+
+  it('answers when the wire carries `listLabel: null` (the turn always answers)', async () => {
+    // The round-1 Rust serializer emitted `"listLabel": null`; the formatter threw
+    // and the generation never settled a reply (bubble stuck at "Thinking…").
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === APP_COMMAND_SURFACES_COMMAND) {
+        return {
+          surfaces: [
+            { ...MANIFEST.surfaces[0], listLabel: null } as unknown as CompanionSurfaceManifest,
+          ],
+        };
+      }
+      return undefined;
+    });
+    const openFeatureWindow = await mount();
+
+    await emit('llm-skill-call', { skill: 'demo', arguments: { action: 'listActions' } });
+
+    await waitFor(() => expect(pusher).toHaveBeenCalledTimes(1));
+    expect(pusher).toHaveBeenCalledTimes(1);
+    expect(pusher.mock.calls[0][0]).toMatchObject({
+      kind: 'success',
+      text: expect.stringMatching(/^Demo actions: /),
+    });
+    expect(openFeatureWindow).not.toHaveBeenCalled();
+    expect(intentCalls()).toHaveLength(0);
   });
 });
 

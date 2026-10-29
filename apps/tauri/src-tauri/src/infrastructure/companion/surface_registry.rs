@@ -55,6 +55,10 @@ pub const APP_COMMAND_SURFACE_MAX_COMMANDS: usize = 512;
 pub struct CompanionCommandArgManifest {
     pub name: String,
     pub required: bool,
+    /// An absent description is an ABSENT key on the wire (never `null`) — the
+    /// published TS type declares it optional (`description?: string`), so the
+    /// serializer must match that contract (Spec #3099 fix round 2).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
 
@@ -77,6 +81,11 @@ pub struct CompanionSurfaceManifest {
     pub app_name: String,
     pub skill_name: String,
     pub description: String,
+    /// An absent override is an ABSENT key on the wire (never `null`) — the
+    /// published TS type declares it optional (`listLabel?: string`), and the
+    /// shared golden fixture omits it. A `null` here crashed the list formatter
+    /// (`null.trim()`), the round-1 AC4 defect (Spec #3099 fix round 2).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub list_label: Option<String>,
     pub commands: Vec<CompanionCommandManifest>,
 }

@@ -58,9 +58,26 @@ describe('appCommandListReply (R-4a/R-4b)', () => {
     expect(reply).not.toContain(' - ');
   });
 
-  it('uses the declared listLabel override verbatim', () => {
+  it('uses the declared listLabel override verbatim (never trimmed)', () => {
     const reply = appCommandListReply({ ...SURFACE, listLabel: 'Demo capabilities' });
     expect(reply.startsWith('Demo capabilities: demo.add.text — ')).toBe(true);
+
+    // Surrounding whitespace is part of the author's wording — used as given.
+    const padded = appCommandListReply({ ...SURFACE, listLabel: '  Demo capabilities  ' });
+    expect(padded.startsWith('  Demo capabilities  : demo.add.text — ')).toBe(true);
+  });
+
+  it('treats a `null` listLabel from the wire as absent', () => {
+    // The Rust serializer used to emit `"listLabel": null` (no
+    // `skip_serializing_if`) while the published type says `listLabel?: string`.
+    // The formatter must be TOTAL over that non-conforming boundary value: before
+    // the fix `null.trim()` threw and the list turn never answered (AC4).
+    const wireSurface = { ...SURFACE, listLabel: null } as unknown as CompanionSurfaceManifest;
+
+    expect(appCommandListLabel(wireSurface)).toBe('Demo actions');
+    expect(appCommandListReply(wireSurface).startsWith('Demo actions: demo.add.text — ')).toBe(
+      true,
+    );
   });
 
   it('falls back to `<appName> actions` for a blank listLabel', () => {

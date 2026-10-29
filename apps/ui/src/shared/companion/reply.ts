@@ -30,10 +30,16 @@ const REPLY_QUOTE = '"';
  * The listing prefix: the surface's declared wording override, else
  * `<appName> actions`. A blank/whitespace-only override is treated as absent
  * (never a bare `: <id>` prefix).
+ *
+ * The guard is TOTAL over the wire shape: the value crosses the unchecked Tauri
+ * IPC boundary, so it is read as `string | null | undefined` even though the
+ * published type says `listLabel?: string` (a pre-fix Rust serializer emitted
+ * `"listLabel": null`, which made `!== undefined` + `.trim()` throw and left the
+ * list turn unanswered — Spec #3099 fix round 2). One branch, one default path.
  */
 export function appCommandListLabel(surface: CompanionSurfaceManifest): string {
-  const label = surface.listLabel;
-  if (label !== undefined && label.trim() !== '') return label;
+  const label: string | null | undefined = surface.listLabel;
+  if (typeof label === 'string' && label.trim() !== '') return label;
   return `${surface.appName} actions`;
 }
 

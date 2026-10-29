@@ -25,8 +25,8 @@ use fredo_lib::infrastructure::companion::skills::{
 };
 use fredo_lib::infrastructure::companion::surface_registry::{
     build_companion_skill_registry, surface_skill, AppCommandSurfaceRegistry,
-    CompanionCommandManifest, CompanionManifest, CompanionSurfaceManifest,
-    APP_COMMAND_SURFACE_MAX_COMMANDS, APP_COMMAND_SURFACE_MAX_SURFACES,
+    CompanionCommandArgManifest, CompanionCommandManifest, CompanionManifest,
+    CompanionSurfaceManifest, APP_COMMAND_SURFACE_MAX_COMMANDS, APP_COMMAND_SURFACE_MAX_SURFACES,
     COMPANION_LIST_ACTIONS_ID, RESERVED_SKILL_NAMES,
 };
 use fredo_lib::render_companion_tools;
@@ -223,6 +223,77 @@ fn static_skills_are_byte_identical_to_the_pre_change_baseline() {
 }
 
 // ── 3. The published-surface registry contract ───────────────────────────────
+
+/// Spec #3099 fix round 2 (AC4): an absent optional must be an ABSENT key on the
+/// wire, never `null`. The published TS types declare `listLabel?: string` and
+/// `description?: string`, the TS builder OMITS them, and the shared golden
+/// fixture omits them — so the serializer must match that contract. Before this
+/// fix `app_command_surfaces()` emitted `"listLabel": null` and the list
+/// formatter (`null.trim()`) threw, leaving the turn unanswered.
+#[test]
+fn the_published_wire_omits_absent_optionals_instead_of_emitting_null() {
+    // The shared golden fixture IS the published wire shape: re-serializing the
+    // deserialized manifest must reproduce its `manifest` object verbatim.
+    let fixture = fixture();
+    let raw: Value = serde_json::from_str(GOLDEN_FIXTURE).expect("the fixture parses as JSON");
+    assert_eq!(
+        serde_json::to_value(&fixture.manifest).expect("the manifest serializes"),
+        raw["manifest"],
+        "the serialized manifest must equal the fixture's `manifest` verbatim \
+         (an absent optional is an ABSENT key, never `null`)"
+    );
+
+    // `list_label: None` => no `listLabel` key at all.
+    let absent = surface("alpha");
+    assert!(absent.list_label.is_none(), "the helper surface declares no override");
+    let wire = serde_json::to_value(&absent).expect("the surface serializes");
+    assert!(
+        !wire
+            .as_object()
+            .expect("the surface is an object")
+            .contains_key("listLabel"),
+        "an absent listLabel must be omitted, not serialized as `null`"
+    );
+
+    // A declared override must survive with its value intact.
+    let mut present = surface("alpha");
+    present.list_label = Some("Alpha capabilities".to_string());
+    let wire = serde_json::to_value(&present).expect("the surface serializes");
+    assert_eq!(
+        wire["listLabel"], "Alpha capabilities",
+        "a present listLabel must still be serialized"
+    );
+
+    // The identical rule for a declared argument's optional `description`.
+    let mut with_args = surface("alpha");
+    with_args.commands[0].args = vec![
+        CompanionCommandArgManifest {
+            name: "bare".to_string(),
+            required: true,
+            description: None,
+        },
+        CompanionCommandArgManifest {
+            name: "documented".to_string(),
+            required: false,
+            description: Some("A human/model note.".to_string()),
+        },
+    ];
+    let wire = serde_json::to_value(&with_args).expect("the surface serializes");
+    let args = wire["commands"][0]["args"]
+        .as_array()
+        .expect("the command carries an args array");
+    assert!(
+        !args[0]
+            .as_object()
+            .expect("the argument is an object")
+            .contains_key("description"),
+        "an absent arg description must be omitted, not serialized as `null`"
+    );
+    assert_eq!(
+        args[1]["description"], "A human/model note.",
+        "a present arg description must still be serialized"
+    );
+}
 
 #[test]
 fn a_published_manifest_reads_back_exactly_and_an_empty_publish_is_a_no_op() {
