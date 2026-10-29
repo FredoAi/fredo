@@ -40,6 +40,9 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::infrastructure::companion::skills::SkillRegistry;
+use crate::infrastructure::companion::surface_registry::{
+    build_companion_skill_registry, AppCommandSurfaceRegistry,
+};
 use crate::infrastructure::companion::PerformanceModeState;
 
 use super::chat::{self, ChatSseFrame, ChatStreamEvent, LlmMessage};
@@ -695,7 +698,8 @@ async fn run_status_pass(
         .map(str::to_string)
 }
 
-/// The ONE skill offer of the live companion transport (Spec #3070, ST-7b).
+/// The ONE skill offer of the live companion transport (Spec #3070 ST-7b;
+/// Spec #3099 ST-4 — generated per published surface).
 ///
 /// Every live offer site — [`run_tools_attempt`] and the offer-skills branch of
 /// [`run_plain_retry`] — obtains its registry from here, so the offer SET is
@@ -704,9 +708,16 @@ async fn run_status_pass(
 /// `wireframe` skill was never in any request body the model saw and a
 /// Wireframe request could only be answered with prose.
 ///
-/// Offer order is `open_app`, `close_app`, `doom_mode`, `wireframe`.
-pub(crate) fn companion_skill_registry() -> SkillRegistry {
-    SkillRegistry::with_app_control_doom_and_wireframe()
+/// The shipped static skills (`open_app`, `close_app`, `doom_mode`) stay
+/// byte-identical and FIRST; one generated skill follows per published surface,
+/// read from the managed [`AppCommandSurfaceRegistry`] on EVERY turn (never
+/// cached), so a surface publish is effective on the next turn with no restart.
+pub(crate) fn companion_skill_registry(app: &AppHandle) -> SkillRegistry {
+    let surfaces = app
+        .try_state::<AppCommandSurfaceRegistry>()
+        .map(|state| state.surfaces())
+        .unwrap_or_default();
+    build_companion_skill_registry(&surfaces)
 }
 
 /// Run ONE skill-capable turn through the SHIPPED tools path (ST-6).
@@ -723,7 +734,7 @@ async fn run_tools_attempt(
     messages: &[LlmMessage],
     audio_base64: Option<&str>,
 ) -> Result<(), String> {
-    let registry = companion_skill_registry();
+    let registry = companion_skill_registry(app);
     let body = match audio_base64 {
         Some(audio) => build_audio_skill_request_body(messages, audio, &registry),
         None => build_skill_request_body(messages, &registry),
@@ -792,7 +803,7 @@ async fn run_plain_retry(
     audio_base64: Option<&str>,
 ) -> Result<(), String> {
     if offer_skills {
-        let registry = companion_skill_registry();
+        let registry = companion_skill_registry(app);
         let body = match audio_base64 {
             Some(audio) => build_audio_skill_request_body(messages, audio, &registry),
             None => build_skill_request_body(messages, &registry),
@@ -1332,27 +1343,39 @@ mod tests {
     ///
     /// The Companion's typed send reaches the model through `run_tools_attempt`
     /// (and its retry through the offer-skills branch of `run_plain_retry`), so
-    /// THIS offer must be the four-skill registry: `open_app`, `close_app`,
-    /// `doom_mode`, `wireframe` — in that order — with a `wireframe`
-    /// declaration that declares the three C4 arguments and a DIRECTIVE
-    /// description naming the request class (draft/sketch/visualize) and every
-    /// catalog id, so "let's create a new wireframe for <app>" is callable.
+    /// THIS offer must be the generated registry built from the PUBLISHED
+    /// surfaces: the three shipped static skills (`open_app`, `close_app`,
+    /// `doom_mode`) FIRST, then the generated `wireframe` skill in registration
+    /// order — with a DIRECTIVE description naming the request class
+    /// (draft/sketch/visualize) and every published action id, so "let's create a
+    /// new wireframe for <app>" is callable.
     ///
     /// Round-2 code fails this on the first assertion: the live path offered
     /// `SkillRegistry::with_app_control_and_doom()` — three tools, no
     /// `wireframe` function at all, which is why the model could only reply in
     /// prose.
     #[test]
-    fn the_live_offer_carries_the_wireframe_skill_with_its_directive_description() {
-        use crate::infrastructure::companion::wireframe_catalog::{
-            WIREFRAME_ACTIONS, WIREFRAME_ACTION_ARG, WIREFRAME_APP_NAME_ARG, WIREFRAME_SUMMARY_ARG,
+    fn the_live_offer_carries_the_generated_wireframe_skill_with_its_directive_description() {
+        use crate::infrastructure::companion::surface_registry::{
+            build_companion_skill_registry, CompanionManifest,
         };
 
-        let registry = companion_skill_registry();
+        #[derive(serde::Deserialize)]
+        struct GoldenFixture {
+            manifest: CompanionManifest,
+        }
+
+        let fixture: GoldenFixture = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../ui/src/shared/companion/fixtures/wireframe.companion.golden.json"
+        )))
+        .expect("the golden fixture parses");
+        let surfaces = fixture.manifest.surfaces;
+        let registry = build_companion_skill_registry(&surfaces);
         let tools = skills::render_tools(&registry);
         let tools = tools.as_array().expect("the offer renders a tools array");
 
-        // The four offered functions, in offer order.
+        // The static three, then one generated skill per surface.
         let names: Vec<&str> = tools
             .iter()
             .filter_map(|tool| tool["function"]["name"].as_str())
@@ -1360,7 +1383,7 @@ mod tests {
         assert_eq!(
             names,
             vec!["open_app", "close_app", "doom_mode", "wireframe"],
-            "the live offer must register the wireframe skill last (F-47)"
+            "the live offer must register the generated wireframe skill last (F-47)"
         );
 
         let wireframe = tools
@@ -1368,28 +1391,35 @@ mod tests {
             .find(|tool| tool["function"]["name"] == "wireframe")
             .expect("the wireframe function is offered to the model");
 
-        // The three C4 arguments are declared; `action` is the only required one.
+        // The generated contract: one required `action` string carrying every
+        // published id plus `listActions`, and an open `arguments` object.
         let parameters = &wireframe["function"]["parameters"];
         assert_eq!(parameters["type"], "object");
-        assert_eq!(parameters["required"], json!([WIREFRAME_ACTION_ARG]));
+        assert_eq!(parameters["required"], json!(["action"]));
         let properties = parameters["properties"]
             .as_object()
             .expect("the declared properties object");
         let mut keys: Vec<&str> = properties.keys().map(String::as_str).collect();
         keys.sort_unstable();
-        let mut expected = vec![
-            WIREFRAME_ACTION_ARG,
-            WIREFRAME_APP_NAME_ARG,
-            WIREFRAME_SUMMARY_ARG,
-        ];
-        expected.sort_unstable();
-        assert_eq!(keys, expected, "the C4 arguments are action/app_name/summary");
-        for key in expected {
-            assert_eq!(properties[key]["type"], "string", "{key} must be a string");
-        }
+        assert_eq!(keys, vec!["action", "arguments"]);
+        assert_eq!(properties["action"]["type"], "string");
+        assert_eq!(properties["arguments"], json!({ "type": "object" }));
+        let offered: Vec<&str> = properties["action"]["enum"]
+            .as_array()
+            .expect("the action enum is an array")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        let expected: Vec<&str> = surfaces[0]
+            .commands
+            .iter()
+            .map(|command| command.id.as_str())
+            .chain(std::iter::once("listActions"))
+            .collect();
+        assert_eq!(offered, expected, "every published id then listActions");
 
         // The description is a DIRECTIVE: the request class + the draft action +
-        // every catalog id (an offer that only lists ids is a passive sentence).
+        // every published id (an offer that only lists ids is a passive sentence).
         let description = wireframe["function"]["description"]
             .as_str()
             .expect("the description is a string");
@@ -1400,13 +1430,17 @@ mod tests {
                 "the description must name the request class ({word}): {description}"
             );
         }
-        assert!(
-            description.contains("wireframe.companion.draftApp"),
-            "the description must name the draft action: {description}"
-        );
-        for (id, _) in WIREFRAME_ACTIONS {
-            assert!(description.contains(id), "description is missing {id}");
+        for command in &surfaces[0].commands {
+            assert!(
+                description.contains(&command.id),
+                "description is missing {}",
+                command.id
+            );
         }
+        assert!(
+            description.ends_with("listActions."),
+            "the description ends with the generated id list: {description}"
+        );
 
         // The body keeps the shipped tools contract: the model decides (`auto`),
         // parallel calls stay off, and NO `response_format` — the schema grammar
@@ -1416,7 +1450,7 @@ mod tests {
                 "user",
                 "let's create a new wireframe for our new Reporter app",
             )],
-            &companion_skill_registry(),
+            &registry,
         );
         assert_eq!(body["tool_choice"], "auto");
         assert_eq!(body["parallel_tool_calls"], false);
@@ -1432,7 +1466,7 @@ mod tests {
             .collect();
         assert_eq!(
             body_names, names,
-            "the request body offers the same four tools in offer order"
+            "the request body offers the same generated tools in offer order"
         );
     }
 

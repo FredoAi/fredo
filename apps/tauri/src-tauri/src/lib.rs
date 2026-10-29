@@ -55,6 +55,14 @@ pub use applications::doom;
 #[doc(hidden)]
 pub use applications::llm_server::doom_agent;
 
+// Spec #3099 ST-4 — test seam. The durable companion-manifest suite
+// (`tests/companion_manifest.rs`) renders the offer through the SAME renderer the
+// live paths use (`render_tools`), so the golden fixture is asserted against the
+// real wire shape, not a test-local copy. `mod applications` is private, so the
+// renderer is re-exported here. `#[doc(hidden)]`: not part of the app surface.
+#[doc(hidden)]
+pub use applications::llm_server::skills::render_tools as render_companion_tools;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use applications::terminal::state::TerminalState;
@@ -815,6 +823,17 @@ pub fn run() {
             // (G-124).
             app.manage(infrastructure::app_command::AppCommandIntentState::new());
 
+            // -- Published application command surfaces (Spec #3099 ST-4) ------
+            // The frontend publishes every application's command surface here
+            // (`register_app_command_surfaces`); the companion offer reads this
+            // registry ON EVERY turn, and the read-only `app_command_surfaces`
+            // view lets the dispatcher resolve a surface from the PUBLISHED state
+            // (never a local rebuild). The three static skills are always offered;
+            // one generated skill follows per surface with at least one command.
+            app.manage(
+                infrastructure::companion::surface_registry::AppCommandSurfaceRegistry::new(),
+            );
+
             // -- Built-in PostgreSQL client state (Spec #2950 ST-1) ------------
             // The single managed state every `db_*` command takes. ST-1 resolves
             // only the G-275 seams and opens NO pool; ST-2 populates the
@@ -1030,6 +1049,11 @@ pub fn run() {
             infrastructure::app_command::app_command_intent,
             infrastructure::app_command::app_command_intent_take,
             infrastructure::app_command::app_command_intent_result,
+            // Published application command surfaces (Spec #3099 ST-4): the
+            // frontend publish (upsert by appId, fail-closed) and the READ-ONLY
+            // view the dispatcher resolves its surface from (D12).
+            infrastructure::companion::surface_registry::register_app_command_surfaces,
+            infrastructure::companion::surface_registry::app_command_surfaces,
             // DynamicTableStore (Spec #339)
             application_store::application_store_ensure_table,
             application_store::application_store_insert,
