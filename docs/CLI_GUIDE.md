@@ -142,14 +142,16 @@ fredo doom export-dataset [--format <raw|sft|dpo>] [--out <PATH>]
 | Argument | Required | Description |
 |----------|----------|-------------|
 | `--format` | No | `raw` (default — the lossless per-decision JSONL), `sft`, or `dpo` |
-| `--out` | No | Target file path. Relative → resolved under the app-data dataset dir; omitted → `<dataset dir>/exports/doom-dataset-<ts>.<ext>` |
+| `--out` | No | Target file path **relative to** `<dataset dir>/exports/` — a relative value is joined under it. Absolute paths, drive/UNC prefixes and `..` components are rejected (exit `1`) and write nothing; omitted or blank → `<dataset dir>/exports/doom-dataset-<ts>.<ext>` |
+
+> `--out` is confined to `<dataset dir>/exports/`; there is no way to name a target outside it from the CLI. The webview export surface is separate: it takes no path argument and uses a native save dialog.
 
 **Exit codes**
 
 | Exit | Meaning | stdout |
 |------|---------|--------|
 | `0` | Written | `{"path":"…","format":"raw","records":N,"bytes":N}` |
-| `1` | Invalid format / empty dataset / write failure | a clear error |
+| `1` | Invalid format / refused `--out` / empty dataset / write failure | a clear error |
 | `2` | Fredo app is not running | _(the fallback message below)_ |
 
 > Capture is **opt-in** (`doom_dataset_enabled`, off by default; env `FREDO_DOOM_DATASET_ENABLED` overrides) and **local-only** — nothing is transmitted off-device. The dataset lives as an append-only JSONL under `<app-data>/doom-dataset/` with a bounded retention/rotation policy (it replaces the retired `doom-agent-requests.jsonl` / `doom-agent-actions.jsonl` audit files).

@@ -213,6 +213,16 @@ The React UI renders all agent-provided content via React's JSX (no `dangerously
 - The PTY terminal spawns child processes as the same OS user; no privilege escalation occurs
 - OTLP receivers run as separate tokio tasks within the same process; no additional processes spawned
 
+### Reachability hardening (Spec #3078)
+
+Three Rust/IPC seams reachable from the webview are additionally hardened so a compromised webview cannot name an executable or a write target:
+
+- **The terminal test seam is release-absent.** `spawn_terminal_session`'s TEST-ONLY `test_override` argument (wire type `SpawnTestOverride`) is gated on `#[cfg(debug_assertions)]`, so a release build (`debug_assertions = false`) declares no such argument: no IPC payload can select the executable a PTY is pointed at, and the binary comes only from the stored `terminal_copilot_path` (Copilot) or PATH resolution. Debug/test builds keep the seam so the committed terminal recipes remain reachable (`SPAWN_TEST_SEAM_COMPILED_IN` is the compile-time marker).
+- **Sensitive settings path values are validated on BOTH write planes.** `save_setting` (data plane) and `save_control_setting` (control-plane cache) apply the same rule to exactly four keys — `llama_server_path`, `llama_server_companion_dir`, `terminal_copilot_path`, `terminal_pwsh_path`. A non-empty value must be absolute, free of control characters and free of `..` components (the checks run control characters → absolute → `..`, and the first match is rejected with a message naming the key and the rule); an empty/whitespace-only value clears the setting; every key outside the four is stored unchanged (no allowlist). An accepted value is persisted byte-identically — never trimmed or normalised.
+- **The dataset export cannot name an arbitrary file.** The webview `export_doom_dataset` command takes **no path argument** — it opens a native save dialog and writes only to the path the user picks (`Ok(None)` on cancel, nothing written). The headless CLI/IPC `--out` (a separate, non-webview entry) is confined to `<dataset_dir>/exports/`: absolute paths, drive/UNC prefixes and `..` components are rejected with a typed error, and a blank/absent `--out` writes the default `<dataset_dir>/exports/doom-dataset-<ts>.<ext>`.
+
+The command names and the debug wire keys (`testOverride`, `binary`, `pwshMajor`) are unchanged, and no new dependency, plugin, capability or CSP change is introduced. This hardens reachability only — it does not alter the trust model above (any process running as the same OS user can still call the local IPC socket).
+
 ---
 
 ## Pipeline Comment Surface
