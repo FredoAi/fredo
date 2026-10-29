@@ -136,6 +136,37 @@ export function useActiveCommandMode(appId: string | null): ApplicationCommandMo
 
 // ── Snapshot + subscription ──────────────────────────────────────────────────
 
+/**
+ * The bar's inline-prompt wrapper. It is platform chrome (outside every
+ * `[data-fredo-app-id]` root), so focusing its input makes the PURE resolver
+ * return `null` by design — the display fallback below exists only for this case.
+ */
+const PROMPT_WRAPPER_SELECTOR = '[data-testid="hotkeys-keybar-prompt"]';
+
+/**
+ * The application whose surface the bar DISPLAYS.
+ *
+ * `resolveFocusedApplicationId()` stays the authoritative focused-app answer and
+ * is never changed here. While the user types into the bar's inline prompt,
+ * however, focus lives in platform chrome (outside every application root), so
+ * the pure resolver returns `null`; without a fallback the bar would unmount the
+ * very prompt it just focused (`appId:null` ⇒ `prompt:null`). The prompt wrapper
+ * carries the owning `data-app-id` (the binding DOM contract), so the store
+ * falls back to it — a DISPLAY-identity fallback only: no new listener, no
+ * persistence, and the resolved app id itself is untouched.
+ */
+function resolveDisplayedApplicationId(): string | null {
+  const focused = resolveFocusedApplicationId();
+  if (focused !== null) return focused;
+  if (typeof document === 'undefined') return null;
+  const active = document.activeElement;
+  if (active === null || typeof active.closest !== 'function') return null;
+  const wrapper = active.closest(PROMPT_WRAPPER_SELECTOR);
+  if (wrapper === null) return null;
+  const appId = wrapper.getAttribute('data-app-id');
+  return appId !== null && appId.length > 0 ? appId : null;
+}
+
 interface CommandSurfaceView {
   readonly appId: string | null;
   readonly modePath: readonly string[];
@@ -143,7 +174,7 @@ interface CommandSurfaceView {
 }
 
 function currentView(): CommandSurfaceView {
-  const appId = resolveFocusedApplicationId();
+  const appId = resolveDisplayedApplicationId();
   const surface = resolveCommandSurface(appId);
   if (appId === null || surface === null) {
     return { appId: null, modePath: EMPTY_PATH, prompt: null };
@@ -220,10 +251,10 @@ function setBodyAttribute(name: string, value: string | null): void {
   if (body.getAttribute(name) !== value) body.setAttribute(name, value);
 }
 
-/** Re-derive both body hooks from the currently focused application. */
+/** Re-derive both body hooks from the currently displayed application. */
 function syncBodyHooks(): void {
   if (typeof document === 'undefined' || !document.body) return;
-  const appId = resolveFocusedApplicationId();
+  const appId = resolveDisplayedApplicationId();
   if (appId === null || resolveCommandSurface(appId) === null) {
     setBodyAttribute(BODY_ACTIVE_MODE_ATTR, null);
     setBodyAttribute(BODY_COMMAND_PROMPT_ATTR, null);

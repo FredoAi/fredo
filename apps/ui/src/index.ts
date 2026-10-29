@@ -88,6 +88,10 @@ export type {
   ApplicationCommandSpec,
   ApplicationCommandSurface,
 } from './shared/hotkeys/commandSurface';
+// DEV-only fixture bridge type (Spec #3097 ST-6). TYPE-ONLY on purpose: the
+// bridge + fixture apps are reached via `HotkeysProvider`'s DEV-gated dynamic
+// import, so nothing here pulls them into a production bundle.
+export type { CommandSurfaceFixtureBridge } from './shared/hotkeys/commandSurfaceFixtureBridge';
 
 
 // ── Hotkeys: the always-on bar (Spec #3009 ST-2) ─────────────────────────────
