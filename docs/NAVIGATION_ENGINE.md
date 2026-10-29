@@ -189,11 +189,11 @@ Key resolution turns a stroke sequence into at most one intent. The resolver MUS
 
 ### 4.1 Precedence, in this exact order
 
-For every stroke the resolver MUST evaluate these four tiers **in this exact order**, and it MUST dispatch **exactly one intent** — or reject with a named code:
+For every stroke the resolver MUST evaluate these four tiers **in this exact order**, except while a prefix is armed: then the next stroke MUST first be resolved by tier 3 alone, and tiers 1 and 2 MUST NOT be consulted for that stroke. It MUST dispatch **exactly one intent** — or reject with a named code:
 
 1. **Current place `keys`** — an exact binding on the current place's `keys` map wins.
 2. **Application `directAliases`** — an application-level single-stroke alias, tried only when tier 1 produced neither an exact binding nor a pending prefix.
-3. **Pending / which-key prefix continuation** — while a prefix is armed (see `PENDING_TIMEOUT_MS`), the next stroke MUST be offered to the continuation set of the pending sequence before any other tier may complete.
+3. **Pending / which-key prefix continuation** — while a prefix is armed (see `PENDING_TIMEOUT_MS`), the next stroke MUST be offered to that prefix's continuation set FIRST, and a single-stroke place key (tier 1) or a direct alias (tier 2) MUST NOT be consulted for that stroke. A stroke that matches no continuation of the armed sequence MUST cancel the prefix and MUST be re-resolved from tier 1.
 4. **Quiet hint** — when no tier yields a binding, the engine MUST surface a hint derived from the current place (§8) and MUST dispatch nothing.
 
 A fifth tier — a global hotkey registry, a legacy element listing, a browser or OS shortcut — MUST NOT be consulted. §4 has exactly these four tiers.
@@ -236,7 +236,7 @@ The tree these bindings hang from: `wireframe.canvas` is the root; `wireframe.cr
 
 Every trace starts at the root place `wireframe.canvas` with an empty selection.
 
-| stroke | tier that matched | resolved intent (verb id or place id) | args | journal effect | resulting place path |
+| stroke | tier that matched | resolved intent (verb id or place id) | args | journal effect | `placePath` recorded on the completing verb's journal entry (dispatch-time) |
 |---|---|---|---|---|---|
 | `c` | (1) current place `keys` — `wireframe.canvas` | verb `place.create` | `{}` | one `navigation` entry: `verbId:'place.create'`, `placePath:['wireframe.canvas']`, `exitedBy:'none'` | `[wireframe.canvas, wireframe.create]` |
 | `c r` | stroke 1: (1) `wireframe.canvas` `keys`; stroke 2: (1) `wireframe.create` `keys` | verb `place.create`, then verb `place.rect` | `{}` then `{}` | `navigation` entry for `place.create`; then one `mutation` entry for `place.rect` with `placePath:['wireframe.canvas','wireframe.create']` and `exitedBy:'verb'` (no second navigation entry) | `[wireframe.canvas, wireframe.create]` |
@@ -245,6 +245,8 @@ Every trace starts at the root place `wireframe.canvas` with an empty selection.
 **`c r` is two resolutions, not one binding.** The first stroke resolves in the canvas place and enters `wireframe.create`; the second stroke resolves in the create place and runs `place.rect`, whose completing verb auto-exits the transient place with `exitedBy:'verb'`.
 
 **The point of the pair.** Both the `c r` and the `r` row dispatch the SAME verb id `place.rect` with the same args `{}` and the same journal effect — one `mutation` entry carrying the rect insert and its inverse. Only the journal `placePath` differs: `c r` records the create place, `r` records the canvas place.
+
+**The last column is the entry's `placePath` — the place path root → current at DISPATCH time (§6.1) — not the cursor after the entry.** After `c r` the transient `wireframe.create` place pops exactly one level on that completing verb (§2.2), so the cursor returns to `[wireframe.canvas]` while the `place.rect` entry's `placePath` remains `[wireframe.canvas, wireframe.create]`.
 
 ### 4.4 Grammar decision: `?` and `/` are display glyphs
 
@@ -543,13 +545,14 @@ The contract MUST be testable from its own rules. P3 owns the test code; this se
 
 ### 13.4 Cold-read check
 
-The cold-read check MUST be executable from this document alone. A reader MUST perform it with only §4's published key map and no other source.
+The cold-read check MUST be executable from this document's own normative text. It measures whether that rule text ALONE determines the trace: a reader with no prior context MUST reach the same five columns plus the `placePath`.
 
-1. Start at the root place `wireframe.canvas` with an empty selection and read nothing beyond §4.2.
-2. For each of the three strokes `c`, `c r` and `r`, fill one five-column row — *stroke → tier that matched → resolved intent (verb id or place id) → args → journal effect* — and record the resulting place path.
-3. The architect's trace and the developer's trace MATCH if and only if they agree on every row **for the same stroke**: the tier that matched, the resolved intent, the args, the journal effect and the resulting place path. A difference on the same stroke between the two authors is a mismatch.
+1. Start at the root place `wireframe.canvas` with an empty selection. Every rule the trace needs is in this document's own normative model — §1–§6 (objects, places, verbs, key resolution, dispatch, journal) — and the reading MUST NOT be widened to external material: implementation code, plans, notes, ADR files, research documents, prior traces or another reader's answers.
+2. **Before consulting §4.3**, for each of the three strokes `c`, `c r` and `r`, fill one row of five columns plus the resulting place path — *stroke → tier that matched → resolved intent (verb id or place id) → args → journal effect* — and record the `placePath` on the completing verb's journal entry (§6.1: the path root → current at dispatch, not the cursor after the entry).
+3. The architect's trace and the developer's trace MATCH if and only if they agree on every row **for the same stroke**: the tier that matched, the resolved intent, the args, the journal effect and the recorded `placePath`. A difference on the same stroke between the two authors is a mismatch.
 4. The value that legitimately differs **between the `c r` row and the `r` row** is `placePath` (`c r` = `[wireframe.canvas, wireframe.create]`, `r` = `[wireframe.canvas]`). That is a property of the strokes, and it is never a licence for the two authors to disagree.
-5. Evidence MUST be the two filled five-column tables (`.opencode/tmp/3116/cold-read-architect.md` and `.opencode/tmp/3116/cold-read-developer.md`) plus a one-sentence match statement naming any row that differed.
+5. Evidence MUST be the two filled five-column tables plus the `placePath` column (`.opencode/tmp/3116/cold-read-architect.md` and `.opencode/tmp/3116/cold-read-developer.md`) plus a one-sentence match statement naming any row that differed.
+6. §4.3 is the published answer key: it must contain the three traces by design, so the check is never blind. A reader MUST write their own table from §4.1–§4.2 FIRST and only then compare it against §4.3 — the check measures rule sufficiency, not memory of the examples.
 
 ## Open questions
 
