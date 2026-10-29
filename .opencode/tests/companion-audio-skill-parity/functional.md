@@ -1,5 +1,17 @@
 # Companion Audio Skill Parity — Functional
 
+> **#3099 SUPERSESSION (G-136 / G-183 — history preserved, nothing deleted).** Spec #3099 replaces
+> the hand-written `wireframe` declaration with ONE generated skill per published application
+> surface, so the wireframe declaration now declares only `{action: enum(<published ids>,
+> "listActions"), arguments: object}` (no `app_name`/`summary` at the top level — they move inside
+> `arguments`), and its description is the surface's `companion.description`. Concretely for this
+> suite: **F-4**'s "three C4 args" clause and **F-13**'s `4-skill pins (skills.rs:538, :568)` are
+> REPLACED by the ONE golden fixture asserted on both sides (`.opencode/tests/companion/` F-159) plus
+> the rewritten pins; the **parity requirement itself is UNCHANGED and must not be weakened** —
+> both the typed and the audio turn still obtain the SAME offer from the ONE accessor
+> (`companion_skill_registry(app)`) and their `tools` arrays must still be byte-equal
+> (`.opencode/tests/companion/` F-147 / R-71). F-1/F-2/F-3/F-6/F-7 and F-8..F-12 stand as written.
+
 > Per-requirement test cases for **#3073 — the model-audio (spoken) turn offers exactly the same
 > skills as a typed turn** (`open_app`, `close_app`, `doom_mode`, `wireframe`, same order), so a
 > spoken request is never silently unsupported when its typed twin works.
