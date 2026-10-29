@@ -331,3 +331,34 @@
       inter-leg gap and shoulder notches stay background (no fill leak), the avatar returns to `idle`
       (no lingering `error`/`joking`), the body stays solid; screenshot succeeds; console clean of
       `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
+## #3099 extension — published-command-surface quick paths
+
+> Spec #3099 generates each application's companion skill from its published TypeScript command
+> surface. Quick paths only — the full matrix lives in `functional.md` F-144..F-163 /
+> `regression.md` R-70..R-75. **Verification policy: live.** Each live row states PATH-A (real
+> `llama-server` turn) or FALLBACK-F (`tauri_ipc_emit_event` on `llm-skill-call`) with the literal
+> disclosure `model-turn not exercised`.
+
+- [ ] S-47: **The companion still chats and still opens apps.** With the companion ON at the seat,
+      send `Reply with exactly: Hi there!`, then `open Mission Monitor`. **Expected:** the reply streams
+      into `[data-testid="fredo-reply-surface"]` and settles; one Mission Monitor window opens with the
+      reply EXACTLY `Opening Mission Monitor`; screenshot succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-48: **Wireframe quick path while CLOSED.** With Wireframe closed, send (PATH-A)
+      `Create a wireframe for the Reporter app` — or (FALLBACK-F) emit
+      `{skill:"wireframe",arguments:{action:"wireframe.companion.draftApp",arguments:{app_name:"Reporter"}}}`.
+      **Expected:** the Wireframe window opens, `[data-testid="wireframe-root"]`
+      `data-wireframe-element-count` ≥ 3, the reply is the performed sentence ending with a PERIOD
+      (`` `Performed in Wireframe: … .` ``, `kind: 'success'`), screenshot succeeds, console clean.
+- [ ] S-49: **Action-list quick path while CLOSED.** Emit
+      `{skill:"wireframe",arguments:{action:"listActions"}}`. **Expected:** the reply starts
+      `Wireframe actions:` and lists every id from `invoke('app_command_surfaces')` with a non-empty
+      description in order (`; ` join, em dash, no trailing period, `kind: 'success'`); ZERO windows
+      open; screenshot succeeds; console clean.
+- [ ] S-50: **Honest-rejection quick path.** Emit
+      `{skill:"wireframe",arguments:{action:"wireframe.qa.unknown.<nonce>",arguments:{}}}`. **Expected:**
+      ZERO windows open, NO `app-command-intent` is emitted, and the reply is EXACTLY
+      `I don't know the Wireframe action "wireframe.qa.unknown.<nonce>". Nothing changed.`
+      (`kind: 'unknown'`); screenshot succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
