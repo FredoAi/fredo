@@ -1583,25 +1583,51 @@ the tester's synthetic `document`-dispatched Escape events (harness artifact).
 
 ## F-112 (R-1.1 / AC1) — Element activation + bar DOM unchanged for non-opting apps
 
-- [ ] F-112: `Ctrl+Space` → type `Dev Mode` → Enter; give a non-text focus in its frame; read
-      `data-fredo-hotkey-count` + the bar; press `x`; re-read. **Expected:**
-      `[data-testid="dev-mode-clear-events"][data-hotkey="x"]` activates (event count → 0); the
-      count is unchanged; the bar root is still `role="region"`, `aria-label="Available hotkeys"`,
-      `pointer-events:none`, 34 px, zero focusable descendants, with no mode badge and no prompt.
-      **Data:** the button's observable, the count hook, the bar's computed styles + testids.
+- [ ] F-112: **Open Dev Mode via its shipped Konami lever** — it is NOT launcher-reachable
+      (`DevModeFeature.showable = false`, `DevModeFeature.tsx:11`), so "`Ctrl+Space` → type `Dev Mode`
+      → Enter" cannot open it. With the desktop focused, press on `document`:
+      `ArrowUp, ArrowUp, ArrowDown, ArrowDown, ArrowLeft, ArrowRight, ArrowLeft, ArrowRight, b, a`
+      (`useKonamiCode.ts:3-14`, wired at `Home.tsx:69,77`) — receipt: the Dev Mode window opens + the
+      `Dev Mode Enabled 🐛` toast. Then give a **non-text** focus in its frame (click the header); note
+      `data-fredo-hotkey-count`; **read the bar root, its computed geometry and its row count NOW,
+      BEFORE any activation key press** (`i` focuses a text input, after which rows render
+      `data-hotkey-availability="disabled"`); press the activation key; re-read.
+      **Activation lever, in order:** primary `[data-testid="dev-mode-clear-events"][data-hotkey="x"]`
+      (`DevMode.tsx:590`) — **event-count-gated** (`events.length > 0`, `DevMode.tsx:589`), present only
+      once Dev Mode holds ≥ 1 row; fallback on a fresh/empty env
+      `[data-testid="dev-mode-filter-input"][data-hotkey="i"]` (`DevMode.tsx:643-647`, always present in
+      the rows view) — receipt `document.activeElement` is that input; second fallback
+      `[data-testid="dev-mode-view-toggle"] [data-hotkey="v"]` (`DevMode.tsx:609`) — receipt the body
+      switches to the application-data feed; last resort any other currently-mounted app's
+      `data-hotkey` element (name it in `## Tests Runs`). A non-primary lever is an instrument
+      **substitution and must be disclosed**. **Expected:** the chosen lever activates (clear-events →
+      event count 0; filter input → it is `document.activeElement`; `v` → the view switches); the count
+      is unchanged; the bar root (read BEFORE the press) is still `role="region"`,
+      `aria-label="Available hotkeys"`, `pointer-events:none`, 34 px, zero focusable descendants, with
+      no mode badge and no prompt; pre-press row count == `data-fredo-hotkey-count`.
+      **Data:** the lever's observable, the count hook, the pre-press bar computed styles + testids.
       *(live receipt)*
-  - **Edge:** a window with zero `data-hotkey` elements (bar absent, `count="0"`); My Work Items
-    `r` / Diagram `d` as alternates; a pending prefix present.
+  - **Edge:** a window with zero `data-hotkey` elements (bar absent, `count="0"`); a fresh/empty env
+    where the `x` Clear button is not mounted (use `i` — "lever missing" is never a product defect);
+    `My Work Items`/`Diagram` are NOT usable alternates (both `showable=false`, launcher-unreachable);
+    a pending prefix present.
 
 ## F-113 (R-1.2 / AC1) — The app-global duplicate rule still governs non-opting documents
 
-- [ ] F-113: Inject two `<span data-hotkey="zz">` into `document.body`; read the hook + console;
-      remove both. **Expected:** `data-fredo-hotkey-duplicate="true"`, the count rises by 2 (the
-      positive control proving the flush ran), a duplicate diagnostic reaches the console; after
-      removal the attribute is absent and the count returns to baseline. **Data:** the body hooks +
+- [ ] F-113: **Pre-check first** via `execute_js`:
+      `document.querySelectorAll('[data-hotkey="q"]').length === 0` AND
+      `document.body.hasAttribute('data-fredo-hotkey-duplicate') === false` — record both (baseline
+      count + hook absent). Then inject two sibling `<span data-hotkey="q">` into `document.body`;
+      read the hook + console; remove both; re-read. **Use `q` (a valid single stroke), never `zz`** —
+      the grammar `/^[a-z0-9](?:\+[a-z0-9])?$/` (`hotkeyGrammar.ts:25`) rejects two bare steps, so a
+      `zz` pair only logs `[hotkeys] Ignoring invalid data-hotkey="zz"` and can never duplicate.
+      **Expected:** `data-fredo-hotkey-duplicate="true"`, the count is pre-check baseline + 2 (the
+      positive control proving the flush ran), `Duplicate data-hotkey "q" declared by 2 mounted
+      elements` + the DEV `DuplicateHotkeyError` reach the console; after removal the attribute is
+      absent and the count is back to the recorded baseline. **Data:** the body hooks +
       `tauri_read_logs(level="error")`. *(live receipt)*
   - **Edge:** same-level duplicate vs a strict step-prefix shadow; elements outside every app root
-    (scope `null`).
+    (scope `null`); a pre-check failure means pick another free single stroke, never reuse `zz`.
 
 ## F-114 (R-1.3 / AC1) — The existing hotkey suites pass UNMODIFIED
 
@@ -1629,14 +1655,27 @@ the tester's synthetic `document`-dispatched Escape events (harness artifact).
 
 ## F-116 (R-2.1 / AC2) — Element fallback is scope-filtered for the focused opting app
 
-- [ ] F-116: With alpha focused at root, click `command-fixture-element`, press `x`; focus beta,
-      press `x` again. **Expected:** alpha's `x` element activates exactly once when alpha is
-      focused — its `onClick` side effect writes the alpha sink / bumps `data-command-runs`
-      (`activateHotkeyElement` calls `.click()`, which does NOT move focus, so `document.activeElement`
-      is never the receipt); with beta focused the same stroke does not activate alpha's element
-      (sink/counter unchanged). **Data:** the sink + counter, not activeElement. *(live receipt)*
+- [ ] F-116: (1) Make alpha the **focused window** via the real frame pointer-down path: click
+      `[data-testid="window-frame-command-fixture-alpha"]`; verify `data-focused="true"`. (2) **Move
+      focus OFF the hotkey element** — click `[data-testid="command-fixture-root"]` or `execute_js`
+      `document.querySelector('[data-testid="command-fixture-element"]').blur();
+      document.body.focus()` — and **assert `document.activeElement` is NOT
+      `[data-testid="command-fixture-element"]` BEFORE typing** (a focused native control hits the
+      native-consumer branch `passthrough('native-consumes')`, which precedes the element-fallback
+      path and consumes the stroke; "click the element, then press `x`" can never work). (3) Note
+      alpha's `data-command-runs` (N) and sink text; press `x`. (4) Focus beta
+      (`[data-testid="window-frame-command-fixture-beta"]` → `data-focused="true"`), put focus on
+      `document.body`, re-note alpha's runs/sink, press `x` again. **Expected:** alpha-focused leg —
+      alpha's `x` element activates **exactly once**: the `onClick` receipt is the alpha sink
+      `[data-fredo-app-id="command-fixture-alpha"] [data-testid="command-fixture-value"]` reading
+      `element-x`, `data-command-runs` N → N+1, `window.__dp`'s entry for the stroke
+      `defaultPrevented === true`; beta-focused leg — the same stroke does NOT activate alpha's
+      element (runs and sink unchanged, `__dp` false; beta has no `x` element). **Never use
+      `document.activeElement` as the activation receipt** (`.click()` does not move focus).
+      **Data:** the sink + counter + `__dp`, not activeElement. *(live receipt)*
   - **Edge:** an app-less element (launcher chrome) while an opting app is focused; a non-opting
-    app focused alongside (app-global listing restored).
+    app focused alongside (app-global listing restored); focus left on the fixture's plain text
+    `<input>` (text-entry wins, `x` is typed — expected, not a FAIL).
 
 ## F-117 (R-2.2 / AC2) — Bottom bar = focused app's active-mode rows + leading badge
 
@@ -1654,15 +1693,23 @@ the tester's synthetic `document`-dispatched Escape events (harness artifact).
 ## F-118 (R-2.3 / AC2) — In-scope collision still errors; cross-scope does not
 
 - [ ] F-118: (i) F-113 control. (ii) With alpha focused, append `<span data-hotkey="x">` INSIDE
-      `[data-fredo-app-id="command-fixture-alpha"]`; read hook/console/bar; remove. (iii) Append the
-      same span inside beta's root; read again. **Expected:** (ii) `data-fredo-hotkey-duplicate="true"`,
-      `hotkeys-duplicate-error` renders, a DEV `DuplicateHotkeyError` is logged, and
-      `command-fixture-element` is still present; after removal the hook clears. (iii) With one `x`
-      per app the hook is absent and no error is logged (the count proves the flush ran).
-      **Data:** hooks, console, count. *(live receipt)*
+      `[data-fredo-app-id="command-fixture-alpha"]`; read hook/console/**bar**; remove. (iii) Append
+      the same span inside beta's root (one `x` in alpha's root + one in beta's root = two DIFFERENT
+      command-surface scopes); read hook/console/**bar**; remove.
+      **Durable invariant — the bar banner and the body hook MUST agree in every case:** in-scope ⇒
+      both present; cross-scope ⇒ both absent. Never accept a verdict from one channel alone.
+      **Expected:** (ii) `data-fredo-hotkey-duplicate="true"`,
+      `document.querySelector('[data-testid="hotkeys-duplicate-error"]')` renders (positive control),
+      a DEV `DuplicateHotkeyError` is logged, and `command-fixture-element` is still present; after
+      removal hook AND banner clear. (iii) With one `x` per app,
+      `document.body[data-fredo-hotkey-duplicate]` is absent, `document.querySelector('[data-testid="hotkeys-duplicate-error"]')`
+      is **null**, and no error is logged — the count proves the flush ran.
+      **Data:** hook, banner (`document.querySelector`, NOT the bar subtree), console, count.
+      *(live receipt)*
   - **Edge:** `?hotkeyDupProbe=1` mounts at `document.body` only (scope `null`) and therefore cannot
     produce an in-scope collision. Run (ii) LAST (a DEV throw can abort the coalesced flush) and
-    reload the webview afterwards.
+    reload the webview afterwards. The banner is a fixed sibling ABOVE the bar — it is NOT inside
+    `[data-testid="hotkeys-keybar"]` (`HotkeyBar.tsx:365-403`).
 
 ## F-119 (R-3.1 / AC3) — A non-sticky command returns to the parent mode
 
@@ -1674,11 +1721,16 @@ the tester's synthetic `document`-dispatched Escape events (harness artifact).
 
 ## F-120 (R-3.2 / AC3) — A sticky mode stays active
 
-- [ ] F-120: Enter `pin` (root `p → open-pin` or `command-fixture-pin`), press `n`. **Expected:**
-      badge `pin` / `data-mode-path="browse>pin"`; after `n` the handler ran once and the mode is
-      STILL `pin` with the `n` row listed; `t` (root-only) does nothing. **Data:** badge/path/rows +
-      sink/counter. *(live receipt)*
-  - **Edge:** a throwing sticky command; `sticky` default FALSE (ST-1 pin).
+- [ ] F-120: Enter `pin` (root `p → open-pin` or `command-fixture-pin`), press `n`; then, as a
+      discriminator, press `t`. **Expected:** badge `pin` / `data-mode-path="browse>pin"`; after `n`
+      the handler ran once and the mode is STILL `pin` with the `n` row listed — that is the sticky
+      gate. The `t` discriminator resolves **through the mode chain from `pin`** (its parent `browse`
+      binds `t`, per the R-2.1 top→parent rule), so `t` legitimately pushes `tool` →
+      `data-mode-path="browse>pin>tool"`; "`t` is inert in `pin`" was wrong and is withdrawn.
+      **PASS** = pin persists after `n` + `n`'s handler ran exactly once + `n`'s row still listed.
+      **Data:** badge/path/rows + sink/counter. *(live receipt)*
+  - **Edge:** a throwing sticky command; `sticky` default FALSE (ST-1 pin); `t`-from-`pin` chain
+    resolution (do not re-assert inertness).
 
 ## F-121 (R-3.3 / AC3) — Blur/return leaves mode + keymap unchanged
 
@@ -1700,13 +1752,24 @@ the tester's synthetic `document`-dispatched Escape events (harness artifact).
   - **Edge:** close while not focused; close with the prompt open (no handler run); close the last
     opting app (no badge at all).
 
-## F-123 (R-3.4 / AC3, G-409-owned pin) — Standalone-route unmount resets (STATIC PIN)
+## F-123 (R-3.4 / AC3) — Standalone-route unmount resets (STATIC PIN, shipped artifact)
 
-- [ ] F-123: Read ST-6's `__tests__/commandSurfaceLifecycle.test.tsx`. **Expected:** it asserts
-      `resetApplicationMode(appId)` in the standalone route's unmount cleanup and the store dropping
-      the app's stack + prompt; green. **Disclosure:** no shipped app declares a `commandSurface`,
-      so this leg cannot be driven live in this slice — it is proven only by the named artifact.
-      **Data:** the suite file + its output. *(static pin — declared non-live leg)*
+- [ ] F-123: Read `apps/ui/src/applications/app-window/__tests__/StandaloneAppWindow.test.tsx` and
+      locate the case **`resets the application mode on unmount (Spec #3097 ST-5, R-3.4)`**
+      (`:139-154`). **`__tests__/commandSurfaceLifecycle.test.tsx` does NOT exist and is WITHDRAWN**
+      (ST-6 skipped it by design; ST-5 carries the leg). **Expected:** the case pushes `tool`
+      (`getModePath('probe') === ['browse','tool']`), renders `StandaloneAppWindow` for a
+      `?view=app&id=probe` feature declaring `commandSurface` (still `['browse','tool']` while
+      mounted), unmounts, and asserts `getModePath('probe') === ['browse']` — i.e. the standalone
+      route's unmount cleanup calls `resetApplicationMode(appId)` and the store drops the app's
+      stack/prompt; the sibling case `exposes the resolved feature id as the application root identity
+      (Spec #3097 ST-5)` (`:128-137`) pins `data-fredo-app-id="probe"`. Green in
+      `pnpm --filter @fredo/ui test:run -- src/applications/app-window`.
+      **Disclosure:** no shipped app declares a `commandSurface`, so this leg cannot be driven live in
+      this slice — it is proven only by that shipped artifact. **Data:** the suite file + its output.
+      *(static pin — declared non-live leg)*
+  - **Edge:** provider unmount; two windows of the same app id; unmount while the app is not focused;
+    a re-mounted standalone route must start at `['browse']`, not the stale stack.
 
 ## F-124 (R-3.5a / AC3) — Escape leg 1: the prompt closes, the mode stays, the key is consumed
 
