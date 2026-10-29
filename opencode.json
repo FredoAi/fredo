@@ -334,7 +334,9 @@
                     "*restful-doom*": "allow",
                     "Remove-Item scripts/doom/*": "allow",
                     "git apply*": "allow",
-                    "Test-Path*": "allow"
+                    "Test-Path*": "allow",
+                    "git worktree add*": "allow",
+                    "git worktree remove*": "allow"
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny",
@@ -442,7 +444,9 @@
                     "tasklist*": "allow",
                     "taskkill*": "allow",
                     "powershell -File .opencode/scripts/check-sqlite-retired.ps1*": "allow",
-                    "powershell -File .opencode/tmp/*": "allow"
+                    "powershell -File .opencode/tmp/*": "allow",
+                    "git worktree add*": "allow",
+                    "git worktree remove*": "allow"
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny",
