@@ -428,6 +428,32 @@
 
 ## R-6 / AC6 — Companion control
 
+> **#3099 SUPERSESSION (G-136 — history preserved, no row or PASS record deleted).** Spec #3099 makes
+> the companion skill a GENERATED projection of this application's TypeScript command surface, so the
+> hand-written catalog (`wireframe_catalog.rs`) and its parity test are gone and FOUR rows below are
+> re-pointed. The authoritative rows for the new contract are `.opencode/tests/companion/`
+> F-144..F-163 / R-70..R-75; the wording below is the superseded form kept for the record.
+>
+> - **Emit shape (all rows below):** `llm-skill-call` now carries
+>   `{skill:"wireframe", arguments:{action:"<id>", arguments:{…}}}` — arguments are NESTED under
+>   `arguments`, and `action` is required by the generated schema. A flat
+>   `{action, app_name}` payload (the #3070 shape) is superseded.
+> - **F-43:** the listing id is the RESERVED `listActions` (not `wireframe.companion.listActions`,
+>   which is no longer a command); the reply is composed HOST-SIDE from the published manifest —
+>   `Wireframe actions: <id> — <description>; …` — and keeps working with the app closed. The 35-id
+>   TS↔Rust parity pin is replaced by ONE shared golden fixture asserted by the TS builder suite and
+>   the Rust `tests/companion_manifest.rs` (companion F-159).
+> - **F-45:** the performed reply is now generic — `Performed in Wireframe: <description>, …`
+>   (supersedes `Started a new wireframe for Reporter: …`); it still names only what was performed
+>   and a stopped `draftApp` still lists only the prior steps.
+> - **F-46:** the unknown-id copy is unchanged in form — `I don't know the Wireframe action "<id>".
+>   Nothing changed.` The undeclared-key rejection now happens in TypeScript (`executeCommand`)
+>   BEFORE `run`, fail-closed, with no window opened (companion F-153..F-155); the Rust validator
+>   still rejects the outer `{action, arguments}` shape.
+> - **F-48:** the relay is the generic `app-command-intent` / `app-command-intent-result` pair with
+>   `{requestId, appId, action, arguments}` and the SAME bounded queue (16, oldest-first); the
+>   cross-webview take-on-mount guarantee is retained (companion F-150).
+
 - [ ] **F-43 (R-6.1)** `wireframe.companion.listActions`.
       **Expected:** the reply contains all 35 action ids with a non-empty description each
       (the 25 Slice-1 ids + the 10 `wireframe.arrange.*` ids added by this slice); supported by
