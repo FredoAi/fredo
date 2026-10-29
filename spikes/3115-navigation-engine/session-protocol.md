@@ -264,7 +264,7 @@ GO-2  tasks_1_5_unaided_success_pct = 100 * count(success_unaided=true, task_id 
 GO-3  undo_first_attempt_pct = 100 * count(undo_first_attempt_success=true) / completed_participants  = 100
 GO-4  launcher_same_system_majority = count(launcher_same_system=true) > (completed_participants / 2)
 PRE-1 completed_participants >= 5
-PRE-2 non_keyboard_first_completed >= 1
+PRE-2 non_keyboard_first_completed >= 1        # AC6
 ```
 
 Definitions:
