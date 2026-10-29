@@ -55,6 +55,16 @@ const BETA = 'exec-beta';
 const capture = vi.fn();
 const find = vi.fn();
 const betaCommand = vi.fn();
+const guardedRun = vi.fn();
+const noopRun = vi.fn(() => false);
+const boomRun = vi.fn(() => {
+  throw new Error('boom');
+});
+const asyncOkRun = vi.fn(async () => undefined);
+const asyncFailRun = vi.fn(async () => {
+  throw new Error('async boom');
+});
+const asyncNoopRun = vi.fn(async () => false);
 const openTool = vi.fn(() => {
   pushMode(ALPHA, 'tool');
 });
@@ -69,6 +79,17 @@ function alphaSurface(): ApplicationCommandSurface {
       { id: 'open-tool', title: 'Open tool', run: openTool },
       { id: 'capture', title: 'Capture', run: capture },
       { id: 'find', title: 'Find', prompt: { label: 'Find value' }, run: find },
+      {
+        id: 'guarded',
+        title: 'Guarded',
+        args: [{ name: 'token', required: true, validate: (value) => value === 'ok' }],
+        run: guardedRun,
+      },
+      { id: 'noop', title: 'Noop', run: noopRun },
+      { id: 'boom', title: 'Boom', run: boomRun },
+      { id: 'async-ok', title: 'Async ok', run: asyncOkRun },
+      { id: 'async-fail', title: 'Async fail', run: asyncFailRun },
+      { id: 'async-noop', title: 'Async noop', run: asyncNoopRun },
     ],
   };
 }
@@ -164,7 +185,20 @@ beforeEach(() => {
   resetHotkeyEngineForTests();
   resetHotkeyElementDiscoveryForTests();
   resetRegistryForTests();
-  for (const handler of [capture, find, betaCommand, openTool]) handler.mockClear();
+  for (const handler of [
+    capture,
+    find,
+    betaCommand,
+    openTool,
+    guardedRun,
+    noopRun,
+    boomRun,
+    asyncOkRun,
+    asyncFailRun,
+    asyncNoopRun,
+  ]) {
+    handler.mockClear();
+  }
 });
 
 afterEach(() => {
@@ -392,5 +426,101 @@ describe('#3097 resolveActiveBindings(focusedAppId)', () => {
     alpha.focus.focus();
     expect(dispatch({ key: 'y' }).prevented).toBe(true);
     expect(globalButton.clicks()).toBe(1);
+  });
+});
+
+// ── Spec #3099 — the executor reports what happened ──────────────────────────
+
+describe('#3099 — executeCommand returns the outcome', () => {
+  it('returns performed for a sync run and still auto-returns the mode', () => {
+    const app = mountApp(ALPHA);
+    app.focus.focus();
+    pushMode(ALPHA, 'tool');
+
+    const outcome = executeCommand(ALPHA, 'capture');
+
+    expect(outcome).toEqual({ status: 'performed' });
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(getModePath(ALPHA)).toEqual(['browse']);
+  });
+
+  it('rejects an unknown application and an unknown command', () => {
+    mountApp(ALPHA);
+
+    expect(executeCommand('not-registered', 'capture')).toEqual({
+      status: 'rejected',
+      reason: 'unknown-application',
+    });
+    expect(executeCommand(ALPHA, 'not-a-command')).toEqual({
+      status: 'rejected',
+      reason: 'unknown-command',
+    });
+    expect(capture).not.toHaveBeenCalled();
+  });
+
+  it('returns prompt-required and opens the UNCHANGED inline prompt', () => {
+    const app = mountApp(ALPHA);
+    app.focus.focus();
+
+    const outcome = executeCommand(ALPHA, 'find');
+
+    expect(outcome).toEqual({ status: 'rejected', reason: 'prompt-required' });
+    expect(getOpenCommandPrompt(ALPHA)).toMatchObject({ commandId: 'find', value: '' });
+    expect(find).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a failed guard', { token: 'nope' }],
+    ['a missing required argument', {}],
+    ['an undeclared key', { token: 'ok', extra: 'x' }],
+    ['a blank value', { token: '   ' }],
+    ['a non-string value', { token: 7 }],
+  ])('rejects invalid arguments BEFORE run (%s)', (_label, args) => {
+    mountApp(ALPHA);
+
+    const outcome = executeCommand(ALPHA, 'guarded', args as unknown as Record<string, string>);
+
+    expect(outcome).toEqual({ status: 'rejected', reason: 'invalid-arguments' });
+    expect(guardedRun).not.toHaveBeenCalled();
+  });
+
+  it('performs when the declared contract is satisfied', () => {
+    mountApp(ALPHA);
+
+    expect(executeCommand(ALPHA, 'guarded', { token: 'ok' })).toEqual({ status: 'performed' });
+    expect(guardedRun).toHaveBeenCalledTimes(1);
+    expect(guardedRun).toHaveBeenCalledWith({ token: 'ok' });
+  });
+
+  it('returns noop when run reports false and failed when run throws', () => {
+    mountApp(ALPHA);
+
+    expect(executeCommand(ALPHA, 'noop')).toEqual({ status: 'noop' });
+    expect(noopRun).toHaveBeenCalledTimes(1);
+
+    expect(executeCommand(ALPHA, 'boom')).toEqual({ status: 'failed' });
+    expect(boomRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves async commands to their outcome', async () => {
+    mountApp(ALPHA);
+
+    await expect(Promise.resolve(executeCommand(ALPHA, 'async-ok'))).resolves.toEqual({
+      status: 'performed',
+    });
+    await expect(Promise.resolve(executeCommand(ALPHA, 'async-noop'))).resolves.toEqual({
+      status: 'noop',
+    });
+    await expect(Promise.resolve(executeCommand(ALPHA, 'async-fail'))).resolves.toEqual({
+      status: 'failed',
+    });
+    expect(asyncOkRun).toHaveBeenCalledTimes(1);
+    expect(asyncNoopRun).toHaveBeenCalledTimes(1);
+    expect(asyncFailRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('never throws for a synchronous run that throws', () => {
+    mountApp(ALPHA);
+    expect(() => executeCommand(ALPHA, 'boom')).not.toThrow();
   });
 });

@@ -4,8 +4,15 @@
  * An application MAY opt in by declaring `readonly commandSurface?: ApplicationCommandSurface`
  * on its `FredoApplicationClass`. A surface declares:
  *   - `modes`   — keyboard input states (id, label, parent, keymap, transient/sticky, cursor,
- *                 opaque pointer-operator id), and
- *   - `commands`— capabilities (id, title, optional prompt spec, one `run` handler).
+ *                 opaque pointer-operator id),
+ *   - `commands`— capabilities (id, title, optional prompt spec, one `run` handler), and
+ *   - `companion` — OPTIONAL model-facing capability sentence (Spec #3099). Present ⇒ the
+ *                 application publishes a companion skill; absent ⇒ nothing is published.
+ *
+ * Spec #3099 adds the companion declaration contract: a command MAY declare a model-facing
+ * `description` (the list reply's ONLY source; absent/blank ⇒ never published) and a declared
+ * `args` contract (`ApplicationCommandArg[]`). {@link validateCommandArgs} is the ONE
+ * declared-argument rule, shared by the host pre-flight and the executor.
  *
  * Exactly ONE mode is the root (`parent === null`). Every other mode chains to the root through
  * `parent`; `transient` defaults TRUE (Escape pops) and `sticky` defaults FALSE (a successful
@@ -39,15 +46,58 @@ export interface ApplicationCommandPrompt {
   readonly validate?: (value: string) => boolean;
 }
 
+/**
+ * One declared companion argument (Spec #3099).
+ *
+ * Declaring `args` on a command OPTS IT INTO the argument contract enforced by
+ * {@link validateCommandArgs}; a command that declares no `args` keeps the
+ * Spec #3097 pass-through behaviour (any string map reaches `run`).
+ */
+export interface ApplicationCommandArg {
+  /** Exact key the model must supply inside `arguments`. */
+  readonly name: string;
+  /** Default FALSE — an absent optional argument is accepted. */
+  readonly required?: boolean;
+  /** Optional human note, forwarded into the manifest only (never gated). */
+  readonly description?: string;
+  /**
+   * Optional TS-only value guard. Receives the RAW supplied string (trimming is
+   * the command's own concern); returning `false` rejects the invocation
+   * (`failed-guard`). Never serialized, so it only runs where the surface is
+   * registered (the app-side executor re-run).
+   */
+  readonly validate?: (value: string) => boolean;
+}
+
+/** The opt-in companion declaration of a whole surface (Spec #3099). */
+export interface ApplicationCommandCompanion {
+  /** Model-facing capability sentence — the DIRECTIVE that names the request class. */
+  readonly description: string;
+  /** Optional listing wording override; default `\`${appName} actions\``. */
+  readonly listLabel?: string;
+}
+
 /** One application capability. */
 export interface ApplicationCommandSpec {
   /** App-local id, unique within the surface. */
   readonly id: string;
   /** Bar row title. */
   readonly title: string;
+  /**
+   * Model-facing capability sentence (the list reply + the published manifest).
+   * Absent/blank ⇒ the command is NOT published to the companion (Spec #3099,
+   * fail-closed — `title` is never promoted to a capability sentence).
+   */
+  readonly description?: string;
   /** Present ⇒ a human invocation without args opens the inline prompt. */
   readonly prompt?: ApplicationCommandPrompt;
-  readonly run: (args?: ApplicationCommandArgs) => void | Promise<void>;
+  /**
+   * Declared companion arguments (Spec #3099); absent ⇒ no argument contract
+   * (the Spec #3097 pass-through). Declaring `args` — even `[]` — opts in.
+   */
+  readonly args?: readonly ApplicationCommandArg[];
+  /** `false` / rejection ⇒ nothing performed (fail-closed honesty). */
+  readonly run: (args?: ApplicationCommandArgs) => void | boolean | Promise<void | boolean>;
 }
 
 /** One keyboard input state of an application. */
@@ -82,6 +132,8 @@ export interface ApplicationCommandMode {
 export interface ApplicationCommandSurface {
   readonly modes: readonly ApplicationCommandMode[];
   readonly commands: readonly ApplicationCommandSpec[];
+  /** Present ⇒ this application publishes a companion skill (Spec #3099, opt-in). */
+  readonly companion?: ApplicationCommandCompanion;
 }
 
 /**
@@ -96,6 +148,21 @@ export interface CommandSurfaceValidationResult {
   /** Human-readable diagnostics in a stable declaration/field order. */
   readonly errors: readonly string[];
 }
+
+/** Why a declared-argument check refused an invocation (Spec #3099). */
+export type CommandArgsValidation =
+  | { readonly ok: true }
+  | {
+      readonly ok: false;
+      readonly reason:
+        | 'not-an-object'
+        | 'undeclared-key'
+        | 'missing-required'
+        | 'not-a-string'
+        | 'blank'
+        | 'failed-guard';
+      readonly detail: string;
+    };
 
 /** First-wins lookup (duplicate ids are reported separately and never win over the first). */
 function modesById(modes: readonly ApplicationCommandMode[]): Map<string, ApplicationCommandMode> {
@@ -131,7 +198,8 @@ function parentChainTerminatesAtRoot(
  *   3. every non-null parent resolves to a declared mode,
  *   4. every parent chain terminates at the root (no cycles / dangling chains),
  *   5. every keymap stroke matches {@link COMMAND_MODE_KEY_PATTERN} and targets a declared command,
- *   6. command ids unique (declaration order).
+ *   6. command ids unique (declaration order),
+ *   7. declared argument names unique within one command (Spec #3099).
  */
 export function validateCommandSurface(surface: ApplicationCommandSurface): CommandSurfaceValidationResult {
   const errors: string[] = [];
@@ -194,7 +262,96 @@ export function validateCommandSurface(surface: ApplicationCommandSurface): Comm
     }
   }
 
+  // 7. Declared argument names unique within one command (Spec #3099, appended).
+  for (const command of surface.commands) {
+    const seenArgNames = new Set<string>();
+    for (const arg of command.args ?? []) {
+      if (seenArgNames.has(arg.name)) {
+        errors.push(`duplicate arg name "${arg.name}" in command "${command.id}"`);
+      } else {
+        seenArgNames.add(arg.name);
+      }
+    }
+  }
+
   return { valid: errors.length === 0, errors };
+}
+
+/**
+ * The ONE declared-argument rule (Spec #3099), shared by the host pre-flight
+ * (layer 1, before any window open or relay) and the app-side executor
+ * (layer 2, inside `executeCommand` before `run`).
+ *
+ * TOTAL and PURE: never throws, never mutates. Checks, in this order:
+ *   1. `arguments` must be a plain object (not `null`, not an array),
+ *   2. every supplied key must be a declared `args` name,
+ *   3. every declared `required` argument must be present,
+ *   4. every supplied value must be a string,
+ *   5. a blank (empty/whitespace-only) value is rejected,
+ *   6. a declared `validate` guard returning `false` is rejected.
+ *
+ * `args === undefined` is treated as `{}` (a command with a required declared
+ * argument then fails `missing-required`).
+ *
+ * COMPATIBILITY (Spec #3097 invariant): a command that declares NO `args`
+ * declares no argument contract at all and keeps the legacy pass-through —
+ * any supplied string map reaches `run` unchanged. Declaring `args` (even an
+ * empty array) opts the command in; the Spec #3099 published surfaces declare
+ * their contracts, so every companion-facing command is validated.
+ */
+export function validateCommandArgs(
+  command: ApplicationCommandSpec,
+  args: unknown,
+): CommandArgsValidation {
+  const declared = command.args;
+  if (declared === undefined) return { ok: true };
+
+  const supplied = args === undefined ? {} : args;
+  if (typeof supplied !== 'object' || supplied === null || Array.isArray(supplied)) {
+    return { ok: false, reason: 'not-an-object', detail: 'arguments must be a plain object' };
+  }
+
+  const byName = new Map<string, ApplicationCommandArg>();
+  for (const arg of declared) byName.set(arg.name, arg);
+
+  const record = supplied as Readonly<Record<string, unknown>>;
+  const entries = Object.entries(record);
+
+  for (const [key] of entries) {
+    if (!byName.has(key)) {
+      return { ok: false, reason: 'undeclared-key', detail: `undeclared argument "${key}"` };
+    }
+  }
+
+  for (const arg of declared) {
+    if (arg.required === true && !Object.prototype.hasOwnProperty.call(record, arg.name)) {
+      return {
+        ok: false,
+        reason: 'missing-required',
+        detail: `missing required argument "${arg.name}"`,
+      };
+    }
+  }
+
+  const stringEntries: Array<readonly [string, string]> = [];
+  for (const [key, value] of entries) {
+    if (typeof value !== 'string') {
+      return { ok: false, reason: 'not-a-string', detail: `argument "${key}" must be a string` };
+    }
+    stringEntries.push([key, value]);
+  }
+
+  for (const [key, value] of stringEntries) {
+    if (value.trim() === '') {
+      return { ok: false, reason: 'blank', detail: `argument "${key}" must not be blank` };
+    }
+    const guard = byName.get(key)?.validate;
+    if (guard !== undefined && !guard(value)) {
+      return { ok: false, reason: 'failed-guard', detail: `argument "${key}" failed its guard` };
+    }
+  }
+
+  return { ok: true };
 }
 
 /**
