@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Navigation prototype — low fidelity</title>
+  <link rel="stylesheet" href="./prototype.css" />
+</head>
+<body>
+  <p class="fidelity-tag">Low-fidelity prototype — not the product</p>
+
+  <div data-testid="proto-root" data-active-place="place.canvas" data-selection-count="0" class="frame">
+    <nav data-testid="proto-place-tree" aria-label="Canvas navigation" class="tree">
+      <ul class="tree-list">
+        <li>
+          <button type="button" class="place-node" data-testid="proto-place-node" data-place-id="place.canvas" data-place-path="Canvas" data-child-of="" aria-current="page">
+            <span class="place-name">Canvas</span><span class="here">— here</span>
+          </button>
+        </li>
+        <li>
+          <button type="button" class="place-node child" data-testid="proto-place-node" data-place-id="place.canvas.create" data-place-path="Canvas > Create" data-child-of="place.canvas">
+            <span class="place-name">Create</span><span class="here" hidden>— here</span>
+          </button>
+        </li>
+        <li>
+          <button type="button" class="place-node child" data-testid="proto-place-node" data-place-id="place.canvas.edit" data-place-path="Canvas > Edit" data-child-of="place.canvas">
+            <span class="place-name">Edit</span><span class="here" hidden>— here</span>
+          </button>
+        </li>
+        <li>
+          <button type="button" class="place-node child" data-testid="proto-place-node" data-place-id="place.canvas.arrange" data-place-path="Canvas > Arrange" data-child-of="place.canvas">
+            <span class="place-name">Arrange</span><span class="here" hidden>— here</span>
+          </button>
+        </li>
+        <li>
+          <button type="button" class="place-node child" data-testid="proto-place-node" data-place-id="place.canvas.style" data-place-path="Canvas > Style" data-child-of="place.canvas">
+            <span class="place-name">Style</span><span class="here" hidden>— here</span>
+          </button>
+        </li>
+        <li>
+          <button type="button" class="place-node child" data-testid="proto-place-node" data-place-id="place.canvas.view" data-place-path="Canvas > View" data-child-of="place.canvas">
+            <span class="place-name">View</span><span class="here" hidden>— here</span>
+          </button>
+        </li>
+        <li>
+          <button type="button" class="place-node child" data-testid="proto-place-node" data-place-id="place.canvas.file" data-place-path="Canvas > File" data-child-of="place.canvas">
+            <span class="place-name">File</span><span class="here" hidden>— here</span>
+          </button>
+        </li>
+      </ul>
+
+      <div data-testid="proto-root-aliases" class="aliases" aria-label="Direct aliases">
+        <button type="button" class="alias" data-testid="proto-root-alias" data-key="r" data-verb-id="verb.create.rect"><kbd>r</kbd><span>Rectangle</span></button>
+        <button type="button" class="alias" data-testid="proto-root-alias" data-key="e" data-verb-id="verb.create.ellipse"><kbd>e</kbd><span>Ellipse</span></button>
+        <button type="button" class="alias" data-testid="proto-root-alias" data-key="t" data-verb-id="verb.create.text"><kbd>t</kbd><span>Text</span></button>
+        <button type="button" class="alias" data-testid="proto-root-alias" data-key="m" data-verb-id="verb.place.arrange"><kbd>m</kbd><span>Arrange</span></button>
+        <button type="button" class="alias" data-testid="proto-root-alias" data-key="s" data-verb-id="verb.place.style"><kbd>s</kbd><span>Style</span></button>
+        <button type="button" class="alias" data-testid="proto-root-alias" data-key="f" data-verb-id="verb.place.file"><kbd>f</kbd><span>File</span></button>
+      </div>
+    </nav>
+
+    <aside data-testid="proto-place-rail" data-place-id="place.canvas" class="rail">
+      <nav data-testid="proto-breadcrumb" data-crumb-count="1" aria-label="Current location" class="breadcrumb">
+        <button type="button" class="crumb" data-testid="proto-breadcrumb-crumb" data-place-id="place.canvas" aria-current="page">Canvas</button>
+      </nav>
+
+      <ul data-testid="proto-contextual-verbs" data-verb-count="5" class="verb-list">
+        <li>
+          <button type="button" class="verb" data-testid="proto-verb" data-place-id="place.canvas" data-verb-id="verb.create.rect" data-key="r" data-label="Rectangle" data-requires-selection="none" data-disabled="false" data-risk="low"><kbd>r</kbd><span class="verb-label">Rectangle</span></button>
+        </li>
+        <li>
+          <button type="button" class="verb" data-testid="proto-verb" data-place-id="place.canvas" data-verb-id="verb.create.ellipse" data-key="e" data-label="Ellipse" data-requires-selection="none" data-disabled="false" data-risk="low"><kbd>e</kbd><span class="verb-label">Ellipse</span></button>
+        </li>
+        <li>
+          <button type="button" class="verb" data-testid="proto-verb" data-place-id="place.canvas" data-verb-id="verb.create.text" data-key="t" data-label="Text" data-requires-selection="none" data-disabled="false" data-risk="low"><kbd>t</kbd><span class="verb-label">Text</span></button>
+        </li>
+        <li>
+          <button type="button" class="verb" data-testid="proto-verb" data-place-id="place.canvas" data-verb-id="verb.select.all" data-key="a" data-label="Select all" data-requires-selection="any" data-disabled="true" data-risk="low"><kbd>a</kbd><span class="verb-label">Select all</span></button>
+        </li>
+        <li>
+          <button type="button" class="verb" data-testid="proto-verb" data-place-id="place.canvas" data-verb-id="verb.arrange.alignLeft" data-key="l" data-label="Align left" data-requires-selection="multi" data-disabled="true" data-risk="low"><kbd>l</kbd><span class="verb-label">Align left</span></button>
+        </li>
+      </ul>
+
+      <div class="swatches" id="swatches" hidden>
+        <button type="button" class="swatch" data-fill="grey-20"><span class="swatch-chip swatch-20"></span>Grey 20%</button>
+        <button type="button" class="swatch" data-fill="grey-40"><span class="swatch-chip swatch-40"></span>Grey 40%</button>
+        <button type="button" class="swatch" data-fill="grey-60"><span class="swatch-chip swatch-60"></span>Grey 60%</button>
+        <button type="button" class="swatch" data-fill="grey-80"><span class="swatch-chip swatch-80"></span>Grey 80%</button>
+      </div>
+
+      <div class="rail-entries">
+        <button type="button" class="rail-entry" data-testid="proto-ask-entry" data-key="/" data-verb-id="verb.ask.open"><kbd>/</kbd><span>Ask</span></button>
+        <button type="button" class="rail-entry" data-testid="proto-map-entry" data-key="?" data-verb-id="verb.map.open"><kbd>?</kbd><span>Map</span></button>
+      </div>
+
+      <p data-testid="proto-selection-badge" data-selection-count="0" class="selection-badge">0 selected</p>
+      <p class="rail-note" id="rail-note" role="status"></p>
+    </aside>
+
+    <main class="canvas-wrap">
+      <div data-testid="proto-canvas" class="canvas">
+        <p class="empty-note" id="empty-note">Empty canvas</p>
+      </div>
+    </main>
+  </div>
+
+  <div data-testid="proto-map-overlay" data-open="false" aria-hidden="true" class="map-overlay">
+    <section class="map-panel" role="dialog" aria-modal="true" aria-label="Navigation map">
+      <header class="map-header">
+        <h2 class="map-title">Map</h2>
+        <button type="button" class="map-close" data-testid="proto-map-close">Close</button>
+      </header>
+      <div class="map-groups">
+        <section class="map-group" data-testid="proto-map-group" data-place-id="place.canvas">
+          <h3 class="map-group-title">Canvas <span class="current-marker" hidden>current place</span></h3>
+          <ul>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="r" data-verb-id="verb.create.rect"><kbd>r</kbd><span>Rectangle</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="e" data-verb-id="verb.create.ellipse"><kbd>e</kbd><span>Ellipse</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="t" data-verb-id="verb.create.text"><kbd>t</kbd><span>Text</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="a" data-verb-id="verb.select.all"><kbd>a</kbd><span>Select all</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="l" data-verb-id="verb.arrange.alignLeft"><kbd>l</kbd><span>Align left</span></button></li>
+          </ul>
+        </section>
+
+        <section class="map-group" data-testid="proto-map-group" data-place-id="place.canvas.create">
+          <h3 class="map-group-title">Canvas > Create <span class="current-marker" hidden>current place</span></h3>
+          <ul>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="r" data-verb-id="verb.create.rect"><kbd>r</kbd><span>Rectangle</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="e" data-verb-id="verb.create.ellipse"><kbd>e</kbd><span>Ellipse</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="t" data-verb-id="verb.create.text"><kbd>t</kbd><span>Text</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="d" data-verb-id="verb.create.duplicate"><kbd>d</kbd><span>Duplicate</span></button></li>
+          </ul>
+        </section>
+
+        <section class="map-group" data-testid="proto-map-group" data-place-id="place.canvas.edit">
+          <h3 class="map-group-title">Canvas > Edit <span class="current-marker" hidden>current place</span></h3>
+          <ul>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="d" data-verb-id="verb.edit.delete"><kbd>d</kbd><span>Delete</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="n" data-verb-id="verb.edit.rename"><kbd>n</kbd><span>Rename</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="a" data-verb-id="verb.edit.deselectAll"><kbd>a</kbd><span>Deselect all</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="l" data-verb-id="verb.edit.lock"><kbd>l</kbd><span>Lock</span></button></li>
+          </ul>
+        </section>
+
+        <section class="map-group" data-testid="proto-map-group" data-place-id="place.canvas.arrange">
+          <h3 class="map-group-title">Canvas > Arrange <span class="current-marker" hidden>current place</span></h3>
+          <ul>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="l" data-verb-id="verb.arrange.alignLeft"><kbd>l</kbd><span>Align left</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="c" data-verb-id="verb.arrange.alignCenter"><kbd>c</kbd><span>Align centre</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="d" data-verb-id="verb.arrange.distribute"><kbd>d</kbd><span>Distribute</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="g" data-verb-id="verb.arrange.group"><kbd>g</kbd><span>Group</span></button></li>
+          </ul>
+        </section>
+
+        <section class="map-group" data-testid="proto-map-group" data-place-id="place.canvas.style">
+          <h3 class="map-group-title">Canvas > Style <span class="current-marker" hidden>current place</span></h3>
+          <ul>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="f" data-verb-id="verb.style.setFill"><kbd>f</kbd><span>Set fill</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="c" data-verb-id="verb.style.copyStyle"><kbd>c</kbd><span>Copy style</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="v" data-verb-id="verb.style.pasteStyle"><kbd>v</kbd><span>Paste style</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="r" data-verb-id="verb.style.resetStyle"><kbd>r</kbd><span>Reset style</span></button></li>
+          </ul>
+        </section>
+
+        <section class="map-group" data-testid="proto-map-group" data-place-id="place.canvas.view">
+          <h3 class="map-group-title">Canvas > View <span class="current-marker" hidden>current place</span></h3>
+          <ul>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="i" data-verb-id="verb.view.zoomIn"><kbd>i</kbd><span>Zoom in</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="o" data-verb-id="verb.view.zoomOut"><kbd>o</kbd><span>Zoom out</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="f" data-verb-id="verb.view.fit"><kbd>f</kbd><span>Fit to screen</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="g" data-verb-id="verb.view.toggleGrid"><kbd>g</kbd><span>Toggle grid</span></button></li>
+          </ul>
+        </section>
+
+        <section class="map-group" data-testid="proto-map-group" data-place-id="place.canvas.file">
+          <h3 class="map-group-title">Canvas > File <span class="current-marker" hidden>current place</span></h3>
+          <ul>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="s" data-verb-id="verb.file.save"><kbd>s</kbd><span>Save</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="e" data-verb-id="verb.file.export"><kbd>e</kbd><span>Export</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="a" data-verb-id="verb.file.saveAs"><kbd>a</kbd><span>Save as</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="p" data-verb-id="verb.file.exportPng"><kbd>p</kbd><span>Export PNG</span></button></li>
+          </ul>
+        </section>
+
+        <section class="map-group" data-testid="proto-map-group" data-place-id="place.aliases">
+          <h3 class="map-group-title">Canvas > Aliases</h3>
+          <ul>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="r" data-verb-id="verb.create.rect"><kbd>r</kbd><span>Rectangle</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="e" data-verb-id="verb.create.ellipse"><kbd>e</kbd><span>Ellipse</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="t" data-verb-id="verb.create.text"><kbd>t</kbd><span>Text</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="m" data-verb-id="verb.place.arrange"><kbd>m</kbd><span>Arrange</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="s" data-verb-id="verb.place.style"><kbd>s</kbd><span>Style</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="f" data-verb-id="verb.place.file"><kbd>f</kbd><span>File</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="/" data-verb-id="verb.ask.open"><kbd>/</kbd><span>Ask</span></button></li>
+            <li><button type="button" class="map-key" data-testid="proto-map-key" data-key="?" data-verb-id="verb.map.open"><kbd>?</kbd><span>Map</span></button></li>
+          </ul>
+        </section>
+      </div>
+    </section>
+  </div>
+
+  <div data-testid="proto-launcher" data-open="false" data-launcher-mode="natural" aria-hidden="true" class="launcher">
+    <div class="launcher-scrim" id="launcher-scrim"></div>
+    <section class="launcher-panel" id="launcher-panel" role="dialog" aria-modal="true" aria-label="Ask about this place">
+      <p class="scope-chip" id="scope-chip">Scope: Canvas</p>
+      <p class="launcher-prompt">Ask about this place, or describe a change.</p>
+      <div class="launcher-row">
+        <input data-testid="proto-launcher-input" id="launcher-input" type="text" autocomplete="off" aria-label="Ask or filter actions" />
+        <button type="button" class="launcher-send" id="launcher-send">Send</button>
+        <button type="button" class="launcher-browse" id="launcher-browse">Browse all actions</button>
+      </div>
+      <ol class="replies" id="launcher-replies"></ol>
+      <div data-testid="proto-palette-results" id="palette-results" class="palette-results"></div>
+    </section>
+  </div>
+
+  <div class="undo-region" id="undo-region" hidden>
+    <div data-testid="proto-undo-toast" data-change-target="—" data-change-property="—" data-attribution="companion" class="undo-toast">
+      <p class="undo-copy" id="undo-copy">The companion changed “—” · —</p>
+      <button type="button" class="undo-action" id="undo-action" data-testid="proto-undo-action">Undo</button>
+      <p data-testid="proto-undo-status" id="undo-status" class="undo-status"></p>
+    </div>
+  </div>
+
+  <template id="object-template">
+    <div data-testid="proto-object" data-object-id="" data-kind="" data-fill="grey-40" data-selected="false" class="object">
+      <span class="object-label"></span>
+      <span class="object-fill"></span>
+      <span class="sel-tag" hidden>Selected</span>
+      <span class="lock-tag" hidden>Locked</span>
+    </div>
+  </template>
+
+  <template data-place-verbs="place.canvas.create" data-verb-count="4">
+    <li><button type="button" class="verb" data-verb-template="true" data-place-id="place.canvas.create" data-verb-id="verb.create.rect" data-key="r" data-label="Rectangle" data-requires-selection="none" data-disabled="false" data-risk="low"><kbd>r</kbd><span class="verb-label">Rectangle</span></button></li>
+    <li><button type="button" class="verb" data-verb-template="true" data-place-id="place.canvas.create" data-verb-id="verb.create.ellipse" data-key="e" data-label="Ellipse" data-requires-selection="none" data-disabled="false" data-risk="low"><kbd>e</kbd><span class="verb-label">Ellipse</span></button></li>
+    <li><button type="button" class="verb" data-verb-template="true" data-place-id="place.canvas.create" data-verb-id="verb.create.text" data-key="t" data-label="Text" data-requires-selection="none" data-disabled="false" data-risk="low"><kbd>t</kbd><span class="verb-label">Text</span></button></li>
+    <li><button type="button" class="verb" data-verb-template="true" data-place-id="place.canvas.create" data-verb-id="verb.create.duplicate" data-key="d" data-label="Duplicate" data-requires-selection="single" data-disabled="true" data-risk="low"><kbd>d</kbd><span class="verb-label">Duplicate</span></button></li>
+  </template>
+
+  <template data-place-verbs="place.canvas.edit" data-verb-count="4">
+    <li><button type="button" class="verb" data-verb-template="true" data-place-id="place.canvas.edit" data-verb-id="verb.edit.delete" data-key="d" data-label="Delete" data-requires-selection="any" data-disabled="true" data-risk="high"><kbd>d</kbd><span class="verb-label">Delete</span></button></li>
+    <li><button type="button" class="verb" data-verb-template="true" data-place-id="place.canvas.edit" data-verb-id="verb.edit.rename" data-key="n" data-label="Rename" data-requires-selection="single" data-disabled="true" data-risk="medium"><kbd>n</kbd><span class="verb-label">Rename</span></button></li>
+    <li><button type="button" class="verb" data-verb-template="true" data-place-id="place.canvas.edit" data-verb-id="verb.edit.deselectAll" data-key="a" data-label="Deselect all" data-requires-selection="any" data-disabled="true" data-risk="low"><kbd>a</kbd><span class="verb-label">Deselect all</span></button></li>
+    <li><button type="button" class="verb" data-verb-template="true" data-place-id="place.canvas.edit" data-verb-id="verb.edit.lock" data-key="l" data-label="Lock" data-requires-selection="single" data-disabled="true" data-risk="low"><kbd>l</kbd><span class="verb-label">Lock</span></button></li>
+  </template>
+
+  <template data-place-verbs="place.canvas.arrange" data-verb-count="4">
+    <li><button type="button" class="verb" data-verb-template="true" data-place-id="place.canvas.arrange" data-verb-id="verb.arrange.alignLeft" data-key="l" data-label="Align left" data-requires-selection="multi" data-disabled="true" data-risk="low"><kbd>l</kbd><span class="verb-label">Align left</span></button></li>
+    <li><button type="button" class="verb" data-verb-template="true" data-place-id="place.canvas.arrange" data-verb-id="verb.arrange.alignCenter" data-key="c" data-label="Align centre" data-requires-selection="multi" data-disabled="true" data-risk="low"><kbd>c</kbd><span class="verb-label">Align centre</span></button></li>
+    <li><button type="button" class="verb" data-verb-template="true" data-place-id="place.canvas.arrange" data-verb-id="verb.arrange.distribute" data-key="d" data-label="Distribute" data-requires-selection="multi3" data-disabled="true" data-risk="low"><kbd>d</kbd><span class="verb-label">Distribute</span></button></li>
+    <li><button type="button" class="verb" data-verb-template="true" data-place-id="place.canvas.arrange" data-verb-id="verb.arrange.group" data-key="g" data-label="Group" data-requires-selection="multi" data-disabled="true" data-risk="low"><kbd>g</kbd><span class="verb-label">Group</span></button></li>
+  </template>
+
+  <template data-place-verbs="place.canvas.style" data-verb-count="4">
+    <li><button type="button" class="verb" data-verb-template="true" data-place-id="place.canvas.style" data-verb-id="verb.style.setFill" data-key="f" data-label="Set fill" data-requires-selection="single" data-disabled="true" data-risk="low"><kbd>f</kbd><span class="verb-label">Set fill</span></button></li>
+    <li><button type="button" class="verb" data-verb-template="true" data-place-id="place.canvas.style" data-verb-id="verb.style.copyStyle" data-key="c" data-label="Copy style" data-requires-selection="single" data-disabled="true" data-risk="low"><kbd>c</kbd><span class="verb-label">Copy style</span></button></li>
+    <li><button type="button" class="verb" data-verb-template="true" data-place-id="place.canvas.style" data-verb-id="verb.style.pasteStyle" data-key="v" data-label="Paste style" data-requires-selection="single" data-disabled="true" data-risk="low"><kbd>v</kbd><span class="verb-label">Paste style</span></button></li>
+    <li><button type="button" class="verb" data-verb-template="true" data-place-id="place.canvas.style" data-verb-id="verb.style.resetStyle" data-key="r" data-label="Reset style" data-requires-selection="single" data-disabled="true" data-risk="low"><kbd>r</kbd><span class="verb-label">Reset style</span></button></li>
+  </template>
+
+  <template data-place-verbs="place.canvas.view" data-verb-count="4">
+    <li><button type="button" class="verb" data-verb-template="true" data-place-id="place.canvas.view" data-verb-id="verb.view.zoomIn" data-key="i" data-label="Zoom in" data-requires-selection="none" data-disabled="false" data-risk="low"><kbd>i</kbd><span class="verb-label">Zoom in</span></button></li>
+    <li><button type="button" class="verb" data-verb-template="true" data-place-id="place.canvas.view" data-verb-id="verb.view.zoomOut" data-key="o" data-label="Zoom out" data-requires-selection="none" data-disabled="false" data-risk="low"><kbd>o</kbd><span class="verb-label">Zoom out</span></button></li>
+    <li><button type="button" class="verb" data-verb-template="true" data-place-id="place.canvas.view" data-verb-id="verb.view.fit" data-key="f" data-label="Fit to screen" data-requires-selection="none" data-disabled="false" data-risk="low"><kbd>f</kbd><span class="verb-label">Fit to screen</span></button></li>
+    <li><button type="button" class="verb" data-verb-template="true" data-place-id="place.canvas.view" data-verb-id="verb.view.toggleGrid" data-key="g" data-label="Toggle grid" data-requires-selection="none" data-disabled="false" data-risk="low"><kbd>g</kbd><span class="verb-label">Toggle grid</span></button></li>
+  </template>
+
+  <template data-place-verbs="place.canvas.file" data-verb-count="4">
+    <li><button type="button" class="verb" data-verb-template="true" data-place-id="place.canvas.file" data-verb-id="verb.file.save" data-key="s" data-label="Save" data-requires-selection="none" data-disabled="false" data-risk="low"><kbd>s</kbd><span class="verb-label">Save</span></button></li>
+    <li><button type="button" class="verb" data-verb-template="true" data-place-id="place.canvas.file" data-verb-id="verb.file.export" data-key="e" data-label="Export" data-requires-selection="none" data-disabled="false" data-risk="low"><kbd>e</kbd><span class="verb-label">Export</span></button></li>
+    <li><button type="button" class="verb" data-verb-template="true" data-place-id="place.canvas.file" data-verb-id="verb.file.saveAs" data-key="a" data-label="Save as" data-requires-selection="none" data-disabled="false" data-risk="medium"><kbd>a</kbd><span class="verb-label">Save as</span></button></li>
+    <li><button type="button" class="verb" data-verb-template="true" data-place-id="place.canvas.file" data-verb-id="verb.file.exportPng" data-key="p" data-label="Export PNG" data-requires-selection="none" data-disabled="false" data-risk="low"><kbd>p</kbd><span class="verb-label">Export PNG</span></button></li>
+  </template>
+
+  <script defer src="./prototype.js"></script>
+</body>
+</html>
