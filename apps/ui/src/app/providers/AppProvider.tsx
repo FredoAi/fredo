@@ -10,6 +10,7 @@ import { applyRowDelivery, applyRowDeliveries, endReplayDrain } from '../../shar
 import { isApplicationDeliveryBatch, isRowDelivery, isRowDeliveryBatch, isStreamHealthEnvelope, replayCompleteQueryIdOf } from '../../shared/classes/EventSubscription';
 import { applyApplicationDeliveries } from '../../shared/application-data/store';
 import { ApplicationDataProvider } from '../../shared/contexts/ApplicationDataContext';
+import { installAppCommandSurfacePublisher } from '../../shared/companion/publisher';
 import { useStreamHealthProducer } from '../../shared/hooks/useStreamHealthProducer';
 import { STEP_STATUSES } from '../../shared/constants';
 import type { HostAdapter } from '../adapters/HostAdapter';
@@ -88,6 +89,12 @@ export const AppProvider: React.FC<AppProviderProps> = ({ adapter, children }) =
   useEffect(() => {
     currentPageRef.current = currentPage;
   }, [currentPage]);
+
+  // Spec #3099 ST-2 — publish the companion manifest at boot and on every
+  // application registration. The installer is MODULE-SCOPED and idempotent
+  // (ref-counted), so this effect has `[]` deps and a remount cannot double
+  // publish — no state/ref-length dependency (#523 re-render-loop rule).
+  useEffect(() => installAppCommandSurfacePublisher(), []);
 
   // Forward messages from the host's "fredo-stream-event" IPC channel:
   // STREAM-HEALTH heartbeats ({"streamHealth": ...}, Spec #3064 ST-3) are
