@@ -518,3 +518,48 @@
       is a finding (promotes to F-138); explicitly re-check the `x 460, y 1150` note (the left inner
       leg's own edge, outside `N` once the per-box inset is applied) so a future round does not
       re-file it as a product defect.
+
+---
+
+## #3099 extension — published-surface / generic-relay probes
+
+> Unscripted probes for issue #3099 (one TS source of truth → published registry → generated offer →
+> generic relay). A confirmed finding PROMOTES to `functional.md`/`regression.md` as a new row (keep
+> the origin note). Live policy; an undrivable lever is a named blocker (G-053) with a static/unit
+> pin — never fabricated.
+
+- [ ] E-72: **Concurrent publish from every webview.** With main + an `app-wireframe` window + the
+      `run-cli-terminal` window open, reload them in different orders (and one while a turn is in
+      flight). Does each publisher's UPSERT converge on the SAME manifest (identical bytes are
+      idempotent) with no flap — a turn's offer must never lose the wireframe skill mid-session — and
+      does `app_command_surfaces()` end on exactly one entry per `appId`? Any offer flapping, a
+      partial set replacing a full one, or a duplicate surface is a finding (promotes to F-144/F-145
+      + QA Discussion D4).
+- [ ] E-73: **Publish storm.** Publish 20 different probe surfaces back-to-back (each a new `appId`).
+      Does the registry stay bounded/consistent (the next turn offers what the LAST read shows, no
+      union of stale ids), and does the app stay responsive? Any stale id lingering, a bound violation
+      without an `Err`, or a wedge is a finding (promotes to F-158/F-160).
+- [ ] E-74: **Identical publish is a no-op.** Publish the SAME manifest twice and watch the invoke
+      traffic (`tauri_ipc_monitor` / a `__TAURI__.core.invoke` wrapper). Does the SECOND publish get
+      skipped by the TS publisher (identical consecutive manifests are not re-sent) and is a direct
+      duplicate re-publish idempotent at the registry (same bytes, no order change)? A needless
+      republish that replaces an in-flight turn's offer is a finding (promotes to F-144).
+- [ ] E-75: **An id offered but absent from the TS surface.** Publish a wireframe surface containing a
+      command id that does NOT exist in `wireframeCommandSurface.ts`, then call it. Does layer 1 accept
+      it (it is IN the published manifest) while the app fails CLOSED at layer 2 (`outcome:"Invalid"`
+      / `unknown-command`, nothing changed, honest reply), with no crash and no partial mutation? Any
+      silent success, or an exception reaching the console, is a finding (promotes to F-152/F-153).
+- [ ] E-76: **Intent flood while the app stays closed.** Push 100 intents for `wireframe` with no
+      consumer, then open the app. Is the queue clamped at 16 (oldest evicted), does the editor drain
+      in order, and does every drained intent get exactly one result (no silent drop, no duplicate
+      execution, no runaway `element-count`)? Any unbounded growth or duplicate execution is a
+      finding (promotes to R-73/F-150).
+- [ ] E-77: **Timeout versus a slow-but-alive app.** Publish a surface for a real app whose intent hook
+      exists but whose command work is slow (a heavy wireframe action on a large document). Does the
+      10 s bound settle exactly one reply (never two, never a silent hang), and is a late result after
+      the timeout ignored rather than pushing a second reply? A late duplicate reply is a finding
+      (promotes to F-151/F-161).
+- [ ] E-78: **Empty publish mid-session.** Publish `{surfaces: []}` while a turn is in flight, then
+      again while idle. Is the registry read byte-identical before/after (no clear), and does the next
+      turn's offer still carry the full set? Any offer shrinkage, a lost wireframe skill, or an `Err`
+      is a finding (promotes to F-158/F-160 + QA Discussion D4).
