@@ -16,21 +16,38 @@
  * descendant, is NOT `aria-hidden` (it is perceivable) and is NOT `aria-live`
  * (the ONE shared `hotkeys-announcer` region remains the only live channel).
  *
+ * Spec #3097 ST-4 — the bar is also the FOCUSED application's live keymap:
+ *   - a leading mode badge (plain text, 24 px, the shipped pending-chip recipe);
+ *   - the active mode's rows in keymap declaration order (`kind:'mode'`);
+ *   - while the engine-owned inline prompt is open, the list region, its fade
+ *     and the pending chip are UNMOUNTED and a pointer-events:auto wrapper hosts
+ *     the prompt input — the ONLY focusable descendant while open.
+ * Enter/Escape stay engine-owned (the engine consumes the stroke); the input has
+ * deliberately NO `onKeyDown`, and the bar never restores focus on unmount — the
+ * command-surface store owns `restoreElement` (avoids a double restore).
+ * With no `mode`/`prompt` on the model the JSX tree is the shipped one.
+ *
  * Colour is theme-token / CSS-var / the shared `tint()` helper only — zero
  * hex/rgba/hsl, zero `var(--x)NN` alpha-append (AGENTS.md #2770). Motion is
  * opacity/transform only, `HOTKEY_BAR_FADE_MS`, disabled under
  * `prefers-reduced-motion`.
  */
 
-import React, { useEffect, useState } from 'react';
-import { Box, Icon, Text } from '@chakra-ui/react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Box, chakra, Icon, Text } from '@chakra-ui/react';
 import { LuChevronRight, LuCircleSlash, LuTriangleAlert } from 'react-icons/lu';
 
 import { Keycap } from '../components/hotkeys/Keycap';
 import { tint } from '../utils/colorTint';
 import { displaySequence, parseSequence } from './keys';
 import { setElementHotkeysDisabled } from './hotkeyElements';
-import type { HotkeyBarModel, HotkeyBarRow } from './hotkeyBarModel';
+import { setCommandPromptValue } from './commandSurfaceStore';
+import type {
+  HotkeyBarModeView,
+  HotkeyBarModel,
+  HotkeyBarPromptView,
+  HotkeyBarRow,
+} from './hotkeyBarModel';
 import type { Platform } from './types';
 
 // ── Design constants (owned by ST-2; plan UI/UX §1) ──────────────────────────
@@ -49,6 +66,13 @@ export const HOTKEY_BAR_ROW_MAX_WIDTH_PX = 240;
 export const HOTKEY_BAR_TITLE_MIN_WIDTH_PX = 48;
 /** Fade duration; opacity/transform only, none under reduced motion. */
 export const HOTKEY_BAR_FADE_MS = 150;
+/** Spec #3097 ST-4 — mode-badge pill (24 px, ellipsized, clamped). */
+export const HOTKEY_BAR_MODE_BADGE_HEIGHT_PX = 24;
+export const HOTKEY_BAR_MODE_BADGE_MIN_WIDTH_PX = 64;
+export const HOTKEY_BAR_MODE_BADGE_MAX_WIDTH_PX = 168;
+/** Spec #3097 ST-4 — inline prompt field (24 px = WCAG 2.5.8 target floor). */
+export const HOTKEY_BAR_PROMPT_INPUT_HEIGHT_PX = 24;
+export const HOTKEY_BAR_PROMPT_MIN_WIDTH_PX = 120;
 
 // ── Contract testids + copy (plan BINDING NAMES BLOCK) ───────────────────────
 
@@ -60,6 +84,10 @@ export const HOTKEY_BAR_ARIA_LABEL = 'Available hotkeys';
 export const HOTKEY_BAR_PENDING_LABEL = 'waiting…';
 /** R-3.4 — the DEV-only duplicate-key error surface (plan BINDING NAMES BLOCK). */
 export const HOTKEY_DUPLICATE_ERROR_TESTID = 'hotkeys-duplicate-error';
+/** Spec #3097 ST-4 — the leading mode badge, the prompt wrapper and its input. */
+export const HOTKEY_BAR_MODE_TESTID = 'hotkeys-keybar-mode';
+export const HOTKEY_BAR_PROMPT_TESTID = 'hotkeys-keybar-prompt';
+export const HOTKEY_BAR_PROMPT_INPUT_TESTID = 'hotkeys-keybar-prompt-input';
 
 // ── Motion + scrollbar styles ────────────────────────────────────────────────
 
@@ -133,6 +161,7 @@ function HotkeyBarRowView({
       data-hotkey-key={row.key}
       data-hotkey-action={row.actionId}
       data-hotkey-availability={row.availability}
+      data-hotkey-mode-id={row.modeId ?? undefined}
       aria-label={ariaLabel}
       display="flex"
       alignItems="center"
@@ -165,6 +194,134 @@ function HotkeyBarRowView({
       >
         {row.title}
       </Text>
+    </Box>
+  );
+}
+
+// ── Mode badge (Spec #3097 ST-4) ─────────────────────────────────────────────
+
+/**
+ * The FOCUSED application's active-mode badge — leading, presentational text
+ * (no role, no tabIndex, no live region). Reuses the shipped pending-chip
+ * visual recipe (`accent.border` + a 14 % `tint()` of the user accent).
+ */
+function HotkeyBarModeBadge({
+  mode,
+}: {
+  readonly mode: HotkeyBarModeView;
+}): React.ReactElement {
+  return (
+    <Box
+      data-testid={HOTKEY_BAR_MODE_TESTID}
+      data-mode-id={mode.modeId}
+      data-mode-app={mode.appId}
+      data-mode-path={mode.path.join('>')}
+      flexShrink={1}
+      minWidth={`${HOTKEY_BAR_MODE_BADGE_MIN_WIDTH_PX}px`}
+      maxWidth={`${HOTKEY_BAR_MODE_BADGE_MAX_WIDTH_PX}px`}
+      height={`${HOTKEY_BAR_MODE_BADGE_HEIGHT_PX}px`}
+      display="flex"
+      alignItems="center"
+      paddingX="2"
+      borderRadius="sm"
+      borderWidth="1px"
+      borderColor="accent.border"
+      bg={tint('var(--accent-primary)', 14)}
+      overflow="hidden"
+    >
+      <Text
+        fontSize="xs"
+        fontWeight="medium"
+        color="fg.default"
+        whiteSpace="nowrap"
+        overflow="hidden"
+        textOverflow="ellipsis"
+      >
+        {mode.label}
+      </Text>
+    </Box>
+  );
+}
+
+// ── Inline value prompt (Spec #3097 ST-4) ────────────────────────────────────
+
+/**
+ * The engine-owned inline value prompt. The wrapper is the ONE
+ * `pointerEvents:'auto'` island inside the otherwise non-interactive bar, so the
+ * input is the bar's ONLY focusable descendant while open.
+ *
+ * Enter/Escape are consumed by the engine BEFORE the input sees them — there is
+ * deliberately NO `onKeyDown` here (a local handler would double-fire). The
+ * component focuses the input when the prompt mounts (keyed on appId+commandId;
+ * never `autoFocus`, which the provider's render could race) and does NOT
+ * restore focus on unmount — `commitCommandPrompt`/`cancelCommandPrompt` own
+ * `restoreElement`, so restoring here too would double-restore.
+ */
+function HotkeyBarPrompt({
+  prompt,
+}: {
+  readonly prompt: HotkeyBarPromptView;
+}): React.ReactElement {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const { appId, commandId } = prompt;
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, [appId, commandId]);
+
+  return (
+    <Box
+      data-testid={HOTKEY_BAR_PROMPT_TESTID}
+      data-command-id={commandId}
+      data-app-id={appId}
+      style={{ pointerEvents: 'auto' }}
+      display="flex"
+      alignItems="center"
+      gap="2"
+      flex="1"
+      minWidth="0"
+      height="100%"
+    >
+      {/* Visible label — aria-hidden (the accessible name is the input's aria-label). */}
+      <Text
+        aria-hidden="true"
+        display={{ base: 'none', sm: 'block' }}
+        fontSize="xs"
+        color="fg.muted"
+        whiteSpace="nowrap"
+        flexShrink={2}
+        minWidth="0"
+        maxWidth="24ch"
+        overflow="hidden"
+        textOverflow="ellipsis"
+      >
+        {prompt.label}
+      </Text>
+      <chakra.input
+        ref={inputRef}
+        data-testid={HOTKEY_BAR_PROMPT_INPUT_TESTID}
+        aria-label={prompt.label}
+        value={prompt.value}
+        placeholder={prompt.placeholder ?? prompt.label}
+        onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
+          setCommandPromptValue(appId, event.target.value)
+        }
+        autoComplete="off"
+        spellCheck={false}
+        type="text"
+        flex="1"
+        minWidth={`${HOTKEY_BAR_PROMPT_MIN_WIDTH_PX}px`}
+        height={`${HOTKEY_BAR_PROMPT_INPUT_HEIGHT_PX}px`}
+        paddingX="2"
+        fontSize="xs"
+        color="fg.default"
+        bg="bg.subtle"
+        borderWidth="1px"
+        borderColor="border.default"
+        borderRadius="sm"
+        _placeholder={{ color: 'fg.subtle' }}
+        _focusVisible={{ outline: '2px solid var(--accent-strong)', outlineOffset: '-2px' }}
+      />
     </Box>
   );
 }
@@ -269,59 +426,69 @@ export function HotkeyBar({
         boxShadow="var(--shadow-dialog)"
         overflow="hidden"
       >
-        {/* The single horizontal scroll region — rows in document order. */}
-        <Box position="relative" display="flex" alignItems="center" flex="1" minWidth="0">
-          <Box
-            data-testid={HOTKEY_BAR_LIST_TESTID}
-            role="list"
-            display="flex"
-            alignItems="center"
-            gap={HOTKEY_BAR_ROW_GAP}
-            flex="1"
-            minWidth="0"
-            overflowX="auto"
-            overflowY="hidden"
-            css={LIST_SCROLLBAR_CSS}
-          >
-            {model.rows.map((row) => (
-              <HotkeyBarRowView key={row.actionId} row={row} platform={platform} />
-            ))}
-          </Box>
-          {/* Trailing edge fade: a non-interactive affordance over the clip edge. */}
-          <Box
-            aria-hidden="true"
-            position="absolute"
-            right="0"
-            top="0"
-            bottom="0"
-            width="24px"
-            pointerEvents="none"
-            bg="linear-gradient(to right, transparent, var(--card-bg))"
-          />
-        </Box>
+        {/* Spec #3097 ST-4 — the FOCUSED application's active-mode badge (leading). */}
+        {model.mode !== null ? <HotkeyBarModeBadge mode={model.mode} /> : null}
 
-        {/* The pending-prefix chip — pinned OUTSIDE the scroll region. */}
-        {model.pendingPrefix !== null ? (
-          <Box
-            data-testid={HOTKEY_BAR_PENDING_TESTID}
-            flexShrink={0}
-            display="flex"
-            alignItems="center"
-            gap="1.5"
-            paddingX="2"
-            paddingY="0.5"
-            borderRadius="sm"
-            bg={tint('var(--accent-primary)', 14)}
-            borderWidth="1px"
-            borderColor="accent.border"
-          >
-            <Keycap sequence={model.pendingPrefix} platform={platform} />
-            <Icon as={LuChevronRight} boxSize="3.5" color="accent.default" aria-hidden="true" />
-            <Text fontSize="xs" color="fg.default" whiteSpace="nowrap">
-              {HOTKEY_BAR_PENDING_LABEL}
-            </Text>
-          </Box>
-        ) : null}
+        {model.prompt !== null ? (
+          /* Prompt open: list + fade + pending chip are UNMOUNTED (R-4.1). */
+          <HotkeyBarPrompt prompt={model.prompt} />
+        ) : (
+          <>
+            {/* The single horizontal scroll region — rows in document order. */}
+            <Box position="relative" display="flex" alignItems="center" flex="1" minWidth="0">
+              <Box
+                data-testid={HOTKEY_BAR_LIST_TESTID}
+                role="list"
+                display="flex"
+                alignItems="center"
+                gap={HOTKEY_BAR_ROW_GAP}
+                flex="1"
+                minWidth="0"
+                overflowX="auto"
+                overflowY="hidden"
+                css={LIST_SCROLLBAR_CSS}
+              >
+                {model.rows.map((row) => (
+                  <HotkeyBarRowView key={row.actionId} row={row} platform={platform} />
+                ))}
+              </Box>
+              {/* Trailing edge fade: a non-interactive affordance over the clip edge. */}
+              <Box
+                aria-hidden="true"
+                position="absolute"
+                right="0"
+                top="0"
+                bottom="0"
+                width="24px"
+                pointerEvents="none"
+                bg="linear-gradient(to right, transparent, var(--card-bg))"
+              />
+            </Box>
+
+            {/* The pending-prefix chip — pinned OUTSIDE the scroll region. */}
+            {model.pendingPrefix !== null ? (
+              <Box
+                data-testid={HOTKEY_BAR_PENDING_TESTID}
+                flexShrink={0}
+                display="flex"
+                alignItems="center"
+                gap="1.5"
+                paddingX="2"
+                paddingY="0.5"
+                borderRadius="sm"
+                bg={tint('var(--accent-primary)', 14)}
+                borderWidth="1px"
+                borderColor="accent.border"
+              >
+                <Keycap sequence={model.pendingPrefix} platform={platform} />
+                <Icon as={LuChevronRight} boxSize="3.5" color="accent.default" aria-hidden="true" />
+                <Text fontSize="xs" color="fg.default" whiteSpace="nowrap">
+                  {HOTKEY_BAR_PENDING_LABEL}
+                </Text>
+              </Box>
+            ) : null}
+          </>
+        )}
       </Box>
     </>
   );
