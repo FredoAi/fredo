@@ -486,3 +486,74 @@ describe('decideDispatch — fall-through after the mode chain', () => {
     expect(decision).toMatchObject({ outcome: 'passthrough', consumed: false, reason: 'unbound' });
   });
 });
+
+// ── Spec #3098 ST-1 — pending sequences outrank the mode chain ──────────────
+
+describe('decideDispatch — pending sequences outrank mode keys (Spec #3098 ST-1)', () => {
+  const gcBinding = binding('fredo.element.g-c#0', 'g c', 'feature');
+
+  it('an armed g prefix completes the g+* binding instead of running the mode key', () => {
+    const decision = decideDispatch(
+      input({
+        stroke: stroke({ key: 'c' }),
+        pending: parseSequence('g'),
+        bindings: [gcBinding],
+        // `tool` declares `c` as a mode key — it must NOT win over the prefix.
+        commandScope: scope({ modePath: ['browse', 'tool'] }),
+      }),
+    );
+    expect(decision.outcome).toBe('match');
+    expect(decision.action?.actionId).toBe('fredo.element.g-c#0');
+    expect(decision.command).toBeUndefined();
+  });
+
+  it('with no pending, the same stroke runs the mode command', () => {
+    const decision = decideDispatch(
+      input({
+        stroke: stroke({ key: 'c' }),
+        bindings: [gcBinding],
+        commandScope: scope({ modePath: ['browse', 'tool'] }),
+      }),
+    );
+    expect(decision.outcome).toBe('command');
+    expect(decision.reason).toBe('command:mode');
+    expect(decision.command?.commandId).toBe('capture');
+  });
+
+  it('an armed prefix still wins over a mode key that is not a continuation', () => {
+    const decision = decideDispatch(
+      input({
+        stroke: stroke({ key: 't' }),
+        pending: parseSequence('g'),
+        bindings: [gcBinding],
+        commandScope: scope(),
+      }),
+    );
+    expect(decision).toMatchObject({ outcome: 'suppress', reason: 'sequence-invalid' });
+    expect(decision.command).toBeUndefined();
+  });
+
+  it('Escape while a sequence is pending resets the sequence, not the mode stack', () => {
+    const decision = decideDispatch(
+      input({
+        stroke: stroke({ key: 'escape' }),
+        pending: parseSequence('g'),
+        commandScope: scope({ modePath: ['browse', 'tool'] }),
+      }),
+    );
+    expect(decision).toMatchObject({ outcome: 'suppress', reason: 'sequence-escape' });
+  });
+
+  it('non-opting dispatch (no commandScope) is unchanged', () => {
+    const decision = decideDispatch(
+      input({
+        stroke: stroke({ key: 'c' }),
+        pending: parseSequence('g'),
+        bindings: [gcBinding],
+      }),
+    );
+    expect(decision.outcome).toBe('match');
+    expect(decision.action?.actionId).toBe('fredo.element.g-c#0');
+    expect(decision.command).toBeUndefined();
+  });
+});

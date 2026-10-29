@@ -233,8 +233,10 @@ export function decideDispatch(input: DispatchInput): DispatchDecision {
   // 3b. Application command surface — the active mode chain, then the Escape
   //     stack rule. Reaching here already means the focus is NOT a text control
   //     (branch 3 returned above), so a mode key can never steal a typed char.
-  //     The chain is inert while a prompt is open (the prompt owns the keyboard).
-  if (commandScope !== null) {
+  //     The chain is inert while a prompt is open (the prompt owns the keyboard)
+  //     AND while a pending sequence is armed (Spec #3098 ST-1): an armed `g`
+  //     prefix must complete `g+*` even when the second stroke is also a mode key.
+  if (commandScope !== null && pending === null) {
     if (!commandScope.promptOpen) {
       const modeCommand = matchModeCommand(commandScope, stroke);
       if (modeCommand !== null) return modeCommand;

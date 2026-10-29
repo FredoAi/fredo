@@ -28,6 +28,15 @@ export interface ApplicationCommandPrompt {
   readonly placeholder?: string;
   /** Seeds the draft; default `''`. */
   readonly initialValue?: string;
+  /**
+   * Optional synchronous value guard (Spec #3098 ST-1).
+   *
+   * Absent ⇒ today's merge behaviour: every draft commits. Returning `false`
+   * keeps the SAME prompt open with its draft — no `run`, no mode change, no
+   * document mutation, no focus restore. The guard receives the RAW draft
+   * (trimming is the command's own concern).
+   */
+  readonly validate?: (value: string) => boolean;
 }
 
 /** One application capability. */
@@ -51,6 +60,14 @@ export interface ApplicationCommandMode {
   readonly parent: string | null;
   /** Serialized single stroke → command id. */
   readonly keymap: Readonly<Record<string, string>>;
+  /**
+   * Optional PRESENTATION order for the bar's keymap rows (Spec #3098 ST-1/A2).
+   *
+   * Keys absent from `keymap` are skipped; absent ⇒ today's `Object.entries`
+   * (declaration) order. Binding semantics are unchanged — the keymap stays the
+   * one binding source.
+   */
+  readonly keymapOrder?: readonly string[];
   /** Default TRUE — Escape pops this mode. */
   readonly transient?: boolean;
   /** Default FALSE — false ⇒ auto-return after a successful command. */

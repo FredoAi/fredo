@@ -11,6 +11,7 @@ import { LuPenTool } from 'react-icons/lu';
 
 import { FredoApplicationClass } from '../../shared/classes';
 import { WIREFRAME_APP_ID } from './model/document';
+import { wireframeCommandSurface } from './wireframeCommandSurface';
 import { WireframeEditor } from './components/WireframeEditor';
 
 export class WireframeFeature extends FredoApplicationClass {
@@ -20,6 +21,12 @@ export class WireframeFeature extends FredoApplicationClass {
   readonly showable = true;
   readonly isMultiWindow = false;
   readonly hasSettings = false;
+  /**
+   * Spec #3098 ST-3 — Wireframe is the first application to opt into the
+   * declarative command surface (modes + commands). Declaring it never changes
+   * another application's scope.
+   */
+  readonly commandSurface = wireframeCommandSurface;
 
   render(): ReactElement {
     return <WireframeEditor />;

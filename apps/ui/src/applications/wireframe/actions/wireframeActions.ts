@@ -2,18 +2,22 @@
  * Wireframe command table (Spec #3070, ST-3, C4 / C9).
  *
  * ONE table is the single source of truth for the toolbar buttons, the
- * `data-hotkey` attributes (mounted through those buttons) and the Companion's
- * action invocation. "Pressing the shortcut performs the same action as the
- * visible control" is therefore structural, not a duplicated wiring: the
- * engine clicks the button, and the button calls `runWireframeAction(id)` for
- * the same id the table binds.
+ * command-surface commands (Spec #3098 ST-3), the hidden `g+*` carrier
+ * (Spec #3098 ST-3/ST-5) and the Companion's action invocation. "Pressing the
+ * shortcut performs the same action as the visible control" is therefore
+ * structural, not a duplicated wiring: a mode key / carrier binding / toolbar
+ * click all funnel through `executeCommand`, whose command runs
+ * `runWireframeAction(id)` for the same id the table binds.
  *
  * The 35 ids are the C4 catalog verbatim. The first 22 carry the single
  * `[a-z0-9]` hotkey step; the 10 arrangement ids (Spec #3071, ST-4) carry a
  * two-step `g+<step>` binding, and the two Slice-1 view ids were RE-BOUND to
  * two-step `g`-namespace sequences so the saturated first-step budget
  * (`[a-z0-9]` = 36 slots) still fits every action. `g` is therefore a
- * PREFIX-ONLY namespace — there is no bare `g` binding anywhere.
+ * PREFIX-ONLY namespace — there is no bare `g` binding anywhere. The table's
+ * `hotkey` metadata stays the single source for the accessible names/tooltips,
+ * the carrier bindings and the root mode keymap; no control renders the
+ * attribute itself (Spec #3098 ST-5).
  * `wireframe.document.new` is a toolbar-only button (no hotkey); the two
  * `wireframe.companion.*` ids are Companion-only (`toolbar: false`, no hotkey)
  * and are executed by ST-7's companion layer — their `run` is deliberately
@@ -62,6 +66,12 @@ export interface WireframeActionDefinition {
   id: string;
   /** Human description; identical text to the Rust catalog entry. */
   description: string;
+  /**
+   * SHORT control label (Spec #3098 ST-3). The visible toolbar label and the
+   * command-surface `title` (the bar row) both come from here — never the long
+   * `description`. Absent on Companion-only rows (they render no control).
+   */
+  title?: string;
   /** `data-hotkey` binding: one `[a-z0-9]` step, or a two-step `a+b` sequence. */
   hotkey?: string;
   /** `true` when the action renders a toolbar control. */
@@ -356,6 +366,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.add.text',
     description: 'Add a text element (body or heading style)',
+    title: 'Text',
     hotkey: '1',
     toolbar: true,
     run: () => addWireframeElement('text'),
@@ -363,6 +374,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.add.button',
     description: 'Add a button element',
+    title: 'Button',
     hotkey: '2',
     toolbar: true,
     run: () => addWireframeElement('button'),
@@ -370,6 +382,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.add.input',
     description: 'Add an input field element',
+    title: 'Input',
     hotkey: '3',
     toolbar: true,
     run: () => addWireframeElement('input'),
@@ -377,6 +390,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.add.image',
     description: 'Add an image placeholder frame',
+    title: 'Image',
     hotkey: '4',
     toolbar: true,
     run: () => addWireframeElement('image'),
@@ -384,6 +398,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.add.icon',
     description: 'Add an icon from the curated set',
+    title: 'Icon',
     hotkey: '5',
     toolbar: true,
     run: () => addWireframeElement('icon'),
@@ -391,6 +406,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.add.card',
     description: 'Add a card/container element',
+    title: 'Card',
     hotkey: '6',
     toolbar: true,
     run: () => addWireframeElement('card'),
@@ -398,6 +414,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.add.section',
     description: 'Add a site frame section (header, nav bar, sidebar, footer)',
+    title: 'Section',
     hotkey: '7',
     toolbar: true,
     run: () => addWireframeElement('section'),
@@ -405,6 +422,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.add.shape',
     description: 'Add a basic shape',
+    title: 'Shape',
     hotkey: '8',
     toolbar: true,
     run: () => addWireframeElement('shape'),
@@ -412,6 +430,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.add.line',
     description: 'Add a line',
+    title: 'Line',
     hotkey: '9',
     toolbar: true,
     run: () => addWireframeElement('line'),
@@ -419,6 +438,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.element.duplicate',
     description: 'Duplicate the selected element',
+    title: 'Duplicate',
     hotkey: 'p',
     toolbar: true,
     run: duplicateSelection,
@@ -426,6 +446,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.element.delete',
     description: 'Delete the selected element',
+    title: 'Delete',
     hotkey: 'k',
     toolbar: true,
     run: deleteSelection,
@@ -433,6 +454,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.element.toggleLock',
     description: 'Lock or unlock the selected element',
+    title: 'Lock',
     hotkey: 'l',
     toolbar: true,
     run: toggleSelectionLock,
@@ -440,6 +462,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.edit.undo',
     description: 'Undo the last change',
+    title: 'Undo',
     hotkey: 'u',
     toolbar: true,
     run: runUndo,
@@ -447,6 +470,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.edit.redo',
     description: 'Redo the last undone change',
+    title: 'Redo',
     hotkey: 'y',
     toolbar: true,
     run: runRedo,
@@ -454,6 +478,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.zoom.in',
     description: 'Zoom in',
+    title: 'Zoom in',
     // Re-bound by Spec #3071 ST-4: `g` is the prefix-only arrangement namespace.
     hotkey: 'g+i',
     toolbar: true,
@@ -462,6 +487,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.zoom.out',
     description: 'Zoom out',
+    title: 'Zoom out',
     // Re-bound by Spec #3071 ST-4 (`m` is now free).
     hotkey: 'g+o',
     toolbar: true,
@@ -470,6 +496,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.view.fitPage',
     description: 'Fit the page to the screen',
+    title: 'Fit page',
     hotkey: 'n',
     toolbar: true,
     run: () => runViewChange(fitPage),
@@ -477,6 +504,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.view.resetView',
     description: 'Reset to 100% and centre the page',
+    title: 'Reset view',
     hotkey: '0',
     toolbar: true,
     run: () => runViewChange(resetView),
@@ -484,6 +512,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.view.togglePan',
     description: 'Toggle the pan tool',
+    title: 'Pan tool',
     hotkey: 'h',
     toolbar: true,
     run: togglePanMode,
@@ -491,6 +520,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.file.saveAs',
     description: 'Save the document to a new file',
+    title: 'Save As',
     hotkey: 'w',
     toolbar: true,
     run: () => runFileAction('saveAs'),
@@ -498,6 +528,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.file.open',
     description: 'Open a saved wireframe document',
+    title: 'Open',
     hotkey: 'o',
     toolbar: true,
     run: () => runFileAction('openDocument'),
@@ -505,6 +536,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.file.exportPng',
     description: 'Export the page as a PNG',
+    title: 'Export PNG',
     hotkey: 't',
     toolbar: true,
     run: () => runFileAction('exportPng'),
@@ -513,6 +545,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.arrange.group',
     description: 'Group the selected elements',
+    title: 'Group',
     hotkey: 'g+g',
     toolbar: true,
     run: groupSelection,
@@ -520,6 +553,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.arrange.ungroup',
     description: 'Ungroup the selected group',
+    title: 'Ungroup',
     hotkey: 'g+u',
     toolbar: true,
     run: ungroupSelection,
@@ -527,6 +561,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.arrange.toggleGroupLock',
     description: 'Lock or unlock the selected group',
+    title: 'Lock group',
     hotkey: 'g+l',
     toolbar: true,
     run: toggleGroupLockSelection,
@@ -534,6 +569,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.arrange.toggleSnap',
     description: 'Toggle snap to grid',
+    title: 'Snap to grid',
     hotkey: 'g+s',
     toolbar: true,
     run: toggleSnapMode,
@@ -541,6 +577,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.arrange.alignLeft',
     description: 'Align the selected elements to the left',
+    title: 'Align left',
     hotkey: 'g+a',
     toolbar: true,
     run: () => alignSelection('left'),
@@ -548,6 +585,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.arrange.alignCenter',
     description: 'Align the selected elements to the centre',
+    title: 'Align centre',
     hotkey: 'g+c',
     toolbar: true,
     run: () => alignSelection('center'),
@@ -555,6 +593,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.arrange.alignRight',
     description: 'Align the selected elements to the right',
+    title: 'Align right',
     hotkey: 'g+r',
     toolbar: true,
     run: () => alignSelection('right'),
@@ -562,6 +601,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.arrange.distribute',
     description: 'Distribute the selected elements with equal gaps',
+    title: 'Distribute',
     hotkey: 'g+d',
     toolbar: true,
     run: distributeSelection,
@@ -569,6 +609,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.arrange.bringForward',
     description: 'Bring the selected elements forward',
+    title: 'Bring forward',
     hotkey: 'g+f',
     toolbar: true,
     run: () => reorderSelection('forward'),
@@ -576,6 +617,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.arrange.sendBackward',
     description: 'Send the selected elements backward',
+    title: 'Send backward',
     hotkey: 'g+b',
     toolbar: true,
     run: () => reorderSelection('backward'),
@@ -583,6 +625,7 @@ export const WIREFRAME_ACTIONS: readonly WireframeActionDefinition[] = [
   {
     id: 'wireframe.document.new',
     description: 'Start a new empty wireframe',
+    title: 'New',
     toolbar: true,
     run: () => {
       resetForNewDocument();

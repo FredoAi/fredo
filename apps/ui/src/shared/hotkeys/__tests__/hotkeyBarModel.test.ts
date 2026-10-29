@@ -8,10 +8,15 @@
  * sequence / strict prefix), so a repeated first step is not a duplicate.
  */
 
-import { describe, expect, it } from 'vitest';
+import type { ReactElement } from 'react';
+import { LuAppWindow } from 'react-icons/lu';
+import { afterEach, describe, expect, it } from 'vitest';
 
+import { registerApplication } from '@/applications/applicationRegistry';
+import { FredoApplicationClass } from '@/shared/classes';
 import { buildHotkeyBarModel } from '../hotkeyBarModel';
 import { parseDataHotkey } from '../hotkeyGrammar';
+import type { ApplicationCommandSurface } from '../commandSurface';
 import type { HotkeyElementEntry } from '../hotkeyElements';
 import type { FocusSnapshot } from '../engine';
 import type { FocusContext } from '../types';
@@ -30,6 +35,77 @@ function entry(key: string, title: string): HotkeyElementEntry {
 
 function focus(context: FocusContext, textEntry = false): FocusSnapshot {
   return { context, nativeConsumes: false, textEntry };
+}
+
+// ── Spec #3098 ST-1 fixtures (A1 element scope + A2 keymap order) ────────────
+
+/** A surface-owning application registered for the scope/order cases. */
+const ORDER_APP_ID = 'bar-order-app';
+
+const orderAppSurface: ApplicationCommandSurface = {
+  modes: [
+    {
+      id: 'select',
+      label: 'Select',
+      parent: null,
+      keymap: { r: 'rect', e: 'ellipse', c: 'fill', v: 'select-mode' },
+      keymapOrder: ['v', 'c', 'e', 'r', 'z'],
+    },
+    {
+      id: 'plain-mode',
+      label: 'Plain',
+      parent: 'select',
+      keymap: { b: 'command-b', a: 'command-a' },
+    },
+  ],
+  commands: [
+    { id: 'rect', title: 'Rectangle', run: () => {} },
+    { id: 'ellipse', title: 'Ellipse', run: () => {} },
+    { id: 'fill', title: 'Fill', run: () => {} },
+    { id: 'select-mode', title: 'Select', run: () => {} },
+    { id: 'command-b', title: 'Command B', run: () => {} },
+    { id: 'command-a', title: 'Command A', run: () => {} },
+  ],
+};
+
+class BarStubApplication extends FredoApplicationClass {
+  readonly id = ORDER_APP_ID;
+  readonly name = 'Bar order app';
+  readonly icon = LuAppWindow;
+  readonly commandSurface = orderAppSurface;
+
+  render(): ReactElement {
+    return null as unknown as ReactElement;
+  }
+}
+
+registerApplication(new BarStubApplication());
+
+/** One element hotkey mounted inside an application root (`data-fredo-app-id`). */
+function scopedEntry(appId: string, key: string, title: string): HotkeyElementEntry {
+  const grammar = parseDataHotkey(key);
+  if (grammar === null) throw new Error(`bad fixture key ${key}`);
+  const root = document.createElement('div');
+  root.setAttribute('data-fredo-app-id', appId);
+  const button = document.createElement('button');
+  root.appendChild(button);
+  document.body.appendChild(root);
+  return {
+    element: button,
+    actionId: `fredo.element.${key}#${appId}`,
+    grammar,
+    title,
+    source: 'element',
+  };
+}
+
+function modeView(modeId: string): {
+  appId: string;
+  modeId: string;
+  label: string;
+  path: readonly string[];
+} {
+  return { appId: ORDER_APP_ID, modeId, label: modeId, path: ['select', modeId] };
 }
 
 describe('buildHotkeyBarModel — rows', () => {
@@ -188,5 +264,107 @@ describe('buildHotkeyBarModel — duplicate channel (R-3.4)', () => {
     });
     expect(model.duplicate).toBe(true);
     expect(model.duplicateKey).toBe('g a');
+  });
+});
+
+// ── Spec #3098 ST-1 (A1) — per-scope element rows ────────────────────────────
+
+describe('buildHotkeyBarModel — per-scope element rows (Spec #3098 A1)', () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it('drops a carrier element whose surface-owning app is not displayed', () => {
+    const carrier = scopedEntry(ORDER_APP_ID, 'g+i', 'Zoom in');
+
+    const model = buildHotkeyBarModel({
+      entries: [carrier],
+      pending: null,
+      focus: focus('default'),
+      scopeAppId: 'another-app',
+    });
+
+    expect(model.rows).toHaveLength(0);
+    expect(model.empty).toBe(true);
+  });
+
+  it('lists the same element when its app IS displayed', () => {
+    const carrier = scopedEntry(ORDER_APP_ID, 'g+i', 'Zoom in');
+
+    const model = buildHotkeyBarModel({
+      entries: [carrier],
+      pending: null,
+      focus: focus('default'),
+      scopeAppId: ORDER_APP_ID,
+    });
+
+    expect(model.rows.map((row) => row.key)).toEqual(['g']);
+    expect(model.rows.map((row) => row.serialized)).toEqual(['g i']);
+    expect(model.rows.map((row) => row.title)).toEqual(['Zoom in']);
+  });
+
+  it('lists a null-scoped element in both states (today’s behaviour)', () => {
+    const global = entry('y', 'Global binding');
+
+    for (const scopeAppId of [ORDER_APP_ID, 'another-app', null]) {
+      document.body.innerHTML = '';
+      const model = buildHotkeyBarModel({
+        entries: [global],
+        pending: null,
+        focus: focus('default'),
+        scopeAppId,
+      });
+      expect(model.rows.map((row) => row.serialized)).toEqual(['y']);
+    }
+  });
+
+  it('defaults the scope to the focused application (no caller can forget it)', () => {
+    const carrier = scopedEntry(ORDER_APP_ID, 'g+i', 'Zoom in');
+    const other = scopedEntry('other-app', 'g+o', 'Zoom out');
+    other.element.focus();
+
+    const model = buildHotkeyBarModel({
+      entries: [carrier, other],
+      pending: null,
+      focus: focus('default'),
+    });
+
+    // Focus is inside `other-app`: the surface-owned carrier is dropped even
+    // though no `scopeAppId` was supplied (the single default did the filter).
+    expect(model.rows.map((row) => row.serialized)).toEqual(['g o']);
+  });
+});
+
+// ── Spec #3098 ST-1 (A2) — keymapOrder ───────────────────────────────────────
+
+describe('buildHotkeyBarModel — keymapOrder (Spec #3098 A2)', () => {
+  it('renders mode rows in the declared order and skips undeclared keys', () => {
+    const model = buildHotkeyBarModel({
+      entries: [],
+      pending: null,
+      focus: focus('default'),
+      activeMode: modeView('select'),
+    });
+
+    expect(model.rows.map((row) => row.key)).toEqual(['v', 'c', 'e', 'r']);
+    expect(model.rows.map((row) => row.title)).toEqual([
+      'Select',
+      'Fill',
+      'Ellipse',
+      'Rectangle',
+    ]);
+    expect(model.rows.every((row) => row.kind === 'mode')).toBe(true);
+  });
+
+  it('falls back to Object.entries (declaration) order when absent', () => {
+    const model = buildHotkeyBarModel({
+      entries: [],
+      pending: null,
+      focus: focus('default'),
+      activeMode: modeView('plain-mode'),
+    });
+
+    expect(model.rows.map((row) => row.key)).toEqual(['b', 'a']);
+    expect(model.rows.map((row) => row.title)).toEqual(['Command B', 'Command A']);
   });
 });

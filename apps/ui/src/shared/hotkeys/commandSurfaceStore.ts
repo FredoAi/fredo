@@ -93,6 +93,15 @@ const listeners = new Set<() => void>();
 /** Own-window kernel ids seen by this webview — the prune boundary. */
 let knownAppIds = new Set<string>();
 
+/**
+ * Applications the window kernel PRUNED. Their prompt input can still own DOM
+ * focus for the remainder of the pruning commit (React has not unmounted it
+ * yet), so the prompt-wrapper display fallback must never resurrect the closed
+ * application's root mode on `<body>` / in the bar. Cleared as soon as the
+ * application is present in the window snapshot again.
+ */
+let closedAppIds = new Set<string>();
+
 let installCount = 0;
 let unsubscribeWindows: (() => void) | null = null;
 let focusInHandler: (() => void) | null = null;
@@ -164,7 +173,10 @@ function resolveDisplayedApplicationId(): string | null {
   const wrapper = active.closest(PROMPT_WRAPPER_SELECTOR);
   if (wrapper === null) return null;
   const appId = wrapper.getAttribute('data-app-id');
-  return appId !== null && appId.length > 0 ? appId : null;
+  if (appId === null || appId.length === 0) return null;
+  // A window the kernel already pruned is GONE — the still-focused (not yet
+  // unmounted) prompt input must not keep its mode on the body hooks or the bar.
+  return closedAppIds.has(appId) ? null : appId;
 }
 
 interface CommandSurfaceView {
@@ -350,6 +362,11 @@ export function cancelCommandPrompt(appId: string): void {
 /**
  * Commit the draft exactly once to the command that opened the prompt, then
  * apply the invocation mode's auto-return and restore focus.
+ *
+ * Spec #3098 ST-1 — the command's optional `prompt.validate` guard runs BEFORE
+ * the prompt is torn down: a `false` result keeps the SAME prompt open with its
+ * draft and performs no run, no mode change, no body-hook change and no focus
+ * restore.
  */
 export function commitCommandPrompt(appId: string): void {
   const record = prompts.get(appId);
@@ -361,6 +378,9 @@ export function commitCommandPrompt(appId: string): void {
       : surface.commands.find((candidate) => candidate.id === record.state.commandId) ?? null;
   const value = record.state.value;
   const restoreElement = record.state.restoreElement;
+
+  const validate = command?.prompt?.validate;
+  if (validate !== undefined && !validate(value)) return;
 
   prompts.delete(appId);
   commit(); // body hook clears before the handler runs
@@ -533,7 +553,9 @@ function handleWindowSnapshotChange(): void {
     if (current.has(appId)) continue;
     if (modeStacks.delete(appId)) pruned = true;
     if (prompts.delete(appId)) pruned = true;
+    closedAppIds.add(appId);
   }
+  for (const appId of current) closedAppIds.delete(appId);
   knownAppIds = current;
   if (pruned) commit();
   else syncFromFocus();
@@ -549,6 +571,7 @@ export function installCommandSurfaceRuntime(): () => void {
 
   if (installCount === 0) {
     knownAppIds = new Set(getWindowSnapshot().map((win) => win.id));
+    closedAppIds = new Set();
     seedBaseline();
     syncBodyHooks();
     unsubscribeWindows = subscribeWindows(handleWindowSnapshotChange);
@@ -580,6 +603,7 @@ function teardownRuntime(): void {
     focusOutHandler = null;
   }
   knownAppIds = new Set();
+  closedAppIds = new Set();
   // The runtime owns the hooks — clear them, but keep the mode/prompt state so
   // a remount preserves the user's active mode.
   setBodyAttribute(BODY_ACTIVE_MODE_ATTR, null);
@@ -596,6 +620,7 @@ export function resetCommandSurfaceForTests(): void {
   modeStacks.clear();
   prompts.clear();
   knownAppIds = new Set();
+  closedAppIds = new Set();
   listeners.clear();
   revision = 0;
   snapshot = null;

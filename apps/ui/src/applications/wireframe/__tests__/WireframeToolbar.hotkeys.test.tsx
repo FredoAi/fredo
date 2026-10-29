@@ -15,6 +15,7 @@ import { LuCopy } from 'react-icons/lu';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
+import { WireframeHotkeyCarrier } from '../components/WireframeHotkeyCarrier';
 import { WireframeActionButton } from '../components/WireframeInsertMenu';
 import { WireframeToolbar } from '../components/WireframeToolbar';
 import {
@@ -23,12 +24,6 @@ import {
   resetWireframeStoreForTests,
   setStatus,
 } from '../store/wireframeDocumentStore';
-
-const hostFocus = vi.hoisted(() => ({ focused: true }));
-
-vi.mock('../hooks/useWireframeHostFocused', () => ({
-  useWireframeHostFocused: () => hostFocus.focused,
-}));
 
 function elements() {
   return getSnapshot().document.elements;
@@ -72,7 +67,6 @@ function generatedCssFor(element: Element): string {
 
 beforeEach(() => {
   resetWireframeStoreForTests();
-  hostFocus.focused = true;
 });
 
 afterEach(() => {
@@ -123,43 +117,31 @@ describe('toolbar markup (UI/UX 2.1)', () => {
   });
 });
 
-describe('hotkey attributes (R-5.1 / R-5.4)', () => {
-  it('mounts data-hotkey from the table while the host is focused', () => {
+describe('hotkey attributes (R-5.1 / R-5.4 / Spec #3098 AC4)', () => {
+  it('renders no data-hotkey or data-hotkey-label on any toolbar control', () => {
     renderWithChakra(<WireframeToolbar />);
 
-    const expected: readonly [string, string][] = [
-      ['wireframe-action-add-text', '1'],
-      ['wireframe-action-add-line', '9'],
-      ['wireframe-action-element-duplicate', 'p'],
-      ['wireframe-action-element-delete', 'k'],
-      ['wireframe-action-element-toggleLock', 'l'],
-      ['wireframe-action-edit-undo', 'u'],
-      ['wireframe-action-edit-redo', 'y'],
-      ['wireframe-action-zoom-in', 'g+i'],
-      ['wireframe-action-zoom-out', 'g+o'],
-      ['wireframe-action-view-fitPage', 'n'],
-      ['wireframe-action-view-resetView', '0'],
-      ['wireframe-action-view-togglePan', 'h'],
-      ['wireframe-action-file-saveAs', 'w'],
-      ['wireframe-action-file-open', 'o'],
-      ['wireframe-action-file-exportPng', 't'],
-    ];
-    for (const [testId, key] of expected) {
-      expect(button(testId), testId).toHaveAttribute('data-hotkey', key);
+    // Every control (the same 33 testids), focused state: the retired
+    // workaround is gone — the attributes never mount on the toolbar.
+    const controls = screen.getAllByTestId(/^wireframe-action-/);
+    expect(controls).toHaveLength(33);
+    for (const control of controls) {
+      expect(control).not.toHaveAttribute('data-hotkey');
+      expect(control).not.toHaveAttribute('data-hotkey-label');
     }
 
-    // document.new has no binding at all.
+    // document.new still has no binding at all.
     expect(button('wireframe-action-document-new')).not.toHaveAttribute('data-hotkey');
 
-    // The always-on bar shows the action title, not the composed aria-label.
-    expect(button('wireframe-action-add-text')).toHaveAttribute('data-hotkey-label', 'Text');
+    // The table's `hotkey` metadata STILL drives the accessible name/tooltip.
+    expect(button('wireframe-action-add-text')).toHaveAttribute('aria-label', 'Text (1)');
     expect(button('wireframe-action-element-duplicate')).toHaveAttribute(
-      'data-hotkey-label',
-      'Duplicate',
+      'aria-label',
+      'Duplicate (p)',
     );
 
     // #3087 — the always-on bar is the single shortcut-discovery surface: no
-    // control renders an on-control hotkey badge/keychip in the focused state.
+    // control renders an on-control hotkey badge/keychip.
     expect(
       button('wireframe-action-add-text').querySelector(
         '[data-testid="wireframe-hotkey-chip"]',
@@ -172,13 +154,34 @@ describe('hotkey attributes (R-5.1 / R-5.4)', () => {
     ).toHaveLength(0);
   });
 
-  it('removes the attribute and renders no chip when unfocused', () => {
-    hostFocus.focused = false;
+  it('stays attribute-free across blur/refocus (no mutation, focused or not)', async () => {
     const { container } = renderWithChakra(<WireframeToolbar />);
+    const toolbar = button('wireframe-toolbar');
+    const records: MutationRecord[] = [];
+    const observer = new MutationObserver((mutations) => records.push(...mutations));
+    observer.observe(toolbar, {
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['data-hotkey', 'data-hotkey-label'],
+    });
 
+    // Unfocused state: still no attribute anywhere in the toolbar.
     expect(container.querySelectorAll('[data-hotkey]')).toHaveLength(0);
-    // No on-control badge in the unfocused state either — the chip is removed,
-    // never merely hidden.
+    expect(container.querySelectorAll('[data-hotkey-label]')).toHaveLength(0);
+
+    act(() => {
+      window.dispatchEvent(new Event('blur'));
+      window.dispatchEvent(new Event('focus'));
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    observer.disconnect();
+    // AC4 — no `data-hotkey` attribute mutation happens across the transition.
+    expect(records).toHaveLength(0);
+    expect(container.querySelectorAll('[data-hotkey]')).toHaveLength(0);
+    expect(container.querySelectorAll('[data-hotkey-label]')).toHaveLength(0);
     expect(
       container.querySelectorAll('[data-testid="wireframe-hotkey-chip"]'),
     ).toHaveLength(0);
@@ -188,34 +191,40 @@ describe('hotkey attributes (R-5.1 / R-5.4)', () => {
   });
 });
 
-describe('two-step binding stays grammar-only (Spec #3087, supersedes #3071 ST-4)', () => {
-  it('keeps the g+g grammar form on data-hotkey and renders zero keycaps', () => {
+describe('two-step binding lives on the hidden carrier (Spec #3098)', () => {
+  it('keeps the g+g grammar on the carrier, never on the toolbar control', () => {
     renderWithChakra(
-      <WireframeActionButton
-        actionId="wireframe.arrange.group"
-        label="Group"
-        description="Group the selected elements"
-        icon={LuCopy}
-        density="compact"
-        focused
-        onActivate={() => {}}
-      />,
+      <>
+        <WireframeActionButton
+          actionId="wireframe.arrange.group"
+          label="Group"
+          description="Group the selected elements"
+          icon={LuCopy}
+          density="compact"
+          onActivate={() => {}}
+        />
+        <WireframeHotkeyCarrier />
+      </>,
     );
 
     const control = button('wireframe-action-arrange-group');
-    // The attribute keeps the `g+g` grammar value the engine parses — the
-    // always-on bar reads it for discovery; no chip echoes it on the control.
-    expect(control).toHaveAttribute('data-hotkey', 'g+g');
-    expect(control).toHaveAttribute('data-hotkey-label', 'Group the selected elements');
+    expect(control).not.toHaveAttribute('data-hotkey');
+    expect(control).not.toHaveAttribute('data-hotkey-label');
     expect(
       control.querySelectorAll('[data-testid="hotkeys-keycap"]'),
     ).toHaveLength(0);
     expect(
       control.querySelector('[data-testid="wireframe-hotkey-chip"]'),
     ).toBeNull();
+
+    // The `g+g` grammar now lives on the hidden carrier's binding element.
+    const carrier = button('wireframe-hotkey-carrier');
+    const binding = carrier.querySelector('[data-hotkey="g+g"]');
+    expect(binding).not.toBeNull();
+    expect(binding).toHaveAttribute('data-hotkey-label', 'Group');
   });
 
-  it('renders zero keycaps for a single-step binding too', () => {
+  it('renders zero keycaps for a single-step command control too', () => {
     renderWithChakra(
       <WireframeActionButton
         actionId="wireframe.element.duplicate"
@@ -223,13 +232,13 @@ describe('two-step binding stays grammar-only (Spec #3087, supersedes #3071 ST-4
         description="Duplicate"
         icon={LuCopy}
         density="compact"
-        focused
         onActivate={() => {}}
       />,
     );
 
     const control = button('wireframe-action-element-duplicate');
-    expect(control).toHaveAttribute('data-hotkey', 'p');
+    expect(control).not.toHaveAttribute('data-hotkey');
+    expect(control).not.toHaveAttribute('data-hotkey-label');
     expect(
       control.querySelectorAll('[data-testid="hotkeys-keycap"]'),
     ).toHaveLength(0);
