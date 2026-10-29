@@ -8,6 +8,8 @@
  *     element (the ONE seam, `resolveActiveBindings`),
  *   - classifies the focus context (`focusContext.ts`),
  *   - owns the pending-sequence state machine + its timeout,
+ *   - builds the application command-surface scope (Spec #3097) and applies the
+ *     `command` / `mode-pop` / `prompt-cancel` outcomes,
  *   - runs the winning action (never awaited — the keydown path must not block),
  *   - mirrors live state onto `document.body` DOM hooks for QA.
  *
@@ -22,6 +24,16 @@
 import { useSyncExternalStore } from 'react';
 
 import { FOCUS_NEXT_ACTION_ID, FOCUS_PREVIOUS_ACTION_ID, KEPT_GLOBAL_BINDINGS, LAUNCHER_TOGGLE_ACTION_ID } from './defaults';
+import { getElementApplicationId, resolveFocusedApplicationId } from './applicationFocus';
+import {
+  cancelCommandPrompt,
+  commitCommandPrompt,
+  executeCommand,
+  getModePath,
+  getOpenCommandPrompt,
+  popMode,
+  resolveCommandSurface,
+} from './commandSurfaceStore';
 import { isInteractiveElement, isTextControl, classifyFocusContext } from './focusContext';
 import { activateHotkeyElement, listElementHotkeys, type HotkeyElementEntry } from './hotkeyElements';
 import { normalizeKeyStroke, parseSequence, serializeStroke } from './keys';
@@ -30,7 +42,7 @@ import {
   registerFredoAction,
   runResolvedAction,
 } from './registry';
-import { decideDispatch } from './sequence';
+import { decideDispatch, type CommandDispatchScope } from './sequence';
 import { setHotkeysDisabled } from './store';
 import { focusWindow, getWindowSnapshot } from '../window-system/windowStore';
 import {
@@ -164,12 +176,99 @@ export function elementHotkeyToBinding(entry: HotkeyElementEntry): ResolvedBindi
  * Resolve every dispatchable binding: the kept globals + every mounted element
  * hotkey. This is the ONLY binding source for BOTH the keydown decision and the
  * bar.
+ *
+ * Spec #3097: when `focusedAppId` is supplied AND that application declares a
+ * `commandSurface`, element bindings are SCOPED to it — an element inside a
+ * DIFFERENT application root is dropped, while an element outside every app root
+ * (launcher / desktop chrome) stays global. With no argument (every existing
+ * caller) the list is exactly today's.
  */
 export function resolveActiveBindings(
-  _focusedFeatureId?: string | null,
+  focusedAppId?: string | null,
 ): readonly ResolvedBinding[] {
   registerDefaultFredoActions();
-  return [...keptGlobalBindings(), ...listElementHotkeys().map(elementHotkeyToBinding)];
+  if (focusedAppId === undefined || focusedAppId === null) {
+    return [...keptGlobalBindings(), ...listElementHotkeys().map(elementHotkeyToBinding)];
+  }
+  if (resolveCommandSurface(focusedAppId) === null) {
+    return [...keptGlobalBindings(), ...listElementHotkeys().map(elementHotkeyToBinding)];
+  }
+  return [
+    ...keptGlobalBindings(),
+    ...listElementHotkeys()
+      .filter((entry) => isElementInCommandScope(entry.element, focusedAppId))
+      .map(elementHotkeyToBinding),
+  ];
+}
+
+/** An element is in scope when it sits inside the app's root, or outside every root. */
+function isElementInCommandScope(element: HTMLElement, appId: string): boolean {
+  const owner = getElementApplicationId(element);
+  return owner === null || owner === appId;
+}
+
+// ── Application command-surface scope (Spec #3097) ───────────────────────────
+
+/**
+ * The inline value prompt's selectors. The strings mirror the playbook's binding
+ * DOM contract (`HOTKEY_BAR_PROMPT_INPUT_TESTID` / `HOTKEY_BAR_PROMPT_TESTID` in
+ * `HotkeyBar.tsx`); they are duplicated here as literals so the engine's module
+ * graph never pulls the React bar component in.
+ */
+const PROMPT_INPUT_SELECTOR = '[data-testid="hotkeys-keybar-prompt-input"]';
+const PROMPT_WRAPPER_SELECTOR = '[data-testid="hotkeys-keybar-prompt"]';
+
+/** The prompt input element, or `null` off-DOM / while no prompt is open. */
+function readPromptInput(): Element | null {
+  if (typeof document === 'undefined') return null;
+  return document.querySelector(PROMPT_INPUT_SELECTOR);
+}
+
+/**
+ * The application that owns the rendered prompt. The bar is platform chrome, so
+ * focusing its input makes `resolveFocusedApplicationId()` return `null` by
+ * design (focus outside every app root) — the prompt wrapper carries the owning
+ * app id (`data-app-id`, the binding DOM contract) so the prompt branch stays
+ * reachable while the user is typing into it.
+ */
+function readPromptAppId(): string | null {
+  if (typeof document === 'undefined') return null;
+  const wrapper = document.querySelector(PROMPT_WRAPPER_SELECTOR);
+  if (wrapper === null) return null;
+  const appId = wrapper.getAttribute('data-app-id');
+  return appId !== null && appId.length > 0 ? appId : null;
+}
+
+/**
+ * Build the read-only command-surface view the pure decision consumes. Returns
+ * `null` when the focused application declares no `commandSurface`, which makes
+ * every new branch unreachable — a non-opting app keeps today's behaviour.
+ *
+ * Synchronous by design: plain module reads + one `querySelector`; no IPC, no
+ * persistence, no React.
+ */
+function buildCommandScope(): CommandDispatchScope | null {
+  const promptInput = readPromptInput();
+  const promptInputFocused =
+    promptInput !== null && typeof document !== 'undefined' && document.activeElement === promptInput;
+
+  const appId = promptInputFocused
+    ? readPromptAppId() ?? resolveFocusedApplicationId()
+    : resolveFocusedApplicationId();
+  if (appId === null) return null;
+
+  const surface = resolveCommandSurface(appId);
+  if (surface === null) return null;
+
+  const prompt = getOpenCommandPrompt(appId);
+  return {
+    appId,
+    surface,
+    modePath: getModePath(appId),
+    promptOpen: prompt !== null,
+    promptInput: promptInputFocused && prompt !== null,
+    promptCommandId: prompt === null ? null : prompt.commandId,
+  };
 }
 
 // ── Pending-sequence state machine ───────────────────────────────────────────
@@ -342,6 +441,7 @@ function applyDecision(
   decision: DispatchDecision,
   stroke: KeyStroke,
   focusedFeatureId: string | null,
+  commandScope: CommandDispatchScope | null,
 ): void {
   switch (decision.outcome) {
     case 'match': {
@@ -369,6 +469,30 @@ function applyDecision(
       if (pending !== null) abandonPending();
       return;
     }
+    // Spec #3097 — the application command surface. A consumed command ends any
+    // armed element sequence (mode keys never enter the pending machine). The
+    // handler is invoked EXACTLY ONCE: the executor for a mode/command key, the
+    // prompt commit for Enter in the prompt — never both (AC5).
+    case 'command': {
+      const command = decision.command;
+      if (!command) return;
+      abandonPending();
+      if (command.promptAction === 'commit') commitCommandPrompt(command.appId);
+      else executeCommand(command.appId, command.commandId);
+      return;
+    }
+    case 'mode-pop': {
+      abandonPending();
+      const appId = commandScope === null ? null : commandScope.appId;
+      if (appId !== null) popMode(appId);
+      return;
+    }
+    case 'prompt-cancel': {
+      abandonPending();
+      const appId = commandScope === null ? null : commandScope.appId;
+      if (appId !== null) cancelCommandPrompt(appId);
+      return;
+    }
   }
 }
 
@@ -392,7 +516,8 @@ export function handleHotkeyKeydown(event: KeyboardEvent): DispatchDecision {
   updateHooks(context);
 
   const focusedFeatureId = getFocusedFeatureId();
-  const bindings = resolveActiveBindings();
+  const commandScope = buildCommandScope();
+  const bindings = resolveActiveBindings(commandScope === null ? undefined : commandScope.appId);
   const active = readActiveElement();
 
   const decision = decideDispatch({
@@ -401,9 +526,10 @@ export function handleHotkeyKeydown(event: KeyboardEvent): DispatchDecision {
     pending,
     bindings,
     nativeConsumes: isInteractiveElement(active),
+    commandScope,
   });
 
-  applyDecision(decision, stroke, focusedFeatureId);
+  applyDecision(decision, stroke, focusedFeatureId, commandScope);
 
   if (decision.consumed) {
     event.preventDefault();

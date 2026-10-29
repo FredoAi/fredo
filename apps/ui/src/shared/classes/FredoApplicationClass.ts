@@ -46,6 +46,7 @@
 
 import type { ReactElement } from 'react';
 import type { IconType } from 'react-icons';
+import type { ApplicationCommandSurface } from '../hotkeys/commandSurface';
 import type { GridItemConfig } from './types';
 
 export abstract class FredoApplicationClass<TProps = {}> {
@@ -116,6 +117,15 @@ export abstract class FredoApplicationClass<TProps = {}> {
    * owns the single Save button and delegates to whatever fn is registered.
    */
   renderSettings?(): ReactElement;
+
+  /**
+   * Optional application command surface (Spec #3097).
+   *
+   * Declares this application's keyboard modes and commands. When absent (every application in
+   * this slice), every key behaves exactly as today — the engine applies the unchanged
+   * `data-hotkey` / kept-globals dispatch. Declaring it never changes another application's scope.
+   */
+  readonly commandSurface?: ApplicationCommandSurface;
 
   // === INTERNAL CALLBACKS (managed by Home.tsx) ===
   
