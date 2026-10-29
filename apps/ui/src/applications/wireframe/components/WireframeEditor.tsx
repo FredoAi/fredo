@@ -20,8 +20,11 @@ import React, { useSyncExternalStore } from 'react';
 import { Flex } from '@chakra-ui/react';
 
 import { HOTKEY_BAR_HEIGHT_PX } from '../../../shared/hotkeys/HotkeyBar';
+import { useActiveCommandMode } from '../../../shared/hotkeys/commandSurfaceStore';
 import { formatGeometry } from '../model/geometry';
+import { WIREFRAME_APP_ID } from '../model/document';
 import { useWireframeIntent } from '../hooks/useWireframeIntent';
+import { WIREFRAME_PAN_MODE_ID } from '../wireframeCommandSurface';
 import {
   getSnapshot,
   primarySelectedId,
@@ -30,6 +33,7 @@ import {
 } from '../store/wireframeDocumentStore';
 import { WireframeCanvas } from './WireframeCanvas';
 import { WireframeFileError } from './WireframeFileError';
+import { WireframeHotkeyCarrier } from './WireframeHotkeyCarrier';
 import { WireframePropertyPanel } from './WireframePropertyPanel';
 import { WireframeStatusBar } from './WireframeStatusBar';
 import { WireframeToolbar } from './WireframeToolbar';
@@ -39,7 +43,13 @@ export function WireframeEditor(): React.ReactElement {
   // the take-on-mount drain (the app may have been opened by the request).
   useWireframeIntent();
   const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-  const { document, selectedIds, snapToGrid, view, filePath, dirty, panMode } = state;
+  const { document, selectedIds, snapToGrid, view, filePath, dirty } = state;
+
+  // Spec #3098 ST-3 — the active command mode is the module-owned source of
+  // truth (never a ref / per-effect copy); `data-wireframe-pan-mode` mirrors
+  // the MODE, not the store's free-floating pan flag.
+  const activeMode = useActiveCommandMode(WIREFRAME_APP_ID);
+  const panActive = activeMode?.id === WIREFRAME_PAN_MODE_ID;
 
   const primaryId = primarySelectedId(state);
   const selectedElement =
@@ -47,6 +57,8 @@ export function WireframeEditor(): React.ReactElement {
       ? null
       : document.elements.find((element) => element.id === primaryId) ?? null;
   const activeGroup = selectionGroup(document, selectedIds);
+  const selectionShape = selectedElement?.type === 'shape' ? selectedElement.shape : '';
+  const selectionFill = selectedElement?.type === 'shape' ? selectedElement.fill : '';
 
   return (
     <Flex
@@ -54,6 +66,8 @@ export function WireframeEditor(): React.ReactElement {
       data-wireframe-element-count={String(document.elements.length)}
       data-wireframe-selection-id={selectedElement?.id ?? ''}
       data-wireframe-selection-type={selectedElement?.type ?? ''}
+      data-wireframe-selection-shape={selectionShape}
+      data-wireframe-selection-fill={selectionFill}
       data-wireframe-selection-geometry={
         selectedElement ? formatGeometry(selectedElement) : ''
       }
@@ -69,13 +83,14 @@ export function WireframeEditor(): React.ReactElement {
         document.page.height,
       )}`}
       data-wireframe-zoom={String(Math.round(view.scale * 100))}
-      data-wireframe-pan-mode={panMode ? 'true' : 'false'}
+      data-wireframe-pan-mode={panActive ? 'true' : 'false'}
       flexDirection="column"
       h="100%"
       minH={0}
       pb={`${HOTKEY_BAR_HEIGHT_PX}px`}
       bg="bg.canvas"
     >
+      <WireframeHotkeyCarrier />
       <WireframeToolbar />
 
       <Flex flex="1" minH={0} display="flex" flexDirection={{ base: 'column', lg: 'row' }}>
