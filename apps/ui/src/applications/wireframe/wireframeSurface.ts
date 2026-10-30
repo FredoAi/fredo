@@ -24,9 +24,9 @@
  * effect that publishes a rename request (element id + which name field to focus); the
  * details view consumes it. It never fabricates a name.
  *
- * Keeping `WIREFRAME_ACTIONS` intact is deliberate (ST-4 removes its `hotkey` field in
- * the same landing that deletes the legacy carrier); this module reuses its file-action
- * handler seam for the four non-undoable file verbs.
+ * `WIREFRAME_ACTIONS` survives as the retained handler/parity registry (its legacy `hotkey`
+ * field was removed in ST-4); this module reuses its file-action handler seam for the four
+ * non-undoable file verbs.
  *
  * PURE DATA + SYNCHRONOUS RUNS: no polling, no timers, no IPC. The only module state is
  * the armed create kind, the rename request and their listeners (session-scoped, never
@@ -141,12 +141,26 @@ const APP_ASK_VERB_ID = 'app.ask';
  * Session-scoped armed create kind (§7 flow 2/4). Kept at module scope (never a React
  * ref) so it survives a component remount while the user is mid-gesture; the shell reads
  * it through `getArmedWireframeShape()` to publish `data-wireframe-arm`.
+ *
+ * A tiny subscriber set lets the shell/canvas re-render when the armed kind flips without
+ * subscribing to the journal. It is presentation state only (never persisted).
  */
 let armedShape: WireframeShapeDrawKind | null = null;
+const armedListeners = new Set<() => void>();
+
+function notifyArmed(): void {
+  for (const listener of armedListeners) listener();
+}
+
+function setArmed(shape: WireframeShapeDrawKind | null): void {
+  if (armedShape === shape) return;
+  armedShape = shape;
+  notifyArmed();
+}
 
 /** Arm the create operator for `shape`; the next pointer commit supplies the bounds. */
 export function beginWireframeShapeCreate(shape: WireframeShapeDrawKind): void {
-  armedShape = shape;
+  setArmed(shape);
 }
 
 export function getArmedWireframeShape(): WireframeShapeDrawKind | null {
@@ -154,11 +168,19 @@ export function getArmedWireframeShape(): WireframeShapeDrawKind | null {
 }
 
 export function clearArmedWireframeShape(): void {
-  armedShape = null;
+  setArmed(null);
 }
 
 export function setArmedWireframeShape(shape: WireframeShapeDrawKind | null): void {
-  armedShape = shape;
+  setArmed(shape);
+}
+
+/** Subscribe to the armed create-kind changes (shell/canvas selector). */
+export function subscribeArmedWireframeShape(listener: () => void): () => void {
+  armedListeners.add(listener);
+  return () => {
+    armedListeners.delete(listener);
+  };
 }
 
 /* ───────────────────────────── rename request seam ───────────────────────────── */
@@ -1663,6 +1685,7 @@ export const wireframeSurface: Surface = {
 /** Test-only: clear the session-scoped armed kind + pending rename request. */
 export function resetWireframeSurfaceForTests(): void {
   armedShape = null;
+  armedListeners.clear();
   renameRequest = null;
   renameListeners.clear();
 }

@@ -88,18 +88,12 @@ import {
 } from '../canvas/wireframeCanvasRegistry';
 import { useCanvasPalette, type CanvasPalette } from '../theme/useCanvasPalette';
 import {
-  getActiveCommandMode,
-  resetApplicationMode,
-  subscribeCommandSurface,
-} from '../../../shared/hotkeys/commandSurfaceStore';
-import { WIREFRAME_APP_ID } from '../model/document';
-import {
-  WIREFRAME_CREATE_OPERATOR,
   WIREFRAME_DRAW_CURSOR,
-  WIREFRAME_DRAW_ELLIPSE_MODE_ID,
-  WIREFRAME_DRAW_RECT_MODE_ID,
+  clearArmedWireframeShape,
   createWireframeShapeAt,
-} from '../wireframeCommandSurface';
+  getArmedWireframeShape,
+  subscribeArmedWireframeShape,
+} from '../wireframeSurface';
 
 /**
  * Pointer modifier that toggles an element in/out of the selection (R-1.1 /
@@ -148,15 +142,6 @@ interface CreateGesture {
   start: PagePoint;
   current: PagePoint;
 }
-
-/**
- * The shape a draw mode produces. Only the two create-operator modes declare a
- * kind; any other mode (select, pan) is not a create operator and maps to none.
- */
-const SHAPE_BY_MODE_ID: Readonly<Record<string, WireframeShapeDrawKind>> = {
-  [WIREFRAME_DRAW_RECT_MODE_ID]: 'rect',
-  [WIREFRAME_DRAW_ELLIPSE_MODE_ID]: 'ellipse',
-};
 
 /** Logical text size per `WireframeTextSize` preset (UI/UX section 1.5). */
 export const TEXT_SIZE_PX: Readonly<Record<WireframeTextSize, number>> = {
@@ -671,20 +656,19 @@ export function WireframeCanvasImpl(): ReactElement {
   const primaryId = primarySelectedId(state);
   const palette = useCanvasPalette();
 
-  // ── Active command mode → app-side create operator (Spec #3098, ST-4) ─────
-  // Read through the command-surface store's OWN subscription path
-  // (`useSyncExternalStore`, no effect and no per-move state). The engine never
-  // sees pointer input: a mode's opaque `operator` id is what turns this canvas
-  // into a create surface for the duration of that mode.
-  const activeCommandMode = useSyncExternalStore(
-    subscribeCommandSurface,
-    () => getActiveCommandMode(WIREFRAME_APP_ID),
-    () => getActiveCommandMode(WIREFRAME_APP_ID),
+  // ── Armed create operator (Spec #3119, ST-4 compatibility seam) ───────────
+  // The legacy command-surface mode that used to drive this operator was retired
+  // with `wireframeCommandSurface.ts`. Until ST-5 converges the pointer gestures
+  // on the declared verbs, the surface's session-scoped armed kind is the
+  // operator source: the create verbs arm it and this canvas answers the drag.
+  // Read through its OWN subscription path (`useSyncExternalStore`, no effect
+  // and no per-move state).
+  const drawShape: WireframeShapeDrawKind | null = useSyncExternalStore(
+    subscribeArmedWireframeShape,
+    getArmedWireframeShape,
+    getArmedWireframeShape,
   );
-  const createOperatorActive = activeCommandMode?.operator === WIREFRAME_CREATE_OPERATOR;
-  const drawShape: WireframeShapeDrawKind | null = createOperatorActive
-    ? (SHAPE_BY_MODE_ID[activeCommandMode?.id ?? ''] ?? null)
-    : null;
+  const createOperatorActive = drawShape !== null;
 
   const containerRef = useRef<HTMLDivElement>(null);
   // Mutable: the capture registry is bound from the same ref callback the
@@ -970,9 +954,9 @@ export function WireframeCanvasImpl(): ReactElement {
         rect: clampRectToPage(rect, page),
       });
       // ONE created element ⇒ ONE add step, auto-selected by the store; the
-      // gesture then returns the mode to Select. A failed create leaves the
-      // draw mode active (nothing to return from).
-      if (created !== null) resetApplicationMode(WIREFRAME_APP_ID);
+      // gesture then disarms the operator. A failed create leaves it armed
+      // (nothing to return from).
+      if (created !== null) clearArmedWireframeShape();
     },
     [drawShape, stageToPagePoint],
   );

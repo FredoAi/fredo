@@ -2,13 +2,13 @@
  * Wireframe command table (Spec #3070, ST-3, C4 / R-1.2 / R-1.3 / R-2.4 /
  * R-4.1; extended by Spec #3071, ST-4).
  *
- * Pins the table contract ST-7 depends on (35 ids, 32 hotkeys — 20 single-step
- * plus the 12 two-step `g`-namespace bindings — the two Companion-only rows with
- * no local `run`) and proves every action's side effect on the module-scoped
- * store — no UI involved.
+ * Pins the table contract ST-7 depends on (35 ids, the two Companion-only rows
+ * with no local `run`, and the `toolbar: true` parity flag) and proves every
+ * action's side effect on the module-scoped store — no UI involved.
  *
- * ST-4 adds the 10 arrange rows and RE-BINDS `wireframe.zoom.in` (`g` -> `g+i`)
- * and `wireframe.zoom.out` (`m` -> `g+o`), so `g` is a PREFIX-ONLY namespace.
+ * Spec #3119 ST-4 REMOVES the legacy `hotkey` field from every row (keyboard
+ * resolution now lives on `wireframeSurface`); the table keeps its `run`
+ * handlers as the retained capability registry.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -33,10 +33,6 @@ import {
   selectMany,
   setStatus,
 } from '../store/wireframeDocumentStore';
-
-const SHIPPED_KEYS = ['s', 'd', 'r', 'a', 'z', 'j', 'f', 'q', 'e', 'c', 'i', 'x', 'b', 'v'];
-
-const DATA_HOTKEY = /^[a-z0-9](?:\+[a-z0-9])?$/;
 
 const EXPECTED_IDS = [
   'wireframe.add.text',
@@ -75,41 +71,6 @@ const EXPECTED_IDS = [
   'wireframe.companion.listActions',
   'wireframe.companion.draftApp',
 ];
-
-const EXPECTED_KEYS: Readonly<Record<string, string>> = {
-  'wireframe.add.text': '1',
-  'wireframe.add.button': '2',
-  'wireframe.add.input': '3',
-  'wireframe.add.image': '4',
-  'wireframe.add.icon': '5',
-  'wireframe.add.card': '6',
-  'wireframe.add.section': '7',
-  'wireframe.add.shape': '8',
-  'wireframe.add.line': '9',
-  'wireframe.element.duplicate': 'p',
-  'wireframe.element.delete': 'k',
-  'wireframe.element.toggleLock': 'l',
-  'wireframe.edit.undo': 'u',
-  'wireframe.edit.redo': 'y',
-  'wireframe.zoom.in': 'g+i',
-  'wireframe.zoom.out': 'g+o',
-  'wireframe.view.fitPage': 'n',
-  'wireframe.view.resetView': '0',
-  'wireframe.view.togglePan': 'h',
-  'wireframe.file.saveAs': 'w',
-  'wireframe.file.open': 'o',
-  'wireframe.file.exportPng': 't',
-  'wireframe.arrange.group': 'g+g',
-  'wireframe.arrange.ungroup': 'g+u',
-  'wireframe.arrange.toggleGroupLock': 'g+l',
-  'wireframe.arrange.toggleSnap': 'g+s',
-  'wireframe.arrange.alignLeft': 'g+a',
-  'wireframe.arrange.alignCenter': 'g+c',
-  'wireframe.arrange.alignRight': 'g+r',
-  'wireframe.arrange.distribute': 'g+d',
-  'wireframe.arrange.bringForward': 'g+f',
-  'wireframe.arrange.sendBackward': 'g+b',
-};
 
 function elements() {
   return getSnapshot().document.elements;
@@ -162,50 +123,31 @@ describe('WIREFRAME_ACTIONS — the one command table', () => {
     expect(WIREFRAME_ACTIONS.map((action) => action.id)).toEqual(EXPECTED_IDS);
   });
 
-  it('binds exactly the 32 declared hotkeys (single- and two-step)', () => {
-    const bound = WIREFRAME_ACTIONS.filter((action) => action.hotkey !== undefined);
-    expect(bound).toHaveLength(32);
-
-    for (const action of bound) {
-      expect(action.hotkey, action.id).toBe(EXPECTED_KEYS[action.id]);
-      expect(action.hotkey, action.id).toMatch(DATA_HOTKEY);
+  it('declares no hotkey field on any row (the legacy binding is retired)', () => {
+    for (const action of WIREFRAME_ACTIONS) {
+      expect('hotkey' in action, action.id).toBe(false);
     }
-
-    // No duplicate full serialization inside the table (the relaxed rule).
-    const keys = bound.map((action) => action.hotkey as string);
-    expect(new Set(keys).size).toBe(keys.length);
-
-    // No strict-prefix shadowing: no binding's value is a strict prefix of
-    // another's, so a bare key can never shadow a sequence on its key.
-    for (const key of keys) {
-      expect(keys.some((other) => other.startsWith(`${key}+`)), key).toBe(false);
-    }
-
-    // First steps disjoint from the 14 shipped keys.
-    for (const key of keys) expect(SHIPPED_KEYS).not.toContain(key.split('+')[0]);
   });
 
-  it('marks only the two companion ids as non-toolbar, with no hotkey and no local run', () => {
+  it('marks only the two companion ids as non-toolbar, with no local run', () => {
     const companion = WIREFRAME_ACTIONS.filter((action) => !action.toolbar);
     expect(companion.map((action) => action.id)).toEqual([
       'wireframe.companion.listActions',
       'wireframe.companion.draftApp',
     ]);
     for (const action of companion) {
-      expect(action.hotkey).toBeUndefined();
       expect(action.run).toBeUndefined();
     }
   });
 
-  it('keeps document.new toolbar-visible without a hotkey', () => {
+  it('keeps document.new toolbar-visible with a run handler', () => {
     const newDocument = findWireframeAction('wireframe.document.new');
     expect(newDocument?.toolbar).toBe(true);
-    expect(newDocument?.hotkey).toBeUndefined();
     expect(newDocument?.run).toBeTypeOf('function');
   });
 
   it('resolves ids and refuses unknown/companion ids', () => {
-    expect(findWireframeAction('wireframe.add.text')?.hotkey).toBe('1');
+    expect(findWireframeAction('wireframe.add.text')?.title).toBe('Text');
     expect(findWireframeAction('wireframe.nope')).toBeUndefined();
     expect(runWireframeAction('wireframe.nope')).toBe(false);
     expect(runWireframeAction('wireframe.companion.listActions')).toBe(false);
@@ -443,7 +385,7 @@ describe('view actions (R-4.2 - R-4.5, store-only)', () => {
 });
 
 describe('arrange actions (Spec #3071, ST-4 — R-1.3/1.5/1.7/1.9/2.1/2.3/2.4/2.6/2.7/2.8/2.9)', () => {
-  it('declares the 10 arrange rows as toolbar controls bound in the `g` namespace', () => {
+  it('declares the 10 arrange rows as toolbar-time controls with run handlers', () => {
     const arrange = WIREFRAME_ACTIONS.filter((action) =>
       action.id.startsWith('wireframe.arrange.'),
     );
@@ -461,16 +403,8 @@ describe('arrange actions (Spec #3071, ST-4 — R-1.3/1.5/1.7/1.9/2.1/2.3/2.4/2.
     ]);
     for (const action of arrange) {
       expect(action.toolbar, action.id).toBe(true);
-      expect(action.hotkey, action.id).toMatch(/^g\+[a-z0-9]$/);
       expect(action.run, action.id).toBeTypeOf('function');
     }
-  });
-
-  it('re-binds the two Slice-1 view rows and leaves `g` prefix-only (`m` free)', () => {
-    expect(findWireframeAction('wireframe.zoom.in')?.hotkey).toBe('g+i');
-    expect(findWireframeAction('wireframe.zoom.out')?.hotkey).toBe('g+o');
-    expect(WIREFRAME_ACTIONS.some((action) => action.hotkey === 'g')).toBe(false);
-    expect(WIREFRAME_ACTIONS.some((action) => action.hotkey === 'm')).toBe(false);
   });
 
   it('group is a false no-op with fewer than two selected (R-2.7)', () => {

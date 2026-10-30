@@ -1,17 +1,15 @@
 /**
  * Deterministic Wireframe starter draft (Spec #3070 C4; Spec #3099 ST-3).
  *
- * The draft script moved to `actions/wireframeDraft.ts` when
- * `wireframe.companion.draftApp` became a real published surface command. This
- * suite pins the script itself (page preset, step order, the produced
- * navbar/heading/report-card document, and the stop-on-failure honesty rule)
- * plus the published command that now owns it.
+ * The draft script lives in `actions/wireframeDraft.ts`. Spec #3119 ST-4 retired
+ * the application command surface (so the published-command lookup is gone); this
+ * suite keeps the direct draft-operations contract: page preset, step order, the
+ * produced navbar/heading/report-card document, and the stop-on-failure rule.
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
-  WIREFRAME_DRAFT_APP_ID,
   WIREFRAME_DRAFT_PAGE_PRESET,
   WIREFRAME_DRAFT_STEPS,
   createWireframeDraftOperations,
@@ -24,15 +22,6 @@ import {
   getSnapshot,
   resetWireframeStoreForTests,
 } from '../store/wireframeDocumentStore';
-import {
-  executeCommand,
-  resetCommandSurfaceForTests,
-} from '@/shared/hotkeys/commandSurfaceStore';
-import { WIREFRAME_APP_ID } from '../model/document';
-import { wireframeCommandSurface } from '../wireframeCommandSurface';
-// Side effect: the application must be registered so the executor resolves the
-// surface (exactly as the eager `allApplications` barrel does in the app).
-import '../index';
 
 function elements(): WireframeElement[] {
   return getSnapshot().document.elements;
@@ -62,17 +51,8 @@ function operationsWith(
   return { ...createWireframeDraftOperations(), ...overrides };
 }
 
-function draftCommand() {
-  const command = wireframeCommandSurface.commands.find(
-    (candidate) => candidate.id === WIREFRAME_DRAFT_APP_ID,
-  );
-  if (command === undefined) throw new Error('draftApp command is not published');
-  return command;
-}
-
 beforeEach(() => {
   resetWireframeStoreForTests();
-  resetCommandSurfaceForTests();
 });
 
 describe('the deterministic draft script (C4 / R-6.5)', () => {
@@ -148,35 +128,5 @@ describe('the deterministic draft script (C4 / R-6.5)', () => {
     expect(elements().some((element) => element.type === 'card')).toBe(false);
     // A stopped script is NOT the complete binding draft -> selection remains.
     expect(getSnapshot().selectedId).not.toBeNull();
-  });
-});
-
-describe('the published draftApp command (Spec #3099 ST-3)', () => {
-  it('declares app_name required and summary optional, and runs the same script', () => {
-    const command = draftCommand();
-    expect(command.args?.map((arg) => [arg.name, arg.required ?? false])).toEqual([
-      ['app_name', true],
-      ['summary', false],
-    ]);
-
-    const outcome = executeCommand(WIREFRAME_APP_ID, WIREFRAME_DRAFT_APP_ID, {
-      app_name: 'Reporter',
-    });
-
-    expect(outcome).toEqual({ status: 'performed' });
-    expect(elements()).toHaveLength(3);
-    expect(elements()[1]).toMatchObject({ type: 'text', text: 'Reporter' });
-  });
-
-  it('rejects a missing required app_name before run (nothing performed)', () => {
-    const outcome = executeCommand(WIREFRAME_APP_ID, WIREFRAME_DRAFT_APP_ID);
-    expect(outcome).toEqual({ status: 'rejected', reason: 'invalid-arguments' });
-    expect(elements()).toHaveLength(0);
-  });
-
-  it('the command run reports false when nothing was performed', () => {
-    expect(draftCommand().run(undefined)).toBe(false);
-    expect(draftCommand().run({ app_name: '   ' })).toBe(false);
-    expect(draftCommand().run({ app_name: 'Reporter' })).toBe(true);
   });
 });

@@ -1,24 +1,19 @@
 /**
- * Wireframe toolbar controls + insert menus (Spec #3070, ST-3, UI/UX 2.1/2.2).
+ * Wireframe insert menus (Spec #3070, ST-3, UI/UX 2.1/2.2).
  *
- * Every control here is driven by the ONE command table in
- * `actions/wireframeActions.ts`: the button's `data-hotkey`, its testid and the
- * action it runs all come from the same row, so a shortcut can never diverge
- * from its visible control.
+ * Spec #3119 ST-4 retired the 33-control toolbar; ST-6 re-homes this module as
+ * the ONE pointer affordance (`wireframe-insert`) inside the canvas region. The
+ * exported button primitive is retained for that rewrite.
  *
  * Presentation rules (binding):
- * - a real `<button>` (Chakra `Button`) — the shipped hotkey activator clicks
- *   buttons, and the element is a normal Tab stop (the toolbar is a `group`,
- *   never an ARIA `toolbar` with roving tabindex);
- * - controls carry NO `data-hotkey`/`data-hotkey-label` (Spec #3098 ST-5): the
- *   `g+*` grammar lives on the hidden `WireframeHotkeyCarrier` and the mode keys
- *   live in the declared command surface, so the always-on bottom hotkey bar is
- *   the single shortcut-discovery surface with no per-host focus plumbing. The
- *   row's `hotkey` metadata still drives the accessible name / tooltip;
+ * - a real `<button>` (Chakra `Button`) — a normal Tab stop;
+ * - controls carry NO `data-hotkey`/`data-hotkey-label` (Spec #3098 ST-5); the
+ *   legacy carrier and command surface are gone (Spec #3119 ST-4), so keyboard
+ *   discovery belongs to the navigation rail/map;
  * - a POINTER activation (`event.detail > 0`) blurs the control after running
  *   its action so the next bare key is in the `default` context (G-327,
  *   UI/UX 3.14); a keyboard activation (`detail === 0`) keeps focus for Tab
- *   users, and an engine-driven activation never moves focus at all.
+ *   users.
  *
  * Tokens only: semantic tokens and the shared `tint()` helper — never a
  * hex/rgba literal, never an alpha-append onto a `var()`.
@@ -42,10 +37,7 @@ import {
 } from 'react-icons/lu';
 
 import { tint } from '../../../shared/utils/colorTint';
-import {
-  findWireframeAction,
-  wireframeActionTestId,
-} from '../actions/wireframeActions';
+import { wireframeActionTestId } from '../actions/wireframeActions';
 
 export interface WireframeActionButtonProps {
   /** C4 action id this control performs. */
@@ -78,14 +70,8 @@ export function WireframeActionButton({
   pressed,
   onActivate,
 }: WireframeActionButtonProps): React.ReactElement {
-  const action = findWireframeAction(actionId);
-  const hotkey = action?.hotkey;
   const testId = wireframeActionTestId(actionId);
-  const accessibleName = hotkey
-    ? `${density === 'full' ? label : description} (${hotkey})`
-    : density === 'full'
-      ? label
-      : description;
+  const accessibleName = density === 'full' ? label : description;
 
   const button = (
     <Button
@@ -138,7 +124,7 @@ export function WireframeActionButton({
             px={2}
             py={1}
           >
-            {hotkey ? `${description} (${hotkey})` : description}
+            {description}
           </Tooltip.Content>
         </Tooltip.Positioner>
       </Portal>
