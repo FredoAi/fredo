@@ -31,3 +31,6 @@ export * from './NavigationMap';
 export * from './ActivityTrail';
 export * from './announce';
 export * from './host';
+export * from './hostRegistry';
+export * from './confirmation';
+export * from './launcherBridge';

@@ -32,6 +32,7 @@ import {
   deriveRail,
   dispatch,
   resolveStroke,
+  type Actor,
   type Channel,
   type ConfirmationRequest,
   type ContextEnvelope,
@@ -76,7 +77,15 @@ export interface NavigationHostOptions {
   readonly now?: () => string;
   /** Apply a whole-document patch; throwing marks an undo failure. */
   readonly applyPatch?: (patch: JsonPatch) => void;
-  readonly confirm?: (request: ConfirmationRequest) => boolean;
+  /**
+   * §9 — the risk-policy decision. The intent rides alongside the request so the provider can
+   * gate the dialog on the channel; a promise is awaited by the funnel. Keyboard/pointer hosts
+   * keep the shipped no-confirm behaviour by leaving this undefined.
+   */
+  readonly confirm?: (
+    request: ConfirmationRequest,
+    intent: Intent,
+  ) => boolean | Promise<boolean>;
   readonly announcementChannel?: AnnouncementChannel;
   readonly overlayOpen?: () => boolean;
 }
@@ -100,6 +109,13 @@ export interface NavigationHostSnapshot {
 export interface NavigationHost {
   readonly getSnapshot: () => NavigationHostSnapshot;
   readonly subscribe: (listener: () => void) => () => void;
+  /**
+   * Spec #3120 (P6) — a FRESH envelope built from the CURRENT context + journal. The launcher
+   * reads this synchronously on open (NFR-1); it is never cached on the snapshot.
+   */
+  readonly describeContext: () => ContextEnvelope;
+  /** Spec #3120 (P6) — a full intent (verbId, args, channel, actor, actorRef) through the ONE funnel. */
+  readonly runIntent: (intent: Intent) => Promise<DispatchResult>;
   /** Resolves + dispatches one stroke. `null` ⇒ not handled (text-entry / passthrough). */
   readonly handleStroke: (
     stroke: string,
@@ -113,8 +129,15 @@ export interface NavigationHost {
   ) => Promise<DispatchResult>;
   /** Convenience: `JOURNAL_UNDO_VERB_ID` through the funnel (newest entry). */
   readonly undoLast: () => Promise<DispatchResult>;
-  /** Per-entry undo: selects the journal entry BY `seq` and undoes THAT entry. */
-  readonly undoEntry: (seq: number) => Promise<DispatchResult>;
+  /**
+   * Per-entry undo: selects the journal entry BY `seq` and undoes THAT entry. The reversal is
+   * journaled for `options.actor`/`options.channel` (default `{actor:'human', channel:'pointer'}`
+   * — the trail button reads `You`); a companion actor maps to `human` (§3.10).
+   */
+  readonly undoEntry: (
+    seq: number,
+    options?: { readonly actor?: Actor; readonly channel?: Channel },
+  ) => Promise<DispatchResult>;
   readonly openMap: (filterPlaceId?: string | null) => void;
   readonly closeMap: () => void;
   /** Test hygiene: reset the presentation state (and a host-owned journal). */
@@ -289,7 +312,9 @@ export function createNavigationHost(options: NavigationHostOptions): Navigation
         // A completed mutation in a TRANSIENT place auto-exits (one pop) — announce the
         // exit through the SAME composer as an Escape pop, exactly once.
         if (!pathEquals(previous, next)) return placeAnnouncement(previous, next);
-        if (entry.actor === 'system' && entry.label.startsWith('Undo ')) {
+        // Spec #3120 (P6) — the reversal is now attributed to the requester (human/system), so
+        // the engine's reserved `Undo <label>` phrasing is the discriminator, not `actor`.
+        if (entry.label.startsWith('Undo ')) {
           return navUndoMessage(undoneLabelOf(entry));
         }
         return null;
@@ -374,6 +399,10 @@ export function createNavigationHost(options: NavigationHostOptions): Navigation
     overlayOpen: options.overlayOpen,
   };
 
+  async function runIntent(intent: Intent): Promise<DispatchResult> {
+    return commitResult(await dispatch(deps, intent));
+  }
+
   async function run(verbId: string, channel: Channel, args: Readonly<Record<string, string>>) {
     const intent: Intent = {
       verbId,
@@ -381,7 +410,12 @@ export function createNavigationHost(options: NavigationHostOptions): Navigation
       channel,
       actor: isCompanionChannel(channel) ? 'companion' : 'human',
     };
-    return commitResult(await dispatch(deps, intent));
+    return runIntent(intent);
+  }
+
+  /** Spec #3120 (P6) — a fresh envelope; never the snapshot's cached copy (NFR-1). */
+  function describeContext(): ContextEnvelope {
+    return buildContextEnvelope(surface, currentContext(), journal.entries());
   }
 
   /* ── the stroke path (R-4.5 / §5 algorithm) ── */
@@ -458,7 +492,10 @@ export function createNavigationHost(options: NavigationHostOptions): Navigation
 
   /* ── per-entry undo (Architect §5; QA GAP 10) ── */
 
-  async function undoEntry(seq: number): Promise<DispatchResult> {
+  async function undoEntry(
+    seq: number,
+    options?: { readonly actor?: Actor; readonly channel?: Channel },
+  ): Promise<DispatchResult> {
     const entries = journal.entries();
     const target = entries.find((entry) => entry.seq === seq);
     const inverse = target?.inverse ?? null;
@@ -468,6 +505,12 @@ export function createNavigationHost(options: NavigationHostOptions): Navigation
       commit(navUndoNothingMessage());
       return { status: 'noop', code: 'no-matches', message: NOTHING_TO_UNDO };
     }
+
+    // Spec #3120 (P6) §3.10 — the reversal is attributed to the requester (default: the human
+    // clicking the trail); a companion actor still journals as `human`.
+    const requestedActor: Actor = options?.actor ?? 'human';
+    const undoActor: Actor = requestedActor === 'companion' ? 'human' : requestedActor;
+    const undoChannel: Channel = options?.channel ?? 'pointer';
 
     try {
       applyPatch(inverse);
@@ -483,8 +526,8 @@ export function createNavigationHost(options: NavigationHostOptions): Navigation
       { entries, redo: journal.redo() },
       {
         verbId: target.verbId,
-        actor: 'system',
-        channel: 'system',
+        actor: undoActor,
+        channel: undoChannel,
         label: `Undo ${target.label}`,
         effect: 'mutation',
         placePath: currentContext().placePath,
@@ -546,6 +589,8 @@ export function createNavigationHost(options: NavigationHostOptions): Navigation
       };
     },
     handleStroke,
+    describeContext,
+    runIntent,
     runVerb: (verbId, channel = 'pointer', args = {}) => run(verbId, channel, args),
     undoLast: () => run(JOURNAL_UNDO_VERB_ID, 'pointer', {}),
     undoEntry,

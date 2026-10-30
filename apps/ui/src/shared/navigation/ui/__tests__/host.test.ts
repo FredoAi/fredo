@@ -420,7 +420,9 @@ describe('undoEntry(seq) — reverts THAT entry, never the newest', () => {
     expect(result.status).toBe('performed');
     if (result.status === 'performed') {
       expect(result.entry.seq).toBe(4);
-      expect(result.entry.actor).toBe('system');
+      // Spec #3120 §3.10 — the trail button's undo is the human's, on the pointer channel.
+      expect(result.entry.actor).toBe('human');
+      expect(result.entry.channel).toBe('pointer');
       expect(result.entry.label).toBe('Undo Rectangle 1');
       expect(result.entry.inverse).toEqual(oldest.patch?.after ?? null);
     }
@@ -429,7 +431,7 @@ describe('undoEntry(seq) — reverts THAT entry, never the newest', () => {
     expect(harness.applied).toEqual([oldest.inverse]);
     expect(harness.applied).not.toContainEqual(newest.inverse);
 
-    // Exactly ONE system entry appended; the earlier entries survive byte-identical.
+    // Exactly ONE requester-attributed entry appended; the earlier entries survive byte-identical.
     const after = journal.entries();
     expect(after).toHaveLength(4);
     expect(after[2]).toEqual(newest);

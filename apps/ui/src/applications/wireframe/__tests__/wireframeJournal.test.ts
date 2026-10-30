@@ -191,7 +191,11 @@ describe('the journal is the single mutation authority (R-5)', () => {
 
     // One counter: consecutive seqs, no gap, and the host reads the SAME array.
     expect(journal.entries().map((entry) => entry.seq)).toEqual([1, 2, 3, 4]);
-    expect(journal.entries().filter((entry) => entry.actor === 'system')).toHaveLength(2);
+    // Spec #3120 (P6) §3.10 — the store's own undo stays `system`; the host's undoLast is the
+    // requester's (a human on the pointer channel), replacing the old hardcoded system entry.
+    expect(journal.entries().filter((entry) => entry.actor === 'system')).toHaveLength(1);
+    expect(journal.entries()[3].actor).toBe('human');
+    expect(journal.entries()[3].channel).toBe('pointer');
     expect(host.getSnapshot().entries.map((entry) => entry.seq)).toEqual([1, 2, 3, 4]);
   });
 

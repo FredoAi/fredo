@@ -396,10 +396,11 @@ describe('§6.4/§4.10 multi-entry undo', () => {
     });
     // The B inverse was applied before the failing A inverse.
     expect(calls[calls.length - 1]).toStrictEqual({ b: 0 });
-    // The applied inverse is preserved as a `system` entry.
+    // The applied inverse is preserved for the requester (a human undo stays human).
     const entries = journal.entries();
     expect(entries).toHaveLength(3);
-    expect(entries[2].actor).toBe('system');
+    expect(entries[2].actor).toBe('human');
+    expect(entries[2].channel).toBe('system');
     expect(entries[2].effect).toBe('mutation');
 
     // Failure on the FIRST inverse reports applied 0.
