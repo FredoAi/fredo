@@ -73,7 +73,7 @@ deleted.
 
 ## Cases
 
-- [ ] **F-N1 (R-1 / AC1) — the declaration is complete, valid and noun-shaped.**
+- [x] **F-N1 (R-1 / AC1) — the declaration is complete, valid and noun-shaped.**
       Run `pnpm --filter @fredo/ui test:run src/applications/wireframe/__tests__/wireframeSurface`.
       **Expected:** the titles `declares one root and the six places under the canvas`,
       `validateSurface reports zero violations`, `every verb applies only to the six declared
@@ -85,7 +85,7 @@ deleted.
       (negative control on a clone, then revert); a 9th bound verb in Create.
       **Files:** `wireframeSurface.test.ts` (NEW).
 
-- [ ] **F-N2 (R-1 / AC1) — every place renders ≤ 8 verb rows and Create overflows by one.**
+- [x] **F-N2 (R-1 / AC1) — every place renders ≤ 8 verb rows and Create overflows by one.**
       Open Wireframe; walk the six places with `c e a s v f` + `Escape`.
       **Expected:** in every place
       `document.querySelectorAll('[data-testid="navigation-rail-row"]').length ≤ 8`; in Create it
@@ -99,7 +99,7 @@ deleted.
       are footer affordances); Arrange (8 rows, no `more…`); a leaf place (no empty place group);
       a place entered twice.
 
-- [ ] **F-N3 (R-2 / AC2) — `c` enters Create and `c r` arms a rectangle.**
+- [x] **F-N3 (R-2 / AC2) — `c` enters Create and `c r` arms a rectangle.**
       From the root press `c`, then `r`.
       **Expected:** after `c`, `data-wireframe-place="wireframe.create"`, the breadcrumb
       `data-nav-place-id` sequence is `wireframe.canvas,wireframe.create` with the current label
@@ -110,7 +110,7 @@ deleted.
       **Edge:** `r` pressed twice (re-arm, still no entry); `r` after the 250 ms prefix timeout
       (re-arms); an announcement on arming is a FAIL (arming is silent).
 
-- [ ] **F-N4 (R-2 / AC2) — `r` at the root arms a rectangle WITHOUT entering Create.**
+- [x] **F-N4 (R-2 / AC2) — `r` at the root arms a rectangle WITHOUT entering Create.**
       From the root press `r`, then drag.
       **Expected:** `data-wireframe-place` stays `wireframe.canvas`, `data-wireframe-arm="rect"`,
       cursor `crosshair`, no navigation entry; the drag creates one element with
@@ -121,7 +121,7 @@ deleted.
       **Edge:** a root alias that also collides with a child key (`r` is Edit's rename) — inside
       Edit, `r` must focus the name field, not arm a rect.
 
-- [ ] **F-N5 (R-2 / AC2) — `s` enters Style at the root and toggles snap inside Arrange.**
+- [x] **F-N5 (R-2 / AC2) — `s` enters Style at the root and toggles snap inside Arrange.**
       Root `s` → Style; `Escape`; `a` → Arrange; `s`.
       **Expected:** root `s` gives `data-wireframe-place="wireframe.style"`; inside Arrange `s`
       flips `data-wireframe-snap` `false`↔`true` and journals ONE
@@ -130,7 +130,7 @@ deleted.
       **Edge:** `s` inside Create = `wireframe.add.section` (third place, third meaning);
       `s` inside Arrange twice; snap state unchanged by `Escape`.
 
-- [ ] **F-N6 (R-2 / AC2) — `f` is place-scoped in three places.**
+- [x] **F-N6 (R-2 / AC2) — `f` is place-scoped in three places.**
       Root `f` → File; `Escape`; `a` → Arrange → `f`; `Escape`; `s` → Style → `f` (with a
       **shape** selected first, since fill is kind-gated).
       **Expected:** root `f` enters `wireframe.file`; Arrange `f` journals ONE
@@ -143,7 +143,7 @@ deleted.
       unavailable → ONE announcement `f isn't available here`, no entry (bound-but-unavailable);
       `f` with a text control focused (nothing dispatched).
 
-- [ ] **F-N7 (LIVE WALKTHROUGH — required evidence) — root → create → drag → style → fill → file → save.**
+- [x] **F-N7 (LIVE WALKTHROUGH — required evidence) — root → create → drag → style → fill → file → save.**
       **Exact token sequence (binding, `Escape` required — see plan Q-2):**
       `c` → `r` → drag a rectangle → (auto-exit) → `s` → `f` (fill cycle) → `Escape` → `f`
       (File) → `w` (Save As).
@@ -160,7 +160,7 @@ deleted.
       **Edge:** the `Escape` omitted (the second `f` is fill again — a FAIL, not a product
       defect); a `FAIL_FILE` launch (banner, document intact).
 
-- [ ] **F-N8 (R-2 / AC2) — arrows align inside Arrange and move the selection at the root.**
+- [x] **F-N8 (R-2 / AC2) — arrows align inside Arrange and move the selection at the root.**
       With ≥2 elements selected: `a` → `←` / `→`. Then `Escape` and `←` / `→` at the root.
       **Expected:** Arrange `←`/`→` journal ONE `wireframe.arrange.alignLeft`/`alignRight` each
       and the selected elements' `-selection-geometry` show coincident left (or right) edges;
@@ -172,7 +172,7 @@ deleted.
       control (caret movement, nothing dispatched); an arrow press at the last element
       (clamped, selection unchanged, still one navigation entry).
 
-- [ ] **F-N9 (R-2 / AC2) — `Escape` pops exactly one level.**
+- [x] **F-N9 (R-2 / AC2) — `Escape` pops exactly one level.**
       Enter `Create`, then `Escape`; enter `Style` then `Arrange` and `Escape` once.
       **Expected:** one level per press (`wireframe.create` → `wireframe.canvas`), `place.exit`
       journalled as a NAVIGATION entry, no document change, announcement
@@ -183,7 +183,7 @@ deleted.
       closes, the place does NOT pop); `Escape` in a details text field (focus moves to the
       canvas root, no dispatch).
 
-- [ ] **F-N10 (R-2 / AC2) — a completed action in the transient place auto-exits exactly once.**
+- [x] **F-N10 (R-2 / AC2) — a completed action in the transient place auto-exits exactly once.**
       `c`, `r`, then drag a rectangle; separately `c` then `t` (insert).
       **Expected:** for BOTH legs the cursor returns to `wireframe.canvas`; the journal has
       exactly ONE human entry (draw: `wireframe.create.rect`, placePath
@@ -196,7 +196,7 @@ deleted.
       transient place — shipped `ui/host.ts:322-334` moves the cursor only for
       `effect === "navigation"`).
 
-- [ ] **F-N11 (R-3 / AC3) — the rail and the map replace the bar and the toolbar.**
+- [x] **F-N11 (R-3 / AC3) — the rail and the map replace the bar and the toolbar.**
       Open Wireframe from the launcher.
       **Expected:** `navigation-rail`, `navigation-trail`, `navigation-map` (footer affordance)
       and `wireframe-canvas` render; `wireframe-toolbar` is **absent**;
@@ -210,7 +210,7 @@ deleted.
       **Edge:** Wireframe open-but-unfocused (the bar stays empty); a second Wireframe window;
       the insert menu closed (still no toolbar).
 
-- [ ] **F-N12 (R-3 / AC3) — breadcrumb and rail cap.**
+- [x] **F-N12 (R-3 / AC3) — breadcrumb and rail cap.**
       Walk all six places.
       **Expected:** the `navigation-rail-breadcrumb` `data-nav-place-id` sequence is
       `[wireframe.canvas, wireframe.<place>]` for each of the six, and `navigation-rail-place`
@@ -220,7 +220,7 @@ deleted.
       **Edge:** the rail at 520 px window width (`scrollWidth ≤ clientWidth`); a 60-char verb
       title (ellipsis only on the title, G-274).
 
-- [ ] **F-N13 (R-3a / AC3) — the 33-row parity manifest.**
+- [x] **F-N13 (R-3a / AC3) — the 33-row parity manifest.**
       Run `pnpm --filter @fredo/ui test:run src/applications/wireframe/__tests__/wireframeRailParity`.
       **Expected:** `the parity manifest has thirty-three rows` and `every toolbar capability
       resolves to a declared verb` green; exactly **33** `WIREFRAME_ACTIONS` rows have
@@ -238,7 +238,7 @@ deleted.
       arrange.toggleSnap, arrange.alignLeft, arrange.alignCenter, arrange.alignRight,
       arrange.distribute, arrange.bringForward, arrange.sendBackward, document.new`.
 
-- [ ] **F-N14 (R-3b / AC3) — 100% reachability, including argument-requiring verbs.**
+- [x] **F-N14 (R-3b / AC3) — 100% reachability, including argument-requiring verbs.**
       **Expected:** every declared verb is reachable by a key binding somewhere in the tree OR
       appears in its `appliesTo` place block of `navigation-map` with
       `data-nav-availability="available"`; `the create place reports one overflow verb and opens
@@ -253,7 +253,7 @@ deleted.
       no args are `noop` (documented capability rows, no error); a map click on an unavailable
       verb runs nothing.
 
-- [ ] **F-N15 (R-4 / AC4) — availability is kind+count gated and derived from the snapshot.**
+- [x] **F-N15 (R-4 / AC4) — availability is kind+count gated and derived from the snapshot.**
       With nothing selected read the map's Edit/Arrange/Style blocks; then select a **shape**,
       a **text**, a **button**, and a **card** in turn and re-read.
       **Expected (UI/UX §4 matrix):** nothing selected → every Edit/Arrange/Style verb reads
@@ -271,7 +271,7 @@ deleted.
       **Note:** the Canvas rail lists only `selection.previous/next`, so element-scoped rows are
       read from the MAP. Reading the Canvas rail for them is a technique error.
 
-- [ ] **F-N16 (R-4 / AC4) — multi-selection reflects the count.**
+- [x] **F-N16 (R-4 / AC4) — multi-selection reflects the count.**
       Select 2, then 3, then 1 element.
       **Expected:** count 2 → `alignLeft`, `alignCenter`, `alignRight`, `group` available,
       `distribute` disabled; count 3 → `distribute` available; count 1 → align/distribute/group
@@ -280,7 +280,7 @@ deleted.
       `did-nothing` (movable-only store rule unchanged, R-g); a 2-element selection that is
       exactly one group → `group` disabled, `ungroup` available.
 
-- [ ] **F-N17 (R-5 / AC5) — one `human` entry per document mutation, with the verb id and place path.**
+- [x] **F-N17 (R-5 / AC5) — one `human` entry per document mutation, with the verb id and place path.**
       Perform each of: create (`c r` drag), move (drag), resize (transformer), duplicate
       (`e` `d`), delete (`e` `x`), lock (`e` `l`), fill/border/radius/text style (`s` … on the
       appropriate kind), page change, arrange group (`a` `g`).
@@ -294,7 +294,7 @@ deleted.
       does NOT clear the redo stack; Edit `r` (rename) writes a navigation entry (focus move),
       not a mutation; a repeated field tick writes TWO entries (no coalescing).
 
-- [ ] **F-N18 (R-5 / AC5) — undo restores, redo re-applies, undo after a selection change is safe.**
+- [x] **F-N18 (R-5 / AC5) — undo restores, redo re-applies, undo after a selection change is safe.**
       Move element A, then select B, then `u` at the ROOT; then `y`.
       **Expected:** `u` restores A's exact prior geometry and selection, appends ONE
       `actor:"system"` entry labelled `Undo <label>`, speaks `Undid <label>` once, and no live
@@ -305,7 +305,7 @@ deleted.
       undo stack; **inside Arrange `u` is ungroup** — the undo leg must run at the Canvas root
       (or via the trail's per-entry Undo).
 
-- [ ] **F-N19 (R-5a / AC5) — exactly ONE undo stack (the journal).**
+- [x] **F-N19 (R-5a / AC5) — exactly ONE undo stack (the journal).**
       Run `pnpm --filter @fredo/ui test:run src/applications/wireframe/__tests__/wireframeUndoAuthority`
       and `.../wireframeJournal`.
       **Expected:** `the store keeps no past or future stack`, `canUndo and canRedo read the
@@ -318,7 +318,7 @@ deleted.
       **Edge:** a retained private array under another name (the behavioural half catches it);
       undo interleaved with a companion/system entry; 100+ edits (journal unbounded — named risk).
 
-- [ ] **F-N20 (R-6 / AC6) — pointer and keyboard commit the same verbs.**
+- [x] **F-N20 (R-6 / AC6) — pointer and keyboard commit the same verbs.**
       Create by drag; move by drag; resize by transformer; pan in `View` `p`.
       **Expected:** each commits exactly ONE entry with the declared verb id —
       `wireframe.create.rect`, `wireframe.element.move`, `wireframe.element.resize`,
@@ -328,7 +328,7 @@ deleted.
       two gestures = two entries; a drag that ends outside the canvas.
       **Cross-ref:** `wireframePointerConvergence.test.ts` (NEW, ST-5).
 
-- [ ] **F-N21 (R-6a / AC6) — no UI handler mutates the store outside `dispatch`.**
+- [x] **F-N21 (R-6a / AC6) — no UI handler mutates the store outside `dispatch`.**
       Run `pnpm --filter @fredo/ui test:run src/applications/wireframe/__tests__/wireframeLegacySurface`.
       **Expected:** `no ui handler mutates the store outside dispatch` green: the scan over
       `applications/wireframe/components/**/*.{ts,tsx}` (excluding `__tests__`; comments and
@@ -340,7 +340,7 @@ deleted.
       **Edge:** a re-exported alias (scan the module barrel); a comment naming a mutator
       (stripped → pass); a template interpolation calling the mutator (must be caught).
 
-- [ ] **F-N22 (R-7 / AC7) — the legacy path is gone and the build is clean.**
+- [x] **F-N22 (R-7 / AC7) — the legacy path is gone and the build is clean.**
       **Expected:** `applications/wireframe/wireframeCommandSurface.ts` and
       `components/WireframeHotkeyCarrier.tsx` do not exist; no import of either anywhere;
       `WireframeFeature` declares no `commandSurface`; no `WIREFRAME_ACTIONS` row has a
@@ -355,7 +355,14 @@ deleted.
       no longer visually disabled during an operation (accepted delta — behaviour, not the
       disabled affordance, is asserted).
 
-- [ ] **F-N23 (R-9 / AC9) — one region, one announcement, focus kept.**
+- [ ] **F-N23 (R-9 / AC9) — one region, one announcement, focus kept.** **FAIL (round 1,
+      2026-10-30).** The announcement legs pass; the FOCUS leg fails in the real shell:
+      focus a `navigation-rail-place-row` button (`activeElement` = that BUTTON), press `c` →
+      `data-wireframe-place="wireframe.create"` and `document.activeElement` becomes `BODY`
+      (the `navigation-rail-places` group unmounts because `placeRows` are the CURRENT place's
+      children, so the focused node is removed). Expected: still the same row button, never
+      `body`. Repro: open Wireframe → focus the `Create` place row → press `c` → read
+      `document.activeElement.tagName` → `BODY`.
       **Expected:** `document.querySelectorAll('[aria-live]').length === 1` and the region is
       `[data-testid="hotkeys-announcer"]` (`role="status"`, `aria-live="polite"`);
       `[data-testid="navigation-announcer"]` is ABSENT (the provider creates the host with
@@ -370,7 +377,7 @@ deleted.
       reduced-motion on; a bound-but-unavailable key (`f` on a text element) speaks
       `f isn't available here` exactly once.
 
-- [ ] **F-N24 (NFR) — synchronous, cheap, themed, motion-safe.**
+- [x] **F-N24 (NFR) — synchronous, cheap, themed, motion-safe.**
       **Expected:** `every listed stroke resolves synchronously in the same task` green (a spy
       records `host.handleStroke` inside the same call stack as the keydown; no `await`/`.then`
       precedes it — and there is exactly ONE element-scoped keydown handler, no document
@@ -402,3 +409,47 @@ Leave `- [ ]`, mark **FAIL** with expected-vs-actual and the exact stroke sequen
 observed `data-wireframe-place` / `data-wireframe-arm` / journal length. Never re-baseline a
 clause; re-baselining an EXPECTED VALUE (a count, a key, a testid) is allowed and must be
 recorded inline (G-125).
+
+---
+
+## Round 1 results — 2026-10-30 (spec/3119 @ `5e49d43`, tester)
+
+Env: isolated `wf3119-a` (slot 1, MCP `16001`), built-in `tauri_driver_session`. Pre-flight:
+`pnpm --filter @fredo/ui build` green **before** the suite (2863 modules); full UI suite
+**294 files / 3881 tests**; scoped wireframe **30 files / 407 tests**; `typecheck` clean;
+`contrast:gate` **4 files / 50 tests**. Console (`tauri_read_logs source=console`) clean across
+the whole drive — no `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
+| Row | Result | Evidence (quoted receipt) |
+|---|---|---|
+| F-N1 | PASS | `wireframeSurface.test.ts` **11/11**; manifest titles verbatim, green in the 407-test run. |
+| F-N2 | PASS | Rail at Canvas: `placeRows 6`, `navigation-rail-row 2`. Create: 8 rows `[Rectangle, Ellipse, Text, Button, Input, Image, Card, Section]`, `navigation-rail-more 1`, transient chip `Create · one action`. |
+| F-N3 | PASS | `c` → `place="wireframe.create"`, breadcrumb `[wireframe.canvas, wireframe.create]`, announcer `Create — 9 actions`, trail +1. `r` → `arm="rect"`, place unchanged, cursor `crosshair`, trail unchanged, announcement unchanged. |
+| F-N4 | PASS | Root `r` + drag → place stayed `wireframe.canvas`, `arm` rect→none, count 0→1, `-selection-type="shape"`, `-selection-shape="rect"`, one `Rectangle` entry, no announcement. |
+| F-N5 | PASS | Root `s` → `wireframe.style`; Arrange `s` → `data-wireframe-snap` false→true, one `Toggle snap` NAVIGATION entry with **no** Undo button, place unchanged. |
+| F-N6 | PASS | Root `f` → `wireframe.file`; Arrange `f` → stacking flipped + one `Bring forward` entry; Style `f` on a shape → fill `muted`→`border`, one entry; Style `f` on **text** → announcer `f isn't available here`, no entry. |
+| F-N7 | PASS (amended, Q-2) | Sequence `c → r → drag → s → f (fill) → Escape → f (File) → w`. Places `create`→`canvas`→`style`→`canvas`→`file`; `-element-count="1"`; saved file `schemaVersion:1`, `app:"fredo.wireframe"`, one `shape`/`rect`; `-dirty="false"`; `wireframe-status` `Saved`; console clean. Captures: dark + light (uploaded). |
+| F-N8 | PASS | Root `→` → one `Next element` navigation entry, selection clamped, place unchanged. Arrange-align leg pinned green by `ArrowLeft and ArrowRight align the selection inside arrange` (live multi-select drive not reproducible — see note below). |
+| F-N9 | PASS | Style→`Escape` → `wireframe.canvas` + `Left Style — Canvas — 2 actions`; root `Escape` → **no** entry, **no** new announcement. Escape with the map open closes the map and leaves the place unchanged. |
+| F-N10 | PASS | Draw auto-exit: `Left Create — Canvas — 2 actions`, one `Rectangle` entry, `arm="none"`. Insert leg (`c` `t`): one `Add Text` entry, `Left Create — Canvas — 2 actions`, place `canvas`. |
+| F-N11 | PASS | `navigation-rail 1`, `navigation-trail 1`, `wireframe-canvas 1`, `wireframe-property-panel 1`, `wireframe-insert 1`, `wireframe-toolbar 0`, `[data-testid^="wireframe-action-"] 0`, `hotkeys-keybar 0`. Non-vacuity (G-408): Mission Monitor focused → `hotkeys-keybar 1` with 1 row. |
+| F-N12 | PASS | Breadcrumbs observed `Canvas`, `Canvas›Create`, `Canvas›Style`, `Canvas›File` (all `[wireframe.canvas, <place>]`); ≤8 verb rows in every place; Canvas 2 rows. |
+| F-N13 | PASS | `wireframeRailParity.test.tsx` **10/10** (`the parity manifest has thirty-three rows`, `every toolbar capability resolves to a declared verb` verbatim, green). |
+| F-N14 | PASS | Map data query: every declared verb appears in its `appliesTo` block. `wireframe.add.icon` click → count +1, `-selection-type="icon"`, one `Add Icon` entry (no `invalid-args`); `wireframe.add.section` → `-selection-type="section"`, one entry. `app.ask` present with `data-nav-availability="disabled"`. |
+| F-N15 | PASS | Live: text selected → Style block `fill/border/appearance/radius = disabled`, `textStyle = available`; nothing selected → `align*`, `distribute`, `group` `disabled`; count-2/3 matrix pinned by the green `flipping the selection flips rail and map availability` + `multi-selection gates align distribute and group by count` titles. |
+| F-N16 | PASS | Count 1 → align/distribute/group `disabled`. Count 2/3 legs pinned by the green titles above (live multi-select drive not reproducible — see note below). |
+| F-N17 | PASS | One human entry per mutation at the store level: `Rectangle`, `Add Text`, `Add Icon`, `Add Section`, `Add Image`, `Bring forward`, `Fill`, `Update page`, `Move`, `Resize` — each exactly one, trail newest-first. No coalescing observed. |
+| F-N18 | PASS | Root `u` → count 6→5, one `System Undo Add Image` entry (actor `System`), announcer `Undid Add Image`; `y` → count back to 6, selection restored. |
+| F-N19 | PASS | `wireframeUndoAuthority.test.ts` 4/4 + `wireframeJournal.test.ts` 7/7 green (`the store keeps no past or future stack`, `store undo and host undoLast advance the same journal` verbatim). |
+| F-N20 | PASS | Create-drag → `Rectangle`; element drag → geometry `520,608,240,160`→`576,640,240,160` + one `Move`; transformer drag → `576,640,240,160`→`576,600.6,299.1,199.4` + one `Resize`; pan drag (View `p`) → one `Pan` NAVIGATION entry, count/geometry/dirty identical. |
+| F-N21 | PASS | `wireframeLegacySurface.test.ts` **7/7** (`no ui handler mutates the store outside dispatch` verbatim, green). |
+| F-N22 | PASS | `wireframeCommandSurface.ts` / `WireframeHotkeyCarrier.tsx` deleted (diff); `the built bundle names no removed module` green after the pre-suite build; `data-hotkey` under `wireframe-root` = 0. |
+| F-N23 | **FAIL** | Announcements PASS (`Create — 9 actions`, `Left Create — Canvas — 2 actions`, `Left Style — Canvas — 2 actions`, `File — 4 actions`; `navigation-announcer` absent). FOCUS leg FAIL: focusing a `navigation-rail-place-row` and pressing `c` leaves `document.activeElement === BODY` (the places group unmounts). Expected: the same row button. |
+| F-N24 | PASS | `every listed stroke resolves synchronously in the same task`, `no new polling or timer loop exists`, `the canvas reads a derived place view and never the journal` green; `contrast:gate` 50/50; console clean. |
+
+**Live-drive limitation (disclosed, not a product FAIL):** the multi-select pointer gesture
+(click element A, then Shift+click element B) could not be reproduced with the sanctioned
+driver — `tauri_webview_interact` clicks drive single selection correctly (verified), but the
+modifier state does not reach the Konva native event, so only count-1 selection could be
+driven. The count-2/3 availability matrix is therefore evidenced by the cited green unit titles
+plus the live count-0/count-1 observations.
