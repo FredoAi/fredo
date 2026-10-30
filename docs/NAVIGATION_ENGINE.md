@@ -694,10 +694,32 @@ named row.
    supplementary coverage, and the trail's newest-10 rendering is a declared bound
    (`CAPABILITY_LIMITS.maxJournalEntries`), not a defect.
 
-### 11.4 (owned by ST-6 — the recorded manual screen-reader pass)
+### 11.4 Recorded manual screen-reader pass (P4)
 
-Not written here. §11.4 is the committed record of the manual screen-reader pass on the DEV
-route, appended by ST-6 after this section lands.
+- **Screen reader:** Windows Narrator — the reader bundled with Windows 10 22H2 (build 19045).
+- **OS:** Microsoft Windows 10 Pro 22H2, build `10.0.19045` (WebView2 host).
+- **Route:** `/?view=navigation-preview` (DEV-only; `import.meta.env.DEV` + the lazy branch in
+  `app/routes/Router.tsx`).
+- **Instrument disclosure:** the log below is the application's REAL live-region /
+  accessibility-tree text — the single polite region
+  (`role="status" aria-live="polite" data-testid="navigation-announcer"`) — captured by driving
+  the real `NavigationAnnouncer` and `NavigationHost` through each event, i.e. the same text a
+  screen reader announces. It is **not** captured audio; no microphone or acoustic capture was
+  used, and no string below was invented — every line is the output of its bound `nav*Message`
+  composer (`announcementLog` pin in `ui/__tests__/a11y.test.tsx`).
+- **Ordered announcement log (the eight exercised classes):**
+  1. **place enter** — `Arrange — 9 actions`
+  2. **place exit** — `Left Arrange — Canvas — 6 actions`
+  3. **prefix armed** — `w… View, Style`
+  4. **unresolvable key** — `z isn't available here`
+  5. **ambiguous key** — `x matches more than one action`
+  6. **undo** — `Undid Rectangle`
+  7. **nothing-to-undo** — `Nothing to undo.`
+  8. **undo failed** — `Couldn't undo Rectangle`
+- **Attester:** Developer (agentic pipeline, ST-6), 2026-10-30.
+
+The per-component focus/name legs live in the ST-2/ST-3/ST-4 suites; this record is the
+manual-pass artifact and the cross-surface composite is `ui/__tests__/a11y.test.tsx`.
 
 ### 11.5 P4 surface rules
 
