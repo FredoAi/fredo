@@ -2081,3 +2081,577 @@ The FIXED composition suppresses the hint chip in model mode (REQ-3), so the mod
       control or any removed hook renders.
   - **Edge:** light + dark; a persisted `Fredo_dock_position` value present (orphaned, must not
     resurrect the control); narrow viewport.
+
+---
+
+## #3120 extension — launcher + agent bridge (NavigationEngine P6, live)
+
+> Issue #3120 grounds the launcher in the active application's navigation context and makes the
+> companion able to change what you are looking at with visible, undoable attribution. Cases map
+> 1:1 to `.opencode/tmp/3120/triage.md` `## QA Expert` (R-1.1…R-9.4 + NFR), keyed to the
+> Architect's BINDING NAMES BLOCK §3.1–3.12 and the UI/UX §2.x/§4/§5 bindings.
+> **Verification policy: live** (R-8.x are the only `static` rows — committed template content).
+> A static-only PASS is a FALSE PASS: every live row needs E-DOM/E-SHOT and the round needs the
+> `telemetry_spans` receipt (F-162).
+> **Evidence record:** the POSTED `## Tests Runs (round N)` comment — never a
+> `.opencode/tmp/3120/` draft (G-415).
+>
+> **Shared levers (use these, do not improvise):**
+> **L1** open the pilot — type `wire` in `[data-testid="launcher-command-input"]` + Enter (the
+> shipped prefix match opens Wireframe; `feature.id` = `wireframe` = `wireframeSurface.tree.appId`).
+> **L2** reset — the Wireframe document is session-scoped (module store); reload to reset. Only
+> ever drive destructive verbs on a scratch document.
+> **L3** element + selection — in Wireframe press `c` (Create), `r` (arm Rectangle), drag one
+> rectangle, `Escape`, then `ArrowRight` in the root place (`wireframe.selection.next`).
+> **L4** palette — `Ctrl+Space` (or `/ Ask`) then `> <term>`.
+> **L5** companion channel (deterministic, no model) —
+> `tauri_ipc_execute_command({command:"app_command_intent", args:{requestId:"qa-3120-<n>", appId:"wireframe", action:"<verbId>", arguments:{}}})`;
+> the mounted Wireframe executes it via `useAppCommandIntent` →
+> `host.runIntent({channel:'agent', actor:'companion'})` and answers
+> `app-command-intent-result`. This is the sanctioned **scripted routed intent** (no transcript
+> exists — the audio clip is the turn input).
+> **L6** confirmation — destructive/external from `launcher|voice|agent` reaches
+> `requestLauncherConfirmation`; the dialog renders with **Cancel focused**.
+>
+> **Shipped literals these rows assert** (re-derived from source, G-316): 7 places / **55** verbs
+> (`wireframeSurface.ts`; 6 `publish:false` entry verbs → **49** published); declared risk classes
+> over the 55 verbs: **safe 18 / mutating 35 / destructive 1 / external 1** (`place.exportPng`,
+> reclassified to `external` by ST-4 per QA Q-2); `formatPlacePathLabel`
+> joins with `' › '`;
+> `formatKeyHint(['x'])` = `X`; `NAV_RISK_LABELS` = `Safe/Changes/Destructive/External`;
+> `NAV_ACTOR_LABELS` = `You/Companion/System`; `PALETTE_MAX_RECENTS` = 5; `maxContextBytes` = 16384;
+> `maxVerbs` = 64.
+
+## F-126 (R-1.1) — Ctrl+Space over Wireframe renders the context header before any query
+
+- [ ] F-126: L1, then `Ctrl+Space` and read the context region **without typing**.
+  **Expected:** `[data-testid="launcher-context"]` (`role="group"`, `aria-label="Current context"`)
+  is present; `launcher-context-path` text === `formatPlacePathLabel(envelope.placePath)`
+  (`Canvas` at root); `launcher-context-selection` === the selected element's `label` (the node is
+  hidden when `selection.count === 0`); `launcher-context-verb` chips = the FIRST 3 of
+  `describeContext('wireframe').verbs.filter(v => v.available)` in declaration order, each with
+  `data-nav-verb-id` and its `title`, plus a `+{n-3}` counter when more than 3 are available.
+  **Edge:** no selection (count 0 → no selection node); multi-select; transient place
+  (`Canvas › Create`); empty envelope → one muted `No context` line, no selection/verbs rows.
+  **Receipt:** E-DOM (the region subtree) + E-SHOT + the derived available-verb list.
+- [ ] F-126 edge: a MINIMIZED Wireframe window is not the active app — the launcher falls back
+  (F-127), never a stale header.
+
+## F-127 (R-1.2) — a no-surface app renders today's launcher, unchanged
+
+- [ ] F-127: Focus Mission Monitor (no registered navigation host), `Ctrl+Space`, then type `> set`,
+  then type `undo the last change` + Enter.
+  **Expected:** `launcher-context` count 0; `launcher-palette-announcer` NOT mounted; no
+  `launcher-palette-list`; `>` renders the shipped `LauncherActionList` (`launcher-action-entry`
+  rows) and Enter still runs the hotkey action's own side effect; `undo the last change` takes the
+  **shipped send path** (one companion generation, zero journal entries, zero palette) — the undo
+  matcher / `resolveLauncherRoute` is not consulted (UI/UX D1).
+  **Edge:** plain query (grid filters, shipped Enter); `>` then clearing back to a plain query; a
+  no-surface app while Wireframe is open behind.
+  **Receipt:** E-DOM (absence + the shipped rows) + E-SHOT + the generation count.
+
+## F-128 (R-1.3) — the header reads a FRESH envelope and updates while the launcher stays open
+
+- [ ] F-128: L1, `Ctrl+Space`, then L4 with `create` + Enter (the `wireframe.create` entry verb is a
+  **navigation** effect, so the launcher stays open per UI/UX §1.5).
+  **Expected:** `launcher-context-path` becomes `Canvas › Create` **without remount or reload**
+  within one host notification (≤ 500 ms); the announcer carries
+  `navPlaceEnterMessage('Create', n)` = `Create — n actions`; the value is the fresh envelope (a
+  stale read would still show `Canvas` — the store publishes `placePath` only on provider mount).
+  **Edge:** then dispatch a mutating verb from the transient place → exactly one level popped back
+  to `Canvas`; several navigation dispatches in a row; `Ctrl+Space` reopen after a dispatch.
+  **Receipt:** E-DOM before/after (both texts) + E-SHOT.
+
+## F-129 (R-2.1 projection) — grouped Place→Verb model: parity, order, path/key/risk, recents
+
+- [ ] F-129: `pnpm --filter @fredo/ui exec vitest run applications/home/components/launcher/__tests__/launcherNavigationPalette.test.ts`.
+  **Expected:** over `wireframeSurface` + an empty snapshot + `recents: []` —
+  `rows.length === surface.verbs.length` (**55** shipped) and `rows.map(r => r.verbId)` deep-equals
+  `derivePalette(surface, snapshot, []).map(r => r.verbId)` (the shipped P3 order); group path
+  labels include `Canvas › Create` … `Canvas › File`; `wireframe.element.delete` → `pathLabel
+  'Canvas › Edit'`, `key 'x'`, `keyHint 'X'`, `risk 'destructive'`, `riskLabel 'Destructive'`,
+  `available false` with `reason === NAV_UNAVAILABLE_REASON`; `wireframe.zoom.in` → `keyHint '+'`,
+  `riskLabel null`; `wireframe.element.toggleLock` → `riskLabel 'Changes'`. Recents:
+  `['wireframe.element.toggleLock','wireframe.element.toggleLock','stale.verb']` →
+  `rows[0].verbId` = `wireframe.element.toggleLock`, `section 'recent'`, `recentsCount 1`, row
+  count unchanged; >5 valid recents → `recentsCount === PALETTE_MAX_RECENTS` (**5**).
+  **Edge:** unbound verb (`keyHint ''`); `key`/`keyHint` compared against
+  `firstKeyInPlace(reg, primaryPlaceId, verbId)`, never a global lookup; the assertion must read the
+  PROJECTION's fields, not the source verb (G-418).
+  **Receipt:** the vitest summary quoted in `## Tests Runs` (E-UNIT).
+
+## F-130 (R-2.1 live) — the rendered `>` palette is grouped, teaching and risk-labelled
+
+- [ ] F-130: L1, `Ctrl+Space`, type `>`.
+  **Expected:** `launcher-palette-list` (`role="listbox"`, `aria-label="Places and actions"`)
+  replaces the tiles; one `launcher-palette-group` per place with `launcher-palette-group-path` = the
+  **full** path (never a bare place label); the Delete row carries `launcher-palette-row-risk` =
+  `Destructive`, `launcher-palette-row-key` = `X`, `data-nav-risk="destructive"`,
+  `data-nav-availability="disabled"` (no selection), `data-launcher-section="place"`; a safe row
+  (`Zoom in`) has **no** risk chip.
+  **Edge:** filter to zero rows → `LAUNCHER_PALETTE_EMPTY_COPY` ('No places or actions match') inside
+  the list root; filter by path (`edit`) and by key hint (`x`); the 55-row list scrolls internally
+  (`min(52vh, 420px)`).
+  **Receipt:** E-DOM (rows + group paths) + E-SHOT.
+
+## F-131 (R-2.2) — a plain query is sent to the companion grounded on the envelope
+
+- [ ] F-131: `pnpm --filter @fredo/ui exec vitest run shared/components/companion/__tests__/CompanionEntity.dispatch.test.tsx`
+  and `.../companionDispatch.test.ts`; then live: `Ctrl+Space` over Wireframe with a plain query.
+  **Expected (unit):** with `{context}` the entity prepends **exactly one** `system` message whose
+  content is `JSON.stringify(context)` before the persona + user turn and adds no history; without
+  `context` → zero system messages, legacy messages byte-identical. **Live:** the grid branch stays
+  (no `launcher-palette-list`), Enter routes to `askActiveCompanion(query, {context})` (exactly one
+  generation), the context header stays rendered, and at most **one** envelope is sent per turn.
+  **Edge:** empty query (never a send); companion OFF/away (shipped no-op, text preserved); `set` →
+  shipped launch, 0 generations; the header must not move the reply band (`barrierTop` = bar top
+  edge).
+  **Receipt:** E-UNIT + E-DOM + the generation count. (The model's *use* of the envelope is not
+  machine-assertable — A2.)
+
+## F-132 (R-2.3) — voice parity at the routed-intent seam (typed vs scripted voice origin)
+
+- [ ] F-132: Reset (L2), L3 one element, then run `wireframe.element.toggleLock` twice: **typed**
+  (L4 `> lock` + Enter) and **scripted voice** (L5, `requestId:"qa-3120-voice-1"`).
+  **Expected:** both legs report `status:'performed'`, same `verbId`, same `args`, exactly ONE
+  journal entry each, and the **same document state** (the element's `locked` flag equal after each
+  leg); the relay result event is `outcome:"Performed"`, `performed:["wireframe.element.toggleLock"]`.
+  The entries differ **only** in `channel` (`launcher` vs `agent`) and `actor` (`human` vs
+  `companion`) — the allowed difference (A2). No transcript artifact is demanded.
+  **Edge:** identical invalid args on both origins → identical `invalid-args`; a verb unavailable at
+  dispatch (`wireframe.element.delete` with no selection) → identical `unavailable`; the relay to a
+  closed window (queued `_take` on mount, ≤16 entries).
+  **Receipt:** E-DOM (journal entries + document flag) for both legs.
+
+## F-133 (R-3.1) — Enter runs the row through the ONE dispatch funnel
+
+- [ ] F-133: `Ctrl+Space` over Wireframe at `Canvas` → L4 `fit page` + Enter (**safe/navigation**);
+  then L3 → L4 `lock` + Enter (**mutating**).
+  **Expected:** `fit page` → the launcher **stays open**, journal gains exactly one entry
+  (`verbId 'wireframe.view.fitPage'`, `effect 'navigation'`, `channel 'launcher'`, `actor 'human'`),
+  no confirmation. `lock` → the launcher **closes** (mutation close, UI/UX §1.5), focus restored,
+  exactly one entry (`wireframe.element.toggleLock`, `effect 'mutation'`), the element is `locked` in
+  the visible document, a new trail entry exists. No `runHotkeyAction` side effect fires (no
+  `launcher-action-entry` renders, no hotkey action runs) — the nav source is mutually exclusive.
+  **Edge (D6):** a live launcher-origin capture + a `>` query + Enter → NOTHING dispatches (no
+  palette action, no journal entry). Enter on an unavailable row → no dispatch, no entry, row
+  announced with `NAV_UNAVAILABLE_REASON`. Palette args are always `{}`.
+  **Receipt:** E-DOM (journal + document) + E-SHOT.
+
+## F-134 (R-3.2) — Cmd/Ctrl+K opens the row's secondary actions; toggle back
+
+- [ ] F-134: Focus the `wireframe.element.delete` row → `Ctrl+K`; read the panel; press `Ctrl+K`
+  again.
+  **Expected:** `launcher-palette-secondary` (`role="listbox"`, `aria-label="Row actions"`) replaces
+  the list; its `launcher-palette-secondary-item` set equals `buildLauncherRowActions(row,
+  journal.entries())` mapped to `kind:verbId|placeId` (no synthetic "Run" row, no third level);
+  `data-launcher-action-kind` present (D2; fallback: item icon + label). `Ctrl+K` again pops back to
+  the palette with the **same row re-selected**. Enter on a `run` item dispatches that verbId via
+  `host.runIntent`; a `map` item closes the launcher and opens the `navigation-map` dialog.
+  **Edge:** `buildLauncherRowActions` → `[]` → nothing opens (no empty panel); an `undo` item only
+  when an undoable entry for that verb exists; Cmd vs Ctrl; `Ctrl+K` outside the palette is unbound
+  (no hotkey action fires).
+  **Receipt:** E-DOM (panel items) + E-SHOT.
+
+## F-135 (R-3.3) — the Esc stack pops one level; top-level Esc restores focus
+
+- [ ] F-135: Record `document.activeElement` → `Ctrl+Space` → L4 → `Ctrl+K` (secondary) → `Esc`; then
+  `Esc` again.
+  **Expected:** first `Esc` pops **exactly one** level (secondary gone, palette list back, same row
+  selected + announced, launcher still open); second `Esc` closes the launcher and focuses the
+  recorded pre-open element (not `body`); no focus trap (Tab from the last launcher control reaches
+  page chrome).
+  **Edge:** confirmation pending + `Esc` → the confirmation cancels only (launcher stays open, the
+  palette returns, nothing applied); live-capture `Esc` → the shipped dictation-cancel branch;
+  pre-open element removed while open → graceful blur, no crash; `Esc` never co-fires a second close.
+  **Receipt:** E-DOM (each level) + the focused element before/after.
+
+## F-136 (R-4.1 projection) — the unified manifest publishes every declared verb with all six fields
+
+- [ ] F-136: `pnpm --filter @fredo/ui exec vitest run shared/navigation/__tests__/manifest.test.ts shared/companion/__tests__/manifest.test.ts shared/companion/__tests__/publisher.test.ts`.
+  **Expected:** one command per Wireframe verb with `publish === true` (re-derived = **49**) in
+  declaration order, then `ENGINE_COMPANION_UNDO_COMMAND` (`id 'journal.undo'`, `risk 'mutating'`,
+  `aliases ['undo','revert']`, optional args `actor`/`count`), then `listActions`;
+  `commands.length` = 50, `actionIds.length` = 51. **Every command carries all six fields ON THE
+  PROJECTION** — `id`, `label`, `description`, `risk`, `args`, `aliases` — read from the projected
+  command, never the source verb (G-418); `shared/companion/fixtures/wireframe.companion.golden.json`
+  deep-equals the projection.
+  **Edge:** a legacy `commandSurface` app still publishes; a surface with zero described commands;
+  duplicate `appId` (first-wins); `journal.undo` before `listActions`, never duplicated.
+  **Receipt:** E-UNIT summary + the golden file's empty diff.
+
+## F-137 (R-4.1 wire) — `risk`/`aliases` cross the Rust wire as ABSENT keys, never null
+
+- [ ] F-137: run the ST-2 producing + consuming tests (`cargo test` for `surface_registry` in
+  `apps/tauri/src-tauri` plus the TS golden).
+  **Expected (producer):** a navigation command **serializes** `risk` present (e.g.
+  `"risk":"destructive"`); `aliases` present only when non-empty — `journal.undo` carries
+  `["undo","revert"]`, every Wireframe verb (`aliases: []`) **omits** the key; a legacy
+  command-surface command **omits** `risk`. No `null` for either field anywhere.
+  **Expected (consumer):** both wire shapes (navigation + legacy) deserialize into
+  `app_command_surfaces` / the registry without error and round-trip byte-identically.
+  **Edge:** an explicit `null` `risk`/`aliases` on the wire must be rejected/fail the deserializer —
+  an authoring-side type is not the wire (G-413).
+  **Receipt:** the two serialized JSON snippets + the cargo test summary.
+
+## F-138 (R-4.1 live) — a companion-channel intent mutates the same state as the human path
+
+- [ ] F-138: L5 relay a safe verb and a mutating verb (`wireframe.view.fitPage`,
+  `wireframe.element.toggleLock` with one element selected) and compare each with its L4 typed
+  equivalent.
+  **Expected:** each relay reports `outcome:"Performed"` with the dispatched id; the resulting state
+  matches the typed leg (navigation path / `locked` flag); one journal entry each with
+  `actor:'companion'`, `channel:'agent'`. The offer contained every published id (F-136), so every
+  declared verb is invocable by name.
+  **Edge:** a relayed verb is addressed by **id** (not label); a repeated relay of the same mutating
+  verb toggles twice (two entries, state returns).
+  **Receipt:** E-DOM (both legs' entries + state) + the two result events.
+
+## F-139 (R-4.2) — unknown / unavailable / invalid arguments apply nothing and report the code
+
+- [ ] F-139: L5 relay three bad intents: `wireframe.nope`; `wireframe.element.delete` with an empty
+  selection; `wireframe.create.rect` with `arguments:{x:"   "}`.
+  **Expected:** each result event `outcome:"Invalid"`, `detail` = the typed code (`unknown-verb` /
+  `unavailable` / `invalid-args`); the document and journal are unchanged (entry count + element set
+  identical); on the launcher path the S6 line renders with `data-launcher-code` = the code (D2;
+  fallback: the response text) and the launcher stays open.
+  **Edge:** `actor-spoof` is proven only at the unit `dispatch` level (the relay asserts the actor);
+  repeated identical rejects; a reject while a confirmation is pending must not resolve the other.
+  **Receipt:** E-DOM (three result events + before/after counts) + E-UNIT
+  (`shared/companion/__tests__/useAppCommandIntent.test.tsx`).
+
+## F-140 (R-5.1) — safe and mutating launcher/companion intents apply with NO confirmation
+
+- [ ] F-140: L4 `fit page` (safe) and L4 `lock` (mutating, L3 selection); then L5 `toggleLock`.
+  **Expected:** no `launcher-confirmation` node is created for any leg; each applies immediately and
+  writes **exactly one** journal entry (safe → `effect 'navigation'`, no patch; mutating →
+  `effect 'mutation'` with a real patch); the mutating change is visible after the launcher closes;
+  the companion leg also applies silently (the policy gates only destructive/external).
+  **Existing pin to keep green:** `shared/navigation/__tests__/riskPolicy.test.ts` —
+  `'safe and mutating apply without confirmation and journal once'` (its sync `confirm` harness
+  must survive the widened signature — ST-1).
+  **Edge:** a `noop` mutating verb (patch `null`) writes NO entry and reports `did-nothing`; double
+  Enter must not double-apply.
+  **Receipt:** E-DOM (journal + document) + E-SHOT.
+
+## F-141 (R-5.2 destructive) — the confirmation names verb/target/consequence/undo and applies nothing first
+
+- [ ] F-141: L2 reset → L3 one element → L4 `delete` + Enter (destructive).
+  **Expected:** `launcher-confirmation` (`role="alertdialog"`, `aria-modal="true"`, name
+  `launcherConfirmTitle('Delete')` = `Run Delete?`); `launcher-confirmation-verb` = `Delete`;
+  `launcher-confirmation-target` contains the selected element's id (the shipped
+  `ConfirmationRequest.targetLabels` value); `launcher-confirmation-consequence` is **present and
+  non-empty** (ST-4 authors the consequence for `wireframe.element.delete` — Q-3; read the exact
+  text at runtime, never hardcode it); `launcher-confirmation-undo` = `Undo available`; accept label
+  `Apply Delete`; cancel `Cancel` and **Cancel holds focus**. Before accept: element present, journal
+  unchanged. After accept: launcher closes, element removed, exactly one entry, the trail shows it,
+  `journal.undo` restores it.
+  **Edge:** targetless verb (target row hidden); `targetOverflow > 0` → `+n`; Esc / outside click =
+  cancel (F-143); a second destructive intent while one is pending (E-84).
+  **Receipt:** E-DOM (all five testids + focus) + E-SHOT of the dialog.
+
+## F-142 (R-5.2 external) — the external class is LIVE (cancel-only) on `place.exportPng`; accept-render on the fixture
+
+- [ ] F-142: L2 reset → L4 `> export png` (bind the row by `verbId 'place.exportPng'`; if the
+  runtime label differs, select by the row's `data-nav-verb-id` — never by copy) → Enter → read the
+  dialog → **Cancel** (never Accept: it opens the OS save dialog). Then the accept-render unit leg:
+  `pnpm --filter @fredo/ui exec vitest run applications/home/components/launcher/__tests__/LauncherConfirmation.test.tsx shared/navigation/__tests__/dispatch.test.ts`.
+  **Expected (live, external — ST-4 reclassifies `place.exportPng` to `risk:'external'`, Q-2):**
+  `launcher-confirmation` (`role="alertdialog"`, named `launcherConfirmTitle(<runtime label>)`)
+  renders `launcher-confirmation-consequence` **non-empty**, `launcher-confirmation-undo` =
+  `Not undoable`, and `launcherConfirmExternal('your file system')` = `Outside Fredo: your file
+  system`; **Cancel holds focus**; after Cancel → nothing applied, zero journal entries, no OS
+  dialog, launcher back at the palette.
+  **Expected (unit — accept-render supplement):** a `ConfirmationRequest` built from the committed
+  fixture surface (`shared/navigation/ui/__tests__/fixtures.ts`, `test.exportPng`, `risk:'external'`)
+  renders `launcherConfirmExternal(party)` = `Outside Fredo: <party>` and `Not undoable —
+  not-undoable`; `dispatch` routes `risk:'external'` through `confirm` (accept → run, reject →
+  `canceled-confirmation`, nothing applied).
+  **Existing pins (kept green, widened not weakened — ST-1):** `shared/navigation/__tests__/riskPolicy.test.ts`
+  — `'destructive verb does not run until confirmation is accepted'`,
+  `'destructive confirmation carries verb target consequence and undo availability'`,
+  `'external confirmation carries the party and is always not-undoable'`.
+  **Edge:** the external leg is **cancel-only** — Accept must never be pressed (an OS save dialog,
+  not a scripted leg); the fixture remains the ONLY accept path; repeated cancel → a fresh dialog,
+  no stale promise.
+  **Receipt:** E-DOM (dialog + post-cancel journal) + E-SHOT + E-UNIT summary + the explicit
+  non-live disclosure for the accept half only (a cancel-only PASS is valid).
+
+## F-143 (R-5.3) — cancel / Esc / outside-click journal nothing
+
+- [ ] F-143: `delete` + Enter → Cancel; repeat → `Esc`; repeat → outside click; then
+  `pnpm --filter @fredo/ui exec vitest run shared/navigation/__tests__/riskPolicy.test.ts`.
+  **Expected:** every dismissal → `status:'rejected'`, `code:'canceled-confirmation'`; zero entries
+  added, document byte-identical (element still present), **no** S6 error line, launcher stays open
+  at the palette. Unit: `requestLauncherConfirmation` with no launcher mounted resolves `false`
+  immediately and the funnel applies nothing.
+  **Edge:** launcher closed between request and resolve; double resolve (guarded); cancel then
+  re-dispatch (a fresh dialog, no stale promise).
+  **Receipt:** E-DOM (before/after journal + document) + E-UNIT (the confirmation-store case in
+  ST-1's new `shared/navigation/ui/__tests__/hostRegistry.test.ts`, plus the existing
+  `riskPolicy.test.ts` pin `'dismissed confirmation rejects canceled-confirmation and journals nothing'`).
+
+## F-144 (R-6.1 matcher) — the undo-by-description phrase table
+
+- [ ] F-144: `pnpm --filter @fredo/ui exec vitest run applications/home/components/launcher/__tests__/launcherUndoQuery.test.ts`.
+  **Expected:** `"undo the companion's last change"` → `{kind:'undo', args:{actor:'companion',
+  count:'1'}}`; case/punctuation variants equal; `"undo the last 3 companion changes"` →
+  `{actor:'companion', count:'3'}`; `"undo"` / `"undo the last change"` → `{count:'1'}` (bare last);
+  `"undo that"` / `"undo it"` → `{kind:'ambiguous', reason:'actor'}`; an undo-SHAPED phrase with no
+  rule — `"undo the red one"` → `{kind:'no-match-undo'}` (Q-1 accepted — ST-5 widens the matcher),
+  and `resolveLauncherRoute` maps it to `{kind:'clarify', message: UNDO_NO_MATCH_COPY}` — while a
+  plain non-undo query `"make it nicer"` → `{kind:'no-match'}` (never captured).
+  **Edge:** trailing punctuation, extra whitespace, mixed case; a number word vs a digit; `count`
+  outside 1..100; `no-match` (ordinary query) and `no-match-undo` (undo-shaped miss) must stay
+  distinct — only the latter routes to `UNDO_NO_MATCH_COPY`.
+  **Receipt:** E-UNIT summary (the whole table quoted, including the no-match-undo case).
+
+## F-145 (R-6.1 live) — "undo the companion's last change" reverts exactly the newest companion entry
+
+- [ ] F-145: L5 companion entry A (`toggleLock`); then L4 human entry B (`toggleVisible`); then type
+  `undo the companion's last change` + Enter.
+  **Expected:** exactly **one** new journal entry, label `Undo Toggle lock`; the companion entry A
+  stays in the trail (append-only); **B's effect is untouched** (the element's visibility flag is
+  unchanged); the launcher closes to reveal the trail (UI/UX §1.5); no other entry reverts.
+  **Edge:** no companion entry → `no-matches` + `Nothing to undo.`, no mutation; a companion
+  navigation entry (inverse `null`) is skipped for the next invertible one; the same phrase relayed
+  through L5 (`journal.undo` with the matched args) has the same effect.
+  **Receipt:** E-DOM (trail entries + both flags) + E-SHOT of the trail.
+
+## F-146 (R-6.2) — "undo the last 3 companion changes" reverts a block
+
+- [ ] F-146: L5 three companion mutations (`toggleLock`, `toggleVisible`, `toggleLock`) → type
+  `undo the last 3 companion changes` + Enter.
+  **Expected:** exactly **3** new entries, newest-first, each `Undo <original label>`, each
+  `actor 'human'`; the document is restored to the pre-companion state; a human entry made before
+  the block is untouched.
+  **Edge:** fewer companion entries than named → undoes what exists and reports the count applied;
+  0 companion entries → `no-matches`, nothing applied; `count` clamp 1..100.
+  **Receipt:** E-DOM (3 entries + restored flags).
+
+## F-147 (R-6.3) — the reversal entry is attributed to the human (keyed to the UNDO entry)
+
+- [ ] F-147: same run as F-145.
+  **Expected:** the newest `[data-testid="navigation-trail-entry"]` (the reversal) has
+  `data-nav-actor="human"` and `navigation-trail-actor` text `You`; the original companion entry
+  still reads `Companion`; the P3/P4 `actor:'system'` pins are **refreshed, not deleted**
+  (`shared/navigation/__tests__/journal.test.ts`, `dispatch.test.ts`, `ui/__tests__/host.test.ts` —
+  A1's four pins); the trail-button undo (`host.undoEntry(seq)`) defaults to
+  `{actor:'human', channel:'pointer'}` and also reads `You`.
+  **Edge:** a companion-channel undo request journals `human` (§3.10); a system-originated undo keeps
+  `system`; the `NOTHING_TO_UNDO` path adds no entry.
+  **Receipt:** E-DOM (both entries) + the named refreshed pins in `## Tests Runs`.
+
+## F-148 (R-6.4) — ambiguous undo asks; nothing mutates
+
+- [ ] F-148: type `undo that`, then `undo it`, then `undo the red one` (or any undo-shaped phrase
+  with no rule); repeat one leg via L5.
+  **Expected:** `undo that` / `undo it` → `{kind:'ambiguous', reason:'actor'}`, route `clarify`, the S6
+  line text exactly `Tell me whose change to undo — yours or the companion's. Nothing changed.`
+  (`data-launcher-response="clarify"`, D2; fallback: the line text), announced once, **zero** journal
+  entries, document identical. `undo the red one` → `{kind:'no-match-undo'}`, route `clarify` with
+  the S6 line text exactly `I couldn't tell which change to undo. Nothing changed.`
+  (`UNDO_NO_MATCH_COPY`, Q-1), announced once, NO `journal.undo` dispatch, zero journal entries,
+  document identical.
+  **Edge:** a plain NON-undo-shaped query (`make it nicer`) still falls through to the companion —
+  `no-match-undo` must not capture ordinary text; every leg journals nothing.
+  **Receipt:** E-DOM (both lines verbatim + entry count) + E-UNIT (F-144 table, incl. the
+  no-match-undo case).
+
+## F-149 (R-7.1) — `/ Ask` and `app.ask` open a pre-focused, grounded launcher
+
+- [ ] F-149: in Wireframe click `[data-testid="navigation-rail-ask"]`; then L4 `ask` + Enter.
+  **Expected:** the rail affordance is enabled — `aria-disabled` omitted, no reason node, tooltip
+  `Ask (k)`, visible label `Ask`; activation → the launcher opens with `document.activeElement` =
+  `[data-testid="launcher-command-input"]`, empty value, `launcher-context` visible with the
+  Wireframe path. `app.ask` (`available: always`) performs a navigation effect and opens the same
+  state via `requestLauncherOpen({source:'ask-verb'})`.
+  **Edge:** `/ Ask` from a no-surface app → legacy launcher, no header; `app.ask` while the launcher
+  is already open (no double open); `NAV_ASK_DISABLED_REASON` gone from `ui/constants.ts` and no
+  reason node rendered.
+  **Receipt:** E-DOM (rail + launcher) + E-SHOT.
+
+## F-150 (R-7.2) — closing restores focus to the pre-open element
+
+- [ ] F-150: record `document.activeElement` (the rail Ask button) → `/ Ask` → `Esc`; then
+  `Ctrl+Space` open/close from another element.
+  **Expected:** the recorded element is focused again; the launcher is closed; no focus trap remains
+  (Tab moves through page chrome).
+  **Edge:** pre-open element unmounted while open → graceful blur, no crash; toggle-off close restores
+  too; a confirmation's close returns focus to the bar searchbox, not the page.
+  **Receipt:** E-DOM (activeElement before/after each leg).
+
+## F-151 (R-7.3) — no chat panel, no transcript anywhere
+
+- [ ] F-151: two companion turns from the launcher; inspect the results region + the shell; scan the
+  P6 source.
+  **Expected:** the results region shows only app tiles, the grouped palette, one row's actions, or
+  ONE response sentence — no message list, no scrollback, no second bubble; the companion's answer
+  stays in the shipped seat bubble; the voice path still carries no transcript state
+  (`useVoiceDictation.ts`; `CompanionEntity` sends the clip as the turn input).
+  **Edge:** a long reply; the S6 line replaced by the next keystroke (no history); two turns in a row
+  (latest reply only); `/ Ask` while a reply is displayed. The source scan strips comments and the
+  literal text of strings/templates before the ban but still scans template interpolations as code
+  (G-419).
+  **Receipt:** E-DOM + the scan result.
+
+## F-152 (R-8.1/R-8.2, **static**) — the committed template carries the fields, the six gate lines and the Gate H handoff
+
+- [ ] F-152: `Read` `docs/agentic-pipeline/evaluations/3120-pilot-exit-review-template.md` by exact
+  path; `Read` `spikes/3115-navigation-engine/session-protocol.md` §3/§7/§8 +
+  `spikes/3115-navigation-engine/session-kit/gate-h-input-template.md`.
+  **Expected:** the template exists at that exact path and carries (a) the per-participant summary
+  columns `participant_id, keyboard_profile, vim_comfortable, wireframe_new, consent_recorded,
+  tasks_completed, where_rating_1_5, q_ux_item_1_7, q_ux_item_2_7, umux_lite_score,
+  trust_autoapply_1_5, undo_first_attempt_success, launcher_same_system, launcher_same_system_why,
+  quote_1, quote_2, helped_or_hindered`; (b) the per-task columns `task_id, success_unaided, time_s,
+  errors, discovery_source, discovery_note` with rows T1–T7; (c) the six gate lines byte-matching
+  protocol §8 (the full literal text is quoted in the QA Plan row R-8.1; whitespace-only
+  differences allowed); (d) the three RQ rows with the exact titles `RQ1 — Does the place tree
+  improve felt flow?`, `RQ2 — Does launcher-only conversation feel connected?`, `RQ3 — Does
+  auto-apply with visible undo build trust?` and ≥2 quote slots each; (e) the #3120-is-the-pilot-gate
+  + fleet-migration-decision statement; (f) the Gate H handoff (copy `gate-h-input-template.md` →
+  `.opencode/tmp/3115/sessions/participant-notes.md`, one block per completed participant,
+  `consent_recorded` gate, P1–P8 only, Stage-2 transcription).
+  **Edge:** a wrapped GO-2 line (every token/operator/threshold must still match);
+  `session-protocol.md` is **not edited** by this spec (no diff entry).
+  **Receipt:** E-STATIC field table + the exact-path read.
+- [ ] F-152 edge: **no participant data is required and its absence is never a FAIL** (G-414).
+
+## F-153 (R-8.3/R-8.4, **static**) — no data, no verdict, banner, and the P1 comparator
+
+- [ ] F-153: same file.
+  **Expected:** zero participant rows / ratings / quotes / examples (every data cell an empty slot);
+  **no** prefilled `Verdict: GO` or `NO-GO`; exactly one `Verdict: GO|NO-GO` line; a banner states
+  participant data is human-produced, never pipeline-produced; the P1 comparator is the documented
+  qualitative flat-key baseline + the six thresholds, and the file states P1 produced no participant
+  rows (`docs/UX_FLUENCY_RESEARCH.md:544/550-552/614`; `docs/NAVIGATION_ENGINE.md:544`).
+  **Edge:** a numeric P1 column rendered empty with its stated reason (never a fabricated baseline);
+  no interim percentages; an empty quote slot is correct, never `[]`.
+  **Receipt:** E-STATIC.
+
+## F-154 (R-8.5/R-8.6, **static**) — cohort quotas, per-cohort report, verdict procedure
+
+- [ ] F-154: same file.
+  **Expected:** the quota block is verbatim — `5–8 participants, with a minimum of 5 completed`;
+  `keyboard_first_or_vim = count(keyboard_profile=="keyboard-first" OR vim_comfortable=="yes") >= 2`;
+  `non_vim = count(keyboard_profile=="non-vim" AND vim_comfortable=="no") >= 2`;
+  `wireframe_new = count(wireframe_new=="yes") >= 2`; a **per-cohort report** is required and **no
+  finding may rest on keyboard-first participants alone**. The template also requires the `Verdict:`
+  line to be mirrored as a `## Status` comment on the issue, a failed line to name what participants
+  did instead (from `discovery_source`/`discovery_note`) plus one concrete redesign hypothesis, and
+  states `GO` iff `PRE-1 ∧ PRE-2 ∧ GO-1 ∧ GO-2 ∧ GO-3 ∧ GO-4`.
+  **Edge:** the categories are not mutually exclusive (satisfiable at n=5); NO-GO recorded as a valid
+  outcome (not a retry instruction); GO-4 strict-majority note; GO-2 pooled-rate note.
+  **Receipt:** E-STATIC.
+
+## F-155 (R-9.1) — ONE polite launcher region with the exact announcement format
+
+- [ ] F-155: open the palette, press `ArrowDown` three times; open the secondary; trigger the clarify
+  line.
+  **Expected:** exactly **one** `[data-testid="launcher-palette-announcer"]` (`role="status"`,
+  `aria-live="polite"`, `aria-label="Launcher announcements"`) in the launcher; on each focused-row
+  change its text is exactly `launcherPaletteAnnouncement(row)` — e.g.
+  `Delete — Canvas › Edit — Destructive — X`; a safe row → `… — Safe`; an unbound row → no trailing
+  key segment; the secondary open/item change → the item label; the clarify line → its message. The
+  S6 line is **not** `role="status"`.
+  **Edge:** the no-surface launcher has NO announcer node (byte-identical DOM); identical consecutive
+  text de-duplicates; a 55-row arrow walk. **Count ONE `launcher-palette-announcer` — never a global
+  `[aria-live]` count** (the shipped status bar + the bar's voice/queue announcers are live regions
+  too — UI/UX D3, G-424).
+  **Receipt:** E-DOM (the announcer + its text per step).
+
+## F-156 (R-9.2) — reduced motion removes every new animation
+
+- [ ] F-156: `execute_js` installs a `matchMedia` stub returning `matches:true` for
+  `NAV_REDUCED_MOTION_QUERY` **only**, then open the palette, move the selection, open the secondary,
+  open the confirmation.
+  **Expected:** the context entrance, palette entrance, secondary entrance, confirmation/scrim and row
+  press render with no transition/animation (`transitionDuration` 0s / `animationName` `none` on the
+  animated nodes; two frames ≥100 ms apart identical); selection changes instantly; no
+  context-change flash. Without the stub the §4 timings are present.
+  **Edge:** the stub must not leak to other queries; the confirmation appears at full opacity; a
+  theme switch mid-open under reduce.
+  **Receipt:** E-DOM (computed styles + two-frame comparison) + E-SHOT.
+
+## F-157 (R-9.3) — theme tokens only; the palette and dialog re-tint live
+
+- [ ] F-157: static scan of the new P6 files (launcher palette/confirmation/context +
+  `shared/navigation/ui/hostRegistry.ts` / `confirmation.ts` / `launcherBridge.ts`), then re-theme
+  live while the palette + confirmation are visible.
+  **Expected:** ZERO `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` / `hsla(` literals and ZERO `var(--x)NN`
+  alpha-appends (comment issue-refs such as `#3120` exempt); tints use the shared `tint()` helper;
+  the scan strips comments and the literal text of strings/templates before the ban but still scans
+  interpolations as code (G-419). Live: dark ↔ a light preset via
+  `select[aria-label="Theme presets"]` re-tints with **identical rects** (no stale colour, no layout
+  shift).
+  **Edge:** a near-background accent; the status-tint chips keep their word legible; no new theme
+  token without a `system.ts` mapping.
+  **Receipt:** the scan output + before/after computed colours + the rect pairs.
+
+## F-158 (R-9.4) — keyboard operable, every control named, no trap
+
+- [ ] F-158: walk the palette, secondary and confirmation with Tab/arrows; read accessible names;
+  close.
+  **Expected:** every control is keyboard operable with a non-empty accessible name — context region
+  `Current context`, list `Places and actions`, secondary list `Row actions`, announcer `Launcher
+  announcements`, each row's `aria-label` = `launcherPaletteAnnouncement(row)` (+ ` — <reason>` when
+  unavailable), confirmation `role="alertdialog"` named `Run <title>?` with the consequence as
+  description, Cancel focused, accept `Apply <title>`; unavailable rows use `aria-disabled="true"`
+  (never native `disabled`), stay selectable, dispatch nothing; closing does not trap focus.
+  **Edge:** an icon-only control with no name = FAIL (G-423); Tab exits; Shift+Tab; focus-visible ring
+  (`accent-strong`); the dialog keeps focus while modal.
+  **Receipt:** E-DOM (role/name per control).
+
+## F-159 (NFR-1) — the keystroke path is local, synchronous and non-blocking
+
+- [ ] F-159: type 20 chars and arrow through 10 rows while timing the handler and counting `fetch`
+  calls; static-scan the route/palette/registry modules.
+  **Expected:** zero `fetch`/`XMLHttpRequest`/`adapterBridge.invoke` in the keystroke path (scan +
+  runtime counter 0); `describeContext()` is a synchronous registry read (`getNavigationHost` →
+  `host.describeContext()`); per-keystroke handler < 16 ms; no awaited work precedes the render on a
+  safe/mutating dispatch.
+  **Edge:** the 55-row filter per keystroke; a large selection; a confirmation opened while typing
+  (route precedence blocks it). **Pre-authorized disclosure:** `tauri_ipc_monitor` cannot witness
+  application invokes in this build → `logic-verified — invoke not observable through the monitor in
+  this build`, with the DOM observable as the binding evidence (references.md #3098).
+  **Receipt:** the timing series + the scan output + the disclosure.
+
+## F-160 (NFR-2) — the envelope stays inside the byte cap; one envelope per turn
+
+- [ ] F-160: `pnpm --filter @fredo/ui exec vitest run shared/navigation/__tests__/context.test.ts`
+  (+ ST-3's dispatch test), then read the live header.
+  **Expected:** `envelopeByteLength(buildContextEnvelope(wireframeSurface, maximalSnapshot, 10)) <=
+  CAPABILITY_LIMITS.maxContextBytes` (**16384**) with a maximal snapshot (32 selection ids × 120
+  chars, 10 journal entries) and `verbs.length <= maxVerbs` (**64** — the surface's 55 fit); exactly
+  one envelope per companion turn.
+  **Edge:** a path deeper than `maxPathDepth` (8) keeps root + deepest seven; labels truncate at 120;
+  a 40-id selection caps at 32.
+  **Receipt:** E-UNIT summary + the live header content.
+
+## F-161 (NFR-3/NFR-4) — build and suite green; other apps unregressed
+
+- [ ] F-161: `pnpm --filter @fredo/ui build`; `pnpm --filter @fredo/ui test:run`; then open Mission
+  Monitor, Query Viewer, Settings, Terminal from the launcher and run one companion skill call; count
+  `document` keydown listeners before/after.
+  **Expected:** build exit 0, zero TS errors; suite green; the refreshed P3/P4 pins are updated not
+  deleted/weakened (A1's four pins; the `NAV_ASK_DISABLED_REASON` P4 assertions in
+  `commandRail.test.tsx`/`models.test.ts` rewritten to the enabled state) and each refresh is listed
+  in `## Tests Runs`; every other app opens and behaves as on `main`; every legacy `commandSurface`
+  app is still published; the `document` keydown listener count is unchanged and the Wireframe
+  adapter stays element-scoped (no new `document` listener).
+  **Edge:** a pre-existing unrelated failure must be named with its `main` baseline; a skipped test is
+  not a pass.
+  **Receipt:** the quoted command output + the listener counts + the app sweep.
+
+## F-162 (live receipt) — `telemetry_spans` non-zero with a recent ingest timestamp
+
+- [ ] F-162: same run as F-126…F-161: query `telemetry_spans` via the `telemetry-query` skill; upload
+  the run's screenshots with `upload-evidence`.
+  **Expected:** a NON-ZERO count with `max(ingested_at)` at/after the run start (lever: the app's own
+  OTLP ingest from an active session / the companion generation in F-131 — **`fredo emit` writes no
+  spans** and is not a substitute); the count + timestamp quoted verbatim and the screenshot URLs
+  embedded in `## Tests Runs`.
+  **Edge:** a quiet table → re-run after a companion turn; a stale `max(ingested_at)` is a FAIL, not a
+  "quiet environment" pass.
+  **Receipt:** E-SPAN + E-SHOT.
