@@ -183,13 +183,25 @@ and none is planned.
 - [ ] **F-14 (REQ-10.3 / AC9) — golden manifest projection.**
   **Expected:** green titles `manifest equals the committed golden file`, `manifest projection is
   byte-identical across runs`, `every published verb carries id title description risk args and
-  aliases`. The golden file path is
+  aliases`, `golden command rows carry all six projection keys`. The golden file path is
   `apps/ui/src/shared/navigation/__tests__/fixtures/wireframe.navigation.golden.json` and is read
-  from disk with `readFileSync` + `JSON.parse`. `commands` ids equal every `publish===true` verb
-  id; `actionIds` ends with exactly one `listActions`.
+  from disk with `readFileSync` + `JSON.parse` — never regenerated at test time. The six fields are
+  asserted **on the projected `CompanionCommand`**, per published verb: `command.id === verb.id`,
+  `command.label === verb.title`, `command.description === verb.description`,
+  `command.risk === verb.risk`, `command.args` name/required per declared arg (an authored
+  `VerbArg.description` preserved, omitted when the source declares none),
+  `command.aliases === verb.aliases` (a non-empty authored array projected verbatim, and an
+  authored `[]` preserved as `[]`). An assertion on the source `VerbDescriptor` alone does NOT
+  satisfy this case (G-418). `commands` ids equal every `publish===true` verb id in declaration
+  order; `actionIds` ends with exactly one `listActions`; and every row of the committed golden's
+  `manifest.commands` has `Object.keys()` exactly `['id','label','description','risk','args',
+  'aliases']` in that order — a shape gate independent of the projection code, with a non-empty
+  `commands` array asserted first.
   **Edge:** an unpublished verb appearing in the projection; input reordered (projection
-  unchanged); a verb with no aliases (`[]` is valid); a regenerated-at-test-time expectation
-  (FAIL — the file must be committed).
+  unchanged); a verb with no aliases (`[]` is valid); a golden row missing `risk` or `aliases`
+  (FAIL — the AC9 narrowing this round fixes); `risk`/`aliases` asserted only on the source
+  descriptor (FAIL, G-418); a projection hard-coding `aliases: []`; a regenerated-at-test-time
+  expectation (FAIL — the file must be committed).
 
 - [ ] **F-15 (REQ-10.4, REQ-10.5 / AC1–AC10 build gate) — commands green, no new dependency.**
   Run `pnpm --filter @fredo/ui test:run`, `pnpm --filter @fredo/ui typecheck` and
