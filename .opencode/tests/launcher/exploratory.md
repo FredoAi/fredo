@@ -584,3 +584,48 @@
       remain intact?
 - [ ] E-82: **Minimize/restore from the row.** Minimize a window, engage, activate its entry — does the
       window restore and raise (topmost) with the entry label updating to/from `(minimized)`?
+
+---
+
+## #3120 extension — navigation-grounded launcher edge probes
+
+> Unscripted probes for issue #3120. A confirmed finding PROMOTES to `functional.md` as a new `F-`
+> row (keep the origin note). Live policy; an undrivable lever is a named blocker (G-053) with a
+> static/unit pin — never fabricated. Levers: the `functional.md` `#3120` L1–L6 recipe.
+
+- [ ] E-83: **Stale-envelope race.** Fire a navigation dispatch (place entry) and a keystroke in
+      quick succession — does the context header ever render a stale path (an envelope captured
+      before the dispatch), and does the palette group order match the header? Any frame where the
+      header and the palette disagree about the current place is a finding (promotes to F-128).
+- [ ] E-84: **Two pending confirmations.** Trigger two destructive intents back-to-back (palette
+      Enter twice on `delete`, and a relay in the same window) — is exactly one dialog shown, does
+      the second resolve the first (or vanish), and is anything applied that was never confirmed?
+      Any double-apply or orphaned promise is a finding (promotes to F-141/F-143).
+- [ ] E-85: **Esc ordering across S4/S5/S6.** With the secondary open, a confirmation pending and an
+      S6 line visible in sequence, press Esc repeatedly — does each press consume exactly one branch
+      (confirmation → secondary → top-level close) with no double-fire, and does the response line
+      survive one Esc too many? Any skipped/doubled level is a finding (promotes to F-135).
+- [ ] E-86: **Undo during an in-flight intent.** Send a companion mutation (relay) and immediately
+      type `undo the companion's last change` — does the undo see the new entry, or silently undo the
+      previous one? Record the journal order; a wrong target or a double undo is a finding (promotes
+      to F-145).
+- [ ] E-87: **Window switch while the launcher is open.** With the launcher open over Wireframe, focus
+      another window (or minimize Wireframe) — does the context source switch, disappear, or keep
+      rendering a stale header? Any header for a non-active app is a finding (promotes to F-127).
+- [ ] E-88: **Envelope-cap interaction with the palette.** Create many elements (or select the
+      maximum) so the envelope truncates (`maxSelectionIds` 32 / `maxPathDepth` 8 / `maxVerbs` 64) —
+      does the palette still list the full 55 rows, does the context header truncate gracefully
+      (no clip/overflow), and does the list scroll (`min(52vh, 420px)`) without horizontal scroll?
+      Any lost row, clipped header or h-scroll is a finding (promotes to F-126/F-130/F-160).
+- [ ] E-89: **Relay to a closed window (queued take).** Send an `app_command_intent` while the
+      Wireframe window is closed, then open it — does the intent drain on mount (`_take`), execute
+      once, and answer exactly one result event? A lost intent, a double execution or a missing
+      result is a finding (promotes to F-138/F-139). Queue bound: 16 (oldest-first eviction).
+- [ ] E-90: **Reduced-motion override mid-animation.** Flip the `matchMedia` stub to `true` while a
+      palette entrance / selection transition is running — does the running animation stop cleanly
+      (no stuck transform/opacity) and does the next state render instantly? Any stuck mid-animation
+      frame is a finding (promotes to F-156).
+- [ ] E-91: **Recents churn.** Run 8 mutations so the journal overflows `maxJournalEntries` (10) and
+      the recents exceed `PALETTE_MAX_RECENTS` (5) — does the recent set stay deduped/capped, do
+      undo entries (`Undo …`) enter recents, and does the palette order stay stable (no flicker,
+      no duplicate row)? A duplicated/lost row is a finding (promotes to F-129/F-130).
