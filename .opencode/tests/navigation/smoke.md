@@ -128,7 +128,7 @@ Verification policy: **static** — command exits plus two reads. No app launch 
 
 ## Cases — P5
 
-- [ ] **S-11: The scoped navigation suite is green with the new titles.**
+- [x] **S-11: The scoped navigation suite is green with the new titles.**
       `pnpm --filter @fredo/ui test:run src/shared/navigation`.
       **Expected:** exit 0; the reporter shows `arrow strokes resolve as bindable reserved
       strokes`, `plus and minus resolve as bindable reserved strokes`,
@@ -140,12 +140,12 @@ Verification policy: **static** — command exits plus two reads. No app launch 
       `place rows stay out of the eight row verb cap`, and
       `formatKeyHint renders the four arrows as glyphs`; no nav test skipped or `todo`.
 
-- [ ] **S-12: Typecheck and build are clean, `dist` is real.**
+- [x] **S-12: Typecheck and build are clean, `dist` is real.**
       `pnpm --filter @fredo/ui typecheck` then `pnpm --filter @fredo/ui build`.
       **Expected:** both exit 0; zero diagnostics; zero warnings; `apps/ui/dist/index.html` and a
       non-empty `apps/ui/dist/assets/` exist (the AC7 marker scan reads them).
 
-- [ ] **S-13: The reserved-stroke constant is the extended set.**
+- [x] **S-13: The reserved-stroke constant is the extended set.**
       Read `apps/ui/src/shared/navigation/types.ts`.
       **Expected:** `ENGINE_RESERVED_STROKES` is exactly
       `['Escape','Enter','Tab','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','+','-']` and
@@ -155,3 +155,16 @@ Verification policy: **static** — command exits plus two reads. No app launch 
 
 PASS = S-11…S-13 green. A missing title, a skipped test, a warning-only build, or a missing
 `dist` is a FAIL. The receipt is the POSTED `## Tests Runs` comment plus the committed files.
+
+### Round 1 results — 2026-10-30 (spec/3119 @ `5e49d43`, tester)
+
+S-11 PASS — `pnpm --filter @fredo/ui test:run` green (**294 files / 3881 tests**) and every
+listed title is present verbatim in the committed test sources (`keyResolver.test.ts:353,389`,
+`validation.test.ts:416,437`, `host.test.ts:478,492`, `models.test.ts:282,316,574`); no
+`.skip`/`.todo`/`.only` anywhere in `apps/ui/src/shared/navigation`.
+S-12 PASS — `typecheck` exit 0, `build` exit 0 (2863 modules, only the pre-existing >500 kB
+chunk advisory), `apps/ui/dist/index.html` + `dist/assets/` populated.
+S-13 PASS — `git diff origin/main HEAD -- apps/ui/src/shared/navigation/types.ts` shows the
+reserved set becoming `['Escape','Enter','Tab','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','+','-']`
+and nothing else in the file; `BINDABLE_STROKE_PATTERN` / `PENDING_TIMEOUT_MS = 250` are
+untouched by the diff.
