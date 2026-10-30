@@ -339,3 +339,37 @@
       engaged: `[data-testid="launcher-open-apps"]` and `[data-testid="app-dock"]` are `count 0`;
       screenshot succeeds; console clean.
 
+## #3120 extension — navigation-grounded launcher quick paths (live)
+
+> Issue #3120 grounds the launcher in the active app's navigation context and adds the grouped
+> palette, the confirmation and undo-by-description. Quick paths only — the full matrix lives in
+> `functional.md` F-126..F-162 / `regression.md` R-75..R-86. **Verification policy: live.**
+> Levers: the `functional.md` `#3120` L1–L6 recipe (L1 open the pilot, L5 the relay intent).
+
+- [ ] S-40: **The context header renders on open.** L1 (type `wire` + Enter) then `Ctrl+Space`.
+      **Expected:** `[data-testid="launcher-context"]` renders with the path (`Canvas`),
+      a selection summary when something is selected, and the first ≤3 available verb chips; the
+      launcher is focused in the bar; screenshot succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-41: **The `>` palette is grouped.** Type `>` → **Expected:** `launcher-palette-list` with one
+      `launcher-palette-group` per place, full-path group headings, a risk word on the `Delete` row
+      and a key hint chip; arrow down moves the selection and the announcer text changes; screenshot
+      succeeds; console clean.
+- [ ] S-42: **Destructive confirm → cancel changes nothing.** L3 select one element → `>` `delete` +
+      Enter → Cancel (or Esc). **Expected:** the dialog named `Run Delete?` appeared with Cancel
+      focused; after cancel the element is still present, no journal entry was added and no error
+      line rendered; screenshot succeeds; console clean.
+- [ ] S-43: **Undo by description.** L5 one companion mutation → type `undo the companion's last
+      change` + Enter. **Expected:** exactly one new trail entry labelled `Undo <verb>` attributed to
+      `You`, the companion entry still listed, the launcher closed to reveal the trail; screenshot
+      succeeds; console clean.
+- [ ] S-44: **`/ Ask` opens the launcher.** In Wireframe click `[data-testid="navigation-rail-ask"]`
+      (or `>` `ask` + Enter). **Expected:** the launcher opens with the bar focused, empty, and the
+      context header visible for the Wireframe app; Esc returns focus to the rail button; screenshot
+      succeeds; console clean.
+- [ ] S-45: **Evidence + liveness.** Query `telemetry_spans` (telemetry-query skill) after the run and
+      upload one screenshot via `upload-evidence`. **Expected:** a NON-ZERO span count with a recent
+      `max(ingested_at)` (NOT `fredo emit` — that writes no spans) and a resolvable
+      `https://github.com/user-attachments/...` URL embedded in `## Tests Runs`; a static-only PASS
+      is a FALSE PASS.
+
