@@ -16,6 +16,7 @@
 12. Migration strategy
 13. Testing strategy
 P4 surfaces (Spec #3118 — appended §11)
+P6 launcher + agent bridge (Spec #3120 — appended)
 Open questions
 
 **Normative keywords.** `MUST`, `MUST NOT` and `SHOULD` state binding requirements; `MAY` states an option. A clause without a keyword is descriptive and is never an acceptance target, and a later `MAY` never softens an earlier `MUST NOT`.
@@ -406,7 +407,8 @@ interface JournalQuery {
 - **Ordering.** Candidates MUST be ordered by `seq` DESC for undo and ASC for redo.
 - **Defaults.** `effect` MUST default to `mutation`; `count` MUST default to 1 and MUST clamp to the range 1..100.
 - **Empty result.** A query matching nothing MUST return `{status:'noop', reason:'no-matches'}`, MUST write no journal entry, and the product MUST state **"Nothing to undo."** exactly once — no error surface and no second message.
-- **Many.** For `count > 1` the engine MUST apply inverses newest-first and stop on the first failure, returning `{status:'partial', applied:n, failedSeq, code:'undo-failed'}` with `n` already-applied inverses preserved as separate `system`-attributed entries.
+- **Many.** For `count > 1` the engine MUST apply inverses newest-first and stop on the first failure, returning `{status:'partial', applied:n, failedSeq, code:'undo-failed'}` with `n` already-applied inverses preserved as separate requester-attributed entries (see **Undo attribution** below).
+- **Undo attribution.** Each applied inverse MUST be journaled as its own `mutation` entry attributed to the REQUESTER: `actor` is the dispatching intent's `actor`, except that a companion-channel request journals `human` (the human asked the companion, or the launcher acted for them); `channel` is the dispatching intent's channel. A `system` requester keeps `system`. The reversal therefore reads `You` in the trail (§6.1). This replaces the pre-P6 hard-coded `system` attribution.
 
 The two canonical queries are defined verbatim:
 
@@ -477,7 +479,7 @@ Every discoverable surface MUST be derived from the single declaration — §2 `
 | Hint / next-step | pending prefix + `PlaceTree` + `available(ctx)` | which-key rows 250 ms after arming; after a verb, the place's next 3 available verbs; empty when a hint would duplicate the rail |
 | Onboarding | `PlaceTree` shape (root keys, place count, direct aliases) | the fixed tour steps (root → each place), each step naming that place's `keys`; no hand-written step list |
 | Tooltips | `VerbDescriptor.title` + bound `keys` + `risk` | one string per surface: `"<title> (<binding keys joined by ', '>)"`, plus `" — <risk>"` when risk ≠ safe |
-| Companion manifest | `VerbDescriptor` where `publish === true`, declaration order | `CompanionManifest` — `appId/appName/skillName/description/commands[{id,label,description,args}]` plus the reserved `listActions` entry |
+| Companion manifest | `VerbDescriptor` where `publish === true`, declaration order | `CompanionManifest` — `appId/appName/skillName/description/commands[{id,label,description,risk,args,aliases}]` in declaration order, then the engine-owned `journal.undo` command (`risk: mutating`; optional `actor`/`count` args; aliases `undo`/`revert`), plus the reserved `listActions` entry. The published manifest projects a registered navigation surface ahead of a legacy `commandSurface` for the same `appId` (P6, §P6.7) |
 | Docs index | `PlaceTree` + `VerbDescriptor.id` | `docs/README.md` rows anchored per place; `app.docs` deep-links to `#<place-slug>` |
 
 ### 8.2 Derivation is the only mechanism
@@ -648,8 +650,7 @@ Each builder is total and pure over the declaration plus the injected read model
   breadcrumb/current place come from `buildContextEnvelope(...).placePath` (declaration
   labels), falling back to the declared root. `actionCount = rows.length + overflow`.
   `more` appears only when `overflow > 0` and opens the map filtered to the current place.
-  The two affordances are always present: `/ Ask` is disabled with the bound launcher reason;
-  `? Map` is enabled. Neither tooltip ever contains a glyph (a tooltip names `m`/`k`).
+  The two affordances are always present: `/ Ask` is ENABLED — activation opens the launcher (§P6.3); `? Map` is enabled. Neither tooltip ever contains a glyph (a tooltip names `m`/`k`).
 - **Place rows** — `CommandRailModel.placeRows` lists the current place's **child places** in
   declaration order (`registry.childrenByParent`), each `{placeId, label, key, keys, keyHint,
   transient, tooltip}`. An entry stroke is a `{kind:'place'}` binding or a verb whose id is the
@@ -691,6 +692,20 @@ Each builder is total and pure over the declaration plus the injected read model
 Purity: the layer reads no clock (`ts`/`now` are supplied), no DOM, no storage; it adds no
 dependency and no theme token.
 
+**P6 consumers (Spec #3120).** The launcher consumes the same layer and adds its own
+presentational modules under `applications/home/components/launcher/`:
+`launcherNavigationPalette.ts` (the grouped Place → Verb projection, row actions and the pure
+client-side filter), `launcherUndoQuery.ts` (undo-by-description), `launcherRoute.ts` (the pure
+Enter precedence), `LauncherNavigationList.tsx`, `LauncherConfirmation.tsx` and the
+`LauncherShell` integration (context header, secondary actions, response line, ONE announcer).
+The launcher reads the host through `ui/hostRegistry.ts` (`getNavigationHost` /
+`describeContext`) and runs every palette/secondary row through `NavigationHost.runIntent` —
+never `runHotkeyAction`. A performed navigation result keeps the launcher open and announces the
+new place; a performed mutation, external action or `journal.undo` closes it so the change and
+its trail entry are visible; `canceled-confirmation` stays silently; `noop` / `rejected` /
+`failed` stay with the ONE response line. The legacy `>` hotkey-action list remains only for an
+application with no declared surface.
+
 ### 11.2 The bound names block (`ui/constants.ts`)
 
 Every test id, data attribute, accessible name, copy string and bound below is BINDING; a
@@ -704,16 +719,25 @@ surface renders the constant, never an invented literal (G-324/G-419).
 - **Accessible names** — `Command rail`, `Navigation map`, `Activity trail`,
   `Navigation announcements`.
 - **Copy** — `more…`; the empty trail `Nothing yet — your actions will appear here`; the
-  generic disabled reason `Not available for the current selection`; the launcher reason
-  `Ask arrives with the launcher in the next phase`; the transient suffix `one action`;
-  risk words `Safe`/`Changes`/`Destructive`/`External`; actor words `You`/`Companion`/`System`;
+  generic disabled reason `Not available for the current selection`; the transient suffix
+  `one action`; risk words `Safe`/`Changes`/`Destructive`/`External`; actor words
+  `You`/`Companion`/`System`;
   and the G-324 bundle `Search places, actions and keys`, `No matching places, actions or
   keys`, `Direct aliases`, `Global keys`, `Current place`, `No actions in this place`,
   `↑ ↓ move · Enter run · Esc close`, plus `NAV_RAIL_MIN_WIDTH_PX = 180` (design intent — the
-  measured no-scroll proof is live, not a jsdom width read).
+  measured no-scroll proof is live, not a jsdom width read). The P4 launcher reason
+  `Ask arrives with the launcher in the next phase` is RETIRED — no constant, no rendered node.
 - **Globals** — `app.map` is bound to `m` and displays the glyph `?`; `app.ask` is bound to
   `k` and displays `/`; accessible glyph names are `Question mark` / `Slash`. A glyph is never
   a binding value.
+- **`/ Ask` (P6)** — the rail affordance is ENABLED: `enabled: true`, `reason: null`,
+  `aria-disabled` absent, visible label `Ask`, tooltip `Ask (k)`; activation calls
+  `requestLauncherOpen({source:'rail-ask', focus:true})`, and the declared `app.ask` verb is
+  `available: always` and opens the same seam with `source:'ask-verb'` (§P6.3).
+- **P6 launcher names** — the launcher's DOM hooks, `data-*` attributes, accessible names and
+  copy are a separate binding block in
+  `applications/home/components/launcher/launcherConstants.ts` (§P6.4). They rename no P4
+  name above and are the only source the launcher renders.
 - **Motion / bounds** — `NAV_MOTION_MS = 150` (opacity/transform only),
   `NAV_REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)'`, `NAV_RAIL_MAX_ROWS = 8`
   (mirrors `discover.RAIL_MAX_ROWS`; the rail never pads to `RAIL_MIN_ROWS`).
@@ -788,8 +812,7 @@ manual-pass artifact and the cross-surface composite is `ui/__tests__/a11y.test.
 - **Motion:** transitions/animations animate `opacity`/`transform` only, at `NAV_MOTION_MS`,
   and are disabled when `prefers-reduced-motion` is set (the `reducedMotion` prop /
   `useNavReducedMotion()`).
-- **One live region:** the surfaces declare no `aria-live`; the announcement layer owns the
-  single polite region (P5 settles ownership).
+- **One live region:** the P4 navigation surfaces declare no `aria-live`; the navigation announcement layer owns the single `navigation-announcer` polite region. P6 adds exactly ONE launcher region — `launcher-palette-announcer` (`role="status"`, `aria-live="polite"`, `aria-label="Launcher announcements"`) — mounted only while the launcher is open over a registered navigation host; the launcher's response line is NOT a live region, and the shipped command bar's own voice/queue regions are pre-existing and unchanged. A migrated application therefore has one navigation region plus (while the launcher is open) one launcher region — never two competing regions inside the same surface.
 - **Bounded DOM:** rail verb rows ≤ 8 (never padded) and no more than the place's bound verbs;
   child-place rows (`placeRows`) are a separate, tree-bounded section and never count against
   that cap; trail entries ≤ 10 (newest first); map rows = the declared tree. No polling: the
@@ -810,3 +833,290 @@ manual-pass artifact and the cross-surface composite is `ui/__tests__/a11y.test.
   control) is never touched. No prop, no `document`/`window` listener, no timer, no state
   write — `ui/usePlaceTransitionFocus.ts`.
 
+## P6 launcher + agent bridge (Spec #3120)
+
+> **Numbering note.** This is a phase section appended after the thirteen numbered contract
+> sections. Its subsections are `§P6.1`–`§P6.9` and never renumber §1–§13 or the appended P4
+> §11. It records the behaviour shipped by Spec #3120. Nothing in §1–§13 is rewritten: only
+> the affected clauses are amended in place — §6.4 (undo attribution), §8.1 (manifest
+> projection), §11.1 (consumers), §11.2 (`/ Ask` copy) and §11.5 (live-region scope).
+
+P6 takes the headless model out of the Wireframe window: the **launcher** becomes the second
+consumer of the same declaration and the same `dispatch()` funnel, so conversation, keyboard,
+palette and the agent bridge are one system. No new noun, no second dispatch path and no
+transcript are introduced.
+
+### P6.1 The host registry and the fresh context seam
+
+The ONE stateful seam is still `NavigationHost`. P6 makes it reachable synchronously from the
+launcher through a module-scoped registry (`shared/navigation/ui/hostRegistry.ts`):
+
+```ts
+interface NavigationHostRegistration {
+  readonly appId: string;
+  readonly surface: Surface;
+  readonly host: NavigationHost;
+}
+function registerNavigationHost(reg: NavigationHostRegistration): () => void; // idempotent
+function getNavigationHost(appId: string): NavigationHost | null;
+function getRegisteredSurface(appId: string): Surface | null;
+function listRegisteredSurfaces(): readonly Surface[];
+function describeContext(appId: string): ContextEnvelope | null; // null ⇒ AC1 fallback
+function subscribeNavigationHosts(listener: () => void): () => void;
+```
+
+- **Registration is the provider's mount effect.** `registerNavigationHost` replaces the entry
+  for its `appId` (a StrictMode remount is safe) and its disposer removes only the entry it
+  created — a stale disposer never removes a newer registration. The registry holds no
+  state beyond the live registrations: no persistence, no clock, no I/O.
+- **`describeContext` is FRESH.** `hostRegistry.describeContext(appId)` calls the host's own
+  `describeContext()`, which is `buildContextEnvelope(surface, currentContext(),
+  journal.entries())` on every read — never a cached snapshot. A missing registration is the
+  AC1 fallback (`null`), and the launcher then renders the shipped resting/engaged surface
+  byte-identically.
+- **`runIntent` is the only runner.** `NavigationHost.runIntent(intent)` carries the full
+  `Intent` (`verbId`, `args`, `channel`, `actor`, `actorRef`) into the ONE `dispatch()` funnel,
+  so the launcher and the agent bridge can express `channel:'launcher' | 'voice' | 'agent'`
+  with `actor:'human' | 'companion'` instead of the channel-derived `run()`. The §5.2
+  validation order (existence → availability → arguments → risk) is unchanged.
+- **The confirmation seam is async, additively.** `EngineDeps.confirm(request, intent)` returns
+  `boolean | Promise<boolean>`. A promise is awaited at risk step 4; a falsy sync decision is
+  the shipped `canceled-confirmation` before the verb runs. The Wireframe provider gates only
+  `launcher`/`voice`/`agent` channels through the launcher confirmation store; a
+  `keyboard`/`pointer` human intent keeps the shipped no-confirm behaviour.
+
+The launcher derives its `activeAppId` from the focused, non-minimized window, memoizes
+`navContext` on the host identity + the host snapshot `epoch` (never an effect + `setState`,
+never a poll), and re-derives on every host notification. The host snapshot subscription
+uses `useSyncExternalStore`, so a dispatch that changes the place updates the header without a
+remount or reload.
+
+### P6.2 One box, three routes
+
+The shell's existing Enter handler is extended (no second `document` keydown listener). While
+`navContext !== null`, `resolveLauncherRoute({ query, entries, textOrigin, companionActive,
+captureLive, paletteActive })` decides in this fixed precedence:
+
+1. `captureLive` → the shipped `none/listening` verdict (nothing dispatches);
+2. first non-whitespace `>` → the grouped Place → Verb palette;
+3. an undo rule → `journal.undo` with the matched args;
+4. `no-match-undo` → a clarify response (`UNDO_NO_MATCH_COPY`);
+5. `ambiguous` → a clarify response (`UNDO_AMBIGUOUS_COPY`);
+6. otherwise → the shipped `resolveEnterAction` verdict, unchanged.
+
+The route module is consulted ONLY when a host is registered; an app with no surface takes the
+shipped Enter path verbatim, so a `>` query still renders the legacy `LauncherActionList` and
+`runHotkeyAction(id,'palette')`, and an undo-shaped phrase takes the ordinary send path.
+
+**The palette projection** (`launcherNavigationPalette.ts`) consumes the shipped P3
+`derivePalette` directly, so row order can never drift from the declared derivation: recents
+first (newest-first, deduped, stale ids dropped, capped at `PALETTE_MAX_RECENTS = 5`), then
+every verb grouped by place in tree order. Each row carries the full place path
+(`formatPlacePathLabel`, `' › '` join), the row place's first key + `formatKeyHint`, the risk
+and — only for a non-`safe` row — a risk label, plus `available`/`reason`
+(`NAV_UNAVAILABLE_REASON`). `filterLauncherPaletteModel` is a pure case-insensitive substring
+over `title + pathLabel + keyHint`; empty groups are dropped and `rows` is re-flattened so the
+selection index stays stable. `buildLauncherRowActions` is the ONE level-2 source: `run`, then
+`undo` only when that verb has an undoable journal entry (label names the entry; dispatch verb
+is `journal.undo`), then `map` (the `NavigationMap` dialog, never a third launcher level).
+
+The launcher is a **runner, not a second handler**: Enter on a palette row calls
+`host.runIntent({ verbId, args: {}, channel: 'launcher', actor: 'human' })`; Enter on a
+secondary action does the same with the action's dispatch verb (a row-targeted undo adds
+`{ verbId }`). An unavailable row stays selectable, announces its reason, and dispatches
+nothing. The close/stay matrix is fixed:
+
+| Result | Launcher |
+|---|---|
+| `performed` + `navigation` (not undo, not external) | stays open, announces the new place (`navPlaceEnterMessage`) |
+| `performed` + mutation / external / `journal.undo` | closes, focus restored, so the change and its trail entry are visible |
+| `rejected` + `canceled-confirmation` | stays open, silent (the user chose it) |
+| `noop` / other `rejected` / `failed` | stays open with the ONE response line |
+
+`Cmd`/`Ctrl+K` opens/toggles the focused row's secondary actions; `Esc` pops exactly one
+nested level and, at the top level, closes the launcher and restores the pre-open focus. Both
+are branches of the EXISTING shell handler.
+
+### P6.3 `/ Ask` and the launcher-open bridge
+
+`app.ask` is a real affordance: it is declared `available: always`, performs a `navigation`
+effect, and calls `requestLauncherOpen({ source: 'ask-verb', focus: true })`. The rail's
+`/ Ask` control calls the same bridge with `source: 'rail-ask'`, and the bridge also accepts
+`source: 'keyboard'`. The shell subscribes once:
+
+```ts
+interface LauncherOpenRequest {
+  readonly source: 'ask-verb' | 'rail-ask' | 'keyboard';
+  readonly prefill?: string;
+  readonly focus: true;
+}
+```
+
+On a request the shell raises the launcher through the shipped `openOverlay()` (which captures
+the pre-open element), writes any prefill through the ONE controlled-query route, and focuses
+the command input on the next frame. Closing therefore restores focus to the element that
+asked — the rail button, or whatever had focus before `Ctrl+Space`. The P4 disabled reason
+`Ask arrives with the launcher in the next phase` is retired: `NAV_ASK_DISABLED_REASON` no
+longer exists, the affordance carries no reason node, and the tooltip is `Ask (k)`.
+
+### P6.4 Launcher names, hooks and copy (binding)
+
+The launcher's names block is `applications/home/components/launcher/launcherConstants.ts`;
+every launcher surface renders these constants (no invented literal). It is additive to the P4
+`ui/constants.ts` block and renames nothing there.
+
+- **DOM hooks** — `launcher-context`, `launcher-context-path`, `launcher-context-selection`,
+  `launcher-context-verbs`, `launcher-context-verb`, `launcher-palette-list`,
+  `launcher-palette-group`, `launcher-palette-group-path`, `launcher-palette-row`,
+  `launcher-palette-row-key`, `launcher-palette-row-risk`, `launcher-palette-secondary`,
+  `launcher-palette-secondary-item`, `launcher-confirmation`, `launcher-confirmation-verb`,
+  `launcher-confirmation-target`, `launcher-confirmation-consequence`,
+  `launcher-confirmation-undo`, `launcher-confirmation-accept`,
+  `launcher-confirmation-cancel`, `launcher-palette-announcer`, and the response line
+  `launcher-response`.
+- **Data attributes** — `data-launcher-response`
+  (`clarify`|`rejected`|`undo-nothing`|`undo-failed`), `data-launcher-code` (the
+  `DispatchResult.code` on a rejected/failed line), `data-launcher-section`
+  (`recent`|`place` on a row) and `data-launcher-action-kind` (`run`|`undo`|`map` on a
+  secondary item). Row selection/availability reuse the P4 `data-nav-*` hooks.
+- **Accessible names** — `Current context` (context group), `Selection`, `Actions`, `Recent`,
+  `Places and actions` (palette listbox), `Row actions` (secondary listbox), `Action` /
+  `Target` / `Consequence` (confirmation fields), `Launcher announcements` (the ONE polite
+  region), and the row announcement `Title — Canvas › Edit — Destructive — X`.
+- **Copy** — `No context`, `No places or actions match`,
+  `That action couldn't run. Nothing changed.`, `Run <title>?`, `Apply <title>`, `Cancel`,
+  `Undo available`, `Not undoable`, `Outside Fredo: <party>`, and the two clarify sentences
+  (below). A safe row carries NO risk word.
+- **Bounds** — the palette is one listbox with one group per place and an internal scroll bound
+  (`maxHeight: min(52vh, 420px)`); the context header shows at most 3 available verbs plus
+  `+{n-3}`; the secondary level is at most one level deep.
+
+### P6.5 Risk policy end to end, and the confirmation contract
+
+§9.1 is enforced by the one funnel for every launcher/voice/agent intent:
+
+- **`safe` and `mutating` auto-apply**, write exactly one journal entry, and never render a
+  confirmation.
+- **`destructive` and `external` render a launcher confirmation and apply nothing until it is
+  accepted.** The dialog is an `alertdialog` named `Run <title>?` with `Cancel` focused; it
+  names the verb, the target, a non-empty consequence, the undo availability, and — for an
+  `external` verb — `Outside Fredo: <party>`. Accept resolves `true`; `Cancel`, `Esc` and a
+  backdrop click resolve `false`. The store is single-pending: a second request supersedes
+  the first, a double resolve is guarded, and the LAST launcher unsubscribe cancels a pending
+  request.
+- **Dismissal is not an error.** A cancelled confirmation returns
+  `{status:'rejected', code:'canceled-confirmation'}`, mutates nothing, writes NO journal entry
+  and shows no error line. A request made with no launcher mounted resolves `false`
+  immediately.
+- **Keyboard/pointer keeps the shipped behaviour.** Only `launcher`/`voice`/`agent` channels
+  are gated; a human `keyboard`/`pointer` dispatch still applies without a prompt (the journal
+  is the undo).
+- **The external risk class ships in the pilot declaration.** `wireframeSurface.ts`
+  reclassifies `place.exportPng` (`Export PNG`) from `mutating` to `risk:'external'`, authors a
+  consequence (`"Writes a PNG file outside Fredo's document history. It cannot be undone from
+  the trail."`) and `externalParty:'your file system'`; the shared `VerbDescriptor` gained the
+  optional `externalParty` and the funnel prefers it over the derived party. The verb remains
+  non-undoable (§6.3) and its rail/shell action is unchanged. The other three file verbs stay
+  `mutating` this round.
+
+### P6.6 Undo attribution and undo by description
+
+Undo is journaled to the REQUESTER (§6.4): `dispatchUndo` writes
+`actor = intent.actor === 'companion' ? 'human' : intent.actor` and
+`channel = intent.channel`, so a companion-channel undo is a human's reversal and reads `You`
+in the trail; a `system` requester keeps `system`. `host.undoEntry(seq, options?)` accepts
+`{ actor?, channel? }` and defaults to `{actor:'human', channel:'pointer'}` for the trail
+button. The trail renders the entry's own actor and label — no new visual language.
+
+The launcher's undo-by-description matcher (`launcherUndoQuery.ts`) is one pure phrase table
+over case/punctuation-normalised text:
+
+| Phrase shape | Result |
+|---|---|
+| companion + last | `journal.undo` `{actor:'companion', count:'1'}` |
+| companion + N | `journal.undo` `{actor:'companion', count:'N'}` |
+| last / bare undo | `journal.undo` `{count:'1'}` |
+| `undo that` / `undo it` | ambiguous → `Tell me whose change to undo — yours or the companion's. Nothing changed.` |
+| undo-shaped, no rule | `I couldn't tell which change to undo. Nothing changed.` |
+| anything else | an ordinary query (routes to the companion) |
+
+Counts may be digits or number words and are bounded 1..100; a leading `revert` is the
+manifest undo alias. A clarify result renders ONE response line and dispatches nothing; the
+two miss variants are never conflated (a non-undo query is never captured). The undo intent is
+still `journal.undo` through `host.runIntent`, so the typed and spoken origins share the
+funnel.
+
+### P6.7 The unified companion manifest and the engine `journal.undo` row
+
+The published manifest is now ONE projection with two possible sources
+(`shared/companion/manifest.ts`): a registered navigation `Surface` projected through
+`shared/navigation/manifest.ts`, or the legacy `feature.commandSurface` projection (the P7
+migration path). **Navigation wins per `appId`** — a registered navigation surface suppresses
+the legacy projection for that app, so an application never publishes two competing capability
+sets; legacy applications keep publishing exactly as before. A navigation command always
+carries all six fields (`id`, `label`, `description`, `risk`, `args`, `aliases`) read from the
+projection, never re-derived from the source verb.
+
+`journal.undo` has no `VerbDescriptor` (it is an engine verb), so it is appended explicitly by
+`buildCompanionManifest(surface)` after the published verbs and BEFORE the reserved
+`listActions` id, guarded so a hand-published duplicate is never added twice:
+
+```ts
+ENGINE_COMPANION_UNDO_COMMAND = {
+  id: 'journal.undo',
+  label: 'Undo',
+  description: 'Undo the newest change; optionally filter by actor (human, companion or system) and count (1..100).',
+  risk: 'mutating',
+  args: [{ name: 'actor', required: false }, { name: 'count', required: false }],
+  aliases: ['undo', 'revert'],
+}
+```
+
+For the shipped Wireframe declaration: 55 verbs, of which the 6 place-entry verbs are
+`publish:false` → 49 published verbs, plus `journal.undo` → 50 commands and 51 `actionIds`
+including `listActions`. The Rust wire type gained additive `risk: Option<String>` and
+`aliases: Vec<String>` with absent-key semantics: `risk` is absent for a legacy
+command-surface command and `aliases` is absent when empty — never `null`. The publisher also
+subscribes to host-registry changes, so an application that mounts after boot republishes its
+navigated capability set.
+
+App-side execution stays on the same relay contract: `useAppCommandIntent` resolves the
+registered host and, when one exists, runs
+`host.runIntent({ verbId: action, args, channel: 'agent', actor: 'companion' })`; otherwise it
+falls back to `executeCommand`. A rejection (`unknown-verb` / `unavailable` / `invalid-args`)
+applies nothing and is reported as the typed code.
+
+### P6.8 The voice-parity boundary (routed-intent seam; no transcript)
+
+Voice parity is proven at the **routed-intent seam**, not at the audio layer: the same
+`verbId` and `args` arriving from the typed launcher and from the voice/agent origin produce
+the same `dispatch()` outcome, the same resulting state and the same journal effect. The
+`channel` value (`launcher` vs `agent`) and the accompanying `actor` (`human` vs `companion`)
+MAY differ because the two paths genuinely differ; that pair is the only allowed difference.
+The scripted routed intent for QA is the real `app_command_intent` relay — the same channel a
+voice turn's skill call produces — which is why no audio fixture or transcript is required.
+
+The audio → intent interpretation is model-mediated and human-gated: there is **no transcript**
+anywhere on this path. The captured clip is the turn's `input_audio` content part, the
+companion receives at most ONE `ContextEnvelope` per turn (serialized as
+`JSON.stringify(context)`, bounded by `CAPABILITY_LIMITS.maxContextBytes = 16384`, prepended as
+one `system` message before the persona + user turn), and no history or message array is added.
+An over-cap envelope is dropped rather than truncated (a truncated serialization is not valid
+JSON).
+
+### P6.9 The human pilot-exit gate (not recorded here)
+
+The machine-deliverable half of the gate is the committed, non-consumed evaluation template
+at [`docs/agentic-pipeline/evaluations/3120-pilot-exit-review-template.md`](agentic-pipeline/evaluations/3120-pilot-exit-review-template.md).
+It carries the per-participant and per-task columns, the six verbatim gate lines
+(`GO-1`…`GO-4`, `PRE-1`, `PRE-2`), the cohort quotas and the three research-question rows with
+empty quote slots — but **no participant data and no verdict**. The sessions, the data and the
+`Verdict: GO|NO-GO` are human-produced (Gate H handoff:
+`spikes/3115-navigation-engine/session-kit/gate-h-input-template.md` →
+`.opencode/tmp/3115/sessions/participant-notes.md`), and
+`spikes/3115-navigation-engine/session-protocol.md` is reused verbatim and is not edited by
+this spec.
+
+**This document records no pilot verdict and no session result.** The P1 comparator is the
+documented qualitative baseline in `docs/UX_FLUENCY_RESEARCH.md:544,550-552,614` (P1 ran no
+sessions); a measured improvement claim would be false and is never made here.
