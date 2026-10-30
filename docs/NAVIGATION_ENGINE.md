@@ -1,0 +1,560 @@
+# NavigationEngine — Normative Contract
+
+## Table of contents
+
+1. Glossary & object model
+2. Place model
+3. Verb model
+4. Key resolution
+5. Dispatch contract
+6. Journal contract
+7. Context protocol
+8. Discovery derivations
+9. Policy
+10. Validation contract
+11. Metrics
+12. Migration strategy
+13. Testing strategy
+Open questions
+
+**Normative keywords.** `MUST`, `MUST NOT` and `SHOULD` state binding requirements; `MAY` states an option. A clause without a keyword is descriptive and is never an acceptance target, and a later `MAY` never softens an earlier `MUST NOT`.
+
+**Scope.** This contract defines one navigation model for every Fredo application: the nouns (§1), places (§2), verbs (§3), key resolution (§4) and the single dispatch entry point (§5). It specifies models and behaviour only. Layout, components, colour and motion belong to the design phase, and this document MUST NOT prescribe them. Every type and field name used here is a binding identifier; renaming one is a breaking change.
+
+## 1. Glossary & object model
+
+The glossary is closed. Every normative clause in §2–§13 MUST use only the nouns defined here, and a capability that needs a new noun MUST amend this section before it may be specified elsewhere.
+
+### 1.1 The object nouns
+
+| Noun | Definition | MAY contain | Selection semantics |
+|---|---|---|---|
+| **document** | the single editable artifact an application instance owns | pages | document-scoped verbs apply to it as a whole; a document MUST NOT be a selection member |
+| **page** | one bounded surface inside a document | elements, groups | a page MAY be a placement target; it MUST NOT be a selection member |
+| **element** | one drawable object on a page — a shape, text or image | nothing (leaf) | elements MUST be the only objects a selection contains |
+| **group** | an element that owns other elements | elements, groups | selecting a group MUST select its members as one unit; entering the group MAY select members individually |
+| **selection** | the ordered set of elements the current verb applies to | element ids | at most one selection exists per place, and it MAY be empty |
+| **view** | the camera state of the page surface — zoom, pan, fit | nothing | a view MUST NOT be selectable, and view verbs MUST NOT require a selection |
+
+**Generic object-type shape.** Every object type an application declares MUST carry the same properties: an `id`, a `label`, a containment `parent`, and its selection semantics:
+
+```ts
+interface ObjectType {
+  id: string;                 // stable slug, e.g. 'element', 'rectangle', 'group'
+  label: string;              // one-word human noun used by every derived surface
+  parent: ObjectType | null;  // containment; null only for a type that owns the tree
+  selectable: boolean;        // MAY a selection contain this type
+  multi: boolean;             // MAY more than one instance be selected at once
+}
+```
+
+### 1.2 Forbidden synonyms
+
+Vocabulary drift is a contract defect, not a style preference. The following terms MUST NOT appear in a normative clause, in a verb `appliesTo`, or in a derived surface label:
+
+| Forbidden term | MUST NOT name | Use instead |
+|---|---|---|
+| `widget`, `control`, `item` | an object type | `element` (or the specific object noun from §1.1) |
+| `action` | a capability | `verb` |
+| `shortcut`, `accelerator` | a key | `key` — one stroke or a stroke sequence |
+| `mode` | an interaction state | `place` |
+
+A verb's `appliesTo` refers to these nouns — **objects and places — and MUST NEVER name a widget**. A capability phrased against a toolbar, a panel or a button MUST be re-expressed as a verb applying to a selection or to a place.
+
+## 2. Place model
+
+A **place** is a bounded interaction state of one application. Places form a tree, a stroke resolves inside the current place, and entering or leaving a place is a first-class, observable event — never an implicit mode switch.
+
+### 2.1 Tree shape
+
+```ts
+interface PlaceNode {
+  id: string;                        // '<appId>.<slug>', e.g. 'wireframe.canvas'
+  label: string;                     // one-word badge/rail label
+  parent: string | null;             // null ONLY for the single root
+  transient: boolean;                // true ⇒ auto-exit after ONE completing verb (§2.2)
+  sticky: boolean;                   // true ⇒ verbs do NOT auto-exit (§2.2)
+  cursor: string | null;             // opaque to the engine; the application applies it
+  operator: string | null;           // opaque pointer-operator id; the engine never interprets it
+  keys: Record<string, KeyBinding>;  // full serialized stroke sequence ('c', 'w n') → binding
+  entryHooks: string[];              // named, side-effect-free hook ids
+  exitHooks: string[];               // same contract
+}
+
+type KeyBinding =
+  | { kind: 'verb'; verbId: string }
+  | { kind: 'place'; placeId: string };
+
+interface PlaceTree {
+  appId: string;
+  root: string;                              // exactly one
+  places: PlaceNode[];
+  directAliases: Record<string, string>;     // single stroke → verbId, application-wide
+}
+```
+
+The shape encodes the following binding invariants:
+
+- An application MUST declare **exactly one root** (`parent: null`); every other place MUST have a parent, and its parent chain MUST terminate at that root (`V-02`–`V-04`, §10).
+- A non-root place MUST set exactly one of `transient` and `sticky`; the root MUST set neither.
+- `keys` MUST be **place-local**: a stroke declared in `wireframe.create` MUST NOT dispatch while the cursor is in `wireframe.edit`.
+- `directAliases` MUST be **application-level** and MUST be consulted only when the current place yields neither an exact binding nor a pending prefix (§4.1).
+- A place MUST expose only the verbs its own `keys` or an alias bind; entering a place carries no implicit capability.
+
+### 2.2 Transience, stickiness and Escape — the converged rule
+
+> `transient: true` ⇒ the place auto-exits after ONE completing verb; `sticky: true` ⇒ verbs do NOT auto-exit and the place persists until `Escape`; **in BOTH cases `Escape` pops exactly one level (a sticky place is never an Escape exemption, and there is no exemption to declare).**
+
+- **Entering is observable.** Entering a place MUST write exactly one `navigation` journal entry whose `verbId` is the entering verb (`place.create`, …) or the `place.*` id of a `{kind:'place'}` binding. A silent place switch is a contract violation.
+- **Exiting is always possible.** Every child place MUST be exitable with a single `Escape`; no place, hook or open overlay MAY trap the cursor.
+- **Transient auto-exit.** When a verb completes in a `transient` place, the engine MUST pop exactly one level to that place's parent and MUST record `exitedBy:'verb'` on that verb's journal entry instead of writing a second `navigation` entry.
+- **Sticky base.** When a verb completes in a `sticky` place, the place MUST remain current; only `Escape` leaves it.
+- **Root.** `Escape` at the root MUST dispatch nothing and MUST close the innermost open overlay.
+
+The shape matches the shipped command surface — `transient` defaults to true and `sticky` to false at `apps/ui/src/shared/hotkeys/commandSurface.ts:121-124`, and the engine's Escape stack rule is described at `apps/ui/src/shared/hotkeys/sequence.ts:24-26`. This section makes both normative.
+
+### 2.3 Cursor, operator, hooks and aliases
+
+- **Cursor.** `cursor` MUST be opaque to the engine: the engine MAY compare it for equality but MUST NOT interpret, mutate or persist it, and the application applies it when the place becomes current.
+- **Operator.** `operator` MUST be opaque in the same way; it names a pointer operator the application MAY arm, never engine state.
+- **Entry and exit hooks.** `entryHooks` and `exitHooks` MUST name side-effect-free hook ids. The observable hook id `'observable'` MUST be present on every place, so entry and exit are journaled without application cooperation.
+- **Binding form.** A place entry MAY be declared as `{kind:'place'}` or as a verb whose effect is the entry. Wireframe MUST use the verb form (`place.create`, `place.edit`, …), so every entry journals with one uniform shape and a direct alias can never silently enter a place.
+
+## 3. Verb model
+
+A **verb** is the single unit of capability. A place key, a direct alias, a rail row, a palette row, a companion command, a launcher phrase and an agent intent MUST all resolve to a verb id; there is no second capability type.
+
+### 3.1 `VerbDescriptor`
+
+```ts
+type Risk = 'safe' | 'mutating' | 'destructive' | 'external';
+
+interface VerbDescriptor {
+  id: string;                                         // stable public id (§3.3)
+  title: string;                                      // ≤ 24 chars — bar/palette/rail row
+  description: string;                                // model-facing sentence; manifest's ONLY source
+  appliesTo: { objects: string[]; places: string[] }; // nouns from §1 and §2 — never widgets
+  args: VerbArg[];
+  available: (ctx: ContextSnapshot) => boolean;       // typed, side-effect free; MUST be pure
+  risk: Risk;                                         // REQUIRED — V-09
+  aliases: string[];                                  // natural-language aliases for the launcher
+  run: (intent: Intent, ctx: ContextSnapshot) => Promise<VerbEffect> | VerbEffect;
+  undo?: (entry: JournalEntry) => Promise<VerbEffect> | VerbEffect;  // absent ⇒ undoable:false
+  consequence?: string;                               // REQUIRED for destructive/external — V-10
+  publish: boolean;                                   // true ⇒ appears in the companion manifest
+}
+
+interface VerbArg {
+  name: string;
+  type: 'string' | 'number' | 'boolean' | 'enum';
+  required: boolean;
+  validate?: (value: string) => boolean;   // TS-only guard, never serialized
+}
+```
+
+Each field carries a binding obligation:
+
+| Field | Obligation |
+|---|---|
+| `id` | MUST be a stable, public identifier (§3.3); a rename is a breaking change |
+| `title` | MUST be ≤ 24 characters and MUST be a noun phrase a human can scan |
+| `description` | MUST be a model-facing sentence and MUST be the companion manifest's only source |
+| `appliesTo` | MUST list the object nouns (§1.1) and place ids (§2) the verb acts on |
+| `args` | MUST declare every accepted argument; an undeclared argument is `invalid-args` (§5) |
+| `available` | MUST be typed and side-effect free; it MUST NOT mutate context or perform I/O |
+| `risk` | MUST be one of the four classes; a missing class is `V-09` (§10) |
+| `aliases` | MAY carry natural-language phrases for the launcher; they MUST NOT be key bindings |
+| `run` | MUST be reachable only through `dispatch` (§5) |
+| `undo` | MAY be absent; absence means not undoable, and a destructive or external verb MUST then declare `consequence` |
+| `publish` | MUST be `true` only for verbs the companion may offer |
+
+### 3.2 Arguments
+
+An argument MUST be declared with `name`, `type` and `required`, and MAY add a `validate` guard. A `validate` guard MUST be a TS-only predicate: it is never serialized, never reaches the companion manifest, and its failure maps to `invalid-args` (§5). Argument values MUST be flat strings at the dispatch boundary (`Intent.args`), so every channel passes the same wire shape.
+
+### 3.3 Stable ids and namespaces
+
+```text
+verbId := <namespace> ".*"
+namespace ∈ { place, app, window, journal, companion, <applicationId> }
+```
+
+`place.*` MUST be engine-owned and application-agnostic: the same id means the same thing in every application that declares the matching objects. An application-specific capability MUST use its own namespace (`wireframe.document.new`). **Verb ids are stable public identifiers referenced by the companion manifest and the journal.** Renaming one MUST be treated as a breaking change to `describeContext.version` (§7), and an id MUST NOT be reused for a different capability.
+
+The descriptor is a strict superset of the shipped command spec (`id`/`title`/`description`/`prompt`/`args`/`run` at `apps/ui/src/shared/hotkeys/commandSurface.ts:81-101`), which carries no `risk`, no `appliesTo` and no `undo`. This section adds exactly those three obligations.
+
+## 4. Key resolution
+
+Key resolution turns a stroke sequence into at most one intent. The resolver MUST be deterministic: the same surface declaration, the same place and the same strokes MUST always produce the same outcome, and every rejection MUST name a code.
+
+### 4.1 Precedence, in this exact order
+
+For every stroke the resolver MUST evaluate these four tiers **in this exact order**, except while a prefix is armed: then the next stroke MUST first be resolved by tier 3 alone, and tiers 1 and 2 MUST NOT be consulted for that stroke. It MUST dispatch **exactly one intent** — or reject with a named code:
+
+1. **Current place `keys`** — an exact binding on the current place's `keys` map wins.
+2. **Application `directAliases`** — an application-level single-stroke alias, tried only when tier 1 produced neither an exact binding nor a pending prefix.
+3. **Pending / which-key prefix continuation** — while a prefix is armed (see `PENDING_TIMEOUT_MS`), the next stroke MUST be offered to that prefix's continuation set FIRST, and a single-stroke place key (tier 1) or a direct alias (tier 2) MUST NOT be consulted for that stroke. A stroke that matches no continuation of the armed sequence MUST cancel the prefix and MUST be re-resolved from tier 1.
+4. **Quiet hint** — when no tier yields a binding, the engine MUST surface a hint derived from the current place (§8) and MUST dispatch nothing.
+
+A fifth tier — a global hotkey registry, a legacy element listing, a browser or OS shortcut — MUST NOT be consulted. §4 has exactly these four tiers.
+
+**Stroke → intent.** A stroke MUST be normalized to a single key token, and a sequence MUST be serialized by joining tokens with one space (`'c'`, `'w n'`); `keys` is keyed by that full serialized sequence. A first stroke MUST arm a pending prefix only when no binding is exactly that stroke, and a prefix MUST NOT dispatch on its own. A pending prefix MUST exist only where that first stroke has a non-empty continuation set in the current place; a stroke with no continuation MUST fall through to tier 2 (application `directAliases`) immediately rather than arming an empty prefix.
+
+**Pending-prefix timeout.** The constant is `PENDING_TIMEOUT_MS` and its value MUST be **250** ms. On timeout the resolver MUST cancel the pending prefix, dispatch nothing, write no journal entry and clear the which-key hint. A timeout MUST NOT fall back to the prefix's single-stroke binding.
+
+**`pass-through`.** While the focus is a text-entry control, the focus is a terminal session, or a modal layer owns the keyboard, every unmodified stroke MUST be passed through to that consumer, and the resolver MUST dispatch no place key and no direct alias. The qualifier "unmodified" explains which strokes are guaranteed as consumer input; it MUST NOT be read as opening the resolver, because while a consumer owns the keyboard no stroke — modified or unmodified — dispatches a place key or a direct alias, and every unmodified stroke MUST still reach the consumer.
+
+**Ambiguity.** Two *distinct* intents matching one stroke at the same precedence tier MUST return `{status:'rejected', code:'ambiguous-key'}` and MUST dispatch nothing. A declaration-order, first-match or last-wins fallback is PROHIBITED. Two bindings of the *same* verb id are not ambiguous — see the collision rule below.
+
+**Transient auto-exit.** When a verb completes in a `transient` place, the resolver MUST pop exactly one level and MUST record `exitedBy:'verb'` on that verb's journal entry instead of emitting a second `navigation` entry (§2.2).
+
+**Escape.** Inside a child place, `Escape` MUST dispatch `place.exit` and pop exactly one level. At the root, `Escape` MUST dispatch nothing and close the innermost open overlay. The §2 converged rule applies without exception: `transient: true` ⇒ the place auto-exits after ONE completing verb; `sticky: true` ⇒ verbs do NOT auto-exit and the place persists until `Escape`; **in BOTH cases `Escape` pops exactly one level (a sticky place is never an Escape exemption, and there is no exemption to declare).**
+
+**Alias/place-key collisions.** When an application `directAliases` entry and a place key bind the same stroke to the **same verb id**, the resolver MUST dispatch that verb from the higher tier (tier 1) and MUST NOT raise `ambiguous-key`. When they bind **different verb ids**, the surface MUST be rejected at validation with `V-08` / `NAV-E008` (§10), and that case MUST never reach the resolver.
+
+### 4.2 The published key map
+
+```text
+wireframe.canvas.keys   = c→place.create  i→place.edit  a→place.arrange  s→place.style
+                          v→place.view    f→place.file   m→app.map       k→app.ask
+                          p→app.palette   'w n'→window.focusNext  'w p'→window.focusPrevious
+wireframe.create.keys   = r→place.rect  e→place.ellipse  t→place.text  b→place.button
+wireframe.edit.keys     = a→place.selectAll  d→place.duplicate  x→place.delete  l→place.toggleLock
+wireframe.arrange.keys  = l→place.alignLeft  c→place.alignCenter  z→place.alignRight
+                          d→place.distribute  g→place.group  n→place.ungroup
+                          f→place.bringForward  b→place.sendBackward
+wireframe.style.keys    = f→place.setFill  c→place.copyStyle  x→place.resetStyle
+wireframe.view.keys     = i→place.zoomIn  o→place.zoomOut  n→place.fitPage  h→place.togglePan
+wireframe.file.keys     = s→place.save  a→place.saveAs  o→place.open  x→place.exportPng
+                          n→wireframe.document.new
+directAliases           = r→place.rect  e→place.ellipse  u→journal.undo  y→journal.redo
+```
+
+The tree these bindings hang from: `wireframe.canvas` is the root; `wireframe.create` is `transient`; `wireframe.edit`, `wireframe.arrange`, `wireframe.style`, `wireframe.view` and `wireframe.file` are `sticky`. `w` is deliberately not a binding, which is what makes the `w n` prefix reachable and keeps `V-11` (no complete binding shadows a longer sequence) satisfiable.
+
+### 4.3 Worked traces
+
+Every trace starts at the root place `wireframe.canvas` with an empty selection.
+
+| stroke | tier that matched | resolved intent (verb id or place id) | args | journal effect | journal `placePath` (dispatch-time, §6.1) | cursor after the dispatch |
+|---|---|---|---|---|---|---|
+| `c` | (1) current place `keys` — `wireframe.canvas` | verb `place.create` | `{}` | one `navigation` entry: `verbId:'place.create'`, `placePath:['wireframe.canvas']`, `exitedBy:'none'` | `['wireframe.canvas']` | `[wireframe.canvas, wireframe.create]` |
+| `c r` | stroke 1: (1) `wireframe.canvas` `keys`; stroke 2: (1) `wireframe.create` `keys` | verb `place.create`, then verb `place.rect` | `{}` then `{}` | `navigation` entry for `place.create`; then one `mutation` entry for `place.rect` with `placePath:['wireframe.canvas','wireframe.create']` and `exitedBy:'verb'` (no second navigation entry) | `['wireframe.canvas','wireframe.create']` | `[wireframe.canvas]` |
+| `r` | (2) application `directAliases` — from `wireframe.canvas` | verb `place.rect` | `{}` | one `mutation` entry: `verbId:'place.rect'`, `placePath:['wireframe.canvas']`, `exitedBy:'none'` | `['wireframe.canvas']` | `[wireframe.canvas]` |
+
+**`c r` is two resolutions, not one binding.** The first stroke resolves in the canvas place and enters `wireframe.create`; the second stroke resolves in the create place and runs `place.rect`, whose completing verb auto-exits the transient place with `exitedBy:'verb'`. The `place.rect` entry is written at DISPATCH time, so its `placePath` still records the create place; the pop happens on completion, so the cursor after the dispatch is back at `[wireframe.canvas]`.
+
+**The point of the pair.** Both the `c r` and the `r` row dispatch the SAME verb id `place.rect` with the same args `{}` and the same journal effect — one `mutation` entry carrying the rect insert and its inverse. The two rows differ only in the two derived facts the last two columns separate: the journal `placePath`, which is the dispatch-time path (create vs canvas), and the cursor after the dispatch, which differs because the transient create place pops on completion (§2.2, `exitedBy:'verb'`). That difference is a property of the strokes, and it is never a licence for the two authors to disagree.
+
+### 4.4 Grammar decision: `?` and `/` are display glyphs
+
+Bindable keys MUST be stroke sequences over `[a-z0-9]`, plus the three engine-reserved strokes `Escape`, `Enter` and `Tab`. **`?` and `/` are NOT bindable**: neither shipped grammar can express them (`apps/ui/src/shared/hotkeys/hotkeyGrammar.ts:25`, `apps/ui/src/shared/hotkeys/commandSurface.ts:143`), so the contract binds the map to `m` and ask to `k`. `?` and `/` MAY appear only as *display glyphs* in copy (the map and ask affordances); they MUST NOT appear as binding values or as tooltip keys. This closes research limitation 1 (`docs/UX_FLUENCY_RESEARCH.md:630-636`) without changing either grammar, and it is a section decision — not an eighth ADR, because the ADR set is fixed at seven.
+
+## 5. Dispatch contract
+
+### 5.1 One entry point
+
+**All six channels** — `keyboard`, `pointer`, `launcher`, `voice`, `agent` and `system` — MUST call one function, `dispatch(intent)`. **No channel may call a verb's `run` directly**; a direct `run` call is a contract violation. The funnel mirrors the shipped single `executeCommand` (`apps/ui/src/shared/hotkeys/commandSurfaceStore.ts:437`) and its `performed|noop|rejected|failed` outcome vocabulary (`:91-95`).
+
+```ts
+type Channel = 'keyboard' | 'pointer' | 'launcher' | 'voice' | 'agent' | 'system';
+type Actor   = 'human' | 'companion' | 'system';
+
+interface Intent {
+  verbId: string;
+  args: Record<string, string>;   // flat string map
+  channel: Channel;
+  actor: Actor;                   // host-asserted for companion/agent — see §9
+  actorRef?: string;              // session/turn id for attribution
+}
+```
+
+### 5.2 Validation order
+
+`dispatch` MUST validate in this exact order and MUST stop at the first failure:
+
+1. **Existence** — an unknown `verbId` MUST return `unknown-verb`.
+2. **Availability** — `available(ctx)` returning false MUST return `unavailable`.
+3. **Arguments** — an undeclared key, a missing required argument, a non-string value, a blank value or a failed `validate` guard MUST return `invalid-args`.
+4. **Risk policy** — a `destructive` or `external` verb MUST obtain confirmation per §9, and a dismissal MUST return `canceled-confirmation`.
+
+Only after all four steps pass MAY `dispatch` call `run`; exactly one `VerbEffect` MUST then be applied and journaled per §6.
+
+### 5.3 Result taxonomy
+
+| Status | Code | Meaning |
+|---|---|---|
+| `performed` | — | effect applied; one journal entry written |
+| `noop` | `did-nothing` | the verb ran and changed nothing; no journal entry |
+| `rejected` | `unknown-verb`, `unavailable`, `invalid-args`, `canceled-confirmation` | validation refused the intent; nothing ran |
+| `failed` | `failed-run` | `run` threw; no partial claim |
+| `partial` | `undo-failed` | a multi-step undo stopped after `applied` inverses (§6) |
+
+The `rejected` set additionally carries `actor-spoof`, owned by §9 and raised before validation step 1 when a companion intent's host-asserted actor is not `companion`.
+
+## 6. Journal contract
+
+The **journal** is the application session's append-only, totally ordered record. Every dispatch that changes state MUST write exactly one `JournalEntry` — or join one existing entry under the coalescing rule (§6.3). The journal is the only attribution record and the only source for §11 metrics and for undo.
+
+### 6.1 Entry shape
+
+```ts
+interface JournalEntry {
+  seq: number;                  // monotonic per application session, starts at 1
+  ts: string;                   // ISO-8601 UTC, millisecond precision
+  verbId: string;               // the dispatched verb (§3.3)
+  actor: Actor;                 // 'human' | 'companion' | 'system' — host-asserted (§9.2)
+  channel: Channel;             // the dispatching channel (§5.1)
+  label: string;                // human sentence, ≤ 120 chars
+  effect: 'mutation' | 'navigation';
+  placePath: string[];          // place ids, root → current at dispatch, length ≥ 1
+  target: Array<{ type: string; id: string; label: string }>;  // ≤ 32 object refs
+  patch: { before: JsonPatch; after: JsonPatch } | null;       // null for navigation
+  inverse: JsonPatch | null;    // non-null ⇔ undoable
+  undoable: boolean;
+  external: boolean;            // true ⇒ the effect reached outside the document
+  consequence: string | null;   // REQUIRED sentence when undoable === false
+  exitedBy: 'verb' | 'escape' | 'none';  // how a transient place was left (§2.2)
+  coalesceKey: string | null;
+  groupId: string | null;       // the first entry's seq once coalescing merged ≥ 2
+}
+```
+
+- **`effect`** MUST be `mutation` for a state change and `navigation` for a place entry, exit or any other state-free transition; a `navigation` entry MUST carry `patch: null` and `inverse: null`.
+- **`actor`** MUST be exactly one of `human`, `companion` or `system` and MUST be host-asserted, never model-supplied (§9.2).
+- **`target`** MUST list the objects the verb acted on and MUST carry at most 32 refs.
+- **`undoable`** MUST be `true` if and only if `inverse` is non-null. `external: true` MUST imply `undoable: false` and `inverse: null`.
+- **`consequence`** MUST be a non-empty sentence whenever `undoable` is `false`; `V-10` (§10) makes a verb without one un-shippable.
+- **`exitedBy`** MUST be `verb` when a transient place auto-exited on the verb, `escape` when `place.exit` popped it, and `none` otherwise.
+
+### 6.2 Undo and redo
+
+`journal.undo` MUST resolve a `JournalQuery` (§6.4), order the matches by `seq` DESC, and apply the `inverse` of the newest entry first (LIFO). `journal.redo` MUST re-apply the `patch.after` of redoable entries in ASC `seq` order, oldest first. Any new `mutation` MUST clear the redo stack: a redo is available only until the next mutation. Each applied inverse MUST itself be journaled as a new `mutation` entry, so the journal remains append-only.
+
+### 6.3 Coalescing and the non-undoable list
+
+Entries MUST coalesce into one entry when, and only when, they share an equal `coalesceKey`, an equal `actor`, a `seq` gap of at most 1, and a `ts` gap of at most 400 ms. A coalesced entry MUST keep the later `seq`/`ts`, concatenate the patches, and set `groupId` to the first entry's `seq`. Undo of a coalesced entry MUST revert the whole group. `navigation` entries MUST NEVER coalesce.
+
+These verbs MUST be declared non-undoable, and each MUST carry its own `consequence` and render its undo affordance disabled with reason `not-undoable` — never a generic "cannot undo": `place.save`, `place.saveAs`, `place.open`, `place.exportPng`, `wireframe.document.new`.
+
+The copy template is `"<label> — saved to, or acted on, something Fredo cannot reopen. <consequence>"`. For `place.exportPng` the declared consequence is `"the file is outside Fredo's document history. Re-export to change it."`, so the rendered copy reads `"Exported the page as a PNG — the file is outside Fredo's document history. Re-export to change it."`
+
+### 6.4 Journal queries
+
+```ts
+interface JournalQuery {
+  actor?: Actor;                        // exact match
+  since?: string;                       // ISO-8601 ts, INCLUSIVE lower bound
+  count?: number;                       // default 1, clamped to 1..100
+  verbId?: string;                      // exact match
+  channel?: Channel;                    // exact match
+  effect?: 'mutation' | 'navigation';   // DEFAULT 'mutation'
+}
+```
+
+- **Matching.** Every provided field MUST be AND-ed; an omitted field MUST match everything.
+- **Ordering.** Candidates MUST be ordered by `seq` DESC for undo and ASC for redo.
+- **Defaults.** `effect` MUST default to `mutation`; `count` MUST default to 1 and MUST clamp to the range 1..100.
+- **Empty result.** A query matching nothing MUST return `{status:'noop', reason:'no-matches'}`, MUST write no journal entry, and the product MUST state **"Nothing to undo."** exactly once — no error surface and no second message.
+- **Many.** For `count > 1` the engine MUST apply inverses newest-first and stop on the first failure, returning `{status:'partial', applied:n, failedSeq, code:'undo-failed'}` with `n` already-applied inverses preserved as separate `system`-attributed entries.
+
+The two canonical queries are defined verbatim:
+
+- ***"undo the companion's last change"*** ≡ `journal.undo` with `{actor:'companion', count:'1'}` — the newest `mutation` entry whose `actor` is `companion`, whatever its `verbId`.
+- ***"undo the last N changes by actor X"*** ≡ `journal.undo` with `{count:'N', actor:'X'}` — the newest `N` `mutation` entries by that actor, newest inverse first.
+
+## 7. Context protocol
+
+`describeContext(appId)` MUST return one `ContextEnvelope` and MUST NOT read an application store to produce it. The envelope is the read model the launcher and the companion consume.
+
+### 7.1 Envelope v1
+
+```ts
+interface ContextEnvelope {
+  version: 1;                          // integer; a breaking change bumps it to 2
+  appId: string;                       // the application id
+  placePath: PlaceRef[];               // root → current, length 1..maxPathDepth
+  selection: {
+    count: number;                     // 0 when nothing is selected
+    kinds: string[];                   // object kinds present, deduped, ≤ 8
+    label: string | null;              // e.g. 'Rectangle 3', or null
+    ids: string[];                     // ≤ maxSelectionIds
+  };
+  verbs: VerbSummary[];                // ≤ maxVerbs, declaration order
+  journal: {
+    last: JournalSummary[];            // newest first, ≤ maxJournalEntries
+    undoableCount: number;             // entries whose undoable === true
+  };
+  dirty: boolean;                      // unsaved document mutations since the last save
+  limits: CapabilityLimits;
+}
+
+interface PlaceRef       { id: string; label: string; transient: boolean; sticky: boolean }
+interface VerbSummary    { id: string; title: string; risk: Risk; keys: string[];
+                           available: boolean; unavailableReason: string | null }
+interface JournalSummary { seq: number; ts: string; verbId: string; actor: Actor;
+                           label: string; undoable: boolean }
+interface CapabilityLimits {
+  maxVerbs: 64; maxJournalEntries: 10; maxSelectionIds: 32;
+  maxLabelChars: 120; maxPathDepth: 8; maxContextBytes: 16384;
+}
+```
+
+| Field | Meaning and obligation |
+|---|---|
+| `version` | MUST be the integer `1`; it MUST bump whenever the envelope shape or any verb id changes breakingly |
+| `appId` | MUST be the application id whose places §2 declared |
+| `placePath` | MUST list `PlaceRef` records root → current; each MUST carry the place's `id`, `label`, `transient` and `sticky` |
+| `selection` | MUST summarise the selection: `count`, the deduped object `kinds`, a display `label` or `null`, and `ids` (≤ `maxSelectionIds`) |
+| `verbs` | MUST list `VerbSummary` rows in declaration order, each with `risk`, bound `keys` (`[]` when unbound) and an `available`/`unavailableReason` pair |
+| `journal` | MUST carry `last` (newest-first `JournalSummary` rows, ≤ `maxJournalEntries`) and `undoableCount` |
+| `dirty` | MUST be `true` when the document has unsaved mutations |
+| `limits` | MUST publish the numeric `CapabilityLimits` above; they are the declared ceilings of every field |
+
+The envelope is the **only** read model. The launcher and the companion **MAY read no other application state**: they MUST NOT read an application store, the command surface, any `data-hotkey` listing, or the journal directly — every value they need MUST arrive in the envelope. `version` MUST bump on any breaking change to the envelope or to a verb id (§3.3).
+
+## 8. Discovery derivations
+
+Every discoverable surface MUST be derived from the single declaration — §2 `PlaceTree` plus §3 `VerbDescriptor` plus the current `ContextSnapshot`. Derivation is the only mechanism.
+
+### 8.1 The eight derivations
+
+| Surface | Input declaration | Deterministic output |
+|---|---|---|
+| Rail | `PlaceTree` + `available(ctx)` + selection | ordered verb rows for the current place: `{verbId, title, risk, keys, enabled, reason}`; 4–8 rows, overflow to the palette |
+| Map (`app.map`) | `PlaceTree` + every verb's `appliesTo` | the whole tree as rows `{placePath, verbs[], keys[]}` in tree order — root first, declaration order within a place |
+| Palette (`app.palette`, launcher `>`) | `PlaceTree` + `VerbDescriptor[]` + journal recents | flat rows `{verbId, title, placePath, key, risk, section}` grouped by place in tree order; recents first, capped |
+| Hint / next-step | pending prefix + `PlaceTree` + `available(ctx)` | which-key rows 250 ms after arming; after a verb, the place's next 3 available verbs; empty when a hint would duplicate the rail |
+| Onboarding | `PlaceTree` shape (root keys, place count, direct aliases) | the fixed tour steps (root → each place), each step naming that place's `keys`; no hand-written step list |
+| Tooltips | `VerbDescriptor.title` + bound `keys` + `risk` | one string per surface: `"<title> (<binding keys joined by ', '>)"`, plus `" — <risk>"` when risk ≠ safe |
+| Companion manifest | `VerbDescriptor` where `publish === true`, declaration order | `CompanionManifest` — `appId/appName/skillName/description/commands[{id,label,description,args}]` plus the reserved `listActions` entry |
+| Docs index | `PlaceTree` + `VerbDescriptor.id` | `docs/README.md` rows anchored per place; `app.docs` deep-links to `#<place-slug>` |
+
+### 8.2 Derivation is the only mechanism
+
+A surface MUST be reproducible from the declaration alone, and any difference between the derived output and the declaration MUST be treated as a defect. A hand-maintained second list for any of the eight surfaces is a **contract violation** and MUST NOT be introduced; the declaration is the single source of truth (ADR-6).
+
+**Tooltip wording.** A tooltip MUST emit the **binding keys joined by `', '`** in parentheses after the title — `"Map (m)"`, `"Ask (k)"` — and MUST NEVER print the display glyph. The glyphs `?` and `/` MAY appear only in rail, map and onboarding prose strings; they MUST NOT appear in a tooltip that names a key, because the resolver does not accept them (§4.4).
+
+## 9. Policy
+
+### 9.1 Risk table
+
+| Risk | Auto-apply | Confirmation | Confirmation MUST carry |
+|---|---|---|---|
+| `safe` | yes | none | — (one journal entry is still written) |
+| `mutating` | yes | none | — (one journal entry and the undo affordance are the safety net) |
+| `destructive` | no | required | `verb` (id + title), `target` (≤ 5 labels + `+N more`), `consequence`, `undoAvailability` (`undoable`, or `not-undoable` + reason) |
+| `external` | no | required | the same four fields, plus the external party/artifact (file path, endpoint or shell); `undoAvailability` is ALWAYS `not-undoable` |
+
+`safe` and `mutating` MUST apply without confirmation and MUST still write exactly ONE journal entry (§6.1). `destructive` and `external` MUST run nothing until the confirmation is accepted.
+
+**Dismissal.** A dismissed confirmation MUST return `{status:'rejected', code:'canceled-confirmation'}`, MUST mutate nothing and MUST write no journal entry.
+
+### 9.2 Actor identity
+
+`actor` and `channel` MUST be asserted by the host dispatcher and MUST NOT be supplied by a model. An intent arriving on the companion or agent path whose `actor` is anything other than `companion` MUST be rejected with `actor-spoof` **before** validation step 1 (§5.2). `actorRef` MAY carry the session/turn id.
+
+## 10. Validation contract
+
+`validateSurface(surface)` MUST return `{valid, diagnostics[]}`. It MUST be **total and pure**: it MUST never throw and MUST never mutate its input. It MUST evaluate the rules in the order `V-01` → `V-12` and MUST append diagnostics in declaration order without sorting. Each diagnostic MUST carry the stable code and the author-facing message class below.
+
+### 10.1 The twelve rules
+
+| Rule | Assertion | Code | Author-facing message class |
+|---|---|---|---|
+| V-01 | verb ids are unique across the surface | `NAV-E001` | `duplicate verb id "<id>"` |
+| V-02 | exactly one place has `parent === null` | `NAV-E002` | `surface must declare exactly one root place; found <n>` |
+| V-03 | every non-null `parent` resolves to a declared place | `NAV-E003` | `place "<id>" declares parent "<p>", which is not a declared place` |
+| V-04 | every parent chain reaches the root (no cycle, no dangling) | `NAV-E004` | `place "<id>" parent chain does not terminate at the root place` |
+| V-05 | every `keys` binding targets a declared verb or a declared child place | `NAV-E005` | `place "<id>" key "<stroke>" targets unknown verb or place "<target>"` |
+| V-06 | every referenced verb is available in that place (`appliesTo.places` covers it) | `NAV-E006` | `verb "<id>" is bound in place "<p>" but does not apply to it` |
+| V-07 | no duplicate stroke within one place | `NAV-E007` | `duplicate key "<stroke>" in place "<id>"` |
+| V-08 | a `directAlias` never shadows a place key bound to a *different* verb | `NAV-E008` | `direct alias "<stroke>" → "<verb>" shadows place "<p>" key → "<other verb>"` |
+| V-09 | every verb declares a `risk` | `NAV-E009` | `verb "<id>" declares no risk class` |
+| V-10 | every `destructive`/`external` verb has `undo` or a declared `consequence` | `NAV-E010` | `verb "<id>" is <risk> with no undo and no declared consequence` |
+| V-11 | no complete binding is a strict prefix of another binding in the same place | `NAV-E011` | `key "<short>" shadows the longer sequence "<long>" in place "<id>"` |
+| V-12 | every verb has non-empty `title`, `description` and `appliesTo` | `NAV-E012` | `verb "<id>" is incomplete (missing <field>)` |
+
+V-01…V-10 cover the nine §10 obligations (the parent rule splits into V-03 and V-04); V-11 and V-12 are additive and equally binding. V-11 MUST enforce the same strict-prefix shadowing rule the shipped element registry applies (`apps/ui/src/shared/hotkeys/hotkeyElements.ts:220-232`), so a surface that violates it MUST be rejected before dispatch. `valid` MUST be `true` only when `diagnostics` is empty.
+
+## 11. Metrics
+
+The journal (§6) MUST be the ONLY source of every UX metric in this section. No metric MAY require a new telemetry backend, a new OTel signal or a new table; each MUST be computed from journal entry fields by replay.
+
+| Metric | Definition (journal-derived) |
+|---|---|
+| Place entries / exits | count of `effect:'navigation'` entries by `verbId` (place entry) and by `exitedBy`, grouped by `placePath` |
+| Alias vs place-key usage | for one verb, the share of its entries whose `placePath` ends outside the place the verb declares in `appliesTo.places` (alias resolution) versus inside it (place-key resolution) |
+| Palette / launcher share | share of entries with `channel:'launcher'` or `channel:'pointer'` against `channel:'keyboard'` |
+| Undo rate by actor | count of `verbId:'journal.undo'` entries grouped by the dispatching `actor`, divided by that actor's `effect:'mutation'` count |
+| Abandoned prefixes | share of `navigation` place entries followed by an `exitedBy:'escape'` exit with no intervening `mutation` |
+| Verb usage frequency | count of entries per `verbId`, grouped by `actor`, in DESC order |
+
+No metric MAY be reported as an absolute or measured UX improvement: P1 ran no sessions (`docs/UX_FLUENCY_RESEARCH.md` §8.3), so a measured claim would be false. Metrics MUST be reported as counts and shares only.
+
+## 12. Migration strategy
+
+Legacy surfaces MUST be replaced by declared verbs, not wrapped indefinitely (§6, ADR-2 and ADR-7). During migration an adapter is the only sanctioned bridge between a legacy surface and the declaration.
+
+### 12.1 Adapter rules and application order
+
+An adapter **MAY** expose its legacy surface as declared verbs and **MAY** translate legacy arguments into `Intent.args`. An adapter **MUST NOT** own state and **MUST NOT** duplicate validation: the `validateSurface()` result (§10) is authoritative, and an adapter MUST NOT carry a second copy of it.
+
+Applications MUST migrate in this fixed order: Wireframe → terminal passthrough + window traversal → diagram → mission-monitor → optimizely → my-work-items → dev-mode.
+
+### 12.2 Adapter deletion deadlines
+
+Every adapter MUST be deleted by its `deleteBy` phase; a phase is a hard deadline, not a target, and a `deleteBy` value MUST be one of `P5`, `P6`, `P7` or `P8`.
+
+| Adapter id | Legacy surface it wraps | Target | `deleteBy` |
+|---|---|---|---|
+| `ADP-01-wireframe-actions` | `WIREFRAME_ACTIONS` (`wireframeActions.ts:365-645`) | P5 | **P5** |
+| `ADP-02-wireframe-command-surface` | command-surface declaration (`wireframeCommandSurface.ts:438-444`) | P5 | **P5** |
+| `ADP-03-wireframe-toolbar-list` | hand-listed toolbar groups (`WireframeToolbar.tsx`) | P5 | **P5** |
+| `ADP-04-wireframe-hotkey-carrier` | two-step `data-hotkey` carrier (`WireframeHotkeyCarrier.tsx:73`) | P5 | **P5** |
+| `ADP-05-data-hotkey-discovery` | element listing (`hotkeyElements.ts:47-62`, `:399-421`) | P7 | **P7** |
+| `ADP-06-terminal-passthrough` | implicit terminal passthrough (`terminalMode.ts`) | P7 | **P7** |
+| `ADP-07-window-traversal` | `KEPT_GLOBAL_BINDINGS` (`defaults.ts:38-57`) + `DEFAULT_FREDO_ACTION_DEFS` (`engine.ts:91-120`) | P7 | **P7** |
+| `ADP-08-diagram-key` | `data-hotkey="d"` (`ArchitectureDiagram.tsx:680`) | P7 | **P7** |
+| `ADP-09-mission-monitor-key` | `data-hotkey` in the history drawer | P7 | **P7** |
+| `ADP-10-optimizely-keys` | `data-hotkey` `f/e/c/q` (`OptimizelyFlagsPanel.tsx:461,491,506,533`) | P7 | **P7** |
+| `ADP-11-my-workitems-keys` | `data-hotkey` (`MyWorkItemsContainer.tsx:155`) | P7 | **P7** |
+| `ADP-12-dev-mode-keys` | `data-hotkey` `v` (`DevMode.tsx:609`) | P7 | **P7** |
+| `ADP-13-hotkey-registry` | the third declaration (`registry.ts:59-77`, `:139-166`) | P7 | **P8** |
+| `ADP-14-launcher-palette` | `launcherActionPalette.ts:40-52` fed by `listHotkeyActions()` | P6 | **P8** |
+| `ADP-15-companion-manifest` | `manifest.ts:73-119` + `publisher.ts:55-80` projection | P6 | **P8** |
+
+The **P8 exit criterion** is a checkable predicate: a single grep for every `ADP-` id over `apps/ui/src/` MUST return ZERO matches. Any match at P8 MUST be treated as an unfinished migration, not as deferred cleanup.
+
+## 13. Testing strategy
+
+The contract MUST be testable from its own rules. P3 owns the test code; this section fixes what MUST be proven.
+
+### 13.1 The five strategies
+
+| Strategy | What MUST hold |
+|---|---|
+| Property-based key-sequence resolution | for generated surfaces and stroke sequences the resolver MUST be deterministic and MUST return exactly one intent or a named rejection; no sequence MAY produce two side effects |
+| Reachability | every declared verb MUST be reachable from the root through keyboard or palette, proven by walking the `PlaceTree` |
+| Journal undo invariants | for every `safe` and `mutating` verb, `undo ∘ run` MUST equal identity over `patch.before`, and a redo MUST restore `patch.after` |
+| Manifest projection equality | the derived `CompanionManifest` MUST equal the projection of every `publish === true` `VerbDescriptor` — no extra row and no missing row |
+| Cross-channel parity | the same verb dispatched via `keyboard`, `pointer`, `launcher` or `agent` MUST yield the same state transition and the same journal effect |
+
+### 13.4 Cold-read check
+
+The cold-read check MUST be executable from this document's own normative text. It measures whether that rule text ALONE determines the trace: a reader with no prior context MUST reach the same seven columns.
+
+1. Start at the root place `wireframe.canvas` with an empty selection. Every rule the trace needs is in this document's own normative model — §1–§6 (objects, places, verbs, key resolution, dispatch, journal) — and the reading MUST NOT be widened to external material: implementation code, plans, notes, ADR files, research documents, prior traces or another reader's answers.
+2. **Before consulting §4.3**, for each of the three strokes `c`, `c r` and `r`, fill one seven-column row — *stroke → tier that matched → resolved intent (verb id or place id) → args → journal effect → journal `placePath` (dispatch-time, §6.1) → cursor after the dispatch* — recording the `placePath` the completing verb's journal entry carries (§6.1: the path root → current at dispatch) and, separately, where the cursor sits once that entry's effect has been applied (§2.2 transient pop).
+3. The architect's trace and the developer's trace MATCH if and only if they agree on every row **for the same stroke**: the tier that matched, the resolved intent, the args, the journal effect, the recorded `placePath` and the cursor after the dispatch. A difference on the same stroke between the two authors is a mismatch.
+4. The only value that legitimately differs **between the `c r` row and the `r` row** is the journal `placePath` (`c r` = `[wireframe.canvas, wireframe.create]`, `r` = `[wireframe.canvas]`). The cursor after the dispatch is `[wireframe.canvas]` for both rows — for `c r` because the transient place pops on completion, for `r` because it never left the root. Those differences are properties of the strokes and are never a licence for the two authors to disagree.
+5. Evidence MUST be the two filled seven-column tables (`.opencode/tmp/3116/cold-read-architect.md` and `.opencode/tmp/3116/cold-read-developer.md`) plus a one-sentence match statement naming any row that differed.
+6. §4.3 is the published answer key: it must contain the three traces by design, so the check is never blind. A reader MUST write their own table from §4.1–§4.2 FIRST and only then compare it against §4.3 — the check measures rule sufficiency, not memory of the examples.
+
+## Open questions
+
+Non-normative; never counted among the thirteen sections and never cited by §2–§13.
+
+- **Journal persistence across application restarts** (does undo survive a reload, or is the journal session-scoped only?) — owner: Software Architect, phase: P3.
+- **Redo-stack retention bound** (maximum depth and memory ceiling) — owner: Software Architect, phase: P3.
