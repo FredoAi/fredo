@@ -1,5 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { Box, useBreakpointValue } from '@chakra-ui/react';
+import { Box, Flex, Icon, Text, VisuallyHidden, useBreakpointValue } from '@chakra-ui/react';
+import {
+  LuCompass,
+  LuExternalLink,
+  LuMap,
+  LuMessageCircleQuestion,
+  LuPlay,
+  LuTriangleAlert,
+  LuUndo2,
+} from 'react-icons/lu';
 
 // Own-kernel window list (Spec #2807 ST-1) — AC1: never the third-party toolbar.
 import { useWindows } from '../../../../shared/window-system/useWindows';
@@ -107,6 +116,73 @@ import {
   resolveSpaceKeyUp,
   spaceWriteForVerdict,
 } from './launcherSpaceHold';
+
+// ── Spec #3120 (P6), ST-6 — the launcher experience on the ST-5 modules and the
+// ST-1/ST-4 seams. The host registry is read SYNCHRONOUSLY (no IPC/network), the
+// context envelope is derived on each host-notification epoch (never an
+// effect+setState), and the launcher subscribes to the confirmation + open-request
+// bridges only while it is visible.
+import {
+  JOURNAL_UNDO_VERB_ID,
+  NOTHING_TO_UNDO,
+  type ContextEnvelope,
+  type DispatchResult,
+  type Intent,
+  type JournalEntry,
+} from '../../../../shared/navigation';
+import {
+  NAV_UNAVAILABLE_REASON,
+  getNavigationHost,
+  getRegisteredSurface,
+  navPlaceEnterMessage,
+  navUndoFailedMessage,
+  resolveLauncherConfirmation,
+  subscribeLauncherConfirmation,
+  subscribeLauncherOpenRequests,
+  subscribeNavigationHosts,
+  useNavReducedMotion,
+  type NavigationHost,
+  type NavigationHostSnapshot,
+  type PendingLauncherConfirmation,
+} from '../../../../shared/navigation/ui';
+import { formatKeyHint, formatPlacePathLabel } from '../../../../shared/navigation/ui/format';
+import { tint } from '../../../../shared/utils/colorTint';
+import {
+  LAUNCHER_ACTION_KIND_ATTR,
+  LAUNCHER_ANNOUNCER_LABEL,
+  LAUNCHER_CONTEXT_ARIA_LABEL,
+  LAUNCHER_CONTEXT_EMPTY_COPY,
+  LAUNCHER_CONTEXT_PATH_TESTID,
+  LAUNCHER_CONTEXT_SELECTION_TESTID,
+  LAUNCHER_CONTEXT_TESTID,
+  LAUNCHER_CONTEXT_VERBS_LABEL,
+  LAUNCHER_CONTEXT_VERBS_TESTID,
+  LAUNCHER_CONTEXT_VERB_TESTID,
+  LAUNCHER_PALETTE_ANNOUNCER_TESTID,
+  LAUNCHER_PALETTE_EMPTY_COPY,
+  LAUNCHER_PALETTE_SECONDARY_ITEM_TESTID,
+  LAUNCHER_PALETTE_SECONDARY_TESTID,
+  LAUNCHER_REJECTED_COPY,
+  LAUNCHER_RESPONSE_ATTR,
+  LAUNCHER_RESPONSE_CODE_ATTR,
+  LAUNCHER_RESPONSE_TESTID,
+  LAUNCHER_SECONDARY_ARIA_LABEL,
+  launcherNavigationRowId,
+  launcherNavigationSecondaryId,
+  launcherPaletteAnnouncement,
+  launcherSelectionSummary,
+} from './launcherConstants';
+import { LauncherConfirmation } from './LauncherConfirmation';
+import { LauncherNavigationList } from './LauncherNavigationList';
+import {
+  buildLauncherPaletteModel,
+  buildLauncherRowActions,
+  filterLauncherPaletteModel,
+  type LauncherPaletteModel,
+  type LauncherPaletteRow,
+  type LauncherRowAction,
+} from './launcherNavigationPalette';
+import { resolveLauncherRoute } from './launcherRoute';
 
 /**
  * LauncherShell — the Fredo-owned launcher host (Spec #2808 ST-1; Spec #2821
@@ -421,6 +497,351 @@ const LauncherOpenAppsHost: React.FC<LauncherOpenAppsHostProps> = ({ windows }) 
   );
 };
 
+/* ═════════════════════ Spec #3120 (P6), ST-6 — launcher navigation surfaces ═════════════════════ */
+
+/**
+ * The S6 response line's four states (UI/UX §2.5). The `kind` is the
+ * `data-launcher-response` hook; a rejected/failed line also carries the typed
+ * `DispatchResult.code` in `data-launcher-code`.
+ */
+type LauncherResponseKind = 'clarify' | 'rejected' | 'undo-nothing' | 'undo-failed';
+
+interface LauncherResponse {
+  readonly kind: LauncherResponseKind;
+  readonly message: string;
+  readonly code?: string;
+}
+
+/** Stable empties — never a fresh array/object per render (AGENTS.md #523). */
+const EMPTY_ENTRIES: readonly JournalEntry[] = Object.freeze([]);
+const EMPTY_ROW_ACTIONS: readonly LauncherRowAction[] = Object.freeze([]);
+const EMPTY_NAV_MODEL: LauncherPaletteModel = Object.freeze({
+  appId: '',
+  groups: Object.freeze([]),
+  rows: Object.freeze([]),
+  recentsCount: 0,
+});
+
+/* ── host-registry revision: a primitive snapshot for `useSyncExternalStore` ──
+ *
+ * The registry is module-scoped and has no revision counter of its own; the shell
+ * keeps ONE module-level counter so a provider mount/unmount (an app opening or
+ * closing) re-derives `activeAppId → host → surface` without polling. The watch is
+ * installed lazily on the first subscription and lives for the process (the
+ * registry does too). */
+let hostRegistryRevision = 0;
+const hostRegistryRevisionListeners = new Set<() => void>();
+let hostRegistryWatchInstalled = false;
+
+function ensureHostRegistryWatch(): void {
+  if (hostRegistryWatchInstalled) return;
+  hostRegistryWatchInstalled = true;
+  subscribeNavigationHosts(() => {
+    hostRegistryRevision += 1;
+    for (const listener of [...hostRegistryRevisionListeners]) listener();
+  });
+}
+
+function subscribeHostRegistryRevision(listener: () => void): () => void {
+  ensureHostRegistryWatch();
+  hostRegistryRevisionListeners.add(listener);
+  return () => {
+    hostRegistryRevisionListeners.delete(listener);
+  };
+}
+
+function getHostRegistryRevision(): number {
+  return hostRegistryRevision;
+}
+
+const NOOP_SUBSCRIBE = (): (() => void) => () => undefined;
+
+/** The registered host's stable snapshot, or `null` when the app declares no surface. */
+function useHostSnapshot(host: NavigationHost | null): NavigationHostSnapshot | null {
+  const subscribe = useMemo(
+    () => (host === null ? NOOP_SUBSCRIBE : host.subscribe),
+    [host],
+  );
+  const getSnapshot = useMemo(() => (host === null ? () => null : host.getSnapshot), [host]);
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+/* ── UI/UX §4 motion (the header's one entrance; reduced motion removes it) ── */
+const CONTEXT_MOTION: React.CSSProperties = { animation: 'launcher-context-in 150ms ease' };
+const CONTEXT_NO_MOTION: React.CSSProperties = { animation: 'none', transition: 'none' };
+const SECONDARY_MOTION: React.CSSProperties = { animation: 'launcher-secondary-in 120ms ease' };
+const SECONDARY_NO_MOTION: React.CSSProperties = { animation: 'none', transition: 'none' };
+
+const FOCUS_VISIBLE_STYLE = {
+  outline: '2px solid var(--accent-strong)',
+  outlineOffset: '2px',
+} as const;
+
+/**
+ * `LauncherContextHeader` (UI/UX §2.1) — "does the box know where I am?" in ≤ 2 lines
+ * and ≤ 3 verbs. PURE presentational: the shell passes the FRESH envelope it derived on
+ * the host-notification epoch; this component owns no state, no subscription and no
+ * live-region (the shell owns the ONE announcer).
+ */
+function LauncherContextHeader({
+  envelope,
+}: {
+  readonly envelope: ContextEnvelope;
+}): React.ReactElement {
+  const motionReduced = useNavReducedMotion();
+  const fullPath = formatPlacePathLabel(envelope.placePath);
+  const selection = launcherSelectionSummary(envelope.selection);
+  const availableVerbs = envelope.verbs.filter((verb) => verb.available);
+  const isEmpty = fullPath === '' && selection === '' && availableVerbs.length === 0;
+
+  return (
+    <Box
+      data-testid={LAUNCHER_CONTEXT_TESTID}
+      role="group"
+      aria-label={LAUNCHER_CONTEXT_ARIA_LABEL}
+      width="100%"
+      maxWidth="560px"
+      px={3}
+      py={2}
+      bg="bg.subtle"
+      borderWidth="1px"
+      borderColor="border.subtle"
+      borderRadius="md"
+      display="flex"
+      flexDirection="column"
+      gap={1.5}
+      minWidth={0}
+      css={{
+        '@keyframes launcher-context-in': {
+          from: { opacity: 0, transform: 'translateY(4px)' },
+          to: { opacity: 1, transform: 'translateY(0)' },
+        },
+      }}
+      style={motionReduced ? CONTEXT_NO_MOTION : CONTEXT_MOTION}
+    >
+      <Flex align="center" gap={2} minWidth={0}>
+        <Icon as={LuCompass} boxSize="3.5" color="fg.subtle" aria-hidden="true" flexShrink={0} />
+        <Text
+          data-testid={LAUNCHER_CONTEXT_PATH_TESTID}
+          fontSize="sm"
+          fontWeight={isEmpty ? '400' : '600'}
+          color={isEmpty ? 'fg.muted' : 'fg.default'}
+          lineClamp={1}
+          minWidth={0}
+          title={isEmpty ? undefined : fullPath}
+        >
+          {isEmpty ? LAUNCHER_CONTEXT_EMPTY_COPY : fullPath}
+        </Text>
+        {selection === '' ? null : (
+          <Text
+            data-testid={LAUNCHER_CONTEXT_SELECTION_TESTID}
+            fontSize="xs"
+            color="fg.muted"
+            whiteSpace="nowrap"
+            flexShrink={0}
+          >
+            {selection}
+          </Text>
+        )}
+      </Flex>
+
+      {availableVerbs.length === 0 ? null : (
+        <Flex
+          data-testid={LAUNCHER_CONTEXT_VERBS_TESTID}
+          align="center"
+          gap={1.5}
+          flexWrap="wrap"
+          minWidth={0}
+        >
+          <Text
+            as="span"
+            fontSize="10px"
+            textTransform="uppercase"
+            letterSpacing="0.05em"
+            color="fg.subtle"
+            flexShrink={0}
+          >
+            {LAUNCHER_CONTEXT_VERBS_LABEL}
+          </Text>
+          {availableVerbs.slice(0, 3).map((verb) => (
+            <Box
+              key={verb.id}
+              data-testid={LAUNCHER_CONTEXT_VERB_TESTID}
+              data-nav-verb-id={verb.id}
+              title={verb.title}
+              px={1.5}
+              py={0.5}
+              borderRadius="sm"
+              borderWidth="1px"
+              borderColor="border.subtle"
+              bg="transparent"
+              display="inline-flex"
+              alignItems="center"
+              gap={1}
+              flexShrink={0}
+            >
+              <Text as="span" fontSize="11px" color="fg.default" lineClamp={1}>
+                {verb.title}
+              </Text>
+              {verb.keys.length === 0 ? null : (
+                <Text as="span" fontSize="10px" fontFamily="mono" color="fg.muted">
+                  {formatKeyHint(verb.keys)}
+                </Text>
+              )}
+            </Box>
+          ))}
+          {availableVerbs.length > 3 ? (
+            <Text as="span" fontSize="11px" color="fg.muted">
+              +{availableVerbs.length - 3}
+            </Text>
+          ) : null}
+        </Flex>
+      )}
+    </Box>
+  );
+}
+
+/** The level-2 action icon (the label carries the meaning). */
+function secondaryActionIcon(action: LauncherRowAction) {
+  if (action.kind === 'undo') return LuUndo2;
+  if (action.kind === 'map') return LuMap;
+  return LuPlay;
+}
+
+/**
+ * `LauncherPaletteSecondary` (UI/UX §2.3) — one row's actions. Presentational: the shell
+ * owns the index + runs the action; the panel renders `buildLauncherRowActions` verbatim
+ * (never a synthetic "Run" row) and adds no live region.
+ */
+function LauncherPaletteSecondary({
+  row,
+  actions,
+  selectedIndex,
+  onSelect,
+  reducedMotion,
+}: {
+  readonly row: LauncherPaletteRow;
+  readonly actions: readonly LauncherRowAction[];
+  readonly selectedIndex: number;
+  readonly onSelect: (index: number) => void;
+  readonly reducedMotion: boolean;
+}): React.ReactElement {
+  return (
+    <Box
+      data-testid={LAUNCHER_PALETTE_SECONDARY_TESTID}
+      role="listbox"
+      aria-label={LAUNCHER_SECONDARY_ARIA_LABEL}
+      width="100%"
+      maxWidth="560px"
+      bg="bg.surface"
+      borderWidth="1px"
+      borderColor="border.default"
+      borderRadius="md"
+      p={2}
+      css={{
+        '@keyframes launcher-secondary-in': {
+          from: { opacity: 0, transform: 'translateX(4px)' },
+          to: { opacity: 1, transform: 'translateX(0)' },
+        },
+      }}
+      style={reducedMotion ? SECONDARY_NO_MOTION : SECONDARY_MOTION}
+    >
+      <Flex align="baseline" gap={2} px={2} mb={2} minWidth={0}>
+        <Text fontSize="sm" fontWeight="600" color="fg.default" lineClamp={1}>
+          {row.title}
+        </Text>
+        <Text fontSize="11px" color="fg.muted" lineClamp={1} minWidth={0}>
+          {row.pathLabel}
+        </Text>
+      </Flex>
+      <Box display="flex" flexDirection="column" gap={0.5}>
+        {actions.map((action, index) => {
+          const selected = index === selectedIndex;
+          return (
+            <Box
+              key={`${action.kind}:${action.label}`}
+              role="option"
+              id={launcherNavigationSecondaryId(index)}
+              data-testid={LAUNCHER_PALETTE_SECONDARY_ITEM_TESTID}
+              {...{ [LAUNCHER_ACTION_KIND_ATTR]: action.kind }}
+              aria-selected={selected}
+              aria-label={action.label}
+              title={action.label}
+              tabIndex={selected ? 0 : -1}
+              onClick={() => onSelect(index)}
+              display="flex"
+              alignItems="center"
+              gap={2}
+              height="32px"
+              px={2}
+              borderRadius="sm"
+              borderWidth="1px"
+              borderColor={selected ? 'var(--accent-primary)' : 'transparent'}
+              bg={selected ? tint('var(--accent-primary)', 22) : 'transparent'}
+              cursor="pointer"
+              transition={
+                reducedMotion
+                  ? 'none'
+                  : 'background-color 120ms ease, border-color 120ms ease'
+              }
+              _hover={selected ? undefined : { bg: 'bg.hover' }}
+              css={{ '&:focus-visible': FOCUS_VISIBLE_STYLE }}
+            >
+              <Icon as={secondaryActionIcon(action)} boxSize="3.5" color="fg.muted" aria-hidden="true" />
+              <Text as="span" fontSize="13px" color="fg.default" lineClamp={1} minWidth={0}>
+                {action.label}
+              </Text>
+            </Box>
+          );
+        })}
+      </Box>
+    </Box>
+  );
+}
+
+/**
+ * The S6 response line (UI/UX §2.5) — ONE sentence, never a conversation turn and
+ * deliberately NOT a live region (the shell's ONE announcer speaks the same text).
+ */
+function LauncherResponseLine({
+  response,
+}: {
+  readonly response: LauncherResponse;
+}): React.ReactElement {
+  const rejected = response.kind === 'rejected' || response.kind === 'undo-failed';
+  return (
+    <Box
+      data-testid={LAUNCHER_RESPONSE_TESTID}
+      {...{ [LAUNCHER_RESPONSE_ATTR]: response.kind }}
+      {...(response.code === undefined
+        ? {}
+        : { [LAUNCHER_RESPONSE_CODE_ATTR]: response.code })}
+      width="100%"
+      maxWidth="560px"
+      px={3}
+      py={2}
+      display="flex"
+      alignItems="flex-start"
+      gap={2}
+      bg="bg.subtle"
+      borderWidth="1px"
+      borderRadius="md"
+      borderColor={rejected ? tint('var(--status-warning)', 40) : 'border.subtle'}
+    >
+      <Icon
+        as={rejected ? LuTriangleAlert : LuMessageCircleQuestion}
+        boxSize="3.5"
+        color={rejected ? 'status.warning' : 'fg.muted'}
+        aria-hidden="true"
+        flexShrink={0}
+      />
+      <Text fontSize="13px" color="fg.default" lineHeight="1.5">
+        {response.message}
+      </Text>
+    </Box>
+  );
+}
+
 export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, onOpenFeature }) => {
   const currentWindows = useWindows();
   // #2899 ST-3 — the desktop surface's fill is conditional on the selection
@@ -535,6 +956,20 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // (it re-z's above the window stack + autofocuses the searchbox). When FALSE the
   // resting z-model (coveredByWindow) applies unchanged.
   const [open, setOpen] = useState(false);
+
+  // ── Spec #3120 (P6), ST-6 — launcher-navigation interaction state ───────────
+  // All of it is view state (never persisted): the navigation selection is SEPARATE
+  // from the shipped `paletteIndex` so the app grid's roving index stays aligned
+  // (#2826) in every non-navigation query.
+  const [navPaletteIndex, setNavPaletteIndex] = useState(0);
+  const [navSecondaryOpen, setNavSecondaryOpen] = useState(false);
+  const [navSecondaryIndex, setNavSecondaryIndex] = useState(0);
+  const [navResponse, setNavResponse] = useState<LauncherResponse | null>(null);
+  // A performed NAVIGATION dispatch's result message; cleared on the next user move.
+  const [navResultAnnouncement, setNavResultAnnouncement] = useState('');
+  // The ST-1 confirmation store's pending request (subscribed only while visible).
+  const [pendingConfirmation, setPendingConfirmation] =
+    useState<PendingLauncherConfirmation | null>(null);
 
   // Spec #2887 follow-up (UI/UX §4 S4) — the CANCEL signal handed to the bar's
   // live region. A monotonic counter (never a boolean) so each live Escape / `×`
@@ -781,6 +1216,12 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     openRef.current = true;
     setOpen(true);
     setEngaged(true);
+    // Spec #3120 (P6), ST-6 — a raise is a fresh engagement: the navigation level-2
+    // view, its selection and any stale response line never survive a re-open.
+    setNavSecondaryOpen(false);
+    setNavSecondaryIndex(0);
+    setNavResponse(null);
+    setNavResultAnnouncement('');
     window.requestAnimationFrame(() => {
       // Guard against a within-frame close (rapid double-press): only touch the
       // searchbox if the overlay is STILL open (openRef is read live, not captured).
@@ -886,6 +1327,97 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   const paletteSafeIndex = paletteCount === 0 ? 0 : Math.min(paletteIndex, paletteCount - 1);
   const activeActionId = paletteCount > 0 ? launcherActionEntryId(paletteSafeIndex) : undefined;
 
+  // ── Spec #3120 (P6), ST-6 — the navigation source (context header + palette) ──
+  // `activeAppId` is the FOCUSED, non-minimized window; a minimized window can never
+  // own the context (QA R-1.1 edge). The registry revision re-derives the host when a
+  // provider mounts/unmounts (an app opening/closing) — no polling, no IPC.
+  const hostRegistryRevision = useSyncExternalStore(
+    subscribeHostRegistryRevision,
+    getHostRegistryRevision,
+    getHostRegistryRevision,
+  );
+  const activeAppId = useMemo(() => {
+    const focused = currentWindows.find((win) => win.focused && !win.isMinimized);
+    return focused?.id ?? null;
+  }, [currentWindows]);
+  const navHost = useMemo(
+    () => (activeAppId === null ? null : getNavigationHost(activeAppId)),
+    [activeAppId, hostRegistryRevision],
+  );
+  const navSurface = useMemo(
+    () => (activeAppId === null ? null : getRegisteredSurface(activeAppId)),
+    [activeAppId, hostRegistryRevision],
+  );
+  const navHostSnapshot = useHostSnapshot(navHost);
+  const navHostEpoch = navHostSnapshot?.epoch ?? -1;
+  // FRESHNESS (#523): ONE memo over primitive keys (`navHost` + the host epoch). The
+  // envelope is rebuilt on every host notification — never an effect+setState, never
+  // a cached snapshot, never a poll. `null` ⇒ the shipped no-surface launcher.
+  const navContext = useMemo<ContextEnvelope | null>(
+    () => (navHost === null ? null : navHost.describeContext()),
+    [navHost, navHostEpoch],
+  );
+  // Both palette sources are mutually exclusive per active app (Architect A5).
+  const navPaletteActive = navContext !== null && paletteActive;
+  const navPaletteModel = useMemo<LauncherPaletteModel>(() => {
+    if (!navPaletteActive || navSurface === null || navHostSnapshot === null) {
+      return EMPTY_NAV_MODEL;
+    }
+    const recents = navHostSnapshot.envelope.journal.last.map((entry) => entry.verbId);
+    const built = buildLauncherPaletteModel(navSurface, navHostSnapshot.context, recents);
+    return filterLauncherPaletteModel(built, paletteQuery.term);
+  }, [navPaletteActive, navSurface, navHostSnapshot, paletteQuery.term]);
+  const navPaletteRows = navPaletteModel.rows;
+  const navPaletteCount = navPaletteRows.length;
+  const navPaletteSafeIndex =
+    navPaletteCount === 0 ? 0 : Math.min(navPaletteIndex, navPaletteCount - 1);
+  const navSecondaryRow = navPaletteRows[navPaletteSafeIndex] ?? null;
+  const navSecondaryActions = useMemo<readonly LauncherRowAction[]>(
+    () =>
+      navPaletteActive && navSecondaryRow !== null
+        ? buildLauncherRowActions(navSecondaryRow, navHostSnapshot?.entries ?? EMPTY_ENTRIES)
+        : EMPTY_ROW_ACTIONS,
+    [navPaletteActive, navSecondaryRow, navHostSnapshot],
+  );
+  const navSecondaryCount = navSecondaryActions.length;
+  const navSecondarySafeIndex =
+    navSecondaryCount === 0 ? 0 : Math.min(navSecondaryIndex, navSecondaryCount - 1);
+  const navActiveDescendant = navPaletteActive
+    ? navSecondaryOpen
+      ? navSecondaryCount > 0
+        ? launcherNavigationSecondaryId(navSecondarySafeIndex)
+        : undefined
+      : navPaletteCount > 0
+        ? launcherNavigationRowId(navPaletteSafeIndex)
+        : undefined
+    : undefined;
+  // The ONE polite region's text (UI/UX §2.6). Precedence: response → secondary item →
+  // navigation result → focused palette row (or the empty copy). Identical consecutive
+  // text is a no-op for a screen reader because the string never changes.
+  const navRowAnnouncement = useMemo(() => {
+    if (!navPaletteActive) return '';
+    if (navPaletteCount === 0) return LAUNCHER_PALETTE_EMPTY_COPY;
+    const row = navPaletteRows[navPaletteSafeIndex];
+    return row === undefined ? '' : launcherPaletteAnnouncement(row);
+  }, [navPaletteActive, navPaletteCount, navPaletteRows, navPaletteSafeIndex]);
+  const navSecondaryAnnouncement = useMemo(() => {
+    if (!navSecondaryOpen) return '';
+    const action = navSecondaryActions[navSecondarySafeIndex];
+    return action === undefined ? '' : action.label;
+  }, [navSecondaryOpen, navSecondaryActions, navSecondarySafeIndex]);
+  const navAnnouncement =
+    navContext === null
+      ? ''
+      : navResponse !== null
+        ? navResponse.message
+        : navSecondaryOpen && navSecondaryAnnouncement !== ''
+          ? navSecondaryAnnouncement
+          : navResultAnnouncement !== ''
+            ? navResultAnnouncement
+            : navRowAnnouncement;
+  // UI/UX §4 — read the reduced-motion preference ONCE and pass it to every new surface.
+  const navReducedMotion = useNavReducedMotion();
+
   // Spec #2882 ST-4 — the truthful hint, derived from ST-1's ONE Enter verdict
   // (R-6.3: "the hint always states the action Enter will take"). The old
   // independent exact-full-name rule + the `companionBusy` global gate are
@@ -905,6 +1437,22 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     enterMode: LauncherEnterMode;
     hintLabel: string | undefined;
   }>(() => {
+    // Spec #3120 (P6), ST-6 — in the NAVIGATION palette the chip names the row/action
+    // Enter will run, never a shipped hotkey action (which Enter no longer runs here).
+    if (navPaletteActive) {
+      if (navSecondaryOpen) {
+        const action = navSecondaryActions[navSecondarySafeIndex];
+        return {
+          enterMode: 'none',
+          hintLabel: action === undefined ? undefined : `↵ run ${action.label}`,
+        };
+      }
+      const row = navPaletteRows[navPaletteSafeIndex];
+      return {
+        enterMode: 'none',
+        hintLabel: row === undefined ? undefined : `↵ run ${row.title}`,
+      };
+    }
     // Spec #2946 ST-9 — in palette mode the chip names the ACTION Enter will run
     // (the shipped `resolveEnterAction` verdict never applies to a `>` query).
     if (paletteActive) {
@@ -932,6 +1480,12 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       action.kind === 'launch' ? 'launch' : action.kind === 'send' ? 'send' : 'none';
     return { enterMode, hintLabel };
   }, [
+    navPaletteActive,
+    navSecondaryOpen,
+    navSecondaryActions,
+    navSecondarySafeIndex,
+    navPaletteRows,
+    navPaletteSafeIndex,
     paletteActive,
     paletteEntries,
     paletteSafeIndex,
@@ -1116,7 +1670,12 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // The EMPTY-query grid selection stays in the Enter handler (R-5.1) — it is not
   // a commit and never reaches here.
   const commitBarQuery = useCallback(
-    (raw: string): 'launched' | 'sent' | 'queued' | 'none' => {
+    (
+      raw: string,
+      // Spec #3120 (P6), ST-6 — the navigation source hands ST-3 the FRESH envelope so a
+      // plain launcher query is grounded. The no-surface path passes nothing (byte-identical).
+      context?: ContextEnvelope,
+    ): 'launched' | 'sent' | 'queued' | 'none' => {
       const action = resolveEnterAction({
         query: raw,
         entries: filteredEntries,
@@ -1135,7 +1694,12 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
         // non-accepting outcome; both `dispatched` and `queued` ACCEPT (the bar
         // clears and focus stays). `null`/`rejected` leaves the text UNTOUCHED —
         // never the retired launch fall-through (AC7/REQ-7).
-        const result = askActiveCompanion(raw.trim());
+        // The no-surface path calls with ONE argument (byte-identical shipped shape); the
+        // navigation source adds the ST-3 grounding option.
+        const result =
+          context === undefined
+            ? askActiveCompanion(raw.trim())
+            : askActiveCompanion(raw.trim(), { context });
         if (result && result.outcome !== 'rejected') {
           setQuery('');
           barTextRef.current = '';
@@ -1173,6 +1737,164 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     [paletteEntries],
   );
 
+  /* ── Spec #3120 (P6), ST-6 — the navigation execution seam ── */
+
+  /**
+   * Apply the close/stay matrix (UI/UX §1.5) to one finished dispatch.
+   *
+   *   performed + navigation (not an undo, not external) → STAY + announce the new place;
+   *   performed + mutation / external / `journal.undo`   → CLOSE (focus restore);
+   *   canceled-confirmation                             → STAY silently (the user chose it);
+   *   noop / rejected / failed                           → STAY with the S6 response line.
+   */
+  const handleNavDispatchResult = useCallback(
+    (result: DispatchResult, requestedVerbId: string) => {
+      if (result.status === 'performed') {
+        const entry = result.entry;
+        const isNavigationResult =
+          entry.effect === 'navigation' &&
+          requestedVerbId !== JOURNAL_UNDO_VERB_ID &&
+          !entry.external;
+        if (isNavigationResult) {
+          setNavSecondaryOpen(false);
+          setNavResponse(null);
+          // The host committed the new path before returning, so a FRESH envelope names
+          // where the user landed (`navPlaceEnterMessage`, the reused P4 composer).
+          if (navHost !== null) {
+            const fresh = navHost.describeContext();
+            const current = fresh.placePath[fresh.placePath.length - 1];
+            const availableCount = fresh.verbs.filter((verb) => verb.available).length;
+            if (current !== undefined) {
+              setNavResultAnnouncement(navPlaceEnterMessage(current.label, availableCount));
+            }
+          }
+          return;
+        }
+        // A performed mutation / external action / undo: close so the change and the new
+        // trail entry are visible (the overlay would hide them).
+        setNavResponse(null);
+        closeOverlay();
+        return;
+      }
+
+      // Anything else stays open and speaks through the ONE response line.
+      setNavResultAnnouncement('');
+      if (result.status === 'noop') {
+        if (result.message === NOTHING_TO_UNDO) {
+          setNavResponse({ kind: 'undo-nothing', message: NOTHING_TO_UNDO });
+        } else if (result.message !== null) {
+          setNavResponse({ kind: 'rejected', message: result.message });
+        }
+        return;
+      }
+      if (result.status === 'rejected') {
+        // Cancel is the user's own choice — an error line would be a lie.
+        if (result.code === 'canceled-confirmation') return;
+        setNavResponse({
+          kind: 'rejected',
+          message: result.code === 'unavailable' ? NAV_UNAVAILABLE_REASON : LAUNCHER_REJECTED_COPY,
+          code: result.code,
+        });
+        return;
+      }
+      if (result.status === 'partial') {
+        const failed = navHost
+          ?.getSnapshot()
+          .entries.find((entry) => entry.seq === result.failedSeq);
+        setNavResponse({
+          kind: 'undo-failed',
+          message: navUndoFailedMessage(failed?.label ?? 'the last action'),
+        });
+        return;
+      }
+      if (result.status === 'failed') {
+        setNavResponse({ kind: 'rejected', message: LAUNCHER_REJECTED_COPY, code: result.code });
+      }
+    },
+    [closeOverlay, navHost],
+  );
+
+  /** Run one intent through the ONE host funnel (`runIntent`) — never `runHotkeyAction`. */
+  const runNavIntent = useCallback(
+    async (intent: Intent) => {
+      if (navHost === null) return;
+      let result: DispatchResult;
+      try {
+        result = await navHost.runIntent(intent);
+      } catch {
+        setNavResultAnnouncement('');
+        setNavResponse({ kind: 'rejected', message: LAUNCHER_REJECTED_COPY, code: 'failed-run' });
+        return;
+      }
+      handleNavDispatchResult(result, intent.verbId);
+    },
+    [handleNavDispatchResult, navHost],
+  );
+
+  /** Enter on the navigation palette: the focused row, or the focused secondary action. */
+  const handleNavPaletteEnter = useCallback(() => {
+    if (navSecondaryOpen) {
+      const action = navSecondaryActions[navSecondarySafeIndex];
+      if (action === undefined) return;
+      if (action.kind === 'map') {
+        // The map is the NavigationMap dialog, never a third launcher level.
+        closeOverlay();
+        navHost?.openMap(action.placeId);
+        return;
+      }
+      void runNavIntent({
+        verbId: action.verbId,
+        // A row-targeted undo names that row's verb (the newest undoable entry for it);
+        // the ST-5 action's `verbId` is the DISPATCH verb (`journal.undo`).
+        args:
+          action.kind === 'undo' && navSecondaryRow !== null
+            ? { verbId: navSecondaryRow.verbId }
+            : {},
+        channel: 'launcher',
+        actor: 'human',
+      });
+      return;
+    }
+    const row = navPaletteRows[navPaletteSafeIndex];
+    if (row === undefined) return;
+    if (!row.available) {
+      // The row stays selectable (the user learns it exists); Enter dispatches nothing.
+      setNavResultAnnouncement(
+        `${launcherPaletteAnnouncement(row)} — ${row.reason ?? NAV_UNAVAILABLE_REASON}`,
+      );
+      return;
+    }
+    void runNavIntent({
+      verbId: row.verbId,
+      args: {},
+      channel: 'launcher',
+      actor: 'human',
+    });
+  }, [
+    navSecondaryOpen,
+    navSecondaryActions,
+    navSecondarySafeIndex,
+    navSecondaryRow,
+    navPaletteRows,
+    navPaletteSafeIndex,
+    runNavIntent,
+    closeOverlay,
+    navHost,
+  ]);
+
+  /** Cmd/Ctrl+K — open one row's actions, or toggle back to the palette. */
+  const handleNavSecondaryToggle = useCallback(() => {
+    if (!navPaletteActive || navSecondaryCount === 0) return;
+    setNavResultAnnouncement('');
+    setNavSecondaryOpen((openSecondary) => !openSecondary);
+    setNavSecondaryIndex(0);
+  }, [navPaletteActive, navSecondaryCount]);
+
+  /** The confirmation dialog's only exit: Accept = true, Cancel/Esc/outside = false. */
+  const handleConfirmationResolve = useCallback((accepted: boolean) => {
+    resolveLauncherConfirmation(accepted);
+  }, []);
+
   const handleQueryChange = useCallback((q: string) => {
     // #2878 ST-1 — synchronous mirror so the release owner's ordinary-space write
     // reads the current text in the same commit (never a one-render-stale read).
@@ -1182,6 +1904,13 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     setSelectedIndex(0);
     // Spec #2946 ST-9 — a fresh filter restarts the action-palette selection too.
     setPaletteIndex(0);
+    // Spec #3120 (P6), ST-6 — the next keystroke re-resolves the route: the response
+    // line, the secondary level and the navigation result message are all replaced.
+    setNavPaletteIndex(0);
+    setNavSecondaryOpen(false);
+    setNavSecondaryIndex(0);
+    setNavResponse(null);
+    setNavResultAnnouncement('');
     // A present query reveals the grid (engaged) even without surface focus.
     if (q.trim() !== '') setEngaged(true);
   }, []);
@@ -1382,6 +2111,18 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
           void cancelVoice();
           return;
         }
+        // Spec #3120 (P6), ST-6 — the Esc stack (UI/UX §1.3): a pending confirmation is
+        // dismissed first (the dialog is portal'd, but the shell honours the same branch
+        // for deterministic hosts), then ONE level of the navigation view.
+        if (pendingConfirmation !== null) {
+          resolveLauncherConfirmation(false);
+          return;
+        }
+        if (navSecondaryOpen) {
+          setNavSecondaryOpen(false);
+          setNavSecondaryIndex(0);
+          return;
+        }
         if (open) {
           // #2823: ESC on a shortcut-opened overlay closes the overlay (AC2) and
           // restores focus to the pre-open element (REQ-5). This is the ONLY action
@@ -1436,6 +2177,54 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
 
       if (e.key === 'Enter') {
         e.preventDefault();
+        // ── Spec #3120 (P6), ST-6 — the ONE navigation route, consumed BEFORE the
+        // shipped `paletteActive` branch (UI/UX D6). The route is consulted ONLY when
+        // the active app registered a navigation host; otherwise the shipped branches
+        // below are byte-identical (R-1.2).
+        if (navContext !== null) {
+          const route = resolveLauncherRoute({
+            query,
+            entries: filteredEntries,
+            textOrigin: 'typed',
+            companionActive,
+            captureLive,
+            paletteActive,
+          });
+          if (route.kind === 'clarify') {
+            // S6 — ONE response line, no dispatch, no journal change.
+            setNavResultAnnouncement('');
+            setNavSecondaryOpen(false);
+            setNavResponse({ kind: 'clarify', message: route.message });
+            return;
+          }
+          if (route.kind === 'undo') {
+            // Undo by description → the engine verb through the SAME funnel.
+            const args: Record<string, string> = {};
+            if (route.args.actor !== undefined) args.actor = route.args.actor;
+            if (route.args.count !== undefined) args.count = route.args.count;
+            void runNavIntent({
+              verbId: JOURNAL_UNDO_VERB_ID,
+              args,
+              channel: 'launcher',
+              actor: 'human',
+            });
+            return;
+          }
+          if (route.kind === 'palette') {
+            handleNavPaletteEnter();
+            return;
+          }
+          // kind 'enter' — the shipped verdict, unchanged (captureLive is the no-op).
+          if (route.action.kind === 'none' && route.action.reason === 'listening') return;
+          const navQuery = query.trim();
+          if (navQuery === '') {
+            if (companionReplying) return;
+            openSelected();
+            return;
+          }
+          commitBarQuery(navQuery, navContext);
+          return;
+        }
         // Spec #2946 ST-9 — palette mode: Enter runs the focused ACTION result
         // with `source: 'palette'`. This branch is reachable ONLY while the query
         // carries the `>` prefix, so a non-prefix query keeps the shipped
@@ -1537,6 +2326,28 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       // Spec #2946 ST-9 — palette mode: ↑/↓ move the ACTION selection and the
       // app-grid navigation below (its roving index over apps) is skipped, so a
       // `>` query can never move the app tile selection (#2826 invariant).
+      if (navPaletteActive) {
+        // Cmd/Ctrl+K — the ONE bound chord, evaluated in the EXISTING shell handler
+        // (no second `document` listener). A row with no actions is a silent no-op.
+        if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+          e.preventDefault();
+          handleNavSecondaryToggle();
+          return;
+        }
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          setNavResultAnnouncement('');
+          const delta = e.key === 'ArrowDown' ? 1 : -1;
+          if (navSecondaryOpen) {
+            if (navSecondaryCount > 0) {
+              setNavSecondaryIndex((i) => clampIndex(i + delta, navSecondaryCount));
+            }
+          } else if (navPaletteCount > 0) {
+            setNavPaletteIndex((i) => clampIndex(i + delta, navPaletteCount));
+          }
+        }
+        return;
+      }
       if (paletteActive) {
         if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
           e.preventDefault();
@@ -1604,6 +2415,16 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       paletteEntries,
       paletteSafeIndex,
       paletteCount,
+      // Spec #3120 (P6), ST-6 — the navigation route/stack reads these.
+      navContext,
+      navPaletteActive,
+      navPaletteCount,
+      navSecondaryOpen,
+      navSecondaryCount,
+      pendingConfirmation,
+      handleNavPaletteEnter,
+      handleNavSecondaryToggle,
+      runNavIntent,
     ],
   );
 
@@ -1649,6 +2470,39 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       registerHotkeyHandler(ACTION_PALETTE_OPEN_ACTION_ID, null);
     };
   }, [handleLauncherToggle, openActionsPalette]);
+
+  // ── Spec #3120 (P6), ST-6 — the launcher-open bridge (`/ Ask`, `app.ask`) ──
+  // A request raises the launcher, clears the bar (the bridge may carry a prefill),
+  // and focuses the input. The shipped pre-open focus capture runs FIRST, so the rail
+  // button that asked is restored on the next close (R-7.2).
+  useEffect(
+    () =>
+      subscribeLauncherOpenRequests((request) => {
+        openOverlay();
+        handleQueryChange(request.prefill ?? '');
+        window.requestAnimationFrame(() => {
+          if (!openRef.current) return;
+          const input = overlayRef.current?.querySelector<HTMLTextAreaElement | HTMLInputElement>(
+            SEARCHBOX_SELECTOR,
+          );
+          if (!input) return;
+          input.focus();
+          const end = input.value.length;
+          input.setSelectionRange(end, end);
+        });
+      }),
+    [openOverlay, handleQueryChange],
+  );
+
+  // ── Spec #3120 (P6), ST-6 — the confirmation host ──────────────────────────
+  // Subscribe while the launcher is VISIBLE. The last unsubscribe cancels an in-flight
+  // request (ST-1's store resolves it `false`), so a closed launcher never strands the
+  // funnel and nothing auto-confirms; the dialog itself owns Accept/Cancel/Esc/outside.
+  const launcherVisible = open || engaged;
+  useEffect(() => {
+    if (!launcherVisible) return;
+    return subscribeLauncherConfirmation(setPendingConfirmation);
+  }, [launcherVisible]);
 
   // Spec #2882 ST-5 — the SINGLE release owner for the hold gesture (R-2.2/R-2.6/
   // R-2.7, UI/UX §5.9): one mount-once bubble-phase `document` keyup listener,
@@ -1907,7 +2761,9 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             query={query}
             onQueryChange={handleQueryChange}
             gridOpen={engaged}
-            ariaActivedescendant={paletteActive ? activeActionId : activeTileId}
+            ariaActivedescendant={
+              navPaletteActive ? navActiveDescendant : paletteActive ? activeActionId : activeTileId
+            }
             onFocus={handleBarFocus}
             onBlur={handleBarBlur}
             onMinimize={handleMinimize}
@@ -1990,6 +2846,24 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             // passed down; ST-1 renders the caption only on 2+ visual lines.
             newlineHint={companionActive}
           />
+          {/* Spec #3120 (P6), ST-6 — the context header (UI/UX §2.1). Rendered
+              immediately under the bar, above the open-apps row, BEFORE typing, and only
+              while the launcher is engaged over a window with a registered host. The
+              no-surface launcher renders none of this (byte-identical DOM). */}
+          {engaged && navContext !== null ? <LauncherContextHeader envelope={navContext} /> : null}
+          {/* The ONE launcher polite region (UI/UX §2.6): mounted only while a navigation
+              host owns the focused window. The S6 response line is NOT a live region, so
+              it can never become a second one. */}
+          {navContext !== null ? (
+            <VisuallyHidden
+              data-testid={LAUNCHER_PALETTE_ANNOUNCER_TESTID}
+              role="status"
+              aria-live="polite"
+              aria-label={LAUNCHER_ANNOUNCER_LABEL}
+            >
+              {navAnnouncement}
+            </VisuallyHidden>
+          ) : null}
           {/* Spec #2954 ST-2 — the in-launcher Open-apps row. Rendered
               IMMEDIATELY above the grid, inside the launcher column, gated
               `engaged && !paletteActive && windows>0`. The gate is expressed on
@@ -2003,8 +2877,44 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
               <LauncherOpenAppsHost windows={filteredOpenWindows} />
             </Box>
           )}
+          {/* Spec #3120 (P6), ST-6 — the ONE shared results region, source-switched:
+              response line → secondary actions → grouped navigation palette → the
+              shipped app grid. The no-surface branches are the shipped pair verbatim. */}
           {(engaged || companionMessageVisible) &&
-            (paletteActive ? (
+            (navContext !== null ? (
+              navResponse !== null ? (
+                <Box ref={gridRef} width="100%" display="flex" justifyContent="center">
+                  <LauncherResponseLine response={navResponse} />
+                </Box>
+              ) : navPaletteActive && navSecondaryOpen && navSecondaryCount > 0 ? (
+                <Box ref={gridRef} width="100%" display="flex" justifyContent="center">
+                  {navSecondaryRow === null ? null : (
+                    <LauncherPaletteSecondary
+                      row={navSecondaryRow}
+                      actions={navSecondaryActions}
+                      selectedIndex={navSecondarySafeIndex}
+                      onSelect={setNavSecondaryIndex}
+                      reducedMotion={navReducedMotion}
+                    />
+                  )}
+                </Box>
+              ) : navPaletteActive ? (
+                <LauncherNavigationList
+                  model={navPaletteModel}
+                  selectedIndex={navPaletteSafeIndex}
+                  onSelect={setNavPaletteIndex}
+                  containerRef={gridRef}
+                  reducedMotion={navReducedMotion}
+                />
+              ) : (
+                <LauncherAppGrid
+                  entries={filteredEntries}
+                  selectedIndex={safeSelectedIndex}
+                  onSelect={handleSelect}
+                  containerRef={gridRef}
+                />
+              )
+            ) : paletteActive ? (
               <LauncherActionList
                 entries={paletteEntries}
                 selectedIndex={paletteSafeIndex}
@@ -2021,6 +2931,14 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             ))}
         </Box>
       </Box>
+      {/* Spec #3120 (P6), ST-6 — the confirmation host (the ONLY await in the keystroke
+          path). Rendered only while the launcher is visible; the store's last unsubscribe
+          cancels an in-flight request, and nothing auto-confirms. */}
+      <LauncherConfirmation
+        request={launcherVisible ? pendingConfirmation?.request ?? null : null}
+        onResolve={handleConfirmationResolve}
+        reducedMotion={navReducedMotion}
+      />
     </>
   );
 };
