@@ -1,7 +1,13 @@
 /**
- * Wireframe property panel — contextual variants, immediate dispatch, numeric
- * alternatives, radius slider↔enum parity, hidden/locked selection behaviour
- * (Spec #3070, ST-4, R-3.1…R-3.6 / R-4.6).
+ * Wireframe property panel — contextual variants, immediate verb dispatch,
+ * numeric alternatives, radius slider↔enum parity, hidden/locked selection
+ * behaviour (Spec #3070, ST-4, R-3.1…R-3.6 / R-4.6).
+ *
+ * Spec #3119 ST-6: the panel is the DETAILS VIEW — every edit dispatches the
+ * declared verb through the navigation host (one journal entry per interaction
+ * tick), `rename` focuses+selects the name field, and Escape in a field returns
+ * focus to the canvas root. The panel is rendered inside the real
+ * `WireframeNavigationProvider` so `useWireframeNavigation()` resolves.
  *
  * Arc/Zag machines deliver their state-change callbacks in a microtask, so every
  * machine-driven interaction is awaited inside `act` before the store is read.
@@ -13,7 +19,12 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
+import type { NavigationHost } from '@/shared/navigation/ui/host';
 import { WireframePropertyPanel } from '../components/WireframePropertyPanel';
+import {
+  WireframeNavigationProvider,
+  useWireframeNavigation,
+} from '../components/WireframeNavigationProvider';
 import {
   createDefaultElement,
   type WireframeElement,
@@ -21,13 +32,27 @@ import {
 } from '../model/elements';
 import {
   dispatch,
+  getNavigationJournal,
   getSnapshot,
   resetWireframeStoreForTests,
   select,
   selectMany,
 } from '../store/wireframeDocumentStore';
+import { resetWireframeSurfaceForTests } from '../wireframeSurface';
 
 let counter = 0;
+let currentHost: NavigationHost | null = null;
+
+/** Grab the provider's host so a test can run a verb exactly as the UI does. */
+function HostCapture(): null {
+  currentHost = useWireframeNavigation().host;
+  return null;
+}
+
+function host(): NavigationHost {
+  if (currentHost === null) throw new Error('host not mounted');
+  return currentHost;
+}
 
 function addElement(type: WireframeElementType): WireframeElement {
   counter += 1;
@@ -50,7 +75,12 @@ function elementFromStore(id: string): WireframeElement {
 }
 
 function renderPanel() {
-  return renderWithChakra(<WireframePropertyPanel />);
+  return renderWithChakra(
+    <WireframeNavigationProvider>
+      <HostCapture />
+      <WireframePropertyPanel />
+    </WireframeNavigationProvider>,
+  );
 }
 
 /** Let Arc/Zag deliver its microtask state callback and React re-render. */
@@ -134,11 +164,16 @@ function numberInput(testId: string): HTMLInputElement {
 
 beforeEach(() => {
   counter = 0;
+  currentHost = null;
   resetWireframeStoreForTests();
+  resetWireframeSurfaceForTests();
 });
 
 afterEach(() => {
   cleanup();
+  currentHost = null;
+  resetWireframeStoreForTests();
+  resetWireframeSurfaceForTests();
 });
 
 describe('selection header and panel variants', () => {
@@ -431,7 +466,7 @@ describe('multi-selection and group headers (Spec #3071, ST-6 — UI/UX 2.2)', (
 
     expect(screen.getByTestId('wireframe-panel-title')).toHaveTextContent('2 elements selected');
     expect(screen.getByTestId('wireframe-panel-caption')).toHaveTextContent(
-      'Arrange, align or group them from the toolbar',
+      'Arrange, align or group them from the rail',
     );
     expect(screen.queryByTestId('wireframe-tag-group')).toBeNull();
     expect(screen.queryByTestId('wireframe-page-controls')).toBeNull();
@@ -554,5 +589,99 @@ describe('every numeric property has a non-numeric alternative (R-3.6)', () => {
     expect(
       within(screen.getByTestId('wireframe-page-height-number')).getAllByRole('button'),
     ).toHaveLength(2);
+  });
+});
+
+describe('the panel is the details view — every edit dispatches a declared verb (Spec #3119, R-5/R-6)', () => {
+  it('a fill edit appends one journal entry carrying the declared style verb id', async () => {
+    const element = addElement('shape');
+    renderPanel();
+    const before = getNavigationJournal().entries().length;
+
+    await clickControl('wireframe-fill-accent');
+
+    const entries = getNavigationJournal().entries();
+    expect(entries).toHaveLength(before + 1);
+    const entry = entries[entries.length - 1];
+    expect(entry.verbId).toBe('wireframe.style.fill');
+    // One interaction tick = one entry = one undo (no coalescing).
+    expect(entry.coalesceKey).toBeNull();
+    expect(elementFromStore(element.id)).toMatchObject({ fill: 'accent' });
+  });
+
+  it('a field edit dispatches wireframe.element.setField', () => {
+    const element = addElement('text');
+    renderPanel();
+    const before = getNavigationJournal().entries().length;
+
+    fireEvent.change(screen.getByTestId('wireframe-text-content'), {
+      target: { value: 'Hero headline' },
+    });
+
+    const entries = getNavigationJournal().entries();
+    expect(entries).toHaveLength(before + 1);
+    expect(entries[entries.length - 1].verbId).toBe('wireframe.element.setField');
+    expect(elementFromStore(element.id)).toMatchObject({ text: 'Hero headline' });
+  });
+
+  it('visible and lock dispatch the declared Edit toggle verbs', async () => {
+    const element = addElement('text');
+    renderPanel();
+    const before = getNavigationJournal().entries().length;
+
+    await toggleSwitch('wireframe-visible-switch');
+    let entries = getNavigationJournal().entries();
+    expect(entries).toHaveLength(before + 1);
+    expect(entries[entries.length - 1].verbId).toBe('wireframe.element.toggleVisible');
+    expect(elementFromStore(element.id)).toMatchObject({ visible: false });
+
+    await toggleSwitch('wireframe-lock-switch');
+    entries = getNavigationJournal().entries();
+    expect(entries).toHaveLength(before + 2);
+    expect(entries[entries.length - 1].verbId).toBe('wireframe.element.toggleLock');
+    expect(elementFromStore(element.id)).toMatchObject({ locked: true });
+  });
+
+  it('Edit r focuses and selects the name field instead of fabricating a name', async () => {
+    const element = addElement('text');
+    renderPanel();
+    const field = screen.getByTestId('wireframe-text-content') as HTMLTextAreaElement;
+    const before = getNavigationJournal().entries().length;
+
+    await act(async () => {
+      await host().runVerb('wireframe.element.rename', 'pointer', {});
+    });
+
+    expect(field).toHaveFocus();
+    expect(field.selectionStart).toBe(0);
+    expect(field.selectionEnd).toBe(element.text.length);
+    // A navigation effect — no document name is written.
+    expect(elementFromStore(element.id)).toMatchObject({ text: element.text });
+    const entries = getNavigationJournal().entries();
+    expect(entries[entries.length - 1].verbId).toBe('wireframe.element.rename');
+    expect(entries).toHaveLength(before + 1);
+  });
+
+  it('Escape inside a panel field returns focus to the canvas root (never body)', () => {
+    addElement('text');
+    const canvas = document.createElement('div');
+    canvas.setAttribute('data-testid', 'wireframe-canvas');
+    canvas.tabIndex = 0;
+    document.body.appendChild(canvas);
+    try {
+      renderPanel();
+      const field = screen.getByTestId('wireframe-text-content');
+      field.focus();
+      const before = getNavigationJournal().entries().length;
+
+      fireEvent.keyDown(field, { key: 'Escape' });
+
+      expect(canvas).toHaveFocus();
+      expect(document.body).not.toHaveFocus();
+      // No dispatch, no journal entry.
+      expect(getNavigationJournal().entries()).toHaveLength(before);
+    } finally {
+      canvas.remove();
+    }
   });
 });

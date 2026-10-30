@@ -2,6 +2,10 @@
  * Wireframe page controls — three presets + derived `Custom` caption, editable
  * dimensions and the declared 64..4096 clamp (Spec #3070, ST-4, R-3.5 / R-4.6).
  *
+ * Spec #3119 ST-6: the controls dispatch the declared `wireframe.page.update`
+ * verb through the navigation host, so the panel renders inside the real
+ * `WireframeNavigationProvider`.
+ *
  * Arc/Zag machines deliver their state-change callbacks in a microtask, so every
  * machine-driven interaction is awaited inside `act` before the store is read.
  */
@@ -13,7 +17,17 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { WireframePropertyPanel } from '../components/WireframePropertyPanel';
+import { WireframeNavigationProvider } from '../components/WireframeNavigationProvider';
 import { getSnapshot, resetWireframeStoreForTests } from '../store/wireframeDocumentStore';
+import { resetWireframeSurfaceForTests } from '../wireframeSurface';
+
+function renderPageControls() {
+  return renderWithChakra(
+    <WireframeNavigationProvider>
+      <WireframePropertyPanel />
+    </WireframeNavigationProvider>,
+  );
+}
 
 function page() {
   return getSnapshot().document.page;
@@ -70,15 +84,18 @@ async function pressSliderKey(name: string, key: string): Promise<void> {
 
 beforeEach(() => {
   resetWireframeStoreForTests();
+  resetWireframeSurfaceForTests();
 });
 
 afterEach(() => {
   cleanup();
+  resetWireframeStoreForTests();
+  resetWireframeSurfaceForTests();
 });
 
 describe('page controls (nothing selected)', () => {
   it('renders three selectable presets, the dims and the clipping caption', () => {
-    renderWithChakra(<WireframePropertyPanel />);
+    renderPageControls();
 
     expect(screen.getByTestId('wireframe-page-controls')).toBeInTheDocument();
     expect(screen.getByTestId('wireframe-page-preset-desktop')).toBeInTheDocument();
@@ -99,7 +116,7 @@ describe('page controls (nothing selected)', () => {
   });
 
   it('a preset writes its exact dimensions and becomes the selection', async () => {
-    renderWithChakra(<WireframePropertyPanel />);
+    renderPageControls();
 
     await clickPreset('tablet');
     expect(page()).toEqual({ preset: 'tablet', width: 768, height: 1024 });
@@ -118,7 +135,7 @@ describe('page controls (nothing selected)', () => {
 
   it('editing a dimension yields Custom (none selected) with the derived caption', async () => {
     const user = userEvent.setup();
-    renderWithChakra(<WireframePropertyPanel />);
+    renderPageControls();
 
     const width = numberInput('wireframe-page-width');
     await user.clear(width);
@@ -142,7 +159,7 @@ describe('page controls (nothing selected)', () => {
 
   it('clamps typed dimensions to the declared 64..4096 range', async () => {
     const user = userEvent.setup();
-    renderWithChakra(<WireframePropertyPanel />);
+    renderPageControls();
 
     const width = numberInput('wireframe-page-width');
     await user.clear(width);
@@ -159,7 +176,7 @@ describe('page controls (nothing selected)', () => {
   });
 
   it('the page sliders expose the full clamp without typing', async () => {
-    renderWithChakra(<WireframePropertyPanel />);
+    renderPageControls();
 
     await pressSliderKey('Page width slider', 'Home');
     expect(page().width).toBe(64);
@@ -173,7 +190,7 @@ describe('page controls (nothing selected)', () => {
 
   it('selecting a preset after Custom restores the preset selection', async () => {
     const user = userEvent.setup();
-    renderWithChakra(<WireframePropertyPanel />);
+    renderPageControls();
 
     await clickPreset('tablet');
     const width = numberInput('wireframe-page-width');

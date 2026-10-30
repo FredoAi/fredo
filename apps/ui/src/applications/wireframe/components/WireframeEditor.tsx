@@ -61,6 +61,7 @@ import {
 } from './WireframeNavigationProvider';
 import { WireframeCanvas } from './WireframeCanvas';
 import { WireframeFileError } from './WireframeFileError';
+import { WireframeInsertMenu } from './WireframeInsertMenu';
 import { WireframeNewDocumentDialog } from './WireframeNewDocumentDialog';
 import { WireframePropertyPanel } from './WireframePropertyPanel';
 import { WireframeStatusBar } from './WireframeStatusBar';
@@ -240,18 +241,20 @@ function WireframeShell(): React.ReactElement {
           </Box>
         </Flex>
 
-        {/* ── Canvas (the insert-menu pill lands in ST-6) ── */}
+        {/* ── Canvas region: the pointer-only insert pill (ST-6) over the stage ── */}
         <Box
           flex="1"
           minWidth="0"
           minH={{ base: '320px', lg: 0 }}
+          position="relative"
           display="flex"
           flexDirection="column"
         >
+          <WireframeInsertMenu />
           <WireframeCanvas />
         </Box>
 
-        {/* ── Details view (rewired to verbs in ST-6) ── */}
+        {/* ── Details view: the selection's verbs (ST-6) ── */}
         <Box
           w={{ base: '100%', lg: '288px' }}
           maxW={{ base: '100%', lg: '72' }}

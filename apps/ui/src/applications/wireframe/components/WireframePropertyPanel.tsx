@@ -1,6 +1,7 @@
 /**
  * Wireframe property panel (Spec #3070, ST-4, AC3 / UI/UX section 2.5;
- * extended by Spec #3071, ST-6 — UI/UX 2.2).
+ * extended by Spec #3071, ST-6 — UI/UX 2.2; becomes the DETAILS VIEW of the
+ * selection in Spec #3119, ST-6 — UI/UX §4).
  *
  * Store-connected, prop-less, contextual panel:
  *   - a four-mode selection header (Page / single element / multi-selection /
@@ -11,16 +12,28 @@
  * A multi-selection or group selection renders the header ONLY — no field
  * sections (progressive disclosure: values are ambiguous across a mixed set).
  *
- * Every control writes through the store on its own interaction tick — no
- * submit button and no cross-interaction debounce, so the canvas repaints
- * immediately. Every numeric property has a stepper AND a slider (R-3.6); the
- * corner radius ships preset chips plus a 4-stop slider that both write the
- * same `none|s|m|l` enum (SI adjudication 5 — no schema change).
+ * EXECUTION SEAM (Spec #3119, R-6): the panel never mutates the store. Every
+ * control dispatches the DECLARED verb through the navigation host:
+ *   fill/border/radius/textStyle/appearance → `wireframe.style.*` (explicit value)
+ *   width/height/label/content/placeholder/icon/preset/kind/align/size
+ *                                            → `wireframe.element.setField {id,field,value}`
+ *   visible / lock                           → `wireframe.element.toggleVisible/toggleLock`
+ *   page preset / dimensions                 → `wireframe.page.update {field,value}`
+ * The verbs keep `coalesceKey: null`, so one interaction tick = one journal
+ * entry = one undo (the retired store's granularity, R-8).
  *
- * No panel control carries `data-hotkey` (the panel is a property surface).
+ * The Edit place's `wireframe.element.rename` is a navigation effect: it
+ * publishes a one-shot rename request; this panel consumes it and focuses +
+ * selects the element's name field (never a fabricated name). Escape inside a
+ * panel text field returns focus to the CANVAS ROOT (no dispatch, never `body`)
+ * so the key path resumes.
+ *
+ * Every numeric property has a stepper AND a slider (R-3.6); the corner radius
+ * ships preset chips plus a 4-stop slider that both write the same
+ * `none|s|m|l` enum. No panel control carries `data-hotkey`.
  */
 
-import React, { useSyncExternalStore } from 'react';
+import React, { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
 import {
   Box,
   Button,
@@ -68,19 +81,47 @@ import {
   type WireframeTextStyle,
 } from '../model/elements';
 import {
-  dispatch,
   getSnapshot,
   selectedElements,
   selectionGroup,
   subscribe,
 } from '../store/wireframeDocumentStore';
+import {
+  consumeWireframeRenameRequest,
+  subscribeWireframeRenameRequest,
+} from '../wireframeSurface';
+import { isTextControl } from '../../../shared/hotkeys/focusContext';
 import { tint } from '../../../shared/utils/colorTint';
+import { useWireframeNavigation } from './WireframeNavigationProvider';
 import { CornerRadiusField } from './fields/CornerRadiusField';
 import { IconPicker } from './fields/IconPicker';
 import { NumberSliderField } from './fields/NumberSliderField';
 import { PageControls } from './fields/PageControls';
 import { SegmentedField } from './fields/SegmentedField';
 import { SwatchRow } from './fields/SwatchRow';
+
+/** The element name field a rename request targets (UI/UX §8). */
+type NameFieldElement = HTMLInputElement | HTMLTextAreaElement;
+/** Mutable holder so the name-field ref can be shared through the field tree. */
+interface NameFieldRef {
+  current: NameFieldElement | null;
+}
+
+/**
+ * Patch key → the declared style verb that owns it (UI/UX §4). Every other
+ * patch key is a plain field write through `wireframe.element.setField`.
+ */
+const STYLE_VERB_BY_FIELD: Readonly<Record<string, string>> = {
+  fill: 'wireframe.style.fill',
+  border: 'wireframe.style.border',
+  radius: 'wireframe.style.radius',
+  textStyle: 'wireframe.style.textStyle',
+  appearance: 'wireframe.style.appearance',
+};
+
+const SET_FIELD_VERB_ID = 'wireframe.element.setField';
+const TOGGLE_VISIBLE_VERB_ID = 'wireframe.element.toggleVisible';
+const TOGGLE_LOCK_VERB_ID = 'wireframe.element.toggleLock';
 
 const ELEMENT_ICONS: Readonly<Record<WireframeElementType, IconType>> = {
   text: LuType,
@@ -270,7 +311,7 @@ function SelectionHeader({ model }: { model: SelectionHeaderModel }): React.Reac
           </Text>
         </HStack>
         <Text fontSize="xs" color="fg.muted" data-testid="wireframe-panel-caption">
-          Arrange, align or group them from the toolbar
+          Arrange, align or group them from the rail
         </Text>
       </VStack>
     );
@@ -322,14 +363,19 @@ function LabeledControl({
 function TextFields({
   element,
   update,
+  nameFieldRef,
 }: {
   element: Extract<WireframeElement, { type: 'text' }>;
   update: (patch: WireframeElementPatch) => void;
+  nameFieldRef: NameFieldRef;
 }): React.ReactElement {
   return (
     <>
       <LabeledControl label="Content">
         <Textarea
+          ref={(node) => {
+            nameFieldRef.current = node;
+          }}
           data-testid="wireframe-text-content"
           aria-label="Content"
           rows={2}
@@ -411,14 +457,19 @@ function TextFields({
 function ButtonFields({
   element,
   update,
+  nameFieldRef,
 }: {
   element: Extract<WireframeElement, { type: 'button' }>;
   update: (patch: WireframeElementPatch) => void;
+  nameFieldRef: NameFieldRef;
 }): React.ReactElement {
   return (
     <>
       <LabeledControl label="Label">
         <Input
+          ref={(node) => {
+            nameFieldRef.current = node;
+          }}
           data-testid="wireframe-button-label"
           aria-label="Label"
           size="sm"
@@ -528,21 +579,30 @@ function ElementFields({
   pageWidth,
   pageHeight,
   update,
+  nameFieldRef,
 }: {
   element: WireframeElement;
   pageWidth: number;
   pageHeight: number;
   update: (patch: WireframeElementPatch) => void;
+  nameFieldRef: NameFieldRef;
 }): React.ReactElement {
   return (
     <VStack align="stretch" gap={5} minWidth={0} width="full">
-      {element.type === 'text' ? <TextFields element={element} update={update} /> : null}
+      {element.type === 'text' ? (
+        <TextFields element={element} update={update} nameFieldRef={nameFieldRef} />
+      ) : null}
 
-      {element.type === 'button' ? <ButtonFields element={element} update={update} /> : null}
+      {element.type === 'button' ? (
+        <ButtonFields element={element} update={update} nameFieldRef={nameFieldRef} />
+      ) : null}
 
       {element.type === 'input' ? (
         <LabeledControl label="Placeholder">
           <Input
+            ref={(node) => {
+              nameFieldRef.current = node;
+            }}
             data-testid="wireframe-input-placeholder"
             aria-label="Placeholder"
             size="sm"
@@ -557,6 +617,9 @@ function ElementFields({
       {element.type === 'card' ? (
         <LabeledControl label="Label">
           <Input
+            ref={(node) => {
+              nameFieldRef.current = node;
+            }}
             data-testid="wireframe-card-label"
             aria-label="Label"
             size="sm"
@@ -641,12 +704,15 @@ function ElementFields({
 }
 
 export function WireframePropertyPanel(): React.ReactElement {
+  const { host } = useWireframeNavigation();
   const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const { document, selectedIds } = state;
 
   const selected = selectedElements(state);
   const element = selected.length === 1 ? selected[0] : null;
   const group = selectionGroup(document, selectedIds);
+  const elementId = element?.id ?? null;
+  const nameFieldRef = useRef<NameFieldElement | null>(null);
 
   const header: SelectionHeaderModel =
     element !== null
@@ -657,9 +723,77 @@ export function WireframePropertyPanel(): React.ReactElement {
           ? { kind: 'group', group, memberCount: group.memberIds.length }
           : { kind: 'multi', count: selected.length };
 
-  const update = (patch: WireframeElementPatch): void => {
-    if (!element) return;
-    dispatch('element.update', { id: element.id, patch });
+  /**
+   * Every edit is ONE declared verb on ONE interaction tick (`coalesceKey: null`),
+   * so the journal has exactly one entry (one undo) per field change. Nothing here
+   * touches the store directly (Spec #3119, R-6a).
+   */
+  const update = useCallback(
+    (patch: WireframeElementPatch): void => {
+      if (!element) return;
+      for (const [field, value] of Object.entries(patch as Record<string, unknown>)) {
+        if (value === undefined) continue;
+        const styleVerb = STYLE_VERB_BY_FIELD[field];
+        if (styleVerb !== undefined) {
+          void host.runVerb(styleVerb, 'pointer', { [field]: String(value) });
+          continue;
+        }
+        // The switches are bound to the element's own value, so the click IS the
+        // toggle the Edit verbs declare (never a direct boolean write).
+        if (field === 'visible') {
+          void host.runVerb(TOGGLE_VISIBLE_VERB_ID, 'pointer', {});
+          continue;
+        }
+        if (field === 'locked') {
+          void host.runVerb(TOGGLE_LOCK_VERB_ID, 'pointer', {});
+          continue;
+        }
+        void host.runVerb(SET_FIELD_VERB_ID, 'pointer', {
+          id: element.id,
+          field,
+          value: String(value),
+        });
+      }
+    },
+    [element, host],
+  );
+
+  /**
+   * Consume the surface's one-shot rename request (Edit `r`): focus + select the
+   * element's name field. The request carries the id + field, so a stale request
+   * for another element is dropped rather than applied to the wrong field.
+   */
+  useEffect(() => {
+    if (elementId === null) return undefined;
+    const handle = (): void => {
+      const request = consumeWireframeRenameRequest();
+      if (request === null || request.id !== elementId) return;
+      const field = nameFieldRef.current;
+      if (field === null) return;
+      field.focus();
+      field.select();
+    };
+    const unsubscribe = subscribeWireframeRenameRequest(handle);
+    // A request published before this panel mounted is still one-shot pending.
+    handle();
+    return unsubscribe;
+  }, [elementId]);
+
+  /**
+   * Escape inside a panel text field would otherwise die on the field (the shell
+   * adapter passes text controls through). Return focus to the CANVAS ROOT — never
+   * `body` — so the next stroke resolves again. No dispatch.
+   */
+  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
+    if (event.key !== 'Escape') return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (!isTextControl(target)) return;
+    const canvas = event.currentTarget.ownerDocument.querySelector<HTMLElement>(
+      '[data-testid="wireframe-canvas"]',
+    );
+    if (canvas === null) return;
+    event.preventDefault();
+    canvas.focus();
   };
 
   return (
@@ -680,6 +814,7 @@ export function WireframePropertyPanel(): React.ReactElement {
       borderColor="border.subtle"
       borderTopWidth={{ base: '1px', lg: '0' }}
       borderLeftWidth={{ base: '0', lg: '1px' }}
+      onKeyDown={onKeyDown}
     >
       <SelectionHeader model={header} />
 
@@ -691,6 +826,7 @@ export function WireframePropertyPanel(): React.ReactElement {
           pageWidth={document.page.width}
           pageHeight={document.page.height}
           update={update}
+          nameFieldRef={nameFieldRef}
         />
       ) : null}
     </VStack>
