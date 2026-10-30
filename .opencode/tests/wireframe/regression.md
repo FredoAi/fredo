@@ -326,7 +326,75 @@
       consumers (`HotkeyBar.tsx:154,318`, `LauncherActionList.tsx:114`, `src/index.ts:32`) still
       render keycaps and `Keycap.test.tsx` is green; (f) `data-fredo-hotkey-duplicate` stays
       absent.
-      **Edge:** focused AND unfocused; two-step `g`-namespace rows still render two chips in the
-      bar; `wireframe.document.new` still has no `data-hotkey` and no bar row; no
-      `#[allow(...)]` and no weakened assertion (G-125).
-      Cross-ref `functional.md` F-84…F-90 and `.opencode/tests/hotkeys/` R-39/R-40/R-42.
+       **Edge:** focused AND unfocused; two-step `g`-namespace rows still render two chips in the
+       bar; `wireframe.document.new` still has no `data-hotkey` and no bar row; no
+       `#[allow(...)]` and no weakened assertion (G-125).
+       Cross-ref `functional.md` F-84…F-90 and `.opencode/tests/hotkeys/` R-39/R-40/R-42.
+
+## Spec #3119 (P5) — Wireframe pilot: regression pins
+
+> Runs on the #3119 testing phase. The toolbar, the command surface and the hotkey carrier are
+> deleted and the surface is declaration-driven. **Verification policy: live** for the rendered
+> rows; **static** only for the prove-a-negative source/diff rows (an absence cannot be witnessed
+> by the surface claimed absent, G-408). No `telemetry_spans` receipt is expected.
+> Env + driver: `-Spec 3119 -EnvId wf3119-a -EnvSlot 1 -RequireIsolation`, MCP port `"16001"`.
+
+- [ ] **R-20 (hotkey/bar/chip re-baseline — supersedes R-1/R-2/R-3/R-14/R-19 counts).**
+      **Expected:** with Wireframe focused, `data-fredo-hotkey-count` is **unchanged** by
+      focusing Wireframe (delta 0), `hotkeys-keybar-row` contains **no** Wireframe row,
+      `[data-testid="wireframe-toolbar"]` and every `wireframe-action-*` node are ABSENT, and
+      `wireframe-root` carries **0** `[data-hotkey]` descendants. `data-fredo-hotkey-duplicate`
+      and `hotkeys-duplicate-error` stay absent with Mission Monitor + Diagram + My Work Items +
+      Optimizely + Dev Mode open. **Non-vacuity control:** focus Mission Monitor → its rows and
+      its hotkey count are present and unchanged from the pre-change build.
+      Cross-ref `functional.md` F-37/F-38/F-40 amendments, `wireframe-navigation` F-N11.
+
+- [ ] **R-21 (capability parity replaces the removed controls).** The 33 toolbar capabilities
+      are still reachable as declared verbs (rail/map/keys), pinned by a 33-row manifest.
+      **Expected:** `wireframe-navigation` F-N13/F-N14 green; every one of the 33 performs its
+      capability at least once; the 5 unbound ones (Icon, Shape, Lock group, Align centre, and
+      engine-owned Undo/Redo via `u`/`y`) are reachable via map/palette/alias.
+      Cross-ref `functional.md` F-37 replacement, F-63/F-67/F-71/F-76 amendments.
+
+- [ ] **R-22 (file seams + document shape unchanged).** Save As / Open / Export behave
+      identically through `place.saveAs` / `place.open` / `place.exportPng`.
+      **Expected:** the per-command seams, precedence, cancel/fail copy, 2× PNG dimensions,
+      page-space invariance, `schemaVersion:1`, `app:"fredo.wireframe"`, the three bad-document
+      rejections and dangling-group reconciliation are byte-identical to the pre-change build.
+      Cross-ref `functional.md` F-31/F-32/F-33/F-35/F-50/F-51/F-52/F-83,
+      `wireframe-navigation/regression.md` R-N4/R-N5.
+
+- [ ] **R-23 (one undo step per mutation, editor state excluded).** Every document mutation
+      commits exactly ONE undo step through the journal; selection/snap/guides/pan/zoom commit
+      none and never flip `-dirty`.
+      **Expected:** `functional.md` F-10/F-11/F-24/F-25/E-15/E-16 and the #3071 one-undo clauses
+      still pass; a value-equal no-op commits nothing; the trail's per-entry Undo reverts exactly
+      that entry.
+      Cross-ref `wireframe-navigation` F-N17/F-N18/F-N19.
+
+- [ ] **R-24 (New-discard dialog survives the toolbar deletion).** `f n` on a dirty document
+      opens `wireframe-new-document-dialog`; Cancel keeps document + dirty; Discard empties the
+      document; a clean document shows no dialog; the Discard label colour still equals the
+      resolved `--status-on-solids` with ratio ≥ 4.5 and is never white.
+      **Expected:** `functional.md` F-57/F-57a green. The dialog's owning component must be
+      named by ST-7 — until then this row is a NAMED BLOCKER, not a silent PASS (plan Q-6).
+
+- [ ] **R-25 (canvas behaviour unchanged).** Guides, transformer pinning, the pan hit surface,
+      export page-space invariance, the `#523` no-render-loop rule and the lazy canvas chunk are
+      unchanged; the canvas does NOT subscribe to the journal.
+      **Expected:** `functional.md` F-27/F-33/F-56/F-73/F-78 and
+      `wireframe-navigation` F-N24 green; a 50-append journal probe does not re-render the
+      canvas.
+
+- [ ] **R-26 (no new dependency or platform surface — static).**
+      `apps/ui/package.json` + the `apps/ui` lockfile importer unchanged key-for-key; no new
+      Tauri capability/plugin; no `global-shortcut`; no persisted settings key; `Cargo.lock`
+      unchanged.
+
+- [ ] **R-27 (companion path fails closed — P6 deferral, never a silent removal).** With
+      Wireframe closed, emit `llm-skill-call {skill:"wireframe",
+      arguments:{action:"wireframe.add.card", arguments:{}}}`
+      (`#3099` nested shape). **Expected:** the command-intent path reports a clean `Invalid`
+      (no window opens, no element appears, no timeout, no crash) and the app still opens from
+      the launcher. `wireframeDraft.ts`'s direct draft operations still work in the unit suite.
+      **Edge:** an unknown id; an emit while the app is open (still Invalid, nothing changes).
