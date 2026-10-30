@@ -636,6 +636,7 @@ eleven-module purity scan is untouched).
 | `ui/format.ts` | `formatKeyHint`, `formatPlacePathLabel`, `formatTrailTime`, `riskLabel`, `navTooltip`. |
 | `ui/models.ts` | `buildCommandRailModel`, `buildNavigationMapModel`, `buildActivityTrailModel`. |
 | `ui/useReducedMotion.ts` | `useNavReducedMotion()`. |
+| `ui/usePlaceTransitionFocus.ts` | `usePlaceTransitionFocus(model)` — place-transition focus retention for the rail (§11.5); no prop, no document listener. |
 
 Each builder is total and pure over the declaration plus the injected read model:
 
@@ -798,4 +799,14 @@ manual-pass artifact and the cross-surface composite is `ui/__tests__/a11y.test.
 - **No second source of truth:** no prop carries a key table or a `VerbDescriptor[]`; every
   surface renders the model built here, and the a11y invariants (role/name, risk as text,
   keycap accessible names, focus trap/restore) are owned by the surface components.
+- **Place-transition focus retention (`#3119` retry, R-9/AC9):** place rows are the current
+  place's children, so entering a place unmounts the row a keyboard user is standing on and
+  the browser falls back to `document.body` — which also silences the shell's one
+  element-scoped key adapter. `CommandRail` therefore re-homes focus it dropped (the same
+  control when it renders again, else the always-rendered `navigation-rail-place` heading,
+  `tabIndex={-1}`) and returns to the triggering row when the place is exited (`Escape`). It
+  acts only when the tracked in-rail control is disconnected AND `document.activeElement` is
+  `body`/null; focus the user moved elsewhere (canvas, details view, map dialog, another
+  control) is never touched. No prop, no `document`/`window` listener, no timer, no state
+  write — `ui/usePlaceTransitionFocus.ts`.
 

@@ -13,6 +13,9 @@
  *   - root `role="region"`, `aria-label={NAV_RAIL_ARIA_LABEL}`, `data-nav-surface="rail"`,
  *     `overflow: hidden`, `minWidth: NAV_RAIL_MIN_WIDTH_PX`, no `position`/`zIndex`;
  *   - NO `aria-live` region of its own, NO positive tabindex, NO focus move on mount;
+ *   - a place transition re-homes focus the rail itself dropped (the same control when it
+ *     reappears, else the current-place heading — the programmatic `tabIndex={-1}` anchor)
+ *     and NEVER steals focus the user moved elsewhere (#3119 R-9 / AC9, §11.5);
  *   - no horizontal scroll anywhere: the rail is a column, every row is `minWidth: 0` and
  *     only the title ellipsizes (G-274).
  *
@@ -57,6 +60,7 @@ import {
 import { NavKeycap } from './Keycap';
 import type { CommandRailModel, CommandRailRow, NavRiskCue } from './types';
 import { useNavReducedMotion } from './useReducedMotion';
+import { usePlaceTransitionFocus } from './usePlaceTransitionFocus';
 
 export interface CommandRailProps {
   /** The ONE view-model (built by `buildCommandRailModel`). No key table, no verb list. */
@@ -212,9 +216,12 @@ export function CommandRail({
   const motionReduced = reducedMotion ?? queryReduced;
   const more = model.more;
   const askReasonId = React.useId();
+  const { railRef, onFocus: handleRailFocus } = usePlaceTransitionFocus(model);
 
   return (
     <Box
+      ref={railRef}
+      onFocus={handleRailFocus}
       data-testid={NAV_RAIL_TESTID}
       data-nav-surface="rail"
       role="region"
@@ -280,6 +287,9 @@ export function CommandRail({
       <chakra.h2
         data-testid={NAV_RAIL_PLACE_TESTID}
         title={model.currentPlace.label}
+        // The place-transition focus anchor: programmatically focusable, never in the tab
+        // order (the no-focus-steal contract holds).
+        tabIndex={-1}
         mt="1"
         mb="0"
         fontSize="sm"
