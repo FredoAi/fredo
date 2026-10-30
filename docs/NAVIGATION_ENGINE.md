@@ -211,27 +211,51 @@ A fifth tier — a global hotkey registry, a legacy element listing, a browser o
 
 **Escape.** Inside a child place, `Escape` MUST dispatch `place.exit` and pop exactly one level. At the root, `Escape` MUST dispatch nothing and close the innermost open overlay. The §2 converged rule applies without exception: `transient: true` ⇒ the place auto-exits after ONE completing verb; `sticky: true` ⇒ verbs do NOT auto-exit and the place persists until `Escape`; **in BOTH cases `Escape` pops exactly one level (a sticky place is never an Escape exemption, and there is no exemption to declare).**
 
-**Alias/place-key collisions.** When an application `directAliases` entry and a place key bind the same stroke to the **same verb id**, the resolver MUST dispatch that verb from the higher tier (tier 1) and MUST NOT raise `ambiguous-key`. When they bind **different verb ids**, the surface MUST be rejected at validation with `V-08` / `NAV-E008` (§10), and that case MUST never reach the resolver.
+**Alias/place-key collisions.** When an application `directAliases` entry and the **root place's** key bind the same stroke to the **same verb id**, the resolver MUST dispatch that verb from the higher tier (tier 1) and MUST NOT raise `ambiguous-key`. When they bind **different verb ids** at the root, the surface MUST be rejected at validation with `V-08` / `NAV-E008` (§10), and that case MUST never reach the resolver. A collision with a **child** place's own key is not a V-08 violation: a direct alias is tier 2 and is reached only where tier 1 missed, so a child place's key is never shadowed by an alias.
 
 ### 4.2 The published key map
 
+The P5 home surface is the Wireframe declaration (Spec #3119). Entry keys at the root are
+`{kind:'place'}` bindings; every other key is a verb binding. The six entry place ids are
+also declared as verbs so the host can run the entry effect.
+
 ```text
-wireframe.canvas.keys   = c→place.create  i→place.edit  a→place.arrange  s→place.style
-                          v→place.view    f→place.file   m→app.map       k→app.ask
-                          p→app.palette   'w n'→window.focusNext  'w p'→window.focusPrevious
-wireframe.create.keys   = r→place.rect  e→place.ellipse  t→place.text  b→place.button
-wireframe.edit.keys     = a→place.selectAll  d→place.duplicate  x→place.delete  l→place.toggleLock
-wireframe.arrange.keys  = l→place.alignLeft  c→place.alignCenter  z→place.alignRight
-                          d→place.distribute  g→place.group  n→place.ungroup
-                          f→place.bringForward  b→place.sendBackward
-wireframe.style.keys    = f→place.setFill  c→place.copyStyle  x→place.resetStyle
-wireframe.view.keys     = i→place.zoomIn  o→place.zoomOut  n→place.fitPage  h→place.togglePan
-wireframe.file.keys     = s→place.save  a→place.saveAs  o→place.open  x→place.exportPng
-                          n→wireframe.document.new
-directAliases           = r→place.rect  e→place.ellipse  u→journal.undo  y→journal.redo
+wireframe.canvas.keys   = c→place wireframe.create   e→place wireframe.edit
+                          a→place wireframe.arrange  s→place wireframe.style
+                          v→place wireframe.view     f→place wireframe.file
+                          m→app.map                  k→app.ask
+                          ArrowLeft→wireframe.selection.previous   ArrowUp→wireframe.selection.previous
+                          ArrowRight→wireframe.selection.next      ArrowDown→wireframe.selection.next
+wireframe.create.keys   = r→wireframe.create.rect  e→wireframe.create.ellipse
+                          t→wireframe.add.text  b→wireframe.add.button  i→wireframe.add.input
+                          m→wireframe.add.image  k→wireframe.add.card  s→wireframe.add.section
+                          l→wireframe.add.line
+wireframe.edit.keys     = d→wireframe.element.duplicate  x→wireframe.element.delete
+                          l→wireframe.element.toggleLock  h→wireframe.element.toggleVisible
+                          r→wireframe.element.rename
+wireframe.arrange.keys  = g→wireframe.arrange.group  u→wireframe.arrange.ungroup
+                          ArrowLeft→wireframe.arrange.alignLeft   ArrowRight→wireframe.arrange.alignRight
+                          d→wireframe.arrange.distribute  f→wireframe.arrange.bringForward
+                          b→wireframe.arrange.sendBackward  s→wireframe.arrange.toggleSnap
+wireframe.style.keys    = f→wireframe.style.fill  o→wireframe.style.border
+                          p→wireframe.style.appearance  z→wireframe.style.radius
+                          t→wireframe.style.textStyle
+wireframe.view.keys     = +→wireframe.zoom.in  -→wireframe.zoom.out  f→wireframe.view.fitPage
+                          0→wireframe.view.resetView  p→wireframe.view.togglePan
+wireframe.file.keys     = n→wireframe.document.new  o→place.open
+                          w→place.saveAs  x→place.exportPng
+directAliases           = r→wireframe.create.rect  u→journal.undo  y→journal.redo
 ```
 
-The tree these bindings hang from: `wireframe.canvas` is the root; `wireframe.create` is `transient`; `wireframe.edit`, `wireframe.arrange`, `wireframe.style`, `wireframe.view` and `wireframe.file` are `sticky`. `w` is deliberately not a binding, which is what makes the `w n` prefix reachable and keeps `V-11` (no complete binding shadows a longer sequence) satisfiable.
+The tree these bindings hang from: `wireframe.canvas` is the root; `wireframe.create` is
+`transient` with the create-shape operator and the crosshair cursor; `wireframe.edit`,
+`wireframe.arrange`, `wireframe.style`, `wireframe.view` and `wireframe.file` are `sticky`.
+Root entry keys (`c e a s v f`) are **place** bindings, not aliases — only `r`, `u` and `y`
+are application-level direct aliases (tier 2). `wireframe.arrange.alignCenter`,
+`wireframe.arrange.toggleGroupLock` and `wireframe.view.panBy` are declared but unbound, so
+they are reachable through the map/palette only. The same stroke may bind different verbs in
+sibling places (`f` = bring-forward in Arrange, fill in Style, fit-page in View; `s` =
+section in Create, toggle-snap in Arrange); place locality is what makes this legal.
 
 ### 4.3 Worked traces
 
@@ -239,17 +263,42 @@ Every trace starts at the root place `wireframe.canvas` with an empty selection.
 
 | stroke | tier that matched | resolved intent (verb id or place id) | args | journal effect | journal `placePath` (dispatch-time, §6.1) | cursor after the dispatch |
 |---|---|---|---|---|---|---|
-| `c` | (1) current place `keys` — `wireframe.canvas` | verb `place.create` | `{}` | one `navigation` entry: `verbId:'place.create'`, `placePath:['wireframe.canvas']`, `exitedBy:'none'` | `['wireframe.canvas']` | `[wireframe.canvas, wireframe.create]` |
-| `c r` | stroke 1: (1) `wireframe.canvas` `keys`; stroke 2: (1) `wireframe.create` `keys` | verb `place.create`, then verb `place.rect` | `{}` then `{}` | `navigation` entry for `place.create`; then one `mutation` entry for `place.rect` with `placePath:['wireframe.canvas','wireframe.create']` and `exitedBy:'verb'` (no second navigation entry) | `['wireframe.canvas','wireframe.create']` | `[wireframe.canvas]` |
-| `r` | (2) application `directAliases` — from `wireframe.canvas` | verb `place.rect` | `{}` | one `mutation` entry: `verbId:'place.rect'`, `placePath:['wireframe.canvas']`, `exitedBy:'none'` | `['wireframe.canvas']` | `[wireframe.canvas]` |
+| `c` | (1) current place `keys` — `wireframe.canvas` (place binding) | verb `wireframe.create` | `{}` | one `navigation` entry: `verbId:'wireframe.create'`, `placePath:['wireframe.canvas']`, `exitedBy:'none'` | `['wireframe.canvas']` | `[wireframe.canvas, wireframe.create]` |
+| `c r` | stroke 1: (1) `wireframe.canvas` `keys`; stroke 2: (1) `wireframe.create` `keys` | verb `wireframe.create`, then verb `wireframe.create.rect` | `{}` then `{}` | `navigation` entry for `wireframe.create`; then one `mutation` entry for `wireframe.create.rect` with `placePath:['wireframe.canvas','wireframe.create']` and `exitedBy:'verb'` (no second navigation entry) | `['wireframe.canvas','wireframe.create']` | `[wireframe.canvas]` |
+| `r` | (2) application `directAliases` — from `wireframe.canvas` | verb `wireframe.create.rect` | `{}` | one `mutation` entry: `verbId:'wireframe.create.rect'`, `placePath:['wireframe.canvas']`, `exitedBy:'none'` | `['wireframe.canvas']` | `[wireframe.canvas]` |
 
-**`c r` is two resolutions, not one binding.** The first stroke resolves in the canvas place and enters `wireframe.create`; the second stroke resolves in the create place and runs `place.rect`, whose completing verb auto-exits the transient place with `exitedBy:'verb'`. The `place.rect` entry is written at DISPATCH time, so its `placePath` still records the create place; the pop happens on completion, so the cursor after the dispatch is back at `[wireframe.canvas]`.
+**`c r` is two resolutions, not one binding.** The first stroke resolves in the canvas place
+and enters `wireframe.create`; the second stroke resolves in the create place and runs
+`wireframe.create.rect`, whose completing verb auto-exits the transient place with
+`exitedBy:'verb'`. The `wireframe.create.rect` entry is written at DISPATCH time, so its
+`placePath` still records the create place; the pop happens on completion, so the cursor after
+the dispatch is back at `[wireframe.canvas]`.
 
-**The point of the pair.** Both the `c r` and the `r` row dispatch the SAME verb id `place.rect` with the same args `{}` and the same journal effect — one `mutation` entry carrying the rect insert and its inverse. The two rows differ only in the two derived facts the last two columns separate: the journal `placePath`, which is the dispatch-time path (create vs canvas), and the cursor after the dispatch, which differs because the transient create place pops on completion (§2.2, `exitedBy:'verb'`). That difference is a property of the strokes, and it is never a licence for the two authors to disagree.
+**The point of the pair.** Both the `c r` and the `r` row dispatch the SAME verb id
+`wireframe.create.rect` with the same args `{}` and the same journal effect — one `mutation`
+entry carrying the rect insert and its inverse. The two rows differ only in the two derived
+facts the last two columns separate: the journal `placePath`, which is the dispatch-time path
+(create vs canvas), and the cursor after the dispatch, which differs because the transient
+create place pops on completion (§2.2, `exitedBy:'verb'`). That difference is a property of
+the strokes, and it is never a licence for the two authors to disagree.
 
-### 4.4 Grammar decision: `?` and `/` are display glyphs
+### 4.4 Grammar decision: reserved strokes and the two display glyphs
 
-Bindable keys MUST be stroke sequences over `[a-z0-9]`, plus the three engine-reserved strokes `Escape`, `Enter` and `Tab`. **`?` and `/` are NOT bindable**: neither shipped grammar can express them (`apps/ui/src/shared/hotkeys/hotkeyGrammar.ts:25`, `apps/ui/src/shared/hotkeys/commandSurface.ts:143`), so the contract binds the map to `m` and ask to `k`. `?` and `/` MAY appear only as *display glyphs* in copy (the map and ask affordances); they MUST NOT appear as binding values or as tooltip keys. This closes research limitation 1 (`docs/UX_FLUENCY_RESEARCH.md:630-636`) without changing either grammar, and it is a section decision — not an eighth ADR, because the ADR set is fixed at seven.
+Bindable keys MUST be stroke sequences over `[a-z0-9]`, plus the nine engine-reserved strokes
+`Escape`, `Enter`, `Tab`, `ArrowLeft`, `ArrowRight`, `ArrowUp`, `ArrowDown`, `+` and `-`.
+Reserved tokens are matched case-insensitively and canonicalise to their declared casing;
+`+` and `-` are single characters and pass through verbatim. The P5 surface uses the arrows
+for selection (root) and alignment (Arrange) and `+`/`-` for zoom (View).
+
+**`?` and `/` are NOT bindable**: neither shipped grammar can express them
+(`apps/ui/src/shared/hotkeys/hotkeyGrammar.ts:25`, `apps/ui/src/shared/hotkeys/commandSurface.ts:143`),
+so the contract binds the map to `m` and ask to `k`. `?` and `/` MAY appear only as *display
+glyphs* in copy (the map and ask affordances); they MUST NOT appear as binding values or as
+tooltip keys. A surface adapter MAY dispatch `?` straight to the declared `app.map` verb
+without synthesising `m` (so `m` stays place-scoped), and `/` stays inert until the launcher
+lands (P6). This closes research limitation 1 (`docs/UX_FLUENCY_RESEARCH.md:630-636`) without
+changing either grammar, and it is a section decision — not an eighth ADR, because the ADR set
+is fixed at seven.
 
 ## 5. Dispatch contract
 
@@ -471,7 +520,7 @@ A surface MUST be reproducible from the declaration alone, and any difference be
 | V-05 | every `keys` binding targets a declared verb or a declared child place | `NAV-E005` | `place "<id>" key "<stroke>" targets unknown verb or place "<target>"` |
 | V-06 | every referenced verb is available in that place (`appliesTo.places` covers it) | `NAV-E006` | `verb "<id>" is bound in place "<p>" but does not apply to it` |
 | V-07 | no duplicate stroke within one place | `NAV-E007` | `duplicate key "<stroke>" in place "<id>"` |
-| V-08 | a `directAlias` never shadows a place key bound to a *different* verb | `NAV-E008` | `direct alias "<stroke>" → "<verb>" shadows place "<p>" key → "<other verb>"` |
+| V-08 | a `directAlias` never shadows the **root place's** key bound to a *different* verb (a child place's own key is tier 1 and is never reached by an alias, so it is not a shadow) | `NAV-E008` | `direct alias "<stroke>" → "<verb>" shadows place "<p>" key → "<other verb>"` |
 | V-09 | every verb declares a `risk` | `NAV-E009` | `verb "<id>" declares no risk class` |
 | V-10 | every `destructive`/`external` verb has `undo` or a declared `consequence` | `NAV-E010` | `verb "<id>" is <risk> with no undo and no declared consequence` |
 | V-11 | no complete binding is a strict prefix of another binding in the same place | `NAV-E011` | `key "<short>" shadows the longer sequence "<long>" in place "<id>"` |
@@ -587,6 +636,7 @@ eleven-module purity scan is untouched).
 | `ui/format.ts` | `formatKeyHint`, `formatPlacePathLabel`, `formatTrailTime`, `riskLabel`, `navTooltip`. |
 | `ui/models.ts` | `buildCommandRailModel`, `buildNavigationMapModel`, `buildActivityTrailModel`. |
 | `ui/useReducedMotion.ts` | `useNavReducedMotion()`. |
+| `ui/usePlaceTransitionFocus.ts` | `usePlaceTransitionFocus(model)` — place-transition focus retention for the rail (§11.5); no prop, no document listener. |
 
 Each builder is total and pure over the declaration plus the injected read model:
 
@@ -600,6 +650,13 @@ Each builder is total and pure over the declaration plus the injected read model
   `more` appears only when `overflow > 0` and opens the map filtered to the current place.
   The two affordances are always present: `/ Ask` is disabled with the bound launcher reason;
   `? Map` is enabled. Neither tooltip ever contains a glyph (a tooltip names `m`/`k`).
+- **Place rows** — `CommandRailModel.placeRows` lists the current place's **child places** in
+  declaration order (`registry.childrenByParent`), each `{placeId, label, key, keys, keyHint,
+  transient, tooltip}`. An entry stroke is a `{kind:'place'}` binding or a verb whose id is the
+  child place id. Place rows render ABOVE the verb rows and are **not** part of `rows`,
+  `overflow` or `actionCount` (those count the current place's bound verbs only). A leaf place
+  has `placeRows: []`; the root lists its six children. Clicking a place row runs the place id
+  (a place-entry verb's id equals the place id, so the host enters it).
 - **Map** — `buildNavigationMapModel(surface, snapshot, { filteredTo })` composes the shipped
   `deriveMap` tree order with `createRegistry(...).verbsById`, each verb's
   `available(snapshot)` and the shipped `formatTooltip` (through `navTooltip`); it never
@@ -733,12 +790,23 @@ manual-pass artifact and the cross-surface composite is `ui/__tests__/a11y.test.
   `useNavReducedMotion()`).
 - **One live region:** the surfaces declare no `aria-live`; the announcement layer owns the
   single polite region (P5 settles ownership).
-- **Bounded DOM:** rail rows ≤ 8 (never padded); trail entries ≤ 10 (newest first); map rows =
-  the declared tree. No polling: the only timer is the host's one-shot `PENDING_TIMEOUT_MS`
-  (250 ms) prefix clear.
+- **Bounded DOM:** rail verb rows ≤ 8 (never padded) and no more than the place's bound verbs;
+  child-place rows (`placeRows`) are a separate, tree-bounded section and never count against
+  that cap; trail entries ≤ 10 (newest first); map rows = the declared tree. No polling: the
+  only timer is the host's one-shot `PENDING_TIMEOUT_MS` (250 ms) prefix clear.
 - **No persisted presentation state:** map open/filter/search and the pending prefix live in
   host/component state only — no storage, no settings key.
 - **No second source of truth:** no prop carries a key table or a `VerbDescriptor[]`; every
   surface renders the model built here, and the a11y invariants (role/name, risk as text,
   keycap accessible names, focus trap/restore) are owned by the surface components.
+- **Place-transition focus retention (`#3119` retry, R-9/AC9):** place rows are the current
+  place's children, so entering a place unmounts the row a keyboard user is standing on and
+  the browser falls back to `document.body` — which also silences the shell's one
+  element-scoped key adapter. `CommandRail` therefore re-homes focus it dropped (the same
+  control when it renders again, else the always-rendered `navigation-rail-place` heading,
+  `tabIndex={-1}`) and returns to the triggering row when the place is exited (`Escape`). It
+  acts only when the tracked in-rail control is disconnected AND `document.activeElement` is
+  `body`/null; focus the user moved elsewhere (canvas, details view, map dialog, another
+  control) is never touched. No prop, no `document`/`window` listener, no timer, no state
+  write — `ui/usePlaceTransitionFocus.ts`.
 

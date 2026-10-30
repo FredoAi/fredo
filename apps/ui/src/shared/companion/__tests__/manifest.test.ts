@@ -8,8 +8,8 @@
  *   - description-less commands are EXCLUDED (R-1c) and zero-command surfaces
  *     are still returned (Rust skips them);
  *   - duplicate registration is FIRST-WINS by appId;
- *   - the shipped Wireframe surface publishes ALL 39 commands (zero exclusions);
- *   - the ONE shared golden fixture deep-equals the real builder output.
+ *   - the retired Wireframe surface (Spec #3119 ST-4 / Q-1) is NOT republished
+ *     (companion parity is a P6 follow-up — fail closed, never a silent drop).
  */
 
 import { readFileSync } from 'fs';
@@ -203,34 +203,32 @@ describe('buildCompanionManifest', () => {
     expect(source).not.toMatch(/@tauri-apps\/api/);
   });
 
-  it('publishes ALL 39 commands of the shipped Wireframe surface (zero exclusions)', () => {
+  /**
+   * Spec #3119 ST-4 / Orchestrator Q-1 — the legacy Wireframe command surface is
+   * RETIRED (AC7). `WireframeFeature.commandSurface` is gone, so the app no
+   * longer publishes a companion surface; a companion call now fails closed
+   * (`Invalid`) until the P6 launcher/companion slice re-homes the capability.
+   *
+   * The shared golden fixture below is UNCHANGED on purpose: it is a
+   * cross-language artifact also read by the Rust companion tests, and the plan
+   * names its reconciliation (with `infrastructure/companion/wireframe_catalog.rs`)
+   * as a P6 follow-up, not a P5 change.
+   */
+  it('no longer publishes the retired Wireframe command surface (P6 fail-closed)', () => {
     const manifest = buildCompanionManifest([wireframeFeature]);
-    const wireframe = manifest.surfaces[0];
 
-    expect(manifest.surfaces).toHaveLength(1);
-    expect(wireframe.appId).toBe('wireframe');
-    expect(wireframe.appName).toBe('Wireframe');
-    expect(wireframe.skillName).toBe('wireframe');
-    expect(wireframe.commands).toHaveLength(39);
-    expect(wireframe.commands.every((entry) => entry.description.trim() !== '')).toBe(true);
-    // Every surface command declares its argument contract explicitly.
-    expect(wireframe.commands.every((entry) => Array.isArray(entry.args))).toBe(true);
+    expect(manifest.surfaces).toEqual([]);
   });
 
-  it('matches the ONE shared golden fixture exactly', () => {
+  it('does not republish the retired surface from the shared golden fixture', () => {
     const fixture = readFixture();
     const manifest = buildCompanionManifest(getApplications());
 
-    expect(manifest).toEqual(fixture.manifest);
-    expect(manifest.surfaces[0].commands).toHaveLength(39);
-
-    // The offer is derived from the SAME surface: ids in manifest order, then
-    // the reserved listing action.
-    const ids = companionActionIds(manifest.surfaces[0]);
-    expect(fixture.offer.parameters.properties.action.enum).toEqual(ids);
-    expect(fixture.offer.description).toBe(
-      `${manifest.surfaces[0].description} Actions: ${ids.join(', ')}.`,
-    );
+    // Nothing in the shipped app publishes a companion surface any more.
+    expect(manifest.surfaces).toEqual([]);
+    // The retained P6 fixture is therefore NOT the live manifest this slice.
+    expect(manifest).not.toEqual(fixture.manifest);
+    expect(fixture.manifest.surfaces[0]?.appId).toBe('wireframe');
   });
 });
 

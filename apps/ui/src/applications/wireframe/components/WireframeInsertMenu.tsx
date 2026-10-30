@@ -1,248 +1,197 @@
 /**
- * Wireframe toolbar controls + insert menus (Spec #3070, ST-3, UI/UX 2.1/2.2).
+ * Wireframe insert menu (Spec #3070, ST-3, UI/UX 2.1/2.2; re-homed as the ONE
+ * pointer affordance by Spec #3119, ST-6 — UI/UX §9).
  *
- * Every control here is driven by the ONE command table in
- * `actions/wireframeActions.ts`: the button's `data-hotkey`, its testid and the
- * action it runs all come from the same row, so a shortcut can never diverge
- * from its visible control.
+ * A single pill pinned inside the canvas region (`wireframe-insert`) opens one
+ * Chakra `Menu` grouped as Elements / Section presets / Shape kinds / Icons.
+ * Every item carries `data-testid="wireframe-insert-item"`, `data-nav-verb-id`
+ * and (for an argumented verb) `data-nav-args`, and dispatches the DECLARED verb
+ * through `host.runVerb(verbId, 'pointer', args)`. It never changes the place
+ * and never mutates the store — it is a shortcut to the same verbs the rail,
+ * the map and the Create place expose.
  *
- * Presentation rules (binding):
- * - a real `<button>` (Chakra `Button`) — the shipped hotkey activator clicks
- *   buttons, and the element is a normal Tab stop (the toolbar is a `group`,
- *   never an ARIA `toolbar` with roving tabindex);
- * - controls carry NO `data-hotkey`/`data-hotkey-label` (Spec #3098 ST-5): the
- *   `g+*` grammar lives on the hidden `WireframeHotkeyCarrier` and the mode keys
- *   live in the declared command surface, so the always-on bottom hotkey bar is
- *   the single shortcut-discovery surface with no per-host focus plumbing. The
- *   row's `hotkey` metadata still drives the accessible name / tooltip;
- * - a POINTER activation (`event.detail > 0`) blurs the control after running
- *   its action so the next bare key is in the `default` context (G-327,
- *   UI/UX 3.14); a keyboard activation (`detail === 0`) keeps focus for Tab
- *   users, and an engine-driven activation never moves focus at all.
+ * Pointer activation releases focus to the trigger's caller (G-327) once the
+ * menu has closed, so the next bare key reaches the ONE key adapter; keyboard
+ * activation keeps focus on the trigger so the menu remains operable.
  *
  * Tokens only: semantic tokens and the shared `tint()` helper — never a
  * hex/rgba literal, never an alpha-append onto a `var()`.
  */
 
-import React from 'react';
-import {
-  Button,
-  HStack,
-  Icon,
-  Menu,
-  Portal,
-  Text,
-  Tooltip,
-} from '@chakra-ui/react';
-import type { IconType } from 'react-icons';
-import {
-  LuChevronDown,
-  LuLayoutPanelTop,
-  LuShapes,
-} from 'react-icons/lu';
+import React, { useRef } from 'react';
+import { Box, Button, Icon, Menu, Portal, Text } from '@chakra-ui/react';
+import { LuPlus } from 'react-icons/lu';
 
+import {
+  WIREFRAME_ELEMENT_LABELS,
+  type WireframeElementType,
+  type WireframeSectionPreset,
+  type WireframeShapeKind,
+} from '../model/elements';
+import { WIREFRAME_ICONS } from '../model/icons';
 import { tint } from '../../../shared/utils/colorTint';
-import {
-  findWireframeAction,
-  wireframeActionTestId,
-} from '../actions/wireframeActions';
+import { useWireframeNavigation } from './WireframeNavigationProvider';
 
-export interface WireframeActionButtonProps {
-  /** C4 action id this control performs. */
-  readonly actionId: string;
-  /** Visible label (the `full` density only). */
+interface InsertItem {
+  /** Unique menu value (never shown). */
+  readonly key: string;
   readonly label: string;
-  /** Human description used for the tooltip and the compact accessible name. */
-  readonly description: string;
-  readonly icon: IconType;
-  /** `full` = icon + label (Insert); `compact` = icon only. */
-  readonly density: 'full' | 'compact';
-  readonly disabled?: boolean;
-  /** Toggle state (`aria-pressed`); `undefined` for a plain button. */
-  readonly pressed?: boolean;
-  readonly onActivate: (event: React.MouseEvent<HTMLButtonElement>) => void;
+  readonly verbId: string;
+  readonly args?: Readonly<Record<string, string>>;
 }
 
-/**
- * One action control. The testid and accessible name derive from the table row,
- * so a new entry needs no markup change beyond its icon/label. The control is a
- * plain `data-hotkey`-free button — its keyboard path is the command surface.
- */
-export function WireframeActionButton({
-  actionId,
-  label,
-  description,
-  icon,
-  density,
-  disabled = false,
-  pressed,
-  onActivate,
-}: WireframeActionButtonProps): React.ReactElement {
-  const action = findWireframeAction(actionId);
-  const hotkey = action?.hotkey;
-  const testId = wireframeActionTestId(actionId);
-  const accessibleName = hotkey
-    ? `${density === 'full' ? label : description} (${hotkey})`
-    : density === 'full'
-      ? label
-      : description;
+/** The seven no-argument element verbs (Section/Shape carry an explicit choice). */
+const ELEMENT_TYPES: readonly WireframeElementType[] = [
+  'text',
+  'button',
+  'input',
+  'image',
+  'icon',
+  'card',
+  'line',
+];
 
-  const button = (
-    <Button
-      data-testid={testId}
-      size="sm"
-      variant="ghost"
-      px={2}
-      gap={1.5}
-      flexShrink={0}
-      aria-label={accessibleName}
-      aria-pressed={pressed}
-      disabled={disabled}
-      onClick={onActivate}
-      bg={pressed ? tint('var(--accent-primary)', 18) : undefined}
-      // #3086 ST-4 (G-235 substitution) — the label stays `fg.default` in EVERY
-      // state (default / hover / pressed). The accent signal is the FILL
-      // (`control-ghost|hover|label` = 10 % tint, `control-ghost|active|label` =
-      // 18 % tint); `accent.default` on its own faint tint was the sub-floor
-      // pair. The gate validates `fg.default` on the composed accent fill.
-      color="fg.default"
-      _hover={{ bg: tint('var(--accent-primary)', 10) }}
-    >
-      <Icon as={icon} boxSize={3.5} aria-hidden="true" />
-      {density === 'full' ? (
-        <Text as="span" fontSize="xs" whiteSpace="nowrap">
-          {label}
-        </Text>
-      ) : null}
-    </Button>
-  );
+const ELEMENT_ITEMS: readonly InsertItem[] = ELEMENT_TYPES.map((type) => ({
+  key: `element:${type}`,
+  label: WIREFRAME_ELEMENT_LABELS[type],
+  verbId: `wireframe.add.${type}`,
+}));
 
-  if (density === 'full') return button;
-
-  return (
-    <Tooltip.Root
-      openDelay={400}
-      closeDelay={0}
-      positioning={{ placement: 'bottom' }}
-    >
-      <Tooltip.Trigger asChild>{button}</Tooltip.Trigger>
-      <Portal>
-        <Tooltip.Positioner>
-          <Tooltip.Content
-            bg="bg.surface"
-            color="fg.default"
-            borderWidth="1px"
-            borderColor="border.subtle"
-            borderRadius="sm"
-            fontSize="xs"
-            px={2}
-            py={1}
-          >
-            {hotkey ? `${description} (${hotkey})` : description}
-          </Tooltip.Content>
-        </Tooltip.Positioner>
-      </Portal>
-    </Tooltip.Root>
-  );
-}
-
-type InsertMenuKind = 'section' | 'shape';
-
-interface InsertMenuOption {
-  readonly value: string;
-  readonly label: string;
-}
-
-interface InsertMenuSpec {
-  readonly actionId: string;
-  readonly label: string;
-  readonly icon: IconType;
-  readonly chevronLabel: string;
-  readonly menuLabel: string;
-  readonly options: readonly InsertMenuOption[];
-}
-
-const INSERT_MENUS: Readonly<Record<InsertMenuKind, InsertMenuSpec>> = {
-  section: {
-    actionId: 'wireframe.add.section',
-    label: 'Section',
-    icon: LuLayoutPanelTop,
-    chevronLabel: 'Section presets',
-    menuLabel: 'Section presets',
-    options: [
-      { value: 'header', label: 'Header' },
-      { value: 'navbar', label: 'Nav bar' },
-      { value: 'sidebar', label: 'Sidebar' },
-      { value: 'footer', label: 'Footer' },
-    ],
-  },
-  shape: {
-    actionId: 'wireframe.add.shape',
-    label: 'Shape',
-    icon: LuShapes,
-    chevronLabel: 'Shape kinds',
-    menuLabel: 'Shape kinds',
-    options: [
-      { value: 'rect', label: 'Rectangle' },
-      { value: 'ellipse', label: 'Ellipse' },
-      { value: 'triangle', label: 'Triangle' },
-    ],
-  },
+const SECTION_PRESET_LABELS: Readonly<Record<WireframeSectionPreset, string>> = {
+  header: 'Header',
+  navbar: 'Nav bar',
+  sidebar: 'Sidebar',
+  footer: 'Footer',
 };
 
-export interface WireframeInsertMenuProps {
-  readonly kind: InsertMenuKind;
-  /**
-   * Activate the main button (adds the default preset/kind). Receives the DOM
-   * event so the toolbar can apply the pointer-activation blur rule.
-   */
-  readonly onAddDefault: (event: React.MouseEvent<HTMLButtonElement>) => void;
-  /** Add one menu option (a named section preset or shape kind). */
-  readonly onAddOption: (value: string) => void;
+const SECTION_ITEMS: readonly InsertItem[] = (
+  Object.keys(SECTION_PRESET_LABELS) as WireframeSectionPreset[]
+).map((preset) => ({
+  key: `section:${preset}`,
+  label: SECTION_PRESET_LABELS[preset],
+  verbId: 'wireframe.add.section',
+  args: { preset },
+}));
+
+const SHAPE_KIND_LABELS: Readonly<Record<WireframeShapeKind, string>> = {
+  rect: 'Rectangle',
+  ellipse: 'Ellipse',
+  triangle: 'Triangle',
+};
+
+const SHAPE_ITEMS: readonly InsertItem[] = (
+  Object.keys(SHAPE_KIND_LABELS) as WireframeShapeKind[]
+).map((shape) => ({
+  key: `shape:${shape}`,
+  label: SHAPE_KIND_LABELS[shape],
+  verbId: 'wireframe.add.shape',
+  args: { shape },
+}));
+
+const ICON_ITEMS: readonly InsertItem[] = WIREFRAME_ICONS.map((icon) => ({
+  key: `icon:${icon.id}`,
+  label: icon.label,
+  verbId: 'wireframe.add.icon',
+  args: { iconId: icon.id },
+}));
+
+/** `preset=footer` / `shape=triangle` / `iconId=user` (single argument per row). */
+function formatArgs(args: Readonly<Record<string, string>>): string {
+  return Object.entries(args)
+    .map(([name, value]) => `${name}=${value}`)
+    .join(',');
 }
 
-/**
- * An Insert-group control: the main action button plus a trailing chevron that
- * opens the preset/kind menu. The chevron carries NO `data-hotkey` — the same
- * first character would collide with its parent action (D2).
- */
-export function WireframeInsertMenu({
-  kind,
-  onAddDefault,
-  onAddOption,
-}: WireframeInsertMenuProps): React.ReactElement {
-  const spec = INSERT_MENUS[kind];
+function InsertMenuItem({
+  item,
+  onRun,
+}: {
+  item: InsertItem;
+  onRun: (item: InsertItem) => void;
+}): React.ReactElement {
+  const args = item.args;
+  return (
+    <Menu.Item
+      value={item.key}
+      data-testid="wireframe-insert-item"
+      data-nav-verb-id={item.verbId}
+      {...(args === undefined ? {} : { 'data-nav-args': formatArgs(args) })}
+      onSelect={() => onRun(item)}
+      fontSize="xs"
+      color="fg.default"
+      px={3}
+      py="4px"
+      borderRadius="xs"
+      cursor="pointer"
+      whiteSpace="nowrap"
+      _highlighted={{ bg: 'bg.hover' }}
+    >
+      {item.label}
+    </Menu.Item>
+  );
+}
+
+export function WireframeInsertMenu(): React.ReactElement {
+  const { host } = useWireframeNavigation();
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const pointerOpenedRef = useRef(false);
+
+  const runItem = (item: InsertItem): void => {
+    void host.runVerb(item.verbId, 'pointer', item.args ?? {});
+  };
 
   return (
-    <HStack gap={0} flexShrink={0}>
-      <WireframeActionButton
-        actionId={spec.actionId}
-        label={spec.label}
-        description={spec.label}
-        icon={spec.icon}
-        density="full"
-        onActivate={onAddDefault}
-      />
-      <Menu.Root positioning={{ placement: 'bottom-start' }}>
+    <Box
+      position="absolute"
+      insetInlineStart="12px"
+      insetBlockStart="12px"
+      zIndex={2}
+    >
+      <Menu.Root
+        positioning={{ placement: 'bottom-start' }}
+        onExitComplete={() => {
+          if (!pointerOpenedRef.current) return;
+          pointerOpenedRef.current = false;
+          // A pointer activation releases focus so the next bare key resolves
+          // through the shell adapter (G-327); a keyboard activation keeps it.
+          triggerRef.current?.blur();
+        }}
+      >
         <Menu.Trigger asChild>
           <Button
-            size="xs"
-            variant="ghost"
-            px={1}
-            flexShrink={0}
-            aria-label={spec.chevronLabel}
+            ref={triggerRef}
+            data-testid="wireframe-insert"
+            aria-label="Insert"
             aria-haspopup="menu"
-            color="fg.muted"
+            size="sm"
+            variant="ghost"
+            gap={1.5}
+            px={2}
+            bg="bg.surface"
+            borderWidth="1px"
+            borderColor="border.default"
+            color="fg.default"
             _hover={{ bg: tint('var(--accent-primary)', 10) }}
+            onPointerDown={() => {
+              pointerOpenedRef.current = true;
+            }}
+            onKeyDown={() => {
+              pointerOpenedRef.current = false;
+            }}
           >
-            <Icon as={LuChevronDown} boxSize={3} aria-hidden="true" />
+            <Icon as={LuPlus} boxSize={3.5} aria-hidden="true" />
+            <Text as="span" display={{ base: 'none', lg: 'inline' }} fontSize="xs">
+              Insert
+            </Text>
           </Button>
         </Menu.Trigger>
         <Portal>
           <Menu.Positioner>
             <Menu.Content
-              aria-label={spec.menuLabel}
+              aria-label="Insert"
               minWidth="10rem"
+              maxH="60vh"
+              overflowY="auto"
               bg="bg.surface"
               borderColor="border.default"
               borderWidth="1px"
@@ -250,27 +199,45 @@ export function WireframeInsertMenu({
               boxShadow="md"
               py={1}
             >
-              {spec.options.map((option) => (
-                <Menu.Item
-                  key={option.value}
-                  value={option.value}
-                  onSelect={() => onAddOption(option.value)}
-                  fontSize="xs"
-                  color="fg.default"
-                  px={3}
-                  py="4px"
-                  borderRadius="xs"
-                  cursor="pointer"
-                  whiteSpace="nowrap"
-                  _highlighted={{ bg: 'bg.hover' }}
-                >
-                  {option.label}
-                </Menu.Item>
-              ))}
+              <Menu.ItemGroup>
+                <Menu.ItemGroupLabel fontSize="xs" color="fg.muted">
+                  Elements
+                </Menu.ItemGroupLabel>
+                {ELEMENT_ITEMS.map((item) => (
+                  <InsertMenuItem key={item.key} item={item} onRun={runItem} />
+                ))}
+              </Menu.ItemGroup>
+              <Menu.Separator />
+              <Menu.ItemGroup>
+                <Menu.ItemGroupLabel fontSize="xs" color="fg.muted">
+                  Section presets
+                </Menu.ItemGroupLabel>
+                {SECTION_ITEMS.map((item) => (
+                  <InsertMenuItem key={item.key} item={item} onRun={runItem} />
+                ))}
+              </Menu.ItemGroup>
+              <Menu.Separator />
+              <Menu.ItemGroup>
+                <Menu.ItemGroupLabel fontSize="xs" color="fg.muted">
+                  Shape kinds
+                </Menu.ItemGroupLabel>
+                {SHAPE_ITEMS.map((item) => (
+                  <InsertMenuItem key={item.key} item={item} onRun={runItem} />
+                ))}
+              </Menu.ItemGroup>
+              <Menu.Separator />
+              <Menu.ItemGroup>
+                <Menu.ItemGroupLabel fontSize="xs" color="fg.muted">
+                  Icons
+                </Menu.ItemGroupLabel>
+                {ICON_ITEMS.map((item) => (
+                  <InsertMenuItem key={item.key} item={item} onRun={runItem} />
+                ))}
+              </Menu.ItemGroup>
             </Menu.Content>
           </Menu.Positioner>
         </Portal>
       </Menu.Root>
-    </HStack>
+    </Box>
   );
 }

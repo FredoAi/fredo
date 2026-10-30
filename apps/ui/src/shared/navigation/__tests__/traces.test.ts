@@ -1,15 +1,13 @@
 /**
- * Spec #3117 (P3) — ST-5 §4.3 worked traces (AC2 / REQ-03.1–03.4).
+ * Spec #3117 (P3) / Spec #3119 (P5) — ST-5 §4.3 worked traces (AC2 / REQ-03.1–03.4).
  *
  * Three rows, all seven published columns: tier, intents, args, journal effects, journal
  * `placePath`, post-dispatch cursor and `exitedBy`. Every dispatch is awaited (Reading #12).
  *
- * The trace surface is built LOCALLY from the same §4.2 ids, key map and place flags as
- * `fixtures.ts`'s `validWireframeSurface()`. Reason: the fixture's default verb `run`
- * returns a patch-less mutation (`makeEffect({ label })` ⇒ `patch: null`), which dispatch
- * correctly classifies as `noop did-nothing` and does NOT journal — so it cannot produce the
- * published `navigation` / `mutation` effects. `fixtures.ts` is NOT edited (it is ST-1's file
- * and other suites pin its content); only the two trace verbs are declared here.
+ * P5 re-baselines the published matrix to the Spec #3119 tree: the intents now read
+ * `wireframe.*` ids and the root entry keys are `{kind:'place'}` bindings. `TRACES` lives in
+ * `fixtures.ts` and the trace surface is derived from `publishedWireframeSurface()` so the
+ * published docs §4.2 and this suite cannot disagree (R-d).
  *
  * The cursor is host-owned (dispatch deliberately performs no cursor mutation, §2.2). This
  * harness applies the documented host contract: a navigation verb pushes its target child
@@ -22,6 +20,8 @@ import { dispatch, type EngineDeps } from '../dispatch';
 import { createJournalStore } from '../journal';
 import { resolveStroke, type KeyResolution } from '../keyResolver';
 import { createRegistry, type SurfaceRegistry } from '../registry';
+import { isBindableStroke, normalizeStroke } from '../resolver';
+import { validateSurface } from '../validation';
 import {
   type ContextSnapshot,
   type Intent,
@@ -33,12 +33,9 @@ import {
   TRACES,
   type TraceCase,
   makeEffect,
-  makePlace,
   makeSelection,
   makeSnapshot,
-  makeSurface,
-  makeVerb,
-  validWireframeSurface,
+  publishedWireframeSurface,
 } from './fixtures';
 
 const CANVAS = 'wireframe.canvas';
@@ -46,10 +43,9 @@ const CREATE = 'wireframe.create';
 const TS = '2026-01-01T00:00:00.000Z';
 const NOW_MS = 1000;
 
-/** §4.2 — the four published direct aliases. */
+/** §4.2 — the three published direct aliases. */
 const PUBLISHED_ALIASES = {
-  r: 'place.rect',
-  e: 'place.ellipse',
+  r: 'wireframe.create.rect',
   u: 'journal.undo',
   y: 'journal.redo',
 } as const;
@@ -61,70 +57,111 @@ function boundTargets(reg: SurfaceRegistry, placeId: string, stroke: string): st
 
 describe('§4.2 published key map (REQ-03.1)', () => {
   it('fixture declares the published key map', () => {
-    const surface = validWireframeSurface();
+    const surface = publishedWireframeSurface();
     const reg = createRegistry(surface);
 
     expect(surface.tree.appId).toBe('wireframe');
     expect(surface.tree.root).toBe(CANVAS);
 
-    // canvas — navigation + application capabilities
-    const canvasKeys: Readonly<Record<string, string>> = {
-      c: 'place.create',
-      i: 'place.edit',
-      a: 'place.arrange',
-      s: 'place.style',
-      v: 'place.view',
-      f: 'place.file',
-      m: 'app.map',
-      k: 'app.ask',
-      p: 'app.palette',
-      'w n': 'window.focusNext',
-      'w p': 'window.focusPrevious',
-    };
-    for (const [stroke, verbId] of Object.entries(canvasKeys)) {
-      expect(boundTargets(reg, CANVAS, stroke), `${CANVAS} ${stroke}`).toStrictEqual([verbId]);
-    }
-    // create (transient)
-    expect(boundTargets(reg, CREATE, 'r')).toStrictEqual(['place.rect']);
-    expect(boundTargets(reg, CREATE, 'e')).toStrictEqual(['place.ellipse']);
-    expect(boundTargets(reg, CREATE, 't')).toStrictEqual(['place.text']);
-    expect(boundTargets(reg, CREATE, 'b')).toStrictEqual(['place.button']);
-    // edit (sticky)
-    expect(boundTargets(reg, 'wireframe.edit', 'a')).toStrictEqual(['place.selectAll']);
-    expect(boundTargets(reg, 'wireframe.edit', 'd')).toStrictEqual(['place.duplicate']);
-    expect(boundTargets(reg, 'wireframe.edit', 'x')).toStrictEqual(['place.delete']);
-    expect(boundTargets(reg, 'wireframe.edit', 'l')).toStrictEqual(['place.toggleLock']);
-    // arrange (sticky)
-    expect(boundTargets(reg, 'wireframe.arrange', 'l')).toStrictEqual(['place.alignLeft']);
-    expect(boundTargets(reg, 'wireframe.arrange', 'c')).toStrictEqual(['place.alignCenter']);
-    expect(boundTargets(reg, 'wireframe.arrange', 'z')).toStrictEqual(['place.alignRight']);
-    expect(boundTargets(reg, 'wireframe.arrange', 'd')).toStrictEqual(['place.distribute']);
-    expect(boundTargets(reg, 'wireframe.arrange', 'g')).toStrictEqual(['place.group']);
-    expect(boundTargets(reg, 'wireframe.arrange', 'n')).toStrictEqual(['place.ungroup']);
-    expect(boundTargets(reg, 'wireframe.arrange', 'f')).toStrictEqual(['place.bringForward']);
-    expect(boundTargets(reg, 'wireframe.arrange', 'b')).toStrictEqual(['place.sendBackward']);
-    // style (sticky)
-    expect(boundTargets(reg, 'wireframe.style', 'f')).toStrictEqual(['place.setFill']);
-    expect(boundTargets(reg, 'wireframe.style', 'c')).toStrictEqual(['place.copyStyle']);
-    expect(boundTargets(reg, 'wireframe.style', 'x')).toStrictEqual(['place.resetStyle']);
-    // view (sticky)
-    expect(boundTargets(reg, 'wireframe.view', 'i')).toStrictEqual(['place.zoomIn']);
-    expect(boundTargets(reg, 'wireframe.view', 'o')).toStrictEqual(['place.zoomOut']);
-    expect(boundTargets(reg, 'wireframe.view', 'n')).toStrictEqual(['place.fitPage']);
-    expect(boundTargets(reg, 'wireframe.view', 'h')).toStrictEqual(['place.togglePan']);
-    // file (sticky)
-    expect(boundTargets(reg, 'wireframe.file', 's')).toStrictEqual(['place.save']);
-    expect(boundTargets(reg, 'wireframe.file', 'a')).toStrictEqual(['place.saveAs']);
-    expect(boundTargets(reg, 'wireframe.file', 'o')).toStrictEqual(['place.open']);
-    expect(boundTargets(reg, 'wireframe.file', 'x')).toStrictEqual(['place.exportPng']);
-    expect(boundTargets(reg, 'wireframe.file', 'n')).toStrictEqual(['wireframe.document.new']);
+    // R-1 feasibility: the published tree is V-valid under the P5 ROOT-only V-08 rule
+    // (Arrange binds `u → ungroup` while the application aliases `u → journal.undo`).
+    expect(validateSurface(surface)).toStrictEqual({ valid: true, diagnostics: [] });
 
-    // The four direct aliases, exactly.
+    // canvas — place entries (kind:'place'), the two globals, the arrow selection keys.
+    expect(boundTargets(reg, CANVAS, 'c')).toStrictEqual([CREATE]);
+    expect(boundTargets(reg, CANVAS, 'e')).toStrictEqual(['wireframe.edit']);
+    expect(boundTargets(reg, CANVAS, 'a')).toStrictEqual(['wireframe.arrange']);
+    expect(boundTargets(reg, CANVAS, 's')).toStrictEqual(['wireframe.style']);
+    expect(boundTargets(reg, CANVAS, 'v')).toStrictEqual(['wireframe.view']);
+    expect(boundTargets(reg, CANVAS, 'f')).toStrictEqual(['wireframe.file']);
+    expect(boundTargets(reg, CANVAS, 'm')).toStrictEqual(['app.map']);
+    expect(boundTargets(reg, CANVAS, 'k')).toStrictEqual(['app.ask']);
+    expect(boundTargets(reg, CANVAS, 'ArrowLeft')).toStrictEqual(['wireframe.selection.previous']);
+    expect(boundTargets(reg, CANVAS, 'ArrowUp')).toStrictEqual(['wireframe.selection.previous']);
+    expect(boundTargets(reg, CANVAS, 'ArrowRight')).toStrictEqual(['wireframe.selection.next']);
+    expect(boundTargets(reg, CANVAS, 'ArrowDown')).toStrictEqual(['wireframe.selection.next']);
+
+    // create (transient)
+    expect(boundTargets(reg, CREATE, 'r')).toStrictEqual(['wireframe.create.rect']);
+    expect(boundTargets(reg, CREATE, 'e')).toStrictEqual(['wireframe.create.ellipse']);
+    expect(boundTargets(reg, CREATE, 't')).toStrictEqual(['wireframe.add.text']);
+    expect(boundTargets(reg, CREATE, 'b')).toStrictEqual(['wireframe.add.button']);
+    expect(boundTargets(reg, CREATE, 'i')).toStrictEqual(['wireframe.add.input']);
+    expect(boundTargets(reg, CREATE, 'm')).toStrictEqual(['wireframe.add.image']);
+    expect(boundTargets(reg, CREATE, 'k')).toStrictEqual(['wireframe.add.card']);
+    expect(boundTargets(reg, CREATE, 's')).toStrictEqual(['wireframe.add.section']);
+    expect(boundTargets(reg, CREATE, 'l')).toStrictEqual(['wireframe.add.line']);
+
+    // edit (sticky)
+    expect(boundTargets(reg, 'wireframe.edit', 'd')).toStrictEqual([
+      'wireframe.element.duplicate',
+    ]);
+    expect(boundTargets(reg, 'wireframe.edit', 'x')).toStrictEqual(['wireframe.element.delete']);
+    expect(boundTargets(reg, 'wireframe.edit', 'l')).toStrictEqual([
+      'wireframe.element.toggleLock',
+    ]);
+    expect(boundTargets(reg, 'wireframe.edit', 'h')).toStrictEqual([
+      'wireframe.element.toggleVisible',
+    ]);
+    expect(boundTargets(reg, 'wireframe.edit', 'r')).toStrictEqual(['wireframe.element.rename']);
+
+    // arrange (sticky)
+    expect(boundTargets(reg, 'wireframe.arrange', 'g')).toStrictEqual(['wireframe.arrange.group']);
+    expect(boundTargets(reg, 'wireframe.arrange', 'u')).toStrictEqual([
+      'wireframe.arrange.ungroup',
+    ]);
+    expect(boundTargets(reg, 'wireframe.arrange', 'ArrowLeft')).toStrictEqual([
+      'wireframe.arrange.alignLeft',
+    ]);
+    expect(boundTargets(reg, 'wireframe.arrange', 'ArrowRight')).toStrictEqual([
+      'wireframe.arrange.alignRight',
+    ]);
+    expect(boundTargets(reg, 'wireframe.arrange', 'd')).toStrictEqual([
+      'wireframe.arrange.distribute',
+    ]);
+    expect(boundTargets(reg, 'wireframe.arrange', 'f')).toStrictEqual([
+      'wireframe.arrange.bringForward',
+    ]);
+    expect(boundTargets(reg, 'wireframe.arrange', 'b')).toStrictEqual([
+      'wireframe.arrange.sendBackward',
+    ]);
+    expect(boundTargets(reg, 'wireframe.arrange', 's')).toStrictEqual([
+      'wireframe.arrange.toggleSnap',
+    ]);
+
+    // style (sticky)
+    expect(boundTargets(reg, 'wireframe.style', 'f')).toStrictEqual(['wireframe.style.fill']);
+    expect(boundTargets(reg, 'wireframe.style', 'o')).toStrictEqual(['wireframe.style.border']);
+    expect(boundTargets(reg, 'wireframe.style', 'p')).toStrictEqual([
+      'wireframe.style.appearance',
+    ]);
+    expect(boundTargets(reg, 'wireframe.style', 'z')).toStrictEqual(['wireframe.style.radius']);
+    expect(boundTargets(reg, 'wireframe.style', 't')).toStrictEqual([
+      'wireframe.style.textStyle',
+    ]);
+
+    // view (sticky)
+    expect(boundTargets(reg, 'wireframe.view', '+')).toStrictEqual(['wireframe.zoom.in']);
+    expect(boundTargets(reg, 'wireframe.view', '-')).toStrictEqual(['wireframe.zoom.out']);
+    expect(boundTargets(reg, 'wireframe.view', 'f')).toStrictEqual(['wireframe.view.fitPage']);
+    expect(boundTargets(reg, 'wireframe.view', '0')).toStrictEqual(['wireframe.view.resetView']);
+    expect(boundTargets(reg, 'wireframe.view', 'p')).toStrictEqual(['wireframe.view.togglePan']);
+
+    // file (sticky)
+    expect(boundTargets(reg, 'wireframe.file', 'n')).toStrictEqual(['wireframe.document.new']);
+    expect(boundTargets(reg, 'wireframe.file', 'o')).toStrictEqual(['place.open']);
+    expect(boundTargets(reg, 'wireframe.file', 'w')).toStrictEqual(['place.saveAs']);
+    expect(boundTargets(reg, 'wireframe.file', 'x')).toStrictEqual(['place.exportPng']);
+
+    // The three direct aliases, exactly.
     expect(surface.tree.directAliases).toStrictEqual(PUBLISHED_ALIASES);
 
-    // `w` is deliberately unbound (only the `w n` / `w p` sequences exist).
-    expect(reg.bindingsByPlace.get(CANVAS)?.has('w')).toBe(false);
-    expect(surface.tree.directAliases).not.toHaveProperty('w');
+    // §4.4 — the P5 grammar extension: arrows and + / - are bindable reserved strokes.
+    for (const stroke of ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', '+', '-']) {
+      expect(isBindableStroke(stroke), stroke).toBe(true);
+    }
+    expect(normalizeStroke('arrowleft')).toBe('ArrowLeft');
+    expect(normalizeStroke('ArrowRight')).toBe('ArrowRight');
 
     // Place flags: canvas root; create transient; edit/arrange/style/view/file sticky.
     const byId = new Map(surface.tree.places.map((place) => [place.id, place]));
@@ -150,60 +187,33 @@ describe('§4.2 published key map (REQ-03.1)', () => {
 
 /** The navigation verb of the `c` trace and the place it enters. */
 const NAVIGATION_TARGET_PLACES: Readonly<Record<string, string>> = {
-  'place.create': CREATE,
+  'wireframe.create': CREATE,
 };
 
 /**
- * The §4.2 surface subset the three traces need: canvas → create, `c` entering create,
- * `r` drawing a rectangle, and the `r` direct alias for the tier-2 `r` trace.
+ * The published surface with ONE override: `wireframe.create.rect` performs a REAL mutation
+ * (one patch pair, one inverse) so the `c r` / `r` traces can publish the `mutation` effect.
+ * The declaration (keys, aliases, places) is exactly `publishedWireframeSurface()`.
  */
 function traceSurface(): Surface {
-  return makeSurface({
-    appId: 'wireframe',
-    root: CANVAS,
-    places: [
-      makePlace({
-        id: CANVAS,
-        label: 'Canvas',
-        parent: null,
-        keys: { c: { kind: 'verb', verbId: 'place.create' } },
-      }),
-      makePlace({
-        id: CREATE,
-        label: 'Create',
-        parent: CANVAS,
-        transient: true,
-        sticky: false,
-        keys: { r: { kind: 'verb', verbId: 'place.rect' } },
-      }),
-    ],
-    verbs: [
-      makeVerb({
-        id: 'place.create',
-        title: 'Create',
-        risk: 'safe',
-        appliesTo: { objects: ['page'], places: [CANVAS] },
-        // §5.2 navigation effect: no patch, no inverse, journaled as `navigation`.
-        run: () =>
-          makeEffect({ effect: 'navigation', label: 'Create', patch: null, inverse: null, target: [] }),
-      }),
-      makeVerb({
-        id: 'place.rect',
-        title: 'Rectangle',
-        risk: 'safe',
-        appliesTo: { objects: ['element'], places: [CREATE] },
-        // A real mutation: one patch pair, one inverse — exactly one journal entry.
-        run: () =>
-          makeEffect({
-            label: 'Rectangle',
-            patch: { before: { shapes: 0 }, after: { shapes: 1 } },
-            inverse: { shapes: 0 },
-            target: [],
-          }),
-      }),
-    ],
-    directAliases: { r: 'place.rect' },
-  });
+  const base = publishedWireframeSurface();
+  return {
+    ...base,
+    verbs: base.verbs.map((verb) =>
+      verb.id === 'wireframe.create.rect'
+        ? {
+            ...verb,
+            run: () =>
+              makeEffect({
+                label: 'Rectangle',
+                patch: { before: { shapes: 0 }, after: { shapes: 1 } },
+                inverse: { shapes: 0 },
+                target: [],
+              }),
+          }
+        : verb,
+    ),
+  };
 }
 
 interface TraceRun {
@@ -328,18 +338,17 @@ describe('§4.3 worked traces (REQ-03.2–03.4)', () => {
     expect(cr.cursor).toStrictEqual(r.cursor);
     expect(cr.cursor).toStrictEqual([CANVAS]);
 
-    // Both journal the SAME `place.rect` mutation effect.
-    const crRect = cr.entries.find((entry) => entry.verbId === 'place.rect');
-    const rRect = r.entries.find((entry) => entry.verbId === 'place.rect');
+    // Both journal the SAME `wireframe.create.rect` mutation effect.
+    const crRect = cr.entries.find((entry) => entry.verbId === 'wireframe.create.rect');
+    const rRect = r.entries.find((entry) => entry.verbId === 'wireframe.create.rect');
     if (crRect === undefined || rRect === undefined) {
-      throw new Error('both traces must journal a place.rect entry');
+      throw new Error('both traces must journal a wireframe.create.rect entry');
     }
     expect(crRect.effect).toBe('mutation');
     expect(rRect.effect).toBe('mutation');
 
     // The journal row differs ONLY in its dispatch-time path. `seq` is the entry's ordinal
-    // (the `c r` run journals a navigation entry first) and `exitedBy` is the separately
-    // published transient-exit column (REQ-03.4, asserted below).
+    // and `exitedBy` is the separately published transient-exit column (REQ-03.4).
     const comparable = (entry: JournalEntry): Omit<JournalEntry, 'seq' | 'placePath' | 'exitedBy'> => {
       const { seq: _seq, placePath: _placePath, exitedBy: _exitedBy, ...rest } = entry;
       return rest;
@@ -361,11 +370,11 @@ describe('§4.3 worked traces (REQ-03.2–03.4)', () => {
     const run = await driveTrace(TRACES[1]);
 
     expect(run.entries).toHaveLength(2);
-    expect(run.entries[0]?.verbId).toBe('place.create');
+    expect(run.entries[0]?.verbId).toBe('wireframe.create');
     expect(run.entries[0]?.effect).toBe('navigation');
     expect(run.entries[0]?.placePath).toStrictEqual([CANVAS]);
 
-    expect(run.entries[1]?.verbId).toBe('place.rect');
+    expect(run.entries[1]?.verbId).toBe('wireframe.create.rect');
     expect(run.entries[1]?.effect).toBe('mutation');
     expect(run.entries[1]?.exitedBy).toBe('verb');
     expect(run.entries[1]?.placePath).toStrictEqual([CANVAS, CREATE]);
@@ -374,6 +383,6 @@ describe('§4.3 worked traces (REQ-03.2–03.4)', () => {
     // is recorded on the mutation entry, never as a second `navigation` entry.
     const navigations = run.entries.filter((entry) => entry.effect === 'navigation');
     expect(navigations).toHaveLength(1);
-    expect(navigations.map((entry) => entry.verbId)).toStrictEqual(['place.create']);
+    expect(navigations.map((entry) => entry.verbId)).toStrictEqual(['wireframe.create']);
   });
 });

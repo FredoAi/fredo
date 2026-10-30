@@ -38,8 +38,26 @@ export const JOURNAL_REDO_VERB_ID = 'journal.redo';
 /** §2.2 — the engine-owned Escape verb id. */
 export const PLACE_EXIT_VERB_ID = 'place.exit';
 
-/** §4.4 — engine-reserved strokes, bindable but never a bare `[a-z0-9]` token. */
-export const ENGINE_RESERVED_STROKES = ['Escape', 'Enter', 'Tab'] as const;
+/**
+ * §4.4 — engine-reserved strokes, bindable but never a bare `[a-z0-9]` token.
+ *
+ * P5 extends the grammar with the four arrow keys and the two zoom characters so a
+ * place-scoped surface can express `← ↑ ↓ →` (selection/align) and `+`/`-` (zoom). The
+ * tokens are matched case-insensitively by `registry.normalizeToken` / `resolver.normalizeToken`;
+ * `+`/`-` are single characters and already pass the bare pattern, but they are listed here so
+ * the reserved set is the ONE published source of bindable non-alphanumeric strokes.
+ */
+export const ENGINE_RESERVED_STROKES = [
+  'Escape',
+  'Enter',
+  'Tab',
+  'ArrowLeft',
+  'ArrowRight',
+  'ArrowUp',
+  'ArrowDown',
+  '+',
+  '-',
+] as const;
 
 /** §9.2 — the channels a companion may originate. */
 export const COMPANION_CHANNELS = ['voice', 'agent'] as const;

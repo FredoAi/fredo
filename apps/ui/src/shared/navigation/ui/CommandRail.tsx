@@ -13,6 +13,9 @@
  *   - root `role="region"`, `aria-label={NAV_RAIL_ARIA_LABEL}`, `data-nav-surface="rail"`,
  *     `overflow: hidden`, `minWidth: NAV_RAIL_MIN_WIDTH_PX`, no `position`/`zIndex`;
  *   - NO `aria-live` region of its own, NO positive tabindex, NO focus move on mount;
+ *   - a place transition re-homes focus the rail itself dropped (the same control when it
+ *     reappears, else the current-place heading — the programmatic `tabIndex={-1}` anchor)
+ *     and NEVER steals focus the user moved elsewhere (#3119 R-9 / AC9, §11.5);
  *   - no horizontal scroll anywhere: the rail is a column, every row is `minWidth: 0` and
  *     only the title ellipsizes (G-274).
  *
@@ -41,6 +44,10 @@ import {
   NAV_RAIL_MAP_TESTID,
   NAV_RAIL_MIN_WIDTH_PX,
   NAV_RAIL_MORE_TESTID,
+  NAV_MORE_ARIA_LABEL,
+  NAV_RAIL_PLACE_ROW_TESTID,
+  NAV_RAIL_PLACES_LABEL,
+  NAV_RAIL_PLACES_TESTID,
   NAV_RAIL_PLACE_TESTID,
   NAV_RAIL_RISK_TESTID,
   NAV_RAIL_ROW_MAX_WIDTH_PX,
@@ -53,6 +60,7 @@ import {
 import { NavKeycap } from './Keycap';
 import type { CommandRailModel, CommandRailRow, NavRiskCue } from './types';
 import { useNavReducedMotion } from './useReducedMotion';
+import { usePlaceTransitionFocus } from './usePlaceTransitionFocus';
 
 export interface CommandRailProps {
   /** The ONE view-model (built by `buildCommandRailModel`). No key table, no verb list. */
@@ -208,9 +216,12 @@ export function CommandRail({
   const motionReduced = reducedMotion ?? queryReduced;
   const more = model.more;
   const askReasonId = React.useId();
+  const { railRef, onFocus: handleRailFocus } = usePlaceTransitionFocus(model);
 
   return (
     <Box
+      ref={railRef}
+      onFocus={handleRailFocus}
       data-testid={NAV_RAIL_TESTID}
       data-nav-surface="rail"
       role="region"
@@ -276,6 +287,9 @@ export function CommandRail({
       <chakra.h2
         data-testid={NAV_RAIL_PLACE_TESTID}
         title={model.currentPlace.label}
+        // The place-transition focus anchor: programmatically focusable, never in the tab
+        // order (the no-focus-steal contract holds).
+        tabIndex={-1}
         mt="1"
         mb="0"
         fontSize="sm"
@@ -306,6 +320,79 @@ export function CommandRail({
       )}
 
       <Separator my="2" borderColor="border.subtle" />
+
+      {model.placeRows.length === 0 ? null : (
+        <Box display="block" minWidth="0" mb="2">
+          <Text
+            px="2"
+            mb="1"
+            fontSize="2xs"
+            fontWeight="medium"
+            color="fg.subtle"
+            textTransform="uppercase"
+            letterSpacing="wider"
+          >
+            {NAV_RAIL_PLACES_LABEL}
+          </Text>
+          <Box
+            data-testid={NAV_RAIL_PLACES_TESTID}
+            role="list"
+            as="ul"
+            display="flex"
+            minWidth="0"
+            flexDirection="column"
+            gap="0.5"
+            width="100%"
+            listStyleType="none"
+            p="0"
+            m="0"
+          >
+            {model.placeRows.map((placeRow) => (
+              <chakra.li key={placeRow.placeId} role="listitem" display="block" minWidth="0">
+                <chakra.button
+                  type="button"
+                  data-testid={NAV_RAIL_PLACE_ROW_TESTID}
+                  data-nav-place-id={placeRow.placeId}
+                  title={placeRow.tooltip}
+                  aria-label={placeRow.tooltip}
+                  onClick={() => onRunVerb(placeRow.placeId)}
+                  display="flex"
+                  minWidth="0"
+                  alignItems="center"
+                  gap="1.5"
+                  width="100%"
+                  maxWidth={`${NAV_RAIL_ROW_MAX_WIDTH_PX}px`}
+                  height="24px"
+                  px="2"
+                  borderRadius="sm"
+                  borderWidth="0"
+                  bg="transparent"
+                  color="fg.default"
+                  textAlign="left"
+                  cursor="pointer"
+                  overflow="hidden"
+                  _hover={{ bg: 'bg.hover' }}
+                  _active={motionReduced ? undefined : { transform: 'scale(0.99)' }}
+                  _focusVisible={FOCUS_VISIBLE}
+                >
+                  <NavKeycap keys={placeRow.keys} platform={platform} />
+                  <Text
+                    flex="1 1 auto"
+                    minWidth={`${NAV_RAIL_TITLE_MIN_WIDTH_PX}px`}
+                    overflow="hidden"
+                    textOverflow="ellipsis"
+                    whiteSpace="nowrap"
+                    fontSize="xs"
+                    color="fg.default"
+                  >
+                    {placeRow.label}
+                  </Text>
+                </chakra.button>
+              </chakra.li>
+            ))}
+          </Box>
+        </Box>
+      )}
 
       <Box display="block" minWidth="0">
         <Box
@@ -348,6 +435,7 @@ export function CommandRail({
             type="button"
             data-testid={NAV_RAIL_MORE_TESTID}
             title={more.label}
+            aria-label={NAV_MORE_ARIA_LABEL}
             onClick={() => onOpenMap(more.opensFilteredTo)}
             display="flex"
             minWidth="0"

@@ -17,7 +17,7 @@ import {
   type KeyResolution,
   type ResolverInput,
 } from '../keyResolver';
-import { isBindableStroke } from '../resolver';
+import { isBindableStroke, normalizeStroke } from '../resolver';
 import {
   PENDING_TIMEOUT_MS,
   type KeyBinding,
@@ -346,5 +346,66 @@ describe('determinism (REQ-01.5)', () => {
     };
     expect(resolveStroke(input)).toStrictEqual(resolveStroke(input));
     expect(resolveStroke(input)).toStrictEqual(resolveStroke({ ...input }));
+  });
+});
+
+describe('P5 reserved-stroke grammar (§4.4)', () => {
+  it('arrow strokes resolve as bindable reserved strokes', () => {
+    for (const stroke of ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']) {
+      expect(isBindableStroke(stroke), stroke).toBe(true);
+    }
+    // Case-insensitive canonicalisation mirrors registry/resolver normalization.
+    expect(normalizeStroke('arrowleft')).toBe('ArrowLeft');
+    expect(normalizeStroke('ARROWRIGHT')).toBe('ArrowRight');
+
+    const arrows = surfaceWithKeys(
+      {
+        ArrowLeft: verbBinding('v.left'),
+        ArrowRight: verbBinding('v.right'),
+        ArrowUp: verbBinding('v.up'),
+        ArrowDown: verbBinding('v.down'),
+      },
+      {},
+      ['v.left', 'v.right', 'v.up', 'v.down'],
+    );
+    const atRoot = (stroke: string): KeyResolution =>
+      resolveStroke({
+        surface: arrows,
+        placePath: ['p.root'],
+        pending: null,
+        stroke,
+        nowMs: 1000,
+        keyboardOwner: 'engine',
+      });
+
+    expectDispatch(atRoot('ArrowLeft'), 'v.left', 1);
+    expectDispatch(atRoot('ArrowRight'), 'v.right', 1);
+    expectDispatch(atRoot('ArrowUp'), 'v.up', 1);
+    expectDispatch(atRoot('ArrowDown'), 'v.down', 1);
+    // The raw keyboard casing is normalized before lookup.
+    expectDispatch(atRoot('arrowleft'), 'v.left', 1);
+  });
+
+  it('plus and minus resolve as bindable reserved strokes', () => {
+    expect(isBindableStroke('+')).toBe(true);
+    expect(isBindableStroke('-')).toBe(true);
+
+    const zoom = surfaceWithKeys(
+      { '+': verbBinding('v.zoomIn'), '-': verbBinding('v.zoomOut') },
+      {},
+      ['v.zoomIn', 'v.zoomOut'],
+    );
+    const atRoot = (stroke: string): KeyResolution =>
+      resolveStroke({
+        surface: zoom,
+        placePath: ['p.root'],
+        pending: null,
+        stroke,
+        nowMs: 1000,
+        keyboardOwner: 'engine',
+      });
+
+    expectDispatch(atRoot('+'), 'v.zoomIn', 1);
+    expectDispatch(atRoot('-'), 'v.zoomOut', 1);
   });
 });

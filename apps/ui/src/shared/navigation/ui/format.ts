@@ -24,8 +24,23 @@ function baseTooltip(subject: TooltipSubject, keys: readonly string[]): string {
   return formatTooltip(subject as VerbDescriptor, keys);
 }
 
-/** Display one token: first character upper-cased, the rest lower-cased ('w' → 'W'). */
+/**
+ * Bindable-token glyphs (§4.4). Reserved strokes canonicalise to their declared casing, so
+ * match case-insensitively; `+`/`-` are single characters and pass through verbatim.
+ */
+const TOKEN_GLYPHS: Readonly<Record<string, string>> = {
+  arrowleft: '←',
+  arrowright: '→',
+  arrowup: '↑',
+  arrowdown: '↓',
+  '+': '+',
+  '-': '-',
+};
+
+/** Display one token: a bound glyph when the token is reserved, else Title-case ('w' → 'W'). */
 function displayToken(token: string): string {
+  const glyph = TOKEN_GLYPHS[token.toLowerCase()];
+  if (glyph !== undefined) return glyph;
   const lower = token.toLowerCase();
   return lower.charAt(0).toUpperCase() + lower.slice(1);
 }

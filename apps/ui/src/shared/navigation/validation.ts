@@ -389,6 +389,16 @@ function collectDuplicateStrokes(
   }
 }
 
+/**
+ * V-08 — a direct alias shadows a place key bound to a DIFFERENT verb only at the ROOT.
+ *
+ * A direct alias is tier 2: it is reached only where tier 1 (the current place's own `keys`)
+ * missed. A child place's own key therefore never shadows (and is never shadowed by) an
+ * application-level alias — the child key wins at tier 1 by construction. Only the root
+ * place can collide with an alias because only its keys are consulted for every root-level
+ * stroke. Scoping V-08 to `place.parent === null` is what lets a surface bind `u` inside
+ * `wireframe.arrange` while the application aliases `u → journal.undo`.
+ */
 function collectAliasShadowing(
   places: readonly PlaceNode[],
   registry: SurfaceRegistry,
@@ -398,6 +408,9 @@ function collectAliasShadowing(
     for (const alias of aliases) {
       if (alias.kind !== 'verb') continue;
       for (const place of places) {
+        // P5 — alias-vs-place-key shadowing is a ROOT-only rule (a child key is tier 1
+        // and can never be reached by an alias).
+        if (place.parent !== null) continue;
         const bindings = registry.bindingsByPlace.get(place.id)?.get(stroke) ?? [];
         for (const binding of bindings) {
           if (binding.kind !== 'verb') continue;

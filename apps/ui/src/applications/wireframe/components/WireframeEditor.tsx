@@ -1,57 +1,161 @@
 /**
  * Wireframe editor shell (Spec #3070, ST-1, C8; root hooks extended by
- * Spec #3071, ST-6).
+ * Spec #3071, ST-6; re-shaped by Spec #3119, ST-4).
  *
- * Composition seam: this file imports exactly the five store-connected, no-prop
- * children. ST-1 owns the shell, the status bar and every C7 root hook; the
- * canvas (ST-2), toolbar (ST-3), property panel (ST-4) and file-error banner
- * (ST-6) replace only their own file's body.
+ * Spec #3119 ST-4 replaces the retired toolbar + hidden `g+*` carrier + command
+ * surface with the NavigationEngine P4 surfaces: a rail + canvas + details +
+ * trail workspace over the declarative `wireframeSurface`. The shell root keeps
+ * every shipped `data-wireframe-*` hook (same names and meanings) and gains
+ * `data-wireframe-place` + `data-wireframe-arm`.
  *
- * ST-6 adds the arrangement observables to the root host (UI/UX 5): the
- * selection SET, its count, the selection's group id, the document group count,
- * the snap mode and the paint order. The Slice-1 hooks keep their names and
- * meanings (`wireframe-selection-id` = the PRIMARY = last selected id).
+ * Layout (UI/UX §1):
+ *   ≥ lg — left column 266 px (rail over compact trail), canvas `flex:1`,
+ *          details 288 px right; file error + status bar span the full width.
+ *   < lg — rail band (wrap) → canvas → details (bottom, ≤ 45%) → file error →
+ *          status bar.
+ * The retired hotkey-bar band padding is gone (Wireframe renders no HotkeyBar).
  *
- * Layout (UI/UX section 1.3): toolbar -> main (canvas + panel) -> file error ->
- * status bar, inside a column that always reserves the shipped hotkey-bar band.
+ * The ONE element-scoped keydown adapter is attached here (no document
+ * listener). The rail/map/trail read the host snapshot; the availability models
+ * are rebuilt from the FRESH store selection + the host place path so a pure
+ * selection change flips `data-nav-availability` without a verb dispatch.
  */
 
-import React, { useSyncExternalStore } from 'react';
-import { Flex } from '@chakra-ui/react';
+import React, {
+  useCallback,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from 'react';
+import { Box, Flex } from '@chakra-ui/react';
 
-import { HOTKEY_BAR_HEIGHT_PX } from '../../../shared/hotkeys/HotkeyBar';
-import { useActiveCommandMode } from '../../../shared/hotkeys/commandSurfaceStore';
+import type { ContextSnapshot } from '../../../shared/navigation';
+import {
+  ActivityTrail,
+  CommandRail,
+  NavigationMap,
+  buildActivityTrailModel,
+  buildCommandRailModel,
+  buildNavigationMapModel,
+} from '../../../shared/navigation/ui';
+import { useAppCommandIntent } from '../../../shared/companion/useAppCommandIntent';
 import { formatGeometry } from '../model/geometry';
 import { WIREFRAME_APP_ID } from '../model/document';
-import { useAppCommandIntent } from '../../../shared/companion/useAppCommandIntent';
-import { WIREFRAME_PAN_MODE_ID } from '../wireframeCommandSurface';
 import {
   getSnapshot,
+  getWireframeContext,
   primarySelectedId,
   selectionGroup,
   subscribe,
 } from '../store/wireframeDocumentStore';
+import { WIREFRAME_MAP_DEFAULT_ARGS } from '../wireframeSurface';
+import {
+  WireframeNavigationProvider,
+  handleWireframeKeyDown,
+  useFreshWireframeContext,
+  useWireframeHostSnapshot,
+  useWireframeNavigation,
+  useWireframePlaceView,
+  type WireframeChannel,
+} from './WireframeNavigationProvider';
 import { WireframeCanvas } from './WireframeCanvas';
 import { WireframeFileError } from './WireframeFileError';
-import { WireframeHotkeyCarrier } from './WireframeHotkeyCarrier';
+import { WireframeInsertMenu } from './WireframeInsertMenu';
+import { WireframeNewDocumentDialog } from './WireframeNewDocumentDialog';
 import { WireframePropertyPanel } from './WireframePropertyPanel';
 import { WireframeStatusBar } from './WireframeStatusBar';
-import { WireframeToolbar } from './WireframeToolbar';
 
 export function WireframeEditor(): React.ReactElement {
-  // Spec #3099 ST-6 — the generic Companion relay (replaces
-  // `useWireframeIntent`): one `app-command-intent` listener plus the
-  // take-on-mount drain (the app may have been opened by the request), both
-  // filtered to THIS app id and executed exactly once through `executeCommand`.
+  // Spec #3099 ST-6 — the generic Companion relay. It stays mounted so a
+  // companion intent reports a clean `Invalid` (the declared command surface was
+  // retired in ST-4) instead of a timeout; P6 re-homes the capability.
   useAppCommandIntent(WIREFRAME_APP_ID);
-  const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-  const { document, selectedIds, snapToGrid, view, filePath, dirty } = state;
 
-  // Spec #3098 ST-3 — the active command mode is the module-owned source of
-  // truth (never a ref / per-effect copy); `data-wireframe-pan-mode` mirrors
-  // the MODE, not the store's free-floating pan flag.
-  const activeMode = useActiveCommandMode(WIREFRAME_APP_ID);
-  const panActive = activeMode?.id === WIREFRAME_PAN_MODE_ID;
+  return (
+    <WireframeNavigationProvider>
+      <WireframeShell />
+    </WireframeNavigationProvider>
+  );
+}
+
+function WireframeShell(): React.ReactElement {
+  const { host, surface } = useWireframeNavigation();
+  const hostSnapshot = useWireframeHostSnapshot(host);
+  const placeView = useWireframePlaceView(host);
+  const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const { document, selectedIds, snapToGrid, view, filePath, dirty, panMode } = state;
+
+  const [newDialogOpen, setNewDialogOpen] = useState(false);
+
+  // Freshness seam (AC4): a pure selection change notifies the store but writes no
+  // journal entry, so the host snapshot's context can be stale. Rebuild the models
+  // from the live store selection/dirty + the host's current place path.
+  const storeContext = useMemo<ContextSnapshot>(() => getWireframeContext(), [state]);
+  const liveContext = useFreshWireframeContext(hostSnapshot.context, storeContext);
+
+  const railModel = useMemo(
+    () => buildCommandRailModel(surface, liveContext),
+    [surface, liveContext],
+  );
+  const mapModel = useMemo(
+    () =>
+      buildNavigationMapModel(surface, liveContext, {
+        filteredTo: hostSnapshot.mapFilterPlaceId,
+      }),
+    [surface, liveContext, hostSnapshot.mapFilterPlaceId],
+  );
+  const trailModel = useMemo(
+    () => buildActivityTrailModel(surface, hostSnapshot.entries),
+    [surface, hostSnapshot.entries],
+  );
+
+  /** Run one verb through the map-click defaults (UI/UX §9). */
+  const performVerb = useCallback(
+    async (verbId: string, channel: WireframeChannel = 'pointer') => {
+      const args = WIREFRAME_MAP_DEFAULT_ARGS[verbId] ?? {};
+      const result = await host.runVerb(verbId, channel, args);
+      // `m` at the root (and `?`) perform `app.map`; the shell opens the map once.
+      if (verbId === 'app.map' && result.status === 'performed') host.openMap(null);
+      return result;
+    },
+    [host],
+  );
+
+  /** The shell's dirty guard owns the New-discard dialog (File `n` + rail/map rows). */
+  const runVerb = useCallback(
+    (verbId: string) => {
+      if (verbId === 'wireframe.document.new' && dirty) {
+        setNewDialogOpen(true);
+        return;
+      }
+      void performVerb(verbId, 'pointer');
+    },
+    [dirty, performVerb],
+  );
+
+  const beforeDispatch = useCallback(
+    (verbId: string): boolean => {
+      if (verbId === 'wireframe.document.new' && dirty) {
+        setNewDialogOpen(true);
+        return true;
+      }
+      return false;
+    },
+    [dirty],
+  );
+
+  const onKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      handleWireframeKeyDown(event, host, performance.now(), { beforeDispatch });
+    },
+    [host, beforeDispatch],
+  );
+
+  const discardNewDocument = useCallback(() => {
+    setNewDialogOpen(false);
+    void performVerb('wireframe.document.new', 'pointer');
+  }, [performVerb]);
 
   const primaryId = primarySelectedId(state);
   const selectedElement =
@@ -65,6 +169,8 @@ export function WireframeEditor(): React.ReactElement {
   return (
     <Flex
       data-testid="wireframe-root"
+      data-wireframe-place={placeView.placeId}
+      data-wireframe-arm={placeView.armed ?? 'none'}
       data-wireframe-element-count={String(document.elements.length)}
       data-wireframe-selection-id={selectedElement?.id ?? ''}
       data-wireframe-selection-type={selectedElement?.type ?? ''}
@@ -85,23 +191,97 @@ export function WireframeEditor(): React.ReactElement {
         document.page.height,
       )}`}
       data-wireframe-zoom={String(Math.round(view.scale * 100))}
-      data-wireframe-pan-mode={panActive ? 'true' : 'false'}
+      data-wireframe-pan-mode={panMode ? 'true' : 'false'}
       flexDirection="column"
       h="100%"
       minH={0}
-      pb={`${HOTKEY_BAR_HEIGHT_PX}px`}
       bg="bg.canvas"
+      onKeyDown={onKeyDown}
     >
-      <WireframeHotkeyCarrier />
-      <WireframeToolbar />
+      <Flex
+        flex="1"
+        minH={0}
+        display="flex"
+        flexDirection={{ base: 'column', lg: 'row' }}
+        gap={{ base: 2, lg: 0 }}
+      >
+        {/* ── Left column: rail over compact trail (≥lg) / rail band (<lg) ── */}
+        <Flex
+          flexDirection={{ base: 'row', lg: 'column' }}
+          flexWrap={{ base: 'wrap', lg: 'nowrap' }}
+          alignItems="flex-start"
+          gap={3}
+          w={{ base: '100%', lg: '266px' }}
+          flexShrink={0}
+          minWidth="0"
+          maxH={{ base: '220px', lg: 'none' }}
+          overflowY={{ base: 'auto', lg: 'hidden' }}
+          p={{ base: 0, lg: 2 }}
+        >
+          <CommandRail
+            model={railModel}
+            onRunVerb={runVerb}
+            onOpenMap={(filterPlaceId) => host.openMap(filterPlaceId ?? null)}
+          />
+          <Box
+            flex="1"
+            minWidth="0"
+            maxW={{ base: '360px', lg: '100%' }}
+            overflowY="auto"
+            display="flex"
+            alignItems="flex-start"
+          >
+            <ActivityTrail
+              model={trailModel}
+              compact
+              onUndo={(seq) => {
+                void host.undoEntry(seq);
+              }}
+            />
+          </Box>
+        </Flex>
 
-      <Flex flex="1" minH={0} display="flex" flexDirection={{ base: 'column', lg: 'row' }}>
-        <WireframeCanvas />
-        <WireframePropertyPanel />
+        {/* ── Canvas region: the pointer-only insert pill (ST-6) over the stage ── */}
+        <Box
+          flex="1"
+          minWidth="0"
+          minH={{ base: '320px', lg: 0 }}
+          position="relative"
+          display="flex"
+          flexDirection="column"
+        >
+          <WireframeInsertMenu />
+          <WireframeCanvas />
+        </Box>
+
+        {/* ── Details view: the selection's verbs (ST-6) ── */}
+        <Box
+          w={{ base: '100%', lg: '288px' }}
+          maxW={{ base: '100%', lg: '72' }}
+          maxH={{ base: '45%', lg: 'none' }}
+          flexShrink={0}
+          minWidth="0"
+          overflowY="auto"
+        >
+          <WireframePropertyPanel />
+        </Box>
       </Flex>
 
       <WireframeFileError />
       <WireframeStatusBar />
+
+      <NavigationMap
+        model={mapModel}
+        open={hostSnapshot.mapOpen}
+        onClose={() => host.closeMap()}
+        onRunVerb={runVerb}
+      />
+
+      <WireframeNewDocumentDialog
+        open={newDialogOpen}
+        onCancel={() => setNewDialogOpen(false)}
+        onDiscard={discardNewDocument}
+      />
     </Flex>
   );
 }

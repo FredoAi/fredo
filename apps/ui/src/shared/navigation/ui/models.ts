@@ -55,6 +55,7 @@ import type {
   ActivityTrailEntry,
   ActivityTrailModel,
   CommandRailModel,
+  CommandRailPlaceRow,
   CommandRailRow,
   NavAffordance,
   NavPlaceRef,
@@ -149,6 +150,67 @@ function buildMapAffordance(): NavAffordance {
   };
 }
 
+/** The strokes in `placeId` that enter `childId` (a place binding, or a verb whose id IS the place). */
+function entryStrokes(reg: SurfaceRegistry, placeId: string, childId: string): string[] {
+  const strokes: string[] = [];
+  for (const [stroke, bindings] of reg.bindingsByPlace.get(placeId) ?? NO_BINDINGS) {
+    for (const binding of bindings) {
+      const target = binding.kind === 'verb' ? binding.verbId : binding.placeId;
+      if (target !== childId) continue;
+      if (!strokes.includes(stroke)) strokes.push(stroke);
+    }
+  }
+  return strokes;
+}
+
+/** The announced action count of a child place (globals excluded, exactly as the rail counts). */
+function childActionCount(
+  contextual: Surface,
+  snapshot: ContextSnapshot,
+  pathIds: readonly string[],
+  childId: string,
+): number {
+  const rail = deriveRail(contextual, { ...snapshot, placePath: [...pathIds, childId] });
+  return rail.rows.length + rail.overflow;
+}
+
+/**
+ * The child-place rows of the current place, declaration order. They answer "where can I go?"
+ * and are rendered ABOVE the verb rows; they never contribute to `rows`, `overflow` or
+ * `actionCount` (those count the current place's bound verbs only).
+ */
+function buildPlaceRows(
+  surface: Surface,
+  contextual: Surface,
+  reg: SurfaceRegistry,
+  snapshot: ContextSnapshot,
+  breadcrumb: readonly NavPlaceRef[],
+): CommandRailPlaceRow[] {
+  const currentId = breadcrumb[breadcrumb.length - 1]?.id ?? reg.rootId;
+  const pathIds = breadcrumb.map((place) => place.id);
+  const childIds = reg.childrenByParent.get(currentId) ?? [];
+
+  return childIds.map((childId) => {
+    const node = reg.placesById.get(childId);
+    const label = node?.label ?? childId;
+    const keys = entryStrokes(reg, currentId, childId);
+    const keyHint = formatKeyHint(keys);
+    const transient = node?.transient === true;
+    const count = childActionCount(contextual, snapshot, pathIds, childId);
+    const base = `${label} — ${count} action${count === 1 ? '' : 's'}`;
+    const withKey = keyHint === '' ? base : `${base} (${keyHint})`;
+    return {
+      placeId: childId,
+      label,
+      key: keys[0] ?? '',
+      keys,
+      keyHint,
+      transient,
+      tooltip: transient ? `${withKey} — ${NAV_TRANSIENT_MARKER_SUFFIX}` : withKey,
+    };
+  });
+}
+
 /** R-1.1 … R-1.7 — the rail's one model, built from the declaration + snapshot. */
 export function buildCommandRailModel(
   surface: Surface,
@@ -166,6 +228,13 @@ export function buildCommandRailModel(
     ),
   };
   const rail = deriveRail(contextual, snapshot);
+  const placeRows = buildPlaceRows(
+    surface,
+    contextual,
+    createRegistry(surface),
+    snapshot,
+    breadcrumb,
+  );
 
   const rows: CommandRailRow[] = rail.rows.map((row) => {
     const reason = row.enabled ? null : NAV_UNAVAILABLE_REASON;
@@ -189,6 +258,7 @@ export function buildCommandRailModel(
     transientMarker: currentPlace.transient
       ? `${currentPlace.label} · ${NAV_TRANSIENT_MARKER_SUFFIX}`
       : null,
+    placeRows,
     rows,
     overflow: rail.overflow,
     actionCount: rows.length + rail.overflow,

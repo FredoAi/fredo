@@ -1,7 +1,7 @@
 /**
  * Spec #3117 (P3) — stroke grammar + pure tree lookups.
  *
- * The resolver owns the §4.4 stroke grammar (`[a-z0-9]` + the three engine-reserved
+ * The resolver owns the §4.4 stroke grammar (`[a-z0-9]` + the engine-reserved
  * strokes) and the pure, total lookups every other module reads a `SurfaceRegistry`
  * through. It reads NO clock: time enters the engine only as the `nowMs` argument in
  * `keyResolver.resolveStroke` (REQ-01.3).
@@ -49,8 +49,9 @@ export function normalizeStroke(raw: string): string | null {
 }
 
 /**
- * §4.4 — is one token bindable? `[a-z0-9]` plus `Escape` / `Enter` / `Tab`;
- * `?` and `/` are display glyphs and are NEVER bindable.
+ * §4.4 — is one token bindable? `[a-z0-9]` plus the nine reserved strokes
+ * (`Escape`, `Enter`, `Tab`, the four arrows, `+`, `-`); `?` and `/` are display glyphs
+ * and are NEVER bindable.
  */
 export function isBindableStroke(token: string): boolean {
   const trimmed = token.trim();

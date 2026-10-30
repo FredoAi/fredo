@@ -86,7 +86,7 @@ function namedColorViolations(source: string): string[] {
 describe('Wireframe raw-colour sweep (AC2)', () => {
   it('scans a non-empty Wireframe source tree', () => {
     expect(SOURCE_TARGETS.length).toBeGreaterThan(0);
-    expect(SOURCE_TARGETS.some((t) => t.path.endsWith('WireframeToolbar.tsx'))).toBe(true);
+    expect(SOURCE_TARGETS.some((t) => t.path.endsWith('WireframeEditor.tsx'))).toBe(true);
   });
 
   it('has zero raw-colour literals via the canonical scanner (hex / rgb / hsl / var-alpha)', () => {

@@ -20,30 +20,24 @@ import { act, cleanup, screen } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { resetHotkeyAnnouncer } from '@/shared/hotkeys/announcer';
-import {
-  getModePath,
-  pushMode,
-  resetApplicationMode,
-  resetCommandSurfaceForTests,
-} from '@/shared/hotkeys/commandSurfaceStore';
 import { WireframeCanvasImpl } from '../components/WireframeCanvasImpl';
-import { WIREFRAME_APP_ID } from '../model/document';
+import { WireframeNavigationProvider } from '../components/WireframeNavigationProvider';
 import {
   getSnapshot,
   resetWireframeStoreForTests,
+  setPanMode,
   setView,
   subscribe,
   undo,
 } from '../store/wireframeDocumentStore';
 import {
-  WIREFRAME_DRAW_ELLIPSE_MODE_ID,
-  WIREFRAME_DRAW_RECT_MODE_ID,
-  WIREFRAME_PAN_MODE_ID,
-  WIREFRAME_SELECT_MODE_ID,
   beginWireframeShapeCreate,
-} from '../wireframeCommandSurface';
-// Side effect: the application must be registered so the command-surface store
-// resolves the surface (exactly as the eager `allApplications` barrel does).
+  clearArmedWireframeShape,
+  getArmedWireframeShape,
+  resetWireframeSurfaceForTests,
+} from '../wireframeSurface';
+// Side effect: the application must be registered (exactly as the eager
+// `allApplications` barrel does in the app).
 import '../index';
 
 const konvaMock = vi.hoisted(() => ({
@@ -331,9 +325,8 @@ function commitCountDuring(run: () => void): number {
   return commits;
 }
 
-function activeModeId(): string | undefined {
-  const path = getModePath(WIREFRAME_APP_ID);
-  return path[path.length - 1];
+function armedKind(): 'rect' | 'ellipse' | null {
+  return getArmedWireframeShape();
 }
 
 function artworkLayer(): HTMLElement {
@@ -344,7 +337,7 @@ function artworkLayer(): HTMLElement {
 
 beforeEach(() => {
   resetWireframeStoreForTests();
-  resetCommandSurfaceForTests();
+  resetWireframeSurfaceForTests();
   resetHotkeyAnnouncer();
   document.body.innerHTML = '';
   konvaMock.stageProps = null;
@@ -380,7 +373,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   resetWireframeStoreForTests();
-  resetCommandSurfaceForTests();
+  resetWireframeSurfaceForTests();
   resetHotkeyAnnouncer();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -389,7 +382,11 @@ afterEach(() => {
 
 /** Render the canvas at 100 % / origin so stage coords equal page coords. */
 function mountCanvas(): void {
-  renderWithChakra(<WireframeCanvasImpl />);
+  renderWithChakra(
+    <WireframeNavigationProvider>
+      <WireframeCanvasImpl />
+    </WireframeNavigationProvider>,
+  );
   act(() => setView({ scale: 1, x: 0, y: 0 }));
 }
 
@@ -409,18 +406,18 @@ describe('create operator — activation', () => {
     act(() => beginWireframeShapeCreate('ellipse'));
     expect(artworkLayer()).toHaveAttribute('data-mock-listening', 'false');
 
-    act(() => resetApplicationMode(WIREFRAME_APP_ID));
-    expect(activeModeId()).toBe(WIREFRAME_SELECT_MODE_ID);
+    act(() => clearArmedWireframeShape());
+    expect(armedKind()).toBeNull();
     expect(host).toHaveStyle({ cursor: 'default' });
     expect(artworkLayer()).toHaveAttribute('data-mock-listening', 'true');
   });
 });
 
 describe('create operator — commit', () => {
-  it('draws a rectangle at the dragged bounds, auto-selects it and returns to Select', () => {
+  it('draws a rectangle at the dragged bounds, auto-selects it and disarms', () => {
     mountCanvas();
     act(() => beginWireframeShapeCreate('rect'));
-    expect(activeModeId()).toBe(WIREFRAME_DRAW_RECT_MODE_ID);
+    expect(armedKind()).toBe('rect');
 
     dragCreate({ x: 100, y: 80 }, { x: 340, y: 240 });
 
@@ -437,10 +434,10 @@ describe('create operator — commit', () => {
       height: 160,
       fill: 'muted',
     });
-    // Auto-selected (primary = the only member) and back in Select.
+    // Auto-selected (primary = the only member) and disarmed.
     expect(state.selectedIds).toEqual([element.id]);
     expect(state.selectedId).toBe(element.id);
-    expect(activeModeId()).toBe(WIREFRAME_SELECT_MODE_ID);
+    expect(armedKind()).toBeNull();
   });
 
   it('draws an ellipse through the same path', () => {
@@ -461,7 +458,7 @@ describe('create operator — commit', () => {
       height: 200,
     });
     expect(state.selectedIds).toEqual([element.id]);
-    expect(activeModeId()).toBe(WIREFRAME_SELECT_MODE_ID);
+    expect(armedKind()).toBeNull();
   });
 
   it('normalizes a reversed drag (right→left, bottom→top) to a min-origin positive rect', () => {
@@ -547,7 +544,7 @@ describe('create operator — below minimum / no operator', () => {
     expect(state.document.elements).toHaveLength(0);
     expect(state.selectedIds).toEqual([]);
     expect(state.canUndo).toBe(false);
-    expect(activeModeId()).toBe(WIREFRAME_DRAW_RECT_MODE_ID);
+    expect(armedKind()).toBe('rect');
   });
 
   it('creates nothing below the minimum height', () => {
@@ -559,7 +556,7 @@ describe('create operator — below minimum / no operator', () => {
     const state = getSnapshot();
     expect(state.document.elements).toHaveLength(0);
     expect(state.canUndo).toBe(false);
-    expect(activeModeId()).toBe(WIREFRAME_DRAW_ELLIPSE_MODE_ID);
+    expect(armedKind()).toBe('ellipse');
   });
 
   it('treats a zero-area (same-point) gesture as no creation and stays in the mode', () => {
@@ -571,7 +568,7 @@ describe('create operator — below minimum / no operator', () => {
     const state = getSnapshot();
     expect(state.document.elements).toHaveLength(0);
     expect(state.canUndo).toBe(false);
-    expect(activeModeId()).toBe(WIREFRAME_DRAW_RECT_MODE_ID);
+    expect(armedKind()).toBe('rect');
   });
 
   it('leaves an existing selection untouched for a below-minimum drag', () => {
@@ -587,12 +584,12 @@ describe('create operator — below minimum / no operator', () => {
     const state = getSnapshot();
     expect(state.document.elements).toHaveLength(1);
     expect(state.selectedIds).toEqual(selectedBefore);
-    expect(activeModeId()).toBe(WIREFRAME_DRAW_RECT_MODE_ID);
+    expect(armedKind()).toBe('rect');
   });
 
   it('never creates from a drag in Select mode', () => {
     mountCanvas();
-    expect(activeModeId()).toBe(WIREFRAME_SELECT_MODE_ID);
+    expect(armedKind()).toBeNull();
 
     dragCreate({ x: 100, y: 100 }, { x: 400, y: 300 });
 
@@ -602,8 +599,8 @@ describe('create operator — below minimum / no operator', () => {
 
   it('never creates from a drag in Pan mode', () => {
     mountCanvas();
-    act(() => pushMode(WIREFRAME_APP_ID, WIREFRAME_PAN_MODE_ID));
-    expect(activeModeId()).toBe(WIREFRAME_PAN_MODE_ID);
+    act(() => setPanMode(true));
+    expect(getSnapshot().panMode).toBe(true);
     expect(artworkLayer()).toHaveAttribute('data-mock-listening', 'true');
 
     dragCreate({ x: 100, y: 100 }, { x: 400, y: 300 });

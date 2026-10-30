@@ -47,6 +47,7 @@ import {
   NAV_MAP_ROW_TESTID,
   NAV_MAP_SEARCH_LABEL,
   NAV_MAP_TESTID,
+  NAV_MORE_ARIA_LABEL,
   NAV_MORE_LABEL,
   NAV_RAIL_ARIA_LABEL,
   NAV_RAIL_ASK_TESTID,
@@ -158,7 +159,10 @@ describe('Cross-surface a11y — role/name reachability (Q7-01 / R-7.1)', () => 
       expect((row.getAttribute('aria-label') ?? '').length).toBeGreaterThan(0);
     }
 
-    expect(screen.getByRole('button', { name: NAV_MORE_LABEL })).toBeTruthy();
+    // P5: the `more…` control's accessible name is the bound NAV_MORE_ARIA_LABEL while the
+    // visible label stays `more…` (UI/UX §2 / G-324 adjudication).
+    const more = screen.getByRole('button', { name: NAV_MORE_ARIA_LABEL });
+    expect(more.textContent).toBe(NAV_MORE_LABEL);
     expect(within(rail).getByRole('button', { name: 'Question mark Map' })).toBe(
       screen.getByTestId(NAV_RAIL_MAP_TESTID),
     );

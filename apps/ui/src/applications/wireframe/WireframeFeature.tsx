@@ -11,7 +11,6 @@ import { LuPenTool } from 'react-icons/lu';
 
 import { FredoApplicationClass } from '../../shared/classes';
 import { WIREFRAME_APP_ID } from './model/document';
-import { wireframeCommandSurface } from './wireframeCommandSurface';
 import { WireframeEditor } from './components/WireframeEditor';
 
 export class WireframeFeature extends FredoApplicationClass {
@@ -22,11 +21,12 @@ export class WireframeFeature extends FredoApplicationClass {
   readonly isMultiWindow = false;
   readonly hasSettings = false;
   /**
-   * Spec #3098 ST-3 — Wireframe is the first application to opt into the
-   * declarative command surface (modes + commands). Declaring it never changes
-   * another application's scope.
+   * Spec #3119 ST-4 — the legacy application command surface was retired. The
+   * Wireframe shell now mounts the NavigationEngine P4 surfaces over the
+   * declarative `wireframeSurface`; keyboard resolution is owned by the ONE
+   * element-scoped adapter, not by `executeCommand` modes. (`useAppCommandIntent`
+   * stays mounted, so a companion intent reports a clean `Invalid` until P6.)
    */
-  readonly commandSurface = wireframeCommandSurface;
 
   render(): ReactElement {
     return <WireframeEditor />;
