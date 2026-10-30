@@ -8,6 +8,9 @@
  *
  * It exercises every AC path the prototype must demonstrate:
  *   - place entry from the root (`c i a s v f`) and the two declared globals (`m` Map, `k` Ask);
+ *   - a real two-stroke prefix at the root (`w n` → View, `w p` → Style) so the live prefix
+ *     announcement is reachable (`w… View, Style`, R-4.2 / Q4-07); there is deliberately NO
+ *     bare `w` at Canvas, so the prefix does not shadow a single-stroke binding (V-11);
  *   - a transient place (`Create`) and sticky places (all children);
  *   - a place that binds MORE than eight verbs (`Arrange`, nine) so the rail's `more…` and the
  *     map's filtered seed are reachable;
@@ -238,6 +241,11 @@ const CANVAS_KEYS: Readonly<Record<string, KeyBinding>> = {
   f: verbBinding(DEMO_PLACES.file),
   m: verbBinding('app.map'),
   k: verbBinding('app.ask'),
+  // R-4.2 / Q4-07 — a real two-stroke prefix so the live prefix announcement is reachable.
+  // Appended AFTER the single-stroke entries: `keys[0]` stays `v` / `s`, so every rail
+  // keycap is byte-identical. No bare `w` here — the prefix must not shadow a bound stroke.
+  'w n': verbBinding(DEMO_PLACES.view),
+  'w p': verbBinding(DEMO_PLACES.style),
 };
 
 const CREATE_KEYS: Readonly<Record<string, KeyBinding>> = {

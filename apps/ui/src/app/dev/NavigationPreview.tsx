@@ -33,7 +33,11 @@ import { ActivityTrail } from '../../shared/navigation/ui/ActivityTrail';
 import { NavigationAnnouncer } from '../../shared/navigation/ui/announce';
 import { NAV_ASK_DISABLED_REASON } from '../../shared/navigation/ui/constants';
 import { CommandRail } from '../../shared/navigation/ui/CommandRail';
-import { createNavigationHost, useNavigationHostSnapshot } from '../../shared/navigation/ui/host';
+import {
+  createNavigationHost,
+  useNavigationHostSnapshot,
+  type NavigationHost,
+} from '../../shared/navigation/ui/host';
 import {
   buildActivityTrailModel,
   buildCommandRailModel,
@@ -51,12 +55,23 @@ const NAV_PREVIEW_GLYPH_KEYS: Readonly<Record<string, 'map' | 'ask'>> = {
   '/': 'ask',
 };
 
+/**
+ * The one-shot seed latch — a SYNCHRONOUS guard keyed to the host instance.
+ *
+ * `host.runVerb` awaits `dispatch` before the journal entry is appended, so a snapshot read
+ * (`entries.length === 0`) lets React StrictMode's second mount-effect invocation pass the
+ * same guard and enqueue a second companion entry. The latch is written BEFORE the first
+ * await, so the second invocation sees it; it is per-host, so a Reset (which keeps the host
+ * instance) does not re-seed. Module-scoped and NOT exported (root-export purity).
+ */
+const SEEDED_DEMO_HOSTS = new WeakSet<NavigationHost>();
+
 /** The visible stage label (the screen-reader walk's first stop). */
 const STAGE_LABEL = 'Navigation prototype stage';
 
 /** The keyboard hint card copy (recognition over recall — no binding is hidden). */
 const KEYBOARD_HINT =
-  'c create · i edit · a arrange · s style · v view · f file · m map · k ask · ? map · / ask · Esc back · r/e shapes · u/y undo/redo';
+  'c create · i edit · a arrange · s style · v view · f file · m map · k ask · ? map · / ask · w then n view · w then p style · Esc back · r/e shapes · u/y undo/redo';
 
 export function NavigationPreview(): React.ReactElement {
   // One controller + one host for the lifetime of the screen: a parent re-render must not
@@ -74,12 +89,14 @@ export function NavigationPreview(): React.ReactElement {
   const snapshot = useNavigationHostSnapshot(host);
   const [notice, setNotice] = React.useState<string | null>(null);
 
-  // Seed exactly one companion iteration through the dispatcher (attribution demo). The
-  // journal check keeps it idempotent under React StrictMode's dev double-effect.
+  // Seed exactly one companion iteration through the dispatcher (attribution demo). The guard
+  // MUST be synchronous: `runVerb` awaits `dispatch` before the entry is appended, so React
+  // StrictMode's dev double-effect would race an `entries.length === 0` snapshot read and seed
+  // twice. The per-host latch is written before the await, so the second run is a no-op.
   React.useEffect(() => {
-    if (host.getSnapshot().entries.length === 0) {
-      void host.runVerb('place.rect', 'agent');
-    }
+    if (SEEDED_DEMO_HOSTS.has(host)) return;
+    SEEDED_DEMO_HOSTS.add(host);
+    void host.runVerb('place.rect', 'agent');
   }, [host]);
 
   // One model per surface, derived from the ONE stable snapshot (never `.length`/fresh arrays).

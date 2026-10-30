@@ -25,6 +25,7 @@ import { join, resolve, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { validateSurface, type ContextSnapshot } from '@/shared/navigation';
+import { navPrefixMessage } from '@/shared/navigation/ui/announce';
 import { createNavigationHost } from '@/shared/navigation/ui/host';
 import {
   DEMO_PLACES,
@@ -222,6 +223,42 @@ describe('DEV prototype declaration (Q8-01 static legs / R-8.1)', () => {
     expect(entries).toHaveLength(1);
     expect(entries[0]?.actor).toBe('companion');
     expect(entries[0]?.label).toBe('Rectangle');
+  });
+
+  it('declares the two-stroke Canvas prefix (w n → View, w p → Style) and no bare w', () => {
+    const canvas = NAVIGATION_DEMO_SURFACE.tree.places.find(
+      (place) => place.id === DEMO_PLACES.canvas,
+    );
+    expect(canvas).toBeDefined();
+
+    // The prefix continuations are real verb bindings on the root place (Q4-07).
+    expect(canvas?.keys['w n']).toEqual({ kind: 'verb', verbId: DEMO_PLACES.view });
+    expect(canvas?.keys['w p']).toEqual({ kind: 'verb', verbId: DEMO_PLACES.style });
+
+    // V-11 satisfiability: Canvas declares no bare `w`, so the prefix shadows no single stroke.
+    expect(canvas?.keys.w).toBeUndefined();
+  });
+
+  it('arms the live prefix from the real declaration and enters View on the second stroke', async () => {
+    const controller = createNavigationDemoController();
+    const host = createNavigationHost({
+      surface: NAVIGATION_DEMO_SURFACE,
+      getContext: () => controller.getContext(),
+      applyPatch: (patch) => controller.applyPatch(patch),
+      confirm: () => true,
+    });
+
+    // Arm `w` at Canvas: the host announces the composer output for its continuations.
+    await host.handleStroke('w', 1000);
+    expect(host.getSnapshot().pending?.sequence).toBe('w');
+    expect(host.getSnapshot().announcement).toBe(navPrefixMessage('w', ['View', 'Style']));
+    expect(host.getSnapshot().announcement).toBe('w… View, Style');
+
+    // The continuation resolves to demo.view and clears the prefix.
+    await host.handleStroke('n', 1001);
+    const snapshot = host.getSnapshot();
+    expect(snapshot.pending).toBeNull();
+    expect(snapshot.context.placePath).toEqual([DEMO_PLACES.canvas, DEMO_PLACES.view]);
   });
 });
 
