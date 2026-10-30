@@ -213,6 +213,15 @@ const DEFAULT_CONTEXT_PLACE = 'wireframe.canvas';
 let contextProvider: (() => ContextSnapshot) | null = null;
 
 let state: WireframeEditorState = createInitialState();
+/**
+ * The journal arrays captured when `snapshot` was last built. The journal
+ * replaces BOTH arrays on every commit, so identity is a cheap revision token:
+ * a path that appends a journal entry WITHOUT notifying the store (the
+ * navigation funnel applies the patch first, then journals) is still observed
+ * by the next `getSnapshot()`.
+ */
+let snapshotJournalEntries: readonly JournalEntry[] = navigationJournal.entries();
+let snapshotJournalRedo: readonly number[] = navigationJournal.redo();
 let snapshot: WireframeEditorSnapshot = createSnapshot(state);
 
 function createInitialState(): WireframeEditorState {
@@ -235,6 +244,8 @@ function createInitialState(): WireframeEditorState {
 
 /** The selection source of truth is `selectedIds`; `selectedId` is derived. */
 function createSnapshot(next: WireframeEditorState): WireframeEditorSnapshot {
+  snapshotJournalEntries = navigationJournal.entries();
+  snapshotJournalRedo = navigationJournal.redo();
   return {
     ...next,
     canUndo: computeCanUndo(),
@@ -773,8 +784,23 @@ export function subscribe(listener: Listener): () => void {
 /**
  * Stable snapshot reference until the next mutation. The returned object also
  * carries the derived `selectedId` (the primary/last selected id).
+ *
+ * `canUndo`/`canRedo` are derived from the shared journal on every read (Spec
+ * #3119, R-5a). The navigation funnel applies the document patch BEFORE it
+ * appends the entry, so a value captured at notify time is one append stale;
+ * refreshing the two flags here keeps them truthful after a VERB commit too,
+ * while still returning the SAME object when they did not move (the
+ * `useSyncExternalStore` stability contract).
  */
 export function getSnapshot(): WireframeEditorSnapshot {
+  // O(1) revision check (the journal replaces its arrays on commit); only a real
+  // journal change re-derives the flags.
+  if (
+    snapshotJournalEntries !== navigationJournal.entries() ||
+    snapshotJournalRedo !== navigationJournal.redo()
+  ) {
+    snapshot = createSnapshot(state);
+  }
   return snapshot;
 }
 

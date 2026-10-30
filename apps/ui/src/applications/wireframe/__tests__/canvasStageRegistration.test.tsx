@@ -18,6 +18,7 @@ import { act, cleanup, render } from '@testing-library/react';
 import { ChakraProvider, createSystem, defaultBaseConfig } from '@chakra-ui/react';
 
 import { WireframeCanvasImpl } from '../components/WireframeCanvasImpl';
+import { WireframeNavigationProvider } from '../components/WireframeNavigationProvider';
 import {
   captureWireframePagePng,
   getWireframeStage,
@@ -158,7 +159,9 @@ function renderCanvas(): ReturnType<typeof render> {
   return render(
     <React.StrictMode>
       <ChakraProvider value={testSystem}>
-        <WireframeCanvasImpl />
+        <WireframeNavigationProvider>
+          <WireframeCanvasImpl />
+        </WireframeNavigationProvider>
       </ChakraProvider>
     </React.StrictMode>,
   );

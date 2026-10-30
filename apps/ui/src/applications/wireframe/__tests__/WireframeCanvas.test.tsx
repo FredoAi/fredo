@@ -32,6 +32,7 @@ import { act, cleanup, fireEvent, screen } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { WireframeCanvasImpl } from '../components/WireframeCanvasImpl';
+import { WireframeNavigationProvider } from '../components/WireframeNavigationProvider';
 import type { WireframeElement } from '../model/elements';
 import type { WireframeDocument } from '../model/document';
 import { createNewWireframeDocument } from '../model/document';
@@ -343,6 +344,19 @@ function seedDocument(elements: WireframeElement[], selectedIds?: string[]): voi
   if (selectedIds && selectedIds.length > 0) selectMany(selectedIds);
 }
 
+/**
+ * Mount the canvas inside the ONE navigation provider (Spec #3119, ST-5). The
+ * canvas commits its pointer gestures through `host.runVerb`, so it needs the
+ * same host the shell provides.
+ */
+function renderCanvas() {
+  return renderWithChakra(
+    <WireframeNavigationProvider>
+      <WireframeCanvasImpl />
+    </WireframeNavigationProvider>,
+  );
+}
+
 function elementGroup(id = 'el-text'): { props: Record<string, any>; node: MockNode } {
   const entry = konvaMock.groups.get(`wireframe-element-${id}`);
   if (!entry) throw new Error(`element group ${id} not mounted`);
@@ -474,7 +488,7 @@ afterEach(() => {
 describe('canvas host contract', () => {
   it('renders the focusable, labelled canvas host with a measured stage', () => {
     seedDocument([]);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     const host = screen.getByTestId('wireframe-canvas');
     expect(host).toHaveAttribute('role', 'group');
@@ -488,7 +502,7 @@ describe('canvas host contract', () => {
 
   it('exposes the guides hook at 0 while idle', () => {
     seedDocument([]);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
     expect(screen.getByTestId('wireframe-canvas')).toHaveAttribute(
       'data-wireframe-guides',
       '0',
@@ -497,7 +511,7 @@ describe('canvas host contract', () => {
 
   it('paints the artboard from the resolved theme palette', () => {
     seedDocument([]);
-    const { container } = renderWithChakra(<WireframeCanvasImpl />);
+    const { container } = renderCanvas();
 
     expect(
       container.querySelector('[data-mock-shape="rect"][data-mock-fill="token-surface"]'),
@@ -509,7 +523,7 @@ describe('canvas host contract', () => {
 
   it('shows the empty-state hint only when the page has no elements', () => {
     seedDocument([]);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
     expect(
       screen.getByText(
         'Add an element from the toolbar, or ask the Companion to draft a wireframe.',
@@ -521,7 +535,7 @@ describe('canvas host contract', () => {
 describe('selection', () => {
   it('selects exactly the clicked element and shows the Transformer', () => {
     seedDocument([textElement()]);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     expect(screen.queryByTestId('mock-transformer')).toBeNull();
 
@@ -537,7 +551,7 @@ describe('selection', () => {
 
   it('replaces the previous selection on a plain click', () => {
     seedDocument([textElement(), buttonElement('el-other', 200, 200)]);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     clickElement('el-text');
     clickElement('el-other');
@@ -549,7 +563,7 @@ describe('selection', () => {
 
   it('shift-click ADDS an element and keeps the previous one selected', () => {
     seedDocument([textElement(), buttonElement('el-b', 200, 200), buttonElement('el-c', 400, 400)]);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     clickElement('el-text');
     clickElement('el-b', true);
@@ -564,7 +578,7 @@ describe('selection', () => {
   it('shift-click REMOVES an already-selected element', () => {
     seedDocument([textElement(), buttonElement('el-b', 200, 200)]);
     seedDocument([textElement(), buttonElement('el-b', 200, 200)], ['el-text', 'el-b']);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     clickElement('el-b', true);
 
@@ -574,7 +588,7 @@ describe('selection', () => {
 
   it('shift-click down to empty clears the selection and the Transformer', () => {
     seedDocument([textElement()], ['el-text']);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
     expect(screen.getByTestId('mock-transformer')).toBeInTheDocument();
 
     clickElement('el-text', true);
@@ -586,7 +600,7 @@ describe('selection', () => {
 
   it('binds ONE Transformer to every selected node', () => {
     seedDocument([textElement(), buttonElement('el-b', 200, 200)], ['el-text', 'el-b']);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     expect(screen.getAllByTestId('mock-transformer')).toHaveLength(1);
     expect(konvaMock.transformerNodes).toHaveLength(2);
@@ -596,7 +610,7 @@ describe('selection', () => {
 
   it('clears the selection on an empty-canvas click', () => {
     seedDocument([textElement()], ['el-text']);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
     expect(getSnapshot().selectedId).toBe('el-text');
 
     fireEvent.click(screen.getByTestId('mock-stage'));
@@ -609,7 +623,7 @@ describe('selection', () => {
 describe('selection outlines', () => {
   it('paints the primary 2 px accent and other members 1 px accent', () => {
     seedDocument([textElement(), buttonElement('el-b', 200, 200)], ['el-text', 'el-b']);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
     // 100 % zoom so the chrome stroke is exactly 2 / 1 logical px.
     act(() => setView({ scale: 1, x: 0, y: 0 }));
 
@@ -640,7 +654,7 @@ describe('selection outlines', () => {
     };
     loadDocument(document, 'C:/tmp/wireframe.wireframe.json');
     selectMany(['el-text', 'el-b']);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
     act(() => setView({ scale: 1, x: 0, y: 0 }));
 
     const outlines = chromeOutlines();
@@ -656,7 +670,7 @@ describe('selection outlines', () => {
 describe('drag', () => {
   it('commits exactly ONE store step on drag end and updates the position', () => {
     seedDocument([textElement()], ['el-text']);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
     expect(getSnapshot().canUndo).toBe(false);
 
     dragElementTo('el-text', 500, 400);
@@ -674,7 +688,7 @@ describe('drag', () => {
 
   it('does not commit a step for a click without movement', () => {
     seedDocument([textElement()], ['el-text']);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     act(() => {
       elementGroup().props.onDragStart();
@@ -687,7 +701,7 @@ describe('drag', () => {
 
   it('never writes React state per pointer move (drag-move updates Konva attrs only)', () => {
     seedDocument([textElement()], ['el-text']);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     act(() => {
       elementGroup().props.onDragStart();
@@ -713,7 +727,7 @@ describe('drag', () => {
       [textElement(), buttonElement('el-b', 500, 300)],
       ['el-text', 'el-b'],
     );
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     act(() => {
       elementGroup('el-text').props.onDragStart();
@@ -752,7 +766,7 @@ describe('drag', () => {
       [textElement(), buttonElement('el-b', 500, 300), locked as WireframeElement],
       ['el-text', 'el-b', 'el-locked'],
     );
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     // A locked member is not draggable.
     expect(elementGroup('el-locked').props.draggable).toBe(false);
@@ -782,7 +796,7 @@ describe('multi-node drag session (FX-1)', () => {
       [textElement(), buttonElement('el-b', 500, 300)],
       ['el-text', 'el-b'],
     );
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
     expect(getSnapshot().canUndo).toBe(false);
 
     // One gesture: a dragstart + dragmove + dragend for EACH attached node.
@@ -814,7 +828,7 @@ describe('multi-node drag session (FX-1)', () => {
       [textElement(), buttonElement('el-b', 500, 300), locked as WireframeElement],
       ['el-text', 'el-b', 'el-locked'],
     );
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
     expect(getSnapshot().canUndo).toBe(false);
 
     // Konva proxy-drags the locked node too (`startDrag` ignores `draggable`),
@@ -850,7 +864,7 @@ describe('multi-node drag session (FX-1)', () => {
 
   it('still commits exactly one step for a plain single-element drag', () => {
     seedDocument([textElement()], ['el-text']);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     const commits = commitCountDuring(() => {
       dragElementTo('el-text', 500, 400);
@@ -865,7 +879,7 @@ describe('snap to grid', () => {
   it('lands the dragged origin on the grid when snap is on', () => {
     seedDocument([textElement()], ['el-text']);
     act(() => setSnapToGrid(true));
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     dragElementTo('el-text', 133, 91);
 
@@ -875,7 +889,7 @@ describe('snap to grid', () => {
 
   it('keeps free coordinates when snap is off', () => {
     seedDocument([textElement()], ['el-text']);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     dragElementTo('el-text', 133, 91);
 
@@ -888,7 +902,7 @@ describe('snap to grid', () => {
       ['el-text', 'el-b'],
     );
     act(() => setSnapToGrid(true));
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     act(() => {
       elementGroup('el-text').props.onDragStart();
@@ -914,7 +928,7 @@ describe('snap to grid', () => {
     // 1268 → nearest 8 is 1272, but max x is 1280 - 320 = 960.
     seedDocument([textElement({ x: 955, y: 100 })], ['el-text']);
     act(() => setSnapToGrid(true));
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     dragElementTo('el-text', 1268, 97);
 
@@ -925,7 +939,7 @@ describe('snap to grid', () => {
 describe('smart alignment guides', () => {
   it('paints guides mid-drag and clears them on drop (imperative hook)', () => {
     seedDocument([textElement(), buttonElement('el-b', 800, 376)], ['el-text']);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     const host = screen.getByTestId('wireframe-canvas');
     expect(host).toHaveAttribute('data-wireframe-guides', '0');
@@ -953,7 +967,7 @@ describe('smart alignment guides', () => {
 
   it('never paints a guide when nothing is near', () => {
     seedDocument([textElement(), buttonElement('el-b', 1200, 700)], ['el-text']);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     act(() => {
       elementGroup('el-text').props.onDragStart();
@@ -970,9 +984,9 @@ describe('smart alignment guides', () => {
     );
   });
 
-  it('clears every guide on Escape (drag cancel)', () => {
+  it('clears every guide when the drag gesture ends (no local keydown handler)', () => {
     seedDocument([textElement(), buttonElement('el-b', 800, 376)], ['el-text']);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     act(() => {
       elementGroup('el-text').props.onDragStart();
@@ -985,10 +999,19 @@ describe('smart alignment guides', () => {
       Number(screen.getByTestId('wireframe-canvas').getAttribute('data-wireframe-guides')),
     ).toBeGreaterThan(0);
 
+    // Spec #3119 R-j: the canvas owns NO keydown handler — Escape belongs to
+    // the shell's ONE key adapter. Firing it here leaves the guide overlay
+    // untouched; the gesture's drop is the canvas-owned clear point.
     act(() => {
       fireEvent.keyDown(screen.getByTestId('wireframe-canvas'), { key: 'Escape' });
     });
+    expect(
+      Number(screen.getByTestId('wireframe-canvas').getAttribute('data-wireframe-guides')),
+    ).toBeGreaterThan(0);
 
+    act(() => {
+      elementGroup('el-text').props.onDragEnd();
+    });
     expect(screen.getByTestId('wireframe-canvas')).toHaveAttribute(
       'data-wireframe-guides',
       '0',
@@ -997,7 +1020,7 @@ describe('smart alignment guides', () => {
 
   it('puts guides + the snap grid on a capture-hidden layer', () => {
     seedDocument([]);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     const layer = document.querySelector(
       '[data-mock-layer-name="wireframe-guides wireframe-capture-hidden"]',
@@ -1012,7 +1035,7 @@ describe('smart alignment guides', () => {
 
   it('shows the snap grid while snap is on and hides it when off', () => {
     seedDocument([]);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     const grid = () => document.querySelector('[data-mock-name="wireframe-snap-grid"]');
     expect(grid()).toHaveAttribute('data-mock-visible', 'false');
@@ -1028,7 +1051,7 @@ describe('smart alignment guides', () => {
 describe('transformer resize', () => {
   it('commits ONE store step on release and folds the delta into width/height', () => {
     seedDocument([textElement()], ['el-text']);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     const node = elementGroup().node;
     act(() => {
@@ -1061,7 +1084,7 @@ describe('transformer resize', () => {
       [textElement(), buttonElement('el-b', 500, 300)],
       ['el-text', 'el-b'],
     );
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     act(() => {
       transformerProps().onTransformStart();
@@ -1099,7 +1122,7 @@ describe('transformer resize', () => {
       ],
       ['el-text', 'el-b'],
     );
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     act(() => {
       transformerProps().onTransformStart();
@@ -1121,7 +1144,7 @@ describe('transformer resize', () => {
 describe('locked inertness', () => {
   it('renders no Transformer and refuses a body drag', () => {
     seedDocument([textElement({ locked: true })], ['el-text']);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     expect(screen.queryByTestId('mock-transformer')).toBeNull();
     expect(elementGroup().props.draggable).toBe(false);
@@ -1141,7 +1164,7 @@ describe('locked inertness', () => {
 describe('hidden elements', () => {
   it('paint no ink but keep a dashed textMuted outline while selected', () => {
     seedDocument([textElement({ visible: false })], ['el-text']);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     expect(elementGroup().props.visible).toBe(false);
     expect(screen.queryByTestId('mock-transformer')).toBeNull();
@@ -1154,7 +1177,7 @@ describe('hidden elements', () => {
 
   it('shows a solid accent outline for a visible selection', () => {
     seedDocument([textElement()], ['el-text']);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     const outlines = chromeOutlines();
     expect(outlines).toHaveLength(1);
@@ -1179,7 +1202,7 @@ describe('pan mode hit surface (F-27)', () => {
   it('covers the stage viewport and listens only while pan mode is on', () => {
     seedDocument([]);
     act(() => setPanMode(true));
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     // The first commit fits the page; drive the transform under test explicitly.
     act(() => setView({ scale: 2, x: -120, y: -80 }));
@@ -1219,7 +1242,7 @@ describe('pan mode hit surface (F-27)', () => {
   it('commits ONE view step on a pan release and never touches the document', () => {
     seedDocument([]);
     act(() => setPanMode(true));
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
     act(() => setView({ scale: 1, x: -120, y: -80 }));
 
     const before = getSnapshot();
@@ -1285,7 +1308,7 @@ describe('capture paint override (F-33)', () => {
 
   it('paints the 100 % identity frame while capturing and returns to the live view after', () => {
     seedDocument([]);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
     // The first commit fits the page; drive the live transform under test.
     act(() => setView(LIVE_VIEW));
 
@@ -1306,7 +1329,7 @@ describe('capture paint override (F-33)', () => {
 describe('bubbled element drag (E-16)', () => {
   it('leaves the view untouched and still commits exactly one element move', () => {
     seedDocument([textElement()], ['el-text']);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
     act(() => setView({ scale: 1, x: 175, y: 30.5 }));
 
     const viewGroup = konvaMock.groups.get('wireframe-view');
@@ -1379,7 +1402,7 @@ describe('zero-size stage guard', () => {
 
   it('commits no Stage while the host measures 0x0, then mounts it at the measured size', () => {
     seedDocument([]);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     // First commit: host mounted (measurement + empty-state overlay keep their
     // node), no Stage at all, and the loading placeholder owns the viewport.
@@ -1401,7 +1424,7 @@ describe('zero-size stage guard', () => {
 
   it('commits the Stage first at the measured size and never at a zero dimension', () => {
     seedDocument([]);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     act(() => {
       measured = { width: 900, height: 640 };
@@ -1418,7 +1441,7 @@ describe('zero-size stage guard', () => {
 
   it('unmounts the Stage when the host shrinks to zero instead of re-committing at 0x0', () => {
     seedDocument([textElement()]);
-    renderWithChakra(<WireframeCanvasImpl />);
+    renderCanvas();
 
     act(() => {
       measured = { width: 900, height: 640 };

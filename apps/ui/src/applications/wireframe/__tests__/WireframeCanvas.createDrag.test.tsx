@@ -21,6 +21,7 @@ import { act, cleanup, screen } from '@testing-library/react';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { resetHotkeyAnnouncer } from '@/shared/hotkeys/announcer';
 import { WireframeCanvasImpl } from '../components/WireframeCanvasImpl';
+import { WireframeNavigationProvider } from '../components/WireframeNavigationProvider';
 import {
   getSnapshot,
   resetWireframeStoreForTests,
@@ -381,7 +382,11 @@ afterEach(() => {
 
 /** Render the canvas at 100 % / origin so stage coords equal page coords. */
 function mountCanvas(): void {
-  renderWithChakra(<WireframeCanvasImpl />);
+  renderWithChakra(
+    <WireframeNavigationProvider>
+      <WireframeCanvasImpl />
+    </WireframeNavigationProvider>,
+  );
   act(() => setView({ scale: 1, x: 0, y: 0 }));
 }
 
