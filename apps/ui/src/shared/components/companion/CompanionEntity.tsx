@@ -21,8 +21,8 @@ import {
   shouldAnnounceProtection,
   useReplyProtection,
 } from './replyProtection';
-import { createCompanionSendQueue, resolveSendOutcome } from './companionDispatch';
-import type { CompanionSendQueue, CompanionSendResult } from './companionDispatch';
+import { buildCompanionTurnMessages, createCompanionSendQueue, resolveSendOutcome } from './companionDispatch';
+import type { CompanionAskOptions, CompanionSendQueue, CompanionSendResult } from './companionDispatch';
 
 // #2883 ST-6 — the plan-declared ADDITIVE `SpeechBubble` props (`## API Contracts
 // & Data Models`). Typed here so this workstream compiles before ST-4 attaches
@@ -158,11 +158,18 @@ function registerActiveCompanionEntity(handle: CompanionEntityHandle): () => voi
  *   `{ outcome: 'rejected' }`       → not accepted (keep text)
  * This is the ONE dispatch path (G-149) — both surfaces register the same handle
  * into this registry; never add a second, surface-specific route.
+ *
+ * #3120 ST-3 — the launcher may pass the focused app's current `ContextEnvelope`;
+ * the entity prepends exactly one grounding `system` message to the SAME legacy
+ * persona + user turn (no transcript/history is added).
  */
-export function askActiveCompanion(text: string): CompanionSendResult | null {
+export function askActiveCompanion(
+  text: string,
+  options?: CompanionAskOptions,
+): CompanionSendResult | null {
   const entity = activeCompanionEntity;
   if (!entity) return null;
-  return entity.ask(text);
+  return entity.ask(text, options);
 }
 
 /**
@@ -176,11 +183,17 @@ export function askActiveCompanion(text: string): CompanionSendResult | null {
  *   `null`                       → no entity mounted in this window
  *   `{ outcome: 'dispatched' }`  → accepted, audio generation started
  *   `{ outcome: 'rejected' }`    → not accepted (a teleport owns the entity)
+ *
+ * #3120 ST-3 — `options.context` grounds the voice turn exactly like the typed
+ * one; the clip remains the turn's input (an empty user turn, no transcript).
  */
-export function askActiveCompanionWithAudio(clipBase64: string): CompanionSendResult | null {
+export function askActiveCompanionWithAudio(
+  clipBase64: string,
+  options?: CompanionAskOptions,
+): CompanionSendResult | null {
   const entity = activeCompanionEntity;
   if (!entity) return null;
-  return entity.askWithAudio(clipBase64);
+  return entity.askWithAudio(clipBase64, options);
 }
 
 /**
@@ -274,8 +287,10 @@ export interface CompanionEntityHandle {
    * #2892 ST-4 (REQ-5/REQ-6/REQ-7/REQ-8) — returns the typed acceptance result;
    * while a generation is in flight the persisted disposition decides between
    * queueing (FIFO, auto-drained on settle) and a logical interrupt. Never void.
+   * #3120 ST-3 — `options.context` prepends exactly one grounding `system` message
+   * (the current `ContextEnvelope`) before the legacy persona + user turn.
    */
-  ask: (text: string) => CompanionSendResult;
+  ask: (text: string, options?: CompanionAskOptions) => CompanionSendResult;
   /**
    * #2897 ST-3 (REQ-5) — model-audio turn: `clipBase64` is the captured 16 kHz
    * mono WAV from `stt_take_audio_clip`. Streams the reply on the SAME channels
@@ -283,8 +298,10 @@ export interface CompanionEntityHandle {
    * the audio turn cannot join the TEXT FIFO, an in-flight generation is
    * superseded via the same logical-interrupt path (the clip is never dropped).
    * `rejected` only when a teleport owns the entity.
+   * #3120 ST-3 — `options.context` grounds the audio turn too; the clip stays the
+   * turn's input (never a transcript).
    */
-  askWithAudio: (clipBase64: string) => CompanionSendResult;
+  askWithAudio: (clipBase64: string, options?: CompanionAskOptions) => CompanionSendResult;
 }
 
 export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntityProps>(
@@ -1119,10 +1136,16 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       if (!next) { setQueuedSendCount(0); return; }
       setQueuedSendCount(queue.size());
       announceGenerationRef.current = true;
-      runGeneration([
-        { role: 'system', content: FREDO_CHAT_PERSONA },
-        { role: 'user', content: next.text },
-      ], true);
+      // #3120 ST-3 — the queued turn keeps its grounding envelope across the wait;
+      // a legacy send (absent key) rebuilds the byte-identical legacy pair.
+      runGeneration(
+        buildCompanionTurnMessages(
+          next.text,
+          FREDO_CHAT_PERSONA,
+          next.context !== undefined ? { context: next.context } : undefined,
+        ),
+        true,
+      );
     };
 
     // #2893 ST-7 — apply the deterministic app-open reply pushed by ST-6's
@@ -1232,7 +1255,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     // `open_app` selection is marked skill-pending and its settle is deferred until
     // the pushed deterministic reply lands (or the watchdog fires). The joke path
     // above stays on the unchanged `llmChat`.
-    const ask = useCallback((text: string): CompanionSendResult => {
+    const ask = useCallback((text: string, options?: CompanionAskOptions): CompanionSendResult => {
       // #2871 a11y — mark this generation as the bar-send path so it announces
       // "Message sent to Fredo" + the settled reply in the live region.
       announceGenerationRef.current = true;
@@ -1247,8 +1270,9 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         const queue = sendQueueRef.current;
         if (!queue) return { outcome: 'rejected' };
         // REQ-5/REQ-6 — accept and wait, visibly; the settle handlers drain the
-        // FIFO exactly once (synchronous dequeue before dispatch).
-        const result = queue.enqueue(text);
+        // FIFO exactly once (synchronous dequeue before dispatch). #3120 ST-3 —
+        // the grounding envelope rides along with the queued turn.
+        const result = queue.enqueue(text, options);
         setQueuedSendCount(queue.size());
         return result;
       }
@@ -1263,10 +1287,9 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         isGeneratingRef.current = false;
       }
 
-      runGeneration([
-        { role: 'system', content: FREDO_CHAT_PERSONA },
-        { role: 'user', content: text },
-      ], true);
+      // #3120 ST-3 — the ONE message builder: a bounded context prepends exactly
+      // one grounding `system` message; without one this is the legacy pair.
+      runGeneration(buildCompanionTurnMessages(text, FREDO_CHAT_PERSONA, options), true);
       return { outcome: 'dispatched' };
     }, [runGeneration, sendDuringReply, clearTimer, setQueuedSendCount]);
 
@@ -1283,7 +1306,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     // `generationUsesSkillsRef` gate in `applyAppOpenReply`. Starting it with
     // `false` (the #2897 shipped value) is exactly the reported bug: the push was
     // discarded and the bubble settled on prose that claimed the action.
-    const askWithAudio = useCallback((clipBase64: string): CompanionSendResult => {
+    const askWithAudio = useCallback((clipBase64: string, options?: CompanionAskOptions): CompanionSendResult => {
       announceGenerationRef.current = true;
       // A teleport owns the entity: there is no generation to stream into, so the
       // clip is not accepted (the caller keeps the clip rather than losing it).
@@ -1295,10 +1318,15 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         isGeneratingRef.current = false;
       }
 
-      runGeneration([
-        { role: 'system', content: FREDO_CHAT_PERSONA },
-        { role: 'user', content: '' },
-      ], true, clipBase64);
+      // #3120 ST-3 — grounding is orthogonal to the voice path: the SAME builder
+      // prepends the one system message, the user turn stays empty, and the clip
+      // remains the turn's input (the backend attaches the single `input_audio`
+      // part). No transcript is ever fabricated.
+      runGeneration(
+        buildCompanionTurnMessages('', FREDO_CHAT_PERSONA, options),
+        true,
+        clipBase64,
+      );
       return { outcome: 'dispatched' };
     }, [runGeneration, clearTimer]);
 

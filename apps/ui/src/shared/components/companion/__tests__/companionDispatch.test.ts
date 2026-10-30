@@ -20,10 +20,31 @@ import { describe, it, expect } from 'vitest';
 import {
   QUEUED_WAITING_COPY,
   QUEUED_WAITING_TESTID,
+  buildCompanionTurnMessages,
+  companionGroundingContent,
   createCompanionSendQueue,
   queuedWaitingCopy,
   resolveSendOutcome,
 } from '../companionDispatch';
+import { CAPABILITY_LIMITS } from '../../../navigation/types';
+import type { ContextEnvelope } from '../../../navigation/types';
+
+const PERSONA = 'You are Fredo, a friendly, concise desktop assistant.';
+
+/** #3120 ST-3 — a minimal envelope used as the exact grounding payload. */
+function makeContext(overrides: Partial<ContextEnvelope> = {}): ContextEnvelope {
+  return {
+    version: 1,
+    appId: 'wireframe',
+    placePath: [{ id: 'root', label: 'Wireframe', transient: false, sticky: true }],
+    selection: { count: 0, kinds: [], label: null, ids: [] },
+    verbs: [],
+    journal: { last: [], undoableCount: 0 },
+    dirty: false,
+    limits: CAPABILITY_LIMITS,
+    ...overrides,
+  };
+}
 
 // ── createCompanionSendQueue — FIFO + exactly-once (REQ-5/REQ-7) ──────────────
 
@@ -179,5 +200,125 @@ describe('queuedWaitingCopy — the bar waiting copy (REQ-5)', () => {
 describe('bound constants (REQ-12)', () => {
   it('exposes the bound testid the launcher renders', () => {
     expect(QUEUED_WAITING_TESTID).toBe('launcher-command-queued');
+  });
+});
+
+// ── #3120 ST-3 — the companion grounding seam (R-2.2) ─────────────────────────
+
+describe('#3120 ST-3 — companionGroundingContent', () => {
+  it('returns null when no context is supplied (legacy turn)', () => {
+    expect(companionGroundingContent()).toBeNull();
+    expect(companionGroundingContent({})).toBeNull();
+    expect(companionGroundingContent({ context: undefined })).toBeNull();
+  });
+
+  it('returns the exact JSON.stringify(context) for a supplied envelope', () => {
+    const context = makeContext();
+    const grounding = companionGroundingContent({ context });
+
+    expect(grounding).toBe(JSON.stringify(context));
+    expect(JSON.parse(grounding as string)).toStrictEqual(context);
+  });
+
+  it('bounds the payload by maxContextBytes (multi-byte aware)', () => {
+    // 5,000 astral code points = 20,000 UTF-8 bytes > 16,384 — even though the
+    // JS string is only 10,000 UTF-16 units. The cap is measured in BYTES.
+    const oversized = makeContext({ appId: '🚀'.repeat(5_000) });
+    expect(companionGroundingContent({ context: oversized })).toBeNull();
+
+    // A comfortably under-cap envelope still grounds.
+    const within = makeContext({ appId: 'x'.repeat(8_000) });
+    const grounding = companionGroundingContent({ context: within });
+    expect(grounding).toBe(JSON.stringify(within));
+    expect(new TextEncoder().encode(grounding as string).length).toBeLessThanOrEqual(
+      CAPABILITY_LIMITS.maxContextBytes,
+    );
+  });
+});
+
+describe('#3120 ST-3 — buildCompanionTurnMessages', () => {
+  it('without a context returns the byte-identical legacy [persona, user] pair', () => {
+    expect(buildCompanionTurnMessages('hello', PERSONA)).toStrictEqual([
+      { role: 'system', content: PERSONA },
+      { role: 'user', content: 'hello' },
+    ]);
+  });
+
+  it('prepends exactly ONE grounding system message before persona + user', () => {
+    const context = makeContext();
+    const messages = buildCompanionTurnMessages('where am I?', PERSONA, { context });
+
+    expect(messages).toStrictEqual([
+      { role: 'system', content: JSON.stringify(context) },
+      { role: 'system', content: PERSONA },
+      { role: 'user', content: 'where am I?' },
+    ]);
+    // Exactly one grounding message — the persona is the shipped one.
+    expect(messages.filter((m) => m.role === 'system')).toHaveLength(2);
+    expect(messages.filter((m) => m.role === 'user')).toHaveLength(1);
+    expect(messages.filter((m) => m.role === 'assistant')).toHaveLength(0);
+  });
+
+  it('adds no transcript/history: the turn length is exactly 2 or 3', () => {
+    expect(buildCompanionTurnMessages('a', PERSONA)).toHaveLength(2);
+    expect(buildCompanionTurnMessages('a', PERSONA, { context: makeContext() })).toHaveLength(3);
+  });
+
+  it('never injects an over-cap context (stays bounded, never truncated JSON)', () => {
+    const oversized = makeContext({ appId: 'x'.repeat(20_000) });
+    expect(buildCompanionTurnMessages('hello', PERSONA, { context: oversized })).toStrictEqual([
+      { role: 'system', content: PERSONA },
+      { role: 'user', content: 'hello' },
+    ]);
+  });
+
+  it('keeps the audio turn clip-shaped: an empty user turn, never a fabricated transcript', () => {
+    const context = makeContext();
+    const messages = buildCompanionTurnMessages('', PERSONA, { context });
+
+    expect(messages).toStrictEqual([
+      { role: 'system', content: JSON.stringify(context) },
+      { role: 'system', content: PERSONA },
+      { role: 'user', content: '' },
+    ]);
+  });
+});
+
+describe('#3120 ST-3 — the FIFO carries the grounding context', () => {
+  it('stores the context on the queued item and returns it on dequeue', () => {
+    const queue = createCompanionSendQueue();
+    const context = makeContext();
+
+    const first = queue.enqueue('grounded', { context });
+    const item = queue.dequeue();
+
+    expect(item).toEqual({ id: first.queueId, text: 'grounded', context });
+    // The same envelope reference is carried (no re-serialization on the way in).
+    expect(item?.context).toBe(context);
+  });
+
+  it('omits the context key entirely for a legacy send (never an explicit undefined)', () => {
+    const queue = createCompanionSendQueue();
+
+    queue.enqueue('legacy');
+    const item = queue.dequeue();
+
+    expect(item).toBeDefined();
+    expect('context' in (item as object)).toBe(false);
+    expect(item).toEqual({ id: item?.id, text: 'legacy' });
+  });
+
+  it('drainAll preserves each queued item’s context', () => {
+    const queue = createCompanionSendQueue();
+    const context = makeContext({ appId: 'wireframe-map' });
+
+    queue.enqueue('one');
+    queue.enqueue('two', { context });
+
+    const drained = queue.drainAll();
+
+    expect(drained).toHaveLength(2);
+    expect('context' in (drained[0] as object)).toBe(false);
+    expect(drained[1].context).toBe(context);
   });
 });
