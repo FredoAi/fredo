@@ -13,6 +13,7 @@
 
 import {
   LIST_ACTIONS_ID,
+  type Risk,
   type Surface,
   type VerbArg,
 } from './types';
@@ -24,12 +25,20 @@ export interface CompanionArg {
   description?: string;
 }
 
-/** One published command of a surface. */
+/**
+ * One published command of a surface.
+ *
+ * AC9 / Reading #13 — the projection carries all six fields, so a consumer never
+ * re-derives a title, guesses a risk class or invents an alias (ADR-6). Key order is
+ * part of the committed golden shape: `id, label, description, risk, args, aliases`.
+ */
 export interface CompanionCommand {
   id: string;
   label: string;
   description: string;
+  risk: Risk;
   args: readonly CompanionArg[];
+  aliases: readonly string[];
 }
 
 /** §8.1 — one application surface's companion manifest. */
@@ -43,9 +52,25 @@ export interface CompanionManifest {
   actionIds: readonly string[];
 }
 
+/**
+ * `VerbArg` does not declare `description`, but a declaration MAY author one; read it
+ * structurally so an authored description round-trips while an unauthored one omits the
+ * key entirely (no existing golden `args` row changes).
+ */
+interface AuthoredArg {
+  readonly name: string;
+  readonly required: boolean;
+  readonly description?: string;
+}
+
 /** Project one declared argument onto the manifest wire shape. */
 function toCompanionArg(arg: VerbArg): CompanionArg {
-  return { name: arg.name, required: arg.required === true };
+  const source: AuthoredArg = arg;
+  return {
+    name: source.name,
+    required: source.required === true,
+    ...(source.description === undefined ? {} : { description: source.description }),
+  };
 }
 
 /**
@@ -62,7 +87,9 @@ export function buildCompanionManifest(surface: Surface): CompanionManifest {
       id: verb.id,
       label: verb.title,
       description: verb.description,
+      risk: verb.risk,
       args: verb.args.map(toCompanionArg),
+      aliases: verb.aliases,
     });
   }
 
