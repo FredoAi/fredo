@@ -355,23 +355,32 @@ deleted.
       no longer visually disabled during an operation (accepted delta — behaviour, not the
       disabled affordance, is asserted).
 
-- [ ] **F-N23 (R-9 / AC9) — one region, one announcement, focus kept.** **FAIL (round 1,
-      2026-10-30).** The announcement legs pass; the FOCUS leg fails in the real shell:
-      focus a `navigation-rail-place-row` button (`activeElement` = that BUTTON), press `c` →
-      `data-wireframe-place="wireframe.create"` and `document.activeElement` becomes `BODY`
-      (the `navigation-rail-places` group unmounts because `placeRows` are the CURRENT place's
-      children, so the focused node is removed). Expected: still the same row button, never
-      `body`. Repro: open Wireframe → focus the `Create` place row → press `c` → read
-      `document.activeElement.tagName` → `BODY`.
-      **Expected:** `document.querySelectorAll('[aria-live]').length === 1` and the region is
-      `[data-testid="hotkeys-announcer"]` (`role="status"`, `aria-live="polite"`);
-      `[data-testid="navigation-announcer"]` is ABSENT (the provider creates the host with
-      `announcementChannel: 'legacy'` and mounts no `NavigationAnnouncer`); the composer pins hold
-      (`navPlaceEnterMessage('Create', 9) === 'Create — 9 actions'`, `navPlaceExitMessage(
-      'Create','Canvas', 2) === 'Left Create — Canvas — 2 actions'`) and entering/exiting
-      produces exactly ONE update each with that text; focus a `navigation-rail-place-row`
-      button, press `c`, and `document.activeElement` is still that same button (never `body`);
-      text-entry focus announces nothing; the region is never written by a failed file verb.
+- [x] **F-N23 (R-9 / AC9) — one region, one announcement, focus kept.**
+      **PASS (round 2, 2026-10-30, spec/3119 @ `6311823`) — focus leg fixed by `c587972`.**
+      Round-1 history (superseded): the FOCUS leg failed — focusing a
+      `navigation-rail-place-row` and pressing `c` left `document.activeElement === BODY`
+      (the current place's `placeRows` unmount). Round 2 re-ran the exact repro live: focus
+      `[data-testid="navigation-rail-place-row"][data-nav-place-id="wireframe.create"]`
+      (`activeElement` = that `BUTTON`, `aria-label="Create — 9 actions (C) — one action"`) →
+      press `c` → `data-wireframe-place="wireframe.create"`, `document.activeElement` is
+      `H2[data-testid="navigation-rail-place"]` (`tabindex="-1"`, text `Create`) INSIDE
+      `[data-testid="navigation-rail"]` — **never `BODY`**; `Escape` pops to `wireframe.canvas`
+      and restores focus to the SAME Create row (`data-nav-place-id="wireframe.create"`);
+      pointer-click the Edit row → `wireframe.edit`, focus retained in the rail (heading), never
+      `BODY`. A subsequent `Escape` still dispatched (the element-scoped key adapter stayed
+      alive). A place transition driven from the CANVAS (`v` at root) did NOT steal focus
+      (`activeElement` stayed `DIV[data-testid="wireframe-canvas"]`).
+      **Expected (R-9 adjudication, recorded inline):** the navigation stream is exactly ONE
+      update per transition on `[data-testid="hotkeys-announcer"]` (`role="status"`,
+      `aria-live="polite"`) and `[data-testid="navigation-announcer"]` is ABSENT; a global
+      `[aria-live].length === 1` is NOT asserted because the shipped `WireframeStatusBar` is also
+      a `role="status"` region (observed 7 `[aria-live]` nodes — round-1 R-9 adjudication). The
+      composer pins hold (`navPlaceEnterMessage('Create', 9) === 'Create — 9 actions'`,
+      `navPlaceExitMessage('Create','Canvas', 2) === 'Left Create — Canvas — 2 actions'`) and
+      entering/exiting produces exactly ONE update each with that text; focus a
+      `navigation-rail-place-row` button, press `c`, and focus is re-homed to the always-rendered
+      `navigation-rail-place` heading (the same row when it reappears on the return trip), never
+      `body`; text-entry focus announces nothing; the region is never written by a failed file verb.
       **Edge:** root `Escape` (quiet hint, no announcement); a transition immediately reversed
       (two distinct messages); the map dialog's close restores focus to its invoker;
       reduced-motion on; a bound-but-unavailable key (`f` on a text element) speaks
@@ -453,3 +462,28 @@ driver — `tauri_webview_interact` clicks drive single selection correctly (ver
 modifier state does not reach the Konva native event, so only count-1 selection could be
 driven. The count-2/3 availability matrix is therefore evidenced by the cited green unit titles
 plus the live count-0/count-1 observations.
+
+---
+
+## Round 2 results — 2026-10-30 (spec/3119 @ `6311823`, retry: AC9 focus leg)
+
+Scope: re-test ONLY the previously-failing AC9 focus leg (F-N23) plus a regression sweep of the
+fixed surface. Env: isolated `wf3119-a` (slot 1, MCP `16001`), `Up` on `6311823` after a
+`Down`→`Up` (no `Restart`). CI parity — `pnpm --filter @fredo/ui typecheck` exit 0;
+`build` green **before** the suite (2864 modules, 11.66s); full suite **296 files / 3888 tests**;
+`contrast:gate` **4 files / 50 tests**. `cargo check` not run — `git diff --stat origin/main HEAD
+-- apps/tauri` is empty (no Rust source changed; disclosed). Console clean across the drive.
+
+| Row | Result | Evidence (quoted receipt) |
+|---|---|---|
+| **F-N23 (focus leg)** | **PASS (was FAIL)** | Focus `navigation-rail-place-row[data-nav-place-id=wireframe.create]` → `activeElement` = `BUTTON` `aria-label="Create — 9 actions (C) — one action"` → press `c` → `place="wireframe.create"`, `activeElement` = `H2[data-testid=navigation-rail-place]` `tabindex="-1"` text `Create`, `activeInsideRail=true`, `activeIsBody=false`; `announcer="Create — 9 actions"`, `navigation-announcer` absent. `Escape` → `place="wireframe.canvas"`, focus restored to the Create row `BUTTON` (`data-nav-place-id=wireframe.create`), `announcer="Left Create — Canvas — 2 actions"` — the Escape itself dispatched (key adapter alive). |
+| **F-N23 (pointer leg)** | **PASS** | Click the Edit place row → `place="wireframe.edit"`, `activeElement` = `H2[navigation-rail-place]` text `Edit`, inside rail, `activeIsBody=false`; one announcement `Edit — 5 actions`. |
+| **F-N23 (no-steal, canvas)** | **PASS** | Focus `[data-testid=wireframe-canvas]`, press `v` → `place="wireframe.view"`, `activeElement` stays `DIV[data-testid=wireframe-canvas]` (rail did not steal focus), `announcer="View — 5 actions"`, 5 View rows, `navigation-announcer` absent. |
+| **F-N23 (announcements)** | **PASS** | `Create — 9 actions`, `Edit — 5 actions`, `Style — 5 actions`, `View — 5 actions`, `Left Create — Canvas — 2 actions` — each exactly one update; `navigation-announcer` absent; 7 `[aria-live]` nodes (R-9 adjudication — the shipped `WireframeStatusBar` is also a status region). |
+| **NFR build/parity** | **PASS** | typecheck 0 diagnostics; build 2864 modules / 11.66s; full suite 296/3888; contrast 4/50; no `.skip`/`.todo`/`.only` in `applications/wireframe` or `shared/navigation`. |
+| **AC3 surface sweep** | **PASS** | Live rail/trail/canvas present; `wireframe-toolbar 0`, `wireframe-hotkey-carrier 0`, `[data-hotkey]` under `wireframe-root 0`, `hotkeys-keybar 0`; 33-row parity pinned by the green `wireframeRailParity.test.tsx` (10/10). |
+
+Unit pins (green in the full run): `commandRailFocus.test.tsx` **3/3**,
+`wireframeNavigationFocus.test.tsx` **4/4**, `commandRail.test.tsx` (no focus move on mount),
+`wireframePlaceLifecycle.test.ts` (focus + one announcement), `wireframeRailParity.test.tsx`
+**10/10**, `wireframeLegacySurface.test.ts` **7/7**.
