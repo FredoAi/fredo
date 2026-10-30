@@ -145,3 +145,39 @@ ad-hoc probe is a finding, never a substitute for the committed assertion.
 PASS = E-7..E-12 probed with the observation quoted. A probe that needs a new public API or a new
 dependency is a plan defect — report it, never invent it. The receipt is the POSTED
 `## Tests Runs` comment plus the committed suite.
+
+---
+
+# P5 — engine contract changes (issue #3119)
+
+Probes for the four contract changes. Static (pure functions + source reads) unless noted.
+
+- [ ] **E-13 (grammar collisions) — does the extended reserved set create a new ambiguity class?**
+  Declare a surface binding both `'-'` and a hypothetical display glyph, then `'+'` and `'ArrowUp'`
+  in the same place, and one place binding `'+'` while a child binds `+` as a first step of a
+  longer sequence.
+  **Expected:** duplicate strokes on one place ⇒ `ambiguous-key` (never a winner);
+  `'+'` as a single stroke and as a prefix of a longer sequence resolve without throwing (the
+  hint/armed path accepts a non-letter token); `?`/`/` remain non-bindable. **Probe:** does the
+  which-key hint render an arrow or `+` sensibly, or as a bare token?
+- [ ] **E-14 (V-08 root scoping — the residual risk) — a legitimate alias that a FUTURE root binding would shadow.**
+  Take the pilot's declaration and add `r` to the ROOT keys (bound to any other verb) without
+  removing the alias `r→wireframe.create.rect`.
+  **Expected:** exactly one `NAV-E008` at the root; the resolver never dispatches both (tier 1
+  wins). Probe: does the diagnostic name BOTH verbs and the root place id (it must, so a future
+  author can act on it)?
+- [ ] **E-15 (transient auto-exit — double-pop and no-pop paths)** *(live, in
+  `.opencode/tests/wireframe-navigation/`)* — see E-N5/E-N6 there; the engine-side probe is: a
+  mutation whose effect is `patch:null` in a transient place must NOT pop and must write no
+  entry, while a mutation with a patch pops exactly once. Record cursor + entry count for both.
+- [ ] **E-16 (`placeRows` — never a second list) — mutate the declaration and re-project.**
+  Add a seventh child place to a clone of the pilot surface (key `z`), rebuild the rail model,
+  and confirm the place rows gain it while `rows`/`overflow`/`actionCount` are unchanged.
+  **Expected:** one declaration, two projections, no second list; removing the place restores the
+  six. Probe: does `CommandRail` render an empty place-rows group when the current place is a
+  leaf (it must not)?
+
+## Suite-level pass/fail — P5
+
+PASS = E-13..E-16 probed with the observation quoted. A probe needing a new public API is a plan
+defect — report it, never invent it.
