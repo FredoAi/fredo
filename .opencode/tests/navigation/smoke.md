@@ -113,3 +113,45 @@ S-9/S-10 (the dev route in the running desktop app).
 PASS = S-7..S-10 green. Any non-zero exit, a missing/empty `dist`, a changed contrast-gate scope, a
 dev route that does not render its three surfaces, or any console error is a FAIL. The receipt is
 the POSTED `## Tests Runs` comment plus the screenshots/DOM snapshots.
+
+---
+
+# P5 — engine contract changes (issue #3119)
+
+Feature: the four engine/P4 contract changes the pilot requires. Minimum proof that the extended
+grammar, the root-scoped V-08, the transient auto-exit and `placeRows` are present and the scoped
+suite is green.
+
+Verification policy: **static** — command exits plus two reads. No app launch for these rows.
+
+> **Precondition.** `spec/3119` checked out; run from the repo root.
+
+## Cases — P5
+
+- [ ] **S-11: The scoped navigation suite is green with the new titles.**
+      `pnpm --filter @fredo/ui test:run src/shared/navigation`.
+      **Expected:** exit 0; the reporter shows `arrow strokes resolve as bindable reserved
+      strokes`, `plus and minus resolve as bindable reserved strokes`,
+      `a direct alias shadowing only a child place key is valid`,
+      `a direct alias shadowing the root place key is V-08`,
+      `a mutation in a transient place pops exactly one level`,
+      `a transient mutation announces the exit once`,
+      `place rows list child places in declaration order`,
+      `place rows stay out of the eight row verb cap`, and
+      `formatKeyHint renders the four arrows as glyphs`; no nav test skipped or `todo`.
+
+- [ ] **S-12: Typecheck and build are clean, `dist` is real.**
+      `pnpm --filter @fredo/ui typecheck` then `pnpm --filter @fredo/ui build`.
+      **Expected:** both exit 0; zero diagnostics; zero warnings; `apps/ui/dist/index.html` and a
+      non-empty `apps/ui/dist/assets/` exist (the AC7 marker scan reads them).
+
+- [ ] **S-13: The reserved-stroke constant is the extended set.**
+      Read `apps/ui/src/shared/navigation/types.ts`.
+      **Expected:** `ENGINE_RESERVED_STROKES` is exactly
+      `['Escape','Enter','Tab','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','+','-']` and
+      `BINDABLE_STROKE_PATTERN` is still `/^[a-z0-9]$/`; `PENDING_TIMEOUT_MS` is `250`.
+
+## Suite-level pass/fail — P5
+
+PASS = S-11…S-13 green. A missing title, a skipped test, a warning-only build, or a missing
+`dist` is a FAIL. The receipt is the POSTED `## Tests Runs` comment plus the committed files.
