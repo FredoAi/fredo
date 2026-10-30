@@ -118,11 +118,16 @@ and none is planned.
   2 and ts gap 401 (must not coalesce); companion entries interleaved with human ones.
 
 - [ ] **F-9 (REQ-06.1–06.8 / AC6) — the context envelope v1.**
-  **Expected:** green titles `envelope v1 carries every field from its arguments` (`version === 1`),
+  **Expected:** all eight `context.test.ts` titles green — `envelope v1 carries every field from
+  its arguments` (`version === 1`), `envelope is JSON-serialisable with no functions or cycles`,
   `place path lists root to current and truncates to eight`, `selection dedupes kinds and
   truncates ids`, `verbs follow declaration order and truncate to 64`, `journal last is newest
   first and capped at ten`, `dirty and frozen capability limits`, `strings truncate at 120 and
-  envelope is at most 16384 bytes`, `envelope build does not mutate its inputs`.
+  envelope is at most 16384 bytes`. REQ-06.8's "every value comes from its arguments" rides on the
+  first title (the empty selection and empty journal cases are asserted explicitly); there is no
+  separate envelope non-mutation title — the envelope's plain-value shape is the JSON-serialisable
+  title, and frozen-input non-mutation is asserted for the derivations by `derivations do not
+  mutate a deep-frozen surface` (F-10).
   `Object.isFrozen(CAPABILITY_LIMITS)` is true and its values are `64/10/32/120/8/16384`.
   **Edge:** a 9-deep place path; 33 selected ids; 9 distinct kinds; 65 verbs; 11 journal entries;
   a 1,000-character label.
@@ -140,14 +145,14 @@ and none is planned.
 
 - [ ] **F-11 (REQ-08.1–08.5 / AC8) — twelve validation rules over twelve failing fixtures.**
   **Expected:** the twelve per-rule titles (`V-01 duplicate verb id`, `V-02 exactly one root`,
-  `V-03 dangling parent`, `V-04 cyclic parent chain`, `V-05 unknown key target`, `V-06 verb does
-  not apply to place`, `V-07 duplicate normalized stroke`, `V-08 alias shadows a different-verb
-  place key`, `V-09 verb declares no risk`, `V-10 destructive or external without undo or
-  consequence`, `V-11 complete binding shadows a longer sequence`, `V-12 incomplete verb`) are
-  green; each failing fixture yields exactly ONE diagnostic with the stated `rule` + `code`; the
-  passing fixture `validWireframeSurface()` yields zero for all twelve. `orderedViolationSurface()`
-  yields exactly `['V-01','V-02','V-09','V-12']`. `validateSurface never throws on a malformed
-  surface` and `validateSurface does not mutate its input` are green.
+  `V-03 parent resolves`, `V-04 chain terminates at root`, `V-05 key target declared`, `V-06 bound
+  verb applies to that place`, `V-07 no duplicate stroke within a place`, `V-08 alias shadows a
+  different-verb place key`, `V-09 every verb declares a risk`, `V-10 destructive or external has
+  undo or consequence`, `V-11 complete binding shadows a longer sequence`, `V-12 incomplete
+  verb`) are green; each failing fixture yields exactly ONE diagnostic with the stated `rule` +
+  `code`; the passing fixture `validWireframeSurface()` yields zero for all twelve.
+  `orderedViolationSurface()` yields exactly `['V-01','V-02','V-09','V-12']`. `validateSurface
+  never throws on a malformed surface` and `validateSurface does not mutate its input` are green.
   **Files:** `__tests__/validation.test.ts`, `__tests__/fixtures.ts`.
   **Edge:** two diagnostics from one fixture; `null`/`undefined` surface; a frozen surface; a
   "nine rules" implementation missing V-11/V-12 (FAIL — AC8 covers all twelve).
@@ -178,13 +183,25 @@ and none is planned.
 - [ ] **F-14 (REQ-10.3 / AC9) — golden manifest projection.**
   **Expected:** green titles `manifest equals the committed golden file`, `manifest projection is
   byte-identical across runs`, `every published verb carries id title description risk args and
-  aliases`. The golden file path is
+  aliases`, `golden command rows carry all six projection keys`. The golden file path is
   `apps/ui/src/shared/navigation/__tests__/fixtures/wireframe.navigation.golden.json` and is read
-  from disk with `readFileSync` + `JSON.parse`. `commands` ids equal every `publish===true` verb
-  id; `actionIds` ends with exactly one `listActions`.
+  from disk with `readFileSync` + `JSON.parse` — never regenerated at test time. The six fields are
+  asserted **on the projected `CompanionCommand`**, per published verb: `command.id === verb.id`,
+  `command.label === verb.title`, `command.description === verb.description`,
+  `command.risk === verb.risk`, `command.args` name/required per declared arg (an authored
+  `VerbArg.description` preserved, omitted when the source declares none),
+  `command.aliases === verb.aliases` (a non-empty authored array projected verbatim, and an
+  authored `[]` preserved as `[]`). An assertion on the source `VerbDescriptor` alone does NOT
+  satisfy this case (G-418). `commands` ids equal every `publish===true` verb id in declaration
+  order; `actionIds` ends with exactly one `listActions`; and every row of the committed golden's
+  `manifest.commands` has `Object.keys()` exactly `['id','label','description','risk','args',
+  'aliases']` in that order — a shape gate independent of the projection code, with a non-empty
+  `commands` array asserted first.
   **Edge:** an unpublished verb appearing in the projection; input reordered (projection
-  unchanged); a verb with no aliases (`[]` is valid); a regenerated-at-test-time expectation
-  (FAIL — the file must be committed).
+  unchanged); a verb with no aliases (`[]` is valid); a golden row missing `risk` or `aliases`
+  (FAIL — the AC9 narrowing this round fixes); `risk`/`aliases` asserted only on the source
+  descriptor (FAIL, G-418); a projection hard-coding `aliases: []`; a regenerated-at-test-time
+  expectation (FAIL — the file must be committed).
 
 - [ ] **F-15 (REQ-10.4, REQ-10.5 / AC1–AC10 build gate) — commands green, no new dependency.**
   Run `pnpm --filter @fredo/ui test:run`, `pnpm --filter @fredo/ui typecheck` and
@@ -192,7 +209,9 @@ and none is planned.
   **Expected:** all three exit 0; `typecheck` reports zero diagnostics; `build` reports zero
   warnings; the whole `test:run` suite has no new failures versus `main`. `apps/ui/package.json`
   `dependencies`/`devDependencies` are unchanged; `pnpm-lock.yaml` shows no `apps/ui` importer
-  delta; Grep `fast-check` in `apps/ui` returns nothing.
+  delta; `fast-check` has no import, no `package.json` entry and no lockfile importer delta — its
+  only two occurrences in `apps/ui` are comment-only mentions in
+  `__tests__/property.test.ts` and `__tests__/fixtures.ts`, prose rather than a dependency.
   **Edge:** a warning-only build (FAIL); a `.skip`ped navigation suite (FAIL); a lockfile-only
   change; a devDependency added "for the property test".
 

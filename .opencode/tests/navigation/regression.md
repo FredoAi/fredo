@@ -26,7 +26,7 @@ exit. There is no app, webview or `telemetry_spans` surface for this feature; no
   Read `apps/ui/src/index.ts`; run `pnpm --filter @fredo/ui test:run src/shared/navigation`.
   **Expected:** the diff adds exactly ONE line, `export * from './shared/navigation';`, after the
   previous final export block; no existing `export` line is edited, reordered or removed;
-  `rootExport.test.ts` › `root index re-exports six navigation entry points` is green.
+  `rootExport.test.ts` › `root export exposes the six navigation entry points` is green.
   **Edge:** the line inserted mid-file (breaks the append-only section rule); a duplicate export
   name silently dropped by `export *` (the six-entry-point import catches it); a re-export list
   written by hand instead of `export *`.
@@ -34,8 +34,10 @@ exit. There is no app, webview or `telemetry_spans` surface for this feature; no
 - [ ] **R-3 (REQ-10.5 / build gate) — no new runtime or dev dependency.**
   Read `apps/ui/package.json` and the `apps/ui` importer in `pnpm-lock.yaml`; compare to `main`.
   **Expected:** `dependencies` and `devDependencies` are unchanged key-for-key; the lockfile
-  importer block is unchanged; Grep `fast-check` in `apps/ui` returns nothing; the seeded PRNG
-  lives in `__tests__/fixtures.ts` (mulberry32, ~10 lines).
+  importer block is unchanged; `fast-check` has no import, no `package.json` entry and no lockfile
+  importer delta (its only two occurrences in `apps/ui` are comment-only mentions in
+  `__tests__/property.test.ts` and `__tests__/fixtures.ts` — prose, not a dependency); the seeded
+  PRNG lives in `__tests__/fixtures.ts` (mulberry32, ~10 lines).
   **Edge:** a transitive-only lock change; a devDependency added "for tests"; a `@types/node`
   addition (unnecessary — `__tests__` is excluded from `typecheck`).
 
