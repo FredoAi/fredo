@@ -79,3 +79,69 @@ telemetry surface; none applies.
 PASS = E-1..E-6 green with the observed outcome quoted. A probe that requires a new public API
 is a plan defect — report it, do not invent the API. The receipt is the POSTED `## Tests Runs`
 comment plus the committed suite.
+
+---
+
+# P4 — UI surfaces (issue #3118)
+
+Feature: the rail / map / trail / keycap / announcement surfaces on the DEV prototype route. These
+are **unscripted prompts**: each names a state the functional suite does not drive. A confirmed
+finding is promoted to `functional.md` as a new `F-` row with an origin note.
+
+Verification policy: **live** where noted; otherwise a short component probe in the same
+`ui/__tests__/` folder. A probe may be added **only** if the named case does not already exist — an
+ad-hoc probe is a finding, never a substitute for the committed assertion.
+
+> **Precondition.** `spec/3118` checked out; the dev route reachable as in S-9.
+
+## Cases — P4
+
+- [ ] **E-7 (R-1.5 / AC1) — the rail at its narrow floor with the worst content.**
+  Resize the window until the rail is at its `NAV_RAIL_MIN_WIDTH_PX` (180) floor; enter the 9-verb place with a 60-char
+  verb title on the 8th row and one `Destructive` row.
+  **Expected:** `rail.scrollWidth <= rail.clientWidth`; no row wraps to two lines; the title
+  ellipsizes while the keycap and the risk word keep their size; the breadcrumb wraps instead of
+  scrolling; `more…` stays reachable. Probe: what happens at 160 px (below the declared floor)?
+  Record the observation, do not assert a new floor.
+
+- [ ] **E-8 (R-2.1–R-2.5 / AC2) — the map's focus integrity under hostile sequencing.**
+  Open the map from `more…`, arrow to the last row, press `Tab` three times, then `Escape` during the
+  Tab walk; reopen and close by backdrop; reopen via `?` while a trail undo button holds focus.
+  **Expected:** focus never lands on `body`; each close restores the **most recent** invoker (not the
+  first one); no double restore leaves focus outside the document order; the trap is released after
+  each close. Probe: a verb that mutates the model while the map is open (does the row set change
+  under the focused element?).
+
+- [ ] **E-9 (R-4.1–R-4.5 / AC4) — announcement ordering under bursts.**
+  Rapidly enter and exit two places with a 300 ms settle between each, arm a prefix and let it
+  time out (250 ms), then undo immediately.
+  **Expected:** at most one announcement per event; the region's final text is the LAST event's
+  message; no message is a concatenation; a timeout announces nothing even when a prefix was armed;
+  the dedupe never swallows a genuinely different consecutive message.
+
+- [ ] **E-10 (R-3.2, R-3.5 / AC3) — the trail's degenerate entries.**
+  Produce an entry whose verb is undoable in general but whose result had `inverse === null`; then a
+  companion entry older than the cap; then compact the trail with the journal full (10 entries).
+  **Expected:** no undo affordance on the non-invertible entry and no empty tooltip; the companion
+  entry falls off the cap in age order (not by actor); compact renders 10 entries with no path/time
+  nodes and still offers undo where the entry is undoable.
+
+- [ ] **E-11 (R-6.1 / AC6) — mutate the declaration twice and re-project.**
+  Apply `renamePlace` and then `addDirectAlias` to the same clone without rebuilding between edits.
+  **Expected:** the second mutation sees the first (no stale projection), `epoch` advances once per
+  mutation (twice total), and every projection reflects both edits — no double-count of the alias
+  row, no duplicated breadcrumb segment.
+
+- [ ] **E-12 (AC8 / AC9) — the dev route's blast radius.**
+  With the dev route open, check the console and the window for leaked state: a `NavigationAnnouncer`
+  region from a previous mount, a stale `document` keydown listener (count listeners before/after
+  navigate away and back), and any settings write attributable to the route.
+  **Expected:** navigating away and back leaves exactly one live region and one element-scoped
+  handler; no `settingsService`/`localStorage` write is attributable to the route; no app is affected
+  (`Home` still renders on the plain URL).
+
+## Suite-level pass/fail — P4
+
+PASS = E-7..E-12 probed with the observation quoted. A probe that needs a new public API or a new
+dependency is a plan defect — report it, never invent it. The receipt is the POSTED
+`## Tests Runs` comment plus the committed suite.
