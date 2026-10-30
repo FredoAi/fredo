@@ -1,13 +1,21 @@
 /**
- * Wireframe document store (Spec #3070, ST-1, C3; extended by Spec #3071, ST-1).
+ * Wireframe document store (Spec #3070, ST-1, C3; extended by Spec #3071, ST-1;
+ * journal seam added by Spec #3119, ST-2).
  *
  * MODULE-SCOPED — never React refs. Open -> close -> open keeps the document,
  * the undo history and the saved path because they live at module scope (the
  * AGENTS.md persistence rule; shipped precedent: `windowStore.ts`).
  *
- * Every document mutation commits exactly ONE undo snapshot. Selection, view,
- * pan mode, the snap-to-grid flag, file status and errors are editor state, NOT
- * document history: they never push a snapshot and never flip `dirty`.
+ * THE JOURNAL IS THE ONE UNDO AUTHORITY (Spec #3119, R-5). Every document
+ * mutation commits exactly ONE entry to the module-scoped `JournalStore`; the
+ * public `undo()`/`redo()`/`canUndo`/`canRedo` are journal-backed shims derived
+ * from that SAME store, so there is no second history container. `dispatch` is
+ * the compatibility funnel for the shipped regression suite; the P5 surface
+ * verbs call the PURE `reduceDocument` plan and commit through
+ * `applyDocumentPatch` (the host owns their journal entry).
+ *
+ * Selection, view, pan mode, the snap-to-grid flag, file status and errors are
+ * editor state, NOT document history: they never journal and never flip `dirty`.
  *
  * Spec #3071 turns the selection into a SET (`selectedIds`, document order) and
  * adds groups, stacking order and snap to the shared spine. `selectedId` is no
@@ -21,7 +29,9 @@
  */
 
 import {
+  WIREFRAME_APP_TAG,
   WIREFRAME_GROUP_MIN_MEMBERS,
+  WIREFRAME_SCHEMA_VERSION,
   createNewWireframeDocument,
   groupOfElement,
   isElementMovable,
@@ -32,11 +42,25 @@ import {
   type WireframePage,
 } from '../model/document';
 import {
+  WIREFRAME_ELEMENT_LABELS,
   createElementId,
   duplicateWireframeElement,
   type WireframeElement,
   type WireframeElementPatch,
 } from '../model/elements';
+import {
+  appendEntry,
+  createJournalStore,
+  type JournalEntryDraft,
+  type JournalStore,
+} from '../../../shared/navigation/journal';
+import type {
+  ContextSnapshot,
+  JournalEntry,
+  JsonPatch,
+  ObjectRef,
+  SelectionSnapshot,
+} from '../../../shared/navigation/types';
 import {
   clampPageDimension,
   clampViewScale,
@@ -90,6 +114,12 @@ export interface WireframeEditorState {
   captureView: WireframeView | null;
   filePath: string | null;
   dirty: boolean;
+  /**
+   * Journal-backed flags (Spec #3119). They are NOT stored independently: the
+   * snapshot derives them from the module-scoped `JournalStore` on every rebuild
+   * (`computeCanUndo` / `computeCanRedo`), so clearing the journal always clears
+   * them and no second stack can disagree.
+   */
   canUndo: boolean;
   canRedo: boolean;
   panMode: boolean;
@@ -105,6 +135,19 @@ export interface WireframeEditorState {
  */
 export interface WireframeEditorSnapshot extends WireframeEditorState {
   selectedId: string | null;
+}
+
+/**
+ * The whole-document patch the navigation funnel applies (Spec #3119, R-5/R-6).
+ *
+ * It is the JSON form of a verb effect's `after`/`inverse` checkpoint: the
+ * document to install plus the selection the committing verb produced. A missing
+ * `selection` keeps (and re-normalises) the live selection — the shape the
+ * `inverse` checkpoint uses.
+ */
+export interface WireframeDocumentPatch {
+  readonly document: WireframeDocument;
+  readonly selection?: readonly string[];
 }
 
 /** Document mutations accepted by `dispatch` (each commits ONE snapshot). */
@@ -151,10 +194,23 @@ interface CanvasStageLike {
 let listeners = new Set<Listener>();
 let canvasStage: CanvasStageLike | null = null;
 
-/** Past documents, oldest first; capped at `UNDO_DEPTH`. */
-let past: WireframeDocument[] = [];
-/** Undone documents, most-recently-undone last. */
-let future: WireframeDocument[] = [];
+/**
+ * The ONE module-scoped navigation journal (Spec #3119, ST-2). Created once and
+ * never replaced: the host, the store shims and the tests all read the SAME
+ * instance, so there is exactly one undo stack. New/Open and the test reset
+ * clear it IN PLACE (never re-create it) so a held reference stays valid.
+ */
+const navigationJournal: JournalStore = createJournalStore();
+
+/** The default place path until the shell registers its read model. */
+const DEFAULT_CONTEXT_PLACE = 'wireframe.canvas';
+
+/**
+ * The shell's read-model registration seam. It supplies the host-owned
+ * `appId`/`placePath`; the store always owns `selection` and `dirty`. The store
+ * never imports the host (Spec #3119, ST-2).
+ */
+let contextProvider: (() => ContextSnapshot) | null = null;
 
 let state: WireframeEditorState = createInitialState();
 let snapshot: WireframeEditorSnapshot = createSnapshot(state);
@@ -179,7 +235,68 @@ function createInitialState(): WireframeEditorState {
 
 /** The selection source of truth is `selectedIds`; `selectedId` is derived. */
 function createSnapshot(next: WireframeEditorState): WireframeEditorSnapshot {
-  return { ...next, selectedId: primarySelectedId(next) };
+  return {
+    ...next,
+    canUndo: computeCanUndo(),
+    canRedo: computeCanRedo(),
+    selectedId: primarySelectedId(next),
+  };
+}
+
+/* ------------------------------------------------------------------------- */
+/* Journal-backed history (the ONLY undo authority — Spec #3119, R-5)          */
+/* ------------------------------------------------------------------------- */
+
+function journalNow(): string {
+  return new Date().toISOString();
+}
+
+function isRedoSeq(seq: number): boolean {
+  return navigationJournal.redo().includes(seq);
+}
+
+/**
+ * The newest USER mutation that has not been undone yet. System entries are
+ * skipped (an undo of an undo is redo, never a second undo), and a seq already
+ * on the redo stack is skipped so repeated undo walks back one step at a time.
+ */
+function newestUndoableEntry(): JournalEntry | null {
+  const entries = navigationJournal.entries();
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry.inverse === null) continue;
+    if (entry.actor === 'system') continue;
+    if (isRedoSeq(entry.seq)) continue;
+    return entry;
+  }
+  return null;
+}
+
+function computeCanUndo(): boolean {
+  return newestUndoableEntry() !== null;
+}
+
+function computeCanRedo(): boolean {
+  const entries = navigationJournal.entries();
+  if (entries.length === 0) return false;
+  const bySeq = new Set(entries.map((entry) => entry.seq));
+  return navigationJournal.redo().some((seq) => bySeq.has(seq));
+}
+
+/** Rebuild the cached snapshot so `canUndo`/`canRedo` read the latest journal. */
+function refreshSnapshot(): void {
+  snapshot = createSnapshot(state);
+}
+
+/** Append one draft to the module-scoped journal (append-only; never mutates). */
+function appendJournalEntry(draft: JournalEntryDraft): JournalEntry {
+  const outcome = appendEntry(
+    { entries: navigationJournal.entries(), redo: navigationJournal.redo() },
+    draft,
+    journalNow(),
+  );
+  navigationJournal.commit(outcome.state.entries, outcome.state.redo);
+  return outcome.entry;
 }
 
 function setState(next: WireframeEditorState): void {
@@ -253,10 +370,10 @@ function replaceState(patch: Partial<WireframeEditorState>): void {
  * is exact — reference identity is not usable because the update path always
  * builds a new document object.
  *
- * `groups` MUST be part of the comparison (Spec #3071): `commitDocument`
- * early-returns on a value-equal candidate, so a groups-only mutation (e.g.
- * group-lock) would otherwise commit nothing — no snapshot, no `dirty`, no
- * notify.
+ * `groups` MUST be part of the comparison (Spec #3071): `reduceDocument`
+ * returns `null` for a value-equal candidate, so a groups-only mutation (e.g.
+ * group-lock) would otherwise commit nothing — no journal entry, no `dirty`,
+ * no notify.
  */
 function documentsEqual(left: WireframeDocument, right: WireframeDocument): boolean {
   if (left === right) return true;
@@ -300,31 +417,349 @@ function groupsEqual(left: WireframeGroup, right: WireframeGroup): boolean {
   return true;
 }
 
+/* ------------------------------------------------------------------------- */
+/* Pure document reduction (the plan every mutation shares)                     */
+/* ------------------------------------------------------------------------- */
+
+/** A computed document change: the next document and its reconciled selection. */
+export interface WireframeDocumentPlan {
+  readonly document: WireframeDocument;
+  readonly selectedIds: readonly string[];
+}
+
 /**
- * Commit a document mutation as exactly ONE undo step. Returns `true` when a
- * snapshot was taken, `false` when the candidate was value-equal (a true no-op:
- * no snapshot, no `dirty` flip, no notify — E-15 / R-2.9).
+ * The PURE plan for one document mutation (Spec #3119, R-5/R-6). It reads the
+ * current state, applies exactly one mutation rule and returns the next
+ * document + selection — or `null` for an unknown action, a missing target or a
+ * value-equal candidate (a true no-op: no journal entry, no `dirty` flip, no
+ * notify — E-15 / R-2.9).
  *
- * History is the store's invariant, so the guard lives here and every caller
- * benefits. Selection-only changes go through the selection mutators, never
- * through this function, so skipping a value-equal commit can never lose a
- * selection change.
+ * It never touches module state, the journal or listeners: the surface verbs
+ * build their `VerbEffect` from this plan, `dispatch` commits it, and the host
+ * applies the effect through `applyDocumentPatch`.
  */
-function commitDocument(next: WireframeDocument, selectedIds?: readonly string[]): boolean {
-  if (documentsEqual(state.document, next)) return false;
-  past.push(state.document);
-  if (past.length > UNDO_DEPTH) past.shift();
-  future = [];
+export function reduceDocument(
+  current: WireframeEditorState,
+  action: WireframeStoreAction,
+  args: WireframeStoreActionArgs = {},
+): WireframeDocumentPlan | null {
+  const { document } = current;
+  let plan: { document: WireframeDocument; selectedIds: readonly string[] } | null = null;
+
+  switch (action) {
+    case 'element.add': {
+      if (!args.element) return null;
+      plan = {
+        document: { ...document, elements: [...document.elements, args.element] },
+        selectedIds: [args.element.id],
+      };
+      break;
+    }
+
+    case 'element.update': {
+      if (!args.id || !args.patch) return null;
+      if (!document.elements.some((element) => element.id === args.id)) return null;
+      plan = {
+        document: updateElement(document, args.id, args.patch),
+        selectedIds: current.selectedIds,
+      };
+      break;
+    }
+
+    case 'elements.update': {
+      if (!args.patches) return null;
+      const patches = args.patches;
+      let changed = false;
+      const elements = document.elements.map((element) => {
+        const patch = patches[element.id];
+        if (!patch) return element;
+        changed = true;
+        return { ...element, ...patch } as WireframeElement;
+      });
+      if (!changed) return null;
+      plan = { document: { ...document, elements }, selectedIds: current.selectedIds };
+      break;
+    }
+
+    case 'element.duplicate': {
+      if (!args.id) return null;
+      const index = document.elements.findIndex((element) => element.id === args.id);
+      if (index === -1) return null;
+      const copy = duplicateWireframeElement(document.elements[index], document.page);
+      const elements = [...document.elements];
+      elements.splice(index + 1, 0, copy);
+      plan = { document: { ...document, elements }, selectedIds: [copy.id] };
+      break;
+    }
+
+    case 'element.delete': {
+      if (!args.id) return null;
+      if (!document.elements.some((element) => element.id === args.id)) return null;
+      const elements = document.elements.filter((element) => element.id !== args.id);
+      plan = {
+        document: reconcileDocumentGroups({ ...document, elements }),
+        selectedIds: current.selectedIds,
+      };
+      break;
+    }
+
+    case 'elements.delete': {
+      const ids = args.ids ?? [];
+      if (ids.length === 0) return null;
+      const remove = new Set(ids);
+      const elements = document.elements.filter((element) => !remove.has(element.id));
+      if (elements.length === document.elements.length) return null;
+      plan = {
+        document: reconcileDocumentGroups({ ...document, elements }),
+        selectedIds: current.selectedIds.filter((id) => !remove.has(id)),
+      };
+      break;
+    }
+
+    case 'element.toggleLock': {
+      const ids = args.ids ?? (args.id ? [args.id] : []);
+      if (ids.length === 0) return null;
+      if (!document.elements.some((element) => ids.includes(element.id))) return null;
+      plan = {
+        document: toggleElementsLocked(document, ids),
+        selectedIds: current.selectedIds,
+      };
+      break;
+    }
+
+    case 'element.reorder': {
+      const ids = args.ids ?? [];
+      if (!args.direction || ids.length === 0) return null;
+      const { elements, moved } = reorderElements(document.elements, ids, args.direction);
+      if (!moved) return null;
+      plan = { document: { ...document, elements }, selectedIds: current.selectedIds };
+      break;
+    }
+
+    case 'group.create': {
+      const ids = args.ids ?? [];
+      // R-2.7: fewer than two elements is not a group; R-1.9: a selection that
+      // is exactly one whole group is a no-op.
+      if (ids.length < 2) return null;
+      if (isWholeGroupSelection(document, ids)) return null;
+      const members = documentOrder(ids, document);
+      if (members.length < 2) return null;
+      const memberSet = new Set(members);
+      const pruned = document.groups
+        .map((group) => ({
+          ...group,
+          memberIds: group.memberIds.filter((memberId) => !memberSet.has(memberId)),
+        }))
+        .filter((group) => group.memberIds.length >= WIREFRAME_GROUP_MIN_MEMBERS);
+      const group: WireframeGroup = {
+        id: createElementId(),
+        memberIds: members,
+        locked: false,
+      };
+      plan = {
+        document: reconcileDocumentGroups({ ...document, groups: [...pruned, group] }),
+        selectedIds: members,
+      };
+      break;
+    }
+
+    case 'group.ungroup': {
+      const groupIds = args.groupIds ?? [];
+      if (groupIds.length === 0) return null;
+      const remove = new Set(groupIds);
+      if (!document.groups.some((group) => remove.has(group.id))) return null;
+      // Ungroup is neither a move nor a resize, so a locked group still
+      // ungroups (R-1.10). Members keep their geometry and stacking order.
+      const groups = document.groups.filter((group) => !remove.has(group.id));
+      plan = { document: { ...document, groups }, selectedIds: current.selectedIds };
+      break;
+    }
+
+    case 'group.toggleLock': {
+      const groupIds = args.groupIds ?? [];
+      if (groupIds.length === 0) return null;
+      const targets = new Set(groupIds);
+      if (!document.groups.some((group) => targets.has(group.id))) return null;
+      const groups = document.groups.map((group) =>
+        targets.has(group.id) ? { ...group, locked: !group.locked } : group,
+      );
+      plan = { document: { ...document, groups }, selectedIds: current.selectedIds };
+      break;
+    }
+
+    case 'page.update': {
+      if (!args.page) return null;
+      const patch = args.page;
+      let preset: WireframePagePreset = patch.preset ?? 'custom';
+      let width: number;
+      let height: number;
+
+      if (patch.preset && patch.preset !== 'custom') {
+        const dimensions = pagePresetDimensions(patch.preset);
+        width = dimensions.width;
+        height = dimensions.height;
+      } else {
+        preset = patch.preset ?? 'custom';
+        width = clampPageDimension(patch.width ?? document.page.width);
+        height = clampPageDimension(patch.height ?? document.page.height);
+      }
+
+      plan = {
+        document: { ...document, page: { preset, width, height } },
+        selectedIds: current.selectedIds,
+      };
+      break;
+    }
+
+    default:
+      return null;
+  }
+
+  if (plan === null) return null;
+  // Value-equal candidates are true no-ops (E-15 / R-2.9).
+  if (documentsEqual(document, plan.document)) return null;
+  return {
+    document: plan.document,
+    selectedIds: documentOrder(plan.selectedIds, plan.document),
+  };
+}
+
+/* ------------------------------------------------------------------------- */
+/* Journal checkpoints + labels (the store's compatibility funnel)             */
+/* ------------------------------------------------------------------------- */
+
+function documentTitle(element: WireframeElement): string {
+  switch (element.type) {
+    case 'text':
+      return element.textStyle === 'heading' ? 'Heading' : 'Text';
+    case 'section':
+      return element.preset;
+    case 'shape':
+      return element.shape;
+    default:
+      return WIREFRAME_ELEMENT_LABELS[element.type];
+  }
+}
+
+function elementRef(element: WireframeElement): ObjectRef {
+  return { type: element.type, id: element.id, label: documentTitle(element) };
+}
+
+/** Serialise a document (and optional selection) as a journal checkpoint patch. */
+function documentCheckpoint(
+  document: WireframeDocument,
+  selection?: readonly string[],
+): JsonPatch {
+  // The checkpoint is plain JSON; `JsonPatch` has no structural index signature,
+  // so the cast is the documented boundary between the app model and the engine.
+  return (
+    selection === undefined ? { document } : { document, selection: [...selection] }
+  ) as unknown as JsonPatch;
+}
+
+/** Element/group refs for the trail — resolved against the pre-mutation document. */
+function targetsForAction(
+  action: WireframeStoreAction,
+  args: WireframeStoreActionArgs,
+  document: WireframeDocument,
+  next: WireframeDocument,
+): ObjectRef[] {
+  const groups = args.groupIds ?? [];
+  if (groups.length > 0) {
+    return groups.map((id) => ({ type: 'group', id, label: 'Group' }));
+  }
+  if (action === 'element.add') {
+    return args.element ? [elementRef(args.element)] : [];
+  }
+  if (action === 'page.update') {
+    return [{ type: 'page', id: 'page', label: 'Page' }];
+  }
+  const before = new Map(document.elements.map((element) => [element.id, element]));
+  const after = new Map(next.elements.map((element) => [element.id, element]));
+  const ids = args.ids ?? (args.id ? [args.id] : []);
+  return ids
+    .map((id) => before.get(id) ?? after.get(id))
+    .filter((element): element is WireframeElement => element !== undefined)
+    .map(elementRef);
+}
+
+function labelForAction(
+  action: WireframeStoreAction,
+  args: WireframeStoreActionArgs,
+  document: WireframeDocument,
+): string {
+  const byId = new Map(document.elements.map((element) => [element.id, element]));
+  const titleOf = (id?: string): string => {
+    const element = id === undefined ? undefined : byId.get(id);
+    return element === undefined ? 'Element' : documentTitle(element);
+  };
+  switch (action) {
+    case 'element.add':
+      return args.element === undefined ? 'Add element' : `Add ${documentTitle(args.element)}`;
+    case 'element.update':
+      return `Update ${titleOf(args.id)}`;
+    case 'element.duplicate':
+      return `Duplicate ${titleOf(args.id)}`;
+    case 'element.delete':
+      return `Delete ${titleOf(args.id)}`;
+    case 'element.toggleLock':
+      return 'Toggle lock';
+    case 'elements.update':
+      return 'Update elements';
+    case 'elements.delete':
+      return 'Delete elements';
+    case 'element.reorder':
+      return args.direction === 'forward' ? 'Bring forward' : 'Send backward';
+    case 'group.create':
+      return 'Group';
+    case 'group.ungroup':
+      return 'Ungroup';
+    case 'group.toggleLock':
+      return 'Toggle group lock';
+    case 'page.update':
+      return 'Update page';
+    default:
+      return action;
+  }
+}
+
+/**
+ * Commit a pure plan as exactly ONE journal entry + ONE state update (the
+ * compatibility funnel behind `dispatch`). The journal append happens BEFORE
+ * the snapshot rebuild so `canUndo`/`canRedo` read the new history.
+ */
+function commitPlan(
+  action: WireframeStoreAction,
+  args: WireframeStoreActionArgs,
+  plan: WireframeDocumentPlan,
+): void {
+  const before = state.document;
+  const beforeSelection = [...state.selectedIds];
+  appendJournalEntry({
+    verbId: action,
+    actor: 'human',
+    channel: 'system',
+    label: labelForAction(action, args, before),
+    effect: 'mutation',
+    placePath: getWireframeContext().placePath,
+    target: targetsForAction(action, args, before, plan.document),
+    patch: {
+      before: documentCheckpoint(before, beforeSelection),
+      after: documentCheckpoint(plan.document, plan.selectedIds),
+    },
+    inverse: documentCheckpoint(before),
+    external: false,
+    consequence: null,
+    exitedBy: 'none',
+    coalesceKey: null,
+  });
   setState({
     ...state,
-    document: next,
-    selectedIds: documentOrder(selectedIds ?? state.selectedIds, next),
+    document: plan.document,
+    selectedIds: [...plan.selectedIds],
     dirty: true,
-    canUndo: true,
-    canRedo: false,
   });
   notify();
-  return true;
 }
 
 /** Subscribe to editor-state changes (`useSyncExternalStore`). */
@@ -341,6 +776,146 @@ export function subscribe(listener: Listener): () => void {
  */
 export function getSnapshot(): WireframeEditorSnapshot {
   return snapshot;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Navigation seam (Spec #3119, ST-2)                                          */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * The ONE module-scoped journal. The P5 host is constructed with THIS instance
+ * and `applyDocumentPatch` as its `applyPatch`, so `store.undo()` and
+ * `host.undoLast()` advance the same stack (no second counter).
+ */
+export function getNavigationJournal(): JournalStore {
+  return navigationJournal;
+}
+
+/**
+ * Register the shell's read model. The provider supplies the host-owned
+ * `appId`/`placePath`; the store always overrides `selection` and `dirty` with
+ * its live values. Registration seam only — the store never imports the host.
+ */
+export function setWireframeContextProvider(fn: () => ContextSnapshot): void {
+  contextProvider = fn;
+}
+
+/**
+ * The `ContextSnapshot` the P5 host reads (Spec #3119, R-4). `selection.kinds`
+ * is the primary element's TYPE first (`text|button|shape|…`), never an
+ * `ObjectRef` noun, so the kind gates in `available(ctx)` work. `ids` stays in
+ * document order and `label` is the primary element's title.
+ */
+export function getWireframeContext(): ContextSnapshot {
+  const base = contextProvider === null ? null : contextProvider();
+  return {
+    appId: base?.appId ?? WIREFRAME_APP_TAG,
+    placePath: base?.placePath ?? [DEFAULT_CONTEXT_PLACE],
+    selection: publishSelection(state),
+    dirty: state.dirty,
+  };
+}
+
+function publishSelection(current: WireframeEditorState): SelectionSnapshot {
+  const byId = new Map(current.document.elements.map((element) => [element.id, element]));
+  const selected = current.selectedIds
+    .map((id) => byId.get(id))
+    .filter((element): element is WireframeElement => element !== undefined);
+  const primary = selected.length > 0 ? selected[selected.length - 1] : null;
+  const ordered = primary === null ? selected : [primary, ...selected.slice(0, -1)];
+  return {
+    count: current.selectedIds.length,
+    ids: [...current.selectedIds],
+    kinds: ordered.map((element) => element.type),
+    label: primary === null ? null : documentTitle(primary),
+  };
+}
+
+/* ------------------------------------------------------------------------- */
+/* Patch application (the host's `applyPatch` target)                          */
+/* ------------------------------------------------------------------------- */
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Validate a document checkpoint structurally. Total: an invalid value returns
+ * `null` (never throws), so a stale/bad patch is a safe no-op.
+ */
+function asWireframeDocument(value: unknown): WireframeDocument | null {
+  if (!isRecord(value)) return null;
+  if (value.schemaVersion !== WIREFRAME_SCHEMA_VERSION) return null;
+  if (value.app !== WIREFRAME_APP_TAG) return null;
+  if (!isRecord(value.page)) return null;
+  const page = value.page;
+  if (
+    typeof page.width !== 'number' ||
+    !Number.isFinite(page.width) ||
+    typeof page.height !== 'number' ||
+    !Number.isFinite(page.height) ||
+    (page.preset !== 'desktop' &&
+      page.preset !== 'tablet' &&
+      page.preset !== 'phone' &&
+      page.preset !== 'custom')
+  ) {
+    return null;
+  }
+  if (!Array.isArray(value.elements)) return null;
+  for (const element of value.elements) {
+    if (!isRecord(element) || typeof element.id !== 'string') return null;
+  }
+  if (!Array.isArray(value.groups)) return null;
+  for (const group of value.groups) {
+    if (
+      !isRecord(group) ||
+      typeof group.id !== 'string' ||
+      !Array.isArray(group.memberIds) ||
+      !group.memberIds.every((memberId) => typeof memberId === 'string') ||
+      typeof group.locked !== 'boolean'
+    ) {
+      return null;
+    }
+  }
+  return value as unknown as WireframeDocument;
+}
+
+/** Decode a journal checkpoint patch into the app patch shape (or `null`). */
+function asDocumentPatch(patch: JsonPatch | null): WireframeDocumentPatch | null {
+  if (patch === null || !isRecord(patch)) return null;
+  const document = asWireframeDocument(patch.document);
+  if (document === null) return null;
+  const selection = patch.selection;
+  if (selection === undefined) return { document };
+  if (!Array.isArray(selection) || !selection.every((id) => typeof id === 'string')) {
+    return null;
+  }
+  return { document, selection: selection as string[] };
+}
+
+/**
+ * Replace the document + reconcile the selection (Spec #3119, R-5/R-6). The
+ * selection re-normalises through `documentOrder`, so ids that the new document
+ * no longer contains are dropped. This is the ONLY document write the host
+ * performs — it never journaled and never throws (an invalid patch is a no-op).
+ */
+export function applyDocumentPatch(patch: WireframeDocumentPatch): void {
+  if (!writeDocumentPatch(patch)) return;
+  notify();
+}
+
+/** Apply a patch to state WITHOUT notifying (used by undo/redo for one notify). */
+function writeDocumentPatch(patch: WireframeDocumentPatch): boolean {
+  const document = asWireframeDocument(patch?.document);
+  if (document === null) return false;
+  const selection = patch.selection ?? state.selectedIds;
+  setState({
+    ...state,
+    document,
+    selectedIds: documentOrder(selection, document),
+    dirty: true,
+  });
+  return true;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -458,200 +1033,102 @@ function reorderElements(
 }
 
 /**
- * Apply one document mutation. Unknown actions and missing targets are safe
- * no-ops (no snapshot, no dirty flip) so a stale UI cannot corrupt the store.
- * Returns `true` when a snapshot was committed (R-2.7 / R-2.9).
+ * Apply one document mutation through the compatibility funnel (Spec #3119,
+ * ST-2). Unknown actions and missing targets are safe no-ops. Returns `true`
+ * when exactly one journal entry was committed (R-2.7 / R-2.9).
+ *
+ * The surface verbs (ST-3) call `reduceDocument` directly and let the navigation
+ * funnel own their journal entry; this function is the shipped-regression-suite
+ * seam and commits through the SAME journal, so `dispatch(...)` then `undo()`
+ * works without a second stack.
  */
 export function dispatch(
   action: WireframeStoreAction,
   args: WireframeStoreActionArgs = {},
 ): boolean {
-  const { document } = state;
-
-  switch (action) {
-    case 'element.add': {
-      if (!args.element) return false;
-      const next: WireframeDocument = {
-        ...document,
-        elements: [...document.elements, args.element],
-      };
-      return commitDocument(next, [args.element.id]);
-    }
-
-    case 'element.update': {
-      if (!args.id || !args.patch) return false;
-      if (!document.elements.some((element) => element.id === args.id)) return false;
-      return commitDocument(updateElement(document, args.id, args.patch), state.selectedIds);
-    }
-
-    case 'elements.update': {
-      if (!args.patches) return false;
-      const patches = args.patches;
-      let changed = false;
-      const elements = document.elements.map((element) => {
-        const patch = patches[element.id];
-        if (!patch) return element;
-        changed = true;
-        return { ...element, ...patch } as WireframeElement;
-      });
-      if (!changed) return false;
-      return commitDocument({ ...document, elements }, state.selectedIds);
-    }
-
-    case 'element.duplicate': {
-      if (!args.id) return false;
-      const index = document.elements.findIndex((element) => element.id === args.id);
-      if (index === -1) return false;
-      const copy = duplicateWireframeElement(document.elements[index], document.page);
-      const elements = [...document.elements];
-      elements.splice(index + 1, 0, copy);
-      return commitDocument({ ...document, elements }, [copy.id]);
-    }
-
-    case 'element.delete': {
-      if (!args.id) return false;
-      if (!document.elements.some((element) => element.id === args.id)) return false;
-      const elements = document.elements.filter((element) => element.id !== args.id);
-      return commitDocument(
-        reconcileDocumentGroups({ ...document, elements }),
-        state.selectedIds,
-      );
-    }
-
-    case 'elements.delete': {
-      const ids = args.ids ?? [];
-      if (ids.length === 0) return false;
-      const remove = new Set(ids);
-      const elements = document.elements.filter((element) => !remove.has(element.id));
-      if (elements.length === document.elements.length) return false;
-      return commitDocument(
-        reconcileDocumentGroups({ ...document, elements }),
-        state.selectedIds.filter((id) => !remove.has(id)),
-      );
-    }
-
-    case 'element.toggleLock': {
-      const ids = args.ids ?? (args.id ? [args.id] : []);
-      if (ids.length === 0) return false;
-      if (!document.elements.some((element) => ids.includes(element.id))) return false;
-      return commitDocument(toggleElementsLocked(document, ids), state.selectedIds);
-    }
-
-    case 'element.reorder': {
-      const ids = args.ids ?? [];
-      if (!args.direction || ids.length === 0) return false;
-      const { elements, moved } = reorderElements(document.elements, ids, args.direction);
-      if (!moved) return false;
-      return commitDocument({ ...document, elements }, state.selectedIds);
-    }
-
-    case 'group.create': {
-      const ids = args.ids ?? [];
-      // R-2.7: fewer than two elements is not a group; R-1.9: a selection that
-      // is exactly one whole group is a no-op.
-      if (ids.length < 2) return false;
-      if (isWholeGroupSelection(document, ids)) return false;
-      const members = documentOrder(ids, document);
-      if (members.length < 2) return false;
-      const memberSet = new Set(members);
-      const pruned = document.groups
-        .map((group) => ({
-          ...group,
-          memberIds: group.memberIds.filter((memberId) => !memberSet.has(memberId)),
-        }))
-        .filter((group) => group.memberIds.length >= WIREFRAME_GROUP_MIN_MEMBERS);
-      const group: WireframeGroup = {
-        id: createElementId(),
-        memberIds: members,
-        locked: false,
-      };
-      return commitDocument(
-        reconcileDocumentGroups({ ...document, groups: [...pruned, group] }),
-        members,
-      );
-    }
-
-    case 'group.ungroup': {
-      const groupIds = args.groupIds ?? [];
-      if (groupIds.length === 0) return false;
-      const remove = new Set(groupIds);
-      if (!document.groups.some((group) => remove.has(group.id))) return false;
-      // Ungroup is neither a move nor a resize, so a locked group still
-      // ungroups (R-1.10). Members keep their geometry and stacking order.
-      const groups = document.groups.filter((group) => !remove.has(group.id));
-      return commitDocument({ ...document, groups }, state.selectedIds);
-    }
-
-    case 'group.toggleLock': {
-      const groupIds = args.groupIds ?? [];
-      if (groupIds.length === 0) return false;
-      const targets = new Set(groupIds);
-      if (!document.groups.some((group) => targets.has(group.id))) return false;
-      const groups = document.groups.map((group) =>
-        targets.has(group.id) ? { ...group, locked: !group.locked } : group,
-      );
-      return commitDocument({ ...document, groups }, state.selectedIds);
-    }
-
-    case 'page.update': {
-      if (!args.page) return false;
-      const patch = args.page;
-      let preset: WireframePagePreset = patch.preset ?? 'custom';
-      let width: number;
-      let height: number;
-
-      if (patch.preset && patch.preset !== 'custom') {
-        const dimensions = pagePresetDimensions(patch.preset);
-        width = dimensions.width;
-        height = dimensions.height;
-      } else {
-        preset = patch.preset ?? 'custom';
-        width = clampPageDimension(patch.width ?? document.page.width);
-        height = clampPageDimension(patch.height ?? document.page.height);
-      }
-
-      return commitDocument({
-        ...document,
-        page: { preset, width, height },
-      });
-    }
-
-    default:
-      return false;
-  }
+  const plan = reduceDocument(state, action, args);
+  if (plan === null) return false;
+  commitPlan(action, args, plan);
+  return true;
 }
 
-/** Reverse the last committed document mutation. */
+/**
+ * Reverse the newest not-yet-undone USER mutation through the shared journal
+ * (Spec #3119, R-5). Applies the entry's inverse, appends exactly ONE `system`
+ * entry (`Undo <label>`, deliberately non-undoable so it is never re-targeted)
+ * and records the undone `seq` on the redo stack. The document + selection are
+ * re-synced through the same patch seam the host uses.
+ */
 export function undo(): void {
-  if (past.length === 0) return;
-  const previous = past.pop() as WireframeDocument;
-  future.push(state.document);
-  if (future.length > UNDO_DEPTH) future.shift();
-  setState({
-    ...state,
-    document: previous,
-    selectedIds: documentOrder(state.selectedIds, previous),
-    dirty: true,
-    canUndo: past.length > 0,
-    canRedo: true,
-  });
+  const target = newestUndoableEntry();
+  if (target === null) return;
+  const inverse = asDocumentPatch(target.inverse);
+  if (inverse === null) return;
+  if (!writeDocumentPatch(inverse)) return;
+
+  // `before` = the state the entry installed; `after` = the restored state.
+  const beforeUndo: JsonPatch =
+    target.patch !== null ? target.patch.after : (target.inverse as JsonPatch);
+  const outcome = appendEntry(
+    { entries: navigationJournal.entries(), redo: navigationJournal.redo() },
+    {
+      verbId: target.verbId,
+      actor: 'system',
+      channel: 'system',
+      label: `Undo ${target.label}`,
+      effect: 'mutation',
+      placePath: getWireframeContext().placePath,
+      target: target.target,
+      patch: { before: beforeUndo, after: target.inverse as JsonPatch },
+      // A system undo entry is NOT undoable: `redo` restores the mutation, so an
+      // undo-of-undo must never become a second stack edge.
+      inverse: null,
+      consequence: 'An undone action is restored with redo.',
+      external: false,
+      exitedBy: 'none',
+      coalesceKey: null,
+    },
+    journalNow(),
+  );
+  navigationJournal.commit(outcome.state.entries, [
+    target.seq,
+    ...navigationJournal.redo().filter((seq) => seq !== target.seq),
+  ]);
+  refreshSnapshot();
   notify();
 }
 
-/** Re-apply the last undone document mutation. */
+/**
+ * Re-apply the OLDEST undone mutation (one step at a time) and drop its `seq`
+ * from the redo stack. The redo stack is ascending, so the smallest seq is the
+ * next chronological step — the retired LIFO redo ordering.
+ */
 export function redo(): void {
-  if (future.length === 0) return;
-  const next = future.pop() as WireframeDocument;
-  past.push(state.document);
-  if (past.length > UNDO_DEPTH) past.shift();
-  setState({
-    ...state,
-    document: next,
-    selectedIds: documentOrder(state.selectedIds, next),
-    dirty: true,
-    canUndo: true,
-    canRedo: future.length > 0,
-  });
+  const redoSeqs = navigationJournal.redo();
+  if (redoSeqs.length === 0) return;
+  const seq = [...redoSeqs].sort((left, right) => left - right)[0];
+  const entries = navigationJournal.entries();
+  const target = entries.find((entry) => entry.seq === seq);
+
+  // A stale redo seq (its entry vanished) is dropped without touching state.
+  if (target === undefined || target.patch === null) {
+    navigationJournal.commit(
+      entries,
+      redoSeqs.filter((candidate) => candidate !== seq),
+    );
+    refreshSnapshot();
+    notify();
+    return;
+  }
+
+  const after = asDocumentPatch(target.patch.after);
+  if (after === null) return;
+  if (!writeDocumentPatch(after)) return;
+  navigationJournal.commit(
+    entries,
+    redoSeqs.filter((candidate) => candidate !== seq),
+  );
+  refreshSnapshot();
   notify();
 }
 
@@ -763,8 +1240,8 @@ export function setError(error: string | null): void {
  */
 export function resetForNewDocument(preset: WireframePagePreset = 'desktop'): void {
   const document = createNewWireframeDocument(preset);
-  past = [];
-  future = [];
+  // History reset is NON-UNDOABLE: clear the ONE journal in place.
+  navigationJournal.commit([], []);
   setState({
     ...state,
     document,
@@ -787,8 +1264,8 @@ export function resetForNewDocument(preset: WireframePagePreset = 'desktop'): vo
  * selection + history, fit the view, remember the path and mark it saved.
  */
 export function loadDocument(document: WireframeDocument, path: string): void {
-  past = [];
-  future = [];
+  // History reset is NON-UNDOABLE: clear the ONE journal in place.
+  navigationJournal.commit([], []);
   setState({
     ...state,
     document,
@@ -831,12 +1308,12 @@ export function getCanvasStage(): CanvasStageLike | null {
   return canvasStage;
 }
 
-/** Test-only: wipe module state, history, stage and listeners. */
+/** Test-only: wipe module state, the ONE journal, stage, provider and listeners. */
 export function resetWireframeStoreForTests(): void {
   listeners = new Set<Listener>();
   canvasStage = null;
-  past = [];
-  future = [];
+  contextProvider = null;
+  navigationJournal.commit([], []);
   state = createInitialState();
   snapshot = createSnapshot(state);
 }
