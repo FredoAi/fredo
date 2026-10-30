@@ -231,3 +231,4 @@ export type {
   RegisteredHotkeyAction,
 } from './shared/hotkeys/types';
 
+export * from './shared/navigation';
