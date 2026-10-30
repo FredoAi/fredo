@@ -147,6 +147,22 @@ describe('the journal is the single mutation authority (R-5)', () => {
     expect(getSnapshot().canUndo).toBe(true);
   });
 
+  it('the legacy funnel undo reverts only the newest entry\'s field (AC6 / R-6.1)', () => {
+    seed(['a']);
+    const originalY = getSnapshot().document.elements[0].y;
+
+    // Two independent human edits on DIFFERENT fields of the same element.
+    dispatch('element.update', { id: 'a', patch: { x: 12 } });
+    dispatch('element.update', { id: 'a', patch: { y: 34 } });
+
+    undo();
+
+    const element = getSnapshot().document.elements[0];
+    // Only the second entry's field (`y`) reverts; the earlier independent `x` survives.
+    expect(element.x).toBe(12);
+    expect(element.y).toBe(originalY);
+  });
+
   it('undoing a selection-scoped verb after the selection changed leaves no stale id', () => {
     seed(['a']);
     dispatch('element.add', { element: makeElement('text', 'b') });

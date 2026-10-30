@@ -88,6 +88,7 @@ import {
   type WireframeDocument,
   type WireframePage,
 } from './model/document';
+import { diffDocument } from './model/documentDelta';
 import type { WireframePagePreset } from './model/pagePresets';
 import {
   dispatch,
@@ -277,7 +278,10 @@ function navigation(label: string, target: readonly ObjectRef[] = []): VerbEffec
 
 /**
  * The ONE mutation seam: read the snapshot, run the PURE plan, and hand the engine a
- * whole-document checkpoint. `null` from `reduceDocument` is a true no-op (no entry).
+ * FIELD-SCOPED delta (Spec #3120 round 2, ST-4-REWORK / AC6) — one entry's inverse
+ * must never revert a later independent edit. The forward delta keeps the post-commit
+ * selection; the inverse never carries one. `null` from `reduceDocument` is a true
+ * no-op (no entry).
  */
 function mutate(
   action: WireframeStoreAction,
@@ -289,14 +293,17 @@ function mutate(
   const before = state.document;
   const next = reduceDocument(state, action, args);
   if (next === null) return noop(label);
+  const { patch: forward, inverse } = diffDocument(before, next.document);
   return {
     effect: 'mutation',
     label,
     patch: {
-      before: documentCheckpoint(before),
-      after: documentCheckpoint(next.document, next.selectedIds),
+      before: { delta: inverse } as unknown as JsonPatch,
+      after: {
+        delta: { ...forward, selection: [...next.selectedIds] },
+      } as unknown as JsonPatch,
     },
-    inverse: documentCheckpoint(before),
+    inverse: { delta: inverse } as unknown as JsonPatch,
     target,
   };
 }

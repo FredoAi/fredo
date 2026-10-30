@@ -49,6 +49,12 @@ import {
   type WireframeElementPatch,
 } from '../model/elements';
 import {
+  applyDocumentDelta,
+  diffDocument,
+  isWireframeDocumentDelta,
+  type WireframeDocumentDelta,
+} from '../model/documentDelta';
+import {
   appendEntry,
   createJournalStore,
   type JournalEntryDraft,
@@ -138,17 +144,28 @@ export interface WireframeEditorSnapshot extends WireframeEditorState {
 }
 
 /**
- * The whole-document patch the navigation funnel applies (Spec #3119, R-5/R-6).
+ * The document write the navigation funnel applies (Spec #3119, R-5/R-6; scoped by
+ * Spec #3120 round 2 / AC6).
  *
- * It is the JSON form of a verb effect's `after`/`inverse` checkpoint: the
- * document to install plus the selection the committing verb produced. A missing
+ * It is one of two shapes: the shipped whole-document checkpoint
+ * (`{document, selection?}` — still used by `newDocument`) or a FIELD-SCOPED delta
+ * (`{delta, selection?}`) that is applied to the CURRENT document. A missing
  * `selection` keeps (and re-normalises) the live selection — the shape the
- * `inverse` checkpoint uses.
+ * `inverse` payload uses.
  */
-export interface WireframeDocumentPatch {
+export interface WireframeDocumentCheckpointPatch {
   readonly document: WireframeDocument;
   readonly selection?: readonly string[];
 }
+
+export interface WireframeDocumentDeltaPatch {
+  readonly delta: WireframeDocumentDelta;
+  readonly selection?: readonly string[];
+}
+
+export type WireframeDocumentPatch =
+  | WireframeDocumentCheckpointPatch
+  | WireframeDocumentDeltaPatch;
 
 /** Document mutations accepted by `dispatch` (each commits ONE snapshot). */
 export type WireframeStoreAction =
@@ -656,18 +673,6 @@ function elementRef(element: WireframeElement): ObjectRef {
   return { type: element.type, id: element.id, label: documentTitle(element) };
 }
 
-/** Serialise a document (and optional selection) as a journal checkpoint patch. */
-function documentCheckpoint(
-  document: WireframeDocument,
-  selection?: readonly string[],
-): JsonPatch {
-  // The checkpoint is plain JSON; `JsonPatch` has no structural index signature,
-  // so the cast is the documented boundary between the app model and the engine.
-  return (
-    selection === undefined ? { document } : { document, selection: [...selection] }
-  ) as unknown as JsonPatch;
-}
-
 /** Element/group refs for the trail — resolved against the pre-mutation document. */
 function targetsForAction(
   action: WireframeStoreAction,
@@ -745,7 +750,9 @@ function commitPlan(
   plan: WireframeDocumentPlan,
 ): void {
   const before = state.document;
-  const beforeSelection = [...state.selectedIds];
+  // Spec #3120 round 2 (ST-4-REWORK / AC6) — the legacy funnel is field-scoped too, so
+  // one entry's inverse can never clobber a later independent human edit.
+  const { patch: forward, inverse } = diffDocument(before, plan.document);
   appendJournalEntry({
     verbId: action,
     actor: 'human',
@@ -755,10 +762,12 @@ function commitPlan(
     placePath: getWireframeContext().placePath,
     target: targetsForAction(action, args, before, plan.document),
     patch: {
-      before: documentCheckpoint(before, beforeSelection),
-      after: documentCheckpoint(plan.document, plan.selectedIds),
+      before: { delta: inverse } as unknown as JsonPatch,
+      after: {
+        delta: { ...forward, selection: [...plan.selectedIds] },
+      } as unknown as JsonPatch,
     },
-    inverse: documentCheckpoint(before),
+    inverse: { delta: inverse } as unknown as JsonPatch,
     external: false,
     consequence: null,
     exitedBy: 'none',
@@ -906,24 +915,39 @@ function asWireframeDocument(value: unknown): WireframeDocument | null {
   return value as unknown as WireframeDocument;
 }
 
-/** Decode a journal checkpoint patch into the app patch shape (or `null`). */
-function asDocumentPatch(patch: JsonPatch | null): WireframeDocumentPatch | null {
-  if (patch === null || !isRecord(patch)) return null;
-  const document = asWireframeDocument(patch.document);
-  if (document === null) return null;
-  const selection = patch.selection;
-  if (selection === undefined) return { document };
-  if (!Array.isArray(selection) || !selection.every((id) => typeof id === 'string')) {
-    return null;
-  }
-  return { document, selection: selection as string[] };
+/** `undefined` = absent, `null` = present but invalid, else the decoded ids. */
+function decodeSelection(value: unknown): readonly string[] | null | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || !value.every((id) => typeof id === 'string')) return null;
+  return value as readonly string[];
 }
 
 /**
- * Replace the document + reconcile the selection (Spec #3119, R-5/R-6). The
- * selection re-normalises through `documentOrder`, so ids that the new document
- * no longer contains are dropped. This is the ONLY document write the host
- * performs — it never journaled and never throws (an invalid patch is a no-op).
+ * Decode a journal patch into the app patch shape (or `null`). Accepts BOTH the
+ * shipped whole-document checkpoint and the field-scoped delta (Spec #3120 round 2).
+ */
+function asDocumentPatch(patch: JsonPatch | null): WireframeDocumentPatch | null {
+  if (patch === null || !isRecord(patch)) return null;
+  if (patch.delta !== undefined) {
+    const delta = patch.delta;
+    if (!isWireframeDocumentDelta(delta)) return null;
+    const selection = decodeSelection(patch.selection ?? delta.selection);
+    if (selection === null) return null;
+    return selection === undefined ? { delta } : { delta, selection };
+  }
+  const document = asWireframeDocument(patch.document);
+  if (document === null) return null;
+  const selection = decodeSelection(patch.selection);
+  if (selection === null) return null;
+  return selection === undefined ? { document } : { document, selection };
+}
+
+/**
+ * Apply the document write + reconcile the selection (Spec #3119, R-5/R-6; delta
+ * form added by Spec #3120 round 2). A delta applies against the CURRENT document;
+ * the selection re-normalises through `documentOrder`, so ids the new document no
+ * longer contains are dropped. This is the ONLY document write the host performs —
+ * it never journaled and never throws (an invalid patch is a no-op).
  */
 export function applyDocumentPatch(patch: WireframeDocumentPatch): void {
   if (!writeDocumentPatch(patch)) return;
@@ -932,9 +956,13 @@ export function applyDocumentPatch(patch: WireframeDocumentPatch): void {
 
 /** Apply a patch to state WITHOUT notifying (used by undo/redo for one notify). */
 function writeDocumentPatch(patch: WireframeDocumentPatch): boolean {
-  const document = asWireframeDocument(patch?.document);
+  const document =
+    'delta' in patch
+      ? applyDocumentDelta(state.document, patch.delta)
+      : asWireframeDocument(patch.document);
   if (document === null) return false;
-  const selection = patch.selection ?? state.selectedIds;
+  const selection =
+    patch.selection ?? ('delta' in patch ? patch.delta.selection : undefined) ?? state.selectedIds;
   setState({
     ...state,
     document,

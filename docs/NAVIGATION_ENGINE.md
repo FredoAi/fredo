@@ -380,7 +380,7 @@ interface JournalEntry {
 
 ### 6.2 Undo and redo
 
-`journal.undo` MUST resolve a `JournalQuery` (§6.4), order the matches by `seq` DESC, and apply the `inverse` of the newest entry first (LIFO). `journal.redo` MUST re-apply the `patch.after` of redoable entries in ASC `seq` order, oldest first. Any new `mutation` MUST clear the redo stack: a redo is available only until the next mutation. Each applied inverse MUST itself be journaled as a new `mutation` entry, so the journal remains append-only.
+`journal.undo` MUST resolve a `JournalQuery` (§6.4), order the matches by `seq` DESC, and apply the `inverse` of the newest entry first (LIFO). `journal.redo` MUST re-apply the `patch.after` of redoable entries in ASC `seq` order, oldest first. Any new `mutation` MUST clear the redo stack: a redo is available only until the next mutation. Each applied inverse MUST itself be journaled as a new `mutation` entry, so the journal remains append-only. An entry's `inverse` MUST revert only the state/fields that entry changed; applying an older inverse MUST NOT revert a later entry's independent change, and a redo MUST re-apply only its own entry's change.
 
 ### 6.3 Coalescing and the non-undoable list
 
