@@ -157,3 +157,55 @@ suite carries the live rows.
 PASS = R-9..R-13 green with the observed diff/paths quoted. Any out-of-scope path, any change to a
 P3 module or to `shared/hotkeys/`, any `applications/` edit, any dependency delta, or any new failing
 suite is a FAIL. The receipt is the POSTED `## Tests Runs` comment plus the committed suites.
+
+---
+
+# P5 — engine contract changes (issue #3119)
+
+Feature: the four contract changes the Wireframe pilot requires (reserved strokes, V-08 root
+scoping, host transient auto-exit, `CommandRailModel.placeRows`). **P4's R-10 "no
+`applications/` change" is SUPERSEDED BY DESIGN:** this spec is the pilot that wires the first
+application, so a Wireframe-only import/mount IS the sanctioned change — any OTHER application
+still may not import the navigation surfaces.
+
+Verification policy: **static** (diff + source + suite exits). The pilot's live rows are in
+`.opencode/tests/wireframe-navigation/`.
+
+## Cases — P5
+
+- [ ] **R-14 (scope) — the engine diff touches only the sanctioned shared paths.**
+  `git diff <merge-base>...HEAD -- apps/ui/src/shared/navigation`
+  **Expected:** changed files are exactly `types.ts`, `validation.ts`, `ui/format.ts`,
+  `ui/types.ts`, `ui/models.ts`, `ui/CommandRail.tsx`, `ui/host.ts`, the paired
+  `__tests__`/`ui/__tests__` files, `__tests__/fixtures.ts` + `__tests__/traces.test.ts`, and
+  `docs/NAVIGATION_ENGINE.md`. **Byte-identical (zero bytes of diff):** `registry.ts`,
+  `resolver.ts`, `keyResolver.ts`, `dispatch.ts`, `journal.ts`, `context.ts`, `discover.ts`
+  (beyond the additive `placeRows`-supporting change if the Architect moves it there — record
+  which file owns it), `manifest.ts`, `index.ts`.
+  **Edge:** a "typo fix" in `dispatch.ts` (FAIL — the funnel order is frozen); a regenerated
+  navigation golden file; a reordered `export *`.
+  **Note:** if `placeRows` is implemented in `discover.ts` instead of `ui/models.ts`, that single
+  file is added to the sanctioned set and the row records the substitution (never a silent pass).
+
+- [ ] **R-15 (P3 pins unchanged) — eleven modules, no dependency, no `.only`.**
+  **Expected:** `purity.test.ts` › `declares exactly eleven modules and a __tests__ directory`
+  green with the same hard-coded 11-file list; `imports only sibling ./ modules` and
+  `reads no clock, global, timer, I/O or network` green; `apps/ui/package.json` + the lockfile
+  importer unchanged key-for-key; no `.skip`/`.todo`/`.only` in the nav suites.
+  **Edge:** a new module for the grammar (fails the pin — the constant IS the change); a
+  devDependency added "for the traces test"; a `Date.now(` smuggled into `format.ts`.
+
+- [ ] **R-16 (scope) — no consumer outside Wireframe, no telemetry.**
+  Grep for `shared/navigation` imports.
+  **Expected:** the only `applications/**` importers are under
+  `applications/wireframe/**`; zero imports from any other application, from `shared/hotkeys/`,
+  or from `shared/companion/`; zero `emit(`/`telemetry`/`span` identifiers added to the engine
+  modules; the engine still emits nothing.
+  **Edge:** a second application wired "for symmetry" (FAIL — P7); a `console` call left in a
+  module; a hotkeys import from `ui/announce.tsx` reaching into `applications/`.
+
+## Suite-level pass/fail — P5
+
+PASS = R-14…R-16 green with the observed diff quoted. Any change to the frozen funnel/journal
+modules, any module-count change, any dependency delta, any second consumer, or any new failing
+suite is a FAIL. The receipt is the POSTED `## Tests Runs` comment plus the committed suites.
