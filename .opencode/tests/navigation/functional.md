@@ -488,7 +488,7 @@ exits + source reads). The pilot's live rows are in `.opencode/tests/wireframe-n
 
 ## Cases — P5
 
-- [ ] **F-28 (grammar) — the reserved-stroke set grows by six, the glyphs stay non-bindable.**
+- [x] **F-28 (grammar) — the reserved-stroke set grows by six, the glyphs stay non-bindable.**
   **Expected:** `types.ts` `ENGINE_RESERVED_STROKES` is exactly
   `['Escape','Enter','Tab','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','+','-']`;
   `isBindableStroke` is `true` for all nine and `false` for `'?'` and `'/'`;
@@ -505,7 +505,7 @@ exits + source reads). The pilot's live rows are in `.opencode/tests/wireframe-n
   **Files:** `types.ts`, `resolver.ts` (no change expected — the constant is the whole code
   change), `resolver.test.ts`, `keyResolver.test.ts`.
 
-- [ ] **F-29 (display map) — arrows render as glyphs, `+`/`-` verbatim.**
+- [x] **F-29 (display map) — arrows render as glyphs, `+`/`-` verbatim.**
   **Expected:** `models.test.ts` › `formatKeyHint renders the four arrows as glyphs` (each of
   `ArrowLeft/Right/Up/Down` → `← → ↑ ↓`) and `formatKeyHint renders plus and minus verbatim`
   green; `Escape` still renders `Escape`; every other token keeps the Title-case rule; `?` and
@@ -514,7 +514,7 @@ exits + source reads). The pilot's live rows are in `.opencode/tests/wireframe-n
   is the affordance, not a key.
   **Files:** `ui/format.ts`, `ui/models.test.ts`.
 
-- [ ] **F-30 (V-08 root scoping) — a child place's own key no longer invalidates a direct alias.**
+- [x] **F-30 (V-08 root scoping) — a child place's own key no longer invalidates a direct alias.**
   **Expected:** `validation.test.ts` › `a direct alias shadowing only a child place key is valid`
   (fixture: root binds `c`; child `wireframe.edit` binds `r→rename`; `tree.directAliases.r →
   wireframe.create.rect` ⇒ `diagnostics === []`) and `a direct alias shadowing the root place key
@@ -529,7 +529,7 @@ exits + source reads). The pilot's live rows are in `.opencode/tests/wireframe-n
   **Files:** `validation.ts`, `validation.test.ts`, `fixtures.ts`, `docs/NAVIGATION_ENGINE.md`
   §4.1/§10.
 
-- [ ] **F-31 (host transient auto-exit) — a mutation in a transient place pops exactly one level.**
+- [x] **F-31 (host transient auto-exit) — a mutation in a transient place pops exactly one level.**
   **Expected:** `ui/host.test.ts` › `a mutation in a transient place pops exactly one level`
   green: cursor seeds `['wireframe.canvas','wireframe.create']`, the dispatched verb returns a
   MUTATION effect, post-dispatch the snapshot's `context.placePath` is `['wireframe.canvas']`,
@@ -546,7 +546,7 @@ exits + source reads). The pilot's live rows are in `.opencode/tests/wireframe-n
   `effect === 'navigation'`; the fix keys on the entry's `exitedBy` + the current place's
   `transient` flag.
 
-- [ ] **F-32 (`placeRows`) — the rail can show the six places, outside the verb cap.**
+- [x] **F-32 (`placeRows`) — the rail can show the six places, outside the verb cap.**
   **Expected:** `ui/models.test.ts` › `place rows list child places in declaration order` (the
   model carries the child places of the current place in declaration order with `id`, `label`,
   `keys`/`keyHint`; from the root: `Create, Edit, Arrange, Style, View, File`), ›
@@ -563,7 +563,7 @@ exits + source reads). The pilot's live rows are in `.opencode/tests/wireframe-n
   `wireframe.style`, `wireframe.view`, `wireframe.file`; labels `Create, Edit, Arrange, Style,
   View, File`.
 
-- [ ] **F-33 (published map + traces) — §4.2/§4.3 read the issue's tree.**
+- [x] **F-33 (published map + traces) — §4.2/§4.3 read the issue's tree.**
   **Expected:** `traces.test.ts` + `fixtures.ts` are REWRITTEN to the issue's tree in the same
   landing (doc and test cannot disagree, R-d) and the three traces keep their column shape —
   `tier`, intent `verbId`, effect, DISPATCH-TIME `placePath`, post-dispatch cursor, `exitedBy`:
@@ -582,7 +582,7 @@ exits + source reads). The pilot's live rows are in `.opencode/tests/wireframe-n
   fixture).
   **Files:** `traces.test.ts`, `fixtures.ts`, `docs/NAVIGATION_ENGINE.md` §4.2/§4.3.
 
-- [ ] **F-34 (build gate) — no module-count change and a clean build.**
+- [x] **F-34 (build gate) — no module-count change and a clean build.**
   **Expected:** `pnpm --filter @fredo/ui test:run src/shared/navigation` green with
   `purity.test.ts` › `declares exactly eleven modules and a __tests__ directory` unchanged
   (P5 adds NO module); `pnpm --filter @fredo/ui typecheck` zero diagnostics;
@@ -596,3 +596,19 @@ exits + source reads). The pilot's live rows are in `.opencode/tests/wireframe-n
 PASS = F-28…F-34 green, every cited title observed verbatim, and the three commands exit 0. A
 renamed/absent title, a `todo`, or a weakened P3 title is a FAIL. The receipt is the POSTED
 `## Tests Runs` comment plus the committed suites.
+
+### Round 1 results — 2026-10-30 (spec/3119 @ `5e49d43`, tester)
+
+All seven P5 rows PASS. `pnpm --filter @fredo/ui typecheck` clean; `pnpm --filter @fredo/ui
+test:run` **294 files / 3881 tests** green; `pnpm --filter @fredo/ui build` exit 0 (2863
+modules); no `.skip`/`.todo`/`.only` in `shared/navigation`.
+
+| Row | Evidence |
+|---|---|
+| F-28 | `types.ts:50-60` `ENGINE_RESERVED_STROKES = ['Escape','Enter','Tab','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','+','-']` (read verbatim); `arrow strokes resolve as bindable reserved strokes` + `plus and minus resolve as bindable reserved strokes` present verbatim and green; `docs/NAVIGATION_ENGINE.md` §4.4 names the set. |
+| F-29 | `formatKeyHint renders the four arrows as glyphs` + `formatKeyHint renders plus and minus verbatim` present verbatim and green. |
+| F-30 | `a direct alias shadowing only a child place key is valid` + `a direct alias shadowing the root place key is V-08` present verbatim and green. |
+| F-31 | `a mutation in a transient place pops exactly one level`, `a transient mutation announces the exit once`, `a sticky place mutation keeps the cursor` present verbatim and green; the live pilot confirms it end-to-end (`c r` drag → place back to `wireframe.canvas`, one entry, one `Left Create — Canvas — 2 actions`). |
+| F-32 | `place rows list child places in declaration order`, `place rows stay out of the eight row verb cap`, `the rail verb rows still exclude the two globals` present verbatim and green; live rail shows the six `navigation-rail-place-row`s at Canvas above 2 verb rows. |
+| F-33 | The five trace titles present verbatim and green; `fixtures.ts` + `traces.test.ts` re-baselined to the `wireframe.*` tree. |
+| F-34 | `purity.test.ts › declares exactly eleven modules and a __tests__ directory` green (no new module); typecheck clean; build exit 0; `package.json`/lockfile importer unchanged (`git diff` empty). |
