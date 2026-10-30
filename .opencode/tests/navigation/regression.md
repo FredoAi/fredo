@@ -88,3 +88,72 @@ exit. There is no app, webview or `telemetry_spans` surface for this feature; no
 PASS = R-1..R-8 green with the observed diff/paths quoted. Any out-of-scope path, any change to
 a shipped export line, any dependency delta, or any new failing suite is a FAIL. The receipt is
 the POSTED `## Tests Runs` comment plus the committed suites.
+
+---
+
+# P4 — UI surfaces (issue #3118)
+
+Feature: the `CommandRail` / `NavigationMap` / `ActivityTrail` / `NavKeycap` / announcement layer,
+a `ui/` subdirectory of `shared/navigation/`, one DEV-only route under `app/dev/`, and one DEV-gated
+branch in `app/routes/Router.tsx`. **P3 is frozen**: the eleven headless modules, the headless
+barrel and everything under `shared/hotkeys/` are byte-identical.
+
+Verification policy: **static** for the rows below (diff + source + suite exits). The P4 functional
+suite carries the live rows.
+
+> **Precondition.** `spec/3118` checked out; `main` is the comparison base; run from the repo root.
+
+## Cases — P4
+
+- [ ] **R-9 (P3 freeze / AC1, AC2, AC7) — the eleven headless modules and the headless barrel are untouched.**
+  `git diff <merge-base>...HEAD -- apps/ui/src/shared/navigation/types.ts registry.ts resolver.ts
+  keyResolver.ts dispatch.ts journal.ts context.ts discover.ts manifest.ts validation.ts index.ts`
+  **Expected:** empty (zero bytes). `pnpm --filter @fredo/ui test:run src/shared/navigation` stays
+  green with the P3 titles unchanged — in particular `purity.test.ts` › `declares exactly eleven
+  modules and a __tests__ directory` (it iterates a hard-coded 11-file list and never lists the
+  directory, so the new `ui/` subdirectory is safe — verify that is still true), the never-pad
+  invariant at `discover.test.ts:124`, and `rootExport.test.ts`.
+  **Edge:** a "typo fix" in `discover.ts` (FAIL — out of scope); a regenerated navigation golden
+  file; a reordered `export *` line.
+
+- [ ] **R-10 (AC9) — nothing under `apps/ui/src/applications/` changed, and no app mounts the new surfaces.**
+  `git diff <merge-base>...HEAD -- apps/ui/src/applications`
+  **Expected:** empty (zero bytes). A source scan finds no `CommandRail` / `NavigationMap` /
+  `ActivityTrail` / `NavigationAnnouncer` / `NavigationHost` import or mount anywhere under
+  `src/applications/**`, and no file under `src/shared/navigation/**` imports `applications/`.
+  The only sanctioned path outside the new modules is the DEV branch in `app/routes/Router.tsx`.
+  **Edge:** a whitespace-only application change; a new file under `applications/`; a deleted
+  shipped app; a nav import in Wireframe "to preview it" (FAIL — that is P5).
+
+- [ ] **R-11 (AC9) — the legacy runtime is untouched and still the only runtime in shipped apps.**
+  `git diff <merge-base>...HEAD -- apps/ui/src/shared/hotkeys apps/ui/src/shared/components/hotkeys`
+  **Expected:** empty (zero bytes). `shared/hotkeys/__tests__` (`themeHygiene.test.ts`,
+  `HotkeysProvider.test.tsx`, `announcer.test.tsx`, `HotkeyBar.test.tsx`) green **unmodified** —
+  `themeHygiene.test.ts` › `only the announcer file declares aria-live` still passes because no file
+  was added to that scan's `FILES` list and no `aria-live` was added to a scanned file.
+  `Router.test.tsx` (4 titles, including the default-route title "routes the default (no view) to
+  Home") still green with the new DEV branch in place.
+  **Edge:** a "small" edit to `HotkeyAnnouncer` to share the region (FAIL — P4 may not edit
+  `shared/hotkeys/`); a guard typo that makes every route hit the preview (breaks `Router.test.tsx`).
+
+- [ ] **R-12 (build gate / NFR) — no new runtime or dev dependency.**
+  Read `apps/ui/package.json` and the `apps/ui` importer in `pnpm-lock.yaml`; compare to `main`.
+  **Expected:** unchanged key-for-key; no `axe-core`, `jest-axe`, focus-trap library, or date
+  library; any test helper is dependency-free (the a11y assertion is a role/name/focus probe suite
+  on the shipped stack: vitest + jsdom + `@testing-library/react` + `jest-dom`).
+  **Edge:** a devDependency added "for the a11y test" (FAIL); a transitive-only lock delta; a
+  `@types/node` addition (unnecessary).
+
+- [ ] **R-13 (AC9 / scope) — the Rust tree and the pre-existing dirty Cargo manifest are untouched.**
+  `git diff <merge-base>...HEAD -- apps/tauri` and `git status --short apps/tauri/src-tauri/Cargo.toml`.
+  **Expected:** the spec diff contains **no** `apps/tauri/**` path; a pre-existing local modification
+  to `Cargo.toml` is acknowledged and left exactly as found (never reverted, never extended). The
+  cargo legs of the CI-parity set still pass.
+  **Edge:** reformatting `Cargo.toml` "because it was dirty" (FAIL); attributing a pre-existing local
+  change to this spec; skipping a cargo leg.
+
+## Suite-level pass/fail — P4
+
+PASS = R-9..R-13 green with the observed diff/paths quoted. Any out-of-scope path, any change to a
+P3 module or to `shared/hotkeys/`, any `applications/` edit, any dependency delta, or any new failing
+suite is a FAIL. The receipt is the POSTED `## Tests Runs` comment plus the committed suites.
