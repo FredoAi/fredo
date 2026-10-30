@@ -628,6 +628,43 @@ describe('LauncherShell — confirmation host (R-5.2/R-5.3)', () => {
     expect(screen.getByTestId(LAUNCHER_CONTEXT_TESTID)).toBeInTheDocument();
   });
 
+  it('a real outside pointerdown on the positioner dismisses the dialog and journals nothing', async () => {
+    const { journal } = destructiveHost();
+    focusWindow(FIXTURE_APP_ID);
+    renderShell();
+    ctrlSpace();
+    type('>delete');
+    await pressEnter();
+
+    const dialog = await screen.findByTestId(LAUNCHER_CONFIRMATION_TESTID);
+
+    // Ark defers twice (dismissable layer on one animation frame, its interact-outside
+    // tracker on the next) and only then installs the document capture listener on a
+    // macrotask. Wait for the whole chain before firing the real outside event.
+    await act(async () => {
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+
+    // The real outside hit lands on the positioner (the backdrop computes `pointer-events:
+    // none`), so the outside event must originate here — never on the unreachable backdrop.
+    const positioner = document.querySelector('[data-part="positioner"]');
+    expect(positioner).not.toBeNull();
+    // The confirmation content is a CHILD of the positioner, so the pointerdown target (the
+    // positioner itself) is OUTSIDE the content node — exactly zag's `isEventOutside` test.
+    expect(dialog.contains(positioner)).toBe(false);
+
+    fireEvent.pointerDown(positioner as Element);
+
+    await waitFor(() =>
+      expect(screen.queryByTestId(LAUNCHER_CONFIRMATION_TESTID)).toBeNull(),
+    );
+    expect(journal.entries()).toHaveLength(0);
+    expect(responseLine()).toBeNull();
+    expect(screen.getByTestId(LAUNCHER_CONTEXT_TESTID)).toBeInTheDocument();
+  });
+
   it('Esc dismisses the dialog and journals nothing', async () => {
     const { journal } = destructiveHost();
     focusWindow(FIXTURE_APP_ID);

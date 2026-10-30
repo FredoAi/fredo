@@ -9,7 +9,7 @@
 
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import type { ConfirmationRequest } from '@/shared/navigation';
@@ -129,11 +129,30 @@ describe('LauncherConfirmation — dismissibility (R-5.3)', () => {
     await waitFor(() => expect(onResolve).toHaveBeenCalledWith(false));
   });
 
-  it('an outside (backdrop) click resolves false', async () => {
+  it('a real outside pointerdown on the positioner resolves false', async () => {
     const onResolve = render(request());
-    const backdrop = document.querySelector('[data-part="backdrop"]');
-    expect(backdrop).not.toBeNull();
-    fireEvent.click(backdrop as Element);
+    const dialog = screen.getByTestId(LAUNCHER_CONFIRMATION_TESTID);
+
+    // Ark defers twice (dismissable layer on one animation frame, its interact-outside
+    // tracker on the next) and only then installs the document capture listener on a
+    // macrotask. Wait for the whole chain before firing the real outside event.
+    await act(async () => {
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+
+    // The live hit path lands on the positioner, NOT the backdrop (the backdrop computes
+    // `pointer-events: none`; the positioner is the full-viewport `auto` layer). Firing on
+    // the backdrop node would assert a path the live DOM cannot reach (G-418).
+    const positioner = document.querySelector('[data-part="positioner"]');
+    expect(positioner).not.toBeNull();
+    // The confirmation content is a CHILD of the positioner, so the pointerdown target (the
+    // positioner itself) is OUTSIDE the content node — exactly zag's `isEventOutside` test.
+    expect(dialog.contains(positioner)).toBe(false);
+
+    fireEvent.pointerDown(positioner as Element);
+
     await waitFor(() => expect(onResolve).toHaveBeenCalledWith(false));
   });
 });

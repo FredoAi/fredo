@@ -154,7 +154,11 @@ export function LauncherConfirmation({
       restoreFocus={false}
       trapFocus
       closeOnEscape={false}
-      closeOnInteractOutside={false}
+      // MUST be explicit: `role="alertdialog"` defaults `closeOnInteractOutside` to false.
+      // The positioner is the full-viewport `auto` hit layer, so a real outside click lands
+      // there (the backdrop computes `pointer-events: none`); Ark classifies it as outside
+      // and this flag lets the dismissal reach `onOpenChange` → `settle(false)`.
+      closeOnInteractOutside
       initialFocusEl={() => cancelRef.current}
       onOpenChange={(details) => {
         if (!details.open) settle(false);
