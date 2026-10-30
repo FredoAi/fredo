@@ -1116,4 +1116,162 @@ plan; the two REQ-1 named presets clear 4.5.
       re-exports `Keycap`; `Keycap.test.tsx` green.
       **Edge:** a two-step Wireframe bar row still renders two chips.
 
+## Spec #3119 (P5) — Wireframe pilot: RE-BASELINE of every keyboard / toolbar / bar recipe
+
+> **Nothing above is deleted (G-125).** Spec #3119 replaces the toolbar + element hotkeys with a
+> **declaration-driven place surface**: `applications/wireframe/wireframeSurface.ts` (six places
+> under `Canvas`, 55 verbs, 3 root direct aliases) mounted with `CommandRail` +
+> `NavigationMap` + `ActivityTrail`. `wireframeCommandSurface.ts`,
+> `components/WireframeHotkeyCarrier.tsx` and `components/WireframeToolbar.tsx` are DELETED;
+> `WIREFRAME_ACTIONS.hotkey` and every `g+*` binding are REMOVED; no Wireframe element carries
+> `data-hotkey`.
+>
+> **Authoritative amendments below.** Where a row above names a removed key, hook or testid,
+> the amendment in this section is the executable recipe — the row's EXPECTED OUTCOME is
+> unchanged (that is the regression guarantee). The new surface's own cases (declaration,
+> parity, reachability, single stack, announcement) live in
+> `.opencode/tests/wireframe-navigation/functional.md` (F-N1…F-N24) and are not duplicated here.
+>
+> **Deleted hooks / premises (a row that reads one of these is a technique error, not a FAIL
+> of the product):** `wireframe-toolbar`, `wireframe-hotkey-carrier`, `wireframe-action-<suffix>`,
+> `wireframe-hotkey-chip`, `data-hotkey` inside `wireframe-root`, the `g` two-step namespace,
+> `data-fredo-pending-sequence` for Wireframe strokes, `hotkeys-keybar-row` rows for Wireframe,
+> the 32-binding counts (22 → 32 history); the companion `commandSurface` path
+> (`wireframe.companion.*`) is deferred to P6 (see Q-1 below).
+>
+> **Two timeouts:** the NAV ENGINE prefix times out at **250 ms**
+> (`PENDING_TIMEOUT_MS`, `shared/navigation/types.ts:17`). The legacy 1000 ms
+> `PENDING_SEQUENCE_TIMEOUT_MS` (`shared/hotkeys/engine.ts:64`) no longer governs Wireframe.
+>
+> **Three surface facts that change what a row can assert (UI/UX §4/§8/§9, binding):**
+> 1. **Availability is kind+count gated.** `fill`/`border`/`radius` need ONE **shape**;
+>    `textStyle` needs a **text**; `appearance` needs a **button**; `rename` needs
+>    `text|button|input|card`; edit verbs need ≥1; `align ≥2`, `distribute ≥3`, `group ≥2`,
+>    `ungroup`/`toggleGroupLock` need a group. A row that expects `fill` enabled on a text
+>    element is wrong — the row is `aria-disabled` with
+>    `Not available for the current selection`, and pressing its key speaks
+>    `<key> isn't available here` once.
+> 2. **Value keys are deterministic CYCLES** (all value args optional): `f` → next
+>    `WIREFRAME_COLOR_TOKENS` token (wrap `info→surface`); `o` → `none→thin→thick→none`;
+>    `p` → `primary→secondary→ghost→primary`; `z` → `none→s→m→l→none`;
+>    `t` → `body→heading→body`. One press = one mutation entry = one undo. Edit `r` is a
+>    NAVIGATION effect (focus + select the name field), never a document entry.
+> 3. **Accepted deltas (not regressions):** (a) file rows are no longer visually disabled while a
+>    file operation runs (`ContextSnapshot` has no file status — re-entrancy is the store's
+>    existing no-op); (b) every Wireframe verb has `coalesceKey: null`, so a repeated field tick
+>    is TWO entries (no coalesced group); (c) the insert menu (`wireframe-insert`) is the ONLY
+>    toolbar-shaped affordance left and never changes the place.
+
+### Key map — old recipe → new recipe (binding)
+
+| Row(s) | Old stroke(s) | New stroke(s) |
+|---|---|---|
+| F-1, S-6 | `1` (text) | `c` `t` |
+| F-2, S-12 | `2`…`4`, `6`…`9` (button/input/image/card/section/shape/line) | `c` `b` / `c` `i` / `c` `m` / `c` `k` / `c` `s` / **map › Create › Shape** / `c` `l` |
+| F-5 | `5` (icon) | **map › Create › Icon** (unbound keyboard-wise; default `iconId` supplied) |
+| F-6 | `1`…`9` | the nine `c <key>` above + map for Icon/Shape |
+| F-12 | `p` duplicate, `k` delete | `e` `d` duplicate, `e` `x` delete |
+| F-13, F-14 | `l` lock | `e` `l` toggleLock (`e` `h` toggles visible) |
+| F-24, F-25 | `u` undo, `y` redo | **unchanged** — root direct aliases `u` / `y` |
+| F-26, F-53 | `g i` zoom in, `g o` zoom out | `v` `+` / `v` `-` |
+| F-27 | `h` pan | `v` `p` (togglePan) |
+| F-28 | `n` fit page | `v` `f` |
+| F-29 | `0` reset view | `v` `0` |
+| F-31, F-35, F-57 | `w` save as | `f` `w` (File place) |
+| F-32, F-35, F-50…F-52 | `o` open | `f` `o` |
+| F-33, F-35 | `t` export | `f` `x` |
+| F-36, F-44c | `document.new` | `f` `n` (opens the discard dialog when dirty — see F-57a) |
+| F-61…F-83 (+ `g` rows) | `g g` / `g u` / `g s` / `g a` / `g r` / `g d` / `g f` / `g b` | `a` `g` / `a` `u` / `a` `s` / `a` `←` / `a` `→` / `a` `d` / `a` `f` / `a` `b` |
+| F-63, F-67, F-69, F-71, F-76 | `wireframe-action-arrange-*` | `navigation-rail-row` / `navigation-map-row` (`data-nav-verb-id`), or `a <key>` |
+| F-69, F-73, F-76 | toolbar `aria-pressed`, `g+i`/`g+o` | rail/map row `data-nav-availability` + `data-wireframe-snap`; `v` `+` / `v` `-` |
+| F-63, F-67 | `WIREFRAME_GROUP_MIN_MEMBERS` etc. | unchanged (document semantics untouched) |
+| F-71 | `alignCenter` via `g c` | `alignCenter` is **unbound** → **map › Arrange › Align centre** |
+| F-67 | `toggleGroupLock` via `g l` | **unbound** → **map › Arrange › Lock group** |
+| F-12 (multi) | delete/lock with N selected | unchanged semantics; one `e x` / `e l` commit |
+
+**Selection by pointer is unchanged** (click / shift-click / empty-canvas deselect) — no key
+change. **Arrow keys are engine-owned now:** at the root they select previous/next (replacing
+`WireframeCanvasImpl.tsx:1275-1303`'s local handler); inside Arrange they align. A test that
+dispatches arrow `KeyboardEvent`s to the canvas element will no longer work — press them on the
+shell root with the key gate satisfied.
+
+### Row amendments (read with the row above)
+
+- **F-1/F-2/F-3/F-5/F-6** — same expected observables; add via the Create place (`c <key>`) or
+  the map. F-5 (icon) and F-2's shape leg now go through **map › Create**, which must supply
+  the default `iconId` / `shape` (`rect`); an `invalid-args` rejection is a FAIL. F-6's
+  12-category page still needs all nine types + the four section presets + both text styles.
+- **F-12/F-13/F-14** — `e` first, then `d`/`x`/`l`/`h`. The one-undo clauses are unchanged but
+  now ride the journal (`wireframeJournal.test.ts`).
+- **F-15/F-16/F-17…F-23** — unchanged (selection + property panel; no keys). The panel writes
+  verbs through the host in ST-6; the panel's testids/labels are unchanged.
+- **F-24/F-25** — `u`/`y` unchanged as ROOT aliases. **Inside Arrange, `u` is ungroup** (tier 1
+  beats tier 2) — an undo leg must run at the root (or via the trail's per-entry Undo).
+- **F-26/F-53** — zoom step is unchanged (±10 pp), now `v +` / `v -`. The 30/9 clamp counts and
+  the 400/10 bounds are unchanged.
+- **F-27** — pan is `v p`; the `wireframe-pan-surface` recipe, the three drag origins and the
+  E-20 bubbled-drag guard are unchanged.
+- **F-28/F-29/F-30** — `v f` / `v 0`; page presets/dims unchanged (`wireframe-page-controls`).
+- **F-31/F-32/F-33/F-34/F-35** — file verbs are `place.saveAs` / `place.open` /
+  `place.exportPng` at `f w` / `f o` / `f x`; the seams, precedence, copy, 2× PNG, page-space
+  invariance and dirty/saved rules are UNCHANGED. One journal entry each, `inverse: null`,
+  `external: true`, non-undoable with the shipped consequence copy.
+- **F-36** — `f n` for New. The `Discard unsaved changes?` dialog behaviour is retained **only
+  if** the dialog survives the toolbar deletion — see F-57a and plan Q-6.
+- **F-37** — **SUPERSEDED.** The 32-binding table no longer exists. Replacement: press the
+  declared strokes listed in `wireframe-navigation/functional.md` (F-N3…F-N10 cover every AC2
+  case) and confirm each performs its verb; `wireframe-navigation/functional.md` F-N13 proves
+  the 33 capabilities are still reachable.
+- **F-38/F-39/F-40** — **SUPERSEDED for the 32-row/32-attribute counts.** New expectations:
+  Wireframe contributes **0** bar rows and `data-fredo-hotkey-count` delta **0** while focused
+  (the global bar model is empty for Wireframe); text-entry suppression still works on the ONE
+  element-scoped nav handler (typing into a panel field dispatches nothing and lands the
+  characters); an unfocused Wireframe still dispatches nothing.
+- **F-41** — duplicate-key guard: Wireframe contributes **zero** bindings, so the risk is now
+  the inverse (a stray `data-hotkey` reintroduced) — covered by `wireframe-navigation`
+  F-N11/F-N22.
+- **F-42** — unchanged in spirit: a bare stroke with a `<button>` focused must not be treated as
+  a text-entry passthrough by the nav engine (only text controls pass through), so record the
+  observed behaviour and do not fail the product for it.
+- **F-43…F-49** — **DEFERRED to P6 (recorded, Q-1).** The generated companion skill came from
+  the deleted command surface. New expected outcome for these rows: a companion
+  `llm-skill-call` for Wireframe resolves to a clean `Invalid` (no window opened, no element
+  added, no timeout, no crash) and `wireframeDraft.ts`'s direct draft operations still work as
+  unit tests. Anything OTHER than a clean fail-closed is a FAIL. Do not re-baseline these to
+  "PASS by removal".
+- **F-50/F-51/F-52** — unchanged except the `o` leg is `f o`.
+- **F-53** — unchanged except zoom strokes.
+- **F-54/F-55/F-56** — unchanged (console, CI parity, bundle).
+- **F-57** — the Discard label colour row keeps its observable (computed colour == resolved
+  `--status-on-solids`, ratio ≥ 4.5, never white, testids `wireframe-new-document-dialog` /
+  `wireframe-new-document-discard`). Its **source-read leg** must be re-pointed from the deleted
+  `WireframeToolbar.tsx:393` to whichever component now owns the dialog — a NAMED BLOCKER until
+  ST-7 declares the owner (plan Q-6). The dialog must be reached with `f n` on a dirty document.
+- **F-58/F-59/F-60** — colour/contrast rows unchanged; the wireframe-scoped scan now includes
+  `wireframeSurface.ts` and the nav surface files (they are under `applications/wireframe/**` /
+  `shared/navigation/**`; the latter needs the scoped sweep because `contrast:gate` does not glob
+  `shared/`).
+- **F-61…F-83** — arrange/group rows keep their document semantics and one-undo clauses; only
+  the invoker changes (`a <key>` or the map/rail row). `alignCenter` and `toggleGroupLock` are
+  map-only. The `g`-namespace bar/ARIA clauses in F-76 are superseded by F-N13/F-N19.
+- **F-84…F-90** — **SUPERSEDED** (they are entirely about the toolbar and the on-control chip,
+  both deleted). Replacement coverage: `wireframe-navigation` F-N11 (no toolbar, no bar) and
+  F-N14 (capability parity) plus `.opencode/tests/hotkeys/` for the other apps' bar.
+- **F-23 (multi header caption) — copy changed, testids unchanged.** The multi-selection panel
+  caption is now `Arrange, align or group them from the rail` (was "…from the toolbar"); the
+  header testids (`wireframe-panel-header/-title/-caption`) are unchanged and the pinned
+  `WireframePropertyPanel` assertion must be UPDATED, never deleted (G-125).
+- **New pointer affordance (insert menu).** The toolbar's Insert cluster is replaced by one pill
+  — `wireframe-insert` (trigger) + `wireframe-insert-item` rows carrying `data-nav-verb-id` and
+  `data-nav-args` (Elements / Section presets / Shape kinds / Icon picker). Every item dispatches
+  its declared verb with explicit args and **never changes the place** and never enters Create.
+  It is the only toolbar-shaped affordance left; `wireframe-toolbar` stays deleted.
+- **S-9/S-15/S-16 (smoke.md)** — superseded: Wireframe now shows **0** bar rows and **0**
+  `data-hotkey` attributes; `wireframe-toolbar` is gone. See `smoke.md`'s P5 section.
+- **F-57a (NEW, P5 regression — the New dialog).** `f n` on a dirty document opens
+  `[data-testid="wireframe-new-document-dialog"]`; Cancel keeps the document and dirty state,
+  Discard resets to an empty document (`-element-count="0"`, `-dirty="true"`, path `''`); on a
+  clean document no dialog appears. **If the dialog is not preserved, this row is a FAIL of
+  AC8** (New is a shipped capability) — the owner must be named by ST-7 (plan Q-6).
+
 
