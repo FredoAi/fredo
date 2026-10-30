@@ -26,24 +26,24 @@ verbs, 3 root direct aliases) and mounted with `CommandRail` + `NavigationMap` +
 
 ## Cases
 
-- [ ] **S-N1: App window renders.**
+- [x] **S-N1: App window renders.**
       `tauri_webview_dom_snapshot(type="structure")` returns a non-empty `<body>` with no
       `vite-error-overlay`.
 
-- [ ] **S-N2: Wireframe opens with the navigation surfaces.**
+- [x] **S-N2: Wireframe opens with the navigation surfaces.**
       Launcher → `Wireframe`. **Expected:** `[data-testid="wireframe-root"]` renders with
       `data-wireframe-place="wireframe.canvas"`, plus `wireframe-canvas`,
       `navigation-rail`, `navigation-trail` and `wireframe-property-panel`; the rail renders
       the six place rows (`Create, Edit, Arrange, Style, View, File`) above its verb rows.
 
-- [ ] **S-N3: No toolbar and no hotkey bar for Wireframe.**
+- [x] **S-N3: No toolbar and no hotkey bar for Wireframe.**
       With Wireframe focused: `document.querySelector('[data-testid="wireframe-toolbar"]')`
       is `null`, `document.querySelectorAll('[data-testid^="wireframe-action-"]').length` is
       **0**, and `document.querySelectorAll('[data-testid="hotkeys-keybar"]').length` is **0**.
       **Non-vacuity control:** open Mission Monitor → `hotkeys-keybar` is present (the
       instrument exists whether or not the Wireframe claim holds).
 
-- [ ] **S-N4: Keyed quick path — create a rectangle.**
+- [x] **S-N4: Keyed quick path — create a rectangle.**
       Press `c` then `r`, then drag on the canvas using DOM `MouseEvent` sequences on
       `.konvajs-content` (an `interact` swipe does not deliver Konva's drag shape).
       **Expected:** `data-wireframe-element-count` 0→1, `-selection-type="shape"`,
@@ -51,7 +51,7 @@ verbs, 3 root direct aliases) and mounted with `CommandRail` + `NavigationMap` +
       `data-wireframe-place="wireframe.canvas"` (the transient Create place auto-exited).
       The trail shows exactly one entry.
 
-- [ ] **S-N5: Map opens with `?` and lists the six places.**
+- [x] **S-N5: Map opens with `?` and lists the six places.**
       Press `?` (the adapter maps it DIRECTLY to the declared `app.map` verb).
       **Expected:** `[data-testid="navigation-map"]` opens with `role="dialog"`,
       `aria-modal="true"`, `aria-label="Navigation map"`; the place blocks appear in tree order
@@ -59,16 +59,16 @@ verbs, 3 root direct aliases) and mounted with `CommandRail` + `NavigationMap` +
       Canvas › File`; exactly one block carries `data-nav-current="true"`.
       Then `Escape` closes it and focus returns to the invoker (never `body`).
 
-- [ ] **S-N6: Screenshot captured.**
+- [x] **S-N6: Screenshot captured.**
       `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/3119/e2e/smoke.jpeg")`
       succeeds and is uploaded with `pipeline-state.rs --issue 3119 --agent tester --action
       upload-evidence --image <path>`.
 
-- [ ] **S-N7: No console errors.**
+- [x] **S-N7: No console errors.**
       `tauri_read_logs(source="console", lines=50)` shows no `Error:`, `Uncaught`,
       `Maximum update depth exceeded`, and no `flushSync` warning, across S-N2…S-N5.
 
-- [ ] **S-N8: Build + suite gates.**
+- [x] **S-N8: Build + suite gates.**
       `pnpm --filter @fredo/ui build` exit 0 with zero TS errors;
       `pnpm --filter @fredo/ui test:run` green; `pnpm --filter @fredo/ui contrast:gate` green
       (46/46 expected pre-change baseline); `cargo check --manifest-path
@@ -80,3 +80,18 @@ PASS = S-N1…S-N8 green, each documented with a quoted tool result (and an uplo
 S-N4/S-N6). A blank window, a present toolbar/hotkey bar, or a stale `dist` is a FAIL. The
 receipt is the POSTED `## Tests Runs` comment plus the committed suite — never a
 `.opencode/tmp/3119/` draft.
+
+---
+
+## Round 1 results — 2026-10-30 (spec/3119 @ `5e49d43`, tester)
+
+| Row | Result | Evidence |
+|---|---|---|
+| S-N1 | PASS | `dom_snapshot(structure)` on the booted shell: `<body>` with `#root` children (`window-manager`, `workspace-layout`), no `vite-error-overlay`. |
+| S-N2 | PASS | `wireframe-root` with `data-wireframe-place="wireframe.canvas"`, `wireframe-canvas`, `navigation-rail`, `navigation-trail`, `wireframe-property-panel`; 6 `navigation-rail-place-row` above the verb rows. |
+| S-N3 | PASS | `wireframe-toolbar` null, `[data-testid^="wireframe-action-"]` 0, `hotkeys-keybar` 0 while Wireframe focused; Mission Monitor non-vacuity control → `hotkeys-keybar 1`. |
+| S-N4 | PASS | `c` `r` + Konva drag → count 0→1, `-selection-type="shape"`, `-selection-shape="rect"`, `arm="none"`, place back to `wireframe.canvas`, trail one new entry. |
+| S-N5 | PASS | `?` → `navigation-map` with `role="dialog"`, `aria-modal="true"`, `aria-label="Navigation map"`, place blocks `Canvas, Canvas › Create, Edit, Arrange, Style, View, File`, exactly one `data-nav-current="true"`; `Escape` closed it with the place unchanged. |
+| S-N6 | PASS | `tauri_webview_screenshot` saved + uploaded (`walkthrough-dark` / `walkthrough-light` user-attachment URLs in the `## Tests Runs` comment). |
+| S-N7 | PASS | `tauri_read_logs(source=console)` after every interaction block: zero `Error:`, `Uncaught`, `Maximum update depth exceeded`, no `flushSync` warning. |
+| S-N8 | PASS | `build` exit 0 (2863 modules); full `test:run` 294 files / 3881 tests; `contrast:gate` 4 files / 50 tests. `cargo check --locked` **not run** (no Rust source changed; the pre-existing `apps/tauri/src-tauri/Cargo.toml` working-tree change is uncommitted and untouched) — disclosed. |
