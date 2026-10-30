@@ -1415,7 +1415,9 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
           : navResultAnnouncement !== ''
             ? navResultAnnouncement
             : navRowAnnouncement;
-  // UI/UX §4 — read the reduced-motion preference ONCE and pass it to every new surface.
+  // UI/UX §4 — the reactive reduced-motion preference: the hook re-reads the CURRENT
+  // `window.matchMedia` on every render (a post-mount replacement, e.g. the live R-9.2 lever,
+  // is honoured) and re-subscribes to the query's `change` event. Passed to every new surface.
   const navReducedMotion = useNavReducedMotion();
 
   // Spec #2882 ST-4 — the truthful hint, derived from ST-1's ONE Enter verdict

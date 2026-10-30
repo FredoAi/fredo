@@ -187,6 +187,27 @@ function renderShell(features: FredoApplicationClass[] = [APP]): void {
   );
 }
 
+/**
+ * R-9.2 live lever — replace the shipped `false` stub AFTER the shell mounted. The hook must
+ * re-read the current `matchMedia` on the next render (the palette/confirmation are mounted at
+ * app start, so a mount-time read alone can never observe this).
+ */
+function stubMatchMedia(matches: boolean): void {
+  vi.stubGlobal(
+    'matchMedia',
+    vi.fn().mockImplementation((query: string) => ({
+      matches,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  );
+}
+
 const input = (): BarField => screen.getByRole('searchbox') as BarField;
 
 const type = (value: string): void => {
@@ -650,6 +671,46 @@ describe('LauncherShell — confirmation host (R-5.2/R-5.3)', () => {
       actor: 'human',
     });
     await waitFor(() => expect(screen.queryByTestId(LAUNCHER_CONTEXT_TESTID)).toBeNull());
+  });
+});
+
+/* ──────────────────── 11. reduced motion is live (R-9.2) ──────────────────── */
+
+describe('LauncherShell — the reduced-motion preference is live (R-9.2)', () => {
+  it('honours a matchMedia stub installed AFTER the shell mounted (palette list)', () => {
+    makeHost();
+    focusWindow(FIXTURE_APP_ID);
+    renderShell();
+
+    // The plan's live lever: the stub is installed after app start, before Ctrl+Space.
+    stubMatchMedia(true);
+
+    ctrlSpace();
+    type('>');
+
+    expect(screen.getByTestId(LAUNCHER_PALETTE_LIST_TESTID).style.animation).toBe('none');
+  });
+
+  it('honours a post-mount matchMedia stub for the confirmation content and scrim', async () => {
+    makeHost({ confirm: (request, intent) => requestLauncherConfirmation(request, intent) });
+    focusWindow(FIXTURE_APP_ID);
+    renderShell();
+
+    stubMatchMedia(true);
+
+    ctrlSpace();
+    type('>delete');
+    await pressEnter();
+
+    await waitFor(() =>
+      expect(screen.getByTestId(LAUNCHER_CONFIRMATION_TESTID)).toBeInTheDocument(),
+    );
+
+    const content = screen.getByTestId(LAUNCHER_CONFIRMATION_TESTID);
+    const backdrop = document.querySelector('[data-part="backdrop"]') as HTMLElement | null;
+    expect(backdrop).not.toBeNull();
+    expect(content.style.animation).toBe('none');
+    expect(backdrop?.style.animation).toBe('none');
   });
 });
 

@@ -2,16 +2,18 @@
  * Spec #3118 (P4), ST-1 — the reduced-motion hook the three surfaces read.
  *
  * `useNavReducedMotion()` answers one question — does the host prefer reduced motion? — and
- * re-answers it when the media query flips. It FAILS SAFE to `false` when `matchMedia` is
- * absent (jsdom, SSR), because "unknown" must never silently disable motion the user did not
- * ask to disable (QA Q5-01 / GAP 7).
+ * re-answers it on every render plus whenever the media query flips. It FAILS SAFE to `false`
+ * when `matchMedia` is absent (jsdom, SSR), because "unknown" must never silently disable
+ * motion the user did not ask to disable (QA Q5-01 / GAP 7).
  *
- * The subscription lives in ONE `useEffect` with an EMPTY dependency array: no `.length`
- * dependency, no freshly-created array, no state write keyed on a re-created value — the
- * #523 re-render-loop rule.
+ * `useSyncExternalStore` is the subscription: the snapshot is a primitive boolean re-read from
+ * the CURRENT `window.matchMedia` on each render (so a `matchMedia` replaced after mount — the
+ * plan's live R-9.2 lever — is honoured on the next render), and `subscribe` attaches the
+ * `change` listener to that same current list so OS/app-level flips stay live. A primitive
+ * snapshot cannot re-render in a loop (the #523 rule).
  */
 
-import { useEffect, useState } from 'react';
+import { useSyncExternalStore } from 'react';
 
 import { NAV_REDUCED_MOTION_QUERY } from './constants';
 
@@ -21,22 +23,19 @@ function readPreference(): boolean {
   return window.matchMedia(NAV_REDUCED_MOTION_QUERY).matches === true;
 }
 
+/** Subscribe to the query's `change` event on the CURRENT list; no listener when absent. */
+function subscribe(onChange: () => void): () => void {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+    return () => {};
+  }
+  const query = window.matchMedia(NAV_REDUCED_MOTION_QUERY);
+  query.addEventListener?.('change', onChange);
+  return () => {
+    query.removeEventListener?.('change', onChange);
+  };
+}
+
 /** True while the host prefers reduced motion; `false` when the query is unavailable. */
 export function useNavReducedMotion(): boolean {
-  const [reduced, setReduced] = useState<boolean>(readPreference);
-
-  useEffect(() => {
-    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
-    const query = window.matchMedia(NAV_REDUCED_MOTION_QUERY);
-    setReduced(query.matches === true);
-    const onChange = (event: MediaQueryListEvent): void => {
-      setReduced(event.matches === true);
-    };
-    query.addEventListener?.('change', onChange);
-    return () => {
-      query.removeEventListener?.('change', onChange);
-    };
-  }, []);
-
-  return reduced;
+  return useSyncExternalStore(subscribe, readPreference, () => false);
 }
