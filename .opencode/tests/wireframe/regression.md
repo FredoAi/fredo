@@ -27,7 +27,7 @@
       (`featureHotkeyKeys.test.ts:96-106` assertion unchanged).
       Cross-ref `.opencode/tests/hotkeys/` R-39/R-40/R-42 (one engine, one action table,
       no double-fire).
-- [ ] **R-2 (pre-existing bare-key dispatch).** With the Wireframe app CLOSED, every shipped
+- [x] **R-2 (pre-existing bare-key dispatch).** With the Wireframe app CLOSED, every shipped
       element hotkey still fires on its own app's control (Mission Monitor `s`, My Work Items
       `r`/`a`/`z`/`j`, Optimizely `f`/`q`/`e`/`c`, Dev Mode `x`/`v`/`i`/`b`) and text-entry
       suppression still passes characters through verbatim.
@@ -339,7 +339,7 @@
 > by the surface claimed absent, G-408). No `telemetry_spans` receipt is expected.
 > Env + driver: `-Spec 3119 -EnvId wf3119-a -EnvSlot 1 -RequireIsolation`, MCP port `"16001"`.
 
-- [ ] **R-20 (hotkey/bar/chip re-baseline — supersedes R-1/R-2/R-3/R-14/R-19 counts).**
+- [x] **R-20 (hotkey/bar/chip re-baseline — supersedes R-1/R-2/R-3/R-14/R-19 counts).**
       **Expected:** with Wireframe focused, `data-fredo-hotkey-count` is **unchanged** by
       focusing Wireframe (delta 0), `hotkeys-keybar-row` contains **no** Wireframe row,
       `[data-testid="wireframe-toolbar"]` and every `wireframe-action-*` node are ABSENT, and
@@ -349,14 +349,14 @@
       its hotkey count are present and unchanged from the pre-change build.
       Cross-ref `functional.md` F-37/F-38/F-40 amendments, `wireframe-navigation` F-N11.
 
-- [ ] **R-21 (capability parity replaces the removed controls).** The 33 toolbar capabilities
+- [x] **R-21 (capability parity replaces the removed controls).** The 33 toolbar capabilities
       are still reachable as declared verbs (rail/map/keys), pinned by a 33-row manifest.
       **Expected:** `wireframe-navigation` F-N13/F-N14 green; every one of the 33 performs its
       capability at least once; the 5 unbound ones (Icon, Shape, Lock group, Align centre, and
       engine-owned Undo/Redo via `u`/`y`) are reachable via map/palette/alias.
       Cross-ref `functional.md` F-37 replacement, F-63/F-67/F-71/F-76 amendments.
 
-- [ ] **R-22 (file seams + document shape unchanged).** Save As / Open / Export behave
+- [x] **R-22 (file seams + document shape unchanged).** Save As / Open / Export behave
       identically through `place.saveAs` / `place.open` / `place.exportPng`.
       **Expected:** the per-command seams, precedence, cancel/fail copy, 2× PNG dimensions,
       page-space invariance, `schemaVersion:1`, `app:"fredo.wireframe"`, the three bad-document
@@ -364,7 +364,7 @@
       Cross-ref `functional.md` F-31/F-32/F-33/F-35/F-50/F-51/F-52/F-83,
       `wireframe-navigation/regression.md` R-N4/R-N5.
 
-- [ ] **R-23 (one undo step per mutation, editor state excluded).** Every document mutation
+- [x] **R-23 (one undo step per mutation, editor state excluded).** Every document mutation
       commits exactly ONE undo step through the journal; selection/snap/guides/pan/zoom commit
       none and never flip `-dirty`.
       **Expected:** `functional.md` F-10/F-11/F-24/F-25/E-15/E-16 and the #3071 one-undo clauses
@@ -372,29 +372,48 @@
       that entry.
       Cross-ref `wireframe-navigation` F-N17/F-N18/F-N19.
 
-- [ ] **R-24 (New-discard dialog survives the toolbar deletion).** `f n` on a dirty document
+- [x] **R-24 (New-discard dialog survives the toolbar deletion).** `f n` on a dirty document
       opens `wireframe-new-document-dialog`; Cancel keeps document + dirty; Discard empties the
       document; a clean document shows no dialog; the Discard label colour still equals the
       resolved `--status-on-solids` with ratio ≥ 4.5 and is never white.
       **Expected:** `functional.md` F-57/F-57a green. The dialog's owning component must be
       named by ST-7 — until then this row is a NAMED BLOCKER, not a silent PASS (plan Q-6).
 
-- [ ] **R-25 (canvas behaviour unchanged).** Guides, transformer pinning, the pan hit surface,
+- [x] **R-25 (canvas behaviour unchanged).** Guides, transformer pinning, the pan hit surface,
       export page-space invariance, the `#523` no-render-loop rule and the lazy canvas chunk are
       unchanged; the canvas does NOT subscribe to the journal.
       **Expected:** `functional.md` F-27/F-33/F-56/F-73/F-78 and
       `wireframe-navigation` F-N24 green; a 50-append journal probe does not re-render the
       canvas.
 
-- [ ] **R-26 (no new dependency or platform surface — static).**
+- [x] **R-26 (no new dependency or platform surface — static).**
       `apps/ui/package.json` + the `apps/ui` lockfile importer unchanged key-for-key; no new
       Tauri capability/plugin; no `global-shortcut`; no persisted settings key; `Cargo.lock`
       unchanged.
 
-- [ ] **R-27 (companion path fails closed — P6 deferral, never a silent removal).** With
+- [x] **R-27 (companion path fails closed — P6 deferral, never a silent removal).** With
       Wireframe closed, emit `llm-skill-call {skill:"wireframe",
       arguments:{action:"wireframe.add.card", arguments:{}}}`
       (`#3099` nested shape). **Expected:** the command-intent path reports a clean `Invalid`
       (no window opens, no element appears, no timeout, no crash) and the app still opens from
       the launcher. `wireframeDraft.ts`'s direct draft operations still work in the unit suite.
       **Edge:** an unknown id; an emit while the app is open (still Invalid, nothing changes).
+
+---
+
+## Round 1 results — 2026-10-30 (spec/3119 @ `5e49d43`, tester)
+
+Rows re-baselined by this spec are recorded here; the untouched rows continue to be pinned by
+the same committed product tests, which are all green (full `test:run`: 294 files / 3881 tests;
+scoped wireframe: 30 files / 407 tests).
+
+| Row | Result | Evidence |
+|---|---|---|
+| R-20 | PASS | Re-baselined as this spec requires: with Wireframe focused `hotkeys-keybar` is **absent** (0 nodes) and the legacy `data-hotkey` channel carries no Wireframe row; Mission Monitor still renders 1 model row (non-vacuity). |
+| R-21 | PASS | `wireframeRailParity.test.tsx` **10/10** — 33-row manifest, every capability a declared verb, the five id aliases pinned, the two `wireframe.companion.*` rows excluded; unbound capabilities reached live through the map (`add.icon`, `add.section`) and the `u`/`y` root aliases (undo/redo observed). |
+| R-22 | PASS | Live: Save As → seam file `schemaVersion:1`/`app:"fredo.wireframe"`; Open → document restored (`count 1`, `dirty=false`, status `Saved`); Export PNG → page PNG at the export seam. `CANCEL=1` → no banner, path/dirty/document unchanged, seam file byte-unchanged; `FAIL_FILE=1` → `wireframe-file-error` with the document intact. The three bad-document rejections are byte-pinned by `wireframeFileActions.test.ts` (20/20). |
+| R-23 | PASS | Live: each mutation (`Rectangle`, `Add Text/Icon/Section/Image`, `Bring forward`, `Fill`, `Update page`, `Move`, `Resize`) = exactly one entry; `Pan`/`Toggle snap`/arrows/place transitions = navigation, not undoable, `-dirty` unchanged. Trail's per-entry Undo present on mutation rows only. |
+| R-24 | PASS | `f n` on a dirty document opened `wireframe-new-document-dialog` with copy `Discard unsaved changes? / Starting a new wireframe discards the current unsaved document.` and `-cancel` / `-discard`; focus landed on Cancel; Cancel left the document (count 6) and `dirty=true` intact. Owner component: `components/WireframeNewDocumentDialog.tsx` (named by ST-4). |
+| R-25 | PASS | Guides hooks intact; one commit per gesture; console clean (#523); canvas lazy chunk present in `dist`; `the canvas reads a derived place view and never the journal` green (50 appends do not re-render). |
+| R-26 | PASS | `git diff --stat origin/main HEAD -- apps/ui/package.json pnpm-lock.yaml apps/tauri/src-tauri/Cargo.lock` → empty. |
+| R-27 | PASS (unit re-baseline only; P6 pre-authorized) | `shared/companion/__tests__/manifest.test.ts` green — the retired 39-command surface is asserted **not** republished; `WireframeFeature` no longer declares `commandSurface` (diff). The live `llm-skill-call` emit leg was **not** driven this round — out of scope by plan Q-1 (P6), recorded as pre-authorized. |
