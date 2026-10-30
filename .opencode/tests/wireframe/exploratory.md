@@ -261,8 +261,46 @@ behaviour is wrong.
       `wireframe.document.new` control (no binding) renders with no chip and no `(hotkey)` suffix
       in its accessible name.
 
+## Spec #3119 (P5) — probes for the declaration-driven surface
+
+> The toolbar / command surface / hotkey carrier are gone; Wireframe is driven by six declared
+> places. These probes target the surfaces most likely to rot during the migration. Evidence is
+> LIVE (quoted tool result + capture). A confirmed finding PROMOTES to
+> `wireframe-navigation/functional.md` as `F-N<n>`.
+
+- [ ] **E-37 The value-key gap.** Press Style `f`/`o`/`p`/`z`/`t` and Edit `r` with an element
+      selected. Record precisely what each does (cycle sequence / default value / focuses a panel
+      control / popover), whether it commits ONE entry, and whether the panel stays in sync. The
+      UI/UX decision for this behaviour is still open (plan Q-4) — this probe is what closes it.
+- [ ] **E-38 Stale armed prefix across a place change.** Arm a rect (`c r`) and, within 250 ms,
+      click a rail place row, then press another stroke. Does the stale prefix fire, leak into
+      the new place, or clear silently?
+- [ ] **E-39 Same stroke, four places.** `s` at root / in Create / in Arrange / in Style; `f` at
+      root / Arrange / Style; `u` at root / Arrange. Record the dispatched verb id each time —
+      any cross-place leakage means tier 2/4 were consulted while a place binding existed.
+- [ ] **E-40 Double announcement.** Enter and exit the same place repeatedly and trigger one
+      transient auto-exit. Count the updates in the single live region: identical consecutive
+      text must be ONE update; distinct text exactly one each.
+- [ ] **E-41 Focus survival across the auto-exit.** Focus a rail row button, `c`, `r`, drag.
+      After the auto-exit, is `document.activeElement` the same rail row (never `body`)? Repeat
+      with the map open so the dialog trap closes first.
+- [ ] **E-42 Toolbar/command-surface residue.** Search the running webview for any surviving
+      trace of the deleted path: `[data-testid="wireframe-toolbar"]`,
+      `[data-testid^="wireframe-action-"]`, `[data-hotkey]` under `wireframe-root`,
+      `wireframe-hotkey-carrier`, and any `g`-prefix pending state on `body`. Any residue is a
+      FAIL of AC7 (not an exploratory note).
+- [ ] **E-43 Journal growth.** Perform ~120 small mutations: responsiveness, the 10-entry trail
+      cap, and whether undo still walks back. The journal is intentionally unbounded this slice —
+      record the memory shape as an observation (named risk), not a defect.
+- [ ] **E-44 Companion path after the deletion.** Emit the nested `llm-skill-call` from
+      `regression.md` R-27 with the app closed and open. Does it fail closed with a clean
+      `Invalid` (no window, no mutation, no timeout), or does it hang / mutate / crash? Report the
+      exact result to the Orchestrator for the P6 hand-off.
+
 ## Teardown (run after this suite)
 - [ ] Close every Wireframe window, delete the probe fixtures under
       `.opencode/tmp/3070/e2e/` that are not part of the functional plan, restore the appearance
       preset to the served default, and `Down` the isolated env. Confirm no settings key, DB row
       or capability file was left modified by a probe.
+- [ ] For #3119 also delete the probe captures under `.opencode/tmp/3119/e2e/` that are not part
+      of the plan and `Down` `wf3119-a`.
