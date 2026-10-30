@@ -531,7 +531,9 @@ mod tests {
                 id: "wireframe.add.text".to_string(),
                 label: "Text".to_string(),
                 description: "Add a text element".to_string(),
+                risk: None,
                 args: Vec::new(),
+                aliases: Vec::new(),
             }],
         };
         let registry = build_companion_skill_registry(&[surface]);
@@ -603,7 +605,9 @@ mod tests {
                 id: "wireframe.add.text".to_string(),
                 label: "Text".to_string(),
                 description: "Add a text element".to_string(),
+                risk: None,
                 args: Vec::new(),
+                aliases: Vec::new(),
             }],
         }]);
 

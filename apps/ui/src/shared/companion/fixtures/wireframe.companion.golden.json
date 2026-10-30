@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "staticOffer": [
     {
       "type": "function",
@@ -402,6 +402,1225 @@
       },
       "required": [
         "action"
+      ]
+    }
+  },
+  "navigation": {
+    "surface": {
+      "appId": "wireframe",
+      "appName": "Wireframe",
+      "skillName": "wireframe",
+      "description": "Draw and arrange wireframe pages.",
+      "commands": [
+        {
+          "id": "app.map",
+          "label": "Map",
+          "description": "Open the navigation map of every place, verb and key.",
+          "risk": "safe",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "app.ask",
+          "label": "Ask",
+          "description": "Ask the launcher to run a request — unavailable until the launcher ships in P6.",
+          "risk": "safe",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.selection.previous",
+          "label": "Previous element",
+          "description": "Select the previous element in document order.",
+          "risk": "safe",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.selection.next",
+          "label": "Next element",
+          "description": "Select the next element in document order.",
+          "risk": "safe",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.create.rect",
+          "label": "Rectangle",
+          "description": "Arm the rectangle draw tool, or create one at explicit page bounds when x, y, width and height are supplied.",
+          "risk": "mutating",
+          "args": [
+            {
+              "name": "x",
+              "required": false
+            },
+            {
+              "name": "y",
+              "required": false
+            },
+            {
+              "name": "width",
+              "required": false
+            },
+            {
+              "name": "height",
+              "required": false
+            }
+          ],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.create.ellipse",
+          "label": "Ellipse",
+          "description": "Arm the ellipse draw tool, or create one at explicit page bounds when x, y, width and height are supplied.",
+          "risk": "mutating",
+          "args": [
+            {
+              "name": "x",
+              "required": false
+            },
+            {
+              "name": "y",
+              "required": false
+            },
+            {
+              "name": "width",
+              "required": false
+            },
+            {
+              "name": "height",
+              "required": false
+            }
+          ],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.add.text",
+          "label": "Text",
+          "description": "Add a text element (body or heading style).",
+          "risk": "mutating",
+          "args": [
+            {
+              "name": "text",
+              "required": false
+            }
+          ],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.add.button",
+          "label": "Button",
+          "description": "Add a button element.",
+          "risk": "mutating",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.add.input",
+          "label": "Input",
+          "description": "Add an input field element.",
+          "risk": "mutating",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.add.image",
+          "label": "Image",
+          "description": "Add an image placeholder frame.",
+          "risk": "mutating",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.add.icon",
+          "label": "Icon",
+          "description": "Add an icon from the curated set.",
+          "risk": "mutating",
+          "args": [
+            {
+              "name": "iconId",
+              "required": false
+            }
+          ],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.add.card",
+          "label": "Card",
+          "description": "Add a card / container element.",
+          "risk": "mutating",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.add.section",
+          "label": "Section",
+          "description": "Add a site frame section (header, nav bar, sidebar or footer).",
+          "risk": "mutating",
+          "args": [
+            {
+              "name": "preset",
+              "required": false
+            }
+          ],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.add.shape",
+          "label": "Shape",
+          "description": "Add a basic shape.",
+          "risk": "mutating",
+          "args": [
+            {
+              "name": "shape",
+              "required": false
+            }
+          ],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.add.line",
+          "label": "Line",
+          "description": "Add a line.",
+          "risk": "mutating",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.element.duplicate",
+          "label": "Duplicate",
+          "description": "Duplicate the selected element.",
+          "risk": "mutating",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.element.delete",
+          "label": "Delete",
+          "description": "Delete every selected element.",
+          "risk": "destructive",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.element.toggleLock",
+          "label": "Toggle lock",
+          "description": "Lock or unlock every selected element.",
+          "risk": "mutating",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.element.toggleVisible",
+          "label": "Toggle visible",
+          "description": "Show or hide every selected element.",
+          "risk": "mutating",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.element.rename",
+          "label": "Rename",
+          "description": "Focus and select the selected element name field in the details view.",
+          "risk": "safe",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.element.move",
+          "label": "Move",
+          "description": "Move the given element ids by a page-space delta.",
+          "risk": "mutating",
+          "args": [
+            {
+              "name": "ids",
+              "required": false
+            },
+            {
+              "name": "dx",
+              "required": false
+            },
+            {
+              "name": "dy",
+              "required": false
+            }
+          ],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.element.resize",
+          "label": "Resize",
+          "description": "Resize the given element ids by a page-space delta.",
+          "risk": "mutating",
+          "args": [
+            {
+              "name": "ids",
+              "required": false
+            },
+            {
+              "name": "dx",
+              "required": false
+            },
+            {
+              "name": "dy",
+              "required": false
+            },
+            {
+              "name": "dw",
+              "required": false
+            },
+            {
+              "name": "dh",
+              "required": false
+            }
+          ],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.element.setField",
+          "label": "Set field",
+          "description": "Write one element field from the details view.",
+          "risk": "mutating",
+          "args": [
+            {
+              "name": "id",
+              "required": false
+            },
+            {
+              "name": "field",
+              "required": false
+            },
+            {
+              "name": "value",
+              "required": false
+            }
+          ],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.page.update",
+          "label": "Update page",
+          "description": "Change the page preset, width or height.",
+          "risk": "mutating",
+          "args": [
+            {
+              "name": "field",
+              "required": false
+            },
+            {
+              "name": "value",
+              "required": false
+            },
+            {
+              "name": "page",
+              "required": false
+            },
+            {
+              "name": "preset",
+              "required": false
+            },
+            {
+              "name": "width",
+              "required": false
+            },
+            {
+              "name": "height",
+              "required": false
+            }
+          ],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.arrange.group",
+          "label": "Group",
+          "description": "Group the selected elements.",
+          "risk": "mutating",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.arrange.ungroup",
+          "label": "Ungroup",
+          "description": "Ungroup every group the selection touches.",
+          "risk": "mutating",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.arrange.toggleGroupLock",
+          "label": "Lock group",
+          "description": "Lock or unlock every group the selection touches.",
+          "risk": "mutating",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.arrange.alignLeft",
+          "label": "Align left",
+          "description": "Align the selected elements to the left of their union bounds.",
+          "risk": "mutating",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.arrange.alignCenter",
+          "label": "Align center",
+          "description": "Align the selected elements to the centre of their union bounds.",
+          "risk": "mutating",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.arrange.alignRight",
+          "label": "Align right",
+          "description": "Align the selected elements to the right of their union bounds.",
+          "risk": "mutating",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.arrange.distribute",
+          "label": "Distribute",
+          "description": "Distribute the selected elements with equal horizontal gaps.",
+          "risk": "mutating",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.arrange.bringForward",
+          "label": "Bring forward",
+          "description": "Move the selected elements one step forward in paint order.",
+          "risk": "mutating",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.arrange.sendBackward",
+          "label": "Send backward",
+          "description": "Move the selected elements one step backward in paint order.",
+          "risk": "mutating",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.arrange.toggleSnap",
+          "label": "Toggle snap",
+          "description": "Toggle snap to grid.",
+          "risk": "safe",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.style.fill",
+          "label": "Fill",
+          "description": "Set the fill token, or cycle to the next token when no value is supplied.",
+          "risk": "mutating",
+          "args": [
+            {
+              "name": "fill",
+              "required": false
+            }
+          ],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.style.border",
+          "label": "Border",
+          "description": "Set the border width, or cycle none → thin → thick when no value is supplied.",
+          "risk": "mutating",
+          "args": [
+            {
+              "name": "border",
+              "required": false
+            }
+          ],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.style.appearance",
+          "label": "Appearance",
+          "description": "Set the button appearance, or cycle primary → secondary → ghost.",
+          "risk": "mutating",
+          "args": [
+            {
+              "name": "appearance",
+              "required": false
+            }
+          ],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.style.radius",
+          "label": "Radius",
+          "description": "Set the corner radius, or cycle none → s → m → l.",
+          "risk": "mutating",
+          "args": [
+            {
+              "name": "radius",
+              "required": false
+            }
+          ],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.style.textStyle",
+          "label": "Text style",
+          "description": "Set the text style, or cycle body → heading.",
+          "risk": "mutating",
+          "args": [
+            {
+              "name": "textStyle",
+              "required": false
+            }
+          ],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.zoom.in",
+          "label": "Zoom in",
+          "description": "Zoom in one step about the viewport centre.",
+          "risk": "safe",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.zoom.out",
+          "label": "Zoom out",
+          "description": "Zoom out one step about the viewport centre.",
+          "risk": "safe",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.view.fitPage",
+          "label": "Fit page",
+          "description": "Fit the whole page to the viewport.",
+          "risk": "safe",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.view.resetView",
+          "label": "Reset view",
+          "description": "Reset to 100% and centre the page.",
+          "risk": "safe",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.view.togglePan",
+          "label": "Pan tool",
+          "description": "Toggle the pan tool.",
+          "risk": "safe",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.view.panBy",
+          "label": "Pan by",
+          "description": "Set the view translation to the given page-space offsets.",
+          "risk": "safe",
+          "args": [
+            {
+              "name": "x",
+              "required": false
+            },
+            {
+              "name": "y",
+              "required": false
+            }
+          ],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.document.new",
+          "label": "New document",
+          "description": "Start a new empty wireframe.",
+          "risk": "mutating",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "place.open",
+          "label": "Open",
+          "description": "Open a saved wireframe document.",
+          "risk": "mutating",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "place.saveAs",
+          "label": "Save as",
+          "description": "Save the document to a new file.",
+          "risk": "mutating",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "place.exportPng",
+          "label": "Export PNG",
+          "description": "Export the page as a PNG.",
+          "risk": "mutating",
+          "args": [],
+          "aliases": []
+        },
+        {
+          "id": "journal.undo",
+          "label": "Undo",
+          "description": "Undo the newest change; optionally filter by actor (human, companion or system) and count (1..100).",
+          "risk": "mutating",
+          "args": [
+            {
+              "name": "actor",
+              "required": false
+            },
+            {
+              "name": "count",
+              "required": false
+            }
+          ],
+          "aliases": [
+            "undo",
+            "revert"
+          ]
+        }
+      ],
+      "actionIds": [
+        "app.map",
+        "app.ask",
+        "wireframe.selection.previous",
+        "wireframe.selection.next",
+        "wireframe.create.rect",
+        "wireframe.create.ellipse",
+        "wireframe.add.text",
+        "wireframe.add.button",
+        "wireframe.add.input",
+        "wireframe.add.image",
+        "wireframe.add.icon",
+        "wireframe.add.card",
+        "wireframe.add.section",
+        "wireframe.add.shape",
+        "wireframe.add.line",
+        "wireframe.element.duplicate",
+        "wireframe.element.delete",
+        "wireframe.element.toggleLock",
+        "wireframe.element.toggleVisible",
+        "wireframe.element.rename",
+        "wireframe.element.move",
+        "wireframe.element.resize",
+        "wireframe.element.setField",
+        "wireframe.page.update",
+        "wireframe.arrange.group",
+        "wireframe.arrange.ungroup",
+        "wireframe.arrange.toggleGroupLock",
+        "wireframe.arrange.alignLeft",
+        "wireframe.arrange.alignCenter",
+        "wireframe.arrange.alignRight",
+        "wireframe.arrange.distribute",
+        "wireframe.arrange.bringForward",
+        "wireframe.arrange.sendBackward",
+        "wireframe.arrange.toggleSnap",
+        "wireframe.style.fill",
+        "wireframe.style.border",
+        "wireframe.style.appearance",
+        "wireframe.style.radius",
+        "wireframe.style.textStyle",
+        "wireframe.zoom.in",
+        "wireframe.zoom.out",
+        "wireframe.view.fitPage",
+        "wireframe.view.resetView",
+        "wireframe.view.togglePan",
+        "wireframe.view.panBy",
+        "wireframe.document.new",
+        "place.open",
+        "place.saveAs",
+        "place.exportPng",
+        "journal.undo",
+        "listActions"
+      ]
+    },
+    "manifest": {
+      "surfaces": [
+        {
+          "appId": "wireframe",
+          "appName": "Wireframe",
+          "skillName": "wireframe",
+          "description": "Draw and arrange wireframe pages.",
+          "commands": [
+            {
+              "id": "app.map",
+              "label": "Map",
+              "description": "Open the navigation map of every place, verb and key.",
+              "risk": "safe",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "app.ask",
+              "label": "Ask",
+              "description": "Ask the launcher to run a request — unavailable until the launcher ships in P6.",
+              "risk": "safe",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.selection.previous",
+              "label": "Previous element",
+              "description": "Select the previous element in document order.",
+              "risk": "safe",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.selection.next",
+              "label": "Next element",
+              "description": "Select the next element in document order.",
+              "risk": "safe",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.create.rect",
+              "label": "Rectangle",
+              "description": "Arm the rectangle draw tool, or create one at explicit page bounds when x, y, width and height are supplied.",
+              "risk": "mutating",
+              "args": [
+                {
+                  "name": "x",
+                  "required": false
+                },
+                {
+                  "name": "y",
+                  "required": false
+                },
+                {
+                  "name": "width",
+                  "required": false
+                },
+                {
+                  "name": "height",
+                  "required": false
+                }
+              ],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.create.ellipse",
+              "label": "Ellipse",
+              "description": "Arm the ellipse draw tool, or create one at explicit page bounds when x, y, width and height are supplied.",
+              "risk": "mutating",
+              "args": [
+                {
+                  "name": "x",
+                  "required": false
+                },
+                {
+                  "name": "y",
+                  "required": false
+                },
+                {
+                  "name": "width",
+                  "required": false
+                },
+                {
+                  "name": "height",
+                  "required": false
+                }
+              ],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.add.text",
+              "label": "Text",
+              "description": "Add a text element (body or heading style).",
+              "risk": "mutating",
+              "args": [
+                {
+                  "name": "text",
+                  "required": false
+                }
+              ],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.add.button",
+              "label": "Button",
+              "description": "Add a button element.",
+              "risk": "mutating",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.add.input",
+              "label": "Input",
+              "description": "Add an input field element.",
+              "risk": "mutating",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.add.image",
+              "label": "Image",
+              "description": "Add an image placeholder frame.",
+              "risk": "mutating",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.add.icon",
+              "label": "Icon",
+              "description": "Add an icon from the curated set.",
+              "risk": "mutating",
+              "args": [
+                {
+                  "name": "iconId",
+                  "required": false
+                }
+              ],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.add.card",
+              "label": "Card",
+              "description": "Add a card / container element.",
+              "risk": "mutating",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.add.section",
+              "label": "Section",
+              "description": "Add a site frame section (header, nav bar, sidebar or footer).",
+              "risk": "mutating",
+              "args": [
+                {
+                  "name": "preset",
+                  "required": false
+                }
+              ],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.add.shape",
+              "label": "Shape",
+              "description": "Add a basic shape.",
+              "risk": "mutating",
+              "args": [
+                {
+                  "name": "shape",
+                  "required": false
+                }
+              ],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.add.line",
+              "label": "Line",
+              "description": "Add a line.",
+              "risk": "mutating",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.element.duplicate",
+              "label": "Duplicate",
+              "description": "Duplicate the selected element.",
+              "risk": "mutating",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.element.delete",
+              "label": "Delete",
+              "description": "Delete every selected element.",
+              "risk": "destructive",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.element.toggleLock",
+              "label": "Toggle lock",
+              "description": "Lock or unlock every selected element.",
+              "risk": "mutating",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.element.toggleVisible",
+              "label": "Toggle visible",
+              "description": "Show or hide every selected element.",
+              "risk": "mutating",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.element.rename",
+              "label": "Rename",
+              "description": "Focus and select the selected element name field in the details view.",
+              "risk": "safe",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.element.move",
+              "label": "Move",
+              "description": "Move the given element ids by a page-space delta.",
+              "risk": "mutating",
+              "args": [
+                {
+                  "name": "ids",
+                  "required": false
+                },
+                {
+                  "name": "dx",
+                  "required": false
+                },
+                {
+                  "name": "dy",
+                  "required": false
+                }
+              ],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.element.resize",
+              "label": "Resize",
+              "description": "Resize the given element ids by a page-space delta.",
+              "risk": "mutating",
+              "args": [
+                {
+                  "name": "ids",
+                  "required": false
+                },
+                {
+                  "name": "dx",
+                  "required": false
+                },
+                {
+                  "name": "dy",
+                  "required": false
+                },
+                {
+                  "name": "dw",
+                  "required": false
+                },
+                {
+                  "name": "dh",
+                  "required": false
+                }
+              ],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.element.setField",
+              "label": "Set field",
+              "description": "Write one element field from the details view.",
+              "risk": "mutating",
+              "args": [
+                {
+                  "name": "id",
+                  "required": false
+                },
+                {
+                  "name": "field",
+                  "required": false
+                },
+                {
+                  "name": "value",
+                  "required": false
+                }
+              ],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.page.update",
+              "label": "Update page",
+              "description": "Change the page preset, width or height.",
+              "risk": "mutating",
+              "args": [
+                {
+                  "name": "field",
+                  "required": false
+                },
+                {
+                  "name": "value",
+                  "required": false
+                },
+                {
+                  "name": "page",
+                  "required": false
+                },
+                {
+                  "name": "preset",
+                  "required": false
+                },
+                {
+                  "name": "width",
+                  "required": false
+                },
+                {
+                  "name": "height",
+                  "required": false
+                }
+              ],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.arrange.group",
+              "label": "Group",
+              "description": "Group the selected elements.",
+              "risk": "mutating",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.arrange.ungroup",
+              "label": "Ungroup",
+              "description": "Ungroup every group the selection touches.",
+              "risk": "mutating",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.arrange.toggleGroupLock",
+              "label": "Lock group",
+              "description": "Lock or unlock every group the selection touches.",
+              "risk": "mutating",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.arrange.alignLeft",
+              "label": "Align left",
+              "description": "Align the selected elements to the left of their union bounds.",
+              "risk": "mutating",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.arrange.alignCenter",
+              "label": "Align center",
+              "description": "Align the selected elements to the centre of their union bounds.",
+              "risk": "mutating",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.arrange.alignRight",
+              "label": "Align right",
+              "description": "Align the selected elements to the right of their union bounds.",
+              "risk": "mutating",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.arrange.distribute",
+              "label": "Distribute",
+              "description": "Distribute the selected elements with equal horizontal gaps.",
+              "risk": "mutating",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.arrange.bringForward",
+              "label": "Bring forward",
+              "description": "Move the selected elements one step forward in paint order.",
+              "risk": "mutating",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.arrange.sendBackward",
+              "label": "Send backward",
+              "description": "Move the selected elements one step backward in paint order.",
+              "risk": "mutating",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.arrange.toggleSnap",
+              "label": "Toggle snap",
+              "description": "Toggle snap to grid.",
+              "risk": "safe",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.style.fill",
+              "label": "Fill",
+              "description": "Set the fill token, or cycle to the next token when no value is supplied.",
+              "risk": "mutating",
+              "args": [
+                {
+                  "name": "fill",
+                  "required": false
+                }
+              ],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.style.border",
+              "label": "Border",
+              "description": "Set the border width, or cycle none → thin → thick when no value is supplied.",
+              "risk": "mutating",
+              "args": [
+                {
+                  "name": "border",
+                  "required": false
+                }
+              ],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.style.appearance",
+              "label": "Appearance",
+              "description": "Set the button appearance, or cycle primary → secondary → ghost.",
+              "risk": "mutating",
+              "args": [
+                {
+                  "name": "appearance",
+                  "required": false
+                }
+              ],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.style.radius",
+              "label": "Radius",
+              "description": "Set the corner radius, or cycle none → s → m → l.",
+              "risk": "mutating",
+              "args": [
+                {
+                  "name": "radius",
+                  "required": false
+                }
+              ],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.style.textStyle",
+              "label": "Text style",
+              "description": "Set the text style, or cycle body → heading.",
+              "risk": "mutating",
+              "args": [
+                {
+                  "name": "textStyle",
+                  "required": false
+                }
+              ],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.zoom.in",
+              "label": "Zoom in",
+              "description": "Zoom in one step about the viewport centre.",
+              "risk": "safe",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.zoom.out",
+              "label": "Zoom out",
+              "description": "Zoom out one step about the viewport centre.",
+              "risk": "safe",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.view.fitPage",
+              "label": "Fit page",
+              "description": "Fit the whole page to the viewport.",
+              "risk": "safe",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.view.resetView",
+              "label": "Reset view",
+              "description": "Reset to 100% and centre the page.",
+              "risk": "safe",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.view.togglePan",
+              "label": "Pan tool",
+              "description": "Toggle the pan tool.",
+              "risk": "safe",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.view.panBy",
+              "label": "Pan by",
+              "description": "Set the view translation to the given page-space offsets.",
+              "risk": "safe",
+              "args": [
+                {
+                  "name": "x",
+                  "required": false
+                },
+                {
+                  "name": "y",
+                  "required": false
+                }
+              ],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.document.new",
+              "label": "New document",
+              "description": "Start a new empty wireframe.",
+              "risk": "mutating",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "place.open",
+              "label": "Open",
+              "description": "Open a saved wireframe document.",
+              "risk": "mutating",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "place.saveAs",
+              "label": "Save as",
+              "description": "Save the document to a new file.",
+              "risk": "mutating",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "place.exportPng",
+              "label": "Export PNG",
+              "description": "Export the page as a PNG.",
+              "risk": "mutating",
+              "args": [],
+              "aliases": []
+            },
+            {
+              "id": "journal.undo",
+              "label": "Undo",
+              "description": "Undo the newest change; optionally filter by actor (human, companion or system) and count (1..100).",
+              "risk": "mutating",
+              "args": [
+                {
+                  "name": "actor",
+                  "required": false
+                },
+                {
+                  "name": "count",
+                  "required": false
+                }
+              ],
+              "aliases": [
+                "undo",
+                "revert"
+              ]
+            }
+          ]
+        }
       ]
     }
   }

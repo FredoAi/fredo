@@ -30,6 +30,26 @@ interface RegistryEntry {
 const registry = new Map<string, RegistryEntry>();
 
 /**
+ * Spec #3120 ST-2 — the companion publisher subscribes here so a host that mounts after
+ * boot (an app opening) republishes the per-surface manifest. Notified AFTER the registry
+ * changes, so a listener that reads `listRegisteredSurfaces()` sees the new state.
+ */
+const listeners = new Set<() => void>();
+
+/** Subscribe to navigation-host registration/unregistration. */
+export function subscribeNavigationHosts(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+function notifyNavigationHosts(): void {
+  // Copy before iterating so an unsubscribe during notification is safe.
+  for (const listener of [...listeners]) listener();
+}
+
+/**
  * Register one app's host on provider mount; the returned disposer unregisters it. Both the
  * registration and the unregistration are idempotent: registering again replaces the entry (a
  * StrictMode remount), and calling the disposer twice — or after a newer registration — is a
@@ -38,8 +58,12 @@ const registry = new Map<string, RegistryEntry>();
 export function registerNavigationHost(registration: NavigationHostRegistration): () => void {
   const entry: RegistryEntry = { registration };
   registry.set(registration.appId, entry);
+  notifyNavigationHosts();
   return () => {
-    if (registry.get(registration.appId) === entry) registry.delete(registration.appId);
+    if (registry.get(registration.appId) === entry) {
+      registry.delete(registration.appId);
+      notifyNavigationHosts();
+    }
   };
 }
 

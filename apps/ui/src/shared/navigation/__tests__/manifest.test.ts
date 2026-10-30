@@ -14,6 +14,7 @@ import { resolve } from 'path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  ENGINE_COMPANION_UNDO_COMMAND,
   buildCompanionManifest,
   type CompanionManifest,
 } from '../manifest';
@@ -44,6 +45,19 @@ interface AuthoredVerbArg extends VerbArg {
   readonly description?: string;
 }
 
+/**
+ * The expected command ids: every `publish === true` verb in declaration order, then the
+ * engine undo when the surface does not already declare (and publish) a `journal.undo`.
+ */
+function expectedCommandIds(surface: Surface): readonly string[] {
+  const published = surface.verbs
+    .filter((verb) => verb.publish === true)
+    .map((verb) => verb.id);
+  return published.includes(ENGINE_COMPANION_UNDO_COMMAND.id)
+    ? published
+    : [...published, ENGINE_COMPANION_UNDO_COMMAND.id];
+}
+
 /** The expected projected arg: name/required plus an authored description (key omitted if none). */
 function expectedArg(arg: VerbArg): {
   name: string;
@@ -67,16 +81,17 @@ describe('buildCompanionManifest', () => {
     expect(manifest.commands.length).toBeGreaterThan(0);
     expect(manifest).toStrictEqual(golden.manifest);
 
-    // Set equality with every `publish === true` verb, in declaration order.
-    const published = validWireframeSurface()
-      .verbs.filter((verb) => verb.publish === true)
-      .map((verb) => verb.id);
-    expect(manifest.commands.map((command) => command.id)).toStrictEqual(published);
+    // Set equality with every `publish === true` verb, in declaration order, then
+    // the engine-owned `journal.undo` (Spec #3120 ST-2). The generic P3 fixture
+    // already declares `journal.undo`, so it must NOT be duplicated.
+    const expected = expectedCommandIds(validWireframeSurface());
+    expect(manifest.commands.map((command) => command.id)).toStrictEqual(expected);
+    expect(expected.filter((id) => id === ENGINE_COMPANION_UNDO_COMMAND.id)).toHaveLength(1);
 
     // Exactly ONE reserved `listActions`, appended last.
     expect(manifest.actionIds.slice(-1)).toStrictEqual([LIST_ACTIONS_ID]);
     expect(manifest.actionIds.filter((id) => id === LIST_ACTIONS_ID)).toHaveLength(1);
-    expect(manifest.actionIds).toHaveLength(published.length + 1);
+    expect(manifest.actionIds).toHaveLength(expected.length + 1);
   });
 
   it('manifest projection is byte-identical across runs', () => {
@@ -110,9 +125,10 @@ describe('buildCompanionManifest', () => {
     );
     const published = surface.verbs.filter((verb) => verb.publish === true);
 
-    // Command ids == every published verb, in declaration order.
+    // Command ids == every published verb in declaration order, then the engine undo
+    // (or the declaration's own `journal.undo`, never a duplicate).
     expect(manifest.commands.map((command) => command.id)).toStrictEqual(
-      published.map((verb) => verb.id),
+      expectedCommandIds(surface),
     );
 
     for (const verb of published) {
@@ -172,17 +188,55 @@ describe('buildCompanionManifest', () => {
       { name: 'label', required: false },
     ]);
     expect(noAliases.aliases).toStrictEqual([]);
+
+    // The engine-owned undo is projected too, with its own authored fields.
+    const undo = projectedLocal.commands[2];
+    expect(undo).toStrictEqual(ENGINE_COMPANION_UNDO_COMMAND);
+  });
+
+  it('appends the engine undo after the published verbs and before listActions, once', () => {
+    // A surface that does NOT declare journal.undo (the shipped Wireframe shape).
+    const surface = makeSurface({
+      root: 'p.local',
+      places: [makePlace({ id: 'p.local' })],
+      verbs: [
+        makeVerb({ id: 'v.one', title: 'One', description: 'Do one.' }),
+        makeVerb({ id: 'v.two', title: 'Two', description: 'Do two.' }),
+      ],
+    });
+    const manifest = buildCompanionManifest(surface);
+    const undoId = ENGINE_COMPANION_UNDO_COMMAND.id;
+    const ids = manifest.commands.map((command) => command.id);
+
+    // Order: ...published verbs, journal.undo.
+    expect(ids).toStrictEqual(['v.one', 'v.two', undoId]);
+    expect(ids.filter((id) => id === undoId)).toHaveLength(1);
+
+    // The reserved `listActions` is NEVER inside `commands` (it is an action id only),
+    // and it follows the undo in `actionIds`.
+    expect(ids).not.toContain(LIST_ACTIONS_ID);
+    expect(manifest.actionIds.slice(-2)).toStrictEqual([undoId, LIST_ACTIONS_ID]);
+
+    // Never duplicated: a surface that publishes `journal.undo` itself keeps ONE row.
+    const withUndoVerb = makeSurface({
+      root: 'p.dup',
+      places: [makePlace({ id: 'p.dup' })],
+      verbs: [makeVerb({ id: undoId, title: 'Undo', description: 'Declared undo.' })],
+    });
+    const withUndo = buildCompanionManifest(withUndoVerb);
+    expect(withUndo.commands.map((command) => command.id)).toStrictEqual([undoId]);
+    expect(withUndo.actionIds).toStrictEqual([undoId, LIST_ACTIONS_ID]);
   });
 
   it('golden command rows carry all six projection keys', () => {
     const golden = readGolden();
     const rows = golden.manifest.commands;
 
-    // Non-vacuity guard: a renamed or emptied fixture fails loudly.
+    // Non-vacuity guard: a renamed or emptied fixture fails loudly. One row per
+    // published verb plus the engine undo (unless already declared).
+    const expected = expectedCommandIds(validWireframeSurface());
     expect(rows.length).toBeGreaterThan(0);
-    expect(rows.length).toBe(
-      validWireframeSurface().verbs.filter((verb) => verb.publish === true).length,
-    );
+    expect(rows.length).toBe(expected.length);
 
     for (const row of rows) {
       // No missing key, no extra key, no reordering — the round-1 defect was `risk`/`aliases` absent.

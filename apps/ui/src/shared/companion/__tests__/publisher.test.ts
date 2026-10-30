@@ -16,6 +16,7 @@ import { resolve } from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  getApplications,
   registerApplication,
   resetApplicationRegistryForTests,
 } from '@/applications/applicationRegistry';
@@ -25,6 +26,9 @@ import type {
   ApplicationCommandSpec,
   ApplicationCommandSurface,
 } from '@/shared/hotkeys/commandSurface';
+import type { NavigationHost } from '@/shared/navigation/ui/host';
+import { registerNavigationHost } from '@/shared/navigation/ui/hostRegistry';
+import type { Surface as NavigationSurface } from '@/shared/navigation/types';
 import {
   REGISTER_APP_COMMAND_SURFACES_COMMAND,
   collectCompanionManifest,
@@ -46,6 +50,41 @@ function feature(id: string, suffix: string): FredoApplicationClass {
   return { id, name: id, commandSurface } as unknown as FredoApplicationClass;
 }
 
+/** Minimal navigation surface (one published verb + a companion block). */
+function navSurface(appId: string): NavigationSurface {
+  return {
+    tree: { appId, root: `${appId}.root`, places: [], directAliases: {} },
+    verbs: [
+      {
+        id: `${appId}.one`,
+        title: 'One',
+        description: `Do ${appId} one.`,
+        appliesTo: { objects: [], places: [] },
+        args: [],
+        available: () => true,
+        risk: 'safe',
+        aliases: [`${appId} one`],
+        run: () => ({ label: 'One', patch: null, inverse: null, target: [] }),
+        publish: true,
+      },
+    ],
+    companion: { appName: appId, description: `${appId} directive.` },
+  };
+}
+
+/** Register a navigation host; the disposer is collected for the test's cleanup. */
+function registerNav(appId: string): () => void {
+  const dispose = registerNavigationHost({
+    appId,
+    surface: navSurface(appId),
+    host: {} as unknown as NavigationHost,
+  });
+  hostDisposers.push(dispose);
+  return dispose;
+}
+
+let hostDisposers: Array<() => void> = [];
+
 /** Let the coalesced microtask + the awaited invoke settle. */
 async function flush(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -61,6 +100,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  for (const dispose of hostDisposers.splice(0)) dispose();
   resetAppCommandPublisherForTests();
   resetApplicationRegistryForTests();
   vi.restoreAllMocks();
@@ -182,6 +222,70 @@ describe('installAppCommandSurfacePublisher', () => {
     registerApplication(feature('gamma', 'one'));
     await flush();
     expect(invoke).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('publisher — navigation surfaces (Spec #3120 ST-2)', () => {
+  it('publishes a registered navigation surface with risk and aliases', async () => {
+    registerNav('wireframe');
+
+    await publishAppCommandSurfaces();
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith(REGISTER_APP_COMMAND_SURFACES_COMMAND, {
+      manifest: collectCompanionManifest(),
+    });
+
+    const published = invoke.mock.calls[0][1].manifest as ReturnType<
+      typeof collectCompanionManifest
+    >;
+    expect(published.surfaces.map((entry) => entry.appId)).toEqual(['wireframe']);
+    const surface = published.surfaces[0];
+    expect(surface.commands.map((entry) => entry.id)).toEqual(['wireframe.one', 'journal.undo']);
+    expect(surface.commands[0].risk).toBe('safe');
+    expect(surface.commands[0].aliases).toEqual(['wireframe one']);
+  });
+
+  it('publishes a navigation surface even when no application is registered', async () => {
+    expect(getApplications()).toHaveLength(0);
+    registerNav('orphan');
+
+    await publishAppCommandSurfaces();
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+    const published = invoke.mock.calls[0][1].manifest as ReturnType<
+      typeof collectCompanionManifest
+    >;
+    expect(published.surfaces.map((entry) => entry.appId)).toEqual(['orphan']);
+  });
+
+  it('publishes when a navigation host registers AFTER install', async () => {
+    installAppCommandSurfacePublisher();
+    await flush();
+    expect(invoke).not.toHaveBeenCalled();
+
+    // An app opening mounts its host after boot — the subscription must republish.
+    registerNav('wireframe');
+    await flush();
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+    const published = invoke.mock.calls[0][1].manifest as ReturnType<
+      typeof collectCompanionManifest
+    >;
+    expect(published.surfaces.map((entry) => entry.appId)).toEqual(['wireframe']);
+  });
+
+  it('does not re-send an identical navigation manifest', async () => {
+    installAppCommandSurfacePublisher();
+    const dispose = registerNav('wireframe');
+    await flush();
+    expect(invoke).toHaveBeenCalledTimes(1);
+
+    // Re-registering the same appId yields the identical projection — no re-send.
+    dispose();
+    registerNav('wireframe');
+    await flush();
+    expect(invoke).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -22,6 +22,7 @@ import {
   resetApplicationRegistryForTests,
 } from '@/applications/applicationRegistry';
 import { wireframeFeature } from '@/applications/wireframe/WireframeFeature';
+import { wireframeSurface } from '@/applications/wireframe/wireframeSurface';
 // Side effect: registers the Wireframe feature exactly as the eager barrel does.
 import '@/applications/wireframe/index';
 import type { FredoApplicationClass } from '@/shared/classes';
@@ -30,6 +31,8 @@ import type {
   ApplicationCommandSpec,
   ApplicationCommandSurface,
 } from '@/shared/hotkeys/commandSurface';
+import { buildCompanionManifest as buildNavigationManifest } from '@/shared/navigation/manifest';
+import type { Surface as NavigationSurface } from '@/shared/navigation/types';
 import {
   COMPANION_LIST_ACTIONS_ID,
   buildCompanionManifest,
@@ -45,6 +48,7 @@ const FIXTURE_PATH = resolve(
 interface GoldenFixture {
   readonly schemaVersion: number;
   readonly staticOffer: readonly unknown[];
+  /** Retained legacy surface: the cross-language Rust companion-offer contract. */
   readonly manifest: CompanionManifest;
   readonly offer: {
     readonly name: string;
@@ -57,6 +61,11 @@ interface GoldenFixture {
       };
       readonly required: readonly string[];
     };
+  };
+  /** Spec #3120 ST-2 — the navigation projection and its unified companion manifest. */
+  readonly navigation: {
+    readonly surface: ReturnType<typeof buildNavigationManifest>;
+    readonly manifest: CompanionManifest;
   };
 }
 
@@ -87,6 +96,34 @@ function feature(
   commandSurface?: ApplicationCommandSurface,
 ): FredoApplicationClass {
   return { id, name, commandSurface } as unknown as FredoApplicationClass;
+}
+
+/** Minimal navigation surface — one published verb + the caller's companion block. */
+function navSurface(
+  appId: string,
+  companion: NavigationSurface['companion'] = {
+    appName: 'Nav App',
+    description: 'Nav directive.',
+  },
+): NavigationSurface {
+  return {
+    tree: { appId, root: `${appId}.root`, places: [], directAliases: {} },
+    verbs: [
+      {
+        id: `${appId}.one`,
+        title: 'One',
+        description: `Do ${appId} one.`,
+        appliesTo: { objects: [], places: [] },
+        args: [],
+        available: () => true,
+        risk: 'safe',
+        aliases: [`${appId} one`],
+        run: () => ({ label: 'One', patch: null, inverse: null, target: [] }),
+        publish: true,
+      },
+    ],
+    companion,
+  };
 }
 
 beforeEach(() => {
@@ -224,13 +261,168 @@ describe('buildCompanionManifest', () => {
     const fixture = readFixture();
     const manifest = buildCompanionManifest(getApplications());
 
-    // Nothing in the shipped app publishes a companion surface any more.
+    // No navigation host is registered in this unit process, so the shipped
+    // Wireframe app still publishes nothing.
     expect(manifest.surfaces).toEqual([]);
-    // The retained P6 fixture is therefore NOT the live manifest this slice.
+    // The retained legacy fixture stays the Rust cross-language contract.
     expect(manifest).not.toEqual(fixture.manifest);
     expect(fixture.manifest.surfaces[0]?.appId).toBe('wireframe');
   });
 });
+
+describe('buildCompanionManifest — navigation source (Spec #3120 ST-2)', () => {
+  it('publishes the shipped Wireframe navigation surface with journal.undo before listActions', () => {
+    const manifest = buildCompanionManifest([wireframeFeature], [wireframeSurface]);
+    expect(manifest.surfaces).toHaveLength(1);
+
+    const surface = manifest.surfaces[0];
+    const published = wireframeSurface.verbs.filter((verb) => verb.publish === true);
+    expect(surface.appId).toBe('wireframe');
+    expect(surface.appName).toBe('Wireframe');
+    expect(surface.skillName).toBe('wireframe');
+
+    // The shipped declaration has 55 verbs; the 6 place-entry verbs are publish:false.
+    expect(wireframeSurface.verbs).toHaveLength(55);
+    expect(published).toHaveLength(49);
+    expect(surface.commands).toHaveLength(50);
+    expect(companionActionIds(surface)).toHaveLength(51);
+
+    // Declaration order, then the engine undo, then listActions in the enum only.
+    expect(surface.commands.map((command) => command.id)).toStrictEqual([
+      ...published.map((verb) => verb.id),
+      'journal.undo',
+    ]);
+    expect(companionActionIds(surface).slice(-2)).toStrictEqual(['journal.undo', 'listActions']);
+    expect(companionActionIds(surface).filter((id) => id === 'journal.undo')).toHaveLength(1);
+
+    // Every navigation command carries all six fields ON THE PROJECTION (G-418).
+    for (const command of surface.commands) {
+      expect(Object.keys(command)).toStrictEqual([
+        'id',
+        'label',
+        'description',
+        'risk',
+        'args',
+        'aliases',
+      ]);
+    }
+
+    // Spot-check the projected values against the declaration (not the other way round).
+    const byId = new Map(surface.commands.map((command) => [command.id, command]));
+    for (const verb of published) {
+      const command = byId.get(verb.id);
+      expect(command).toBeDefined();
+      if (command === undefined) continue;
+      expect(command.label).toBe(verb.title);
+      expect(command.description).toBe(verb.description);
+      expect(command.risk).toBe(verb.risk);
+      expect(command.aliases).toStrictEqual(verb.aliases);
+    }
+    expect(byId.get('journal.undo')).toStrictEqual({
+      id: 'journal.undo',
+      label: 'Undo',
+      description:
+        'Undo the newest change; optionally filter by actor (human, companion or system) and count (1..100).',
+      risk: 'mutating',
+      args: [
+        { name: 'actor', required: false },
+        { name: 'count', required: false },
+      ],
+      aliases: ['undo', 'revert'],
+    });
+  });
+
+  it('navigation wins over a legacy commandSurface for the same appId', () => {
+    const legacy = feature(
+      'alpha',
+      'Alpha Legacy',
+      surface([command('alpha.legacy', 'Legacy', 'A legacy command.')], {
+        description: 'Legacy directive.',
+      }),
+    );
+    const manifest = buildCompanionManifest([legacy], [navSurface('alpha')]);
+
+    expect(manifest.surfaces).toHaveLength(1);
+    const projected = manifest.surfaces[0];
+    expect(projected.appName).toBe('Nav App');
+    expect(projected.description).toBe('Nav directive.');
+    expect(projected.commands.map((entry) => entry.id)).toStrictEqual([
+      'alpha.one',
+      'journal.undo',
+    ]);
+    // The legacy command did not leak through.
+    expect(projected.commands.some((entry) => entry.id === 'alpha.legacy')).toBe(false);
+  });
+
+  it('still publishes a legacy app when no navigation surface is registered', () => {
+    const manifest = buildCompanionManifest([
+      feature('alpha', 'Alpha', surface([command('alpha.one', 'One', 'Do one thing')], {
+        description: 'Alpha directive.',
+      })),
+    ]);
+
+    expect(manifest.surfaces.map((entry) => entry.appId)).toEqual(['alpha']);
+    expect(manifest.surfaces[0].commands).toEqual([
+      { id: 'alpha.one', label: 'One', description: 'Do one thing', args: [] },
+    ]);
+    // A legacy command carries no risk/aliases keys at all (absent, never null).
+    expect('risk' in manifest.surfaces[0].commands[0]).toBe(false);
+    expect('aliases' in manifest.surfaces[0].commands[0]).toBe(false);
+  });
+
+  it('publishes a navigation surface whose appId has no registered feature', () => {
+    const manifest = buildCompanionManifest([], [navSurface('orphan')]);
+    expect(manifest.surfaces.map((entry) => entry.appId)).toEqual(['orphan']);
+  });
+
+  it('de-duplicates navigation surfaces by appId, first-wins', () => {
+    const first = navSurface('alpha', { appName: 'First Nav', description: 'First.' });
+    const second = navSurface('alpha', { appName: 'Second Nav', description: 'Second.' });
+    const manifest = buildCompanionManifest([], [first, second]);
+
+    expect(manifest.surfaces).toHaveLength(1);
+    expect(manifest.surfaces[0].appName).toBe('First Nav');
+  });
+
+  it('a navigation surface without a companion block publishes nothing and suppresses the legacy projection', () => {
+    const legacy = feature(
+      'alpha',
+      'Alpha',
+      surface([command('alpha.one', 'One', 'Do one thing')], {
+        description: 'Legacy directive.',
+      }),
+    );
+    const manifest = buildCompanionManifest([legacy], [navSurface('alpha', null)]);
+    expect(manifest.surfaces).toEqual([]);
+  });
+
+  it('the golden navigation projection deep-equals the builder', () => {
+    const fixture = readFixture();
+    expectAllSixKeys(fixture.navigation.surface);
+
+    expect(fixture.navigation.surface).toStrictEqual(buildNavigationManifest(wireframeSurface));
+    expect(fixture.navigation.manifest).toStrictEqual(
+      buildCompanionManifest([wireframeFeature], [wireframeSurface]),
+    );
+    expect(fixture.navigation.surface.commands).toHaveLength(50);
+    expect(fixture.navigation.surface.actionIds).toHaveLength(51);
+    expect(fixture.navigation.manifest.surfaces[0].commands).toHaveLength(50);
+  });
+});
+
+/** G-418 guard: every projected navigation command carries all six fields. */
+function expectAllSixKeys(manifest: ReturnType<typeof buildNavigationManifest>): void {
+  for (const command of manifest.commands) {
+    expect(Object.keys(command)).toStrictEqual([
+      'id',
+      'label',
+      'description',
+      'risk',
+      'args',
+      'aliases',
+    ]);
+  }
+}
 
 describe('companionActionIds', () => {
   it('appends the reserved listActions id after every published command id', () => {
