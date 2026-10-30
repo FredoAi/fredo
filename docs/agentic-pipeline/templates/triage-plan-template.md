@@ -87,6 +87,11 @@ it satisfies, and the files it owns. Developers work these checklist items on th
 
 <plus pass/fail criteria, required test data, non-functional checks>
 
+> Every evidence artifact a row names must be a **NON-DRAFT record** — the POSTED timeline
+> comment or a committed / non-consumed path; never a `.opencode/tmp/<issue>/` timeline draft
+> (the developer summary, the tests-runs draft, the triage plan or a fix plan), which the
+> transition posts and then consumes (G-415).
+
 ---
 
 ## Summary
