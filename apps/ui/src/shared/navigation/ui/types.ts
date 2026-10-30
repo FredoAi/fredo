@@ -48,11 +48,25 @@ export interface NavAffordance {
   readonly tooltip: string;
 }
 
+/** R-1.1 — one child-place row (the "Places" rail section above the verbs). */
+export interface CommandRailPlaceRow {
+  readonly placeId: string;
+  readonly label: string;
+  /** The first stroke that enters this child place ('' when the parent declares none). */
+  readonly key: string;
+  /** Every stroke in the parent that enters this child place, declaration order. */
+  readonly keys: readonly string[];
+  readonly keyHint: string; // display text of the first entry stroke ('' when unbound)
+  readonly transient: boolean;
+  readonly tooltip: string; // `<label> — <n> actions (<key>)` (+ transient suffix)
+}
+
 /** R-1.1 … R-1.7 — the rail's ONE model. No key table, no `VerbDescriptor[]`. */
 export interface CommandRailModel {
   readonly breadcrumb: readonly NavPlaceRef[]; // root → current
   readonly currentPlace: NavPlaceRef;
   readonly transientMarker: string | null; // `${label} · one action` iff transient
+  readonly placeRows: readonly CommandRailPlaceRow[]; // child places, declaration order
   readonly rows: readonly CommandRailRow[]; // ≤ 8, declaration order; NEVER app.map/app.ask
   readonly overflow: number; // bound verbs beyond 8, excluding the two globals
   readonly actionCount: number; // rows.length + overflow, excluding the two globals

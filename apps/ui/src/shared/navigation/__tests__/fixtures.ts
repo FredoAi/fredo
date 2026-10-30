@@ -4,9 +4,12 @@
  * Owned by ST-1. ST-2…ST-5 import from here; do NOT move or rename an export.
  *
  * Contents:
- *   - `validWireframeSurface()` — the §4.2 published key map, place flags and the four
- *     `directAliases`, with `w` deliberately unbound (so `w n` / `w p` are reachable and
- *     V-11 stays satisfiable);
+ *   - `validWireframeSurface()` — the generic P3 engine fixture (the #3117 §4.2 shape),
+ *     used by the engine-module suites (discover/context/manifest/validation/…). It is NOT
+ *     the published P5 app tree.
+ *   - `publishedWireframeSurface()` — the Spec #3119 §4.2 published tree: the six places,
+ *     the issue's key map (place-entry keys at the root, `Arrow*`/`+`/`-`), the three direct
+ *     aliases and the 55 declared verbs. The docs §4.2 and `TRACES` describe THIS tree.
  *   - `TRACES` — the three §4.3 worked traces, all seven published columns;
  *   - `createSeededRandom(seed)` — mulberry32, no new dependency (REQ-10.1);
  *   - builders (`makePlace` / `makeVerb` / `makeEffect` / `makeSurface` / snapshots) and
@@ -363,6 +366,259 @@ export function validWireframeSurface(): Surface {
   });
 }
 
+/* ─────────────── §4.2 published P5 tree (Spec #3119) ─────────────── */
+
+/**
+ * The Spec #3119 published declaration (docs §4.2): six places under `wireframe.canvas`,
+ * the issue's key map, the three direct aliases and the 55 declared verbs. It is V-valid
+ * under the P5 V-08 ROOT-only scoping (Arrange binds `u → ungroup` while the application
+ * aliases `u → journal.undo`).
+ *
+ * Entry keys at the root are `{kind:'place'}` bindings; the matching place id is declared as
+ * a verb as well so the host can run the entry effect (`host.navigationPath` enters a place
+ * whose id is a declared place).
+ */
+export function publishedWireframeSurface(): Surface {
+  const placeBinding = (placeId: string): KeyBinding => ({ kind: 'place', placeId });
+  const v = (verbId: string): KeyBinding => ({ kind: 'verb', verbId });
+
+  const places: readonly PlaceNode[] = [
+    makePlace({
+      id: CANVAS,
+      label: 'Canvas',
+      parent: null,
+      keys: {
+        c: placeBinding(CREATE),
+        e: placeBinding(EDIT),
+        a: placeBinding(ARRANGE),
+        s: placeBinding(STYLE),
+        v: placeBinding(VIEW),
+        f: placeBinding(FILE),
+        m: v('app.map'),
+        k: v('app.ask'),
+        ArrowLeft: v('wireframe.selection.previous'),
+        ArrowUp: v('wireframe.selection.previous'),
+        ArrowRight: v('wireframe.selection.next'),
+        ArrowDown: v('wireframe.selection.next'),
+      },
+    }),
+    makePlace({
+      id: CREATE,
+      label: 'Create',
+      parent: CANVAS,
+      transient: true,
+      sticky: false,
+      operator: 'wireframe.create-shape',
+      cursor: 'crosshair',
+      keys: {
+        r: v('wireframe.create.rect'),
+        e: v('wireframe.create.ellipse'),
+        t: v('wireframe.add.text'),
+        b: v('wireframe.add.button'),
+        i: v('wireframe.add.input'),
+        m: v('wireframe.add.image'),
+        k: v('wireframe.add.card'),
+        s: v('wireframe.add.section'),
+        l: v('wireframe.add.line'),
+      },
+    }),
+    makePlace({
+      id: EDIT,
+      label: 'Edit',
+      parent: CANVAS,
+      sticky: true,
+      keys: {
+        d: v('wireframe.element.duplicate'),
+        x: v('wireframe.element.delete'),
+        l: v('wireframe.element.toggleLock'),
+        h: v('wireframe.element.toggleVisible'),
+        r: v('wireframe.element.rename'),
+      },
+    }),
+    makePlace({
+      id: ARRANGE,
+      label: 'Arrange',
+      parent: CANVAS,
+      sticky: true,
+      keys: {
+        g: v('wireframe.arrange.group'),
+        u: v('wireframe.arrange.ungroup'),
+        ArrowLeft: v('wireframe.arrange.alignLeft'),
+        ArrowRight: v('wireframe.arrange.alignRight'),
+        d: v('wireframe.arrange.distribute'),
+        f: v('wireframe.arrange.bringForward'),
+        b: v('wireframe.arrange.sendBackward'),
+        s: v('wireframe.arrange.toggleSnap'),
+      },
+    }),
+    makePlace({
+      id: STYLE,
+      label: 'Style',
+      parent: CANVAS,
+      sticky: true,
+      keys: {
+        f: v('wireframe.style.fill'),
+        o: v('wireframe.style.border'),
+        p: v('wireframe.style.appearance'),
+        z: v('wireframe.style.radius'),
+        t: v('wireframe.style.textStyle'),
+      },
+    }),
+    makePlace({
+      id: VIEW,
+      label: 'View',
+      parent: CANVAS,
+      sticky: true,
+      keys: {
+        '+': v('wireframe.zoom.in'),
+        '-': v('wireframe.zoom.out'),
+        f: v('wireframe.view.fitPage'),
+        '0': v('wireframe.view.resetView'),
+        p: v('wireframe.view.togglePan'),
+      },
+    }),
+    makePlace({
+      id: FILE,
+      label: 'File',
+      parent: CANVAS,
+      sticky: true,
+      keys: {
+        n: v('wireframe.document.new'),
+        o: v('place.open'),
+        w: v('place.saveAs'),
+        x: v('place.exportPng'),
+      },
+    }),
+  ];
+
+  const entry = (placeId: string, title: string): VerbDescriptor =>
+    makeVerb({
+      id: placeId,
+      title,
+      appliesTo: { objects: ['page'], places: [placeId] },
+      run: () => makeEffect({ effect: 'navigation', label: title }),
+    });
+
+  const verbs: readonly VerbDescriptor[] = [
+    // place entry (the id EQUALS the place id — host.navigationPath enters it)
+    entry(CREATE, 'Create'),
+    entry(EDIT, 'Edit'),
+    entry(ARRANGE, 'Arrange'),
+    entry(STYLE, 'Style'),
+    entry(VIEW, 'View'),
+    entry(FILE, 'File'),
+    // root capabilities
+    wireframeVerb('app.map', 'Map', CANVAS, 'safe', ['page']),
+    wireframeVerb('app.ask', 'Ask', CANVAS, 'safe', ['page']),
+    wireframeVerb('wireframe.selection.previous', 'Previous element', CANVAS, 'safe', ['selection']),
+    wireframeVerb('wireframe.selection.next', 'Next element', CANVAS, 'safe', ['selection']),
+    // create
+    wireframeVerb('wireframe.create.rect', 'Rectangle', CREATE),
+    wireframeVerb('wireframe.create.ellipse', 'Ellipse', CREATE),
+    // insert
+    wireframeVerb('wireframe.add.text', 'Text', CREATE),
+    wireframeVerb('wireframe.add.button', 'Button', CREATE),
+    wireframeVerb('wireframe.add.input', 'Input', CREATE),
+    wireframeVerb('wireframe.add.image', 'Image', CREATE),
+    wireframeVerb('wireframe.add.icon', 'Icon', CREATE),
+    wireframeVerb('wireframe.add.card', 'Card', CREATE),
+    wireframeVerb('wireframe.add.section', 'Section', CREATE),
+    wireframeVerb('wireframe.add.shape', 'Shape', CREATE),
+    wireframeVerb('wireframe.add.line', 'Line', CREATE),
+    // edit
+    wireframeVerb('wireframe.element.duplicate', 'Duplicate', EDIT),
+    wireframeVerb(
+      'wireframe.element.delete',
+      'Delete',
+      EDIT,
+      'destructive',
+      ['element'],
+      'deleted elements are not kept in Fredo\'s history.',
+    ),
+    wireframeVerb('wireframe.element.toggleLock', 'Toggle lock', EDIT),
+    wireframeVerb('wireframe.element.toggleVisible', 'Toggle visible', EDIT),
+    wireframeVerb('wireframe.element.rename', 'Rename', EDIT),
+    // geometry + fields
+    wireframeVerb('wireframe.element.move', 'Move', EDIT),
+    wireframeVerb('wireframe.element.resize', 'Resize', EDIT),
+    wireframeVerb('wireframe.element.setField', 'Set field', EDIT),
+    wireframeVerb('wireframe.page.update', 'Update page', EDIT),
+    // arrange
+    wireframeVerb('wireframe.arrange.group', 'Group', ARRANGE),
+    wireframeVerb('wireframe.arrange.ungroup', 'Ungroup', ARRANGE),
+    wireframeVerb('wireframe.arrange.toggleGroupLock', 'Lock group', ARRANGE),
+    wireframeVerb('wireframe.arrange.alignLeft', 'Align left', ARRANGE),
+    wireframeVerb('wireframe.arrange.alignCenter', 'Align center', ARRANGE),
+    wireframeVerb('wireframe.arrange.alignRight', 'Align right', ARRANGE),
+    wireframeVerb('wireframe.arrange.distribute', 'Distribute', ARRANGE),
+    wireframeVerb('wireframe.arrange.bringForward', 'Bring forward', ARRANGE),
+    wireframeVerb('wireframe.arrange.sendBackward', 'Send backward', ARRANGE),
+    wireframeVerb('wireframe.arrange.toggleSnap', 'Toggle snap', ARRANGE),
+    // style
+    wireframeVerb('wireframe.style.fill', 'Fill', STYLE),
+    wireframeVerb('wireframe.style.border', 'Border', STYLE),
+    wireframeVerb('wireframe.style.appearance', 'Appearance', STYLE),
+    wireframeVerb('wireframe.style.radius', 'Radius', STYLE),
+    wireframeVerb('wireframe.style.textStyle', 'Text style', STYLE),
+    // view
+    wireframeVerb('wireframe.zoom.in', 'Zoom in', VIEW, 'safe', ['view']),
+    wireframeVerb('wireframe.zoom.out', 'Zoom out', VIEW, 'safe', ['view']),
+    wireframeVerb('wireframe.view.fitPage', 'Fit page', VIEW, 'safe', ['view']),
+    wireframeVerb('wireframe.view.resetView', 'Reset view', VIEW, 'safe', ['view']),
+    wireframeVerb('wireframe.view.togglePan', 'Pan tool', VIEW, 'safe', ['view']),
+    wireframeVerb('wireframe.view.panBy', 'Pan by', VIEW, 'safe', ['view']),
+    // file (non-undoable; authored consequences)
+    wireframeVerb(
+      'wireframe.document.new',
+      'New document',
+      FILE,
+      'destructive',
+      ['document'],
+      'the previous document was closed without being kept.',
+    ),
+    wireframeVerb(
+      'place.open',
+      'Open',
+      FILE,
+      'external',
+      ['document'],
+      'the previous document is no longer loaded.',
+    ),
+    wireframeVerb(
+      'place.saveAs',
+      'Save as',
+      FILE,
+      'external',
+      ['document'],
+      'a new file was written outside Fredo\'s history.',
+    ),
+    wireframeVerb(
+      'place.exportPng',
+      'Export PNG',
+      FILE,
+      'external',
+      ['document'],
+      'the file is outside Fredo\'s document history.',
+    ),
+  ];
+
+  return makeSurface({
+    appId: 'wireframe',
+    root: CANVAS,
+    places,
+    verbs,
+    directAliases: {
+      r: 'wireframe.create.rect',
+      u: 'journal.undo',
+      y: 'journal.redo',
+    },
+    companion: {
+      appName: 'Wireframe',
+      description: 'Draw and arrange wireframe pages.',
+    },
+  });
+}
+
 /* ─────────────────────────── §4.3 worked traces ─────────────────────────── */
 
 /** One §4.3 trace row — every published column, in one record. */
@@ -384,7 +640,7 @@ export const TRACES: readonly TraceCase[] = [
   {
     strokes: ['c'],
     tiers: [1],
-    intents: ['place.create'],
+    intents: ['wireframe.create'],
     args: [{}],
     effects: ['navigation'],
     placePath: ['wireframe.canvas'],
@@ -394,7 +650,7 @@ export const TRACES: readonly TraceCase[] = [
   {
     strokes: ['c', 'r'],
     tiers: [1, 1],
-    intents: ['place.create', 'place.rect'],
+    intents: ['wireframe.create', 'wireframe.create.rect'],
     args: [{}, {}],
     effects: ['navigation', 'mutation'],
     placePath: ['wireframe.canvas', 'wireframe.create'],
@@ -404,7 +660,7 @@ export const TRACES: readonly TraceCase[] = [
   {
     strokes: ['r'],
     tiers: [2],
-    intents: ['place.rect'],
+    intents: ['wireframe.create.rect'],
     args: [{}],
     effects: ['mutation'],
     placePath: ['wireframe.canvas'],

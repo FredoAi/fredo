@@ -276,6 +276,74 @@ describe('buildCommandRailModel — the two globals are affordances, never rows 
   });
 });
 
+/* ───────────────────────────── child-place rows (P5 / ST-1) ───────────────────────────── */
+
+describe('buildCommandRailModel — child-place rows (P5)', () => {
+  it('place rows list child places in declaration order', () => {
+    const rail = railAt([S.canvas]);
+    expect(rail.placeRows.map((row) => row.placeId)).toEqual([
+      S.create,
+      S.edit,
+      S.arrange,
+      S.style,
+      S.view,
+      S.file,
+    ]);
+    expect(rail.placeRows.map((row) => row.label)).toEqual([
+      'Create',
+      'Edit',
+      'Arrange',
+      'Style',
+      'View',
+      'File',
+    ]);
+    // The entry stroke + display hint come from the parent's bindings.
+    expect(rail.placeRows[0]).toMatchObject({
+      placeId: S.create,
+      label: 'Create',
+      key: 'c',
+      keys: ['c'],
+      keyHint: 'C',
+      transient: true,
+    });
+    expect(rail.placeRows[0]?.tooltip).toContain('(C)');
+    expect(rail.placeRows[1]?.transient).toBe(false);
+
+    // A leaf place declares no children — nothing renders.
+    expect(railAt([S.canvas, S.edit]).placeRows).toEqual([]);
+  });
+
+  it('place rows stay out of the eight row verb cap', () => {
+    const rail = railAt([S.canvas]);
+    // Six child places AND six verb rows: the place rows must not consume the verb cap.
+    expect(rail.placeRows).toHaveLength(6);
+    expect(rail.rows).toHaveLength(6);
+    expect(rail.rows.length).toBeLessThanOrEqual(NAV_RAIL_MAX_ROWS);
+    expect(rail.overflow).toBe(0);
+    expect(rail.actionCount).toBe(6);
+    expect(rail.actionCount).toBe(rail.rows.length + rail.overflow);
+
+    // The cap still applies to VERB rows (Arrange binds nine in the fixture).
+    const arrange = railAt([S.canvas, S.arrange]);
+    expect(arrange.rows).toHaveLength(NAV_RAIL_MAX_ROWS);
+    expect(arrange.overflow).toBe(1);
+    expect(arrange.actionCount).toBe(9);
+    expect(arrange.placeRows).toEqual([]);
+  });
+
+  it('the rail verb rows still exclude the two globals', () => {
+    const rail = railAt([S.canvas]);
+    const ids = rail.rows.map((row) => row.verbId);
+    expect(ids).not.toContain(NAV_MAP_VERB_ID);
+    expect(ids).not.toContain(NAV_ASK_VERB_ID);
+    // The child places are their own section, never confused with the two globals.
+    expect(rail.placeRows.map((row) => row.placeId)).not.toContain(NAV_MAP_VERB_ID);
+    expect(rail.placeRows.map((row) => row.placeId)).not.toContain(NAV_ASK_VERB_ID);
+    expect(rail.map.binding).toBe('m');
+    expect(rail.ask.binding).toBe('k');
+  });
+});
+
 /* ───────────────────────────── R-2.2 map tree + sections ───────────────────────────── */
 
 describe('buildNavigationMapModel — the declaration tree and its three sections (R-2.2 / Q2-02)', () => {
@@ -501,6 +569,20 @@ describe('format.ts — the one formatter per concern (Architect §8)', () => {
     expect(formatKeyHint(['c'])).toBe('C');
     expect(formatKeyHint(['w n'])).toBe('W then N');
     expect(formatKeyHint([])).toBe('');
+  });
+
+  it('formatKeyHint renders the four arrows as glyphs', () => {
+    expect(formatKeyHint(['ArrowLeft'])).toBe('←');
+    expect(formatKeyHint(['ArrowRight'])).toBe('→');
+    expect(formatKeyHint(['ArrowUp'])).toBe('↑');
+    expect(formatKeyHint(['ArrowDown'])).toBe('↓');
+    // Only the FIRST binding is shown (matching NavKeycap).
+    expect(formatKeyHint(['ArrowLeft', 'ArrowRight'])).toBe('←');
+  });
+
+  it('formatKeyHint renders plus and minus verbatim', () => {
+    expect(formatKeyHint(['+'])).toBe('+');
+    expect(formatKeyHint(['-'])).toBe('-');
   });
 
   it('joins a place path with the bound separator', () => {

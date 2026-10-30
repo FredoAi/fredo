@@ -286,6 +286,9 @@ export function createNavigationHost(options: NavigationHostOptions): Navigation
       case 'performed': {
         const entry = result.entry;
         if (entry.effect === 'navigation') return placeAnnouncement(previous, next);
+        // A completed mutation in a TRANSIENT place auto-exits (one pop) — announce the
+        // exit through the SAME composer as an Escape pop, exactly once.
+        if (!pathEquals(previous, next)) return placeAnnouncement(previous, next);
         if (entry.actor === 'system' && entry.label.startsWith('Undo ')) {
           return navUndoMessage(undoneLabelOf(entry));
         }
@@ -319,14 +322,40 @@ export function createNavigationHost(options: NavigationHostOptions): Navigation
     return [...path];
   }
 
-  /** Commit exactly one mutation for a finished dispatch. */
-  function commitResult(result: DispatchResult): DispatchResult {
+  /** True when the cursor is inside a declared `transient` place. */
+  function currentPlaceTransient(): boolean {
+    const currentId = path[path.length - 1];
+    if (currentId === undefined) return false;
+    return registry.placesById.get(currentId)?.transient === true;
+  }
+
+  /**
+   * Commit exactly one mutation for a finished dispatch.
+   *
+   * Cursor rules (§2.2 / §4.1): a NAVIGATION effect enters the verb's place (or honours the
+   * injected path); a completed MUTATION in a `transient` place pops exactly one level; a
+   * sticky place's cursor is unchanged. `key` (when the stroke path supplies it) lets a
+   * bound-but-unavailable verb speak `navUnavailableKeyMessage` instead of doing nothing.
+   */
+  function commitResult(result: DispatchResult, key?: string): DispatchResult {
     const previous = path;
-    const next =
-      result.status === 'performed' && result.entry.effect === 'navigation'
-        ? navigationPath(result.entry.verbId)
-        : previous;
-    const message = announcementFor(result, previous, next);
+    let next = previous;
+    if (result.status === 'performed') {
+      if (result.entry.effect === 'navigation') {
+        next = navigationPath(result.entry.verbId);
+      } else if (currentPlaceTransient() && path.length > 1) {
+        next = path.slice(0, -1);
+      }
+    }
+    let message = announcementFor(result, previous, next);
+    if (
+      message === null &&
+      key !== undefined &&
+      result.status === 'rejected' &&
+      result.code === 'unavailable'
+    ) {
+      message = navUnavailableKeyMessage(key);
+    }
     path = next;
     pending = null;
     commit(message ?? undefined);
@@ -423,7 +452,7 @@ export function createNavigationHost(options: NavigationHostOptions): Navigation
       }
 
       case 'dispatch':
-        return commitResult(await dispatch(deps, resolution.intent));
+        return commitResult(await dispatch(deps, resolution.intent), key ?? undefined);
     }
   }
 

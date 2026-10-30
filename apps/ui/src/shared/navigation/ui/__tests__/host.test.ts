@@ -44,6 +44,7 @@ import {
   seedEntries,
   seedNonUndoableEntry,
 } from './fixtures';
+import { publishedWireframeSurface } from '../../__tests__/fixtures';
 
 /* ───────────────────────────── harness ───────────────────────────── */
 
@@ -468,6 +469,102 @@ describe('undoEntry(seq) — reverts THAT entry, never the newest', () => {
     expect(harness.announcements).toEqual(['Nothing to undo.']);
     expect(harness.applied).toHaveLength(0);
     expect(journal.entries()).toHaveLength(2);
+  });
+});
+
+/* ─────────────── P5 — transient auto-exit + pinned action counts ─────────────── */
+
+describe('P5 — transient auto-exit and the unavailable-key announcement', () => {
+  it('a mutation in a transient place pops exactly one level', async () => {
+    const harness = createHarness();
+
+    await harness.host.handleStroke('c', 1000);
+    expect(harness.host.getSnapshot().context.placePath).toEqual([
+      FIXTURE_PLACES.canvas,
+      FIXTURE_PLACES.create,
+    ]);
+
+    const result = await harness.host.handleStroke('r', 1000); // test.rect — a real mutation
+    expect(result?.status).toBe('performed');
+    expect(harness.host.getSnapshot().context.placePath).toEqual([FIXTURE_PLACES.canvas]);
+  });
+
+  it('a transient mutation announces the exit once', async () => {
+    const harness = createHarness();
+
+    await harness.host.handleStroke('c', 1000);
+    await harness.host.handleStroke('r', 1000);
+
+    // The entry message, then EXACTLY ONE exit message through the same composer.
+    expect(harness.announcements).toEqual([
+      navPlaceEnterMessage('Create', 2),
+      navPlaceExitMessage('Create', 'Canvas', 6),
+    ]);
+    expect(harness.announcements).toHaveLength(2);
+  });
+
+  it('a sticky place mutation keeps the cursor', async () => {
+    const harness = createHarness();
+
+    await harness.host.handleStroke('i', 1000); // enter Edit (sticky)
+    const result = await harness.host.handleStroke('d', 1000); // test.duplicate — a mutation
+    expect(result?.status).toBe('performed');
+
+    expect(harness.host.getSnapshot().context.placePath).toEqual([
+      FIXTURE_PLACES.canvas,
+      FIXTURE_PLACES.edit,
+    ]);
+    // Only the entry message — no exit for a sticky place.
+    expect(harness.announcements).toEqual([navPlaceEnterMessage('Edit', 3)]);
+  });
+
+  it('a bound but unavailable key announces the unavailable message once', async () => {
+    const harness = createHarness();
+
+    await harness.host.handleStroke('i', 1000); // enter Edit
+    const entriesBefore = harness.journal.entries().length;
+
+    // `test.paste` is bound to `p` and unavailable with the default (empty) selection.
+    const result = await harness.host.handleStroke('p', 1000);
+
+    expect(result?.status).toBe('rejected');
+    if (result?.status === 'rejected') expect(result.code).toBe('unavailable');
+    expect(harness.host.getSnapshot().announcement).toBe(navUnavailableKeyMessage('p'));
+    expect(harness.announcements).toEqual([
+      navPlaceEnterMessage('Edit', 3),
+      "p isn't available here",
+    ]);
+    // Nothing performed, nothing journaled, the cursor is unchanged.
+    expect(harness.journal.entries()).toHaveLength(entriesBefore);
+    expect(harness.host.getSnapshot().context.placePath).toEqual([
+      FIXTURE_PLACES.canvas,
+      FIXTURE_PLACES.edit,
+    ]);
+  });
+
+  it('the rail action counts are pinned to the declared verbs', async () => {
+    const harness = createHarness(publishedWireframeSurface());
+    const cases: ReadonlyArray<{ stroke: string; label: string; count: number }> = [
+      { stroke: 'c', label: 'Create', count: 9 },
+      { stroke: 'e', label: 'Edit', count: 5 },
+      { stroke: 'a', label: 'Arrange', count: 8 },
+      { stroke: 's', label: 'Style', count: 5 },
+      { stroke: 'v', label: 'View', count: 5 },
+      { stroke: 'f', label: 'File', count: 4 },
+    ];
+
+    for (const expected of cases) {
+      await harness.host.handleStroke(expected.stroke, 1000);
+      expect(harness.host.getSnapshot().announcement, expected.label).toBe(
+        navPlaceEnterMessage(expected.label, expected.count),
+      );
+      await harness.host.handleStroke('Escape', 1000);
+      // Canvas = 2 (the two selection verbs; the six entry keys are PLACE bindings and the
+      // two globals are filtered out), and place rows never inflate the count.
+      expect(harness.host.getSnapshot().announcement, expected.label).toBe(
+        navPlaceExitMessage(expected.label, 'Canvas', 2),
+      );
+    }
   });
 });
 

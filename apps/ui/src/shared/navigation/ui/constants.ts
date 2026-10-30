@@ -21,6 +21,8 @@ export const NAV_RAIL_BREADCRUMB_TESTID = 'navigation-rail-breadcrumb';
 export const NAV_RAIL_PLACE_TESTID = 'navigation-rail-place';
 export const NAV_RAIL_TRANSIENT_TESTID = 'navigation-rail-transient';
 export const NAV_RAIL_LIST_TESTID = 'navigation-rail-list';
+export const NAV_RAIL_PLACES_TESTID = 'navigation-rail-places';
+export const NAV_RAIL_PLACE_ROW_TESTID = 'navigation-rail-place-row';
 export const NAV_RAIL_ROW_TESTID = 'navigation-rail-row';
 export const NAV_RAIL_RISK_TESTID = 'navigation-rail-risk';
 export const NAV_RAIL_MORE_TESTID = 'navigation-rail-more';
@@ -70,6 +72,10 @@ export const NAV_TRAIL_ARIA_LABEL = 'Activity trail';
 
 // ── copy (test-asserted literals) ───────────────────────────────────────────
 export const NAV_MORE_LABEL = 'more…';
+/** Accessible name for the `more…` affordance (the visible label stays `more…`). */
+export const NAV_MORE_ARIA_LABEL = 'More actions in this place — opens the map';
+/** Micro-label above the child-place rows in the rail. */
+export const NAV_RAIL_PLACES_LABEL = 'Places';
 export const NAV_EMPTY_TRAIL_COPY = 'Nothing yet — your actions will appear here';
 export const NAV_UNAVAILABLE_REASON = 'Not available for the current selection';
 export const NAV_ASK_DISABLED_REASON = 'Ask arrives with the launcher in the next phase';

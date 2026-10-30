@@ -413,6 +413,44 @@ describe('the twelve rule fixtures', () => {
     expect(gateOutcome(aliasShadowsPlaceKeySurface(), 'r')).toBe('blocked');
   });
 
+  it('a direct alias shadowing only a child place key is valid', () => {
+    // P5 V-08 is ROOT-only: a child place's own key is tier 1 and is never reached by an
+    // alias, so binding `u` to ungroup inside a child while aliasing `u` to undo is legal.
+    const surface = makeSurface({
+      root: ROOT,
+      places: [
+        makePlace({ id: ROOT }),
+        makePlace({
+          id: 'p.child',
+          parent: ROOT,
+          sticky: true,
+          keys: { u: verbBinding('place.ungroup') },
+        }),
+      ],
+      verbs: [makeVerb({ id: 'place.ungroup', appliesTo: appliesTo(['p.child']) })],
+      directAliases: { u: 'journal.undo' },
+    });
+
+    expect(validateSurface(surface)).toStrictEqual({ valid: true, diagnostics: [] });
+  });
+
+  it('a direct alias shadowing the root place key is V-08', () => {
+    const surface = rootSurface(
+      { u: verbBinding('place.other') },
+      [makeVerb({ id: 'place.other', appliesTo: appliesTo([ROOT]) })],
+      { u: 'journal.undo' },
+    );
+    const result = validateSurface(surface);
+    expect(result.valid).toBe(false);
+    expect(result.diagnostics).toHaveLength(1);
+    expect(result.diagnostics[0]?.rule).toBe('V-08');
+    expect(result.diagnostics[0]?.code).toBe('NAV-E008');
+    expect(result.diagnostics[0]?.path).toBe(`place:${ROOT}`);
+    expect(result.diagnostics[0]?.message).toBe(
+      `direct alias "u" → "journal.undo" shadows place "${ROOT}" key → "place.other"`,
+    );
+  });
+
   it('V-09 every verb declares a risk', () => {
     const only = expectSingleDiagnostic(missingRiskSurface(), 'V-09', 'NAV-E009');
     expect(only.path).toBe('verb:place.rect');
