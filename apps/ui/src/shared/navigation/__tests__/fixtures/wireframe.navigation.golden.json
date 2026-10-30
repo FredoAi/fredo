@@ -1,0 +1,301 @@
+{
+  "schemaVersion": 1,
+  "manifest": {
+    "appId": "wireframe",
+    "appName": "Wireframe",
+    "skillName": "wireframe",
+    "description": "Draw and arrange wireframe pages.",
+    "commands": [
+      {
+        "id": "place.create",
+        "label": "Create",
+        "description": "Create the current page.",
+        "args": []
+      },
+      {
+        "id": "place.edit",
+        "label": "Edit",
+        "description": "Edit the current page.",
+        "args": []
+      },
+      {
+        "id": "place.arrange",
+        "label": "Arrange",
+        "description": "Arrange the current page.",
+        "args": []
+      },
+      {
+        "id": "place.style",
+        "label": "Style",
+        "description": "Style the current page.",
+        "args": []
+      },
+      {
+        "id": "place.view",
+        "label": "View",
+        "description": "View the current page.",
+        "args": []
+      },
+      {
+        "id": "place.file",
+        "label": "File",
+        "description": "File the current page.",
+        "args": []
+      },
+      {
+        "id": "app.map",
+        "label": "Map",
+        "description": "Map the current page.",
+        "args": []
+      },
+      {
+        "id": "app.ask",
+        "label": "Ask",
+        "description": "Ask the current page.",
+        "args": []
+      },
+      {
+        "id": "app.palette",
+        "label": "Palette",
+        "description": "Palette the current page.",
+        "args": []
+      },
+      {
+        "id": "window.focusNext",
+        "label": "Focus next",
+        "description": "Focus next the current page.",
+        "args": []
+      },
+      {
+        "id": "window.focusPrevious",
+        "label": "Focus previous",
+        "description": "Focus previous the current page.",
+        "args": []
+      },
+      {
+        "id": "place.rect",
+        "label": "Rectangle",
+        "description": "Rectangle the current page.",
+        "args": []
+      },
+      {
+        "id": "place.ellipse",
+        "label": "Ellipse",
+        "description": "Ellipse the current page.",
+        "args": []
+      },
+      {
+        "id": "place.text",
+        "label": "Text",
+        "description": "Text the current page.",
+        "args": []
+      },
+      {
+        "id": "place.button",
+        "label": "Button",
+        "description": "Button the current page.",
+        "args": []
+      },
+      {
+        "id": "place.selectAll",
+        "label": "Select all",
+        "description": "Select all the current page.",
+        "args": []
+      },
+      {
+        "id": "place.duplicate",
+        "label": "Duplicate",
+        "description": "Duplicate the current page.",
+        "args": []
+      },
+      {
+        "id": "place.delete",
+        "label": "Delete",
+        "description": "Delete the current page.",
+        "args": []
+      },
+      {
+        "id": "place.toggleLock",
+        "label": "Toggle lock",
+        "description": "Toggle lock the current page.",
+        "args": []
+      },
+      {
+        "id": "place.alignLeft",
+        "label": "Align left",
+        "description": "Align left the current page.",
+        "args": []
+      },
+      {
+        "id": "place.alignCenter",
+        "label": "Align center",
+        "description": "Align center the current page.",
+        "args": []
+      },
+      {
+        "id": "place.alignRight",
+        "label": "Align right",
+        "description": "Align right the current page.",
+        "args": []
+      },
+      {
+        "id": "place.distribute",
+        "label": "Distribute",
+        "description": "Distribute the current page.",
+        "args": []
+      },
+      {
+        "id": "place.group",
+        "label": "Group",
+        "description": "Group the current page.",
+        "args": []
+      },
+      {
+        "id": "place.ungroup",
+        "label": "Ungroup",
+        "description": "Ungroup the current page.",
+        "args": []
+      },
+      {
+        "id": "place.bringForward",
+        "label": "Bring forward",
+        "description": "Bring forward the current page.",
+        "args": []
+      },
+      {
+        "id": "place.sendBackward",
+        "label": "Send backward",
+        "description": "Send backward the current page.",
+        "args": []
+      },
+      {
+        "id": "place.setFill",
+        "label": "Set fill",
+        "description": "Set fill the current page.",
+        "args": []
+      },
+      {
+        "id": "place.copyStyle",
+        "label": "Copy style",
+        "description": "Copy style the current page.",
+        "args": []
+      },
+      {
+        "id": "place.resetStyle",
+        "label": "Reset style",
+        "description": "Reset style the current page.",
+        "args": []
+      },
+      {
+        "id": "place.zoomIn",
+        "label": "Zoom in",
+        "description": "Zoom in the current page.",
+        "args": []
+      },
+      {
+        "id": "place.zoomOut",
+        "label": "Zoom out",
+        "description": "Zoom out the current page.",
+        "args": []
+      },
+      {
+        "id": "place.fitPage",
+        "label": "Fit page",
+        "description": "Fit page the current page.",
+        "args": []
+      },
+      {
+        "id": "place.togglePan",
+        "label": "Toggle pan",
+        "description": "Toggle pan the current page.",
+        "args": []
+      },
+      {
+        "id": "place.save",
+        "label": "Save",
+        "description": "Save the current page.",
+        "args": []
+      },
+      {
+        "id": "place.saveAs",
+        "label": "Save as",
+        "description": "Save as the current page.",
+        "args": []
+      },
+      {
+        "id": "place.open",
+        "label": "Open",
+        "description": "Open the current page.",
+        "args": []
+      },
+      {
+        "id": "place.exportPng",
+        "label": "Export PNG",
+        "description": "Export PNG the current page.",
+        "args": []
+      },
+      {
+        "id": "wireframe.document.new",
+        "label": "New document",
+        "description": "New document the current page.",
+        "args": []
+      },
+      {
+        "id": "journal.undo",
+        "label": "Undo",
+        "description": "Undo the current page.",
+        "args": []
+      },
+      {
+        "id": "journal.redo",
+        "label": "Redo",
+        "description": "Redo the current page.",
+        "args": []
+      }
+    ],
+    "actionIds": [
+      "place.create",
+      "place.edit",
+      "place.arrange",
+      "place.style",
+      "place.view",
+      "place.file",
+      "app.map",
+      "app.ask",
+      "app.palette",
+      "window.focusNext",
+      "window.focusPrevious",
+      "place.rect",
+      "place.ellipse",
+      "place.text",
+      "place.button",
+      "place.selectAll",
+      "place.duplicate",
+      "place.delete",
+      "place.toggleLock",
+      "place.alignLeft",
+      "place.alignCenter",
+      "place.alignRight",
+      "place.distribute",
+      "place.group",
+      "place.ungroup",
+      "place.bringForward",
+      "place.sendBackward",
+      "place.setFill",
+      "place.copyStyle",
+      "place.resetStyle",
+      "place.zoomIn",
+      "place.zoomOut",
+      "place.fitPage",
+      "place.togglePan",
+      "place.save",
+      "place.saveAs",
+      "place.open",
+      "place.exportPng",
+      "wireframe.document.new",
+      "journal.undo",
+      "journal.redo",
+      "listActions"
+    ]
+  }
+}
