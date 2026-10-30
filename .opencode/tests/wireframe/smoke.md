@@ -190,3 +190,53 @@ Root defect detail + repro: see `functional.md` → "Round 1 result — served a
       the `default` gate still adds a text element (`-element-count` 0→1); a capture of the
       clean toolbar is uploaded; console clean.
       Cross-ref `functional.md` F-84/F-86.
+
+## Spec #3119 (P5) — RE-BASELINE of the toolbar / hotkey quick paths
+
+> The toolbar, the command surface and the hotkey carrier are DELETED; Wireframe is driven by a
+> declaration of six places. **The rows above are kept as history (G-125) — the amendments below
+> are the executable recipes.** The surface's own smoke lives in
+> `.opencode/tests/wireframe-navigation/smoke.md` (S-N1…S-N8).
+
+- **S-6 re-baselined:** "press `1` from the `default` focus gate" → press `c` then `t` (Create
+  place, text). `-element-count` 0→1, `-selection-type="text"`, `data-wireframe-place` back to
+  `wireframe.canvas` after the add. Icon (`i` → `m`) and shape are **map › Create** only.
+- **S-7 re-baselined:** `w` (save as) → `f` then `w`; `o` (open) → `f` then `o`. Everything else
+  (path seams, `-dirty=false`, status `Saved`, `-document-path`) is unchanged. `document.new`
+  → `f` `n`.
+- **S-7b re-baselined:** the `FREDO_WIREFRAME_CANCEL=1` leg presses `f` `w`; expectations
+  unchanged (nothing written, no banner, document/path/dirty unchanged).
+- **S-9 re-baselined (bar quick path):** Wireframe now contributes **0** bar rows. With
+  Wireframe focused, `[data-testid="hotkeys-keybar-row"]` contains **no** Wireframe rows and
+  `data-fredo-hotkey-count` is unchanged from the unfocused reading (delta **0**);
+  `document.body[data-fredo-hotkey-duplicate]` stays absent. **Non-vacuity control:** focus
+  Mission Monitor → its rows are present.
+- **S-12 re-baselined (multi-select + group):** keys `1`/`2` → `c` `t` / `c` `b`; `g` `g` →
+  `a` `g`. `-selection-count`, `-group-count` and `wireframe-tag-group` expectations unchanged.
+- **S-13 re-baselined (snap + align):** `g s` → `a` `s`; `g a` (align left) → `a` `←`.
+  `-selection-geometry` edge coincidence and the ONE-`u` clause are unchanged (`u` at the root).
+- **S-15 superseded:** the `g` two-step namespace no longer exists; there is no
+  `data-fredo-pending-sequence` for Wireframe. The nav engine's armed prefix is 250 ms and shows
+  in `navigation-rail` / the hint, not the bar.
+- **S-16 superseded:** `wireframe-toolbar` renders **0** nodes (the element is deleted) and
+  Wireframe mounts **0** `wireframe-action-*` controls. Replacement parity proof:
+  `wireframe-navigation` F-N13 (33-row manifest).
+
+## Spec #3119 (P5) — added quick paths
+
+> Env + driver as above (`-Spec 3119 -EnvId wf3119-a -EnvSlot 1 -RequireIsolation`, MCP port
+> `"16001"`). **Verification policy: live.**
+
+- [ ] **S-17: Navigation-shell quick path.** Open Wireframe from the launcher.
+      **Expected:** `wireframe-root[data-wireframe-place="wireframe.canvas"]`,
+      `navigation-rail` (six place rows + ≤ 8 verb rows), `navigation-trail`,
+      `navigation-map` trigger, `wireframe-canvas`; **no** `wireframe-toolbar`, **0**
+      `wireframe-action-*`, **0** `hotkeys-keybar` while focused. Capture uploaded; console clean.
+- [ ] **S-18: Place-entry quick path.** Press `c` (breadcrumb `Canvas › Create`, announcement
+      `Create — 9 actions`, rail 8 rows + `more…`), then `Escape` (breadcrumb `Canvas`,
+      announcement `Left Create — Canvas — 2 actions`). Capture of the Create rail uploaded;
+      console clean.
+- [ ] **S-19: Create-and-return quick path.** Press `c` `r`, drag a rectangle.
+      **Expected:** count 1, `data-wireframe-place` back to `wireframe.canvas` (transient
+      auto-exit), exactly ONE trail entry, exactly ONE announcement. Console clean.
+      Cross-ref `wireframe-navigation` F-N3/F-N10.
