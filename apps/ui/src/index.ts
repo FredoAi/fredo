@@ -232,3 +232,6 @@ export type {
 } from './shared/hotkeys/types';
 
 export * from './shared/navigation';
+
+// ── Navigation UI surfaces (Spec #3118 ST-7) — second, additive barrel ────────
+export * from './shared/navigation/ui';

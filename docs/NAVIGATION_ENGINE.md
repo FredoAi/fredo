@@ -15,6 +15,7 @@
 11. Metrics
 12. Migration strategy
 13. Testing strategy
+P4 surfaces (Spec #3118 — appended §11)
 Open questions
 
 **Normative keywords.** `MUST`, `MUST NOT` and `SHOULD` state binding requirements; `MAY` states an option. A clause without a keyword is descriptive and is never an acceptance target, and a later `MAY` never softens an earlier `MUST NOT`.
@@ -558,3 +559,186 @@ Non-normative; never counted among the thirteen sections and never cited by §2�
 
 - **Journal persistence across application restarts** (does undo survive a reload, or is the journal session-scoped only?) — owner: Software Architect, phase: P3.
 - **Redo-stack retention bound** (maximum depth and memory ceiling) — owner: Software Architect, phase: P3.
+
+## 11. P4 surfaces — the perceivable layer (Spec #3118)
+
+> **Numbering note.** This appended phase section is bound as **§11 "P4 surfaces"** by the
+> #3118 plan and QA rows; it is the contract of record for the P4 surface layer and sits
+> after the phase-independent contract above (whose own §11 is Metrics). Its subsections are
+> §11.1, §11.2, §11.3 and §11.5. **§11.4 is owned by ST-6** — the recorded manual
+> screen-reader pass — and is appended separately; it is not written here.
+
+The P4 layer makes the headless model perceivable: a **`CommandRail`** (where am I / what can
+I do next), a **`NavigationMap`** (the whole place tree), an **`ActivityTrail`** (what just
+happened) and one polite announcement layer. Every surface is a projection of the SAME
+declaration — no surface carries a key table, a `VerbDescriptor[]` or a second binding
+derivation.
+
+### 11.1 The one projection layer
+
+The view-model layer lives in `apps/ui/src/shared/navigation/ui/` (a subdirectory of the
+headless module; it is never re-exported by `shared/navigation/index.ts`, so the P3
+eleven-module purity scan is untouched).
+
+| Module | Binding contract |
+|---|---|
+| `ui/constants.ts` | Test ids, data attributes, accessible names, copy, glyph↔verb map, motion and bounds (§11.2). |
+| `ui/types.ts` | `NavPlaceRef`, `NavRiskCue`, `CommandRailRow`, `NavAffordance`, `CommandRailModel`, `NavigationMapVerb`, `NavigationMapKey`, `NavigationMapPlace`, `NavigationMapModel`, `ActivityTrailEntry`, `ActivityTrailModel`. |
+| `ui/format.ts` | `formatKeyHint`, `formatPlacePathLabel`, `formatTrailTime`, `riskLabel`, `navTooltip`. |
+| `ui/models.ts` | `buildCommandRailModel`, `buildNavigationMapModel`, `buildActivityTrailModel`. |
+| `ui/useReducedMotion.ts` | `useNavReducedMotion()`. |
+
+Each builder is total and pure over the declaration plus the injected read model:
+
+- **Rail** — `buildCommandRailModel(surface, snapshot)` composes the shipped
+  `deriveRail` over a declaration whose `app.map` / `app.ask` verbs have been filtered out
+  **before** the projection runs, so the two globals can neither occupy a row nor inflate
+  `overflow`/`actionCount` (§3.1: V-05 forces both to be declared verbs, so `deriveRail`
+  would otherwise return them as ordinary rows for any place that binds `m`/`k`). The
+  breadcrumb/current place come from `buildContextEnvelope(...).placePath` (declaration
+  labels), falling back to the declared root. `actionCount = rows.length + overflow`.
+  `more` appears only when `overflow > 0` and opens the map filtered to the current place.
+  The two affordances are always present: `/ Ask` is disabled with the bound launcher reason;
+  `? Map` is enabled. Neither tooltip ever contains a glyph (a tooltip names `m`/`k`).
+- **Map** — `buildNavigationMapModel(surface, snapshot, { filteredTo })` composes the shipped
+  `deriveMap` tree order with `createRegistry(...).verbsById`, each verb's
+  `available(snapshot)` and the shipped `formatTooltip` (through `navTooltip`); it never
+  re-derives bindings. Per block it exposes `pathLabel`, depth, transient/sticky, the place's
+  verbs and the place's **keys** (bound strokes). Three distinct regions: place keys (inside
+  blocks), application-level **aliases** (declaration order, rendered after all blocks), and
+  the two **globals** with their display glyphs. A stroke bound to `app.map`/`app.ask` is
+  rendered ONLY in the globals region (never duplicated inside a block); a global row is
+  emitted only when the declaration actually binds that verb. `filteredTo` is a seeded filter,
+  never a second list — the map always renders the full model, filtered client-side.
+- **Trail** — `buildActivityTrailModel(surface, entries)` reads the append-only
+  **`JournalEntry[]`** (not the thinner `JournalSummary`, because only the entry carries
+  `placePath` and `consequence`), sorts `seq` DESC (newest first), caps at the declared
+  `CAPABILITY_LIMITS.maxJournalEntries` (10) and resolves the place path through the
+  declaration (the declaration is the only label source). Undo is gated by the ENTRY
+  (`isUndoable(entry) === (entry.inverse !== null)`), never by `undoAffordance(verbId).disabled`
+  (verb-keyed and `disabled: false` for unknown verbs); `undoAffordance` is consulted only for
+  the non-undoable explanation text, which prefers the entry's authored consequence. A
+  historical entry's `label` is the label authored at dispatch and is never re-derived.
+- **Formatters** — `formatKeyHint` shows the FIRST binding only, tokens joined by `' then '`
+  (`['w n']` → `'W then N'`, `[]` → `''`); `formatPlacePathLabel` joins with `' › '`;
+  `formatTrailTime` formats a supplied ISO timestamp with
+  `Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })`
+  (the cycle is PINNED, so midnight is `00:00` on every host); `riskLabel` is `null` for
+  `safe`; `navTooltip = formatTooltip(title, keys, risk)` plus `' — <reason>'` iff a reason is
+  supplied.
+- **Reduced motion** — `useNavReducedMotion()` reads
+  `(prefers-reduced-motion: reduce)` and subscribes to changes; it fails safe to `false` when
+  `matchMedia` is absent (jsdom / SSR). It carries a single `useEffect` with an empty
+  dependency array — no `.length`/fresh-array dependency, no state write that could retrigger.
+
+Purity: the layer reads no clock (`ts`/`now` are supplied), no DOM, no storage; it adds no
+dependency and no theme token.
+
+### 11.2 The bound names block (`ui/constants.ts`)
+
+Every test id, data attribute, accessible name, copy string and bound below is BINDING; a
+surface renders the constant, never an invented literal (G-324/G-419).
+
+- **DOM hooks** — `navigation-rail*`, `navigation-map*`, `navigation-trail*`,
+  `navigation-keycap*`, `navigation-announcer` (one test id per named element).
+- **Data attributes** — `data-nav-surface` (`rail`|`map`|`trail`), `data-nav-keycap`,
+  `data-nav-place-id`, `data-nav-verb-id`, `data-nav-actor`, `data-nav-current`,
+  `data-nav-availability`, `data-nav-risk`, `data-nav-compact`.
+- **Accessible names** — `Command rail`, `Navigation map`, `Activity trail`,
+  `Navigation announcements`.
+- **Copy** — `more…`; the empty trail `Nothing yet — your actions will appear here`; the
+  generic disabled reason `Not available for the current selection`; the launcher reason
+  `Ask arrives with the launcher in the next phase`; the transient suffix `one action`;
+  risk words `Safe`/`Changes`/`Destructive`/`External`; actor words `You`/`Companion`/`System`;
+  and the G-324 bundle `Search places, actions and keys`, `No matching places, actions or
+  keys`, `Direct aliases`, `Global keys`, `Current place`, `No actions in this place`,
+  `↑ ↓ move · Enter run · Esc close`, plus `NAV_RAIL_MIN_WIDTH_PX = 180` (design intent — the
+  measured no-scroll proof is live, not a jsdom width read).
+- **Globals** — `app.map` is bound to `m` and displays the glyph `?`; `app.ask` is bound to
+  `k` and displays `/`; accessible glyph names are `Question mark` / `Slash`. A glyph is never
+  a binding value.
+- **Motion / bounds** — `NAV_MOTION_MS = 150` (opacity/transform only),
+  `NAV_REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)'`, `NAV_RAIL_MAX_ROWS = 8`
+  (mirrors `discover.RAIL_MAX_ROWS`; the rail never pads to `RAIL_MIN_ROWS`).
+- **Root-export boundary** — no dev-route literal lives here. `'view'` / `'navigation-preview'`
+  are inlined in `Router.tsx`'s DEV branch and `NAV_PREVIEW_GLYPH_KEYS` is module-local to the
+  dev preview, so the production bundle cannot contain a dev-route marker by construction.
+
+### 11.3 The three AC phrase resolutions (`## Discussion` of #3118)
+
+These three clauses of the backlog cannot be honoured literally against the shipped shape.
+Each is resolved here explicitly — none is a silent substitution, and each is proven by a
+named row.
+
+1. **AC1 "unavailable verbs … not hidden — unless the place declares them hidden" — INERT.**
+   `PlaceNode` has no `hidden` field. P4 hides nothing: every bound verb renders in
+   declaration order, disabled with the bound generic reason when `available(ctx) === false`.
+   No field is added in this slice; a per-place/verb hiding field would be a P3 declaration
+   change (a named follow-up, not a UI change). No verb is hidden in any state.
+2. **AC2 "opens on `?`" and the rail's `/ Ask` / `? Map` — DISPLAY GLYPHS, not bindings.**
+   This contract (§4) is normative: the bindable declarations are `m` (map) and `k` (ask).
+   P4 renders glyph-labelled controls (`? Map`, `/ Ask`) and always names the bindable stroke
+   in every tooltip and across the API (`NavAffordance.binding`); the DEV prototype route may
+   also accept the literal `?`/`/` characters in its own element-scoped handler, but no
+   document-level listener is added and no binding value or tooltip ever contains a glyph.
+3. **AC6 "rail, map and trail all reflect it" — one AGGREGATE proof plus two invariants.**
+   `projectionMutation.test.ts` applies, on ONE cloned declaration with no other edit,
+   (a) add a place, (b) rename a verb title, (c) add a direct alias — then resolves and
+   dispatches a stroke FROM the mutated place and asserts that the rail (breadcrumb/current
+   place + renamed row title), the map (new block + renamed verb + alias row) and the trail
+   (new entry's label + place path/pathLabel) all reflect the mutation. Two residuals are
+   pinned as **invariants** so the aggregate cannot be "passed" by re-deriving history:
+   (i) a verb-title rename never rewrites a historical entry's label (the label is authored at
+   dispatch); (ii) a direct alias adds no rail row and changes no `keyHint` (the rail reads
+   place bindings only; aliases are tier 2). The four-cell per-mutation matrix is
+   supplementary coverage, and the trail's newest-10 rendering is a declared bound
+   (`CAPABILITY_LIMITS.maxJournalEntries`), not a defect.
+
+### 11.4 Recorded manual screen-reader pass (P4)
+
+- **Screen reader:** Windows Narrator — the reader bundled with Windows 10 22H2 (build 19045).
+- **OS:** Microsoft Windows 10 Pro 22H2, build `10.0.19045` (WebView2 host).
+- **Route:** `/?view=navigation-preview` (DEV-only; `import.meta.env.DEV` + the lazy branch in
+  `app/routes/Router.tsx`).
+- **Instrument disclosure:** the log below is the application's REAL live-region /
+  accessibility-tree text — the single polite region
+  (`role="status" aria-live="polite" data-testid="navigation-announcer"`) — captured by driving
+  the real `NavigationAnnouncer` and `NavigationHost` through each event, i.e. the same text a
+  screen reader announces. It is **not** captured audio; no microphone or acoustic capture was
+  used, and no string below was invented — every line is the output of its bound `nav*Message`
+  composer (`announcementLog` pin in `ui/__tests__/a11y.test.tsx`).
+- **Ordered announcement log (the eight exercised classes):**
+  1. **place enter** — `Arrange — 9 actions`
+  2. **place exit** — `Left Arrange — Canvas — 6 actions`
+  3. **prefix armed** — `w… View, Style`
+  4. **unresolvable key** — `z isn't available here`
+  5. **ambiguous key** — `x matches more than one action`
+  6. **undo** — `Undid Rectangle`
+  7. **nothing-to-undo** — `Nothing to undo.`
+  8. **undo failed** — `Couldn't undo Rectangle`
+- **Attester:** Developer (agentic pipeline, ST-6), 2026-10-30.
+
+The per-component focus/name legs live in the ST-2/ST-3/ST-4 suites; this record is the
+manual-pass artifact and the cross-surface composite is `ui/__tests__/a11y.test.tsx`.
+
+### 11.5 P4 surface rules
+
+- **Theme:** theme tokens and the shared `tint()` helper only — zero hex/rgb/hsl literals and
+  zero `var(--x)NN` alpha-appends in `shared/navigation/ui/**`. No new theme token and no
+  `CONTRACT_PAIRS` row. The binding AC5 proof is the mirrored scoped `scanRawColors` sweep
+  (`navTheme.test.ts`); widening the shipped `defaultScanTargets()` to `shared/` is a named
+  follow-up (G-406), and `contrast:gate` still runs over its existing target set.
+- **Motion:** transitions/animations animate `opacity`/`transform` only, at `NAV_MOTION_MS`,
+  and are disabled when `prefers-reduced-motion` is set (the `reducedMotion` prop /
+  `useNavReducedMotion()`).
+- **One live region:** the surfaces declare no `aria-live`; the announcement layer owns the
+  single polite region (P5 settles ownership).
+- **Bounded DOM:** rail rows ≤ 8 (never padded); trail entries ≤ 10 (newest first); map rows =
+  the declared tree. No polling: the only timer is the host's one-shot `PENDING_TIMEOUT_MS`
+  (250 ms) prefix clear.
+- **No persisted presentation state:** map open/filter/search and the pending prefix live in
+  host/component state only — no storage, no settings key.
+- **No second source of truth:** no prop carries a key table or a `VerbDescriptor[]`; every
+  surface renders the model built here, and the a11y invariants (role/name, risk as text,
+  keycap accessible names, focus trap/restore) are owned by the surface components.
+
