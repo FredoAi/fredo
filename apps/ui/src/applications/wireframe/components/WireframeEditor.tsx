@@ -38,6 +38,7 @@ import {
   buildActivityTrailModel,
   buildCommandRailModel,
   buildNavigationMapModel,
+  requestLauncherOpen,
 } from '../../../shared/navigation/ui';
 import { useAppCommandIntent } from '../../../shared/companion/useAppCommandIntent';
 import { formatGeometry } from '../model/geometry';
@@ -67,11 +68,6 @@ import { WireframePropertyPanel } from './WireframePropertyPanel';
 import { WireframeStatusBar } from './WireframeStatusBar';
 
 export function WireframeEditor(): React.ReactElement {
-  // Spec #3099 ST-6 — the generic Companion relay. It stays mounted so a
-  // companion intent reports a clean `Invalid` (the declared command surface was
-  // retired in ST-4) instead of a timeout; P6 re-homes the capability.
-  useAppCommandIntent(WIREFRAME_APP_ID);
-
   return (
     <WireframeNavigationProvider>
       <WireframeShell />
@@ -81,6 +77,10 @@ export function WireframeEditor(): React.ReactElement {
 
 function WireframeShell(): React.ReactElement {
   const { host, surface } = useWireframeNavigation();
+  // Spec #3120 (P6) — the generic Companion relay now resolves this app's registered
+  // navigation host and executes through `host.runIntent(actor:'companion')`. Mounted
+  // INSIDE the provider so the host is registered before an intent can drain.
+  useAppCommandIntent(WIREFRAME_APP_ID);
   const hostSnapshot = useWireframeHostSnapshot(host);
   const placeView = useWireframePlaceView(host);
   const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
@@ -157,6 +157,11 @@ function WireframeShell(): React.ReactElement {
     void performVerb('wireframe.document.new', 'pointer');
   }, [performVerb]);
 
+  /** Spec #3120 (P6) R-7.1 — `/ Ask` opens the shipped launcher through the shared bridge. */
+  const openLauncherFromRail = useCallback(() => {
+    requestLauncherOpen({ source: 'rail-ask', focus: true });
+  }, []);
+
   const primaryId = primarySelectedId(state);
   const selectedElement =
     primaryId === null
@@ -222,6 +227,7 @@ function WireframeShell(): React.ReactElement {
             model={railModel}
             onRunVerb={runVerb}
             onOpenMap={(filterPlaceId) => host.openMap(filterPlaceId ?? null)}
+            onAsk={openLauncherFromRail}
           />
           <Box
             flex="1"

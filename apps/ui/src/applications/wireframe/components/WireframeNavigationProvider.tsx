@@ -35,6 +35,8 @@ import React, {
 import type { Channel, ContextSnapshot, DispatchResult } from '../../../shared/navigation';
 import {
   createNavigationHost,
+  registerNavigationHost,
+  requestLauncherConfirmation,
   useNavigationHostSnapshot,
   type NavigationHost,
 } from '../../../shared/navigation/ui';
@@ -73,8 +75,9 @@ export interface WireframeNavigationProviderProps {
  *
  * The host is built with the module-scoped journal and `applyDocumentPatch`, so every
  * completed verb writes exactly one journal entry and the store's `undo` shims read the
- * SAME stack. `confirm` defaults to `true` because the Wireframe declaration keeps the
- * shipped no-confirm behaviour for destructive verbs (the journal is the undo).
+ * SAME stack. `confirm` gates only the launcher/voice/agent channels through the launcher
+ * confirmation store; keyboard/pointer human intents keep the shipped no-confirm
+ * behaviour (the journal is the undo).
  */
 export function WireframeNavigationProvider({
   children,
@@ -87,10 +90,29 @@ export function WireframeNavigationProvider({
       applyPatch: (patch) =>
         applyDocumentPatch(patch as unknown as WireframeDocumentPatch),
       announcementChannel: 'legacy',
-      confirm: () => true,
+      // Spec #3120 (P6) §9.1 — launcher/voice/agent intents ask the launcher to confirm;
+      // keyboard/pointer keep the shipped no-prompt behaviour.
+      confirm: (request, intent) =>
+        intent.channel === 'launcher' ||
+        intent.channel === 'voice' ||
+        intent.channel === 'agent'
+          ? requestLauncherConfirmation(request, intent)
+          : true,
     });
     return { host, surface: wireframeSurface };
   }, []);
+
+  // Spec #3120 (P6) — register the host for the launcher's synchronous registry read
+  // (`getNavigationHost` / `describeContext`); unregister on unmount.
+  useEffect(
+    () =>
+      registerNavigationHost({
+        appId: WIREFRAME_SURFACE_APP_ID,
+        surface: wireframeSurface,
+        host: value.host,
+      }),
+    [value.host],
+  );
 
   // Publish the host-owned place path to the store's read model. The store always
   // overrides `selection`/`dirty` with its live values; only `appId`/`placePath` are read.

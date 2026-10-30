@@ -15,6 +15,11 @@
  * reports a result (`app_command_intent_result`) — including a thrown error, so
  * the Home dispatcher never waits for something that will not come.
  *
+ * Spec #3120 (P6) — an application that registered a navigation host executes
+ * the intent through `host.runIntent({channel:'agent', actor:'companion'})`
+ * instead (the same ONE `dispatch` funnel the keyboard uses). An application with
+ * no registered host keeps the shipped `executeCommand` path.
+ *
  * Exactly-once is guarded by a MODULE-SCOPED handled-request ledger, never a
  * React ref: refs reset on every mount, and a remount must not re-execute an
  * intent that is still in the host queue.
@@ -26,6 +31,8 @@ import { useEffect } from 'react';
 
 import { executeCommand } from '../hotkeys/commandSurfaceStore';
 import type { ApplicationCommandArgs } from '../hotkeys/commandSurface';
+import type { DispatchResult } from '../navigation';
+import { getNavigationHost } from '../navigation/ui/hostRegistry';
 import { adapterBridge } from '../utils/adapterBridge';
 
 /** Host event carrying one intent (ST-5 binding). */
@@ -127,6 +134,31 @@ function mapOutcome(
   }
 }
 
+/** Map the navigation funnel's result onto the relay's outcome vocabulary. */
+function mapNavigationOutcome(status: DispatchResult['status']): AppCommandOutcomeName {
+  switch (status) {
+    case 'performed':
+      return 'Performed';
+    case 'noop':
+      return 'Noop';
+    case 'rejected':
+      return 'Invalid';
+    // `partial` (an undo failure) claims no successful work.
+    default:
+      return 'Failed';
+  }
+}
+
+/**
+ * The relay's `arguments` as the navigation funnel's flat string map. Absent is
+ * `{}`; a present non-object is passed THROUGH so the declared-argument rule
+ * rejects it (`invalid-args`) rather than silently running with no arguments.
+ */
+function toNavigationArgs(value: unknown): Readonly<Record<string, string>> {
+  if (value === undefined || value === null) return {};
+  return value as Readonly<Record<string, string>>;
+}
+
 /**
  * Execute one intent (idempotent per `requestId`) and ALWAYS report the
  * outcome. Exported so the event path and the drain share one implementation.
@@ -144,11 +176,26 @@ export async function handleAppCommandIntent(
   let detail: string | undefined;
 
   try {
-    // The ONE executor — it re-runs `validateCommandArgs` before `run` (R-3d).
-    const result = await executeCommand(intent.appId, action, toCommandArgs(intent.arguments));
-    outcome = mapOutcome(result.status);
-    if (result.status === 'performed') performed = [action];
-    if (result.status === 'rejected') detail = result.reason;
+    // Spec #3120 (P6) — a registered navigation host is the authoritative path (the same
+    // ONE `dispatch` funnel the keyboard uses, attributed to the companion).
+    const host = getNavigationHost(intent.appId);
+    if (host !== null) {
+      const result = await host.runIntent({
+        verbId: action,
+        args: toNavigationArgs(intent.arguments),
+        channel: 'agent',
+        actor: 'companion',
+      });
+      outcome = mapNavigationOutcome(result.status);
+      if (result.status === 'performed') performed = [action];
+      if (result.status === 'rejected') detail = result.code;
+    } else {
+      // The ONE executor — it re-runs `validateCommandArgs` before `run` (R-3d).
+      const result = await executeCommand(intent.appId, action, toCommandArgs(intent.arguments));
+      outcome = mapOutcome(result.status);
+      if (result.status === 'performed') performed = [action];
+      if (result.status === 'rejected') detail = result.reason;
+    }
   } catch (error) {
     // A throwing `run` is already mapped to `failed` by the executor; this
     // guard covers anything else. Never a silent drop.

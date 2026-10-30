@@ -19,9 +19,9 @@
  *   - no horizontal scroll anywhere: the rail is a column, every row is `minWidth: 0` and
  *     only the title ellipsizes (G-274).
  *
- * Unavailable rows and the disabled `/ Ask` stay in the DOM and in keyboard/SR reach:
- * `aria-disabled` + a token-muted style + the reason in the accessible name/tooltip — never a
- * native `disabled` that would remove them from the tab order (R-1.3 / R-1.4).
+ * Unavailable rows stay in the DOM and in keyboard/SR reach: `aria-disabled` + a
+ * token-muted style + the reason in the accessible name/tooltip — never a native `disabled`
+ * that would remove them from the tab order (R-1.3 / R-1.4).
  *
  * Motion is opacity/transform only, `NAV_MOTION_MS`-based and gated by `reducedMotion` (the
  * prop or `useNavReducedMotion()`); colour is theme tokens + `tint()` only (R-5.1 / R-5.2).
@@ -73,7 +73,7 @@ export interface CommandRailProps {
   readonly onRunVerb: (verbId: string) => void;
   /** Open the navigation map; `null` = the full tree, a place id = filtered to that place. */
   readonly onOpenMap: (filterPlaceId?: string | null) => void;
-  /** The `/ Ask` affordance — inert in P4. */
+  /** The `/ Ask` affordance — the shell opens the launcher (P6). */
   readonly onAsk?: () => void;
 }
 
@@ -492,7 +492,7 @@ export function CommandRail({
           aria-disabled={model.ask.enabled ? undefined : 'true'}
           aria-describedby={model.ask.reason === null ? undefined : askReasonId}
           onClick={() => {
-            // The `/ Ask` affordance is disabled in P4 — keep it focusable, dispatch nothing.
+            // A disabled affordance keeps no reason node in P6; the guard stays as a belt.
             if (model.ask.enabled) onAsk?.();
           }}
           display="inline-flex"

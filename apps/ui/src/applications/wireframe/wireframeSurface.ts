@@ -48,6 +48,7 @@ import type {
   VerbEffect,
 } from '../../shared/navigation';
 
+import { requestLauncherOpen } from '../../shared/navigation/ui/launcherBridge';
 import { runWireframeAction } from './actions/wireframeActions';
 import {
   DEFAULT_ICON_ID,
@@ -894,6 +895,13 @@ interface VerbSpec {
   readonly args?: readonly VerbArg[];
   readonly undo?: (entry: JournalEntry) => VerbEffect;
   readonly publish?: boolean;
+  /**
+   * Spec #3120 (P6) — the authored consequence of a destructive/external action. The builder
+   * previously dropped it, so the confirmation had no honest description (QA Q-3).
+   */
+  readonly consequence?: string;
+  /** Spec #3120 (P6) — where an external action reaches outside Fredo (QA Q-2). */
+  readonly externalParty?: string;
 }
 
 function defineVerb(spec: VerbSpec): VerbDescriptor {
@@ -908,6 +916,8 @@ function defineVerb(spec: VerbSpec): VerbDescriptor {
     aliases: [],
     run: spec.run,
     ...(spec.undo === undefined ? {} : { undo: spec.undo }),
+    ...(spec.consequence === undefined ? {} : { consequence: spec.consequence }),
+    ...(spec.externalParty === undefined ? {} : { externalParty: spec.externalParty }),
     publish: spec.publish ?? true,
   };
 }
@@ -995,12 +1005,17 @@ const VERBS: readonly VerbDescriptor[] = [
   defineVerb({
     id: APP_ASK_VERB_ID,
     title: 'Ask',
-    description: 'Ask the launcher to run a request — unavailable until the launcher ships in P6.',
+    description: 'Open the launcher to ask the companion.',
     objects: OBJECT_PAGE,
     places: [CANVAS],
     risk: 'safe',
-    available: () => false,
-    run: () => navigation('Ask'),
+    // Spec #3120 (P6) — the launcher ships; `/ Ask` is a real affordance (R-7.1).
+    available: always,
+    run: () => {
+      // The navigation effect is the perform; the launcher-open bridge is what makes it visible.
+      requestLauncherOpen({ source: 'ask-verb', focus: true });
+      return navigation('Ask');
+    },
   }),
   defineVerb({
     id: 'wireframe.selection.previous',
@@ -1178,9 +1193,12 @@ const VERBS: readonly VerbDescriptor[] = [
     description: 'Delete every selected element.',
     objects: OBJECT_ELEMENT,
     places: [EDIT],
-    // Destructive with an undo (the journal checkpoint), so V-10 passes and the host's
-    // default confirm (true) shows no prompt — the shipped no-confirm behaviour.
+    // Destructive with an undo (the journal checkpoint), so V-10 passes; the keyboard/pointer
+    // path keeps the shipped no-confirm behaviour, while launcher/voice/agent confirmation
+    // names the authored consequence (QA Q-3).
     risk: 'destructive',
+    consequence:
+      'Deletes the selected element and its contents. This can be undone from the trail.',
     available: hasSelection,
     run: deleteSelection,
     undo: deleteUndo,
@@ -1558,7 +1576,12 @@ const VERBS: readonly VerbDescriptor[] = [
     description: 'Export the page as a PNG.',
     objects: OBJECT_DOCUMENT,
     places: [FILE],
-    risk: 'mutating',
+    // Spec #3120 (P6) QA Q-2 — a file write leaves Fredo, so it is the one declared external
+    // verb. The other three file verbs stay `mutating` this round.
+    risk: 'external',
+    consequence:
+      "Writes a PNG file outside Fredo's document history. It cannot be undone from the trail.",
+    externalParty: 'your file system',
     available: always,
     run: fileActionVerb('wireframe.file.exportPng', 'Export PNG'),
   }),

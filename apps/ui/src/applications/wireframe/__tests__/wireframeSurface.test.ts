@@ -16,6 +16,7 @@ import {
   ENGINE_VERB_IDS,
   validateSurface,
   type ContextSnapshot,
+  type Risk,
   type Surface,
   type VerbDescriptor,
 } from '../../../shared/navigation';
@@ -23,6 +24,7 @@ import {
   buildCommandRailModel,
   buildNavigationMapModel,
   NAV_UNAVAILABLE_REASON,
+  subscribeLauncherOpenRequests,
 } from '../../../shared/navigation/ui';
 import { getSnapshot, resetWireframeStoreForTests } from '../store/wireframeDocumentStore';
 import {
@@ -378,5 +380,63 @@ describe('wireframeSurface — the declaration', () => {
     }
     expect(getSnapshot().document).toBe(before);
     expect(getSnapshot().canUndo).toBe(false);
+  });
+});
+
+/* ───────────────────── P6 declaration policy (Q-2 / Q-3 / R-7.1) ───────────────────── */
+
+describe('wireframeSurface — P6 declaration policy', () => {
+  it('authors the consequence for delete and the external export party (Q-2 / Q-3)', () => {
+    const del = VERBS_BY_ID.get('wireframe.element.delete');
+    expect(del?.risk).toBe('destructive');
+    expect(del?.consequence?.trim().length ?? 0).toBeGreaterThan(0);
+
+    // `defineVerb` copies both fields instead of dropping them (the Q-2/Q-3 defect).
+    const exportPng = VERBS_BY_ID.get('place.exportPng');
+    expect(exportPng?.title).toBe('Export PNG');
+    expect(exportPng?.risk).toBe('external');
+    expect(exportPng?.externalParty).toBe('your file system');
+    expect(exportPng?.consequence?.trim().length ?? 0).toBeGreaterThan(0);
+
+    // The other three file verbs stay `mutating` this round (one external verb only).
+    for (const verbId of ['place.open', 'place.saveAs', 'wireframe.document.new']) {
+      expect(VERBS_BY_ID.get(verbId)?.risk, verbId).toBe('mutating');
+    }
+  });
+
+  it('re-derives the risk classes from the declaration', () => {
+    const counts: Record<Risk, number> = { safe: 0, mutating: 0, destructive: 0, external: 0 };
+    for (const verb of wireframeSurface.verbs) counts[verb.risk] += 1;
+
+    expect(counts.destructive).toBe(1);
+    expect(counts.external).toBe(1);
+    expect(counts.safe + counts.mutating + counts.destructive + counts.external).toBe(
+      wireframeSurface.verbs.length,
+    );
+    expect(wireframeSurface.verbs).toHaveLength(55);
+
+    const byRisk = (risk: Risk): string[] =>
+      wireframeSurface.verbs.filter((verb) => verb.risk === risk).map((verb) => verb.id);
+    expect(byRisk('external')).toEqual(['place.exportPng']);
+    expect(byRisk('destructive')).toEqual(['wireframe.element.delete']);
+  });
+
+  it('makes app.ask available and routes it to the launcher-open bridge (R-7.1)', async () => {
+    const ask = VERBS_BY_ID.get('app.ask');
+    expect(ask).toBeDefined();
+    expect(ask!.available(context())).toBe(true);
+
+    const requests: unknown[] = [];
+    const unsubscribe = subscribeLauncherOpenRequests((request) => requests.push(request));
+    let effect: Awaited<ReturnType<VerbDescriptor['run']>>;
+    try {
+      effect = await ask!.run(intentFor('app.ask'), context());
+    } finally {
+      unsubscribe();
+    }
+
+    expect(effect.effect).toBe('navigation');
+    expect(effect.patch).toBeNull();
+    expect(requests).toEqual([{ source: 'ask-verb', focus: true }]);
   });
 });

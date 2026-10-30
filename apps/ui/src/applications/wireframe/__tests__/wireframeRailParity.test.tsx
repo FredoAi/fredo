@@ -567,10 +567,10 @@ describe('every declared verb is reachable (R-3b / AC3)', () => {
     expect(keyReachable.has('journal.undo')).toBe(true);
     expect(keyReachable.has('journal.redo')).toBe(true);
 
-    // `app.ask` is present but unavailable — reachability is not enablement.
+    // Spec #3120 (P6) — `app.ask` is available; the launcher ships (R-7.1).
     const rootMap = buildNavigationMapModel(wireframeSurface, context());
     const canvasBlock = rootMap.places.find((place) => place.placeId === CANVAS);
-    expect(canvasBlock?.verbs.find((verb) => verb.verbId === 'app.ask')?.available).toBe(false);
+    expect(canvasBlock?.verbs.find((verb) => verb.verbId === 'app.ask')?.available).toBe(true);
 
     // 2 — the three argument-requiring map capabilities PERFORM with the declared defaults.
     expect(WIREFRAME_MAP_DEFAULT_ARGS).toEqual({

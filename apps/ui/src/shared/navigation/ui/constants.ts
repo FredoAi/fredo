@@ -78,7 +78,6 @@ export const NAV_MORE_ARIA_LABEL = 'More actions in this place — opens the map
 export const NAV_RAIL_PLACES_LABEL = 'Places';
 export const NAV_EMPTY_TRAIL_COPY = 'Nothing yet — your actions will appear here';
 export const NAV_UNAVAILABLE_REASON = 'Not available for the current selection';
-export const NAV_ASK_DISABLED_REASON = 'Ask arrives with the launcher in the next phase';
 export const NAV_TRANSIENT_MARKER_SUFFIX = 'one action';
 export const NAV_RISK_LABELS = {
   safe: 'Safe',

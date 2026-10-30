@@ -34,7 +34,6 @@ import {
 } from '../';
 import {
   NAV_ACTOR_LABELS,
-  NAV_ASK_DISABLED_REASON,
   NAV_ASK_VERB_ID,
   NAV_EMPTY_TRAIL_COPY,
   NAV_GLYPH_BY_VERB_ID,
@@ -124,16 +123,16 @@ function fallbackPlace(surface: Surface): NavPlaceRef {
 
 /* ───────────────────────────── rail ───────────────────────────── */
 
-/** `/ Ask` — focusable, disabled in P4 with its bound reason. */
+/** `/ Ask` — enabled since P6; activation opens the launcher (the shell owns the bridge call). */
 function buildAskAffordance(): NavAffordance {
   const binding = NAV_GLOBAL_BINDINGS[NAV_ASK_VERB_ID];
   return {
     glyph: NAV_GLYPH_BY_VERB_ID[NAV_ASK_VERB_ID],
     label: 'Ask',
     binding,
-    enabled: false,
-    reason: NAV_ASK_DISABLED_REASON,
-    tooltip: navTooltip('Ask', [binding], 'safe', NAV_ASK_DISABLED_REASON),
+    enabled: true,
+    reason: null,
+    tooltip: navTooltip('Ask', [binding], 'safe', null),
   };
 }
 

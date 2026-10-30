@@ -423,7 +423,7 @@
         {
           "id": "app.ask",
           "label": "Ask",
-          "description": "Ask the launcher to run a request — unavailable until the launcher ships in P6.",
+          "description": "Open the launcher to ask the companion.",
           "risk": "safe",
           "args": [],
           "aliases": []
@@ -960,7 +960,7 @@
           "id": "place.exportPng",
           "label": "Export PNG",
           "description": "Export the page as a PNG.",
-          "risk": "mutating",
+          "risk": "external",
           "args": [],
           "aliases": []
         },
@@ -1058,7 +1058,7 @@
             {
               "id": "app.ask",
               "label": "Ask",
-              "description": "Ask the launcher to run a request — unavailable until the launcher ships in P6.",
+              "description": "Open the launcher to ask the companion.",
               "risk": "safe",
               "args": [],
               "aliases": []
@@ -1595,7 +1595,7 @@
               "id": "place.exportPng",
               "label": "Export PNG",
               "description": "Export the page as a PNG.",
-              "risk": "mutating",
+              "risk": "external",
               "args": [],
               "aliases": []
             },

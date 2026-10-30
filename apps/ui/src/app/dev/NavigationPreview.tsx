@@ -31,7 +31,6 @@ import {
 } from './navigationDemoSurface';
 import { ActivityTrail } from '../../shared/navigation/ui/ActivityTrail';
 import { NavigationAnnouncer } from '../../shared/navigation/ui/announce';
-import { NAV_ASK_DISABLED_REASON } from '../../shared/navigation/ui/constants';
 import { CommandRail } from '../../shared/navigation/ui/CommandRail';
 import {
   createNavigationHost,
@@ -46,14 +45,17 @@ import {
 import { NavigationMap } from '../../shared/navigation/ui/NavigationMap';
 
 /**
- * Module-local glyph map (C2 / G-419): a `?` opens the map, a `/` is inert (Ask lands with the
- * launcher). These literals must NOT live in a root-exported module — the production bundle
+ * Module-local glyph map (C2 / G-419): a `?` opens the map, a `/` asks (the launcher lives in
+ * Home). These literals must NOT live in a root-exported module — the production bundle
  * marker scan asserts they never reach `dist/assets`.
  */
 const NAV_PREVIEW_GLYPH_KEYS: Readonly<Record<string, 'map' | 'ask'>> = {
   '?': 'map',
   '/': 'ask',
 };
+
+/** Dev-route-only copy for the `/` affordance — the real launcher is the Home shell. */
+const NAV_PREVIEW_ASK_COPY = 'Ask opens the launcher when Fredo is running';
 
 /**
  * The one-shot seed latch — a SYNCHRONOUS guard keyed to the host instance.
@@ -135,7 +137,7 @@ export function NavigationPreview(): React.ReactElement {
       }
       if (glyph === 'ask') {
         event.preventDefault();
-        setNotice(NAV_ASK_DISABLED_REASON);
+        setNotice(NAV_PREVIEW_ASK_COPY);
         return;
       }
 
@@ -190,7 +192,7 @@ export function NavigationPreview(): React.ReactElement {
           model={railModel}
           onRunVerb={runVerb}
           onOpenMap={openMap}
-          onAsk={() => setNotice(NAV_ASK_DISABLED_REASON)}
+          onAsk={() => setNotice(NAV_PREVIEW_ASK_COPY)}
         />
 
         <Box flex="1 1 auto" minWidth="0">

@@ -71,7 +71,7 @@ export interface CommandRailModel {
   readonly overflow: number; // bound verbs beyond 8, excluding the two globals
   readonly actionCount: number; // rows.length + overflow, excluding the two globals
   readonly more: { readonly label: string; readonly opensFilteredTo: string } | null;
-  readonly ask: NavAffordance; // enabled === false in P4
+  readonly ask: NavAffordance; // enabled once the launcher ships (P6)
   readonly map: NavAffordance; // enabled === true
 }
 

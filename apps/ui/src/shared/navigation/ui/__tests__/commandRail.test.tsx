@@ -9,8 +9,8 @@
  *   - Q1-03 > 8 verbs ⇒ 8 rows + `more…`, click → `onOpenMap('test.arrange')` once;
  *   - Q1-04 an unavailable verb is still rendered, `data-nav-availability="disabled"`, reason
  *           in the accessible name/tooltip;
- *   - Q1-05 `/ Ask` disabled with its reason, `? Map` enabled → `onOpenMap(null)`, no tooltip
- *           ever names the `?`/`/` glyph;
+ *   - Q1-05 `/ Ask` enabled (P6) with no reason node, `? Map` enabled → `onOpenMap(null)`, no
+ *           tooltip ever names the `?`/`/` glyph;
  *   - Q1-06 no padding of bound verbs, exact empty copy at 0 rows;
  *   - Q1-07 source scan: no horizontal scroll, root `overflow: hidden`, every flex container
  *           `minWidth: 0`;
@@ -25,7 +25,6 @@ import { cleanup, fireEvent, screen, within } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import {
-  NAV_ASK_DISABLED_REASON,
   NAV_MORE_LABEL,
   NAV_RAIL_ARIA_LABEL,
   NAV_RAIL_ASK_TESTID,
@@ -281,21 +280,21 @@ describe('CommandRail — unavailable verbs stay present, disabled and explained
 
 /* ─────────────────────────── Q1-05 — globals ─────────────────────────── */
 
-describe('CommandRail — `/ Ask` disabled, `? Map` enabled (Q1-05 / R-1.4)', () => {
-  it('keeps `/ Ask` focusable-disabled with its bound reason and inert', () => {
+describe('CommandRail — `/ Ask` enabled, `? Map` enabled (Q1-05 / R-1.4 / R-7.1)', () => {
+  it('renders `/ Ask` enabled with no reason node and activates it', () => {
     const { onAsk } = renderRail(modelAt(ROOT_PATH));
 
     const ask = screen.getByTestId(NAV_RAIL_ASK_TESTID);
-    expect(ask).toHaveAttribute('aria-disabled', 'true');
+    // Enabled: no aria-disabled, no native disabled (it stays focusable either way).
+    expect(ask).not.toHaveAttribute('aria-disabled');
     expect(ask).not.toHaveAttribute('disabled');
-    expect(ask.getAttribute('title')).toContain(NAV_ASK_DISABLED_REASON);
+    expect(ask.getAttribute('title')).toBe('Ask (k)');
 
-    const describedBy = ask.getAttribute('aria-describedby');
-    expect(describedBy).not.toBeNull();
-    expect(document.getElementById(describedBy!)?.textContent).toBe(NAV_ASK_DISABLED_REASON);
+    // The retired P4 reason node is gone (no aria-describedby, no second copy).
+    expect(ask).not.toHaveAttribute('aria-describedby');
 
     fireEvent.click(ask);
-    expect(onAsk).not.toHaveBeenCalled();
+    expect(onAsk).toHaveBeenCalledTimes(1);
   });
 
   it('opens the unfiltered map from `? Map` and never names the glyph in a tooltip', () => {

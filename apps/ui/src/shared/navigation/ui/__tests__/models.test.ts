@@ -20,7 +20,6 @@ import {
 } from '../../';
 import {
   NAV_ACTOR_LABELS,
-  NAV_ASK_DISABLED_REASON,
   NAV_ASK_VERB_ID,
   NAV_EMPTY_TRAIL_COPY,
   NAV_GLYPH_BY_VERB_ID,
@@ -192,15 +191,17 @@ describe('buildCommandRailModel — unavailable verbs stay, disabled with the ge
 
 /* ───────────────────────────── R-1.4 affordances ───────────────────────────── */
 
-describe('buildCommandRailModel — / Ask and ? Map affordances (R-1.4 / Q1-05)', () => {
-  it('renders / Ask disabled with the launcher reason and ? Map enabled', () => {
+describe('buildCommandRailModel — / Ask and ? Map affordances (R-1.4 / Q1-05 / R-7.1)', () => {
+  it('renders / Ask enabled with no reason node and ? Map enabled', () => {
     const rail = railAt([S.canvas]);
     expect(rail.ask.glyph).toBe(NAV_GLYPH_BY_VERB_ID[NAV_ASK_VERB_ID]);
     expect(rail.ask.glyph).toBe('/');
     expect(rail.ask.label).toBe('Ask');
     expect(rail.ask.binding).toBe('k');
-    expect(rail.ask.enabled).toBe(false);
-    expect(rail.ask.reason).toBe(NAV_ASK_DISABLED_REASON);
+    // Spec #3120 (P6) — the launcher ships, so `/ Ask` is a real affordance (R-7.1).
+    expect(rail.ask.enabled).toBe(true);
+    expect(rail.ask.reason).toBeNull();
+    expect(rail.ask.tooltip).toBe('Ask (k)');
 
     expect(rail.map.glyph).toBe(NAV_GLYPH_BY_VERB_ID[NAV_MAP_VERB_ID]);
     expect(rail.map.glyph).toBe('?');
@@ -223,7 +224,8 @@ describe('buildCommandRailModel — / Ask and ? Map affordances (R-1.4 / Q1-05)'
     }
     expect(rail.map.tooltip).toContain('(m)');
     expect(rail.ask.tooltip).toContain('(k)');
-    expect(rail.ask.tooltip).toContain(NAV_ASK_DISABLED_REASON);
+    // The retired P4 disabled reason is gone from the enabled affordance.
+    expect(rail.ask.reason).toBeNull();
   });
 });
 
