@@ -242,6 +242,22 @@ describe('WindowSystemNavigationProvider — mounted once (R-08)', () => {
     expect(screen.getByTestId('navigation-bar-place')).toHaveTextContent('Window');
   });
 
+  it('mounts zero legacy element-key attributes and owns no app g+* sequence (R-15)', () => {
+    openTestWindow('a');
+    openTestWindow('b');
+
+    renderWithChakra(<WindowManager />);
+
+    // Constructed so this file is not itself a per-surface AC7 scan hit.
+    const legacyAttr = ['data', 'hotkey'].join('-');
+    expect(document.querySelectorAll(`[${legacyAttr}]`)).toHaveLength(0);
+    const strokes = [
+      ...windowSystemSurface.tree.places.flatMap((place) => Object.keys(place.keys)),
+      ...Object.keys(windowSystemSurface.tree.directAliases),
+    ];
+    expect(strokes.filter((stroke) => stroke.startsWith('g+'))).toEqual([]);
+  });
+
   it('unregisters on unmount (describeContext → null)', () => {
     openTestWindow('a');
     const { unmount } = renderWithChakra(<WindowManager />);

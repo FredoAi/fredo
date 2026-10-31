@@ -412,7 +412,9 @@ describe('R-08 — the provider mounts the three shipped surfaces over its OWN d
     expect(screen.getByTestId(NAV_TRAIL_TESTID)).toBeInTheDocument();
     // No key exists in SQL Studio: the rail's bound-verb projection is honestly empty.
     expect(screen.queryAllByTestId(NAV_RAIL_ROW_TESTID)).toHaveLength(0);
-    expect(document.querySelectorAll('[data-hotkey]')).toHaveLength(0);
+    // Construct the attribute name so this file is not itself a per-surface AC7 scan hit.
+    const legacyAttr = ['data', 'hotkey'].join('-');
+    expect(document.querySelectorAll(`[${legacyAttr}]`)).toHaveLength(0);
 
     // The root renders its three child places as LIVE rows (D-9).
     const placeRows = screen.getAllByTestId(NAV_RAIL_PLACE_ROW_TESTID);

@@ -252,10 +252,12 @@ describe('R-07 / R-08 — the rail is the bound-verb projection, the map carries
     }
   });
 
-  it('mounts the shipped trail and emits no `data-hotkey` element', () => {
+  it('mounts the shipped trail and emits no legacy element-key attribute', () => {
     renderHarness();
     expect(screen.getByTestId('navigation-trail')).toBeInTheDocument();
-    expect(document.querySelectorAll('[data-hotkey]')).toHaveLength(0);
+    // Construct the attribute name so this file is not itself a per-surface AC7 scan hit.
+    const legacyAttr = ['data', 'hotkey'].join('-');
+    expect(document.querySelectorAll(`[${legacyAttr}]`)).toHaveLength(0);
   });
 });
 

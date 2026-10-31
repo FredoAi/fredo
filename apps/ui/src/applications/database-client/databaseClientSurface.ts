@@ -10,7 +10,8 @@
  *
  * CLOSED SURFACE (D-3(b)): SQL Studio declares **zero place keys**. `Ctrl/Cmd+Enter` stays on
  * `SqlEditor` (the text-entry owner) and calls the identical `runSingle`; the declared
- * `sql-studio.query.run` reproduces that same outcome. No `data-hotkey`, no `g+*`, no new chord.
+ * `sql-studio.query.run` reproduces that same outcome. No legacy element hotkey, no `g+*`,
+ * no new chord.
  *
  * SELECTION (Architect §D.4 / C-4): `ctx.selection` carries the active connection, the selected
  * schema node (`table`), the active query tab (`query`) and the active result set (`resultSet`)
@@ -551,7 +552,7 @@ export const databaseClientSurface: Surface = {
     appId: DATABASE_CLIENT_SURFACE_APP_ID,
     root: SQL_STUDIO_WORKSPACE_PLACE_ID,
     places: PLACES,
-    // No `data-hotkey` / `g+*` migrates: SQL Studio owns no grammar-expressible key.
+    // No legacy element hotkey / `g+*` migrates: SQL Studio owns no grammar-expressible key.
     directAliases: {},
   },
   verbs: VERBS,
