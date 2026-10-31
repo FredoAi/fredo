@@ -501,6 +501,12 @@ Unit pins (green in the full run): `commandRailFocus.test.tsx` **3/3**,
 > source scans — G-408). Evidence record: the POSTED `## Tests Runs` comment, never a
 > `.opencode/tmp/3120/` draft (G-415).
 >
+> **This durable suite is the source of truth.** `functional.md` (with `smoke.md`, `regression.md`
+> and `e2e.md`) — not the `.opencode/tmp/3120/` drafts, the triage plan or an issue comment —
+> defines what the tester executes and scores. **The pipeline does not run Gate H**: the
+> pilot-exit review needs human-produced participant data, no participant data exists in this spec,
+> and its absence is never a test failure.
+>
 > **Binding names (consume verbatim).** Bar root `[data-testid="navigation-bar"]` (symbol
 > `NAV_RAIL_TESTID`, value `navigation-bar`; `aria-label` `Command bar`; `data-nav-surface="bar"`);
 > `navigation-bar-breadcrumb`; `navigation-bar-place` (the LAST breadcrumb segment, the focus anchor,
@@ -525,7 +531,13 @@ Unit pins (green in the full run): `commandRailFocus.test.tsx` **3/3**,
   **Expected:** the bar root is INSIDE `wireframe-command-bar`; `data-nav-surface="bar"`; root
   accessible name `Command bar`; computed `min-height` ≥ `NAV_BAR_MIN_HEIGHT_PX` (**44**);
   `breadcrumb.right ≤ firstRow.left`; every row's horizontal centre lies between `breadcrumb.right`
-  and `map.left`; `map.right ≤ ask.left`; `ask.right ≥ root.right − 1`; the breadcrumb renders the
+  and `map.left`; `map.right ≤ ask.left`; **Ask is the rightmost control and flushes the bar's
+  CONTENT box:** `ask.right ≥ contentRight − 1`, where
+  `contentRight = root.right − paddingRight − borderRightWidth` read from
+  `getComputedStyle(root)` (the bar carries 12 px symmetric horizontal padding — `px="3"` — plus its
+  1 px top border, so the content box ends ~13 px inside the border box; a `root.right − 1` bound
+  would instead demand Ask sit on the padding and is NOT the shipped contract), and no row, `? Map`
+  or breadcrumb segment has a `right` greater than `ask.right`; the breadcrumb renders the
   place path (`Canvas` at root, `Canvas › <place>` inside a place); the bar spans the editor width
   (`bar.left` ≈ editor.left, `bar.right` ≈ editor.right).
   - **Edge:** root place (one segment); a long place label; 1280×800 and 900×600; `? Map`/`Ask` keep
@@ -578,8 +590,14 @@ Unit pins (green in the full run): `commandRailFocus.test.tsx` **3/3**,
   **Steps:** `c` (Create), click `[data-testid="navigation-bar-more"]`; read the `navigation-map`
   dialog, its search input (`NAV_MAP_SEARCH_TESTID`) and the Create block; close it and read focus.
   **Expected:** the map opens; its search value is seeded from the current place path; the Create block
-  lists ALL **9** declared verbs (Rectangle … Line) — the declaration is never truncated; the block's
-  row count equals the declared count; closing the map restores focus to the `more…` button.
+  lists the declaration's ACTUAL create set — **11** verbs: `wireframe.create.rect`,
+  `wireframe.create.ellipse`, `wireframe.add.text`, `wireframe.add.button`, `wireframe.add.input`,
+  `wireframe.add.image`, `wireframe.add.icon`, `wireframe.add.card`, `wireframe.add.section`,
+  `wireframe.add.shape`, `wireframe.add.line` (Rectangle … Line) — i.e. every declared verb whose
+  `places` includes `wireframe.create`, counted from the declaration at read time; the block's row
+  count EQUALS that count (8 bar rows + the 3 overflow verbs `Icon`, `Shape`, `Line`) and the block is
+  never truncated — derive the expected set/count from `wireframeSurface.ts`, never from a stale
+  literal; closing the map restores focus to the `more…` button.
   - **Edge:** keyboard activation (Enter/Space) of `more…`; Arrange (no `more…` — open the map from
     `? Map` with no filter and see all six places); Canvas (2 rows, no `more…`); `Escape` closes the
     map only (the place does NOT pop — F-N9).
@@ -743,17 +761,26 @@ Unit pins (green in the full run): `commandRailFocus.test.tsx` **3/3**,
   (different verb); then dispatch `journal.undo {verbId:'wireframe.element.setLabel', count:'1'}`
   through the ONE funnel; read the label, the lock flag and the journal. **Multi-match leg:** on a
   fresh card add TWO matching `setLabel` entries — the older `setLabel {value:'Alpha'}` then the newer
-  `setLabel {value:'Beta'}` — then `journal.undo {verbId:'wireframe.element.setLabel', count:'1'}`
-  and read the label; then repeat the same undo once more.
+  `setLabel {value:'Beta'}`, BOTH as companion edits (`app_command_intent`, `actor:'companion'`) — then
+  `journal.undo {verbId:'wireframe.element.setLabel', count:'1'}` and read the label; then repeat the
+  same `verbId`-only undo once more and read the label; then walk back with the actor-scoped undo
+  `journal.undo {verbId:'wireframe.element.setLabel', actor:'companion', count:'1'}` and read the
+  label.
   **Expected:** the manifest-declared undo command ACCEPTS the `verbId` arg (no `invalid-args`); on
   the single-match leg the label reverts to its pre-edit value (`''`), the lock flag is UNCHANGED,
   exactly ONE new `Undo Set label` entry is appended and the original entries remain (append-only);
   an unknown filter (`wireframe.nope`) is a `no-matches` noop (`Nothing to undo.`, nothing applied);
   a `count:'2'` with only one matching entry applies one and reports 1. **On the multi-match leg the
-  undo is NEWEST-first (shipped `seq DESC`): the first `count:'1'` reverts the NEWER entry (`Beta`,
-  label back to `Alpha`) and leaves the OLDER `setLabel` entry intact; a second identical undo then
-  reverts the older one (label back to its pre-edit `''`)** — exactly one new `Undo Set label` entry
-  per undo, the other journal entries untouched.
+  undo is NEWEST-first over the append-only journal (shipped `seq DESC`), and R-7's literal "newest
+  matching entry" holds:** the first `verbId`-only `count:'1'` reverts the NEWER companion edit
+  (`Beta` → label `Alpha`) and leaves the OLDER `setLabel` entry intact. **That reversal is itself
+  journaled under the SAME `verbId`** (`wireframe.element.setLabel`, `effect:'mutation'`, non-null
+  `inverse`), so a SECOND identical `verbId`-only undo re-targets the REVERSAL — a REDO: the label
+  returns to `Beta` and one more `Undo Set label` entry is appended; expect the redo (not a defect,
+  and not a contradiction of R-7). To reach the OLDER original edit instead, scope the filter past
+  the human-attributed reversal with `actor:'companion'` — the actor-scoped undo skips the reversal
+  and reverts the older companion edit (label back to its pre-edit `''`); exactly one new
+  `Undo Set label` entry per undo, the other journal entries untouched.
   - **Edge:** no matching entry; a matching NAVIGATION entry (inverse `null` → skipped); a `verbId` on
     a legacy command-surface app; the undo while the app is closed (queued `_take`); three matching
     entries with `count:'2'` reverts the two NEWEST and leaves the oldest.
