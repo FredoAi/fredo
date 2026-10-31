@@ -694,6 +694,51 @@ describe('map state + reset — presentation only', () => {
   });
 });
 
+/* ─────────────── Spec #3121 ST-1 — the additive `keyboardOwner` option (§B.1) ─────────────── */
+
+describe('ST-1 §B.1 — keyboardOwner defaults to `engine`; `terminal` is pure passthrough', () => {
+  it('the DEFAULT owner is `engine`: a bound stroke still resolves and dispatches', async () => {
+    const harness = createHarness();
+    const result = await harness.host.handleStroke('c', 1000);
+
+    expect(result?.status).toBe('performed');
+    expect(harness.host.getSnapshot().context.placePath).toEqual([
+      FIXTURE_PLACES.canvas,
+      FIXTURE_PLACES.create,
+    ]);
+    // The entry is the proof the default did NOT degrade to passthrough (byte-identical).
+    expect(harness.journal.entries()).toHaveLength(1);
+    expect(harness.journal.entries()[0]?.verbId).toBe('test.create');
+  });
+
+  it('{ keyboardOwner: "terminal" } yields null with no dispatch, no journal, no announcement', async () => {
+    const harness = createHarness();
+    const before = harness.host.getSnapshot();
+
+    // `c` is a REAL bound stroke in the fixture; it must not resolve under a non-engine owner.
+    const result = await harness.host.handleStroke('c', 1000, { keyboardOwner: 'terminal' });
+
+    expect(result).toBeNull();
+    expect(harness.host.getSnapshot()).toBe(before);
+    expect(harness.host.getSnapshot().epoch).toBe(0);
+    expect(harness.host.getSnapshot().pending).toBeNull();
+    expect(harness.journal.entries()).toHaveLength(0);
+    expect(harness.announcements).toHaveLength(0);
+    // The host never calls `preventDefault` — that is the ADAPTER's decision, and for a
+    // passthrough owner the terminal adapter deliberately never does (R-05).
+  });
+
+  it('a non-engine owner suppresses even an armed-prefix start (`w`)', async () => {
+    const harness = createHarness(withPrefixBindings(navTestSurface()));
+    const result = await harness.host.handleStroke('w', 0, { keyboardOwner: 'terminal' });
+
+    expect(result).toBeNull();
+    expect(harness.host.getSnapshot().pending).toBeNull();
+    expect(harness.announcements).toHaveLength(0);
+    expect(harness.journal.entries()).toHaveLength(0);
+  });
+});
+
 /* ───────────────────────── N-04 — the source half ───────────────────────── */
 
 const UI_DIR = resolve(process.cwd(), 'src/shared/navigation/ui');

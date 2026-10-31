@@ -24,6 +24,11 @@ import { TerminalSidebar } from './TerminalSidebar';
 import { TerminalPane } from './TerminalPane';
 import { NewSessionDialog } from './NewSessionDialog';
 import { DeleteSessionDialog } from './ResumableSessions';
+import {
+  TerminalNavigationFooter,
+  TerminalNavigationProvider,
+} from './TerminalNavigationProvider';
+import type { TerminalActionHandlers } from '../terminalSurface';
 
 /** Client-only ids for optimistic rows the backend has not created (yet). */
 const PENDING_PREFIX = 'pending-';
@@ -93,8 +98,15 @@ export const TerminalWindow: React.FC = () => {
   const [deleteTarget, setDeleteTarget] = useState<PersistedTerminalSession | null>(null);
   const [actionAnnouncement, setActionAnnouncement] = useState('');
   const [focusTarget, setFocusTarget] = useState<string | null | undefined>(undefined);
+  // Spec #3121 ST-1 — `terminal.session.rename` without a name opens the SAME inline editor
+  // the `F2` row path opens; the nonce re-arms the request for the same session twice.
+  const [renameRequest, setRenameRequest] = useState<{
+    readonly sessionId: string;
+    readonly nonce: number;
+  } | null>(null);
 
   const promptedRef = useRef(false);
+  const renameNonceRef = useRef(0);
   const addButtonRef = useRef<HTMLButtonElement>(null);
   // Guards against a late/abandoned resume result clobbering newer UI state
   // (Cancel / watchdog bump the token).
@@ -418,9 +430,11 @@ export const TerminalWindow: React.FC = () => {
     void navigator.clipboard?.writeText(COPILOT_AUTH_COMMAND).catch(() => {});
   }, []);
 
-  // Spec #2946 ST-12 — install terminal passthrough tracking for this webview.
-  // Idempotent; installs focus listeners + the exit-chord handler only (the ONE
-  // document keydown listener stays owned by the ST-4 engine).
+  // Spec #2946 ST-12 / Spec #3121 ST-1 — install terminal passthrough tracking for this
+  // webview. Idempotent; installs the focus listeners, the `data-fredo-passthrough` body
+  // hook and the one-time announcement only. There is NO exit chord: the keyboard is
+  // released by focus change / click-away (the navigation provider turns that transition
+  // into ONE `place.exit`), and the ONE document keydown listener stays owned by the engine.
   useEffect(() => installTerminalPassthrough(), []);
 
   // ── Mount: idempotent migration, mount-time truth, live listeners ──────────
@@ -587,60 +601,138 @@ export const TerminalWindow: React.FC = () => {
       : '';
   const announcement = actionAnnouncement || statusAnnouncement;
 
+  /**
+   * Spec #3121 ST-1 — the live callbacks the declared terminal verbs delegate to. Each
+   * returns `false` when the target is absent in this window state, so the verb becomes a
+   * `noop` with no journal entry (never a silent mutation of the wrong session).
+   */
+  const terminalActions: TerminalActionHandlers = {
+    newSession: () => {
+      openDialog();
+      return true;
+    },
+    closeSession: (id) => {
+      const live = allSessions.find((s) => s.id === id);
+      if (live === undefined) return false;
+      closeSession(live);
+      return true;
+    },
+    openRename: (id) => {
+      if (!persistedById.has(id)) return false;
+      renameNonceRef.current += 1;
+      setRenameRequest({ sessionId: id, nonce: renameNonceRef.current });
+      return true;
+    },
+    renameSession: (id, name) => {
+      if (!persistedById.has(id)) return false;
+      void handleRename(id, name);
+      return true;
+    },
+    resumeSession: (id) => {
+      const record = previous.find((r) => r.id === id);
+      if (record === undefined) return false;
+      void handleResume(record);
+      return true;
+    },
+    startFresh: (id) => {
+      const record = previous.find((r) => r.id === id);
+      if (record === undefined) return false;
+      handleStartFresh(record);
+      return true;
+    },
+    retrySession: (id) => {
+      const live = allSessions.find((s) => s.id === id);
+      if (live === undefined) return false;
+      handleRetry(live);
+      return true;
+    },
+    chooseDirectory: (id) => {
+      const live = allSessions.find((s) => s.id === id);
+      if (live === undefined) return false;
+      handleChooseDirectory(live);
+      return true;
+    },
+    deleteRecord: (id) => {
+      const record = persisted.find((r) => r.id === id);
+      if (record === undefined) return false;
+      void removeRecord(record.id);
+      return true;
+    },
+    copyAuthCommand: () => {
+      handleCopyCommand();
+      return true;
+    },
+  };
+
+  /** §D.4 — the selected session is the ONE selection the context projects. */
+  const selectedSessionLabel = selected
+    ? sessionDisplayTitle(selected, allSessions, persistedById)
+    : selectedRecord?.title ?? null;
+
   return (
-    <Flex direction="row" h="100%" minH={0} w="100%" bg="bg.canvas" position="relative">
-      <TerminalSidebar
-        sessions={allSessions}
-        previous={previous}
-        persistedById={persistedById}
-        selectedId={selectedId}
-        previousStateOf={previousStateOf}
-        onSelect={handleSelect}
-        onClose={closeSession}
-        onRename={handleRename}
-        onAdd={() => openDialog()}
-        addButtonRef={addButtonRef}
-      />
-      <TerminalPane
-        sessions={allSessions}
-        previous={previous}
-        selected={selected}
-        selectedRecord={selectedRecord}
-        allExited={allExited}
-        outputSeen={outputSeen}
-        slowStarting={!!selected && slowStartingId === selected.id}
-        resumingId={resumingId}
-        resumeFailure={resumeFailure}
-        onFirstOutput={handleFirstOutput}
-        onGridChange={handleGridChange}
-        onClose={closeSession}
-        onRetry={handleRetry}
-        onChooseDirectory={handleChooseDirectory}
-        onCopyCommand={handleCopyCommand}
-        onResume={handleResume}
-        onRetryResume={handleResume}
-        onCancelResume={handleCancelResume}
-        onStartFresh={handleStartFresh}
-        onDelete={handleDeleteRequest}
-        onAdd={() => openDialog()}
-      />
-      <NewSessionDialog
-        open={dialogOpen}
-        onOpenChange={setDialogOpen}
-        onConfirm={handleConfirm}
-        initialCli={dialogInit.cli}
-        initialWorkDir={dialogInit.workDir}
-      />
-      <DeleteSessionDialog
-        record={deleteTarget}
-        open={deleteTarget !== null}
-        onOpenChange={(open) => {
-          if (!open) setDeleteTarget(null);
-        }}
-        onConfirm={() => void handleDeleteConfirm()}
-      />
-      <VisuallyHidden aria-live="polite">{announcement}</VisuallyHidden>
-    </Flex>
+    <TerminalNavigationProvider
+      selectedSessionId={selectedId}
+      selectedSessionLabel={selectedSessionLabel}
+      actions={terminalActions}
+    >
+      {/* The shipped row loses `h=100%` and gains `flex=1`; the provider supplies the column. */}
+      <Flex direction="row" flex="1" minH={0} w="100%" position="relative">
+        <TerminalSidebar
+          sessions={allSessions}
+          previous={previous}
+          persistedById={persistedById}
+          selectedId={selectedId}
+          previousStateOf={previousStateOf}
+          onSelect={handleSelect}
+          onClose={closeSession}
+          onRename={handleRename}
+          onAdd={() => openDialog()}
+          addButtonRef={addButtonRef}
+          renameRequest={renameRequest}
+        />
+        <TerminalPane
+          sessions={allSessions}
+          previous={previous}
+          selected={selected}
+          selectedRecord={selectedRecord}
+          allExited={allExited}
+          outputSeen={outputSeen}
+          slowStarting={!!selected && slowStartingId === selected.id}
+          resumingId={resumingId}
+          resumeFailure={resumeFailure}
+          onFirstOutput={handleFirstOutput}
+          onGridChange={handleGridChange}
+          onClose={closeSession}
+          onRetry={handleRetry}
+          onChooseDirectory={handleChooseDirectory}
+          onCopyCommand={handleCopyCommand}
+          onResume={handleResume}
+          onRetryResume={handleResume}
+          onCancelResume={handleCancelResume}
+          onStartFresh={handleStartFresh}
+          onDelete={handleDeleteRequest}
+          onAdd={() => openDialog()}
+        />
+        <NewSessionDialog
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          onConfirm={handleConfirm}
+          initialCli={dialogInit.cli}
+          initialWorkDir={dialogInit.workDir}
+        />
+        <DeleteSessionDialog
+          record={deleteTarget}
+          open={deleteTarget !== null}
+          onOpenChange={(open) => {
+            if (!open) setDeleteTarget(null);
+          }}
+          onConfirm={() => void handleDeleteConfirm()}
+        />
+        <VisuallyHidden aria-live="polite">{announcement}</VisuallyHidden>
+      </Flex>
+      {/* The navigation footer is the LAST flex child of the provider's column root. */}
+      <TerminalNavigationFooter />
+    </TerminalNavigationProvider>
   );
 };
 

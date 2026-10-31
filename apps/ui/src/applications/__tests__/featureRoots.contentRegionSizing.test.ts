@@ -81,6 +81,12 @@ const DEV_MODE = `${BASE}/dev-mode/components/DevMode.tsx`;
 const DIAGRAM = `${BASE}/diagram/components/ArchitectureDiagram.tsx`;
 const TERMINAL_COMPONENTS = `${BASE}/terminal/components`;
 const TERMINAL_WINDOW = `${TERMINAL_COMPONENTS}/TerminalWindow.tsx`;
+/**
+ * Spec #3121 ST-1 — the terminal is the ONE structural wrapper of the fleet: its column root
+ * (the `h="100%"` definite-height root) lives in the navigation provider, and the shipped
+ * row became that column's `flex="1"` child.
+ */
+const TERMINAL_NAV_PROVIDER = `${TERMINAL_COMPONENTS}/TerminalNavigationProvider.tsx`;
 const TERMINAL_SIDEBAR = `${TERMINAL_COMPONENTS}/TerminalSidebar.tsx`;
 const TERMINAL_SESSION_VIEW = `${TERMINAL_COMPONENTS}/TerminalSessionView.tsx`;
 /** The superseded #2940 horizontal rail module — must not return (#2942). */
@@ -127,10 +133,14 @@ describe('#2924 ST-4 — feature roots size to the content region, not the viewp
   });
 
   it('terminal window root is content-region sized (direction-agnostic)', () => {
-    const code = source(TERMINAL_WINDOW);
-    // The invariant: a Flex window root that fills its definite-height content
-    // region. `direction` / extra props are UI/UX-owned and are NOT pinned.
-    expect(code).toMatch(/<Flex\b[^>]*\bh="100%"/);
+    // Spec #3121 ST-1 — the root MOVED, the invariant did not. The terminal's column root
+    // (the definite-height `h="100%"` Flex that fills its content region) now lives in the
+    // navigation provider, which also owns the ONE key adapter and the footer; the shipped
+    // row became that column's `flex="1"` child (it MUST NOT keep `h="100%"`, or it would
+    // overflow the column past the footer). Re-pointed exactly as #2934 ST-3 re-pointed this
+    // pin when the root moved out of `TerminalSessionView.tsx`.
+    expect(source(TERMINAL_NAV_PROVIDER)).toMatch(/<Flex\b[^>]*\bh="100%"/);
+    expect(source(TERMINAL_WINDOW)).toMatch(/<Flex\b[^>]*\bflex="1"/);
   });
 
   it('pins the #2942 sidebar as the terminal navigation surface (the #2940 rail cannot return)', () => {
