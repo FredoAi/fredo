@@ -50,11 +50,10 @@
     — and the reply is the generic `Performed in Wireframe: …` copy instead of #3070's
     `Started a new wireframe for Reporter: …`. See `.opencode/tests/companion/` F-148 for the
     authoritative row.
-- [ ] **S-9: Bar quick path** — with Wireframe focused, `[data-testid="hotkeys-keybar-row"]`
-      lists 32 wireframe bindings (21 distinct `data-hotkey-key` first-step values; each of the
-      12 `g`-namespace rows renders two chips) and
-      `document.body[data-fredo-hotkey-duplicate]` is absent; focus another window and confirm
-      the wireframe rows disappear.
+- [ ] **S-9 (historical — superseded by S-17/S-18):** the pre-P5 legacy bar quick path. The
+      current observable is the navigation bar (`navigation-bar`) over the Wireframe declaration;
+      focus another window and confirm the Wireframe rows disappear. The legacy element-key
+      channel is deleted in P8; its absence is gate-owned by `legacyAbsence.test.ts`.
 - [ ] **S-10: CI-parity gate** — `pnpm --filter @fredo/ui build` exit 0, `pnpm --filter
       @fredo/ui test:run` green, `pnpm --filter @fredo/tauri build:webview` exit 0, and the
       Rust gates (`cargo check` / `cargo clippy -D warnings` / `cargo nextest run`, all
@@ -63,7 +62,7 @@
 ## Round 1 result — 2026-10-21
 
 - **S-1 PASS (shell only):** the Fredo launcher renders (`FREDO` heading, launcher dialog,
-  `[data-testid="launcher-command-input"]`, hotkey-count `0`); the shell is healthy.
+  `[data-testid="launcher-command-input"]`); the shell is healthy.
 - **S-2 FAIL:** opening the Wireframe app raises an uncaught
   `InvalidStateError: … drawImage … width or height of 0` in `react-konva` `StageWrap`
   (`WireframeCanvasImpl.tsx:828`) and unmounts `#root`. Console is NOT clean.
@@ -102,8 +101,9 @@ Root defect detail + repro: see `functional.md` → "Round 1 result — served a
 - **S-8 FAIL (same root as F-47):** the Gherkin sentence produced prose, no draft, no window.
   `listActions` / `add.*` / `draftApp`'s executor are proven by F-43/F-44a; the model simply
   does not select the skill.
-- **S-9 PASS:** 22 keybar rows while focused; the wireframe rows and `data-hotkey` attributes
-  disappear when the host is unfocused.
+- **S-9 PASS (historical):** with the host focused the then-shipped legacy bar listed the
+  Wireframe rows; they disappeared when the host was unfocused. (P5/P8 replaced this with the
+  navigation bar; the current rows are S-17/S-18.)
 - **S-10 PASS:** build 2832 modules, 3056 tests, contrast 46/46, cargo check zero warnings
   (clippy/nextest/build:webview disclosed as not re-run; no Rust change in the fix commit).
 
@@ -128,8 +128,9 @@ Root defect detail + repro: see `functional.md` → "Round 1 result — served a
   CANCEL+FAIL_FILE showed no banner (cancel wins).
 - **S-8 PASS:** the binding Gherkin opens the app from closed and drafts navbar + "Reporter"
   heading + "Reporter reports" card through the real model path (Companion ON at home).
-- **S-9 PASS:** 22 keybar rows + 22 toolbar `data-hotkey` attributes while focused; typed keys
-  are suppressed in text entry.
+- **S-9 PASS (historical):** the then-shipped legacy bar and toolbar key attributes were present
+  while focused; typed keys were suppressed in text entry. (P5/P8 replaced this with the
+  navigation bar and `data-nav-keycap` / `data-nav-verb-id`; the current rows are S-17/S-18.)
 - **S-10 PASS (tester-run):** typecheck ✓ · build 2832 modules ✓ · test:run 3077 ✓ ·
   contrast 46/46 ✓ · build:webview 2834 modules ✓ · cargo check/clippy zero warnings ✓ ·
   cargo test 1451 lib tests + integration suites ✓.
@@ -167,11 +168,10 @@ Root defect detail + repro: see `functional.md` → "Round 1 result — served a
 - [ ] **S-14: Guides quick path** — start a drag so an element nears another's edge.
       **Expected:** `[data-testid="wireframe-canvas"][data-wireframe-guides]` is a number > 0
       mid-drag and returns to `'0'` on drop; console clean.
-- [ ] **S-15: Two-step hotkey + bar quick path** — with Wireframe focused press `g` alone.
-      **Expected:** `document.body[data-fredo-pending-sequence]`=`g` and the
-      `hotkeys-keybar-pending` chip shows (binding ARMED), then it clears after the 1000 ms
-      timeout with no document change; the bar lists the 10 new rows (now **32** total,
-      re-baselined from 22) with `data-hotkey-key`=`g`; console clean.
+- [ ] **S-15 (historical — superseded).** The pre-P5 two-step legacy chord quick path. P5 deleted
+      the `g` namespace; Wireframe strokes are now the declaration's place keys. The current
+      pending/armed behaviour is the 250 ms navigation prefix rendered in `navigation-bar` (see
+      `functional.md` P5/P8 rows); console clean.
 
 ## Spec #3087 — added quick path (chip removal)
 
@@ -181,15 +181,10 @@ Root defect detail + repro: see `functional.md` → "Round 1 result — served a
 > `tauri_webview_*` result + screenshot; document state, no `telemetry_spans` receipt expected.
 > Do **not** synthesize key events (E-22).
 
-- [ ] **S-16: Toolbar has no hotkey chip; the bar still lists the shortcuts.**
-      Open Wireframe from the launcher with the host focused.
-      **Expected:** `[data-testid="wireframe-toolbar"]` contains **0**
-      `[data-testid="wireframe-hotkey-chip"]` and **0** `[data-testid="hotkeys-keycap"]` nodes;
-      33 `wireframe-action-*` controls render (32 with `data-hotkey`); the
-      `hotkeys-keybar-row` list still carries all 32 Wireframe shortcuts; pressing bare `1` from
-      the `default` gate still adds a text element (`-element-count` 0→1); a capture of the
-      clean toolbar is uploaded; console clean.
-      Cross-ref `functional.md` F-84/F-86.
+- [ ] **S-16 (historical — superseded by S-17).** The toolbar/keycap quick path. P5 deleted the
+      toolbar and the 33 action controls; the current surface is the navigation bar with
+      `data-nav-keycap` hints. Press `c` then `t` to add a text element (`-element-count` 0→1);
+      capture the clean bar; console clean. Cross-ref `functional.md` F-84/F-86.
 
 ## Spec #3119 (P5) — RE-BASELINE of the toolbar / hotkey quick paths
 
@@ -206,18 +201,17 @@ Root defect detail + repro: see `functional.md` → "Round 1 result — served a
   → `f` `n`.
 - **S-7b re-baselined:** the `FREDO_WIREFRAME_CANCEL=1` leg presses `f` `w`; expectations
   unchanged (nothing written, no banner, document/path/dirty unchanged).
-- **S-9 re-baselined (bar quick path):** Wireframe now contributes **0** bar rows. With
-  Wireframe focused, `[data-testid="hotkeys-keybar-row"]` contains **no** Wireframe rows and
-  `data-fredo-hotkey-count` is unchanged from the unfocused reading (delta **0**);
-  `document.body[data-fredo-hotkey-duplicate]` stays absent. **Non-vacuity control:** focus
-  Mission Monitor → its rows are present.
+- **S-9 re-baselined (bar quick path):** Wireframe contributes **0** LEGACY element-key rows.
+  With Wireframe focused, the legacy bar carries no Wireframe row (its absence is gate-owned by
+  `legacyAbsence.test.ts`); the current observable is the navigation bar (`navigation-bar`) over
+  the declaration. **Non-vacuity control:** focus Mission Monitor → its navigation rows are
+  present.
 - **S-12 re-baselined (multi-select + group):** keys `1`/`2` → `c` `t` / `c` `b`; `g` `g` →
   `a` `g`. `-selection-count`, `-group-count` and `wireframe-tag-group` expectations unchanged.
 - **S-13 re-baselined (snap + align):** `g s` → `a` `s`; `g a` (align left) → `a` `←`.
   `-selection-geometry` edge coincidence and the ONE-`u` clause are unchanged (`u` at the root).
-- **S-15 superseded:** the `g` two-step namespace no longer exists; there is no
-  `data-fredo-pending-sequence` for Wireframe. The nav engine's armed prefix is 250 ms and shows
-  in `navigation-rail` / the hint, not the bar.
+- **S-15 superseded:** the `g` two-step namespace no longer exists; Wireframe strokes are place
+  keys. The nav engine's armed prefix is 250 ms and shows in `navigation-bar` / the hint.
 - **S-16 superseded:** `wireframe-toolbar` renders **0** nodes (the element is deleted) and
   Wireframe mounts **0** `wireframe-action-*` controls. Replacement parity proof:
   `wireframe-navigation` F-N13 (33-row manifest).
@@ -229,9 +223,10 @@ Root defect detail + repro: see `functional.md` → "Round 1 result — served a
 
 - [ ] **S-17: Navigation-shell quick path.** Open Wireframe from the launcher.
       **Expected:** `wireframe-root[data-wireframe-place="wireframe.canvas"]`,
-      `navigation-rail` (six place rows + ≤ 8 verb rows), `navigation-trail`,
+      `navigation-bar` (six place rows + ≤ 8 verb rows), `navigation-trail`,
       `navigation-map` trigger, `wireframe-canvas`; **no** `wireframe-toolbar`, **0**
-      `wireframe-action-*`, **0** `hotkeys-keybar` while focused. Capture uploaded; console clean.
+      `wireframe-action-*`, and zero legacy element-key rows while focused. Capture uploaded;
+      console clean.
 - [ ] **S-18: Place-entry quick path.** Press `c` (breadcrumb `Canvas › Create`, announcement
       `Create — 9 actions`, rail 8 rows + `more…`), then `Escape` (breadcrumb `Canvas`,
       announcement `Left Create — Canvas — 2 actions`). Capture of the Create rail uploaded;
