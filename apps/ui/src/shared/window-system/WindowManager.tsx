@@ -36,6 +36,10 @@ import { Box } from '@chakra-ui/react';
 import { WindowFrame } from './WindowFrame';
 import { ZoneDegradedSlot, WorkspaceEmptySlot, WorkspacePane } from './WorkspacePane';
 import { ZoneOverlay } from './ZoneOverlay';
+import {
+  WindowSystemNavigationDock,
+  WindowSystemNavigationProvider,
+} from './WindowSystemNavigationProvider';
 import { setZoneLayoutWorkspace, useZoneLayout } from './zoneLayoutStore';
 import { getWindowSnapshot, subscribeWindows } from './windowStore';
 import type { WorkspaceSize, Zone } from './zoneLayout';
@@ -143,72 +147,79 @@ export function WindowManager() {
     }));
 
   return (
-    <Box
-      data-testid="window-manager"
-      position="absolute"
-      inset="0"
-      overflow="hidden"
-      zIndex={1}
-      bg="transparent"
-    >
-      <Box ref={layerRef} data-testid="workspace-layout" position="absolute" inset="0" pointerEvents="none">
-        <Box data-testid="workspace-tiles" position="absolute" inset="0" pointerEvents="none">
-          {panes.map(({ win, zoneId, layoutId, zone: paneZone }) => (
-            <WorkspacePane
-              key={win.id}
-              window={win}
-              zoneId={zoneId}
-              layoutId={layoutId}
-              zone={paneZone}
-              workspace={workspace}
-              gap={zone.gap}
-            />
-          ))}
+    <WindowSystemNavigationProvider>
+      <Box
+        data-testid="window-manager"
+        position="absolute"
+        inset="0"
+        overflow="hidden"
+        zIndex={1}
+        bg="transparent"
+      >
+        <Box ref={layerRef} data-testid="workspace-layout" position="absolute" inset="0" pointerEvents="none">
+          <Box data-testid="workspace-tiles" position="absolute" inset="0" pointerEvents="none">
+            {panes.map(({ win, zoneId, layoutId, zone: paneZone }) => (
+              <WorkspacePane
+                key={win.id}
+                window={win}
+                zoneId={zoneId}
+                layoutId={layoutId}
+                zone={paneZone}
+                workspace={workspace}
+                gap={zone.gap}
+              />
+            ))}
 
-          {/* R-4.4: minimized zoned panes keep their zone as an empty restore slot. */}
-          {emptySlots.map(({ win, zoneId, layoutId, zone: paneZone }) => (
-            <WorkspaceEmptySlot
-              key={`empty-${win.id}`}
-              window={win}
-              zoneId={zoneId}
-              layoutId={layoutId}
-              zone={paneZone}
-              workspace={workspace}
-              gap={zone.gap}
-            />
-          ))}
+            {/* R-4.4: minimized zoned panes keep their zone as an empty restore slot. */}
+            {emptySlots.map(({ win, zoneId, layoutId, zone: paneZone }) => (
+              <WorkspaceEmptySlot
+                key={`empty-${win.id}`}
+                window={win}
+                zoneId={zoneId}
+                layoutId={layoutId}
+                zone={paneZone}
+                workspace={workspace}
+                gap={zone.gap}
+              />
+            ))}
 
-          {/* R-4.4: assignments with no matching open window render degraded. */}
-          {degraded.map(({ windowId, zoneId, layoutId, zone: paneZone }) => (
-            <ZoneDegradedSlot
-              key={`degraded-${windowId}`}
-              windowId={windowId}
-              zoneId={zoneId}
-              layoutId={layoutId}
-              zone={paneZone}
+            {/* R-4.4: assignments with no matching open window render degraded. */}
+            {degraded.map(({ windowId, zoneId, layoutId, zone: paneZone }) => (
+              <ZoneDegradedSlot
+                key={`degraded-${windowId}`}
+                windowId={windowId}
+                zoneId={zoneId}
+                layoutId={layoutId}
+                zone={paneZone}
+                workspace={workspace}
+                gap={zone.gap}
+              />
+            ))}
+          </Box>
+
+          {/* R-3.1: the zone drop layer renders only while a chord-drag is live. */}
+          {zone.dragActive && (
+            <ZoneOverlay
+              zones={activeLayout?.zones ?? []}
               workspace={workspace}
               gap={zone.gap}
+              hoveredZoneId={zone.hoveredZoneId}
             />
-          ))}
+          )}
         </Box>
 
-        {/* R-3.1: the zone drop layer renders only while a chord-drag is live. */}
-        {zone.dragActive && (
-          <ZoneOverlay
-            zones={activeLayout?.zones ?? []}
-            workspace={workspace}
-            gap={zone.gap}
-            hoveredZoneId={zone.hoveredZoneId}
-          />
-        )}
-      </Box>
+        {/* Un-assigned / maximized / minimized windows keep the freeform-frame
+            path. Rendered last so a float/full-bleed window paints above the
+            zoned layer. */}
+        {frames.map((win) => (
+          <WindowFrame key={win.id} window={win} />
+        ))}
 
-      {/* Un-assigned / maximized / minimized windows keep the freeform-frame
-          path. Rendered last so a float/full-bleed window paints above the
-          zoned layer. */}
-      {frames.map((win) => (
-        <WindowFrame key={win.id} window={win} />
-      ))}
-    </Box>
+        {/* Spec #3121 ST-2 — the ONE window-traversal surface, mounted here (never per
+            window) and rendered as the floating, pointer-inert dock (UI/UX §4). Last
+            child so it stacks above every frame; it adds no keydown listener. */}
+        <WindowSystemNavigationDock />
+      </Box>
+    </WindowSystemNavigationProvider>
   );
 }

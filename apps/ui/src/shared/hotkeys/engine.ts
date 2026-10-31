@@ -45,6 +45,7 @@ import {
 import { decideDispatch, type CommandDispatchScope } from './sequence';
 import { setHotkeysDisabled } from './store';
 import { focusWindow, getWindowSnapshot } from '../window-system/windowStore';
+import { getNavigationHost } from '../navigation/ui/hostRegistry';
 import {
   type ApplicationHotkeyAction,
   type DispatchDecision,
@@ -83,6 +84,39 @@ function focusRelative(delta: number): void {
   if (target) focusWindow(target.id);
 }
 
+// ── Kept-global delegation into the window surface host (Spec #3121 ST-2) ──
+
+/** §B.2 — the declared window-system surface app id. */
+const WINDOW_SYSTEM_SURFACE_APP_ID = 'window-system';
+
+/**
+ * D-3(a) — the modifier chords are NOT expressible in the §4.4 grammar, so the three kept
+ * platform globals stay here and DELEGATE into the declared `window-system` host through
+ * `runIntent({channel:'keyboard'})`. Key → verb id → outcome is therefore provable without
+ * a second key table and without a grammar change. The fallback is the pre-#3121
+ * behaviour, used only while the window system is not mounted (no host registered).
+ *
+ * The re-entry guard terminates a launcher round-trip: the surface's
+ * `window.launcher.toggle` run re-enters the shared registry, whose default action run is
+ * this same delegation.
+ */
+let windowHostIntentInFlight = false;
+
+function runKeptGlobalThroughWindowHost(verbId: string, fallback: () => void): void {
+  const host = getNavigationHost(WINDOW_SYSTEM_SURFACE_APP_ID);
+  if (host === null || windowHostIntentInFlight) {
+    fallback();
+    return;
+  }
+  windowHostIntentInFlight = true;
+  const settle = (): void => {
+    windowHostIntentInFlight = false;
+  };
+  void host
+    .runIntent({ verbId, args: {}, channel: 'keyboard', actor: 'human' })
+    .then(settle, settle);
+}
+
 // ── Default action registration (the kept globals) ──────────────────────────
 
 const DEFAULT_FREDO_ACTION_DEFS: readonly ApplicationHotkeyAction[] = [
@@ -91,21 +125,21 @@ const DEFAULT_FREDO_ACTION_DEFS: readonly ApplicationHotkeyAction[] = [
     title: 'Toggle launcher',
     description: 'Show or focus the launcher command bar',
     defaultSequence: 'primary+space',
-    run: () => {},
+    run: () => runKeptGlobalThroughWindowHost('window.launcher.toggle', () => {}),
   },
   {
     actionId: FOCUS_NEXT_ACTION_ID,
     title: 'Focus next window',
     description: 'Move focus to the next open window',
     defaultSequence: 'primary+tab',
-    run: () => focusRelative(1),
+    run: () => runKeptGlobalThroughWindowHost('window.focus.next', () => focusRelative(1)),
   },
   {
     actionId: FOCUS_PREVIOUS_ACTION_ID,
     title: 'Focus previous window',
     description: 'Move focus to the previous open window',
     defaultSequence: 'primary+shift+tab',
-    run: () => focusRelative(-1),
+    run: () => runKeptGlobalThroughWindowHost('window.focus.previous', () => focusRelative(-1)),
   },
 ];
 
