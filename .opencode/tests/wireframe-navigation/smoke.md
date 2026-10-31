@@ -3,8 +3,9 @@
 Feature: the **declaration-driven Wireframe surface** (Spec #3119, P5 pilot) — the surface is
 declared as data (`applications/wireframe/wireframeSurface.ts`: six places under `Canvas`, 55
 verbs, 3 root direct aliases) and mounted with `CommandRail` + `NavigationMap` +
-`ActivityTrail`; the 33-control toolbar, `wireframeCommandSurface.ts`,
-`WireframeHotkeyCarrier.tsx`, `WIREFRAME_ACTIONS.hotkey` and every `g+*` binding are gone.
+`ActivityTrail`; the 33-control toolbar, the legacy command surface, the legacy key carrier, the
+legacy action-table key field and every retired two-step binding are gone (P8 deletes the rest of
+the legacy runtime and the eight deprecated app trees).
 
 > **Verification policy: live** — every case below is a runtime observation of the running app;
 > the feature emits no telemetry, so no `telemetry_spans` receipt applies (see
@@ -37,11 +38,12 @@ verbs, 3 root direct aliases) and mounted with `CommandRail` + `NavigationMap` +
       bar renders the six place rows (`Create, Edit, Arrange, Style, View, File`) before its
       verb rows.
 
-- [x] **S-N3: No toolbar and no hotkey bar for Wireframe.**
+- [x] **S-N3: No toolbar and no legacy key bar for Wireframe.**
       With Wireframe focused: `document.querySelector('[data-testid="wireframe-toolbar"]')`
       is `null`, `document.querySelectorAll('[data-testid^="wireframe-action-"]').length` is
-      **0**, and `document.querySelectorAll('[data-testid="hotkeys-keybar"]').length` is **0**.
-      **Non-vacuity control:** open Mission Monitor → `hotkeys-keybar` is present (the
+      **0**, and zero legacy element-key bars/rows exist (gate-owned by
+      `legacyAbsence.test.ts`).
+      **Non-vacuity control:** open Mission Monitor → its `navigation-bar` rows are present (the
       instrument exists whether or not the Wireframe claim holds).
 
 - [x] **S-N4: Keyed quick path — create a rectangle.**
