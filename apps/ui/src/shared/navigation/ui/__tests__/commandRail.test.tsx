@@ -10,7 +10,8 @@
  *   - F-N26 (R-1.2): declaration-ordered rows, the 8-row cap unchanged, never padded/sorted/sliced;
  *   - F-N27 (R-1.3): no horizontal auto/scroll, the row title is the one ellipsizing child, rows
  *     keep the 96 px floor and the cluster wraps (vertical growth);
- *   - F-N28 (R-1.4): NO rendered child-place list; the last breadcrumb segment is the current-place
+ *   - F-N28 (R-1.4): the current place's child places render as a `role="list"` group BEFORE the
+ *     verb cluster (since the round-7 follow-up); the last breadcrumb segment is the current-place
  *     anchor (`tabIndex={-1}`, `aria-current="page"`), never a duplicate heading;
  *   - F-N29 (R-1.5): `more…` inline at the end of the cluster opens the map filtered to the place;
  *   - F-N35/F-N39 (R-6.1/R-6.5): one model, no key table, no `aria-live`, no positive tabindex.
@@ -180,11 +181,55 @@ describe('CommandRail — the command bar is a horizontal row (F-N25 / R-1.1)', 
     expect(code).toMatch(/minWidth="0"/);
     expect(code).toMatch(/ROW_MAX_WIDTH_PX\s*=\s*168/);
   });
+
+  it('pins the wrap + zero-basis + real-floor contract that keeps the bar inside its width (ST-5R-6)', () => {
+    // jsdom has no layout engine, so the source slices are the deterministic oracle for the
+    // flex contract; the 900×600 `scrollWidth === clientWidth` receipt stays the tester's live leg.
+    renderRail(modelAt(ROOT_PATH));
+    const code = stripComments(readSource(SOURCE_PATH));
+
+    // (a) the root bar may wrap its top-level groups onto a new line.
+    const rootBlock = code.slice(code.indexOf('data-nav-surface="bar"')).slice(0, 800);
+    expect(rootBlock).toContain('flexWrap="wrap"');
+
+    // (b) the verb cluster reserves a zero basis + one 96 px floor, and wraps inside its line.
+    const listIdx = code.indexOf('data-testid={NAV_RAIL_LIST_TESTID}');
+    expect(listIdx).toBeGreaterThanOrEqual(0);
+    const listBlock = code.slice(listIdx, listIdx + 400);
+    expect(listBlock).toContain('flex="1 1 0"');
+    expect(listBlock).toContain('NAV_BAR_ROW_MIN_WIDTH_PX');
+    expect(listBlock).toContain('flexWrap="wrap"');
+
+    // (c) the globals box flushes right when it wraps, and stays the bar's last element child.
+    const mapIdx = code.indexOf('data-testid={NAV_RAIL_MAP_TESTID}');
+    expect(mapIdx).toBeGreaterThanOrEqual(0);
+    const globalsBlock = code.slice(Math.max(0, mapIdx - 260), mapIdx);
+    expect(globalsBlock).toContain('marginLeft="auto"');
+    const root = screen.getByTestId(NAV_RAIL_TESTID);
+    const last = root.lastElementChild;
+    expect(last).not.toBeNull();
+    expect(last?.contains(screen.getByTestId(NAV_RAIL_MAP_TESTID))).toBe(true);
+    expect(last?.contains(screen.getByTestId(NAV_RAIL_ASK_TESTID))).toBe(true);
+
+    // (d) the row <li>/<button> may shrink to the 96 px floor (the title stays the ONE ellipsis).
+    const railRowBlock = code.slice(
+      code.indexOf('function RailRow('),
+      code.indexOf('function PlaceRow('),
+    );
+    expect(railRowBlock).toContain('flexShrink={1}');
+    expect(railRowBlock).toContain('NAV_BAR_ROW_MIN_WIDTH_PX');
+    const placeRowBlock = code.slice(
+      code.indexOf('function PlaceRow('),
+      code.indexOf('export function CommandRail('),
+    );
+    expect(placeRowBlock).toContain('flexShrink={1}');
+    expect(placeRowBlock).toContain('NAV_BAR_ROW_MIN_WIDTH_PX');
+  });
 });
 
-/* ─────────────────── F-N28 — no child-place list, breadcrumb anchor ─────────────────── */
+/* ─────────────────── F-N28 — child-place rows, breadcrumb anchor ─────────────────── */
 
-describe('CommandRail — no child-place list and the breadcrumb is the current-place anchor (F-N28 / R-1.4)', () => {
+describe('CommandRail — child-place rows before the verbs and the breadcrumb is the current-place anchor (F-N28 / R-1.4)', () => {
   it('renders the child-place list at the root alongside the contextual verbs', () => {
     renderRail(modelAt(ROOT_PATH));
 

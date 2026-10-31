@@ -48,7 +48,7 @@ export interface NavAffordance {
   readonly tooltip: string;
 }
 
-/** R-1.1 — one child-place row (the "Places" rail section above the verbs). */
+/** R-1.1 — one child-place row (rendered in the bar before the verb cluster). */
 export interface CommandRailPlaceRow {
   readonly placeId: string;
   readonly label: string;

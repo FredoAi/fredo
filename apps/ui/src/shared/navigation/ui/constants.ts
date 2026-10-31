@@ -25,9 +25,17 @@ export const NAV_RAIL_BREADCRUMB_TESTID = 'navigation-bar-breadcrumb';
 export const NAV_RAIL_PLACE_TESTID = 'navigation-bar-place';
 export const NAV_RAIL_TRANSIENT_TESTID = 'navigation-bar-transient';
 export const NAV_RAIL_LIST_TESTID = 'navigation-bar-list';
-/** Retained symbol; the bar renders NO child-place list (R-1.4). */
+/**
+ * Retained symbol + string VALUE (`navigation-rail-places`). Since the round-7 follow-up the
+ * bar DOES render the current place's child-place group, as a `role="list"` BEFORE the verb
+ * cluster. The value stays `navigation-rail-places` because the durable suite binds it.
+ */
 export const NAV_RAIL_PLACES_TESTID = 'navigation-rail-places';
-/** Retained symbol; the bar renders NO child-place rows (R-1.4). */
+/**
+ * Retained symbol + string VALUE (`navigation-rail-place-row`) for one child-place row. The
+ * bar renders these rows before the verb cluster (they are excluded from the 8-row verb cap).
+ * The value stays `navigation-rail-place-row` because the durable suite binds it.
+ */
 export const NAV_RAIL_PLACE_ROW_TESTID = 'navigation-rail-place-row';
 export const NAV_RAIL_ROW_TESTID = 'navigation-bar-row';
 export const NAV_RAIL_RISK_TESTID = 'navigation-bar-risk';

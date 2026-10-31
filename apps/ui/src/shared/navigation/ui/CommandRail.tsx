@@ -3,9 +3,11 @@
  * **bottom command bar**.
  *
  * Answers one question: "where am I and what can I do next?" — the place breadcrumb on the
- * left, the current place's bound verbs (≤ 8, declaration order) centred, `more…` inline at
- * the end of the cluster, and the two globals `? Map` / `Ask` on the right. There is NO
- * child-place list and NO duplicate current-place heading (UIUX-D4 / R-1.4).
+ * left, the current place's child places as a `role="list"` group **before** the verb cluster
+ * (since the round-7 follow-up), the current place's bound verbs (≤ 8, declaration order)
+ * centred, `more…` inline at the end of the cluster, and the two globals `? Map` / `Ask` on
+ * the right. The last breadcrumb segment is the current place — there is NO duplicate
+ * current-place heading (UIUX-D4 / R-1.4). Place rows are excluded from the ≤ 8-row verb cap.
  *
  * Source of truth (R-1.7): the bar renders ONE `CommandRailModel` produced by the ST-1
  * projection layer. It takes NO key table, NO `VerbDescriptor[]` and NO `Surface`, and it
@@ -13,11 +15,13 @@
  *
  * Structural invariants (binding, Architect §6 / QA F-N25 … F-N28):
  *   - root `role="region"`, `aria-label={NAV_RAIL_ARIA_LABEL}`, `data-nav-surface="bar"`,
- *     a horizontal flex row, `minHeight: NAV_BAR_MIN_HEIGHT_PX`, `overflowX: hidden`;
+ *     a horizontal flex row that may WRAP its groups to a new line,
+ *     `minHeight: NAV_BAR_MIN_HEIGHT_PX`, `overflowX: hidden`;
  *   - the last breadcrumb segment is the `NAV_RAIL_PLACE_TESTID` anchor
  *     (`tabIndex={-1}`, `aria-current="page"`) and the ONLY ellipsizing breadcrumb segment;
- *   - the verb cluster WRAPS and the bar GROWS VERTICALLY with width (UIUX-D6) — every row
- *     keeps a `NAV_BAR_ROW_MIN_WIDTH_PX` floor and the bar never scrolls horizontally;
+ *   - the top-level groups wrap to a new line, the verb cluster WRAPS inside its own line,
+ *     and the bar GROWS VERTICALLY with width (UIUX-D6) — every verb/place row keeps a
+ *     `NAV_BAR_ROW_MIN_WIDTH_PX` floor and the bar never scrolls horizontally;
  *   - NO `aria-live` region of its own, NO positive tabindex, NO focus move on mount;
  *   - a place transition re-homes focus the bar itself dropped (the same control when it
  *     reappears, else the current-place breadcrumb segment — the programmatic
@@ -142,7 +146,12 @@ function RailRow({
 }): React.ReactElement {
   const titleColor = row.enabled ? 'fg.default' : 'fg.subtle';
   return (
-    <chakra.li role="listitem" display="flex" flexShrink={0} minWidth="0">
+    <chakra.li
+      role="listitem"
+      display="flex"
+      flexShrink={1}
+      minWidth={`${NAV_BAR_ROW_MIN_WIDTH_PX}px`}
+    >
       <chakra.button
         type="button"
         data-testid={NAV_RAIL_ROW_TESTID}
@@ -160,7 +169,7 @@ function RailRow({
         display="flex"
         alignItems="center"
         gap="1.5"
-        flexShrink={0}
+        flexShrink={1}
         minWidth={`${NAV_BAR_ROW_MIN_WIDTH_PX}px`}
         maxWidth={`${ROW_MAX_WIDTH_PX}px`}
         height="28px"
@@ -229,7 +238,12 @@ function PlaceRow({
   readonly onRunVerb: (placeId: string) => void;
 }): React.ReactElement {
   return (
-    <chakra.li role="listitem" display="flex" flexShrink={0} minWidth="0">
+    <chakra.li
+      role="listitem"
+      display="flex"
+      flexShrink={1}
+      minWidth={`${NAV_BAR_ROW_MIN_WIDTH_PX}px`}
+    >
       <chakra.button
         type="button"
         data-testid={NAV_RAIL_PLACE_ROW_TESTID}
@@ -240,7 +254,7 @@ function PlaceRow({
         display="flex"
         alignItems="center"
         gap="1.5"
-        flexShrink={0}
+        flexShrink={1}
         minWidth={`${NAV_BAR_ROW_MIN_WIDTH_PX}px`}
         maxWidth={`${ROW_MAX_WIDTH_PX}px`}
         height="28px"
@@ -297,6 +311,7 @@ export function CommandRail({
       aria-label={NAV_RAIL_ARIA_LABEL}
       display="flex"
       alignItems="center"
+      flexWrap="wrap"
       width="100%"
       gap="2"
       px="3"
@@ -385,7 +400,7 @@ export function CommandRail({
         </Box>
       )}
 
-      {/* ── Centre: the wrapping verb cluster (`more…` inline at its end) ── */}
+      {/* ── The current place's child places, BEFORE the verb cluster ── */}
       {model.placeRows.length === 0 ? null : (
         <Box
           data-testid={NAV_RAIL_PLACES_TESTID}
@@ -396,7 +411,7 @@ export function CommandRail({
           alignItems="center"
           justifyContent="center"
           gap="1"
-          flexShrink={0}
+          flexShrink={1}
           minWidth="0"
           listStyleType="none"
           p="0"
@@ -422,8 +437,8 @@ export function CommandRail({
         role="list"
         as="ul"
         display="flex"
-        flex="1 1 auto"
-        minWidth="0"
+        flex="1 1 0"
+        minWidth={`${NAV_BAR_ROW_MIN_WIDTH_PX}px`}
         flexWrap="wrap"
         justifyContent="center"
         alignItems="center"
@@ -456,7 +471,7 @@ export function CommandRail({
         )}
 
         {more === null ? null : (
-          <chakra.li role="listitem" display="flex" flexShrink={0}>
+          <chakra.li role="listitem" display="flex" flexShrink={1}>
             <chakra.button
               type="button"
               data-testid={NAV_RAIL_MORE_TESTID}
@@ -465,7 +480,7 @@ export function CommandRail({
               onClick={() => onOpenMap(more.opensFilteredTo)}
               display="flex"
               alignItems="center"
-              flexShrink={0}
+              flexShrink={1}
               minWidth={`${NAV_BAR_ROW_MIN_WIDTH_PX}px`}
               justifyContent="center"
               height="28px"
@@ -486,7 +501,7 @@ export function CommandRail({
       </Box>
 
       {/* ── Right: the two globals ── */}
-      <Box display="flex" alignItems="center" gap="1" flexShrink={0}>
+      <Box display="flex" alignItems="center" gap="1" flexShrink={0} marginLeft="auto">
         <chakra.button
           type="button"
           data-testid={NAV_RAIL_MAP_TESTID}

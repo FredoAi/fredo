@@ -646,8 +646,10 @@ Each builder is total and pure over the declaration plus the injected read model
   breadcrumb/current place come from `buildContextEnvelope(...).placePath` (declaration
   labels), falling back to the declared root; the current place is the **last breadcrumb
   segment** (`navigation-bar-place`, `tabIndex={-1}`, `aria-current="page"`), never a
-  standalone heading. The bar renders **no child-place rows** (§P6.2) and 4–8 contextual verb
-  rows (the declaration's bound verbs, capped at 8; never padded to a minimum).
+  standalone heading. The bar renders the current place's child places as a `role="list"`
+  group **before** the verb cluster (§P6.2) and its contextual verb rows (the declaration's
+  bound verbs, capped at 8; never padded to a minimum; place rows never count against the
+  8-row verb cap).
   `actionCount = rows.length + overflow`. `more…` appears only when `overflow > 0` and opens the
   map **filtered to the current place**. The bar is a single horizontal region
   (`data-nav-surface="bar"`, `aria-label="Command bar"`, `overflowX: hidden`); width-driven
@@ -656,13 +658,14 @@ Each builder is total and pure over the declaration plus the injected read model
   enabled, and `/ Ask` is ENABLED — activation publishes
   `requestCompanionComposerOpen({source:'command-bar-ask', appId, focus:true})` (§P6.3). Neither
   tooltip ever contains a glyph (a tooltip names `m`/`k`).
-- **Place rows (retained in the model, NOT rendered)** — `CommandRailModel.placeRows` still
-  lists the current place's **child places** in declaration order (`registry.childrenByParent`),
-  each `{placeId, label, key, keys, keyHint, transient, tooltip}`, and is used by the derivation
-  and its tests. Since P6 (Spec #3120, ST-5) the bottom command bar renders **no child-place
-  rows** (R-1.4): a place is entered through the `? Map` map or its declared place stroke. The
-  retained `placeRows` never contribute to `rows`, `overflow` or `actionCount` (those count the
-  current place's bound verbs only).
+- **Place rows (rendered before the verb cluster)** — `CommandRailModel.placeRows` lists the
+  current place's **child places** in declaration order (`registry.childrenByParent`), each
+  `{placeId, label, key, keys, keyHint, transient, tooltip}`, and drives the bar's child-place
+  group. Since the round-7 follow-up the bottom command bar renders those child places as a
+  `role="list"` group **before** the verb cluster; a place is also enterable through the
+  `? Map` map or its declared place stroke. `placeRows` never contribute to `rows`, `overflow`
+  or `actionCount` (those count the current place's bound verbs only; place rows are excluded
+  from the 8-row verb cap).
 - **Map** — `buildNavigationMapModel(surface, snapshot, { filteredTo })` composes the shipped
   `deriveMap` tree order with `createRegistry(...).verbsById`, each verb's
   `available(snapshot)` and the shipped `formatTooltip` (through `navTooltip`); it never
@@ -705,7 +708,9 @@ Every test id, data attribute, accessible name, copy string and bound below is B
 surface renders the constant, never an invented literal (G-324/G-419).
 
 - **DOM hooks** — `navigation-bar*` (the bottom command bar; the retained `navigation-rail-places`
-  / `navigation-rail-place-row` symbols are declared but **never rendered**), `navigation-map*`,
+  / `navigation-rail-place-row` symbols keep their string VALUES because the durable suite binds
+  them, and the bar **does** render the current place's child-place group before the verb
+  cluster under those ids), `navigation-map*`,
   `navigation-trail*`, `navigation-keycap*`, `navigation-announcer` (one test id per named
   element).
 - **Data attributes** — `data-nav-surface` (`bar`|`map`|`trail`), `data-nav-keycap`,
@@ -823,7 +828,8 @@ manual-pass artifact and the cross-surface composite is `ui/__tests__/a11y.test.
   `useNavReducedMotion()`).
 - **One live region:** the P4 navigation surfaces declare no `aria-live`; the navigation announcement layer owns the single `navigation-announcer` polite region. P6 (ST-7) deleted the launcher navigation announcer (`launcher-palette-announcer`) together with the launcher palette, so there is **no second navigation live region**; the launcher confirmation is an `alertdialog`, not a live region, and the shipped launcher voice/queue regions are pre-existing and unchanged.
 - **Bounded DOM:** bar verb rows ≤ 8 (never padded) and no more than the place's bound verbs;
-  the bar renders **no child-place rows** (the model's `placeRows` is derivation-only); trail
+  the bar renders the current place's child-place rows **before** the verb cluster (excluded
+  from the 8-row verb cap; `placeRows` never feed `rows`/`overflow`/`actionCount`); trail
   entries ≤ 10 (newest first); map rows = the declared tree. No polling: the only timer is the
   host's one-shot `PENDING_TIMEOUT_MS` (250 ms) prefix clear.
 - **No persisted presentation state:** map open/filter/search and the pending prefix live in
