@@ -1,11 +1,16 @@
 /**
- * Wireframe rail parity (Spec #3119, ST-7 — R-3/AC3, R-3a, R-3b, R-4/AC4).
+ * Wireframe rail parity (Spec #3119, ST-7 — R-3/AC3, R-3a, R-3b, R-4/AC4; shell
+ * placement added by Spec #3120 ST-6 — R-1.7 / F-N31).
  *
  * The shell is the REAL `WireframeEditor` over the REAL navigation host and the REAL
  * P4 projections; only the Konva canvas implementation is replaced by a static host
  * element (the canvas is ST-5's surface, not this suite's subject). Every assertion
- * therefore reads either the rendered rail/map/trail DOM or the ONE declaration and
+ * therefore reads either the rendered bar/map/trail DOM or the ONE declaration and
  * its projections — never a component-local key table or availability boolean.
+ *
+ * The bottom-bar placement cases pin the shell's column order: the workspace row
+ * (canvas + details, exactly two children) → the command bar → the status bar; no
+ * 266 px left column exists (R-8).
  *
  * Titles are authored to the QA Expert's literal manifest (G-419).
  */
@@ -607,6 +612,148 @@ describe('every declared verb is reachable (R-3b / AC3)', () => {
       const elements = getSnapshot().document.elements;
       expect(elements.length, verbId).toBe(before + 1);
       expect(elements[elements.length - 1], verbId).toMatchObject(check);
+    }
+  });
+});
+
+/* ──────────────── Spec #3120 ST-6 — bottom bar shell placement (R-1.7) ──────────────── */
+
+const VIEWPORT = { width: 1280, height: 800 } as const;
+const DETAILS_WIDTH = 288;
+const BAR_HEIGHT = 44;
+const STATUS_HEIGHT = 24;
+const WORKSPACE_HEIGHT = VIEWPORT.height - BAR_HEIGHT - STATUS_HEIGHT;
+
+function rectOf(top: number, height: number, left = 0, width = VIEWPORT.width): DOMRect {
+  return {
+    x: left,
+    y: top,
+    top,
+    left,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+    toJSON: () => ({}),
+  } as DOMRect;
+}
+
+/**
+ * jsdom has no layout engine. This stub models the shell's COLUMN STACK — each root
+ * child occupies its declared box in DOM ORDER (workspace = the flex remainder, the
+ * bar and the status bar fixed) — so `bar.top >= workspace.bottom - 1` is a real
+ * consequence of where the bar is rendered: a bar placed above the workspace reads
+ * `top = 0` and fails. The workspace's own two children split their width (the
+ * details column keeps 288 px, the canvas takes the rest) — the flex contract the
+ * shell declares. The live rows (QA F-N31) measure the real browser geometry.
+ */
+function simulatedRect(el: Element): DOMRect {
+  const rootEl = document.querySelector('[data-testid="wireframe-root"]');
+  if (rootEl === null) return rectOf(0, 0);
+  if (el === rootEl) return rectOf(0, VIEWPORT.height);
+  const testId = el.getAttribute('data-testid');
+  if (testId === 'wireframe-workspace' || testId === 'wireframe-command-bar' || testId === 'wireframe-status-bar') {
+    let top = 0;
+    for (const child of Array.from(rootEl.children)) {
+      const childId = child.getAttribute('data-testid');
+      const height =
+        childId === 'wireframe-workspace'
+          ? WORKSPACE_HEIGHT
+          : childId === 'wireframe-command-bar'
+            ? BAR_HEIGHT
+            : childId === 'wireframe-status-bar'
+              ? STATUS_HEIGHT
+              : 0;
+      if (child === el) return rectOf(top, height);
+      top += height;
+    }
+    return rectOf(0, 0);
+  }
+  const region = el.getAttribute('data-wireframe-region');
+  if (region === 'canvas') {
+    return rectOf(0, WORKSPACE_HEIGHT, 0, VIEWPORT.width - DETAILS_WIDTH);
+  }
+  if (region === 'details') {
+    return rectOf(0, WORKSPACE_HEIGHT, VIEWPORT.width - DETAILS_WIDTH, DETAILS_WIDTH);
+  }
+  return rectOf(0, 0);
+}
+
+describe('bottom bar shell placement (R-1.7) — F-N31', () => {
+  it('the command bar sits below the workspace row and above the status bar', () => {
+    const rectSpy = vi
+      .spyOn(Element.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: Element) {
+        return simulatedRect(this);
+      });
+
+    try {
+      renderShell();
+
+      const workspace = screen.getByTestId('wireframe-workspace');
+      const bar = screen.getByTestId('wireframe-command-bar');
+      const status = screen.getByTestId('wireframe-status-bar');
+
+      // The bar region CONTAINS the bar root; the region/value hooks are bound.
+      expect(bar).toContainElement(screen.getByTestId(NAV_RAIL_TESTID));
+      expect(bar.getAttribute('data-wireframe-region')).toBe('command-bar');
+
+      // DOM order (real, independent of the rect stub): workspace → bar → status.
+      expect(workspace.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(bar.compareDocumentPosition(status) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+      // Measured geometry: bar below the workspace, status below the bar.
+      const workspaceRect = workspace.getBoundingClientRect();
+      const barRect = bar.getBoundingClientRect();
+      const statusRect = status.getBoundingClientRect();
+      expect(barRect.top).toBeGreaterThanOrEqual(workspaceRect.bottom - 1);
+      expect(statusRect.top).toBeGreaterThanOrEqual(barRect.bottom - 1);
+    } finally {
+      rectSpy.mockRestore();
+    }
+  });
+
+  it('the workspace row is exactly canvas + details, with the canvas taking the rest of the width', () => {
+    const rectSpy = vi
+      .spyOn(Element.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: Element) {
+        return simulatedRect(this);
+      });
+
+    try {
+      renderShell();
+
+      const workspace = screen.getByTestId('wireframe-workspace');
+      const children = Array.from(workspace.children) as HTMLElement[];
+
+      // EXACTLY two children — canvas and the details column (no rail, no bar).
+      expect(children).toHaveLength(2);
+      expect(children.map((child) => child.getAttribute('data-wireframe-region'))).toEqual([
+        'canvas',
+        'details',
+      ]);
+      const canvas = children[0];
+      const details = children[1];
+      expect(details).toBe(screen.getByTestId('wireframe-details-column'));
+
+      // No left command column / no bar inside the workspace (R-8).
+      expect(workspace.querySelector('[data-wireframe-region="command-bar"]')).toBeNull();
+      expect(workspace.querySelector('[data-testid="wireframe-command-bar"]')).toBeNull();
+
+      // The details column holds the property panel AND the compact trail footer.
+      expect(details.querySelector('[data-testid="wireframe-property-panel"]')).not.toBeNull();
+      expect(details.querySelector('[data-testid="navigation-trail"]')).not.toBeNull();
+
+      // The canvas fills the remaining width (≥ 2× the 288 px details column at 1280).
+      const canvasRect = canvas.getBoundingClientRect();
+      const detailsRect = details.getBoundingClientRect();
+      expect(canvasRect.width).toBeGreaterThanOrEqual(detailsRect.width * 2);
+
+      // The bar spans the full editor width.
+      const bar = screen.getByTestId('wireframe-command-bar').getBoundingClientRect();
+      expect(bar.width).toBe(VIEWPORT.width);
+    } finally {
+      rectSpy.mockRestore();
     }
   });
 });

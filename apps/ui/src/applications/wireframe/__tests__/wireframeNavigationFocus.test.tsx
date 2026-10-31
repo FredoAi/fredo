@@ -1,6 +1,7 @@
 /**
  * Wireframe shell — command-bar focus retention (Spec #3119 retry, ST-F3; reworked for the
- * bottom command bar by Spec #3120 ST-5 — F-N30 / R-1.6).
+ * bottom command bar by Spec #3120 ST-5 — F-N30 / R-1.6; the `Ask` bridge cases added by
+ * Spec #3120 ST-6 — F-N45 / R-1.8).
  *
  * The exact tester repro: focus a bar VERB row in the REAL shell and press `c`. Entering
  * `Create` replaces the verb cluster (a different place declares different verbs), so the
@@ -30,10 +31,14 @@ import {
   resolveLauncherConfirmation,
   resetNavigationAnnouncer,
   subscribeLauncherConfirmation,
-  subscribeLauncherOpenRequests,
   type NavigationHost,
   type PendingLauncherConfirmation,
 } from '@/shared/navigation/ui';
+import {
+  resetCompanionComposerBridgeForTests,
+  subscribeCompanionComposerOpen,
+  type CompanionComposerOpenRequest,
+} from '@/shared/companion/composerBridge';
 import { resetHotkeyAnnouncer } from '@/shared/hotkeys/announcer';
 import {
   WireframeNavigationProvider,
@@ -43,6 +48,7 @@ import { WIREFRAME_SURFACE_APP_ID } from '../wireframeSurface';
 import { WireframeEditor } from '../components/WireframeEditor';
 import {
   clearSelection,
+  getNavigationJournal,
   getSnapshot,
   loadDocument,
   resetWireframeStoreForTests,
@@ -99,6 +105,7 @@ beforeEach(() => {
   resetWireframeSurfaceForTests();
   resetHotkeyAnnouncer();
   resetNavigationAnnouncer();
+  resetCompanionComposerBridgeForTests();
 });
 
 afterEach(() => {
@@ -107,6 +114,7 @@ afterEach(() => {
   resetWireframeSurfaceForTests();
   resetHotkeyAnnouncer();
   resetNavigationAnnouncer();
+  resetCompanionComposerBridgeForTests();
   vi.restoreAllMocks();
 });
 
@@ -325,7 +333,7 @@ async function addAndSelectElement(host: NavigationHost): Promise<string> {
   return element.id;
 }
 
-describe('WireframeNavigationProvider — host registry + launcher bridge (R-7.1)', () => {
+describe('WireframeNavigationProvider — host registry + composer bridge (R-1.8)', () => {
   it('registers the host on mount and unregisters it on unmount', async () => {
     const view = renderWithChakra(React.createElement(WireframeEditor));
     expect(getNavigationHost(WIREFRAME_SURFACE_APP_ID)).not.toBeNull();
@@ -334,18 +342,41 @@ describe('WireframeNavigationProvider — host registry + launcher bridge (R-7.1
     expect(getNavigationHost(WIREFRAME_SURFACE_APP_ID)).toBeNull();
   });
 
-  it('`/ Ask` activation calls the launcher-open bridge once', async () => {
-    renderWithChakra(React.createElement(WireframeEditor));
-
-    const requests: unknown[] = [];
-    const unsubscribe = subscribeLauncherOpenRequests((request) => requests.push(request));
+  /** Subscribe to the composer bridge for the duration of `run`, then detach. */
+  function captureComposerRequests(run: () => void): CompanionComposerOpenRequest[] {
+    const requests: CompanionComposerOpenRequest[] = [];
+    const unsubscribe = subscribeCompanionComposerOpen((request) => requests.push(request));
     try {
-      fireEvent.click(screen.getByTestId(NAV_RAIL_ASK_TESTID));
+      run();
     } finally {
       unsubscribe();
     }
+    return requests;
+  }
 
-    expect(requests).toEqual([{ source: 'rail-ask', focus: true }]);
+  it('clicking `navigation-bar-ask` publishes exactly one composer request for wireframe', () => {
+    renderWithChakra(React.createElement(WireframeEditor));
+
+    const requests = captureComposerRequests(() => {
+      fireEvent.click(screen.getByTestId(NAV_RAIL_ASK_TESTID));
+    });
+
+    expect(requests).toEqual([
+      { source: 'command-bar-ask', appId: 'wireframe', focus: true },
+    ]);
+  });
+
+  it('pressing `k` publishes exactly one composer request for wireframe and journals nothing', async () => {
+    renderWithChakra(React.createElement(WireframeEditor));
+    const entriesBefore = getNavigationJournal().entries().length;
+
+    const requests = captureComposerRequests(() => {
+      fireEvent.keyDown(root(), { key: 'k' });
+    });
+
+    expect(requests).toEqual([{ source: 'keyboard', appId: 'wireframe', focus: true }]);
+    // Ask is not an editor mutation — the consumed stroke appends no journal entry.
+    expect(getNavigationJournal().entries().length).toBe(entriesBefore);
   });
 });
 
