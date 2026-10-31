@@ -20,7 +20,7 @@
 
 ## F-2 — Real SHOWABLE_FEATURES grid (AC2a)
 - [x] F-2: Open the launcher; `tauri_webview_dom_snapshot(type="structure")` the grid. **Expected:** the rendered tile set equals `SHOWABLE_FEATURES.map(f => f.name)` (from `apps/ui/src/features/home/components/Home.tsx:22`); every showable feature appears as a tile; non-showable features are absent.
-  - **PASS.** Live grid tile `aria-label`s = `["Mission Monitor","Query Viewer","Run CLI","Stepper Probe"]`. Source `SHOWABLE_FEATURES = ALL_FEATURES.filter(f => f.showable)` (Home.tsx:22); showable = mission-monitor, query-viewer, run-cli, stepper-probe (all `readonly showable = true`); non-showable (dev-mode, setup, github-viewer, theming, docs-viewer, browser-preview, model-storage, optimizely, my-workitems, create-workitem, diagram) correctly ABSENT. Grid DOM: `div#fredo-launcher-grid[role="grid"]` with 4 `[role="gridcell"]` tiles. Screenshot: `ac3-shell-light.jpeg`.
+  - **PASS (historical, #2808).** Live grid tile `aria-label`s equalled the `showable` set of the then-shipped registry. Source rule: `SHOWABLE_FEATURES = ALL_FEATURES.filter(f => f.showable)`; non-`showable` features are correctly ABSENT (`Dev Mode` is the only retained hidden app). The current retained set is the exact 8-id boot set asserted by `retainedApplicationSet.test.ts` (P8 / #3122); this row's observable remains "rendered tiles == the showable registry set". Grid DOM: `div#fredo-launcher-grid[role="grid"]` with one `[role="gridcell"]` per tile. Screenshot: `ac3-shell-light.jpeg`.
 
 ## F-3 — Tile select opens the feature through the own kernel (AC2b)
 - [x] F-3: Focus the grid, arrow to a tile, press Enter. **Expected:** the feature window opens (WindowFrame + feature title + content appears in the DOM snapshot); it is focused; `useWindows()` gains the entry. The open routes through `onOpenFeature(id, feature)` → own-kernel `openWindow`.
@@ -1318,7 +1318,7 @@ is verified live. Chip visible with the companion OFF. BEFORE frames (pre-change
       the open — record which; bound ordering: the reply is committed first and the open is dispatched
       after `APP_OPEN_REPLY_BEAT_MS = 800` (Architect QA-6)); the bar busy state clears; success uses
       the `happy` beat.
-  - **Edge:** `OPEN mission monitor` / `mission-monitor` (id form) / leading+trailing whitespace;
+  - **Edge:** `OPEN mission monitor` / `mission-monitor` (id form) / leading or trailing whitespace;
     target already open → re-invoke focuses the SAME window (no duplicate); a second app request with
     the first window open; a reply rendered entirely behind the maximized window = FAIL/UNVERIFIED.
   - **Lever note (G-161):** the MCP `keyboard` tool performs no native text insertion — use the
@@ -2315,8 +2315,8 @@ The FIXED composition suppresses the hint chip in model mode (REQ-3), so the mod
   PROJECTION** — `id`, `label`, `description`, `risk`, `args`, `aliases` — read from the projected
   command, never the source verb (G-418); `shared/companion/fixtures/wireframe.companion.golden.json`
   deep-equals the projection.
-  **Edge:** a legacy `commandSurface` app still publishes; a surface with zero described commands;
-  duplicate `appId` (first-wins); `journal.undo` before `listActions`, never duplicated.
+  **Edge:** a navigation-declared surface with zero described commands; duplicate `appId`
+  (first-wins); `journal.undo` before `listActions`, never duplicated.
   **Receipt:** E-UNIT summary + the golden file's empty diff.
 
 ## F-137 (R-4.1 wire) — `risk`/`aliases` cross the Rust wire as ABSENT keys, never null
@@ -2676,8 +2676,9 @@ The FIXED composition suppresses the hint chip in model mode (REQ-3), so the mod
   **Expected:** build exit 0, zero TS errors; suite green; the refreshed P3/P4 pins are updated not
   deleted/weakened (A1's four pins; the `NAV_ASK_DISABLED_REASON` P4 assertions in
   `commandRail.test.tsx`/`models.test.ts` rewritten to the enabled state) and each refresh is listed
-  in `## Tests Runs`; every other app opens and behaves as on `main`; every legacy `commandSurface`
-  app is still published; the `document` keydown listener count is unchanged and the Wireframe
+  in `## Tests Runs`; every other retained app opens and behaves as on `main`; every retained
+  application that declares a navigation surface is still published; the `document` keydown
+  listener count is unchanged and the Wireframe
   adapter stays element-scoped (no new `document` listener).
   **Edge:** a pre-existing unrelated failure must be named with its `main` baseline; a skipped test is
   not a pass.
