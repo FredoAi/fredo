@@ -218,7 +218,6 @@ export {
   FOCUS_PREVIOUS_ACTION_ID,
 } from './shared/hotkeys/defaults';
 export type { KeptGlobalBinding } from './shared/hotkeys/defaults';
-export { ACTION_PALETTE_PREFIX } from './shared/hotkeys/types';
 export type {
   ApplicationHotkeyAction,
   HotkeyActionId,

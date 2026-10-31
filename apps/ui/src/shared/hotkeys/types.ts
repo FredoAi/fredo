@@ -182,6 +182,3 @@ export type HotkeyResetReason =
   | 'escape'
   | 'focus-change'
   | 'native-consumes';
-
-/** Typing this prefix in the launcher command bar switches results to actions. */
-export const ACTION_PALETTE_PREFIX = '>';

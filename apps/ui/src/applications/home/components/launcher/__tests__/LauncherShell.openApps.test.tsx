@@ -2,11 +2,11 @@
  * Spec #2954 ST-2 — the in-launcher "Open apps" row HOST wiring.
  *
  * Pins the host contract the shell owns (ST-1 pinned the presentational row):
- *   1. The row renders IMMEDIATELY above the grid when
- *      `engaged && !paletteActive && windows > 0`, listing exactly the open
- *      windows (R-2).
+ *   1. The row renders IMMEDIATELY above the grid when `engaged && windows > 0`,
+ *      listing exactly the open windows (R-2).
  *   2. The row is ABSENT at rest (not engaged).
- *   3. The row is ABSENT in `>` palette mode (the action list replaces the grid).
+ *   3. The row stays PRESENT for a `>` query — `>` is ordinary search text
+ *      (Spec #3120 ST-7 R-2 removed the action palette).
  *   4. The row is ABSENT at 0 windows (and the grid still renders — a non-vacuous
  *      absence, R-1 edge).
  *   5. Activate dispatches `focusWindow(id)` (top-window no-op guard); close
@@ -175,15 +175,23 @@ describe('LauncherShell — Open-apps row gating (R-2 / R-1 edge)', () => {
     expect(screen.queryByTestId('launcher-open-apps')).toBeNull();
   });
 
-  it('is ABSENT in `>` palette mode (the action list replaces the grid)', () => {
-    windowsMock.current = [win()];
-    renderShell();
+  it('treats `>` as ordinary search text: same row/grid predicate, no palette (Spec #3120 ST-7 R-2)', () => {
+    windowsMock.current = [win({ title: 'Mission Monitor' })];
+    const { container } = renderShell();
     engage();
-    type('>');
 
+    // `>` is LITERAL query text: it filters the row and the grid exactly like any other
+    // string (no title contains `>`), and the results region stays the shipped grid.
+    type('>');
     expect(screen.queryByTestId('launcher-open-apps')).toBeNull();
-    // The palette list replaced the grid — the row's host surface is gone.
-    expect(screen.queryByRole('grid')).toBeNull();
+    expect(container.querySelector('#fredo-launcher-grid')).not.toBeNull();
+    expect(screen.queryByTestId('launcher-palette-list')).toBeNull();
+    expect(screen.queryByTestId('launcher-action-list')).toBeNull();
+
+    // Non-vacuity: the SAME query path still reveals the row when the text matches.
+    type('Mission');
+    expect(screen.getByTestId('launcher-open-apps')).toBeInTheDocument();
+    expect(container.querySelector('#fredo-launcher-grid')).not.toBeNull();
   });
 
   it('is ABSENT at 0 windows while engaged — and the grid still renders (non-vacuous)', () => {

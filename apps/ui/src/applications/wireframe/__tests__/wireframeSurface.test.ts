@@ -24,7 +24,6 @@ import {
   buildCommandRailModel,
   buildNavigationMapModel,
   NAV_UNAVAILABLE_REASON,
-  subscribeLauncherOpenRequests,
 } from '../../../shared/navigation/ui';
 import { createNavigationHost } from '../../../shared/navigation/ui/host';
 import {
@@ -475,19 +474,14 @@ describe('wireframeSurface — P6 declaration policy', () => {
     expect(ask!.available(context())).toBe(true);
 
     const requests: CompanionComposerOpenRequest[] = [];
-    const launcherRequests: unknown[] = [];
     const unsubscribeComposer = subscribeCompanionComposerOpen((request) =>
       requests.push(request),
-    );
-    const unsubscribeLauncher = subscribeLauncherOpenRequests((request) =>
-      launcherRequests.push(request),
     );
     let effect: Awaited<ReturnType<VerbDescriptor['run']>>;
     try {
       effect = await ask!.run(intentFor('app.ask'), context());
     } finally {
       unsubscribeComposer();
-      unsubscribeLauncher();
     }
 
     expect(effect.effect).toBe('navigation');
@@ -496,7 +490,6 @@ describe('wireframeSurface — P6 declaration policy', () => {
     expect(requests).toEqual([
       { source: 'command-bar-ask', appId: 'wireframe', focus: true },
     ]);
-    expect(launcherRequests).toEqual([]);
   });
 });
 

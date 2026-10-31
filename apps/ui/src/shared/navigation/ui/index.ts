@@ -33,4 +33,3 @@ export * from './announce';
 export * from './host';
 export * from './hostRegistry';
 export * from './confirmation';
-export * from './launcherBridge';

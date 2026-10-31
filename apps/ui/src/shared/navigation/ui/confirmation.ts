@@ -7,9 +7,11 @@
  * funnel's promise when the dialog answers.
  *
  * "No launcher surface is mounted" is the absence of a subscriber: the launcher shell subscribes
- * while it is open, so a request from a closed launcher resolves `false` immediately and nothing
- * applies (R-5.3). If the launcher unmounts while a confirmation is pending, the last unsubscribe
- * dismisses it as a cancel — a closed launcher must never leave a promise hanging.
+ * for its mounted lifetime, so the alertdialog renders whenever a request is pending — even while
+ * the launcher is visually closed (a destructive/external teleport-composer instruction, QA-6 /
+ * F-172). A request with NO mounted launcher resolves `false` immediately and nothing applies
+ * (R-5.3). If the launcher unmounts while a confirmation is pending, the last unsubscribe dismisses
+ * it as a cancel — a closed launcher must never leave a promise hanging.
  *
  * Module-scoped by design (it survives component remounts); no persistence, no clock, no I/O.
  */

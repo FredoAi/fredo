@@ -1,10 +1,11 @@
 /**
  * Spec #3120 (P6), ST-1 — the host seam pins: registry, fresh `describeContext`, `runIntent`,
- * the async launcher confirmation store, the launcher-open bridge and requester-attributed undo.
+ * the async launcher confirmation store and requester-attributed undo.
  *
- * These are the P6 contracts the launcher (ST-6) and the Wireframe provider (ST-4) consume. They
- * are exercised through the real `createNavigationHost` + the controlled `navTestSurface` fixture
- * — no product declaration, no DOM, no persistence.
+ * These are the P6 contracts the launcher and the Wireframe provider consume. They are exercised
+ * through the real `createNavigationHost` + the controlled `navTestSurface` fixture — no product
+ * declaration, no DOM, no persistence. Spec #3120 (P6) ST-7 removed the launcher-open bridge with
+ * the `>` palette and the app-scoped conversation seam (R-2/R-8).
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -31,11 +32,6 @@ import {
   listRegisteredSurfaces,
   registerNavigationHost,
 } from '../hostRegistry';
-import {
-  requestLauncherOpen,
-  subscribeLauncherOpenRequests,
-  type LauncherOpenRequest,
-} from '../launcherBridge';
 import { FIXTURE_APP_ID, FIXTURE_PLACES, fixtureSnapshot, navTestSurface } from './fixtures';
 
 /* ───────────────────────────── harness ───────────────────────────── */
@@ -294,20 +290,3 @@ describe('undo attribution — the reversal belongs to the requester', () => {
   });
 });
 
-/* ───────────────────────── launcher bridge ───────────────────────── */
-
-describe('launcher-open bridge', () => {
-  it('delivers requests to subscribers and stops after unsubscribe', () => {
-    const seen: LauncherOpenRequest[] = [];
-    const unsubscribe = subscribeLauncherOpenRequests((request) => seen.push(request));
-
-    const request: LauncherOpenRequest = { source: 'rail-ask', focus: true };
-    requestLauncherOpen(request);
-    expect(seen).toStrictEqual([request]);
-
-    unsubscribe();
-    unsubscribe(); // idempotent
-    requestLauncherOpen({ source: 'ask-verb', prefill: '> lock', focus: true });
-    expect(seen).toStrictEqual([request]);
-  });
-});

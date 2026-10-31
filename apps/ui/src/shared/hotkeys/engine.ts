@@ -49,15 +49,12 @@ import {
   type ApplicationHotkeyAction,
   type DispatchDecision,
   type FocusContext,
-  type HotkeyActionId,
   type KeySequence,
   type KeyStroke,
   type RegisteredHotkeyAction,
   type ResolvedBinding,
 } from './types';
 
-/** The palette-open action id (the launcher contributes its run). */
-export const ACTION_PALETTE_OPEN_ACTION_ID: HotkeyActionId = 'fredo.palette.openActions';
 /** The launcher-toggle action id (re-exported for the launcher shell). */
 export { LAUNCHER_TOGGLE_ACTION_ID };
 /** The pending-sequence timeout (no keymap config any more). */
@@ -86,7 +83,7 @@ function focusRelative(delta: number): void {
   if (target) focusWindow(target.id);
 }
 
-// ── Default action registration (the kept globals + palette open) ────────────
+// ── Default action registration (the kept globals) ──────────────────────────
 
 const DEFAULT_FREDO_ACTION_DEFS: readonly ApplicationHotkeyAction[] = [
   {
@@ -94,13 +91,6 @@ const DEFAULT_FREDO_ACTION_DEFS: readonly ApplicationHotkeyAction[] = [
     title: 'Toggle launcher',
     description: 'Show or focus the launcher command bar',
     defaultSequence: 'primary+space',
-    run: () => {},
-  },
-  {
-    actionId: ACTION_PALETTE_OPEN_ACTION_ID,
-    title: 'Open actions palette',
-    description: 'Open the launcher pre-filled with the action prefix',
-    defaultSequence: null,
     run: () => {},
   },
   {
@@ -120,7 +110,8 @@ const DEFAULT_FREDO_ACTION_DEFS: readonly ApplicationHotkeyAction[] = [
 ];
 
 /**
- * Register the shipped kept-global actions + the unbound palette-open action.
+ * Register the shipped kept-global actions. Spec #3120 (P6) ST-7 removed the
+ * unbound palette-open action with the `>` palette (R-2/R-8).
  * Idempotent across `resetRegistryForTests` (an already-resolvable action is left
  * untouched), so re-installing the engine can never create a duplicate row.
  */
