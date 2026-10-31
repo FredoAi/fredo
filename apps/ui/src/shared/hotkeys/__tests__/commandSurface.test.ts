@@ -249,6 +249,33 @@ describe('validateCommandArgs — the ONE declared-argument rule', () => {
     });
   });
 
+  it.each(['', '   '])(
+    'accepts a blank value on an allowEmpty arg and keeps siblings strict (%j)',
+    (value) => {
+      // A declared free-text argument opts out of the blank rule (Spec #3120 ST-1).
+      const freeText = command('freeText', { args: [arg('label', { allowEmpty: true })] });
+      expect(validateCommandArgs(freeText, { label: value })).toEqual({ ok: true });
+      expect(validateCommandArgs(freeText, { label: 'Reports' })).toEqual({ ok: true });
+
+      // The opt-out is per argument: a sibling plain arg stays strict.
+      const mixed = command('mixed', {
+        args: [arg('label', { allowEmpty: true }), arg('other')],
+      });
+      expect(validateCommandArgs(mixed, { label: '', other: '' })).toMatchObject({
+        ok: false,
+        reason: 'blank',
+        detail: 'argument "other" must not be blank',
+      });
+
+      // An explicit `false` is NOT an opt-in (the absent-key rule's runtime twin).
+      const explicitFalse = command('explicitFalse', { args: [arg('label', { allowEmpty: false })] });
+      expect(validateCommandArgs(explicitFalse, { label: value })).toMatchObject({
+        ok: false,
+        reason: 'blank',
+      });
+    },
+  );
+
   it('rejects a declared validate guard returning false and receives the RAW value', () => {
     const guard = (value: string) => value.trim() === 'accent';
     const cmd = command('create', { args: [arg('fill', { validate: guard })] });

@@ -109,7 +109,9 @@ function isValidArguments(
       continue;
     }
     if (typeof value !== 'string') return false; // non-string (madcast at the boundary)
-    if (value.trim().length === 0) return false; // blank / whitespace-only
+    // Spec #3120 (P6), ST-1 — a declared free-text argument may legitimately be `''`.
+    // The blank rule stays strict for every argument that does not opt in.
+    if (value.trim().length === 0 && arg.allowEmpty !== true) return false; // blank / whitespace-only
     if (arg.validate !== undefined && !arg.validate(value)) return false; // failed guard
   }
   return true;

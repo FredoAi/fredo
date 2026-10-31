@@ -67,6 +67,14 @@ export interface ApplicationCommandArg {
    * registered (the app-side executor re-run).
    */
   readonly validate?: (value: string) => boolean;
+  /**
+   * Spec #3120 (P6), ST-1 — the free-text opt-out of the blank rule.
+   *
+   * `true` opts this argument out of the blank rejection so a declared free-text
+   * value may legitimately be `''` (a cleared label). Absent/false keeps the
+   * strict blank rule; the opt-out is per argument, never global.
+   */
+  readonly allowEmpty?: boolean;
 }
 
 /** The opt-in companion declaration of a whole surface (Spec #3099). */
@@ -287,7 +295,8 @@ export function validateCommandSurface(surface: ApplicationCommandSurface): Comm
  *   2. every supplied key must be a declared `args` name,
  *   3. every declared `required` argument must be present,
  *   4. every supplied value must be a string,
- *   5. a blank (empty/whitespace-only) value is rejected,
+ *   5. a blank (empty/whitespace-only) value is rejected UNLESS that argument declares
+ *      `allowEmpty: true` (Spec #3120 ST-1 — free text may legitimately be cleared),
  *   6. a declared `validate` guard returning `false` is rejected.
  *
  * `args === undefined` is treated as `{}` (a command with a required declared
@@ -342,7 +351,9 @@ export function validateCommandArgs(
   }
 
   for (const [key, value] of stringEntries) {
-    if (value.trim() === '') {
+    // Spec #3120 (P6), ST-1 — only a declared free-text argument may be blank.
+    // A non-`allowEmpty` argument keeps the strict rule.
+    if (value.trim() === '' && byName.get(key)?.allowEmpty !== true) {
       return { ok: false, reason: 'blank', detail: `argument "${key}" must not be blank` };
     }
     const guard = byName.get(key)?.validate;

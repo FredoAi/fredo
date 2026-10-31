@@ -23,6 +23,12 @@ export interface CompanionArg {
   name: string;
   required: boolean;
   description?: string;
+  /**
+   * Spec #3120 (P6), ST-1 — the declared free-text capability crosses the manifest
+   * boundary under the ABSENT-KEY rule: `true` is emitted, a plain/false argument
+   * carries no key at all (the wire never sends `allowEmpty: false`).
+   */
+  allowEmpty?: boolean;
 }
 
 /**
@@ -64,11 +70,15 @@ export const ENGINE_COMPANION_UNDO_COMMAND: CompanionCommand = {
   id: 'journal.undo',
   label: 'Undo',
   description:
-    'Undo the newest change; optionally filter by actor (human, companion or system) and count (1..100).',
+    'Undo the newest change; optionally filter by verb (verbId), actor (human, companion or system) and count (1..100).',
   risk: 'mutating',
   args: [
     { name: 'actor', required: false },
     { name: 'count', required: false },
+    // Spec #3120 (P6), ST-8 — undo by description: `verbId` narrows the undo to the
+    // named verb's entries (newest-first), so "undo the label change" reaches the
+    // label edit and no other journal entry.
+    { name: 'verbId', required: false },
   ],
   aliases: ['undo', 'revert'],
 };
@@ -82,15 +92,17 @@ interface AuthoredArg {
   readonly name: string;
   readonly required: boolean;
   readonly description?: string;
+  readonly allowEmpty?: boolean;
 }
 
-/** Project one declared argument onto the manifest wire shape. */
+/** Project one declared argument onto the manifest wire shape (absent-key rule, G-413). */
 function toCompanionArg(arg: VerbArg): CompanionArg {
   const source: AuthoredArg = arg;
   return {
     name: source.name,
     required: source.required === true,
     ...(source.description === undefined ? {} : { description: source.description }),
+    ...(source.allowEmpty === true ? { allowEmpty: true } : {}),
   };
 }
 

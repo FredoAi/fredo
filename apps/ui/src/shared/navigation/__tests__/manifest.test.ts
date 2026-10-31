@@ -228,6 +228,68 @@ describe('buildCompanionManifest', () => {
     expect(withUndo.actionIds).toStrictEqual([undoId, LIST_ACTIONS_ID]);
   });
 
+  it('projects allowEmpty on a free-text arg and omits the key for a plain arg (Spec #3120 ST-1)', () => {
+    const surface = makeSurface({
+      root: 'p.local',
+      places: [makePlace({ id: 'p.local' })],
+      verbs: [
+        makeVerb({
+          id: 'v.freeText',
+          title: 'Set label',
+          description: 'Sets the card label.',
+          risk: 'mutating',
+          args: [
+            { name: 'value', type: 'string', required: false, allowEmpty: true },
+            { name: 'plain', type: 'string', required: false },
+            { name: 'off', type: 'string', required: false, allowEmpty: false },
+          ],
+        }),
+      ],
+    });
+
+    const command = buildCompanionManifest(surface).commands.find((row) => row.id === 'v.freeText');
+    expect(command).toBeDefined();
+    if (command === undefined) return;
+
+    // G-413: assert the SERIALIZED projection — the wire never carries
+    // `allowEmpty: false`, and a plain arg carries no key at all.
+    const serialized = JSON.parse(JSON.stringify(command.args)) as Array<Record<string, unknown>>;
+    expect(serialized).toStrictEqual([
+      { name: 'value', required: false, allowEmpty: true },
+      { name: 'plain', required: false },
+      { name: 'off', required: false },
+    ]);
+    expect('allowEmpty' in serialized[0]).toBe(true);
+    expect('allowEmpty' in serialized[1]).toBe(false);
+    expect('allowEmpty' in serialized[2]).toBe(false);
+  });
+
+  it('declares the verbId filter on the engine undo command (Spec #3120 ST-8)', () => {
+    expect(ENGINE_COMPANION_UNDO_COMMAND.args).toStrictEqual([
+      { name: 'actor', required: false },
+      { name: 'count', required: false },
+      { name: 'verbId', required: false },
+    ]);
+
+    const surface = makeSurface({
+      root: 'p.local',
+      places: [makePlace({ id: 'p.local' })],
+      verbs: [makeVerb({ id: 'v.one', title: 'One', description: 'Do one.' })],
+    });
+    const manifest = buildCompanionManifest(surface);
+    const undo = manifest.commands.find((command) => command.id === 'journal.undo');
+    expect(undo).toBeDefined();
+    if (undo === undefined) return;
+
+    // The PROJECTED command (not just the constant) publishes the filter.
+    expect(undo.args.map((arg) => arg.name)).toStrictEqual(['actor', 'count', 'verbId']);
+    expect(JSON.parse(JSON.stringify(undo.args))).toStrictEqual([
+      { name: 'actor', required: false },
+      { name: 'count', required: false },
+      { name: 'verbId', required: false },
+    ]);
+  });
+
   it('golden command rows carry all six projection keys', () => {
     const golden = readGolden();
     const rows = golden.manifest.commands;

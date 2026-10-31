@@ -322,11 +322,13 @@ describe('buildCompanionManifest — navigation source (Spec #3120 ST-2)', () =>
       id: 'journal.undo',
       label: 'Undo',
       description:
-        'Undo the newest change; optionally filter by actor (human, companion or system) and count (1..100).',
+        'Undo the newest change; optionally filter by verb (verbId), actor (human, companion or system) and count (1..100).',
       risk: 'mutating',
       args: [
         { name: 'actor', required: false },
         { name: 'count', required: false },
+        // Spec #3120 (P6), ST-8 — undo by description.
+        { name: 'verbId', required: false },
       ],
       aliases: ['undo', 'revert'],
     });

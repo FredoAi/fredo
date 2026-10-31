@@ -967,7 +967,7 @@
         {
           "id": "journal.undo",
           "label": "Undo",
-          "description": "Undo the newest change; optionally filter by actor (human, companion or system) and count (1..100).",
+          "description": "Undo the newest change; optionally filter by verb (verbId), actor (human, companion or system) and count (1..100).",
           "risk": "mutating",
           "args": [
             {
@@ -976,6 +976,10 @@
             },
             {
               "name": "count",
+              "required": false
+            },
+            {
+              "name": "verbId",
               "required": false
             }
           ],
@@ -1602,7 +1606,7 @@
             {
               "id": "journal.undo",
               "label": "Undo",
-              "description": "Undo the newest change; optionally filter by actor (human, companion or system) and count (1..100).",
+              "description": "Undo the newest change; optionally filter by verb (verbId), actor (human, companion or system) and count (1..100).",
               "risk": "mutating",
               "args": [
                 {
@@ -1611,6 +1615,10 @@
                 },
                 {
                   "name": "count",
+                  "required": false
+                },
+                {
+                  "name": "verbId",
                   "required": false
                 }
               ],
