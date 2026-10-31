@@ -50,10 +50,9 @@ import {
   type Surface,
 } from '../';
 import { normalizeStroke } from '../resolver';
-import { isTextControl } from '../../hotkeys/focusContext';
+import { isTextControl } from '../focusContext';
 import {
   announceNavigation,
-  configureNavigationAnnouncer,
   navAmbiguousKeyMessage,
   navPlaceEnterMessage,
   navPlaceExitMessage,
@@ -63,7 +62,6 @@ import {
   navUndoNothingMessage,
   navUnavailableKeyMessage,
   resetNavigationAnnouncer,
-  type AnnouncementChannel,
 } from './announce';
 import { buildCommandRailModel } from './models';
 
@@ -87,7 +85,6 @@ export interface NavigationHostOptions {
     request: ConfirmationRequest,
     intent: Intent,
   ) => boolean | Promise<boolean>;
-  readonly announcementChannel?: AnnouncementChannel;
   readonly overlayOpen?: () => boolean;
 }
 
@@ -220,10 +217,6 @@ export function createNavigationHost(options: NavigationHostOptions): Navigation
   const now = options.now ?? (() => new Date().toISOString());
   const applyPatch = options.applyPatch ?? (() => undefined);
   const confirm = options.confirm ?? (() => true);
-
-  if (options.announcementChannel !== undefined) {
-    configureNavigationAnnouncer({ channel: options.announcementChannel });
-  }
 
   /* ── mutable state (closed over; never persisted — R-9.1 / N-06) ── */
 

@@ -49,9 +49,9 @@ import {
 } from '../../../shared/companion/reply';
 import type { AppCommandIntentResultPayload } from '../../../shared/companion/useAppCommandIntent';
 import {
-  validateCommandArgs,
-  type ApplicationCommandSpec,
-} from '../../../shared/hotkeys/commandSurface';
+  validateDeclaredArguments,
+  type VerbArg,
+} from '../../../shared/navigation';
 import { adapterBridge } from '../../../shared/utils/adapterBridge';
 import { getWindowSnapshot } from '../../../shared/window-system/windowStore';
 import type { FredoApplicationClass } from '../../../shared/classes/FredoApplicationClass';
@@ -117,25 +117,21 @@ function isReservedSkill(skill: string): boolean {
 
 /**
  * Run the manifest's serializable argument contract through the ONE shared rule
- * (`validateCommandArgs`). The manifest carries `{ name, required, description }`
- * only — the TS-only `validate` guards run app-side inside `executeCommand`
- * (layer 2), so the same rule governs both layers.
+ * (`validateDeclaredArguments`, the same matcher the navigation dispatch funnel uses).
+ * The published manifest carries `{ name, required, description? }` only; the host
+ * pre-flight maps that onto `VerbArg[]` with `type: 'string'` (values arrive as strings
+ * and the rule rejects non-strings at runtime).
  */
 function manifestArgsAreValid(
   command: CompanionCommandManifest,
   args: Record<string, unknown>,
 ): boolean {
-  const spec: ApplicationCommandSpec = {
-    id: command.id,
-    title: command.label,
-    args: command.args.map((arg) => ({
-      name: arg.name,
-      required: arg.required,
-      ...(arg.description === undefined ? {} : { description: arg.description }),
-    })),
-    run: () => true,
-  };
-  return validateCommandArgs(spec, args).ok;
+  const declared: readonly VerbArg[] = command.args.map((arg) => ({
+    name: arg.name,
+    type: 'string',
+    required: arg.required,
+  }));
+  return validateDeclaredArguments(declared, args as Readonly<Record<string, string>>);
 }
 
 export function useAppCommandSkill({

@@ -15,11 +15,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import {
-  HotkeyAnnouncer,
-  resetHotkeyAnnouncer,
-  subscribeAnnouncer,
-} from '@/shared/hotkeys/announcer';
-import { resetNavigationAnnouncer } from '@/shared/navigation/ui/announce';
+  NavigationAnnouncer,
+  resetNavigationAnnouncer,
+  subscribeNavigationAnnouncement,
+} from '@/shared/navigation/ui';
 import { resetWireframeStoreForTests } from '../store/wireframeDocumentStore';
 import {
   WIREFRAME_CREATE_OPERATOR,
@@ -57,7 +56,7 @@ function renderHarness(): void {
     React.createElement(
       React.Fragment,
       null,
-      React.createElement(HotkeyAnnouncer),
+      React.createElement(NavigationAnnouncer),
       React.createElement(
         WireframeNavigationProvider,
         null,
@@ -82,7 +81,6 @@ function root(): HTMLElement {
 beforeEach(() => {
   resetWireframeStoreForTests();
   resetWireframeSurfaceForTests();
-  resetHotkeyAnnouncer();
   resetNavigationAnnouncer();
 });
 
@@ -90,7 +88,6 @@ afterEach(() => {
   cleanup();
   resetWireframeStoreForTests();
   resetWireframeSurfaceForTests();
-  resetHotkeyAnnouncer();
   resetNavigationAnnouncer();
   vi.restoreAllMocks();
 });
@@ -100,10 +97,10 @@ describe('place lifecycle (R-9 / AC9)', () => {
     renderHarness();
 
     let announcements = 0;
-    const unsubscribe = subscribeAnnouncer(() => {
+    const unsubscribe = subscribeNavigationAnnouncement(() => {
       announcements += 1;
     });
-    const announcer = screen.getByTestId('hotkeys-announcer');
+    const announcer = screen.getByTestId('navigation-announcer');
 
     await press('c');
     expect(root().getAttribute('data-place')).toBe('wireframe.create');

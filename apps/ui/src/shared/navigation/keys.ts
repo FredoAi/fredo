@@ -1,6 +1,6 @@
 /**
  * Spec #3122 (P8), ST-1 — the navigation-owned key serialization + normalization + matching
- * truth (relocated verbatim from `shared/hotkeys/keys.ts`; zero behaviour change).
+ * truth (relocated verbatim out of the retired hotkey runtime; zero behaviour change).
  *
  * PURE by design: no DOM/Tauri/React/clock IMPORTS. The only ambient DOM references are the
  * `KeyboardEvent` argument and the browser's `navigator` (for the platform-neutral primary

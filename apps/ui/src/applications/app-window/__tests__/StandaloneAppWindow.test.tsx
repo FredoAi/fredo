@@ -39,23 +39,8 @@ import {
   resolveStandaloneFeature,
 } from '../StandaloneAppWindow';
 import { getApplications } from '../../applicationRegistry';
-import {
-  getModePath,
-  pushMode,
-  resetCommandSurfaceForTests,
-} from '@/shared/hotkeys/commandSurfaceStore';
-import type { ApplicationCommandSurface } from '@/shared/hotkeys/commandSurface';
 
 const getApplicationsMock = getApplications as unknown as ReturnType<typeof vi.fn>;
-
-/** A minimal two-mode surface — only the root/tool chain is needed for the reset pin. */
-const MODE_SURFACE: ApplicationCommandSurface = {
-  modes: [
-    { id: 'browse', label: 'Browse', parent: null, keymap: {} },
-    { id: 'tool', label: 'Tool', parent: 'browse', keymap: {} },
-  ],
-  commands: [],
-};
 
 interface FakeFeatureOptions {
   showable?: boolean;
@@ -84,13 +69,11 @@ function setSearch(search: string): void {
 beforeEach(() => {
   getApplicationsMock.mockReturnValue([]);
   setSearch('');
-  resetCommandSurfaceForTests();
 });
 
 afterEach(() => {
   cleanup();
   setSearch('');
-  resetCommandSurfaceForTests();
 });
 
 describe('readStandaloneAppId', () => {
@@ -134,23 +117,6 @@ describe('StandaloneAppWindow (Spec #2955 ST-5)', () => {
     expect(
       screen.getByTestId(STANDALONE_APP_WINDOW_ROOT_TESTID).getAttribute('data-fredo-app-id'),
     ).toBe('probe');
-  });
-
-  it('resets the application mode on unmount (Spec #3097 ST-5, R-3.4)', () => {
-    getApplicationsMock.mockReturnValue([
-      { ...fakeFeature('probe'), commandSurface: MODE_SURFACE } as unknown as FredoApplicationClass,
-    ]);
-    setSearch('?view=app&id=probe');
-
-    pushMode('probe', 'tool');
-    expect(getModePath('probe')).toEqual(['browse', 'tool']);
-
-    const { unmount } = renderWithChakra(<StandaloneAppWindow />);
-    expect(getModePath('probe')).toEqual(['browse', 'tool']);
-
-    unmount();
-
-    expect(getModePath('probe')).toEqual(['browse']);
   });
 
   it('calls onMount on mount and onUnmount on unmount (kernel parity)', () => {

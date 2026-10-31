@@ -1,6 +1,6 @@
 /**
- * Spec #3122 (P8), ST-1 — the ONE focus classifier, relocated verbatim from
- * `shared/hotkeys/focusContext.ts` into the navigation layer.
+ * Spec #3122 (P8), ST-1 — the ONE focus classifier, relocated verbatim out of the retired
+ * hotkey runtime into the navigation layer.
  *
  * The predicate that identifies a text-editing control is the single implementation; the
  * global chord dispatcher (`navigation/ui/globalKeys.ts`) and every navigation provider

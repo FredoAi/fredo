@@ -1,7 +1,7 @@
 /**
  * Spec #3122 (P8), ST-1 — the ONE webview shell provider for the navigation layer.
  *
- * Mounted exactly once per webview (ST-2 swaps it in for the retired `HotkeysProvider` in
+ * Mounted exactly once per webview (it replaced the retired shell provider in
  * `apps/ui/src/main.tsx` and `apps/tauri/src/main.tsx`). It:
  *   1. installs the ONE navigation chord dispatcher (`installNavigationKeyDispatch`) on mount
  *      and releases it on unmount, and

@@ -18,7 +18,7 @@ import { act, cleanup, render } from '@testing-library/react';
 import { ChakraProvider, createSystem, defaultBaseConfig } from '@chakra-ui/react';
 import React from 'react';
 
-import { resetHotkeyAnnouncer } from '@/shared/hotkeys/announcer';
+import { resetNavigationAnnouncer } from '@/shared/navigation/ui';
 import { resetNavigationAnnouncer } from '@/shared/navigation/ui';
 import type { NavigationHost } from '@/shared/navigation/ui';
 import { WireframeCanvasImpl } from '../components/WireframeCanvasImpl';
@@ -351,7 +351,7 @@ async function dragCreate(
 beforeEach(() => {
   resetWireframeStoreForTests();
   resetWireframeSurfaceForTests();
-  resetHotkeyAnnouncer();
+  resetNavigationAnnouncer();
   resetNavigationAnnouncer();
   hostRef = null;
   konvaMock.stageProps = null;
@@ -388,7 +388,7 @@ afterEach(() => {
   cleanup();
   resetWireframeStoreForTests();
   resetWireframeSurfaceForTests();
-  resetHotkeyAnnouncer();
+  resetNavigationAnnouncer();
   resetNavigationAnnouncer();
   hostRef = null;
   vi.restoreAllMocks();

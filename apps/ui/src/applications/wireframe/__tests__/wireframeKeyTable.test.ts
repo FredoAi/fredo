@@ -14,7 +14,7 @@ import { act, cleanup, fireEvent, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
-import { resetHotkeyAnnouncer } from '@/shared/hotkeys/announcer';
+import { resetNavigationAnnouncer } from '@/shared/navigation/ui';
 import { resetNavigationAnnouncer } from '@/shared/navigation/ui/announce';
 import type { NavigationHost } from '@/shared/navigation/ui/host';
 import { createDefaultElement } from '../model/elements';
@@ -106,7 +106,7 @@ function primaryFill(): string | undefined {
 beforeEach(() => {
   resetWireframeStoreForTests();
   resetWireframeSurfaceForTests();
-  resetHotkeyAnnouncer();
+  resetNavigationAnnouncer();
   resetNavigationAnnouncer();
   currentHost = null;
 });
@@ -115,7 +115,7 @@ afterEach(() => {
   cleanup();
   resetWireframeStoreForTests();
   resetWireframeSurfaceForTests();
-  resetHotkeyAnnouncer();
+  resetNavigationAnnouncer();
   resetNavigationAnnouncer();
   currentHost = null;
   vi.restoreAllMocks();

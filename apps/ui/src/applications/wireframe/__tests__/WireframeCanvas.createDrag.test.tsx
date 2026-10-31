@@ -19,7 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, screen } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
-import { resetHotkeyAnnouncer } from '@/shared/hotkeys/announcer';
+import { resetNavigationAnnouncer } from '@/shared/navigation/ui';
 import { WireframeCanvasImpl } from '../components/WireframeCanvasImpl';
 import { WireframeNavigationProvider } from '../components/WireframeNavigationProvider';
 import {
@@ -338,7 +338,7 @@ function artworkLayer(): HTMLElement {
 beforeEach(() => {
   resetWireframeStoreForTests();
   resetWireframeSurfaceForTests();
-  resetHotkeyAnnouncer();
+  resetNavigationAnnouncer();
   document.body.innerHTML = '';
   konvaMock.stageProps = null;
   konvaMock.pointer = { x: 0, y: 0 };
@@ -374,7 +374,7 @@ afterEach(() => {
   cleanup();
   resetWireframeStoreForTests();
   resetWireframeSurfaceForTests();
-  resetHotkeyAnnouncer();
+  resetNavigationAnnouncer();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   document.documentElement.removeAttribute('style');

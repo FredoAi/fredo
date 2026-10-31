@@ -1,7 +1,6 @@
 /**
- * Spec #3122 (P8), ST-1 — the keyboard-only window traversal engine, relocated from
- * `shared/hotkeys/traversal.ts` into the window system (a DOM/window concern, not a hotkey
- * table).
+ * Spec #3122 (P8), ST-1 — the keyboard-only window traversal engine, relocated out of the
+ * retired hotkey runtime into the window system (a DOM/window concern, not a hotkey table).
  *
  * What it does (behaviour identical to the shipped module):
  *   - turns a keyboard raise into real focus movement,

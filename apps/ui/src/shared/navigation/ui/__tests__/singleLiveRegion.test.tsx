@@ -1,22 +1,15 @@
 /**
- * Spec #3118 (P4), ST-5 — R-4.6: exactly ONE polite live region in the migration shape.
+ * Spec #3118 (P4), ST-5 — R-4.6: exactly ONE navigation polite live region;
+ * Spec #3122 (P8), ST-2 — the legacy forwarding channel is retired.
  *
- * The fixture is the bound migration tree: the shipped `<HotkeyAnnouncer />` (the
- * `hotkeys-announcer` `role="status" aria-live="polite"` region) plus
- * `<NavigationAnnouncer channel="legacy" />` plus the three navigation surfaces. The nav
- * announcer renders nothing and FORWARDS every message to the legacy region, so the document
- * keeps exactly one live region — and the forwarded text is readable THERE (forwarding, not
- * mere absence of a second node).
+ * The fixture is the shipped navigation tree: the ONE `<NavigationAnnouncer />` plus the
+ * three navigation surfaces. The invariant is scoped to the navigation announcement CHANNEL
+ * (U-1): exactly one navigation region, zero legacy `hotkeys-announcer`. `countActiveLiveRegions`
+ * stays a FIXTURE-scoped counter over the navigation tree (other shipped surfaces own their own
+ * polite regions and are never in this fixture).
  *
- * Non-vacuity control: the identical tree with the DEFAULT channel yields exactly 2 —
- * otherwise a counter that always returns 1 would pass. Two `NavigationAnnouncer` mounts
- * yield 2 (documented, never silently deduped).
- *
- * The surface components are owned by sibling slices (ST-2…ST-4, same wave). They are mounted
- * through `import.meta.glob`, so the live tree includes every surface that has landed and the
- * count assertion tightens automatically as they do — the fixture never has to be edited.
- * The Q4-06 count/property assertions do not depend on the surface count (the non-vacuity
- * control pins the counter at 2 independently).
+ * Non-vacuity control: two `NavigationAnnouncer` mounts yield 2 (documented defect signal,
+ * never silently deduped).
  */
 
 import React from 'react';
@@ -24,10 +17,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { act, cleanup } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
-import {
-  HotkeyAnnouncer,
-  resetHotkeyAnnouncer,
-} from '@/shared/hotkeys/announcer';
 import {
   NavigationAnnouncer,
   announceNavigation,
@@ -81,68 +70,32 @@ function NavigationSurfaces() {
 }
 
 beforeEach(() => {
-  resetHotkeyAnnouncer();
   resetNavigationAnnouncer();
 });
 
 afterEach(() => {
   cleanup();
-  resetHotkeyAnnouncer();
   resetNavigationAnnouncer();
 });
 
-describe('R-4.6 — one polite live region while the legacy and new layers coexist', () => {
-  it('Q4-06 legacy announcer + all surfaces yields ONE region and forwards into it', () => {
-    const { getByTestId } = renderWithChakra(
+describe('R-4.6 — ONE navigation announcer, zero legacy announcer', () => {
+  it('the announcer + all navigation surfaces yields ONE navigation region', () => {
+    const { getByTestId, queryByTestId } = renderWithChakra(
       <>
-        <HotkeyAnnouncer />
-        <NavigationAnnouncer channel="legacy" />
+        <NavigationAnnouncer />
         <NavigationSurfaces />
       </>,
     );
 
     expect(countActiveLiveRegions()).toBe(1);
+    expect(queryByTestId('hotkeys-announcer')).toBeNull();
 
-    const region = getByTestId('hotkeys-announcer');
+    const region = getByTestId('navigation-announcer');
     expect(region).toHaveAttribute('aria-live', 'polite');
     expect(region).toHaveAttribute('role', 'status');
 
     act(() => announceNavigation('Undid Rectangle'));
     expect(region).toHaveTextContent('Undid Rectangle');
-  });
-
-  it('Q4-06 non-vacuity control: the DEFAULT channel plus the legacy region yields 2', () => {
-    renderWithChakra(
-      <>
-        <HotkeyAnnouncer />
-        <NavigationAnnouncer />
-        <NavigationSurfaces />
-      </>,
-    );
-
-    expect(countActiveLiveRegions()).toBe(2);
-  });
-
-  it('channel="legacy" with the legacy region alone yields 1', () => {
-    renderWithChakra(
-      <>
-        <HotkeyAnnouncer />
-        <NavigationAnnouncer channel="legacy" />
-      </>,
-    );
-
-    expect(countActiveLiveRegions()).toBe(1);
-  });
-
-  it('the default channel with no HotkeyAnnouncer yields 1', () => {
-    renderWithChakra(
-      <>
-        <NavigationAnnouncer />
-        <NavigationSurfaces />
-      </>,
-    );
-
-    expect(countActiveLiveRegions()).toBe(1);
   });
 
   it('two NavigationAnnouncer mounts yield 2 (never silently deduped)', () => {

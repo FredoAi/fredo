@@ -1,7 +1,7 @@
 /**
  * Spec #3122 (P8), ST-1 — the relocated navigation key grammar + display/speech contract.
  *
- * These cases pin the verbatim relocation of `shared/hotkeys/keys.ts` into
+ * These cases pin the verbatim relocation of the retired hotkey key grammar into
  * `shared/navigation/keys.ts`: the same serialization, the same typed-character model,
  * the same platform-folded matching and the same display/spoken forms. They are the
  * successors the coverage map points at for the deleted hotkey key suite.

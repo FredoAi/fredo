@@ -20,20 +20,18 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
-import { HotkeysProvider } from '@/shared/hotkeys/HotkeysProvider';
-import {
-  getHotkeyAction,
-  listHotkeyActions,
-  resetRegistryForTests,
-} from '@/shared/hotkeys/registry';
-import { resetKeymapStoreForTests } from '@/shared/hotkeys/store';
-import { resetHotkeyEngineForTests } from '@/shared/hotkeys/engine';
 import {
   LAUNCHER_CONFIRMATION_CANCEL_TESTID,
   LAUNCHER_CONFIRMATION_TESTID,
 } from '@/applications/home/components/launcher/launcherConstants';
 import type { ConfirmationRequest, Intent } from '@/shared/navigation';
-import { requestLauncherConfirmation } from '@/shared/navigation/ui';
+import {
+  NAVIGATION_GLOBAL_CHORDS,
+  NavigationProvider,
+  requestLauncherConfirmation,
+  resetNavigationAnnouncer,
+  resetNavigationKeyDispatchForTests,
+} from '@/shared/navigation/ui';
 import type { WindowEntry } from '@/shared/window-system/windowTypes';
 import type { FredoApplicationClass } from '@/shared/classes/FredoApplicationClass';
 import { LauncherShell } from '../LauncherShell';
@@ -110,9 +108,9 @@ const searchbox = () => screen.getByRole('searchbox') as BarField;
 const renderShell = (features: FredoApplicationClass[] = [APP, APP_TWO]) => {
   const onOpenFeature = vi.fn();
   const view = renderWithChakra(
-    <HotkeysProvider>
+    <NavigationProvider>
       <LauncherShell showableFeatures={features} onOpenFeature={onOpenFeature} />
-    </HotkeysProvider>,
+    </NavigationProvider>,
   );
   return { onOpenFeature, view };
 };
@@ -140,8 +138,8 @@ beforeEach(() => {
     replyInFlight: false,
     queuedSendCount: 0,
   };
-  resetRegistryForTests();
-  resetKeymapStoreForTests();
+  resetNavigationAnnouncer();
+  resetNavigationKeyDispatchForTests();
   vi.stubGlobal(
     'matchMedia',
     vi.fn().mockImplementation((query: string) => ({
@@ -160,9 +158,8 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  resetHotkeyEngineForTests();
-  resetRegistryForTests();
-  resetKeymapStoreForTests();
+  resetNavigationAnnouncer();
+  resetNavigationKeyDispatchForTests();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
 });
@@ -292,13 +289,16 @@ describe('LauncherShell — global commands survive, no palette handler (R-2.3 /
     expect(screen.queryByTestId(LAUNCHER_CONFIRMATION_TESTID)).toBeNull();
   });
 
-  it('registers no `fredo.palette.openActions` handler and primary+P is inert', () => {
+  it('declares no retired palette action and primary+P is inert', () => {
     renderShell();
 
-    expect(getHotkeyAction(PALETTE_ACTION_ID)).toBeNull();
-    expect(listHotkeyActions().some((action) => action.actionId === PALETTE_ACTION_ID)).toBe(
-      false,
-    );
+    // The only global chords are the three navigation ones — no palette action id.
+    expect(NAVIGATION_GLOBAL_CHORDS.map((chord) => chord.id)).toEqual([
+      'launcher.toggle',
+      'window.focus.next',
+      'window.focus.previous',
+    ]);
+    expect(PALETTE_ACTION_ID).toBe('fredo.palette.openActions');
 
     // The retired `primary+P` RUN is gone: it neither opens nor prefills the bar.
     act(() => {

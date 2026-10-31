@@ -39,7 +39,6 @@ function createHost(): { host: NavigationHost; journal: ReturnType<typeof getNav
     getContext: getWireframeContext,
     journal,
     applyPatch: (patch) => applyDocumentPatch(patch as unknown as WireframeDocumentPatch),
-    announcementChannel: 'legacy',
     confirm: () => true,
   });
   return { host, journal };

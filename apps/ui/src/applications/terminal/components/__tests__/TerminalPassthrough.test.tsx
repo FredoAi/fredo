@@ -11,9 +11,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, screen, waitFor } from '@testing-library/react';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
-import { BODY_PASSTHROUGH_ATTR, resetTerminalModeForTests } from '@/shared/hotkeys/terminalMode';
-import { resetHotkeyStatusForTests } from '@/shared/hotkeys/store';
-import { resetRegistryForTests } from '@/shared/hotkeys/registry';
+import {
+  BODY_PASSTHROUGH_ATTR,
+  resetTerminalModeForTests,
+} from '@/shared/navigation/ui/terminalPassthrough';
 import type { PersistedTerminalSession, TerminalSessionInfo } from '../../sessionModel';
 
 vi.mock('ghostty-web', () => {
@@ -79,8 +80,6 @@ function session(overrides: Partial<TerminalSessionInfo>): TerminalSessionInfo {
 
 beforeEach(() => {
   localStorage.clear();
-  resetRegistryForTests();
-  resetHotkeyStatusForTests();
   resetTerminalModeForTests();
   document.body.removeAttribute(BODY_PASSTHROUGH_ATTR);
   sessions = [];

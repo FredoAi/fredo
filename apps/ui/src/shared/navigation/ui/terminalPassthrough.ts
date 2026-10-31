@@ -1,6 +1,6 @@
 /**
- * Spec #3122 (P8), ST-1 — terminal passthrough (focus-derived), relocated from
- * `shared/hotkeys/terminalMode.ts` into the navigation layer.
+ * Spec #3122 (P8), ST-1 — terminal passthrough (focus-derived), relocated out of the retired
+ * hotkey runtime into the navigation layer.
  *
  * WHILE a terminal session has keyboard focus EVERY keystroke reaches the PTY and dispatch
  * is suspended (the focus-context suppression in `globalKeys.ts`). The dedicated exit chord

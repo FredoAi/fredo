@@ -59,7 +59,10 @@ import {
   type NavigationHost,
 } from '../../../shared/navigation/ui';
 import { requestCompanionComposerOpen } from '../../../shared/companion/composerBridge';
-import { TERMINAL_ROOT_SELECTOR, isTerminalFocused } from '../../../shared/hotkeys/terminalMode';
+import {
+  TERMINAL_ROOT_SELECTOR,
+  isTerminalFocused,
+} from '../../../shared/navigation/ui/terminalPassthrough';
 import {
   TERMINAL_SESSION_ENTER_VERB_ID,
   TERMINAL_SESSION_PLACE_ID,
@@ -148,8 +151,6 @@ export function TerminalNavigationProvider({
     const host = createNavigationHost({
       surface: terminalSurface,
       getContext: () => terminalContext(focusedRef.current, selectionRef.current),
-      // §11.5 / UI/UX §7 — adopt the shipped `hotkeys-announcer`; never add a second region.
-      announcementChannel: 'legacy',
       // Mirror the P5 policy: launcher/voice/agent intents confirm; keyboard/pointer/system
       // keep the shipped no-prompt behaviour (the journal is the undo).
       confirm: (request, intent) =>

@@ -132,10 +132,4 @@ describe('NavigationAnnouncer — the ONE navigation live region (R-4.6)', () =>
     act(() => announceNavigation(navUndoMessage('Rectangle')));
     expect(region).toHaveTextContent('Undid Rectangle');
   });
-
-  it('channel="legacy" renders NOTHING (the legacy region owns the channel)', () => {
-    renderWithChakra(<NavigationAnnouncer channel="legacy" />);
-
-    expect(countActiveLiveRegions()).toBe(0);
-  });
 });

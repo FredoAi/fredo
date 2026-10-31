@@ -30,7 +30,7 @@
  *
  * Every numeric property has a stepper AND a slider (R-3.6); the corner radius
  * ships preset chips plus a 4-stop slider that both write the same
- * `none|s|m|l` enum. No panel control carries `data-hotkey`.
+ * `none|s|m|l` enum. No panel control carries a legacy key attribute.
  */
 
 import React, { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
@@ -90,7 +90,7 @@ import {
   consumeWireframeRenameRequest,
   subscribeWireframeRenameRequest,
 } from '../wireframeSurface';
-import { isTextControl } from '../../../shared/hotkeys/focusContext';
+import { isTextControl } from '../../../shared/navigation/focusContext';
 import { tint } from '../../../shared/utils/colorTint';
 import { useWireframeNavigation } from './WireframeNavigationProvider';
 import { CornerRadiusField } from './fields/CornerRadiusField';

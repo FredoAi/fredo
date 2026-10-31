@@ -21,17 +21,11 @@ import { useFredoHealth } from '../../../../shared/hooks/useFredoHealth';
 // Companion designated presence — gates the launcher mascot (#2853 ST-4).
 import { useCompanion } from '../../../../shared/contexts/CompanionContext';
 import type { FredoApplicationClass } from '../../../../shared/classes/FredoApplicationClass';
-// Spec #2946 ST-4 — the Ctrl+Space chord is owned by the ONE shared hotkey
-// dispatch engine (`HotkeysProvider`, mounted in `main.tsx`). The shell no longer
-// adds its own `document` keydown listener; it contributes the launcher-toggle
-// RUN through the action registry.
-import { registerHotkeyHandler } from '../../../../shared/hotkeys/registry';
-import { LAUNCHER_TOGGLE_ACTION_ID } from '../../../../shared/hotkeys/engine';
-import { getNavigationHost } from '../../../../shared/navigation/ui/hostRegistry';
-import {
-  WINDOW_LAUNCHER_TOGGLE_VERB_ID,
-  WINDOW_SYSTEM_APP_ID,
-} from '../../../../shared/window-system/windowSystemSurface';
+// Spec #3122 ST-2 — the Ctrl+Space chord is owned by the ONE navigation chord
+// dispatcher (`globalKeys.ts`, installed by `NavigationProvider` in `main.tsx`). The shell
+// adds no `document` keydown listener and registers no legacy action override; it publishes
+// its core toggle through the window-system seam, which the declared
+// `window.launcher.toggle` verb runs.
 import { setWindowLauncherToggle } from '../../../../shared/window-system/launcherToggleSeam';
 
 // Spec #2899 ST-1 — the desktop background registry. `none` resolves to the
@@ -1556,40 +1550,14 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   }, [openOverlay]);
 
   // Spec #3121 ST-2 — the declared `window.launcher.toggle` verb performs this SAME core
-  // toggle through the window-system seam (no registry round-trip, so no recursion while
-  // the delegating override below is registered). Shell-lifetime registration.
+  // toggle through the window-system seam. Shell-lifetime registration; the navigation chord
+  // dispatcher calls the host verb, which calls this seam.
   useEffect(() => {
     setWindowLauncherToggle(performLauncherToggle);
     return () => {
       setWindowLauncherToggle(null);
     };
   }, [performLauncherToggle]);
-
-  // Spec #3121 ST-2 (D-3(a)) — the kept-global chord delegates into the DECLARED window
-  // host exactly once, so the journal records `window.launcher.toggle` / `channel:'keyboard'`
-  // and the verb performs `performLauncherToggle`. No host mounted ⇒ the shipped local run.
-  const handleLauncherToggle = useCallback(() => {
-    const host = getNavigationHost(WINDOW_SYSTEM_APP_ID);
-    if (host !== null) {
-      void host.runIntent({
-        verbId: WINDOW_LAUNCHER_TOGGLE_VERB_ID,
-        args: {},
-        channel: 'keyboard',
-        actor: 'human',
-      });
-      return;
-    }
-    performLauncherToggle();
-  }, [performLauncherToggle]);
-
-  // Register the launcher-toggle RUN with the shared engine for this shell's
-  // lifetime; unmount clears it so a stale closure can never run.
-  useEffect(() => {
-    registerHotkeyHandler(LAUNCHER_TOGGLE_ACTION_ID, handleLauncherToggle);
-    return () => {
-      registerHotkeyHandler(LAUNCHER_TOGGLE_ACTION_ID, null);
-    };
-  }, [handleLauncherToggle]);
 
   // ── Spec #3120 (P6) — the confirmation host ────────────────────────────────
   // Subscribe for the shell's MOUNTED LIFETIME (never gated on `open`/`engaged`): a

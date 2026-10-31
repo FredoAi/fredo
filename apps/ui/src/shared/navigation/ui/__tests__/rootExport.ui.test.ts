@@ -11,8 +11,8 @@
  *      name `undefined` (or tsconfig-ambiguous) and fail here;
  *   2. the type-only module (`types.ts`) is re-exported by the barrel source and every one of
  *      its names is imported `type`-only from `@/index` (a missing type fails `tsc`);
- *   3. `Keycap` still refers to the LEGACY shared component while the navigation keycap is
- *      `NavKeycap` — proven by identity AND by rendering each to its distinct test id;
+ *   3. the deleted legacy `Keycap` is absent from both the root surface and the UI barrel,
+ *      while the navigation keycap is `NavKeycap` — proven by identity AND by rendering it;
  *   4. nothing from `app/dev/` is root-exported and the root/UI barrels never name the DEV
  *      route literal (R-8.2 / Q8-02).
  *
@@ -37,7 +37,6 @@ import * as navigationMapModule from '@/shared/navigation/ui/NavigationMap';
 import * as activityTrailModule from '@/shared/navigation/ui/ActivityTrail';
 import * as announceModule from '@/shared/navigation/ui/announce';
 import * as hostModule from '@/shared/navigation/ui/host';
-import { Keycap as LegacyKeycap } from '@/shared/components/hotkeys/Keycap';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 
 // TYPE-only half of the surface — every name below MUST be exported by `@/index`. A missing
@@ -45,7 +44,6 @@ import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import type {
   ActivityTrailEntry,
   ActivityTrailModel,
-  AnnouncementChannel,
   CommandRailModel,
   CommandRailRow,
   NavAffordance,
@@ -73,7 +71,6 @@ type UiTypeSurface = {
   readonly map: NavigationMapModel;
   readonly trailEntry: ActivityTrailEntry;
   readonly trail: ActivityTrailModel;
-  readonly channel: AnnouncementChannel;
   readonly hostOptions: NavigationHostOptions;
   readonly hostSnapshot: NavigationHostSnapshot;
   readonly host: NavigationHost;
@@ -174,26 +171,17 @@ describe('UI barrel + root export — every public symbol is reachable (Q9-01 / 
   });
 });
 
-describe('Keycap vs NavKeycap — no collision with the legacy primitive', () => {
-  it('keeps `Keycap` on the legacy component and `NavKeycap` on the navigation one', () => {
-    expect(rootSurface.Keycap).toBe(LegacyKeycap);
+describe('NavKeycap — the sole keycap primitive (legacy Keycap deleted)', () => {
+  it('exports `NavKeycap` and exposes no legacy `Keycap` from the root or UI barrel', () => {
     expect(rootSurface.NavKeycap).toBe(keycapModule.NavKeycap);
-    expect(rootSurface.Keycap).not.toBe(rootSurface.NavKeycap);
-    // The navigation UI barrel must NOT re-export the colliding legacy name.
+    // Spec #3122 (P8) ST-2 — the legacy primitive is deleted; neither surface may name it.
+    expect(rootSurface).not.toHaveProperty('Keycap');
     expect(uiBarrel).not.toHaveProperty('Keycap');
   });
 
-  it('renders each keycap to its OWN test id (identity proven behaviourally)', () => {
-    const legacy = renderWithChakra(
-      React.createElement(LegacyKeycap, { sequence: 'primary+space' }),
-    );
-    expect(screen.getByTestId('hotkeys-keycap-group')).toBeInTheDocument();
-    expect(screen.queryByTestId(constants.NAV_KEYCAP_GROUP_TESTID)).toBeNull();
-    legacy.unmount();
+  it('renders the navigation keycap to its own test id', () => {
+    renderWithChakra(React.createElement(rootSurface.NavKeycap, { keys: ['c'] }));
 
-    renderWithChakra(
-      React.createElement(rootSurface.NavKeycap, { keys: ['c'] }),
-    );
     expect(screen.getByTestId(constants.NAV_KEYCAP_GROUP_TESTID)).toBeInTheDocument();
     expect(screen.getByTestId(constants.NAV_KEYCAP_GROUP_TESTID)).toHaveAttribute(
       'data-nav-keycap',

@@ -39,7 +39,7 @@ import {
   getNavigationHost,
   resetNavigationAnnouncer,
 } from '@/shared/navigation/ui';
-import { resetHotkeyAnnouncer } from '@/shared/hotkeys/announcer';
+import { resetNavigationAnnouncer } from '@/shared/navigation/ui';
 import {
   StreamProvider,
   applyRowDelivery,
@@ -151,7 +151,7 @@ beforeEach(() => {
   resetRowStoreForTests();
   resetDevModeSurfaceForTests();
   resetNavigationAnnouncer();
-  resetHotkeyAnnouncer();
+  resetNavigationAnnouncer();
 });
 
 afterEach(() => {
@@ -159,7 +159,7 @@ afterEach(() => {
   resetRowStoreForTests();
   resetDevModeSurfaceForTests();
   resetNavigationAnnouncer();
-  resetHotkeyAnnouncer();
+  resetNavigationAnnouncer();
 });
 
 /* ───────────────────────────── R-01 — the declaration ───────────────────────────── */

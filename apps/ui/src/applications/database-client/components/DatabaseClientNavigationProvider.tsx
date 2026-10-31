@@ -49,7 +49,7 @@ import {
   type NavigationHost,
 } from '../../../shared/navigation/ui';
 import { requestCompanionComposerOpen } from '../../../shared/companion/composerBridge';
-import { isTextControl } from '../../../shared/hotkeys/focusContext';
+import { isTextControl } from '../../../shared/navigation/focusContext';
 import {
   DATABASE_CLIENT_SURFACE_APP_ID,
   SQL_STUDIO_WORKSPACE_PLACE_ID,
@@ -127,7 +127,6 @@ export function DatabaseClientNavigationProvider({
           hostRef.current?.getSnapshot().context.placePath ?? [SQL_STUDIO_WORKSPACE_PLACE_ID],
         ),
       // UI/UX §7 / §11.5 — adopt the shipped `hotkeys-announcer`; never add a second region.
-      announcementChannel: 'legacy',
       // P5 parity: launcher/voice/agent intents confirm; keyboard/pointer keep the shipped
       // no-prompt behaviour (the journal is the attribution/undo record).
       confirm: (request, intent) =>

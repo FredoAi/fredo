@@ -24,7 +24,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import type { Surface } from '@/shared/navigation';
-import { KEPT_GLOBAL_BINDINGS } from '@/shared/hotkeys/defaults';
+import { NAVIGATION_GLOBAL_CHORDS } from '@/shared/navigation/ui';
 
 import {
   TERMINAL_SURFACE_APP_ID,
@@ -234,8 +234,19 @@ describe('R-21 — the 11-row binding completeness table', () => {
 
   it('maps the three kept globals to the declared window-system verbs', () => {
     const globals = TABLE.filter((row) => row.kind === 'kept-global');
-    expect(globals.map((row) => row.binding)).toEqual(
-      KEPT_GLOBAL_BINDINGS.map((binding) => binding.sequence),
+    // The navigation layer owns the three chords now (Spec #3122 ST-2).
+    const chordSequences = NAVIGATION_GLOBAL_CHORDS.map(
+      (chord) =>
+        `${chord.primary ? 'primary+' : ''}${chord.shift ? 'shift+' : ''}${chord.key}`,
+    );
+    expect(globals.map((row) => row.binding)).toEqual(chordSequences);
+    expect(globals.map((row) => row.binding)).toEqual([
+      'primary+space',
+      'primary+tab',
+      'primary+shift+tab',
+    ]);
+    expect(globals.map((row) => row.verbId)).toEqual(
+      NAVIGATION_GLOBAL_CHORDS.map((chord) => chord.verbId),
     );
     expect(globals.map((row) => row.verbId)).toEqual([
       'window.launcher.toggle',
@@ -243,10 +254,14 @@ describe('R-21 — the 11-row binding completeness table', () => {
       'window.focus.previous',
     ]);
 
-    // The shipped engine delegates these exact chords into these exact declared verbs (D-3(a)).
-    const engineSource = readFileSync(resolve(process.cwd(), 'src/shared/hotkeys/engine.ts'), 'utf8');
+    // The ONE global chord dispatcher routes these exact chords into these exact declared
+    // verbs (D-3(a) / U-2 — `globalKeys.ts` is the only global dispatch listener).
+    const dispatchSource = readFileSync(
+      resolve(process.cwd(), 'src/shared/navigation/ui/globalKeys.ts'),
+      'utf8',
+    );
     for (const verbId of globals.map((row) => row.verbId)) {
-      expect(engineSource, verbId).toContain(`'${verbId}'`);
+      expect(dispatchSource, verbId).toContain(`'${verbId}'`);
     }
   });
 
