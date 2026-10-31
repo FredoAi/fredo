@@ -938,18 +938,24 @@
       `launcher-palette-announcer` (so no extra live region), NO `launcher-palette-list`, NO
       `launcher-response`, NO confirmation node — the set differs from the Wireframe case ONLY by
       the P6 nodes; every shipped node/testid is present and identical.
-  - **Edge:** an app with a `commandSurface` but no host; the minimised-Wireframe state (falls back).
+  - **Edge:** an app with no registered navigation host; the minimised-Wireframe state (falls back).
 
-## R-81 — the published manifest keeps every legacy surface (no app loses its skill)
+## R-81 — the published manifest keeps every declared surface (no app loses its skill)
 
 - [ ] R-81: On boot with Wireframe registered, read the published manifest (the Rust
       `app_command_surfaces` return) and run the companion skill list.
-  **Expected:** every legacy app that publishes a `commandSurface.companion` still appears with its
-      shipped commands; Wireframe now appears from the NAVIGATION declaration (49 verbs +
+  **Expected:** every retained application that declares a published navigation surface appears
+      with its shipped commands; Wireframe appears from the NAVIGATION declaration (49 verbs +
       `journal.undo`); no app is dropped, duplicated or renamed; the `skillName` = `appId` identity
       holds; `listActions` remains the single reserved id. Reference F-136/F-137.
-  - **Edge:** two surfaces with the same `appId` (first-wins); an app whose commands all lack a
-    description (still published, empty list).
+  - **Edge:** two surfaces with the same `appId` (first-wins); a surface whose commands all lack a
+    description (still published, empty list). After P8 there is no legacy projection path.
+
+## R-81 note — P8 supersedes "legacy surface" wording
+
+> #3122 deletes the legacy command-surface projection. This row's observable is unchanged ("no
+> retained app loses its published skill"); the source is now the navigation declaration only.
+> The exact boot set is asserted by `retainedApplicationSet.test.ts`.
 
 ## R-82 — `/ Ask` enablement does not disturb the rail/map parity
 
