@@ -23,6 +23,26 @@ import {
 } from './replyProtection';
 import { buildCompanionTurnMessages, createCompanionSendQueue, resolveSendOutcome } from './companionDispatch';
 import type { CompanionAskOptions, CompanionSendQueue, CompanionSendResult } from './companionDispatch';
+import { CompanionComposer } from './CompanionComposer';
+import { REPLY_SURFACE_TESTID } from './SpeechBubble';
+import type { ReplyRect } from './replySurfaceLayout';
+import {
+  peekCompanionComposerRequest,
+  subscribeCompanionComposerOpen,
+} from '../../companion/composerBridge';
+import type { CompanionComposerOpenRequest } from '../../companion/composerBridge';
+import {
+  resolveCompanionTargetApp,
+  resolveNamedAppMention,
+} from '../../companion/composerTarget';
+import type {
+  CompanionTargetFrame,
+  CompanionTurnTarget,
+  FredoAppRef,
+} from '../../companion/composerTarget';
+import { getApplications } from '../../../applications/applicationRegistry';
+import { getWindowSnapshot } from '../../window-system/windowStore';
+import { describeContext } from '../../navigation/ui/hostRegistry';
 
 // #2883 ST-6 — the plan-declared ADDITIVE `SpeechBubble` props (`## API Contracts
 // & Data Models`). Typed here so this workstream compiles before ST-4 attaches
@@ -213,6 +233,77 @@ export function computeTeleportTarget(
   };
 }
 
+// ── #3120 (rework) ST-2 — composer target inputs ─────────────────────────────
+
+/** This webview's standalone app id (`?view=app&id=<appId>`), else `null`. */
+function readWindowAppId(): string | null {
+  if (typeof window === 'undefined') return null;
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('view') !== 'app') return null;
+  const id = params.get('id')?.trim();
+  return id ? id : null;
+}
+
+/** The registered applications as the pure matcher's narrow view. */
+function readAppRefs(): FredoAppRef[] {
+  return getApplications().map((application) => ({
+    id: application.id,
+    name: application.name,
+    showable: application.showable,
+  }));
+}
+
+function toTargetRect(rect: DOMRect): ReplyRect {
+  return {
+    left: rect.left,
+    top: rect.top,
+    right: rect.right,
+    bottom: rect.bottom,
+    width: rect.width,
+    height: rect.height,
+  };
+}
+
+/**
+ * In-window app frames, LOW z → HIGH z. The window kernel owns the z-order and
+ * the `[data-fredo-app-id]` root is the geometry source, so the pure resolver
+ * can pick the TOPMOST frame containing Fredo's landing point.
+ */
+function measureAppFrames(): CompanionTargetFrame[] {
+  if (typeof document === 'undefined') return [];
+  const entries = getWindowSnapshot()
+    .filter((entry) => !entry.isMinimized)
+    .slice()
+    .sort((a, b) => a.zIndex - b.zIndex);
+  const frames: CompanionTargetFrame[] = [];
+  for (const entry of entries) {
+    const escaped = entry.id.replace(/"/g, '\\"');
+    const el = document.querySelector<HTMLElement>(`[data-fredo-app-id="${escaped}"]`);
+    if (!el) continue;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    frames.push({ appId: entry.id, rect: toTargetRect(rect) });
+  }
+  return frames;
+}
+
+/** The focused, non-minimized window in this webview (the resolver's last step). */
+function readFocusedAppId(): string | null {
+  const focused = getWindowSnapshot().find((entry) => entry.focused && !entry.isMinimized);
+  return focused?.id ?? null;
+}
+
+/** Two rects within the same sub-pixel tolerance (the state-write loop guard). */
+function nearRect(a: ReplyRect | null, b: ReplyRect | null): boolean {
+  if (a === null || b === null) return a === b;
+  return (
+    Math.abs(a.left - b.left) < AVATAR_RECT_EPSILON_PX &&
+    Math.abs(a.top - b.top) < AVATAR_RECT_EPSILON_PX &&
+    Math.abs(a.right - b.right) < AVATAR_RECT_EPSILON_PX &&
+    Math.abs(a.bottom - b.bottom) < AVATAR_RECT_EPSILON_PX
+  );
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 
 // #2886 ST-2 — the footprint measurement is epsilon-compared so a sub-pixel
@@ -309,6 +400,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     const {
       state, setState, teleport, hideMessage, notifyInteraction, setInUse,
       sendDuringReply, replyLeaveGraceMs, setReplyInFlight, setQueuedSendCount,
+      composerOpen, openComposer, closeComposer,
     } = useCompanion();
     const { animState, message, isVisible, isAutoHidden, isHosting } = state;
 
@@ -585,6 +677,61 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       avatarFrameRef.current = null;
     }, []);
 
+    // ── #3120 (rework) ST-2 — composer support ────────────────────────────────
+    // The viewport is an INPUT of the placement (resize re-derives it, never a
+    // poll). Equality-guarded so a sub-pixel resize never writes state (#523).
+    const [viewport, setViewport] = useState(() => ({
+      width: typeof window === 'undefined' ? 0 : window.innerWidth,
+      height: typeof window === 'undefined' ? 0 : window.innerHeight,
+    }));
+    useEffect(() => {
+      const onResize = () => {
+        setViewport((prev) =>
+          prev.width === window.innerWidth && prev.height === window.innerHeight
+            ? prev
+            : { width: window.innerWidth, height: window.innerHeight },
+        );
+      };
+      window.addEventListener('resize', onResize);
+      return () => window.removeEventListener('resize', onResize);
+    }, []);
+
+    // The visible SpeechBubble rect — the composer must never intersect it. The
+    // bubble repositions while a reply streams, so this is measured post-commit
+    // with the same epsilon guard (no state write when the box did not move).
+    const [avoidRect, setAvoidRect] = useState<ReplyRect | null>(null);
+    const avoidRectRef = useRef<ReplyRect | null>(null);
+    useLayoutEffect(() => {
+      if (!replyOnScreen || typeof document === 'undefined') {
+        if (avoidRectRef.current !== null) {
+          avoidRectRef.current = null;
+          setAvoidRect(null);
+        }
+        return;
+      }
+      const el = document.querySelector<HTMLElement>(`[data-testid="${REPLY_SURFACE_TESTID}"]`);
+      const next = el ? toTargetRect(el.getBoundingClientRect()) : null;
+      const normalized = next !== null && next.width > 0 && next.height > 0 ? next : null;
+      if (nearRect(avoidRectRef.current, normalized)) return;
+      avoidRectRef.current = normalized;
+      setAvoidRect(normalized);
+    });
+
+    // The app named by the most recent bridge request (the command bar's `Ask`).
+    // Retained across the not-hosted teleport: the entity mounts AFTER the request
+    // and reads the bridge's retained request so target resolution still honours it.
+    const requestedAppIdRef = useRef<string | null>(null);
+    useEffect(() => {
+      const applyRequest = (request: CompanionComposerOpenRequest) => {
+        requestedAppIdRef.current = request.appId ?? null;
+        openComposer();
+      };
+      const retained = peekCompanionComposerRequest();
+      if (retained) requestedAppIdRef.current = retained.appId ?? null;
+      const unsubscribe = subscribeCompanionComposerOpen(applyRequest);
+      return unsubscribe;
+    }, [openComposer]);
+
     // #2853 ST-3 (round 2): report CONTINUOUS use so the host idle gate suppresses
     // auto-return while Fredo is actively engaged — an open TicTacToe, an active
     // joke stream, or the talk hold. `isInUse` is intentionally NOT a dep (same
@@ -799,8 +946,13 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         pendingDestRef.current = null;
         playAnim('idle');
         setState('idle');
+        // #3120 (rework) ST-2 (R-3.1/R-3.2) — the teleport-in SETTLE is the open
+        // trigger: the composer appears (and focuses its input in its own layout
+        // effect) in the destination window, with no click and no polling. The
+        // render is gated to the hosting overlay surface below.
+        openComposer();
       }, ANIM_DURATION['teleport-in'] + 50);
-    }, [clearTimer, teleport, playAnim, setState]);
+    }, [clearTimer, teleport, playAnim, setState, openComposer]);
 
     const startTeleportOut = useCallback((dest: { x: number; y: number }) => {
       clearTimer();
@@ -1330,6 +1482,59 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       return { outcome: 'dispatched' };
     }, [runGeneration, clearTimer]);
 
+    // ── #3120 (rework) ST-2 — the composer's turn target + submit ─────────────
+    // The default target is the app Fredo is in front of (requested → topmost
+    // frame at his landing point → this window's app → focused window → null);
+    // an explicitly named SHOWABLE app in the instruction overrides it.
+    const resolveBaseTargetApp = useCallback((): string | null => {
+      const point = avatarRect
+        ? {
+            x: avatarRect.left + avatarRect.width / 2,
+            y: avatarRect.top + avatarRect.height / 2,
+          }
+        : { x: displayPos.x + AVATAR_SM.width / 2, y: displayPos.y + AVATAR_SM.height / 2 };
+      return resolveCompanionTargetApp({
+        requestedAppId: requestedAppIdRef.current,
+        windowAppId: readWindowAppId(),
+        frames: measureAppFrames(),
+        point,
+        focusedAppId: readFocusedAppId(),
+      });
+    }, [avatarRect, displayPos.x, displayPos.y]);
+
+    const buildTurnTarget = useCallback(
+      (baseAppId: string | null, text: string): CompanionTurnTarget => {
+        const apps = readAppRefs();
+        const namedId = text.trim() === '' ? null : resolveNamedAppMention(text, apps);
+        const appId = namedId ?? baseAppId;
+        const appName = appId === null
+          ? null
+          : (apps.find((application) => application.id === appId)?.name ?? null);
+        return {
+          appId,
+          appName,
+          // The grounding envelope is built ON DEMAND for the resolved target; a
+          // turn for an unregistered app stays ungrounded (never a stale envelope).
+          envelope: appId === null ? null : describeContext(appId),
+          // Re-naming the SAME app is not an override (R-3.5).
+          explicit: namedId !== null && namedId !== baseAppId,
+        };
+      },
+      [],
+    );
+
+    const composerTarget: CompanionTurnTarget = composerOpen
+      ? buildTurnTarget(resolveBaseTargetApp(), '')
+      : { appId: null, appName: null, envelope: null, explicit: false };
+
+    const handleComposerSubmit = useCallback((text: string) => {
+      const resolved = buildTurnTarget(resolveBaseTargetApp(), text);
+      // The ONE dispatch funnel: the existing `ask` (skill-aware, same persona),
+      // grounded with `describeContext(targetApp)` when the app is registered.
+      // An ungrounded turn omits the option key entirely (never `undefined`).
+      ask(text, resolved.envelope ? { context: resolved.envelope } : undefined);
+    }, [ask, buildTurnTarget, resolveBaseTargetApp]);
+
     // #2883 ST-6 (R-4.1/R-4.2/R-4.3) — the surface protection handlers. The
     // pointer and the keyboard are tracked as SEPARATE sources, so focus inside the
     // reply protects it independently of the pointer (and vice-versa). They are
@@ -1565,6 +1770,22 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         >
           {a11yAnnouncement}
         </div>
+
+        {/* #3120 (rework) ST-2 — the ONE teleport-attached instruction box. It is
+            rendered ONLY on the hosting OVERLAY (the composer never mounts at the
+            home seat, in a non-hosting window, or while auto-hidden), and it sits
+            beside Fredo / the SpeechBubble by the pure placement decision. */}
+        {surface === 'overlay' && composerOpen ? (
+          <CompanionComposer
+            surface="overlay"
+            avatarRect={avatarRect}
+            avoidRect={avoidRect}
+            viewport={viewport}
+            target={composerTarget}
+            onSubmit={handleComposerSubmit}
+            onDismiss={closeComposer}
+          />
+        ) : null}
 
         {/* Interactive avatar wrapper — real click box is the avatar's layout
             width AND height (sm = 80 wide x 100 tall). The wrapper carries the

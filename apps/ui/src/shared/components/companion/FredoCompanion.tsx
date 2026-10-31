@@ -8,11 +8,20 @@ import {
   computeTeleportTarget,
   getActiveCompanionEntity,
 } from './CompanionEntity';
+import { subscribeCompanionComposerOpen } from '../../companion/composerBridge';
+
+/** The default landing point for a composer request when Fredo is not hosted here. */
+function defaultComposerTeleportPoint(): { x: number; y: number } {
+  return computeTeleportTarget(window.innerWidth - 24, window.innerHeight - 24);
+}
 
 // ── Component ────────────────────────────────────────────────────────────────
 
 export const FredoCompanion: React.FC = () => {
-  const { state, confirmAutoReturn, setHosting, markAway, notifyInteraction, teleport } = useCompanion();
+  const {
+    state, confirmAutoReturn, setHosting, markAway, notifyInteraction, teleport,
+    openComposer, closeComposer,
+  } = useCompanion();
   const { isAway, isAutoHidden, isAutoReturning, position } = state;
 
   // The interactive body lives in CompanionEntity. The host keeps every
@@ -24,6 +33,10 @@ export const FredoCompanion: React.FC = () => {
   // it is this host's OVERLAY.
   const isInThisWindowRef = useRef(MY_WINDOW === 'main');
   const [isInThisWindow, setIsInThisWindow] = useState(MY_WINDOW === 'main');
+  // #3120 (rework) ST-2 — the ONE hosting predicate (R-3.12), mirrored into a ref
+  // so the bridge subscription never re-registers on a presence change.
+  const hostedHereRef = useRef(false);
+  hostedHereRef.current = isAway && isInThisWindow && !isAutoHidden;
   // Pending teleport-in destination — applied once the overlay becomes active
   const pendingTeleportInRef = useRef<{ x: number; y: number } | null>(null);
   // Bumped on every cross-window arrival so the arrive effect fires even when
@@ -40,6 +53,33 @@ export const FredoCompanion: React.FC = () => {
   // seat, so the #2853 timer arms only for an out Fredo (never while he sits at
   // the seat).
   useEffect(() => { setHosting(isAway && isInThisWindow); }, [isAway, isInThisWindow, setHosting]);
+
+  // #3120 (rework) ST-2 — a composer open request (command-bar `Ask`, keyboard)
+  // that lands in a window NOT hosting Fredo teleports him to the default point
+  // FIRST, then opens the box on the arrival settle. When this window already
+  // hosts the overlay, the active entity's own subscription opens it in place and
+  // this handler is a no-op (the hosting predicate gates every mount).
+  useEffect(() => {
+    return subscribeCompanionComposerOpen(() => {
+      if (!hostedHereRef.current) {
+        const dest = defaultComposerTeleportPoint();
+        isInThisWindowRef.current = true;
+        pendingTeleportInRef.current = dest;
+        teleport(dest.x, dest.y);
+        setIsInThisWindow(true);
+        setArrivalSeq((n) => n + 1);
+      }
+      // Idempotent: the active overlay entity also opens it; either path lands on
+      // the SAME context flag (never a second surface).
+      openComposer();
+    });
+  }, [teleport, openComposer]);
+
+  // Leaving this window (or an auto-hide) closes the instruction box; the next
+  // arrival settle re-opens it.
+  useEffect(() => {
+    if (!isInThisWindow || isAutoHidden) closeComposer();
+  }, [isInThisWindow, isAutoHidden, closeComposer]);
 
   // Once this window becomes active (cross-window arrival), fire the queued
   // teleport-in. Keyed on `arrivalSeq` (not `isInThisWindow`) so a return leg
