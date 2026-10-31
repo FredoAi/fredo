@@ -39,18 +39,17 @@ deleted.
 > (`wireframe-text-content` / `-button-label` / `-card-label` / `-input-placeholder`) and writes
 > NO document entry.
 >
-> **Two different timeouts exist — do not confuse them:** the navigation engine's armed prefix
-> times out at **250 ms** (`PENDING_TIMEOUT_MS`, `shared/navigation/types.ts:17`); the legacy
-> hotkey engine's prefix times out at **1000 ms** (`PENDING_SEQUENCE_TIMEOUT_MS`,
-> `shared/hotkeys/engine.ts:64`). Surface strokes use 250 ms; the legacy bar's
-> `data-fredo-pending-sequence` channel is no longer involved in Wireframe.
+> **One timeout:** the navigation engine's armed prefix times out at **250 ms**
+> (`PENDING_TIMEOUT_MS`, `shared/navigation/types.ts:17`). The legacy engine (and its 1000 ms
+> prefix) was DELETED in P8; no legacy pending-sequence channel is involved in Wireframe.
 >
 > **Root DOM hook:** `[data-testid="wireframe-root"]` carries `data-wireframe-place` (the current
 > place id), `data-wireframe-arm` (`none|rect|ellipse` — the armed draw state), plus the shipped
 > `data-wireframe-element-count | -selection-id | -selection-type | -selection-ids |
 > -selection-count | -selection-group | -group-count | -snap | -stacking | -dirty |
-> -document-path | -page | -zoom | -pan-mode`. Deleted: `wireframe-toolbar`,
-> `wireframe-action-*`, `wireframe-hotkey-carrier`, every `data-hotkey` on a Wireframe element.
+> -document-path | -page | -zoom | -pan-mode`. Deleted: the legacy toolbar/action testids, the
+> legacy key carrier, and every legacy element-key attribute on a Wireframe element (the
+> committed `legacyAbsence.test.ts` owns the literal absence).
 
 ## Harness (run before every leg)
 
@@ -198,15 +197,15 @@ deleted.
 
 - [x] **F-N11 (R-3 / AC3) — the rail and the map replace the bar and the toolbar.**
       Open Wireframe from the launcher.
-      **Expected:** `navigation-rail`, `navigation-trail`, `navigation-map` (footer affordance)
+      **Expected:** `navigation-bar`, `navigation-trail`, `navigation-map` (footer affordance)
       and `wireframe-canvas` render; `wireframe-toolbar` is **absent**;
-      `[data-testid^="wireframe-action-"]` count **0**; `hotkeys-keybar` count **0** while
-      Wireframe is focused, and `buildHotkeyBarModel(...).empty === true` for it. The INSERT pill
+      `[data-testid^="wireframe-action-"]` count **0**; zero legacy element-key bars/rows while
+      Wireframe is focused (gate-owned by `legacyAbsence.test.ts`). The INSERT pill
       (`wireframe-insert`) is present (the only toolbar-shaped affordance), opens a menu whose
       items carry `data-nav-verb-id`, and activating one does NOT change
       `data-wireframe-place`.
-      **Non-vacuity control (G-408):** focus Mission Monitor → `hotkeys-keybar` present and its
-      model non-empty.
+      **Non-vacuity control (G-408):** focus Mission Monitor → its `navigation-bar` rows are
+      present and non-empty.
       **Edge:** Wireframe open-but-unfocused (the bar stays empty); a second Wireframe window;
       the insert menu closed (still no toolbar).
 
@@ -341,15 +340,14 @@ deleted.
       (stripped → pass); a template interpolation calling the mutator (must be caught).
 
 - [x] **F-N22 (R-7 / AC7) — the legacy path is gone and the build is clean.**
-      **Expected:** `applications/wireframe/wireframeCommandSurface.ts` and
-      `components/WireframeHotkeyCarrier.tsx` do not exist; no import of either anywhere;
-      `WireframeFeature` declares no `commandSurface`; no `WIREFRAME_ACTIONS` row has a
-      `hotkey` key; zero `g+` sequences and zero `data-hotkey` in
-      `applications/wireframe/**`; live
-      `document.querySelectorAll('[data-testid="wireframe-root"] [data-hotkey]').length === 0`;
-      after a real `pnpm --filter @fredo/ui build`, every file under `apps/ui/dist/assets/**`
-      has zero hits for `wireframeCommandSurface`, `WireframeHotkeyCarrier`,
-      `wireframe-hotkey-carrier`; the build exits 0.
+      **Expected:** the legacy Wireframe command-surface module and key-carrier component do not
+      exist; no import of either anywhere; `WireframeFeature` declares no legacy command-surface
+      opt-in; no action-table row carries a legacy key field; zero retired two-step bindings and
+      zero legacy element-key attributes in `applications/wireframe/**` (the committed
+      `legacyAbsence.test.ts` owns the literal absence); the live `wireframe-root` has zero legacy
+      element-key descendants; after a real `pnpm --filter @fredo/ui build`, every file under
+      `apps/ui/dist/assets/**` has zero hits for the removed module/component/carrier names; the
+      build exits 0.
       **Edge:** a `g`-prefixed string in a comment (stripped → pass); a stale `dist` (rebuild
       first); the four replaced product test files deleted in the same landing; the file rows are
       no longer visually disabled during an operation (accepted delta — behaviour, not the
@@ -452,7 +450,7 @@ the whole drive — no `Error:`/`Uncaught`/`Maximum update depth exceeded`.
 | F-N19 | PASS | `wireframeUndoAuthority.test.ts` 4/4 + `wireframeJournal.test.ts` 7/7 green (`the store keeps no past or future stack`, `store undo and host undoLast advance the same journal` verbatim). |
 | F-N20 | PASS | Create-drag → `Rectangle`; element drag → geometry `520,608,240,160`→`576,640,240,160` + one `Move`; transformer drag → `576,640,240,160`→`576,600.6,299.1,199.4` + one `Resize`; pan drag (View `p`) → one `Pan` NAVIGATION entry, count/geometry/dirty identical. |
 | F-N21 | PASS | `wireframeLegacySurface.test.ts` **7/7** (`no ui handler mutates the store outside dispatch` verbatim, green). |
-| F-N22 | PASS | `wireframeCommandSurface.ts` / `WireframeHotkeyCarrier.tsx` deleted (diff); `the built bundle names no removed module` green after the pre-suite build; `data-hotkey` under `wireframe-root` = 0. |
+| F-N22 | PASS | The legacy Wireframe command-surface module and key-carrier component are deleted (diff); `the built bundle names no removed module` green after the pre-suite build; zero legacy element-key attributes under `wireframe-root` (gate-owned by `legacyAbsence.test.ts`). |
 | F-N23 | **FAIL** | Announcements PASS (`Create — 9 actions`, `Left Create — Canvas — 2 actions`, `Left Style — Canvas — 2 actions`, `File — 4 actions`; `navigation-announcer` absent). FOCUS leg FAIL: focusing a `navigation-rail-place-row` and pressing `c` leaves `document.activeElement === BODY` (the places group unmounts). Expected: the same row button. |
 | F-N24 | PASS | `every listed stroke resolves synchronously in the same task`, `no new polling or timer loop exists`, `the canvas reads a derived place view and never the journal` green; `contrast:gate` 50/50; console clean. |
 
@@ -481,7 +479,7 @@ fixed surface. Env: isolated `wf3119-a` (slot 1, MCP `16001`), `Up` on `6311823`
 | **F-N23 (no-steal, canvas)** | **PASS** | Focus `[data-testid=wireframe-canvas]`, press `v` → `place="wireframe.view"`, `activeElement` stays `DIV[data-testid=wireframe-canvas]` (rail did not steal focus), `announcer="View — 5 actions"`, 5 View rows, `navigation-announcer` absent. |
 | **F-N23 (announcements)** | **PASS** | `Create — 9 actions`, `Edit — 5 actions`, `Style — 5 actions`, `View — 5 actions`, `Left Create — Canvas — 2 actions` — each exactly one update; `navigation-announcer` absent; 7 `[aria-live]` nodes (R-9 adjudication — the shipped `WireframeStatusBar` is also a status region). |
 | **NFR build/parity** | **PASS** | typecheck 0 diagnostics; build 2864 modules / 11.66s; full suite 296/3888; contrast 4/50; no `.skip`/`.todo`/`.only` in `applications/wireframe` or `shared/navigation`. |
-| **AC3 surface sweep** | **PASS** | Live rail/trail/canvas present; `wireframe-toolbar 0`, `wireframe-hotkey-carrier 0`, `[data-hotkey]` under `wireframe-root 0`, `hotkeys-keybar 0`; 33-row parity pinned by the green `wireframeRailParity.test.tsx` (10/10). |
+| **AC3 surface sweep** | **PASS** | Live bar/trail/canvas present; `wireframe-toolbar 0`, the legacy carrier 0, zero legacy element-key attributes under `wireframe-root`, zero legacy bar rows; 33-row parity pinned by the green `wireframeRailParity.test.tsx` (10/10). |
 
 Unit pins (green in the full run): `commandRailFocus.test.tsx` **3/3**,
 `wireframeNavigationFocus.test.tsx` **4/4**, `commandRail.test.tsx` (no focus move on mount),
