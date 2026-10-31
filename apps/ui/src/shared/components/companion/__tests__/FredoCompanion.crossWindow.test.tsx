@@ -21,6 +21,7 @@ import { act, cleanup, waitFor } from '@testing-library/react';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { CompanionProvider, useCompanion } from '@/shared/contexts/CompanionContext';
 import { CompanionEntity, FredoCompanion } from '@/shared/components/companion';
+import { getActiveCompanionEntity } from '@/shared/components/companion/CompanionEntity';
 import {
   COMPANION_COMPOSER_INPUT_TESTID,
   COMPANION_COMPOSER_TESTID,
@@ -42,9 +43,41 @@ import { AVATAR_SM } from '@/shared/components/fredo-avatar/fredoAvatarSizes';
 // `ui-validate` CI annotation) — which vitest reports for this file and exits 1
 // although every test passed. A functional stub makes any escaped real call (emit,
 // listen, its unmount unlisten) resolve harmlessly instead of rejecting.
+// #3120 (rework) ST-2-R5b — the React.StrictMode replay's SECOND async
+// `import('@tauri-apps/api/event')` continuation can escape this file's
+// `vi.mock` registry and resolve the REAL module (exactly the class the header
+// documents, and the escaped-real path the last test pins). To count EVERY live
+// `companion-teleport` subscription no matter which module instance a
+// continuation reached, the real path is mirrored too: a real `listen` registers
+// through `invoke('plugin:event|listen')` and its unlisten releases it (via
+// `__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener` + `invoke(...unlisten)`).
+// `realBus` tracks those real handlers so the test can both count them and
+// simulate an emit across BOTH registries.
+const realBus = vi.hoisted(() => {
+  const handlers = new Map<string, Set<(ev: { payload: unknown }) => void>>();
+  const add = (event: string, handler: (ev: { payload: unknown }) => void) => {
+    if (!handlers.has(event)) handlers.set(event, new Set());
+    handlers.get(event)!.add(handler);
+  };
+  const release = (event: string) => {
+    handlers.get(event)?.clear();
+  };
+  return { handlers, add, release };
+});
+
 vi.hoisted(() => {
   (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {
-    invoke: async () => undefined,
+    invoke: async (cmd: string, args?: { event?: string; handler?: number }) => {
+      if (args?.event === 'companion-teleport') {
+        if (cmd === 'plugin:event|listen' && typeof args.handler === 'number') {
+          const wrapper = (window as unknown as Record<string, unknown>)[`_${args.handler}`];
+          if (typeof wrapper === 'function') {
+            realBus.add('companion-teleport', wrapper as (ev: { payload: unknown }) => void);
+          }
+        }
+      }
+      return undefined;
+    },
     transformCallback: (cb: unknown, once = false) => {
       const id = Math.floor(Math.random() * 1_000_000_000);
       const key = `_${id}`;
@@ -58,9 +91,10 @@ vi.hoisted(() => {
     metadata: {},
   };
   // The real `listen()`'s returned unlisten touches this plugin-internals global on
-  // teardown — present it so an escaped real `listen` cannot reject on unmount.
+  // teardown — present it so an escaped real `listen` cannot reject on unmount and
+  // so the mirror releases the real handler for this event.
   (window as unknown as Record<string, unknown>).__TAURI_EVENT_PLUGIN_INTERNALS__ = {
-    unregisterListener: () => {},
+    unregisterListener: (event: string) => realBus.release(event),
   };
 });
 
@@ -178,6 +212,69 @@ async function renderCompanion() {
   return view;
 }
 
+/**
+ * #3120 (rework) ST-2-R5b — the window-level `companion-teleport` subscription must
+ * survive React.StrictMode's mount replay with EXACTLY ONE live listener. The async
+ * `import('@tauri-apps/api/event')` continuation resolves AFTER the synchronous
+ * StrictMode cleanup, so without a `cancelled` gate BOTH runs register (two
+ * subscriptions → two `teleportTo` calls per emit). The count spans BOTH registries
+ * (the mock AND an escaped real import) so it cannot be fooled by the harness's
+ * documented mock-registry escape. The same body runs without StrictMode as the
+ * non-vacuity control (proves the assertion is not over-strict).
+ */
+function liveTeleportSubscriptions(): number {
+  const mockSet = tauri.listeners.get('companion-teleport');
+  const realSet = realBus.handlers.get('companion-teleport');
+  return (mockSet?.size ?? 0) + (realSet?.size ?? 0);
+}
+
+async function assertSingleTeleportListener(wrapStrictMode: boolean) {
+  localStorage.setItem('Fredo_companion_visible', 'true');
+  // Drain the async `import(...)` + `listen(...)` continuations. A real macrotask
+  // inside `act` guarantees BOTH StrictMode effect runs have settled before the
+  // assertion (never a transient `waitFor` — developer.md:42).
+  const drain = () =>
+    act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    });
+  const tree = (
+    <CompanionProvider>
+      <SeatSlot />
+      <HostingProbe />
+      <FredoCompanion />
+      <ApiProbe />
+    </CompanionProvider>
+  );
+  const view = renderWithChakra(
+    wrapStrictMode ? <React.StrictMode>{tree}</React.StrictMode> : tree,
+  );
+  await waitFor(() => expect(view.container.querySelectorAll('.fredo-companion-avatar')).toHaveLength(1));
+  await drain();
+
+  expect(liveTeleportSubscriptions()).toBe(1);
+
+  // A single emit invokes EVERY live listener — the spy must see exactly one
+  // `teleportTo` call (a leaked duplicate listener calls it twice).
+  const entity = getActiveCompanionEntity();
+  expect(entity).not.toBeNull();
+  const teleportToSpy = vi.spyOn(entity!, 'teleportTo').mockImplementation(() => {});
+  act(() => {
+    const mockSet = tauri.listeners.get('companion-teleport');
+    for (const cb of [...((mockSet ?? []) as Set<Listener>)]) {
+      cb({ payload: { toWindow: 'main', x: 460, y: 350 } });
+    }
+    const realSet = realBus.handlers.get('companion-teleport');
+    for (const cb of [...(realSet ?? [])]) {
+      cb({ payload: { toWindow: 'main', x: 460, y: 350 } });
+    }
+  });
+  expect(teleportToSpy).toHaveBeenCalledTimes(1);
+
+  view.unmount();
+  await drain();
+  expect(liveTeleportSubscriptions()).toBe(0);
+}
+
 let consoleError: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
@@ -187,6 +284,7 @@ beforeEach(() => {
   tauri.listen.mockClear();
   tauri.emit.mockClear();
   tauri.listeners.clear();
+  realBus.handlers.clear();
   localStorage.clear();
 
   const devAdapter = new DevAdapter();
@@ -281,6 +379,17 @@ describe('FredoCompanion cross-window companion-teleport listener (#2870 ST-2c)'
     expect(getByTestId(COMPANION_COMPOSER_TESTID).getAttribute('data-composer-surface')).toBe('overlay');
     expect(document.activeElement).toBe(getByTestId(COMPANION_COMPOSER_INPUT_TESTID));
     expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  // #3120 (rework) ST-2-R5b — StrictMode-safe window listener: exactly ONE
+  // `companion-teleport` listener while mounted, NONE after unmount, and a single
+  // emit calls `teleportTo` once (never twice from a leaked duplicate listener).
+  it('registers exactly ONE companion-teleport listener under React.StrictMode (no duplicate on replay)', async () => {
+    await assertSingleTeleportListener(true);
+  });
+
+  it('registers exactly ONE companion-teleport listener without StrictMode (control)', async () => {
+    await assertSingleTeleportListener(false);
   });
 
   // #2870 F-68: an idle auto-return followed by a teleport must leave exactly ONE

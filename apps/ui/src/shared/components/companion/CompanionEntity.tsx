@@ -746,19 +746,25 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       return unsubscribe;
     }, [surface, openComposer]);
 
-    // #3120 (rework) ST-2-R4 (R-3.1) — the ONE settle-open owner. Every relocation
-    // bumps `teleportSeq`; the surface that actually SETTLES owns the open. On a
-    // same-window seat→overlay teleport the seat unmounts in the same commit that
-    // `TELEPORT` lands (its timer cleanup would have killed the old open), and this
-    // overlay is the survivor — it arms the settle here. Away→away re-runs on the
-    // seq bump on the surviving overlay; a fresh overlay mount (seat→overlay, or a
-    // cross-window arrival) arms on its first run because nothing is handled yet.
-    const handledTeleportSeqRef = useRef<number | null>(null);
+    // #3120 (rework) ST-2-R4/R5 (R-3.1) — the ONE settle-open owner. Every
+    // relocation bumps `teleportSeq`; the surface that actually SETTLES owns the
+    // open. On a same-window seat→overlay teleport the seat unmounts in the same
+    // commit that `TELEPORT` lands (its timer cleanup would have killed the old
+    // open), and this overlay is the survivor — it arms the settle here.
+    //
+    // RULE (ST-2-R5, G-409): the open is keyed on the EFFECT RUN, never on a
+    // remembered "handled" sequence. React.StrictMode's dev replay runs cleanup
+    // (`clearTimeout`) then re-runs this effect, and the re-run MUST re-arm. A
+    // persistent handled-ref would survive the replay's cleanup and suppress the
+    // re-arm (the round-5 defect: the timer armed and was cleared in the same
+    // millisecond, then the early return skipped the arm → the composer never
+    // opened on the first seat→overlay teleport). Exactly one timer can be live
+    // because React runs the cleanup before every re-run, and `openComposer`
+    // (`CompanionContext.tsx:543-545`) + `surface` are stable, so dependency
+    // churn alone cannot re-arm for an already-settled seq.
     useEffect(() => {
       if (surface !== 'overlay') return;
       if (teleportSeq === 0) return;
-      if (handledTeleportSeqRef.current === teleportSeq) return;
-      handledTeleportSeqRef.current = teleportSeq;
       const settleTimer = setTimeout(() => {
         openComposer();
       }, ANIM_DURATION['teleport-in'] + 50);

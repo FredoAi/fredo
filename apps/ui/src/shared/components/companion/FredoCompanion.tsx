@@ -93,12 +93,22 @@ export const FredoCompanion: React.FC = () => {
     getActiveCompanionEntity()?.arrive(dest);
   }, [arrivalSeq]);
 
-  // Cross-window teleport via Tauri global events
+  // Cross-window teleport via Tauri global events.
+  // #3120 (rework) ST-2-R5b — the `listen` promise resolves AFTER React's
+  // StrictMode cleanup (which runs synchronously during the mount replay), so a
+  // `cancelled` gate is REQUIRED on both sides of the async boundary (the same
+  // shipped idiom as `CompanionContext.tsx:568-587`): bail BEFORE calling
+  // `listen` if we were already cleaned up, and if the cleanup lands while
+  // `listen` is in flight, immediately call the resolved unlisten. Without it a
+  // StrictMode remount leaks a second `companion-teleport` listener → every emit
+  // dispatches `teleportTo` twice (two 450 ms timers per gesture).
   useEffect(() => {
     if (!IS_TAURI) return;
     let unlisten: (() => void) | null = null;
+    let cancelled = false;
 
     import('@tauri-apps/api/event').then(({ listen }) => {
+      if (cancelled) return;
       listen<{ toWindow: string; x: number; y: number }>('companion-teleport', (ev) => {
         const { toWindow, x, y } = ev.payload;
 
@@ -140,10 +150,17 @@ export const FredoCompanion: React.FC = () => {
             setIsInThisWindow(false);
           }
         }
-      }).then(fn => { unlisten = fn; });
+      }).then(fn => {
+        if (cancelled) { fn(); return; }
+        unlisten = fn;
+      });
     });
 
-    return () => { unlisten?.(); };
+    return () => {
+      cancelled = true;
+      unlisten?.();
+      unlisten = null;
+    };
   }, [markAway, teleport]);
 
   // ── Idle auto-return (host-initiated, distinct from teleport) ──────────────

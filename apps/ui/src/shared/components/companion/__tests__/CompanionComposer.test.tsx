@@ -233,20 +233,26 @@ describe('CompanionComposer — teleport-attached instruction box', () => {
   });
 
   /**
-   * #3120 (rework) ST-2-R4 (R-3.1) — REGRESSION PIN for the first same-window
-   * seat→overlay teleport. The out and in timers are advanced in SEPARATE `act`
-   * flushes so React COMMITS the `TELEPORT` that unmounts the seat (and clears its
-   * timer) between them — the live ordering. On the pre-fix tip the seat owned
-   * the only settle-open timer, so its unmount killed it and no composer ever
-   * appeared; here the surviving overlay owns the settle-open.
+   * #3120 (rework) ST-2-R4/R5 (R-3.1) — the shared FIRST same-window seat→overlay
+   * body. The out and in timers are advanced in SEPARATE `act` flushes so React
+   * COMMITS the `TELEPORT` that unmounts the seat (and clears its timer) between
+   * them — the live ordering. On the pre-fix tip the seat owned the only settle-open
+   * timer, so its unmount killed it and no composer ever appeared; here the
+   * surviving overlay owns the settle-open. ST-2-R5 (G-409): the same body is run
+   * under React.StrictMode (the live dev root) and WITHOUT it (the non-vacuity
+   * control) so the pin proves the double-invoke defect rather than an
+   * over-strict assertion.
    */
-  it('the FIRST seat→overlay teleport opens exactly one focused overlay composer (phased flush)', async () => {
-    const { container, getByTestId, queryAllByTestId } = renderWithChakra(
+  async function assertFirstSeatToOverlayOpensOneFocusedComposer(wrapStrictMode: boolean) {
+    const tree = (
       <CompanionProvider>
         <AppRoot />
         <SeatSlot />
         <FredoCompanion />
-      </CompanionProvider>,
+      </CompanionProvider>
+    );
+    const { container, getByTestId, queryAllByTestId } = renderWithChakra(
+      wrapStrictMode ? <React.StrictMode>{tree}</React.StrictMode> : tree,
     );
     await waitFor(() => expect(container.querySelector('.fredo-companion-avatar')).not.toBeNull());
     await waitFor(() => expect(getActiveCompanionEntity()?.surface).toBe('seat'));
@@ -276,6 +282,14 @@ describe('CompanionComposer — teleport-attached instruction box', () => {
     expect(getByTestId(COMPANION_COMPOSER_TESTID).getAttribute('data-composer-surface')).toBe('overlay');
     const input = getByTestId(COMPANION_COMPOSER_INPUT_TESTID) as HTMLTextAreaElement;
     expect(document.activeElement).toBe(input);
+  }
+
+  it('the FIRST seat→overlay teleport opens exactly one focused overlay composer (React.StrictMode — the live dev root)', async () => {
+    await assertFirstSeatToOverlayOpensOneFocusedComposer(true);
+  });
+
+  it('the FIRST seat→overlay teleport opens exactly one focused overlay composer (non-StrictMode control)', async () => {
+    await assertFirstSeatToOverlayOpensOneFocusedComposer(false);
   });
 
   /**
