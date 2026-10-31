@@ -27,6 +27,12 @@ import type { FredoApplicationClass } from '../../../../shared/classes/FredoAppl
 // RUN through the action registry.
 import { registerHotkeyHandler } from '../../../../shared/hotkeys/registry';
 import { LAUNCHER_TOGGLE_ACTION_ID } from '../../../../shared/hotkeys/engine';
+import { getNavigationHost } from '../../../../shared/navigation/ui/hostRegistry';
+import {
+  WINDOW_LAUNCHER_TOGGLE_VERB_ID,
+  WINDOW_SYSTEM_APP_ID,
+} from '../../../../shared/window-system/windowSystemSurface';
+import { setWindowLauncherToggle } from '../../../../shared/window-system/launcherToggleSeam';
 
 // Spec #2899 ST-1 — the desktop background registry. `none` resolves to the
 // shipped grid texture (ONE definition, shared with the launcher surface).
@@ -1535,7 +1541,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // already-open launcher whose searchbox is focused stays open (#2823
   // preserved). The engine always leaves the dispatch decision (match/consume)
   // to `decideDispatch`; this handler only performs the side effect.
-  const handleLauncherToggle = useCallback(() => {
+  const performLauncherToggle = useCallback(() => {
     const active = document.activeElement as HTMLElement | null;
     const activeInLauncher = !!active && !!overlayRef.current && overlayRef.current.contains(active);
     const action = selectCtrlSpaceAction({
@@ -1548,6 +1554,33 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     // `open` — raise the surface, focus the bar and place the caret (R-1.1).
     openOverlay();
   }, [openOverlay]);
+
+  // Spec #3121 ST-2 — the declared `window.launcher.toggle` verb performs this SAME core
+  // toggle through the window-system seam (no registry round-trip, so no recursion while
+  // the delegating override below is registered). Shell-lifetime registration.
+  useEffect(() => {
+    setWindowLauncherToggle(performLauncherToggle);
+    return () => {
+      setWindowLauncherToggle(null);
+    };
+  }, [performLauncherToggle]);
+
+  // Spec #3121 ST-2 (D-3(a)) — the kept-global chord delegates into the DECLARED window
+  // host exactly once, so the journal records `window.launcher.toggle` / `channel:'keyboard'`
+  // and the verb performs `performLauncherToggle`. No host mounted ⇒ the shipped local run.
+  const handleLauncherToggle = useCallback(() => {
+    const host = getNavigationHost(WINDOW_SYSTEM_APP_ID);
+    if (host !== null) {
+      void host.runIntent({
+        verbId: WINDOW_LAUNCHER_TOGGLE_VERB_ID,
+        args: {},
+        channel: 'keyboard',
+        actor: 'human',
+      });
+      return;
+    }
+    performLauncherToggle();
+  }, [performLauncherToggle]);
 
   // Register the launcher-toggle RUN with the shared engine for this shell's
   // lifetime; unmount clears it so a stale closure can never run.

@@ -1,8 +1,14 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Button, Flex, VStack } from '@chakra-ui/react';
 import { LuDatabase, LuUnplug } from 'react-icons/lu';
 import { FredoApplicationClass } from '../../shared/classes';
 import { ConnectionForm } from './components/ConnectionForm';
+import {
+  DatabaseClientNavigationFooter,
+  DatabaseClientNavigationProvider,
+  handleDatabaseClientKeyDown,
+  useOptionalDatabaseClientNavigation,
+} from './components/DatabaseClientNavigationProvider';
 import {
   ConnectionsPanel,
   type ConnectionStatus,
@@ -36,6 +42,10 @@ import {
   loadPrefs,
 } from './lib/storage';
 import { useDbClientLayout } from './lib/useDbClientLayout';
+import {
+  buildDatabaseClientSelection,
+  registerDatabaseClientActionHandlers,
+} from './databaseClientSurface';
 import type {
   DbConnectionView,
   DbSchemaNodeAction,
@@ -68,6 +78,9 @@ interface ExternalSql {
 }
 
 export const DatabaseClientFeatureView: React.FC = () => {
+  // Spec #3121 (P7), ST-4 — the optional provider handle (the surface is also rendered bare by
+  // the pre-migration suites; the product path mounts it through `render()`).
+  const navigation = useOptionalDatabaseClientNavigation();
   const [connections, setConnections] = useState<DbConnectionView[]>([]);
   const [loadingConnections, setLoadingConnections] = useState(true);
   const [connectionsError, setConnectionsError] = useState<string | null>(null);
@@ -90,6 +103,12 @@ export const DatabaseClientFeatureView: React.FC = () => {
   const [pageSize, setPageSize] = useState(100);
   const [defaultRowLimit, setDefaultRowLimit] = useState(100);
   const [statusMessage, setStatusMessage] = useState('');
+
+  // §D.4 / C-4 — the view does not own the active tab (QueryTabs state) nor the active result
+  // set (ResultsGrid state); they report upward through the shipped `onActiveSqlChange` seam
+  // shape so `ctx.selection` can carry connection + table + query + resultSet.
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [activeResultSetId, setActiveResultSetId] = useState<string | null>(null);
 
   // ── Resizable split layout (Spec #3049, ST-3) ──────────────────────────────
   // ONE `useDbClientLayout()` instance for the whole shell (never instantiate it
@@ -369,6 +388,105 @@ export const DatabaseClientFeatureView: React.FC = () => {
     setEditing(null);
   }, []);
 
+  /* ── Spec #3121 (P7), ST-4 — selection projection + action seam ────────────── */
+
+  const handleQuerySelectionChange = useCallback(
+    (tabId: string | null, resultSetId: string | null) => {
+      setActiveTabId(tabId);
+      setActiveResultSetId(resultSetId);
+    },
+    [],
+  );
+
+  // §D.4 — kinds/ids in the fixed order connection, table, query, resultSet.
+  const selection = useMemo(
+    () =>
+      buildDatabaseClientSelection({
+        connectionId: activeId,
+        tableId: selectedNode?.id ?? null,
+        queryId: activeTabId,
+        resultSetId: activeResultSetId,
+      }),
+    [activeId, selectedNode?.id, activeTabId, activeResultSetId],
+  );
+
+  // Publish through the host's `refreshContext` seam — availability flips with no remount, no
+  // poll, and WITHOUT moving the place cursor (D-UI-1 / R-12).
+  const publishSelection = navigation?.publishSelection;
+  useEffect(() => {
+    publishSelection?.(selection);
+  }, [publishSelection, selection]);
+
+  // The surface's action verbs delegate to these LIVE callbacks through one latest-value ref,
+  // so a declaration never captures stale React state.
+  const actionsRef = useRef({
+    connections,
+    activeId,
+    connectedId,
+    selectedNode,
+    handleDelete,
+    handleDisconnect,
+    reload,
+    openNew,
+    openEdit,
+    handleNodeAction,
+  });
+  actionsRef.current = {
+    connections,
+    activeId,
+    connectedId,
+    selectedNode,
+    handleDelete,
+    handleDisconnect,
+    reload,
+    openNew,
+    openEdit,
+    handleNodeAction,
+  };
+
+  useEffect(
+    () =>
+      registerDatabaseClientActionHandlers({
+        connectionNew: () => {
+          actionsRef.current.openNew();
+          return true;
+        },
+        connectionEdit: (connectionId) => {
+          const view = actionsRef.current.connections.find((entry) => entry.id === connectionId);
+          if (view === undefined) return false;
+          actionsRef.current.openEdit(view);
+          return true;
+        },
+        connectionDelete: (connectionId) => {
+          const view = actionsRef.current.connections.find((entry) => entry.id === connectionId);
+          if (view === undefined) return false;
+          void actionsRef.current.handleDelete(view);
+          return true;
+        },
+        connectionDisconnect: () => {
+          if (actionsRef.current.activeId === null) return false;
+          void actionsRef.current.handleDisconnect();
+          return true;
+        },
+        connectionRetry: () => {
+          void actionsRef.current.reload();
+          return true;
+        },
+        schemaViewColumns: () => runNodeAction('viewColumns'),
+        schemaOpenData: () => runNodeAction('openData'),
+        schemaNewQuery: () => runNodeAction('newQuery'),
+      }),
+    // ONE registration for this mount; the ref keeps every closure current.
+    [],
+  );
+
+  function runNodeAction(action: DbSchemaNodeAction): boolean {
+    const current = actionsRef.current;
+    if (current.selectedNode === null || current.connectedId === null) return false;
+    current.handleNodeAction(action, current.selectedNode);
+    return true;
+  }
+
   return (
     <Flex
       data-testid="db-client-root"
@@ -376,6 +494,11 @@ export const DatabaseClientFeatureView: React.FC = () => {
       height="100%"
       minHeight={0}
       bg="bg.canvas"
+      onKeyDown={
+        navigation === null
+          ? undefined
+          : (event) => handleDatabaseClientKeyDown(event, navigation.host)
+      }
     >
       <Flex ref={splitRowRef} flex="1" minHeight={0}>
         {/* Left: connections + schema tree (+ inspector when a node is selected) */}
@@ -479,6 +602,7 @@ export const DatabaseClientFeatureView: React.FC = () => {
             openRequest={openRequest}
             onQueryComplete={handleQueryComplete}
             onActiveSqlChange={setActiveSql}
+            onSelectionChange={handleQuerySelectionChange}
             editorHeight={layout.editorResultsHeight}
             onEditorHeightChange={handleEditorHeightChange}
             renderExport={(activeSet, running) => (
@@ -571,6 +695,11 @@ export const DatabaseClientFeatureView: React.FC = () => {
           </Button>
         ) : null}
       </Flex>
+
+      {/* Spec #3121 (P7), ST-4 — the navigation footer is the THIRD and LAST flex child of
+          `db-client-root`, after the shipped status strip (UI/UX §3.1). No wrapper, no layout
+          restructure, no new testid. Rendered only inside the provider (the product path). */}
+      {navigation === null ? null : <DatabaseClientNavigationFooter />}
     </Flex>
   );
 };
@@ -583,7 +712,11 @@ export class DatabaseClientFeature extends FredoApplicationClass {
   readonly hasSettings = true;
 
   render() {
-    return <DatabaseClientFeatureView />;
+    return (
+      <DatabaseClientNavigationProvider>
+        <DatabaseClientFeatureView />
+      </DatabaseClientNavigationProvider>
+    );
   }
 
   renderSettings() {

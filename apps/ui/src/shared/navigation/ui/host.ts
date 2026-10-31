@@ -44,6 +44,7 @@ import {
   type JournalEntry,
   type JournalStore,
   type JsonPatch,
+  type KeyboardOwner,
   type PendingPrefix,
   type RailModel,
   type Surface,
@@ -106,6 +107,20 @@ export interface NavigationHostSnapshot {
   readonly announcement: string;
 }
 
+/**
+ * Spec #3121 (P7), ST-1 — the ADDITIVE stroke options (Architect §B.1).
+ *
+ * `keyboardOwner` is the §4.1 keyboard-ownership fact. It DEFAULTS to `'engine'`, so every
+ * pre-existing caller keeps byte-identical behaviour; a surface whose keys belong to another
+ * keyboard owner (the terminal PTY) passes `'terminal'` and the shipped `resolveStroke`
+ * returns `passthrough` without consulting a binding, an alias or a prefix.
+ */
+export interface StrokeOptions {
+  readonly target?: Element | null;
+  /** §4.1 — the keyboard owner; DEFAULT `'engine'` (byte-identical behaviour). */
+  readonly keyboardOwner?: KeyboardOwner;
+}
+
 export interface NavigationHost {
   readonly getSnapshot: () => NavigationHostSnapshot;
   readonly subscribe: (listener: () => void) => () => void;
@@ -129,7 +144,7 @@ export interface NavigationHost {
   readonly handleStroke: (
     stroke: string,
     nowMs: number,
-    options?: { readonly target?: Element | null },
+    options?: StrokeOptions,
   ) => Promise<DispatchResult | null>;
   readonly runVerb: (
     verbId: string,
@@ -466,7 +481,7 @@ export function createNavigationHost(options: NavigationHostOptions): Navigation
   async function handleStroke(
     stroke: string,
     nowMs: number,
-    strokeOptions?: { readonly target?: Element | null },
+    strokeOptions?: StrokeOptions,
   ): Promise<DispatchResult | null> {
     // R-4.5 — a text-entry focus resolves NO stroke and emits NO announcement.
     const target = strokeOptions?.target ?? activeElement();
@@ -484,7 +499,9 @@ export function createNavigationHost(options: NavigationHostOptions): Navigation
       pending,
       stroke,
       nowMs,
-      keyboardOwner: 'engine',
+      // Spec #3121 (P7), ST-1 — the caller may assert a non-engine keyboard owner; the
+      // default keeps the shipped `'engine'` behaviour byte-identical (Architect §B.1).
+      keyboardOwner: strokeOptions?.keyboardOwner ?? 'engine',
     });
 
     switch (resolution.status) {

@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { LuPlus, LuX } from 'react-icons/lu';
 import { chakra, Flex, Icon, IconButton, Text } from '@chakra-ui/react';
 import { tint } from '../../../shared/utils/colorTint';
@@ -337,6 +337,11 @@ export interface TerminalSidebarProps {
   onRename: RenameHandler;
   onAdd: () => void;
   addButtonRef?: React.RefObject<HTMLButtonElement>;
+  /**
+   * Spec #3121 ST-1 — an explicit inline-rename request from the declared
+   * `terminal.session.rename` verb (the same editor the `F2` row path opens).
+   */
+  renameRequest?: { readonly sessionId: string; readonly nonce: number } | null;
 }
 
 export const TerminalSidebar: React.FC<TerminalSidebarProps> = ({
@@ -350,6 +355,7 @@ export const TerminalSidebar: React.FC<TerminalSidebarProps> = ({
   onRename,
   onAdd,
   addButtonRef,
+  renameRequest = null,
 }) => {
   // ST-3: exactly ONE row is inline-renamed at a time; the rename affordance and
   // F2 both open it. A live row with no persisted record (pending / failed
@@ -358,6 +364,15 @@ export const TerminalSidebar: React.FC<TerminalSidebarProps> = ({
   const canRename = useCallback((id: string) => persistedById.has(id), [persistedById]);
   const handleStartRename = useCallback((id: string) => setRenameId(id), []);
   const handleEndRename = useCallback(() => setRenameId(null), []);
+
+  // Spec #3121 ST-1 — the declared rename verb asks for the SAME inline editor the
+  // F2 power path opens. The guard is identical (`canRename`); a request for a
+  // session with no persisted record is ignored, so the verb can report a noop.
+  useEffect(() => {
+    if (renameRequest === null) return;
+    if (!canRename(renameRequest.sessionId)) return;
+    setRenameId(renameRequest.sessionId);
+  }, [renameRequest, canRename]);
 
   // ONE roving tabindex across the combined live+previous order (§7): arrows
   // move the selection AND the focus (follow-focus), so exactly one row is

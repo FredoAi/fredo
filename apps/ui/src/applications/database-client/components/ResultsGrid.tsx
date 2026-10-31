@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Button, Flex, HStack, Spinner, Text } from '@chakra-ui/react';
 import { LuArrowDown, LuArrowUp, LuArrowUpDown } from 'react-icons/lu';
 import { dbResultPage, normalizeDbError } from '../lib/api';
+import { registerDatabaseClientActionHandlers } from '../databaseClientSurface';
 import type { DbResultSet } from '../lib/types';
 
 /**
@@ -64,6 +65,12 @@ export interface ResultsGridProps {
   running?: boolean;
   onResultSetUpdated?: (updated: DbResultSet) => void;
   onLoadMoreError?: (message: string) => void;
+  /**
+   * Spec #3121 (P7), ST-4 — report the active result-set id upward so the surface's
+   * `ctx.selection` carries `resultSet` (results verbs are availability-scoped on it; D-8:
+   * NO row selection ships — only the active set is selectable).
+   */
+  onActiveResultSetChange?: (resultSetId: string | null) => void;
 }
 
 export const ResultsGrid: React.FC<ResultsGridProps> = ({
@@ -73,6 +80,7 @@ export const ResultsGrid: React.FC<ResultsGridProps> = ({
   running = false,
   onResultSetUpdated,
   onLoadMoreError,
+  onActiveResultSetChange,
 }) => {
   const [activeIndex, setActiveIndex] = useState(0);
   const [sort, setSort] = useState<SortState | null>(null);
@@ -149,6 +157,32 @@ export const ResultsGrid: React.FC<ResultsGridProps> = ({
       setLoadingMore(false);
     }
   }, [connectionId, activeSet, loadingMore, pageSize, onResultSetUpdated, onLoadMoreError]);
+
+  // Spec #3121 (P7), ST-4 — report the ACTIVE result set (§D.4) and expose the shipped
+  // `loadMore` as the declared `sql-studio.results.loadMore` (same handler, one ref).
+  const onActiveResultSetChangeRef = useRef(onActiveResultSetChange);
+  useEffect(() => {
+    onActiveResultSetChangeRef.current = onActiveResultSetChange;
+  }, [onActiveResultSetChange]);
+  useEffect(() => {
+    onActiveResultSetChangeRef.current?.(activeSet?.resultSetId ?? null);
+  }, [activeSet?.resultSetId]);
+
+  const loadMoreRef = useRef({ loadMore, connectionId, activeSet, loadingMore });
+  loadMoreRef.current = { loadMore, connectionId, activeSet, loadingMore };
+  useEffect(
+    () =>
+      registerDatabaseClientActionHandlers({
+        resultsLoadMore: () => {
+          const current = loadMoreRef.current;
+          if (current.connectionId === null || current.activeSet === null) return false;
+          if (!current.activeSet.hasMore || current.loadingMore) return false;
+          void current.loadMore();
+          return true;
+        },
+      }),
+    [],
+  );
 
   if (running) {
     return (

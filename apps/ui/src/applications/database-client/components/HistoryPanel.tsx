@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Box, Button, Flex, HStack, Skeleton, Text } from '@chakra-ui/react';
+import { registerDatabaseClientActionHandlers } from '../databaseClientSurface';
 import { loadHistory, saveHistory } from '../lib/storage';
 import type { QueryHistoryEntry } from '../lib/types';
 
@@ -82,6 +83,23 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
     }
     setEntries([]);
   }, [connectionId]);
+
+  // Spec #3121 (P7), ST-4 — the declared `sql-studio.history.clear` verb delegates to the
+  // shipped Clear handler (the same one `db-history-clear` invokes).
+  const clearRef = useRef({ handleClear, connectionId, count: entries.length });
+  clearRef.current = { handleClear, connectionId, count: entries.length };
+  useEffect(
+    () =>
+      registerDatabaseClientActionHandlers({
+        historyClear: () => {
+          const current = clearRef.current;
+          if (current.connectionId === null || current.count === 0) return false;
+          void current.handleClear();
+          return true;
+        },
+      }),
+    [],
+  );
 
   return (
     <Flex

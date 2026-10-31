@@ -12,6 +12,11 @@ import type { DevModeStreamEvent, DevModeEventState } from '../hooks/useDevModeS
 import type { ApplicationNotificationLogEntry } from '../../../shared/application-data/store';
 import { tint } from '../../../shared/utils/colorTint';
 import { SpatiotemporalManifold } from './SpatiotemporalManifold';
+import {
+  DevModeNavigationFooter,
+  DevModeNavigationProvider,
+} from './DevModeNavigationProvider';
+import type { DevModeActionHandlers, DevModeViewId } from '../devModeSurface';
 
 // ── State badge colours ───────────────────────────────────────────────────────
 
@@ -510,7 +515,7 @@ const ApplicationDataFeed: React.FC = () => {
 const ALL_STATES = ['Init', 'Update', 'Response', 'Error', 'Timeout'] as const;
 
 /** Top-level Dev Mode views — RTDB row stream vs the application-data probe feed. */
-const VIEWS: Array<{ id: 'rows' | 'application-data'; label: string }> = [
+const VIEWS: Array<{ id: DevModeViewId; label: string }> = [
   { id: 'rows', label: 'Rows' },
   { id: 'application-data', label: 'Application Data' },
 ];
@@ -518,7 +523,7 @@ const VIEWS: Array<{ id: 'rows' | 'application-data'; label: string }> = [
 export const DevMode: React.FC = () => {
   const { events, eventTypes, isConnected, clearEvents } = useDevModeStream();
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [view, setView] = useState<'rows' | 'application-data'>('rows');
+  const [view, setView] = useState<DevModeViewId>('rows');
   // Spec #2961 ST-3 (AC2): the event filter input, focused by the declared
   // `dev-mode.focusFilter` local hotkey.
   const filterInputRef = useRef<HTMLInputElement | null>(null);
@@ -562,8 +567,43 @@ export const DevMode: React.FC = () => {
 
   const allStatesActive = activeStates.size === ALL_STATES.length;
 
+  // Spec #3121 (P7), ST-5 — the live callbacks the declared verbs delegate to. Every outcome
+  // is exactly the shipped handler; a `false` return is the shipped no-op (R-04) and writes
+  // no state and no journal entry.
+  const navigationActions = useMemo<DevModeActionHandlers>(
+    () => ({
+      clearEvents: () => {
+        if (events.length === 0) return false;
+        clearEvents();
+        return true;
+      },
+      focusFilter: () => {
+        const input = filterInputRef.current;
+        if (view !== 'rows' || input === null) return false;
+        input.focus();
+        return true;
+      },
+      showAllStates: () => {
+        if (view !== 'rows' || allStatesActive) return false;
+        setActiveStates(new Set(ALL_STATES));
+        return true;
+      },
+      showApplicationData: () => {
+        setView('application-data');
+        return true;
+      },
+      showRows: () => {
+        setView('rows');
+        return true;
+      },
+    }),
+    [events.length, clearEvents, view, allStatesActive],
+  );
+
   return (
-    <Box width="100%" height="100%" display="flex" flexDirection="column" background="var(--body-bg)" overflow="hidden">
+    <DevModeNavigationProvider view={view} actions={navigationActions}>
+      {(bindings) => (
+    <Box width="100%" height="100%" display="flex" flexDirection="column" background="var(--body-bg)" overflow="hidden" onKeyDown={bindings.onKeyDown}>
       {/* Header */}
       <Box px={3} py={2} background="var(--header-bg)" borderBottom="1px solid" borderColor="var(--border-color)" flexShrink={0}>
         <HStack justify="space-between" align="center">
@@ -587,7 +627,7 @@ export const DevMode: React.FC = () => {
             )}
           </HStack>
           {events.length > 0 && (
-            <Button data-testid="dev-mode-clear-events" data-hotkey="x" size="xs" variant="ghost" color="var(--text-secondary)" _hover={{ color: 'var(--status-error)', background: tint('var(--status-error)', 8) }} onClick={clearEvents} aria-label="Clear events" px={2} height="24px">
+            <Button data-testid="dev-mode-clear-events" size="xs" variant="ghost" color="var(--text-secondary)" _hover={{ color: 'var(--status-error)', background: tint('var(--status-error)', 8) }} onClick={clearEvents} aria-label="Clear events" px={2} height="24px">
               <HStack gap={1}>
                 <LuTrash2 size={11} />
                 <Text fontSize="10px">Clear</Text>
@@ -606,8 +646,12 @@ export const DevMode: React.FC = () => {
               <Box
                 key={entry.id}
                 as="button"
-                data-hotkey={entry.id === 'application-data' ? 'v' : undefined}
-                onClick={() => setView(entry.id)}
+                onClick={() => {
+                  // The view IS the place (Architect §B.3): a real switch runs through the
+                  // SAME declared verb, so the cursor follows the view. Re-selecting the
+                  // active view is the shipped no-op.
+                  if (entry.id !== view) bindings.runView(entry.id);
+                }}
                 px="7px"
                 py="2px"
                 borderRadius="full"
@@ -643,7 +687,6 @@ export const DevMode: React.FC = () => {
             <Input
               ref={filterInputRef}
               data-testid="dev-mode-filter-input"
-              data-hotkey="i"
               value={query}
               onChange={(e) => setQuery(e.currentTarget.value)}
               placeholder="Filter by event type or payload…"
@@ -711,7 +754,6 @@ export const DevMode: React.FC = () => {
             <Box
               as="button"
               data-testid="dev-mode-show-all-states"
-              data-hotkey="b"
               onClick={() => setActiveStates(new Set(ALL_STATES))}
               px="7px"
               py="2px"
@@ -845,6 +887,12 @@ export const DevMode: React.FC = () => {
       ) : (
         <ApplicationDataFeed />
       )}
+
+      {/* Spec #3121 (P7), ST-5 — the shared navigation footer is the root's LAST flex child
+          (UI/UX §3): the shipped rail + trail over the App Data feed, map inside the footer. */}
+      <DevModeNavigationFooter />
     </Box>
+      )}
+    </DevModeNavigationProvider>
   );
 };

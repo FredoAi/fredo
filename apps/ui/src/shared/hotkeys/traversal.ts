@@ -26,6 +26,7 @@
  */
 
 import { focusWindow, getWindowSnapshot } from '../window-system/windowStore';
+import { getNavigationHost } from '../navigation/ui/hostRegistry';
 import { registerHotkeyHandler } from './registry';
 import type { HotkeyActionId } from './types';
 
@@ -309,13 +310,33 @@ export function handleWindowBoundaryTab(event: KeyboardEvent): boolean {
 
 // ── Lifecycle ────────────────────────────────────────────────────────────────
 
+/** §B.2 — the declared window-system surface app id (Spec #3121 ST-2). */
+const WINDOW_SYSTEM_SURFACE_APP_ID = 'window-system';
+
+/**
+ * Spec #3121 ST-2 (D-3(a)) — route the kept-global focus chord through the DECLARED window
+ * host so key → verb id → outcome is provable and the journal records the declared verb
+ * with `channel:'keyboard'`. The host's verb performs the SAME shipped raise + DOM focus
+ * placement (`focusNextWindow`/`focusPreviousWindow`) — exactly one dispatch, never both
+ * paths. With no window system mounted (a bare frame harness) the handler keeps the shipped
+ * behaviour as its fallback.
+ */
+function runFocusActionThroughHost(verbId: string, fallback: () => boolean): void {
+  const host = getNavigationHost(WINDOW_SYSTEM_SURFACE_APP_ID);
+  if (host !== null) {
+    void host.runIntent({ verbId, args: {}, channel: 'keyboard', actor: 'human' });
+    return;
+  }
+  fallback();
+}
+
 /** The override handler set traversal installs for the two kept focus actions. */
 function registerTraversalHandlers(): void {
   registerHotkeyHandler(FOCUS_NEXT_ACTION_ID, () => {
-    focusNextWindow();
+    runFocusActionThroughHost('window.focus.next', focusNextWindow);
   });
   registerHotkeyHandler(FOCUS_PREVIOUS_ACTION_ID, () => {
-    focusPreviousWindow();
+    runFocusActionThroughHost('window.focus.previous', focusPreviousWindow);
   });
 }
 

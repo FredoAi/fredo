@@ -26,6 +26,11 @@ import { SessionHistoryDrawer } from './SessionHistoryDrawer';
 import { SessionTokenBar } from './SessionTokenBar';
 import { NodeFocusProvider } from './NodeFocusContext';
 import { DetailPanel, detailSectionsForTarget, type DetailSectionMeta } from './DetailPanel';
+import {
+  MissionMonitorNavigationFooter,
+  MissionMonitorNavigationProvider,
+} from './MissionMonitorNavigationProvider';
+import type { MissionMonitorActionHandlers } from '../missionMonitorSurface';
 import { ChatNode }          from './nodes/ChatNode';
 import { SubagentNode }      from './nodes/SubagentNode';
 import type { MonitorNodeData } from '../types';
@@ -858,6 +863,15 @@ export const MissionMonitorPanel: React.FC = () => {
     [sessions, selectedSessionId],
   );
 
+  // Spec #3121 (P7), ST-3 — the selection LABEL the navigation context publishes (the
+  // custom name outranks the derived name outranks the timestamp label, exactly as the
+  // drawer's row rendering does).
+  const selectedSessionLabel =
+    selectedSession?.customName ??
+    selectedSession?.derivedName ??
+    selectedSession?.label ??
+    null;
+
   // ── Spec #2896 ST-6/ST-9: the SELECTED SESSION's canonical activity ───────
   // The per-session watch (`sessionId = S` query scope, `initial: true`) is the
   // canvas + session-metrics source. `sessionId === null` opens no per-session
@@ -899,6 +913,9 @@ export const MissionMonitorPanel: React.FC = () => {
   }, [updateWindow]);
 
   const [drawerOpen, setDrawerOpen] = useState(true);
+  // Spec #3121 (P7), ST-3 — the panel root, so the `s` verb can find the session filter input
+  // within THIS panel (the input is mounted only while the drawer is expanded).
+  const rootRef = useRef<HTMLDivElement | null>(null);
   // Spec #2946 ST-15 (AC2 H-4): a monotonic signal the drawer watches to focus
   // its session filter input. A counter (not a boolean) so repeated presses of
   // the same hotkey re-focus every time.
@@ -984,6 +1001,41 @@ export const MissionMonitorPanel: React.FC = () => {
   // onNodeDoubleClick — single-click never opens) or a scoped tool call (opened
   // by double-clicking a ToolsNode accordion item). `null` = panel closed.
   const [focusTarget, setFocusTarget] = useState<DetailOpenTarget | null>(null);
+  // Spec #3121 (P7), ST-3 — a ref mirror so the `mission-monitor.detail.close` verb can
+  // report synchronously whether a panel is open (a state updater runs later; the verb must
+  // return performed vs noop at dispatch time).
+  const focusTargetRef = useRef<DetailOpenTarget | null>(focusTarget);
+  focusTargetRef.current = focusTarget;
+
+  // Spec #3121 (P7), ST-3 — the live callbacks the declared verbs delegate to. ONE stable
+  // object; the provider wraps it so the verb table never captures stale state.
+  const navigationActions = useMemo<MissionMonitorActionHandlers>(
+    () => ({
+      focusSearch: () => {
+        const input = rootRef.current?.querySelector<HTMLInputElement>(
+          '[data-testid="mm-session-search"]',
+        );
+        if (!input) return false;
+        input.focus();
+        return true;
+      },
+      toggleDrawer: () => {
+        setDrawerOpen((value) => !value);
+        return true;
+      },
+      deleteSession: (sessionId) => {
+        if (sessionId.length === 0) return false;
+        handleDeleteSession(sessionId);
+        return true;
+      },
+      closeDetail: () => {
+        if (focusTargetRef.current === null) return false;
+        setFocusTarget(null);
+        return true;
+      },
+    }),
+    [handleDeleteSession],
+  );
 
   // ── Detail panel state (#2743 ST-6 / AC-7, AC-8) ─────────────────────────
   const [collapsedSectionIds, setCollapsedSectionIds] = useState<ReadonlySet<string>>(
@@ -1030,10 +1082,18 @@ export const MissionMonitorPanel: React.FC = () => {
   const isEmpty = listSettled && watchError === null && sessions.length === 0;
 
   return (
-    <div style={{
-      width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
-      background: 'var(--body-bg)',
-    }}>
+    <MissionMonitorNavigationProvider
+      selectedSessionId={selectedSessionId}
+      selectedSessionLabel={selectedSessionLabel}
+      actions={navigationActions}
+    >
+      <div
+        ref={rootRef}
+        style={{
+          width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
+          background: 'var(--body-bg)',
+        }}
+      >
       {/* #2748 ST-6 (AC4 / R-4.1): the `Mission Monitor · <label | sessionId>`
           header strip is REMOVED — the SessionTokenBar (which already carries
           `background: var(--header-bg)` + `borderBottom: 1px solid
@@ -1141,6 +1201,13 @@ export const MissionMonitorPanel: React.FC = () => {
           </div>
         )}
       </div>
-    </div>
+
+      {/* Spec #3121 (P7), ST-3 — the shared navigation footer, appended after the
+          drawer+canvas body (UI/UX §3). The root is already a column, so the drawer,
+          token bar, canvas and detail overlay geometry is unchanged; the footer is the
+          last flex child and only consumes its own height. */}
+      <MissionMonitorNavigationFooter />
+      </div>
+    </MissionMonitorNavigationProvider>
   );
 };
