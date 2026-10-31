@@ -10,34 +10,23 @@
 
 ## Must NOT change
 
-- [ ] **R-1 (hotkey duplicate guard — the highest-risk regression).** Duplicate detection is
-      keyed off the FULL serialized sequence (`hotkeyElements.ts:155-186`, Spec #3071 ST-3):
-      two entries collide iff they share `grammar.serialized`, OR one entry's serialized form
-      is a STRICT PREFIX of another's. A shared FIRST step alone is NOT a collision, so the
-      two-step `g` namespace (12 sequences under the first step `g`) mounts legally while the
-      `[a-z0-9]` first-step slots stay saturated; the flush still throws `DuplicateHotkeyError`
-      in DEV on a real collision, so a true overlap still crash-loops the whole webview.
-      **Expected:** `document.body[data-fredo-hotkey-duplicate]` is absent and
-      `[data-testid="hotkeys-duplicate-error"]` is absent with Wireframe focused, unfocused,
-      and alongside Mission Monitor + Diagram + My Work Items + Optimizely + Dev Mode; the
-      extended `featureHotkeyKeys.test.ts` pins the toolbar file's 32 bindings (21 distinct
-      first-step keys) and a 35-key first-step union with no duplicate (`m` is now FREE); the
-      shipped 14-key set (`s d r a z j f q e c i x b v`) resolves exactly as before; Mission
-      Monitor `n`/`p` and Diagram `f` are still NOT mounted
-      (`featureHotkeyKeys.test.ts:96-106` assertion unchanged).
-      Cross-ref `.opencode/tests/hotkeys/` R-39/R-40/R-42 (one engine, one action table,
-      no double-fire).
-- [x] **R-2 (pre-existing bare-key dispatch).** With the Wireframe app CLOSED, every shipped
-      element hotkey still fires on its own app's control (Mission Monitor `s`, My Work Items
-      `r`/`a`/`z`/`j`, Optimizely `f`/`q`/`e`/`c`, Dev Mode `x`/`v`/`i`/`b`) and text-entry
-      suppression still passes characters through verbatim.
-      Cross-ref `.opencode/tests/hotkeys/` F-96/F-97/F-99 and `regression.md` R-43/R-44.
-- [ ] **R-3 (bar contract).** `hotkeys-keybar` / `hotkeys-keybar-list` /
-      `hotkeys-keybar-row` keep their `data-hotkey-key` / `data-hotkey-action` /
-      `data-hotkey-availability` semantics; the bar is still non-focusable and
-      `aria-hidden`, `document.activeElement` is never changed by it, and it hides when
-      `data-fredo-hotkey-count` is `0`. The wireframe rows are ADDITIVE.
-      Cross-ref `.opencode/tests/hotkeys/` F-106/F-107.
+- [ ] **R-1 (duplicate-stroke correctness — the highest-risk regression).** Duplicate detection
+      is now the DECLARATION rule (`validation.test.ts` V-07): two bindings collide iff they
+      share a normalized stroke within one place; a shared first step of a longer sequence is
+      NOT a collision. **Expected:** the committed `legacyAbsence.test.ts` is green (zero legacy
+      key attributes / discovery observer); `wireframe-root` carries zero legacy element-key
+      attributes; Mission Monitor and Dev Mode keep their declared keys; `validation.test.ts`
+      yields exactly one `NAV-E007` for a duplicate-stroke fixture. Cross-ref
+      `.opencode/tests/navigation/` P8 (R-19/R-24) and the retained `navigationBindingsCompleteness.test.ts`.
+- [x] **R-2 (retained bare-key dispatch).** With Wireframe closed, every retained surface's
+      declared keys still resolve (Mission Monitor `s`/`n`/`p`, Dev Mode `x`/`v`/`i`/`b`,
+      SQL Studio, Terminal) and text-entry suppression still passes characters through
+      verbatim. Cross-ref `.opencode/tests/navigation/` P8 F-49 and `.opencode/tests/terminal/`.
+- [ ] **R-3 (bar contract).** `navigation-bar` / `navigation-bar-list` / `navigation-bar-row`
+      keep their `data-nav-keycap` / `data-nav-verb-id` semantics; the bar is still
+      non-focusable and `aria-hidden`, `document.activeElement` is never changed by it, and it
+      hides when the place has no rows. The Wireframe rows are the declaration's. Cross-ref
+      `.opencode/tests/navigation/` F-35…F-50.
 - [ ] **R-4 (launcher grid).** The launcher shows the `Wireframe` tile via the eager glob
       (`allApplications.ts:5`) with NO `Home.tsx`/registry edit; the tile set equals
       `SHOWABLE_FEATURES` names + Wireframe; `dedupeByApplicationId` first-wins still holds;
@@ -86,8 +75,8 @@
 
 ## Overlapping prior-feature suites (run alongside)
 
-- `.opencode/tests/hotkeys/` — the element-declared `data-hotkey` model, the bar, the
-  duplicate guard, text-entry/terminal suppression.
+- `.opencode/tests/navigation/` — the declaration model, the bar, the duplicate guard
+  (V-07), text-entry/terminal suppression (the legacy hotkeys suite is deleted in P8).
 - `.opencode/tests/companion/` — skill declaration → offer → `llm-skill-call` → honest reply,
   and the existing `open_app`/`close_app` rows.
 - `.opencode/tests/launcher/` — the app grid, tile set, keyboard nav, open lifecycle.
@@ -97,11 +86,12 @@
 
 ## Round 1 result — 2026-10-21
 
-- **R-1 (duplicate guard) UNVERIFIED** — the 22 wireframe `data-hotkey` attributes never mount
-  (the app crashes at canvas mount), so the collision surface cannot be observed live. The
-  unit pin (`featureHotkeyKeys.test.ts`, 5 tests) is green.
-- **R-2 (pre-existing bare-key dispatch) UNVERIFIED** — no driver pass this round; the
-  wireframe keys are absent so a bare-key pass-through cannot be contrasted.
+- **R-1 (duplicate guard) UNVERIFIED (historical #3070)** — the then-shipped wireframe element
+  keys never mounted (the app crashed at canvas mount), so the collision surface could not be
+  observed live. The unit pin (`featureHotkeyKeys.test.ts`) was green. (P5/P8 replaced this with
+  the declaration rule V-07.)
+- **R-2 (retained bare-key dispatch) UNVERIFIED (historical #3070)** — no driver pass that
+  round; the wireframe keys were absent so a bare-key pass-through could not be contrasted.
 - **R-3 (bar contract) UNVERIFIED** — same cause (editor never mounts).
 - **R-4 (launcher grid) PASS (partial)** — the launcher renders `gridcell Wireframe` →
   `button Wireframe` through the eager glob with no `Home.tsx` edit; the grid set is intact.
@@ -130,14 +120,14 @@
 
 ## Round 2 result — 2026-10-21
 
-- **R-1 (duplicate guard) PASS (live)** — `data-fredo-hotkey-duplicate` and
-  `hotkeys-duplicate-error` absent with Wireframe focused, unfocused and with the standalone
-  `app-wireframe` window open; 22 mounted keys; no console `DuplicateHotkeyError`.
-- **R-2 (pre-existing bare-key dispatch) PASS (live)** — with Wireframe unfocused its 22
-  `data-hotkey` attributes are gone (`data-fredo-hotkey-count` 22→0) so a bare key cannot reach
-  it; the toolbar controls stay visible/clickable (height 53 px unchanged).
-- **R-3 (bar contract) PASS (live)** — 22 `hotkeys-keybar-row` entries with
-  `data-hotkey-key`/`-action`; rows disappear on unfocus; the bar never takes focus.
+- **R-1 (duplicate guard) PASS (historical #3070, round 2)** — no duplicate-marker or
+  duplicate-error surface appeared with Wireframe focused, unfocused or in the standalone
+  `app-wireframe` window; 22 mounted legacy keys; no console duplicate throw.
+- **R-2 (retained bare-key dispatch) PASS (historical #3070, round 2)** — with Wireframe
+  unfocused its legacy element keys were absent (count 22→0) so a bare key could not reach it;
+  the toolbar controls stayed visible/clickable. (P5 deleted the toolbar.)
+- **R-3 (bar contract) PASS (historical #3070, round 2)** — 22 legacy bar rows; rows
+  disappeared on unfocus; the bar never took focus.
 - **R-4 (launcher grid) PASS** — the Wireframe tile renders/opens through the eager glob with
   no `Home.tsx` edit; `Enter`/tile activation open the editor.
 - **R-5 (Companion skills) PASS** — `open_app` opened Wireframe three ways, `close_app_window`
@@ -160,16 +150,14 @@
 
 ## Round 3 result — 2026-10-21 (env `wf3070-r3`, served `c045877`)
 
-- **R-1 (duplicate guard) PASS (live)** — `data-fredo-hotkey-duplicate` absent and
-  `hotkeys-duplicate-error` absent with the focused standalone `app-wireframe` host (22 mounted
-  keys) and with the main host unfocused (`data-fredo-hotkey-count=0`, 0 toolbar
-  `data-hotkey` attributes); no console `DuplicateHotkeyError`.
-- **R-2 (pre-existing bare-key dispatch) PASS (live)** — the unfocused main host carried 0
-  `data-hotkey` attributes and a bare key produced no editor action (the view stayed put while
-  the host was unfocused); the focused standalone host carried all 22 and every key fired.
-- **R-3 (bar contract) PASS (live)** — 22 `hotkeys-keybar-row` entries while focused, 22-key
-  `data-fredo-hotkey-count`; the bar never takes focus (typing in the launcher/panel was never
-  diverted). The unfocused reading was 0 rows (consistent with the count).
+- **R-1 (duplicate guard) PASS (historical #3070, round 3)** — no duplicate marker/error with
+  the focused standalone `app-wireframe` host (22 mounted legacy keys) and the unfocused main
+  host (0); no console duplicate throw.
+- **R-2 (retained bare-key dispatch) PASS (historical #3070, round 3)** — the unfocused main
+  host carried 0 legacy element keys and a bare key produced no editor action; the focused
+  standalone host carried all 22 and every key fired.
+- **R-3 (bar contract) PASS (historical #3070, round 3)** — 22 legacy bar rows while focused,
+  count 22; the bar never took focus. The unfocused reading was 0 rows.
 - **R-4 (launcher grid) PASS** — the Wireframe tile opens the editor through the eager glob in
   both presentations (`same-window` tile and `app-wireframe` own window).
 - **R-5 (Companion skills) PARTIAL** — `wireframe.add.card` invoked through the real
@@ -202,16 +190,14 @@
 
 ## Round 4 result — 2026-10-21 (env `wf3070-r4`, served `7d03f3c`)
 
-- **R-1 (duplicate guard) PASS (live)** — `data-fredo-hotkey-duplicate` and
-  `hotkeys-duplicate-error` absent in the focused editor (22 mounted keys); no console
-  duplicate throw.
-- **R-2 (pre-existing bare-key dispatch) PASS (live)** — a bare `KeyboardEvent` dispatch does
-  NOT reach the engine (9 synthetic keydowns → count 0); the driver's real key events do, and
-  with a panel input focused the engine correctly suppresses them
-  (`data-fredo-hotkeys-disabled=true`, `focus-context=text-entry`) while the character lands in
-  the field.
-- **R-3 (bar contract) PASS (live)** — 22 `hotkeys-keybar-row` entries, 22-key
-  `data-fredo-hotkey-count`, 22 toolbar `data-hotkey` attributes, identical key list.
+- **R-1 (duplicate guard) PASS (historical #3070, round 4)** — no duplicate marker/error in
+  the focused editor (22 mounted legacy keys); no console duplicate throw.
+- **R-2 (retained bare-key dispatch) PASS (historical #3070, round 4)** — a synthetic
+  `KeyboardEvent` did not reach the legacy engine; the driver's real key events did, and with a
+  panel input focused the legacy engine suppressed them (text-entry) while the character landed
+  in the field.
+- **R-3 (bar contract) PASS (historical #3070, round 4)** — 22 legacy bar rows, count 22, 22
+  toolbar key attributes, identical key list.
 - **R-4 (launcher grid) PASS** — the app opened from the launcher (`Wireframe` + Enter), from
   `open_app` skill emits in three separate envs, and from the Companion Gherkin.
 - **R-5 (Companion skills) PASS (live, partial coverage)** — `wireframe.add.section` /
@@ -264,18 +250,13 @@
 > document state — no `telemetry_spans` receipt expected). **Re-baseline, never delete (G-125):**
 > this slice adds 10 hotkeyed controls so the Slice-1 exact counts move **22 → 32**.
 
-- [ ] **R-14 (Slice-1 hotkey/bar re-baseline).** The 22 shipped actions stay reachable and
-      hotkeyed; `wireframe.zoom.in`/`zoom.out` keep working (re-bound to the two-step `g+i` /
-      `g+o`); `wireframe.zoom.out`'s old first step `m` is FREE. **Expected:**
-      `document.body[data-fredo-hotkey-duplicate]` absent and
-      `[data-testid="hotkeys-duplicate-error"]` absent with Wireframe focused, unfocused and
-      alongside Mission Monitor + Diagram + My Work Items + Optimizely + Dev Mode;
-      `data-fredo-hotkey-count` and the bar now carry **32** rows (the tester re-baselines
-      `functional.md` F-37/F-38/F-39/F-40, `smoke.md` S-9 and this file's R-1/R-2/R-3 counts
-      from 22 to 32 — the other clauses stay verbatim). The shipped 14-key non-wireframe set
-      (`s d r a z j f q e c i x b v`) resolves exactly as before; Mission Monitor `n`/`p` and
-      Diagram `f` are still NOT mounted.
-      Cross-ref `.opencode/tests/hotkeys/` R-39/R-40/R-42.
+- [ ] **R-14 (Slice-1 hotkey/bar re-baseline — historical #3071).** The 22 then-shipped actions
+      stayed reachable and hotkeyed; the legacy bar moved 22 → 32 rows. **P8 supersession:**
+      Wireframe now contributes its declaration's rows to `navigation-bar`; the legacy bar and
+      its count are deleted. **Expected (current):** `wireframe-root` carries zero legacy
+      element-key attributes (`legacyAbsence.test.ts` green); Mission Monitor and Dev Mode keep
+      their declared keys; no duplicate-stroke diagnostic (`validation.test.ts` V-07).
+      Cross-ref `.opencode/tests/navigation/` P8.
 - [ ] **R-15 (document shape unchanged for Slice-1 files).** `WIREFRAME_SCHEMA_VERSION` stays
       `1`; a Slice-1 document with NO `groups` key parses to `groups: []`; a Slice-1 file still
       opens with every element's geometry/type/properties intact; `serializeWireframeDocument`
@@ -314,22 +295,14 @@
 > accidentally touch. **Verification policy: live** (DOM + bar receipt + uploaded capture;
 > document state — no `telemetry_spans` receipt expected).
 
-- [ ] **R-19 (chip removal must not move the bar, the bindings, or the names).**
-      **Expected:** (a) `document.body[data-fredo-hotkey-count]` and the
-      `hotkeys-keybar-row` set are UNCHANGED from the pre-change build (32 bindings, one row per
-      mounted `data-hotkey` control, non-empty titles) — the chip carried neither `data-hotkey`
-      nor `data-hotkey-label`, so the bar's discovery (`hotkeyElements.ts:376-400`) and titles
-      (`resolveTitle` `:441-453`) are untouched; (b) `WIREFRAME_ACTIONS` (ids, `hotkey` values,
-      `run`) is untouched and `featureHotkeyKeys.test.ts` (which parses the action-table source)
-      stays green; (c) every control's `aria-label`/tooltip still matches
-      `${label|description} (${hotkey})`; (d) Tab order is unchanged; (e) `Keycap`'s other
-      consumers (`HotkeyBar.tsx:154,318`, `LauncherActionList.tsx:114`, `src/index.ts:32`) still
-      render keycaps and `Keycap.test.tsx` is green; (f) `data-fredo-hotkey-duplicate` stays
-      absent.
-       **Edge:** focused AND unfocused; two-step `g`-namespace rows still render two chips in the
-       bar; `wireframe.document.new` still has no `data-hotkey` and no bar row; no
-       `#[allow(...)]` and no weakened assertion (G-125).
-       Cross-ref `functional.md` F-84…F-90 and `.opencode/tests/hotkeys/` R-39/R-40/R-42.
+- [ ] **R-19 (chip removal — historical #3087; current model).**
+      **Expected (current):** the deleted on-control chip has no successor; the bar renders the
+      declaration's key hints through `NavKeycap` (`data-nav-keycap`) and the rail/map rows carry
+      `data-nav-verb-id`; every retained control's accessible name is unchanged; Tab order is
+      unchanged; `navigation/ui/__tests__/keycap.test.tsx` green; zero legacy element-key
+      attributes (`legacyAbsence.test.ts` green).
+       **Edge:** focused AND unfocused; a two-step prefix still renders its hint; no weakened
+       assertion (G-125). Cross-ref `functional.md` F-84…F-90 and `.opencode/tests/navigation/` P8.
 
 ## Spec #3119 (P5) — Wireframe pilot: regression pins
 
@@ -340,13 +313,13 @@
 > Env + driver: `-Spec 3119 -EnvId wf3119-a -EnvSlot 1 -RequireIsolation`, MCP port `"16001"`.
 
 - [x] **R-20 (hotkey/bar/chip re-baseline — supersedes R-1/R-2/R-3/R-14/R-19 counts).**
-      **Expected:** with Wireframe focused, `data-fredo-hotkey-count` is **unchanged** by
-      focusing Wireframe (delta 0), `hotkeys-keybar-row` contains **no** Wireframe row,
-      `[data-testid="wireframe-toolbar"]` and every `wireframe-action-*` node are ABSENT, and
-      `wireframe-root` carries **0** `[data-hotkey]` descendants. `data-fredo-hotkey-duplicate`
-      and `hotkeys-duplicate-error` stay absent with Mission Monitor + Diagram + My Work Items +
-      Optimizely + Dev Mode open. **Non-vacuity control:** focus Mission Monitor → its rows and
-      its hotkey count are present and unchanged from the pre-change build.
+      **Expected (P5 historical):** with Wireframe focused the legacy count was unchanged by
+      focusing Wireframe (delta 0), the legacy bar contained no Wireframe row,
+      `[data-testid="wireframe-toolbar"]` and every `wireframe-action-*` node were ABSENT, and
+      `wireframe-root` carried zero legacy element-key descendants. **P8 supersession:** the
+      legacy count/hook are deleted; the current observable is the navigation bar over the
+      declaration, and the absence is gate-owned by `legacyAbsence.test.ts`.
+      **Non-vacuity control:** focus Mission Monitor → its navigation rows are present.
       Cross-ref `functional.md` F-37/F-38/F-40 amendments, `wireframe-navigation` F-N11.
 
 - [x] **R-21 (capability parity replaces the removed controls).** The 33 toolbar capabilities
@@ -409,11 +382,11 @@ scoped wireframe: 30 files / 407 tests).
 
 | Row | Result | Evidence |
 |---|---|---|
-| R-20 | PASS | Re-baselined as this spec requires: with Wireframe focused `hotkeys-keybar` is **absent** (0 nodes) and the legacy `data-hotkey` channel carries no Wireframe row; Mission Monitor still renders 1 model row (non-vacuity). |
+| R-20 | PASS | Re-baselined as this spec requires: with Wireframe focused the legacy bar is **absent** (0 nodes) and the legacy element-key channel carries no Wireframe row; Mission Monitor still renders 1 model row (non-vacuity). (P8 deletes the legacy channel; the navigation bar is the current surface.) |
 | R-21 | PASS | `wireframeRailParity.test.tsx` **10/10** — 33-row manifest, every capability a declared verb, the five id aliases pinned, the two `wireframe.companion.*` rows excluded; unbound capabilities reached live through the map (`add.icon`, `add.section`) and the `u`/`y` root aliases (undo/redo observed). |
 | R-22 | PASS | Live: Save As → seam file `schemaVersion:1`/`app:"fredo.wireframe"`; Open → document restored (`count 1`, `dirty=false`, status `Saved`); Export PNG → page PNG at the export seam. `CANCEL=1` → no banner, path/dirty/document unchanged, seam file byte-unchanged; `FAIL_FILE=1` → `wireframe-file-error` with the document intact. The three bad-document rejections are byte-pinned by `wireframeFileActions.test.ts` (20/20). |
 | R-23 | PASS | Live: each mutation (`Rectangle`, `Add Text/Icon/Section/Image`, `Bring forward`, `Fill`, `Update page`, `Move`, `Resize`) = exactly one entry; `Pan`/`Toggle snap`/arrows/place transitions = navigation, not undoable, `-dirty` unchanged. Trail's per-entry Undo present on mutation rows only. |
 | R-24 | PASS | `f n` on a dirty document opened `wireframe-new-document-dialog` with copy `Discard unsaved changes? / Starting a new wireframe discards the current unsaved document.` and `-cancel` / `-discard`; focus landed on Cancel; Cancel left the document (count 6) and `dirty=true` intact. Owner component: `components/WireframeNewDocumentDialog.tsx` (named by ST-4). |
 | R-25 | PASS | Guides hooks intact; one commit per gesture; console clean (#523); canvas lazy chunk present in `dist`; `the canvas reads a derived place view and never the journal` green (50 appends do not re-render). |
 | R-26 | PASS | `git diff --stat origin/main HEAD -- apps/ui/package.json pnpm-lock.yaml apps/tauri/src-tauri/Cargo.lock` → empty. |
-| R-27 | PASS (unit re-baseline only; P6 pre-authorized) | `shared/companion/__tests__/manifest.test.ts` green — the retired 39-command surface is asserted **not** republished; `WireframeFeature` no longer declares `commandSurface` (diff). The live `llm-skill-call` emit leg was **not** driven this round — out of scope by plan Q-1 (P6), recorded as pre-authorized. |
+| R-27 | PASS (unit re-baseline only; P6 pre-authorized) | `shared/companion/__tests__/manifest.test.ts` green — the retired 39-command surface is asserted **not** republished; `WireframeFeature` declares no legacy command-surface opt-in (diff). The live `llm-skill-call` emit leg was **not** driven this round — out of scope by plan Q-1 (P6), recorded as pre-authorized. |
