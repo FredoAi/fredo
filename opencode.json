@@ -5,7 +5,7 @@
         "product-owner": {
             "description":  "Clarifies requirements, creates backlog issues, dispatches the Self-Improver (orchestrator). Use when a human requests work. Outputs a backlog issue.",
             "mode":  "subagent",
-            "model": "opencode-go/deepseek-v4.1-flash",
+            "model": "commandcode/deepseek/deepseek-v4.1-flash",
             "reasoningEffort": "high",
             "prompt": "{file:.opencode/agents/product-owner.md}",
             "permission": {
@@ -61,7 +61,7 @@
         "software-architect": {
             "description": "Triage planner and retry Fix Plan author. Researches the codebase, builds the domain model, decomposes scope into independent implementation tasks (with effort estimates), and produces the technical sections of the Implementation Plan. On a testing failure, researches the root cause from the tester's FAIL verdict and authors the round's Fix Plan (.opencode/tmp/<issue>/fix-plan.md). Dispatched by the Self-Improver during Triage and retry rounds.",
             "mode": "subagent",
-            "model": "opencode-go/deepseek-v4.1-flash",
+            "model": "commandcode/deepseek/deepseek-v4.1-flash",
             "reasoningEffort": "high",
             "prompt": "{file:.opencode/agents/software-architect.md}",
             "permission": {
@@ -111,7 +111,7 @@
         "ui-ux-expert": {
             "description": "Triage planner for user experience. Produces design assets (mockups, component specs, interaction flows, states, accessibility) for the Implementation Plan. Dispatched by the Self-Improver during Triage. Returns N/A for backend-only work.",
             "mode": "subagent",
-            "model": "opencode-go/deepseek-v4.1-flash",
+            "model": "commandcode/deepseek/deepseek-v4.1-flash",
             "reasoningEffort": "high",
             "prompt": "{file:.opencode/agents/ui-ux-expert.md}",
             "permission": {
@@ -164,7 +164,7 @@
         "qa-expert": {
             "description": "Triage planner for testing. Produces the QA Plan (test cases per requirement, pass/fail criteria, required test data, non-functional checks, edge cases, regression risks) and seeds the feature test suites (.opencode/tests/<feature>/). Dispatched by the Self-Improver during Triage.",
             "mode": "subagent",
-            "model": "opencode-go/deepseek-v4.1-flash",
+            "model": "commandcode/deepseek/deepseek-v4.1-flash",
             "reasoningEffort": "high",
             "prompt": "{file:.opencode/agents/qa-expert.md}",
             "permission": {
@@ -213,7 +213,7 @@
         "developer": {
             "description": "Implements the Implementation Plan's task checklist on the spec integration branch. Works in a worktree detached at the spec branch tip, implements within the plan's scope, verifies (lint/typecheck/build/test), pushes HEAD to the spec branch. Handles retry via session resume. Dispatched by the Self-Improver.",
             "mode": "subagent",
-            "model": "opencode-go/deepseek-v4.1-flash",
+            "model": "commandcode/deepseek/deepseek-v4.1-flash",
             "reasoningEffort": "high",
             "prompt": "{file:.opencode/agents/developer.md}",
             "permission": {
@@ -352,7 +352,7 @@
         "tester": {
             "description": "Executes the QA Plan from the Implementation Plan against the spec integration branch (spec/N). Runs the QA Plan while the spec PR is open, attaches evidence per test case, posts a PASS/FAIL verdict (## Tests Runs), and reports failing work for the Self-Improver to re-dispatch. Dispatched by the Self-Improver.",
             "mode": "subagent",
-            "model": "opencode-go/deepseek-v4.1-flash",
+            "model": "commandcode/deepseek/deepseek-v4.1-flash",
             "prompt": "{file:.opencode/agents/tester.md}",
             "permission": {
                 "edit": {
@@ -467,7 +467,7 @@
         "machinist": {
             "description": "Machine owner. Keeps the state machine honest (fixes/hardens pipeline-state.rs, pipeline.json, state-machine.md — every edit passes test-scripts.ps1, never rewrites the record), owns the agent permission/sandbox map and the public-repo hardening actions, and owns the pipeline's measurement instrumentation. Dispatched when the machine, a sandbox rule, or the metrics need work.",
             "mode": "subagent",
-            "model": "opencode-go/deepseek-v4.1-flash",
+            "model": "commandcode/deepseek/deepseek-v4.1-flash",
             "reasoningEffort": "high",
             "prompt": "{file:.opencode/agents/machinist.md}",
             "permission": {
@@ -526,7 +526,7 @@
         "toolsmith": {
             "description": "Reusable-capability owner. Authors the skills and scripts the pipeline agents use (each script ships with the skill that documents it — principle 9) and the tooling library that replaces ad-hoc agent scripts. Never ships a capability that writes and executes arbitrary code. Dispatched by the orchestrator when a tooling gap is found.",
             "mode": "subagent",
-            "model": "opencode-go/deepseek-v4.1-flash",
+            "model": "commandcode/deepseek/deepseek-v4.1-flash",
             "reasoningEffort": "high",
             "prompt": "{file:.opencode/agents/toolsmith.md}",
             "permission": {
@@ -586,7 +586,7 @@
         "curator": {
             "description": "Durable-lessons owner. Distills cross-spec lessons from failures into the pipeline's guardrails, playbooks, and references; persists and curates `### G-` guardrail records (dedup, retirement, effectiveness tracking); routes a root cause to the right lever. Improves the pipeline, never the product. Dispatched by the orchestrator after an audit restart.",
             "mode": "subagent",
-            "model": "opencode-go/deepseek-v4.1-flash",
+            "model": "commandcode/deepseek/deepseek-v4.1-flash",
             "reasoningEffort": "high",
             "prompt": "{file:.opencode/agents/curator.md}",
             "permission": {
@@ -642,7 +642,7 @@
         "auditor": {
             "description": "Independent verification gate. Runs the integrity gate, reads the audit bundle, re-derives every acceptance-criterion verdict from the recorded evidence, rejects false PASS and unbacked UNVERIFIED rows, and posts the success-or-restart verdict (phase + root cause + reason) through the state machine. Read-only. Dispatched by the orchestrator at the audit phase.",
             "mode": "subagent",
-            "model": "opencode-go/deepseek-v4.1-flash",
+            "model": "commandcode/deepseek/deepseek-v4.1-flash",
             "reasoningEffort": "high",
             "prompt": "{file:.opencode/agents/auditor.md}",
             "permission": {
@@ -695,7 +695,7 @@
         "orchestrator": {
             "description": "Orchestrates the agentic pipeline end-to-end: dispatches the triage cluster (software-architect, ui-ux-expert, qa-expert), the developer pool, the tester, and the specialist roles (auditor, curator, toolsmith, machinist); runs the transitions, staffing, blockers, and teardown; runs the gate doc-sync. Owns the whole flow, including restarts. Never researches code. Dispatched by the Product Owner after intake.",
             "mode": "subagent",
-            "model": "opencode-go/deepseek-v4.1-flash",
+            "model": "commandcode/deepseek/deepseek-v4.1-flash",
             "reasoningEffort": "high",
             "prompt": "{file:.opencode/agents/orchestrator.md}",
             "permission": {
