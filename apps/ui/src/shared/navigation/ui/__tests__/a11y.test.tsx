@@ -151,7 +151,10 @@ describe('Cross-surface a11y — role/name reachability (Q7-01 / R-7.1)', () => 
   it('exposes the rail controls, `more…`, the globals and every trail undo by role', () => {
     renderWithChakra(<CompositeHarness placePath={ARRANGE_PATH} />);
 
+    // The bar's accessible name comes from the bound constant (Spec #3120: `Command bar`).
+    expect(NAV_RAIL_ARIA_LABEL).toBe('Command bar');
     const rail = screen.getByRole('region', { name: NAV_RAIL_ARIA_LABEL });
+    expect(rail).toHaveAttribute('aria-label', 'Command bar');
     const rows = screen.getAllByTestId(NAV_RAIL_ROW_TESTID);
     expect(rows).toHaveLength(8);
     for (const row of rows) {

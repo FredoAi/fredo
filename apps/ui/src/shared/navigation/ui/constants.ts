@@ -16,18 +16,24 @@
  */
 
 // ── DOM hooks ────────────────────────────────────────────────────────────────
-export const NAV_RAIL_TESTID = 'navigation-rail';
-export const NAV_RAIL_BREADCRUMB_TESTID = 'navigation-rail-breadcrumb';
-export const NAV_RAIL_PLACE_TESTID = 'navigation-rail-place';
-export const NAV_RAIL_TRANSIENT_TESTID = 'navigation-rail-transient';
-export const NAV_RAIL_LIST_TESTID = 'navigation-rail-list';
+// Spec #3120 (P6 rescope, ST-5): the vertical column became the bottom command bar.
+// SYMBOLS are unchanged (binding for downstream consumers); only the string VALUES move
+// from `navigation-rail*` to `navigation-bar*`. `NAV_RAIL_PLACE_TESTID` is now the LAST
+// breadcrumb segment (UIUX-D4), never a standalone heading.
+export const NAV_RAIL_TESTID = 'navigation-bar';
+export const NAV_RAIL_BREADCRUMB_TESTID = 'navigation-bar-breadcrumb';
+export const NAV_RAIL_PLACE_TESTID = 'navigation-bar-place';
+export const NAV_RAIL_TRANSIENT_TESTID = 'navigation-bar-transient';
+export const NAV_RAIL_LIST_TESTID = 'navigation-bar-list';
+/** Retained symbol; the bar renders NO child-place list (R-1.4). */
 export const NAV_RAIL_PLACES_TESTID = 'navigation-rail-places';
+/** Retained symbol; the bar renders NO child-place rows (R-1.4). */
 export const NAV_RAIL_PLACE_ROW_TESTID = 'navigation-rail-place-row';
-export const NAV_RAIL_ROW_TESTID = 'navigation-rail-row';
-export const NAV_RAIL_RISK_TESTID = 'navigation-rail-risk';
-export const NAV_RAIL_MORE_TESTID = 'navigation-rail-more';
-export const NAV_RAIL_ASK_TESTID = 'navigation-rail-ask';
-export const NAV_RAIL_MAP_TESTID = 'navigation-rail-map';
+export const NAV_RAIL_ROW_TESTID = 'navigation-bar-row';
+export const NAV_RAIL_RISK_TESTID = 'navigation-bar-risk';
+export const NAV_RAIL_MORE_TESTID = 'navigation-bar-more';
+export const NAV_RAIL_ASK_TESTID = 'navigation-bar-ask';
+export const NAV_RAIL_MAP_TESTID = 'navigation-bar-map';
 
 export const NAV_MAP_TESTID = 'navigation-map';
 export const NAV_MAP_SEARCH_TESTID = 'navigation-map-search';
@@ -66,7 +72,7 @@ export const NAV_RISK_ATTR = 'data-nav-risk'; // Risk value
 export const NAV_COMPACT_ATTR = 'data-nav-compact'; // 'true'
 
 // ── accessible names ────────────────────────────────────────────────────────
-export const NAV_RAIL_ARIA_LABEL = 'Command rail';
+export const NAV_RAIL_ARIA_LABEL = 'Command bar';
 export const NAV_MAP_ARIA_LABEL = 'Navigation map';
 export const NAV_TRAIL_ARIA_LABEL = 'Activity trail';
 
@@ -126,7 +132,8 @@ export const NAV_REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
 
 // ── bounds ─────────────────────────────────────────────────────────────────
 export const NAV_RAIL_MAX_ROWS = 8; // mirrors discover.RAIL_MAX_ROWS
-export const NAV_RAIL_MIN_WIDTH_PX = 180; // narrow floor for the no-scroll assertion
-export const NAV_RAIL_ROW_MAX_WIDTH_PX = 240;
-export const NAV_RAIL_TITLE_MIN_WIDTH_PX = 48; // the ONE ellipsizing child (G-274)
-export const NAV_RAIL_BREADCRUMB_MAX_WIDTH_PX = 240; // last segment ellipsizes only
+export const NAV_RAIL_TITLE_MIN_WIDTH_PX = 48; // the ONE ellipsizing child per row (G-274)
+// Spec #3120 (P6 rescope, ST-5) — the horizontal bar's geometry (UIUX-D6).
+export const NAV_BAR_MIN_HEIGHT_PX = 44; // the bar may GROW vertically when the cluster wraps
+export const NAV_BAR_ROW_MIN_WIDTH_PX = 96; // rows never collapse below this floor
+export const NAV_BAR_ROW_GAP_PX = 2;

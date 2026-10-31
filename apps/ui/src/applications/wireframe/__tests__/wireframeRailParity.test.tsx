@@ -27,6 +27,7 @@ import {
   NAV_RAIL_MORE_TESTID,
   NAV_RAIL_PLACE_TESTID,
   NAV_RAIL_ROW_TESTID,
+  NAV_RAIL_TESTID,
   buildCommandRailModel,
   buildNavigationMapModel,
   createNavigationHost,
@@ -204,8 +205,9 @@ describe('rail + map replace the bar and the toolbar (R-3 / AC3)', () => {
   it('mounts the command rail and the navigation map and never the toolbar', async () => {
     renderShell();
 
-    // The P4 surfaces + the shell's canvas region are mounted.
-    expect(screen.getByTestId('navigation-rail')).toBeInTheDocument();
+    // The P4 surfaces + the shell's canvas region are mounted. Spec #3120: the rail testid
+    // value is now `navigation-bar` (the bottom command bar).
+    expect(screen.getByTestId(NAV_RAIL_TESTID)).toBeInTheDocument();
     expect(screen.getByTestId('navigation-trail')).toBeInTheDocument();
     expect(screen.getByTestId('wireframe-canvas')).toBeInTheDocument();
 

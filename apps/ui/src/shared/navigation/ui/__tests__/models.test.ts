@@ -33,7 +33,6 @@ import {
   NAV_MORE_LABEL,
   NAV_RAIL_EMPTY_COPY,
   NAV_RAIL_MAX_ROWS,
-  NAV_RAIL_MIN_WIDTH_PX,
   NAV_RISK_LABELS,
   NAV_TRANSIENT_MARKER_SUFFIX,
   NAV_UNAVAILABLE_REASON,
@@ -240,7 +239,6 @@ describe('buildCommandRailModel — never pads (R-1.5 / Q1-06)', () => {
     expect(rail.more).toBeNull();
     // The bound empty-list copy exists for the component; the model never invents rows.
     expect(NAV_RAIL_EMPTY_COPY).toBe('No actions in this place');
-    expect(NAV_RAIL_MIN_WIDTH_PX).toBe(180);
   });
 
   it('never exceeds the hard cap in any declared state', () => {
@@ -445,7 +443,7 @@ describe('buildNavigationMapModel — the declaration tree and its three section
 /* ───────────────────────────── bound copy constants ───────────────────────────── */
 
 describe('the G-324 copy bundle is bound by value (Architect C8)', () => {
-  it('exports the eight adjudicated strings/values', () => {
+  it('exports the adjudicated copy strings/values', () => {
     expect(NAV_MAP_SEARCH_LABEL).toBe('Search places, actions and keys');
     expect(NAV_MAP_EMPTY_COPY).toBe('No matching places, actions or keys');
     expect(NAV_MAP_ALIASES_HEADING).toBe('Direct aliases');
@@ -453,7 +451,6 @@ describe('the G-324 copy bundle is bound by value (Architect C8)', () => {
     expect(NAV_MAP_CURRENT_LABEL).toBe('Current place');
     expect(NAV_RAIL_EMPTY_COPY).toBe('No actions in this place');
     expect(NAV_MAP_HINT_COPY).toBe('↑ ↓ move · Enter run · Esc close');
-    expect(NAV_RAIL_MIN_WIDTH_PX).toBe(180);
     expect(NAV_EMPTY_TRAIL_COPY).toBe('Nothing yet — your actions will appear here');
   });
 

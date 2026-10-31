@@ -1,20 +1,19 @@
 /**
- * Spec #3118 (P4), ST-2 — `CommandRail` (QA Q1-01 … Q1-08, Q7-02 rail legs).
+ * Spec #3118 (P4), ST-2; reworked by Spec #3120 (P6 rescope, ST-5) — `CommandRail` is now the
+ * **bottom command bar**.
  *
- * The rail is a pure render of ONE `CommandRailModel` (ST-1). These cases drive the model
+ * The bar is a pure render of ONE `CommandRailModel` (ST-1). These cases drive the model
  * through its real builder (`buildCommandRailModel`) over the controlled fixture (D1), then
  * assert the DOM contract the QA Plan scores:
- *   - Q1-01 breadcrumb / current place / transient chip;
- *   - Q1-02 declaration-ordered rows with a keycap hint and a risk WORD;
- *   - Q1-03 > 8 verbs ⇒ 8 rows + `more…`, click → `onOpenMap('test.arrange')` once;
- *   - Q1-04 an unavailable verb is still rendered, `data-nav-availability="disabled"`, reason
- *           in the accessible name/tooltip;
- *   - Q1-05 `/ Ask` enabled (P6) with no reason node, `? Map` enabled → `onOpenMap(null)`, no
- *           tooltip ever names the `?`/`/` glyph;
- *   - Q1-06 no padding of bound verbs, exact empty copy at 0 rows;
- *   - Q1-07 source scan: no horizontal scroll, root `overflow: hidden`, every flex container
- *           `minWidth: 0`;
- *   - Q1-08 props carry no key table, no `[aria-live]`, no positive tabindex, no focus steal.
+ *   - F-N25 (R-1.1): breadcrumb left, verbs centre, `? Map` / `Ask` right, `data-nav-surface="bar"`,
+ *     horizontal root, `overflowX: hidden`, no horizontal scrollbar anywhere in the subtree;
+ *   - F-N26 (R-1.2): declaration-ordered rows, the 8-row cap unchanged, never padded/sorted/sliced;
+ *   - F-N27 (R-1.3): no horizontal auto/scroll, the row title is the one ellipsizing child, rows
+ *     keep the 96 px floor and the cluster wraps (vertical growth);
+ *   - F-N28 (R-1.4): NO rendered child-place list; the last breadcrumb segment is the current-place
+ *     anchor (`tabIndex={-1}`, `aria-current="page"`), never a duplicate heading;
+ *   - F-N29 (R-1.5): `more…` inline at the end of the cluster opens the map filtered to the place;
+ *   - F-N35/F-N39 (R-6.1/R-6.5): one model, no key table, no `aria-live`, no positive tabindex.
  */
 
 import React from 'react';
@@ -25,6 +24,8 @@ import { cleanup, fireEvent, screen, within } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import {
+  NAV_BAR_MIN_HEIGHT_PX,
+  NAV_BAR_ROW_MIN_WIDTH_PX,
   NAV_MORE_LABEL,
   NAV_RAIL_ARIA_LABEL,
   NAV_RAIL_ASK_TESTID,
@@ -32,7 +33,6 @@ import {
   NAV_RAIL_EMPTY_COPY,
   NAV_RAIL_LIST_TESTID,
   NAV_RAIL_MAP_TESTID,
-  NAV_RAIL_MIN_WIDTH_PX,
   NAV_RAIL_MORE_TESTID,
   NAV_RAIL_PLACE_TESTID,
   NAV_RAIL_RISK_TESTID,
@@ -104,50 +104,135 @@ afterEach(() => {
   cleanup();
 });
 
-/* ─────────────────────────── Q1-01 — place identity ─────────────────────────── */
+/* ─────────────────── F-N25 — bottom-bar horizontal layout ─────────────────── */
 
-describe('CommandRail — breadcrumb, current place and transient marker (Q1-01 / R-1.1)', () => {
-  it('is a named region that declares the rail surface and the narrow-width floor', () => {
+describe('CommandRail — the command bar is a horizontal row (F-N25 / R-1.1)', () => {
+  it('is a named region declaring the BAR surface, a row layout and a hidden horizontal axis', () => {
     renderRail(modelAt(ROOT_PATH));
 
     const root = screen.getByRole('region', { name: NAV_RAIL_ARIA_LABEL });
     expect(root).toBe(screen.getByTestId(NAV_RAIL_TESTID));
-    expect(root).toHaveAttribute('data-nav-surface', 'rail');
-    expect(root).toHaveStyle({ minWidth: `${NAV_RAIL_MIN_WIDTH_PX}px`, overflow: 'hidden' });
+    expect(NAV_RAIL_ARIA_LABEL).toBe('Command bar');
+    expect(root).toHaveAttribute('data-nav-surface', 'bar');
+    expect(root.style.overflowX).toBe('hidden');
+    expect(root.style.minHeight).toBe(`${NAV_BAR_MIN_HEIGHT_PX}px`);
+    // The root is a horizontal flex row (breadcrumb | verbs | globals), never a column.
+    expect(root.style.flexDirection).not.toBe('column');
+    expect(root.firstElementChild?.tagName.toLowerCase()).toBe('ol');
+    const code = stripComments(readSource(SOURCE_PATH));
+    const rootBlock = code.slice(code.indexOf('data-nav-surface="bar"')).slice(0, 800);
+    expect(rootBlock).toContain('display="flex"');
+    expect(rootBlock).toContain('alignItems="center"');
+    expect(rootBlock).not.toContain('flexDirection="column"');
   });
 
-  it('renders one breadcrumb segment per place and the current place label at the root', () => {
+  it('keeps breadcrumb left, verbs centre and the two globals at the right edge', () => {
     renderRail(modelAt(ROOT_PATH));
 
+    const root = screen.getByTestId(NAV_RAIL_TESTID);
     const breadcrumb = screen.getByTestId(NAV_RAIL_BREADCRUMB_TESTID);
-    const segments = Array.from(breadcrumb.querySelectorAll('[data-nav-place-id]'));
-    expect(segments.map((segment) => segment.getAttribute('data-nav-place-id'))).toEqual([
-      FIXTURE_PLACES.canvas,
-    ]);
-    expect(screen.getByTestId(NAV_RAIL_PLACE_TESTID).textContent).toBe('Canvas');
-    expect(screen.queryByTestId(NAV_RAIL_TRANSIENT_TESTID)).toBeNull();
+    const cluster = screen.getByTestId(NAV_RAIL_LIST_TESTID);
+    const map = screen.getByTestId(NAV_RAIL_MAP_TESTID);
+    const ask = screen.getByTestId(NAV_RAIL_ASK_TESTID);
+
+    // DOM order: breadcrumb → cluster → globals. In a row that is left → centre → right.
+    expect(breadcrumb.compareDocumentPosition(cluster) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(cluster.compareDocumentPosition(map) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(map.compareDocumentPosition(ask) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(within(root).getByTestId(NAV_RAIL_ASK_TESTID)).toBe(ask);
+    // The cluster is the flexible middle: it grows and wraps (see the wrap pin below).
+    expect(cluster.getAttribute('role')).toBe('list');
+    expect(cluster.tagName.toLowerCase()).toBe('ul');
   });
 
-  it('renders the full path and the transient chip inside a transient place', () => {
+  it('never declares or renders a horizontal auto/scroll overflow in the bar subtree', () => {
+    renderRail(modelAt(ARRANGE_PATH));
+
+    const root = screen.getByTestId(NAV_RAIL_TESTID);
+    for (const element of [root, ...Array.from(root.querySelectorAll<HTMLElement>('*'))]) {
+      expect(element.style.overflowX).not.toMatch(/auto|scroll/);
+      expect(element.style.overflow).not.toMatch(/auto|scroll/);
+    }
+
+    const code = stripComments(readSource(SOURCE_PATH));
+    expect(code).not.toMatch(/overflowX\s*:\s*['"](?:auto|scroll)['"]/);
+    expect(code).not.toMatch(/overflow\s*:\s*['"](?:auto|scroll)['"]/);
+    expect(code).toContain("overflowX: 'hidden'");
+  });
+
+  it('gives every verb row the 96 px floor and lets the cluster wrap (vertical growth)', () => {
+    // The cluster wraps rather than scrolls, and every row keeps its floor (UIUX-D6). jsdom
+    // does not resolve Chakra's class-based styles, so the source is the deterministic oracle.
+    renderRail(modelAt(ARRANGE_PATH));
+    expect(screen.getByTestId(NAV_RAIL_LIST_TESTID)).toBeInTheDocument();
+    expect(rows()).toHaveLength(8);
+
+    const code = stripComments(readSource(SOURCE_PATH));
+    expect(code).toMatch(/NAV_BAR_ROW_MIN_WIDTH_PX/);
+    expect(NAV_BAR_ROW_MIN_WIDTH_PX).toBe(96);
+    expect(code).toMatch(/flexWrap="wrap"/);
+    expect(code).toMatch(/minWidth="0"/);
+    expect(code).toMatch(/ROW_MAX_WIDTH_PX\s*=\s*168/);
+  });
+});
+
+/* ─────────────────── F-N28 — no child-place list, breadcrumb anchor ─────────────────── */
+
+describe('CommandRail — no child-place list and the breadcrumb is the current-place anchor (F-N28 / R-1.4)', () => {
+  it('renders NO child-place list or place rows anywhere in the bar', () => {
+    renderRail(modelAt(ROOT_PATH));
+
+    expect(screen.queryByTestId('navigation-rail-places')).toBeNull();
+    expect(screen.queryByTestId('navigation-rail-place-row')).toBeNull();
+    expect(screen.queryByTestId('navigation-bar-places')).toBeNull();
+    expect(document.querySelectorAll('[data-nav-place-id]').length).toBeGreaterThan(0);
+
+    const root = screen.getByTestId(NAV_RAIL_TESTID);
+    // The bar holds only the breadcrumb, the verb cluster and the two globals.
+    expect(root.children).toHaveLength(3);
+  });
+
+  it('makes the LAST breadcrumb segment the current place (the ONLY ellipsis + focus anchor)', () => {
     renderRail(modelAt(CREATE_PATH));
 
     const breadcrumb = screen.getByTestId(NAV_RAIL_BREADCRUMB_TESTID);
+    const place = screen.getByTestId(NAV_RAIL_PLACE_TESTID);
     const segments = Array.from(breadcrumb.querySelectorAll('[data-nav-place-id]'));
+
+    expect(place.textContent).toBe('Create');
+    expect(place).toHaveAttribute('tabindex', '-1');
+    expect(place).toHaveAttribute('aria-current', 'page');
+    // It IS the last segment, not a duplicate heading below the breadcrumb.
+    expect(segments[segments.length - 1]?.contains(place)).toBe(true);
     expect(segments.map((segment) => segment.getAttribute('data-nav-place-id'))).toEqual([
       FIXTURE_PLACES.canvas,
       FIXTURE_PLACES.create,
     ]);
-    expect(screen.getByTestId(NAV_RAIL_PLACE_TESTID).textContent).toBe('Create');
+    // No duplicate current-place heading anywhere.
+    expect(screen.queryByRole('heading', { name: 'Create' })).toBeNull();
+    expect(place.tagName.toLowerCase()).toBe('span');
+  });
+
+  it('renders the transient marker inline without a child-place list', () => {
+    renderRail(modelAt(CREATE_PATH));
+
     expect(screen.getByTestId(NAV_RAIL_TRANSIENT_TESTID).textContent).toBe(
       `Create · ${NAV_TRANSIENT_MARKER_SUFFIX}`,
     );
+    expect(screen.queryByTestId('navigation-rail-places')).toBeNull();
   });
 });
 
-/* ─────────────────────────── Q1-02 — rows ─────────────────────────── */
+/* ─────────────────── F-N26 — rows, order, cap ─────────────────── */
 
-describe('CommandRail — declaration-ordered rows with key hint and risk word (Q1-02 / R-1.2)', () => {
-  it('renders the six root verbs in declaration order', () => {
+describe('CommandRail — declaration-ordered rows, the eight-row cap and risk words (F-N26 / R-1.2)', () => {
+  it('renders the six root verbs in declaration order with their key hints', () => {
     renderRail(modelAt(ROOT_PATH));
 
     expect(rows().map((row) => row.getAttribute('data-nav-verb-id'))).toEqual([
@@ -160,7 +245,6 @@ describe('CommandRail — declaration-ordered rows with key hint and risk word (
     ]);
     for (const row of rows()) {
       expect(row.getAttribute('data-nav-availability')).toBe('available');
-      // Every row carries its keycap (the key hint) — the first root verb's name is 'C'.
       expect(within(row).getByTestId(NAV_KEYCAP_GROUP_TESTID)).toBeTruthy();
     }
     expect(
@@ -177,6 +261,9 @@ describe('CommandRail — declaration-ordered rows with key hint and risk word (
     expect(destructive).toBeDefined();
     expect(within(destructive!).getByTestId(NAV_RAIL_RISK_TESTID).textContent).toContain(
       NAV_RISK_LABELS.destructive,
+    );
+    expect((destructive?.getAttribute('aria-label') ?? '').toLowerCase()).toContain(
+      NAV_RISK_LABELS.destructive.toLowerCase(),
     );
 
     const safe = rowsById.get('test.duplicate');
@@ -203,40 +290,52 @@ describe('CommandRail — declaration-ordered rows with key hint and risk word (
     expect(onRunVerb).toHaveBeenCalledTimes(1);
     expect(onRunVerb).toHaveBeenCalledWith('test.create');
   });
-});
 
-/* ─────────────────────────── Q1-03 — overflow ─────────────────────────── */
-
-describe('CommandRail — 8-row cap, `more…` and the filtered map trigger (Q1-03 / R-1.2, R-1.6)', () => {
   it('renders exactly 8 rows plus `more…` when the place binds 9 verbs', () => {
     const model = modelAt(ARRANGE_PATH);
     expect(model.rows).toHaveLength(8);
     expect(model.overflow).toBe(1);
 
-    const { onOpenMap } = renderRail(model);
+    renderRail(model);
 
     expect(rows()).toHaveLength(8);
+    expect(rows().map((row) => row.getAttribute('data-nav-verb-id'))).toEqual(
+      model.rows.map((row) => row.verbId),
+    );
+    expect(new Set(rows().map((row) => row.getAttribute('data-nav-verb-id'))).size).toBe(8);
+  });
+
+  it('renders no `more…` when the model reports no overflow', () => {
+    renderRail(modelAt(EDIT_PATH));
+    expect(screen.queryByTestId(NAV_RAIL_MORE_TESTID)).toBeNull();
+  });
+});
+
+/* ─────────────────── F-N29 — `more…` inline opens the filtered map ─────────────────── */
+
+describe('CommandRail — `more…` sits inline at the cluster end and opens the seeded map (F-N29 / R-1.5)', () => {
+  it('keeps `more…` inside the verb cluster (inline, after the rows) and opens the place filter', () => {
+    const { onOpenMap } = renderRail(modelAt(ARRANGE_PATH));
+
+    const cluster = screen.getByTestId(NAV_RAIL_LIST_TESTID);
     const more = screen.getByTestId(NAV_RAIL_MORE_TESTID);
+    expect(cluster.contains(more)).toBe(true);
     expect(more.textContent).toBe(NAV_MORE_LABEL);
+    // Inline at the END of the cluster: it follows every rendered row.
+    const lastRow = rows()[rows().length - 1];
+    expect(
+      lastRow.compareDocumentPosition(more) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
 
     fireEvent.click(more);
     expect(onOpenMap).toHaveBeenCalledTimes(1);
     expect(onOpenMap).toHaveBeenCalledWith(ARRANGE_PATH[1]);
   });
-
-  it('renders no `more…` when the model reports no overflow (8 bound verbs)', () => {
-    const full = modelAt(ARRANGE_PATH);
-    const exact: CommandRailModel = { ...full, rows: full.rows.slice(0, 8), overflow: 0, more: null };
-    renderRail(exact);
-
-    expect(rows()).toHaveLength(8);
-    expect(screen.queryByTestId(NAV_RAIL_MORE_TESTID)).toBeNull();
-  });
 });
 
-/* ─────────────────────────── Q1-04 — unavailable ─────────────────────────── */
+/* ─────────────────── F-N27 — unavailable rows stay reachable ─────────────────── */
 
-describe('CommandRail — unavailable verbs stay present, disabled and explained (Q1-04 / R-1.3)', () => {
+describe('CommandRail — unavailable verbs stay present, aria-disabled and explained (R-1.3)', () => {
   it('keeps an unavailable verb in place with the generic reason in name + tooltip', () => {
     const { onRunVerb } = renderRail(modelAt(EDIT_PATH));
 
@@ -246,9 +345,7 @@ describe('CommandRail — unavailable verbs stay present, disabled and explained
 
     expect(paste!).toHaveAttribute('data-nav-availability', 'disabled');
     expect(paste!).toHaveAttribute('aria-disabled', 'true');
-    // No native `disabled` — the row stays reachable (R-7.1).
     expect(paste!).not.toHaveAttribute('disabled');
-
     expect(paste!.getAttribute('aria-label')).toContain(NAV_UNAVAILABLE_REASON);
     expect(paste!.getAttribute('title')).toContain(NAV_UNAVAILABLE_REASON);
 
@@ -278,19 +375,16 @@ describe('CommandRail — unavailable verbs stay present, disabled and explained
   });
 });
 
-/* ─────────────────────────── Q1-05 — globals ─────────────────────────── */
+/* ─────────────────── globals ─────────────────── */
 
-describe('CommandRail — `/ Ask` enabled, `? Map` enabled (Q1-05 / R-1.4 / R-7.1)', () => {
-  it('renders `/ Ask` enabled with no reason node and activates it', () => {
+describe('CommandRail — `Ask` and `? Map` globals (R-1.1 / R-3.11)', () => {
+  it('renders `Ask` enabled with no reason node and activates it', () => {
     const { onAsk } = renderRail(modelAt(ROOT_PATH));
 
     const ask = screen.getByTestId(NAV_RAIL_ASK_TESTID);
-    // Enabled: no aria-disabled, no native disabled (it stays focusable either way).
     expect(ask).not.toHaveAttribute('aria-disabled');
     expect(ask).not.toHaveAttribute('disabled');
     expect(ask.getAttribute('title')).toBe('Ask (k)');
-
-    // The retired P4 reason node is gone (no aria-describedby, no second copy).
     expect(ask).not.toHaveAttribute('aria-describedby');
 
     fireEvent.click(ask);
@@ -328,9 +422,9 @@ describe('CommandRail — `/ Ask` enabled, `? Map` enabled (Q1-05 / R-1.4 / R-7.
   });
 });
 
-/* ─────────────────────────── Q1-06 — no padding ─────────────────────────── */
+/* ─────────────────── empty copy ─────────────────── */
 
-describe('CommandRail — never pads and renders the exact empty copy (Q1-06 / R-1.5)', () => {
+describe('CommandRail — never pads and renders the exact empty copy (R-1.5)', () => {
   it('renders exactly the model rows (no padding to a 4-row floor)', () => {
     renderRail(modelAt(ROOT_PATH));
     expect(rows()).toHaveLength(6);
@@ -348,34 +442,9 @@ describe('CommandRail — never pads and renders the exact empty copy (Q1-06 / R
   });
 });
 
-/* ─────────────────────────── Q1-07 — no horizontal scroll ─────────────────────────── */
+/* ─────────────────── F-N35 — one projection only ─────────────────── */
 
-describe('CommandRail — structural no-horizontal-scroll proof (Q1-07 / R-1.5)', () => {
-  const code = stripComments(readSource(SOURCE_PATH));
-
-  it('never declares a horizontal auto/scroll overflow and clips the root', () => {
-    expect(code).not.toMatch(/overflowX/);
-    expect(code).not.toMatch(/overflow\s*[:=]\s*['"](?:auto|scroll)['"]/);
-    expect(code).toContain("overflow: 'hidden'");
-  });
-
-  it('gives every flex container `minWidth: 0` (the row/wrap collapse guard)', () => {
-    const chunks = code.split('display="flex"');
-    expect(chunks.length).toBeGreaterThan(1); // non-vacuity: real flex containers exist
-    for (const chunk of chunks.slice(1)) {
-      expect(chunk.slice(0, 400)).toContain('minWidth="0"');
-    }
-  });
-
-  it('caps the rendered column at 8 rows in the widest state (arrange)', () => {
-    renderRail(modelAt(ARRANGE_PATH));
-    expect(rows().length).toBeLessThanOrEqual(8);
-  });
-});
-
-/* ─────────────────────────── Q1-08 — one model, no focus steal ─────────────────────────── */
-
-describe('CommandRail — renders one projection only (Q1-08 / R-1.7)', () => {
+describe('CommandRail — renders one projection only (F-N35 / R-6.1)', () => {
   const code = stripComments(readSource(SOURCE_PATH));
 
   it('declares exactly the bound prop surface (no key table, no verb list, no surface)', () => {
@@ -397,7 +466,6 @@ describe('CommandRail — renders one projection only (Q1-08 / R-1.7)', () => {
 
     const root = screen.getByTestId(NAV_RAIL_TESTID);
     expect(root.querySelectorAll('[aria-live]')).toHaveLength(0);
-    expect(root.querySelectorAll('[aria-live="polite"],[aria-live="assertive"]')).toHaveLength(0);
     expect(root).not.toHaveAttribute('aria-live');
 
     for (const element of Array.from(root.querySelectorAll('[tabindex]'))) {
@@ -408,10 +476,10 @@ describe('CommandRail — renders one projection only (Q1-08 / R-1.7)', () => {
   it('does not move focus when mounted while another control is focused', () => {
     const external = renderWithChakra(
       <button type="button">
-        outside the rail
+        outside the bar
       </button>,
     );
-    const outside = external.getByRole('button', { name: 'outside the rail' });
+    const outside = external.getByRole('button', { name: 'outside the bar' });
     outside.focus();
     expect(outside).toHaveFocus();
 
@@ -427,7 +495,7 @@ describe('CommandRail — renders one projection only (Q1-08 / R-1.7)', () => {
     expect(outside).toHaveFocus();
   });
 
-  it('supports two rails mounted at once without a live region or duplicate id clash', () => {
+  it('supports two bars mounted at once without a live region or duplicate id clash', () => {
     const model = modelAt(ROOT_PATH);
     renderWithChakra(
       <>

@@ -187,14 +187,8 @@ export function NavigationPreview(): React.ReactElement {
         DEV-only route — not shipped; press a letter to navigate, ? for the map.
       </Text>
 
-      <Flex mt="6" gap="6" align="flex-start">
-        <CommandRail
-          model={railModel}
-          onRunVerb={runVerb}
-          onOpenMap={openMap}
-          onAsk={() => setNotice(NAV_PREVIEW_ASK_COPY)}
-        />
-
+      {/* ST-5: the command bar is a BOTTOM bar — the stage stack grows above it. */}
+      <Flex mt="6" gap="6" direction="column">
         <Box flex="1 1 auto" minWidth="0">
           <Flex gap="2" flexWrap="wrap" align="center">
             <Button size="sm" variant="ghost" onClick={() => host.openMap(null)}>
@@ -251,6 +245,13 @@ export function NavigationPreview(): React.ReactElement {
             <ActivityTrail model={trailModel} onUndo={undoEntry} />
           </Box>
         </Box>
+
+        <CommandRail
+          model={railModel}
+          onRunVerb={runVerb}
+          onOpenMap={openMap}
+          onAsk={() => setNotice(NAV_PREVIEW_ASK_COPY)}
+        />
       </Flex>
 
       <Box

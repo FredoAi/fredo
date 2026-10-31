@@ -1,28 +1,30 @@
 /**
- * Spec #3119 (retry, ST-F1/ST-F1a) — place-transition focus retention for `CommandRail`.
+ * Spec #3119 (retry, ST-F1/ST-F1a), re-homed by Spec #3120 (P6 rescope, ST-5) — place-transition
+ * focus retention for `CommandRail`.
  *
- * A place transition replaces the rail's place-row section (`buildPlaceRows` returns the
- * CURRENT place's children), so a keyboard user standing on a place row loses the focused
- * node: the browser drops `document.activeElement` to `document.body`, and because the
- * shell's ONE key adapter is element-scoped on `wireframe-root`, every later stroke goes
- * dead until the user clicks back in.
+ * A place transition replaces the bar's verb cluster (a different place declares a different
+ * set of verbs), so a keyboard user standing on a verb row may lose the focused node: the
+ * browser drops `document.activeElement` to `document.body`, and because the shell's ONE key
+ * adapter is element-scoped on `wireframe-root`, every later stroke goes dead until the user
+ * clicks back in.
  *
- * The rail OWNS that unmount, so the rail re-homes the focus it dropped — and nothing else:
+ * The bar OWNS that unmount, so the bar re-homes the focus it dropped — and nothing else:
  *
- *   1. `onFocus` on the rail root records the last in-rail control the USER focused
+ *   1. `onFocus` on the bar root records the last in-bar control the USER focused
  *      (React uses `focusin`, which bubbles — no `document`/`window` listener).
  *   2. A `useLayoutEffect` keyed on the place path (the component-visible projection of the
  *      host's epoch/placePath commit) fires AFTER the DOM mutation that removed the node.
- *   3. On mount it records the baseline only — never a focus move (the rail's contract).
- *   4. When the transition DROPPED a rail-owned focus (the tracked node is `!isConnected`
+ *   3. On mount it records the baseline only — never a focus move (the bar's contract).
+ *   4. When the transition DROPPED a bar-owned focus (the tracked node is `!isConnected`
  *      AND `document.activeElement` is `body`/null) it re-focuses the same control if it is
- *      still rendered, else the always-rendered `navigation-rail-place` heading
- *      (`tabIndex={-1}`) and remembers the lost control as the round-trip target.
- *   5. When focus is still exactly where the rail put it and the remembered control is back
+ *      still rendered, else the LAST BREADCRUMB SEGMENT — `navigation-bar-place`
+ *      (`tabIndex={-1}`, `aria-current="page"`, UIUX-D4) — and remembers the lost control as
+ *      the round-trip target.
+ *   5. When focus is still exactly where the bar put it and the remembered control is back
  *      (the `Escape` round trip), focus returns to it.
  *
  * Focus the user moved elsewhere (canvas, property panel, map dialog, another control) is
- * never touched. The hook writes refs only — no state write that could re-render the rail —
+ * never touched. The hook writes refs only — no state write that could re-render the bar —
  * and adds no prop, no timer and no `document` listener.
  */
 
@@ -152,7 +154,8 @@ export function usePlaceTransitionFocus(model: CommandRailModel): PlaceTransitio
       return;
     }
 
-    // The stable anchor: the current-place heading is always rendered (`tabIndex={-1}`).
+    // The stable anchor: the current-place breadcrumb segment is always rendered
+    // (`tabIndex={-1}`, `aria-current="page"`, UIUX-D4).
     const anchor = findOwner(root, {
       testId: NAV_RAIL_PLACE_TESTID,
       navAttr: null,

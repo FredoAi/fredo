@@ -1,10 +1,13 @@
 /**
- * Wireframe shell — place-row focus retention (Spec #3119 retry, ST-F3 — R-9/AC9).
+ * Wireframe shell — command-bar focus retention (Spec #3119 retry, ST-F3; reworked for the
+ * bottom command bar by Spec #3120 ST-5 — F-N30 / R-1.6).
  *
- * The exact tester repro: focus a `navigation-rail-place-row` in the REAL shell and press
- * `c`. `buildPlaceRows` returns the current place's children, so entering the leaf `Create`
- * place unmounts the focused row; without a re-home, `document.activeElement` becomes
- * `BODY` and the shell's ONE element-scoped key adapter stops receiving strokes.
+ * The exact tester repro: focus a bar VERB row in the REAL shell and press `c`. Entering
+ * `Create` replaces the verb cluster (a different place declares different verbs), so the
+ * focused row unmounts; without a re-home, `document.activeElement` becomes `BODY` and the
+ * shell's ONE element-scoped key adapter stops receiving strokes. The bar re-homes focus to
+ * the current-place breadcrumb segment (`navigation-bar-place`, `tabIndex={-1}`) and returns
+ * it to the triggering verb row when that place renders again.
  *
  * The shell is the REAL `WireframeEditor` over the REAL navigation host; only the Konva
  * canvas is replaced by a static host element (the canvas is another surface).
@@ -20,8 +23,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import {
   NAV_RAIL_ASK_TESTID,
-  NAV_RAIL_PLACE_ROW_TESTID,
   NAV_RAIL_PLACE_TESTID,
+  NAV_RAIL_ROW_TESTID,
   NAV_RAIL_TESTID,
   getNavigationHost,
   resolveLauncherConfirmation,
@@ -60,7 +63,6 @@ vi.mock('../components/WireframeCanvas', async () => {
 
 const CANVAS = 'wireframe.canvas';
 const CREATE = 'wireframe.create';
-const EDIT = 'wireframe.edit';
 
 function root(): HTMLElement {
   return screen.getByTestId('wireframe-root');
@@ -70,18 +72,19 @@ function rail(): HTMLElement {
   return screen.getByTestId(NAV_RAIL_TESTID);
 }
 
-/** The currently rendered place row for `placeId` (never cached — the row unmounts). */
-function placeRow(placeId: string): HTMLElement {
+/** The currently rendered verb row for `verbId` (never cached — a transition unmounts it). */
+function verbRow(verbId: string): HTMLElement {
   const row = screen
-    .getAllByTestId(NAV_RAIL_PLACE_ROW_TESTID)
-    .find((candidate) => candidate.getAttribute('data-nav-place-id') === placeId);
+    .getAllByTestId(NAV_RAIL_ROW_TESTID)
+    .find((candidate) => candidate.getAttribute('data-nav-verb-id') === verbId);
   if (row === undefined) {
-    throw new Error(`place row ${placeId} is not rendered`);
+    throw new Error(`verb row ${verbId} is not rendered`);
   }
   return row;
 }
 
-function heading(): HTMLElement {
+/** The current-place breadcrumb segment — the bar's programmatic focus anchor. */
+function anchor(): HTMLElement {
   return screen.getByTestId(NAV_RAIL_PLACE_TESTID);
 }
 
@@ -107,11 +110,14 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('wireframe place-row focus retention (R-9 / AC9)', () => {
-  it('keeps focus in the rail when a place row is entered from the keyboard', async () => {
+describe('wireframe command-bar focus retention (R-9 / AC9 / F-N30)', () => {
+  /** The root place's first verb row — rendered at Canvas, unmounted inside Create. */
+  const ROOT_VERB = 'wireframe.selection.previous';
+
+  it('keeps focus in the bar when a place is entered from the keyboard', async () => {
     renderWithChakra(React.createElement(WireframeEditor));
 
-    const row = placeRow(CREATE);
+    const row = verbRow(ROOT_VERB);
     row.focus();
     expect(row).toHaveFocus();
 
@@ -121,50 +127,59 @@ describe('wireframe place-row focus retention (R-9 / AC9)', () => {
     const active = document.activeElement;
     expect(active).not.toBe(document.body);
     expect(active instanceof HTMLElement && rail().contains(active)).toBe(true);
-    expect(active).toBe(heading());
-    expect(heading().textContent).toBe('Create');
+    expect(active).toBe(anchor());
+    expect(anchor()).toHaveAttribute('tabindex', '-1');
+    expect(anchor().textContent).toBe('Create');
   });
 
-  it('restores the triggering place row when the place is exited from the keyboard', async () => {
+  it('restores the triggering verb row when the place is exited from the keyboard', async () => {
     renderWithChakra(React.createElement(WireframeEditor));
 
-    const row = placeRow(CREATE);
+    const row = verbRow(ROOT_VERB);
     row.focus();
     await press(row, 'c');
     await waitFor(() => expect(root().getAttribute('data-wireframe-place')).toBe(CREATE));
-    await waitFor(() => expect(heading()).toHaveFocus());
+    await waitFor(() => expect(anchor()).toHaveFocus());
 
-    await press(heading(), 'Escape');
+    await press(anchor(), 'Escape');
     await waitFor(() => expect(root().getAttribute('data-wireframe-place')).toBe(CANVAS));
 
-    await waitFor(() => expect(placeRow(CREATE)).toHaveFocus());
-    expect(placeRow(CREATE).getAttribute('data-nav-place-id')).toBe(CREATE);
+    await waitFor(() => expect(verbRow(ROOT_VERB)).toHaveFocus());
+    expect(verbRow(ROOT_VERB).getAttribute('data-nav-verb-id')).toBe(ROOT_VERB);
   });
 
-  it('keeps focus in the rail when a place row is entered with the pointer', async () => {
+  it('keeps focus in the bar when a transient place is popped with the pointer', async () => {
     const user = userEvent.setup();
     renderWithChakra(React.createElement(WireframeEditor));
 
-    await user.click(placeRow(EDIT));
-    await waitFor(() => expect(root().getAttribute('data-wireframe-place')).toBe(EDIT));
+    // Enter the transient `Create` place first, then activate an add verb with the pointer —
+    // the transient place pops back to Canvas, replacing the whole verb cluster.
+    const row = verbRow(ROOT_VERB);
+    row.focus();
+    await press(row, 'c');
+    await waitFor(() => expect(root().getAttribute('data-wireframe-place')).toBe(CREATE));
+    await waitFor(() => expect(anchor()).toHaveFocus());
+
+    await user.click(verbRow('wireframe.add.text'));
+    await waitFor(() => expect(root().getAttribute('data-wireframe-place')).toBe(CANVAS));
 
     const active = document.activeElement;
     expect(active).not.toBe(document.body);
     expect(active instanceof HTMLElement && rail().contains(active)).toBe(true);
   });
 
-  it('keeps keyboard dispatch alive after a place-row entry', async () => {
+  it('keeps keyboard dispatch alive after a place entry', async () => {
     renderWithChakra(React.createElement(WireframeEditor));
 
-    const row = placeRow(CREATE);
+    const row = verbRow(ROOT_VERB);
     row.focus();
     await press(row, 'c');
     await waitFor(() => expect(root().getAttribute('data-wireframe-place')).toBe(CREATE));
-    await waitFor(() => expect(heading()).toHaveFocus());
+    await waitFor(() => expect(anchor()).toHaveFocus());
 
     // The next stroke must still reach the shell's element-scoped adapter from the re-homed
     // focus: Escape pops exactly one level back to the Canvas place.
-    await press(heading(), 'Escape');
+    await press(anchor(), 'Escape');
     await waitFor(() => expect(root().getAttribute('data-wireframe-place')).toBe(CANVAS));
   });
 });
