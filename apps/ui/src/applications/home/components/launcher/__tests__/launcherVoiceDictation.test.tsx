@@ -731,9 +731,9 @@ describe('LauncherShell — the live-capture Enter guard (QA-10) + the §7 selec
     name: 'Mission Monitor',
     icon: () => null,
   } as unknown as FredoApplicationClass;
-  const BROWSER = {
-    id: 'browser-preview',
-    name: 'Browser',
+  const WIREFRAME = {
+    id: 'wireframe',
+    name: 'Wireframe',
     icon: () => null,
   } as unknown as FredoApplicationClass;
   const TERMINAL = {
@@ -742,7 +742,7 @@ describe('LauncherShell — the live-capture Enter guard (QA-10) + the §7 selec
     icon: () => null,
   } as unknown as FredoApplicationClass;
 
-  const renderShell = (features: FredoApplicationClass[] = [BROWSER, TERMINAL, SETTINGS]) => {
+  const renderShell = (features: FredoApplicationClass[] = [WIREFRAME, TERMINAL, SETTINGS]) => {
     const onOpenFeature = vi.fn();
     renderWithChakra(<LauncherShell showableFeatures={features} onOpenFeature={onOpenFeature} />);
     return onOpenFeature;
@@ -866,7 +866,7 @@ describe('LauncherShell — the live-capture Enter guard (QA-10) + the §7 selec
     const onOpenFirst = renderShell();
     pressEnter();
     expect(onOpenFirst).toHaveBeenCalledTimes(1);
-    expect(onOpenFirst.mock.calls[0][0]).toBe('browser-preview');
+    expect(onOpenFirst.mock.calls[0][0]).toBe('wireframe');
   });
 });
 

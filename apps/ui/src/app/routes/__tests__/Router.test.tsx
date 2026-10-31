@@ -15,19 +15,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 
 vi.mock('@/applications/home', () => ({ Home: () => <div data-testid="route-home" /> }));
-vi.mock('@/applications/diagram/components/ArchitectureDiagram', () => ({
-  ArchitectureDiagram: () => <div data-testid="route-diagram" />,
-}));
-vi.mock('@/applications/dev-mode', () => ({ DevMode: () => <div data-testid="route-dev-mode" /> }));
 vi.mock('@/applications/terminal', () => ({
   TerminalWindow: () => <div data-testid="route-terminal" />,
 }));
 vi.mock('@/applications/doom', () => ({ DoomWindow: () => <div data-testid="route-doom" /> }));
 vi.mock('@/applications/app-window', () => ({
   StandaloneAppWindow: () => <div data-testid="route-app-window" />,
-}));
-vi.mock('@/app/providers/ExtensionProvider', () => ({
-  useExtension: () => ({ currentPage: 'main', showDiagram: false }),
 }));
 
 import { Router } from '../Router';

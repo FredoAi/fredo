@@ -164,7 +164,8 @@ const SURFACES: Readonly<Record<string, Surface>> = {
   [DEV_MODE_SURFACE_APP_ID]: devModeSurface,
 };
 
-const FROZEN_APP_IDS = ['diagram', 'optimizely', 'my-workitems', 'create-workitem'] as const;
+/** Spec #3122 ST-4 — the retained five surfaces are the only in-scope app ids. */
+const SURFACE_APP_IDS = new Set(Object.keys(SURFACES));
 
 interface DeclaredKey {
   readonly appId: string;
@@ -304,15 +305,8 @@ describe('R-21 — the 11-row binding completeness table', () => {
     }
   });
 
-  it('excludes the frozen deprecated apps by scope (not omitted)', () => {
-    expect(TABLE.every((row) => !(FROZEN_APP_IDS as readonly string[]).includes(row.appId))).toBe(
-      true,
-    );
-    for (const row of TABLE) {
-      for (const frozen of FROZEN_APP_IDS) {
-        expect(row.verbId, frozen).not.toContain(frozen);
-      }
-    }
+  it('scopes the table to the five retained surfaces (not omitted)', () => {
+    expect(TABLE.every((row) => SURFACE_APP_IDS.has(row.appId))).toBe(true);
     // The five in-scope ids are the ONLY app ids in the table and its declarations.
     expect(new Set(TABLE.map((row) => row.appId))).toStrictEqual(
       new Set([

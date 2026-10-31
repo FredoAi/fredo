@@ -28,7 +28,7 @@ function win(over: Partial<WindowEntry> = {}): WindowEntry {
 }
 
 const mission = win({ id: 'mission-monitor', title: 'Mission Monitor', focused: true, zIndex: 2 });
-const browser = win({ id: 'browser-preview', title: 'Browser', zIndex: 1 });
+const browser = win({ id: 'wireframe', title: 'Wireframe', zIndex: 1 });
 const terminal = win({ id: 'terminal', title: 'Terminal', isMinimized: true, zIndex: 3 });
 
 describe('filterOpenWindows', () => {
@@ -50,15 +50,15 @@ describe('filterOpenWindows', () => {
 
   it('matches a mid-title substring and trims the query', () => {
     const all = [mission, browser, terminal];
-    expect(filterOpenWindows(all, '  owser ')).toEqual([browser]);
+    expect(filterOpenWindows(all, '  iref ')).toEqual([browser]);
   });
 
   it('removes non-matching windows while preserving the input order', () => {
     const all = [mission, browser, terminal];
     // 'r' is in every title → order preserved exactly.
     expect(filterOpenWindows(all, 'r')).toEqual([mission, browser, terminal]);
-    // Only Browser + Terminal contain 'er'.
-    expect(filterOpenWindows(all, 'er')).toEqual([browser, terminal]);
+    // Only Terminal contains 'er'.
+    expect(filterOpenWindows(all, 'er')).toEqual([terminal]);
   });
 
   it('returns an empty list when nothing matches (the host self-hides on this)', () => {
@@ -80,6 +80,6 @@ describe('openAppEntryLabel', () => {
   });
 
   it('labels an open-but-not-focused window as background', () => {
-    expect(openAppEntryLabel(win({ title: 'Browser' }))).toBe('Browser (background)');
+    expect(openAppEntryLabel(win({ title: 'Wireframe' }))).toBe('Wireframe (background)');
   });
 });

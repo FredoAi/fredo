@@ -52,7 +52,7 @@ describe('LauncherOpenAppsRow — DOM / aria contract', () => {
   it('renders the region, decorative heading, list and one listitem per window', () => {
     const windows = [
       win({ id: 'mission-monitor', title: 'Mission Monitor', focused: true, zIndex: 2 }),
-      win({ id: 'browser-preview', title: 'Browser', zIndex: 1 }),
+      win({ id: 'wireframe', title: 'Wireframe', zIndex: 1 }),
       win({ id: 'terminal', title: 'Terminal', isMinimized: true, zIndex: 3 }),
     ];
     renderWithChakra(<LauncherOpenAppsRow windows={windows} onActivate={noop} onClose={noop} />);
@@ -76,9 +76,9 @@ describe('LauncherOpenAppsRow — DOM / aria contract', () => {
       'aria-label',
       'Mission Monitor (active)',
     );
-    expect(screen.getByTestId('launcher-open-app-entry-browser-preview')).toHaveAttribute(
+    expect(screen.getByTestId('launcher-open-app-entry-wireframe')).toHaveAttribute(
       'aria-label',
-      'Browser (background)',
+      'Wireframe (background)',
     );
     expect(screen.getByTestId('launcher-open-app-entry-terminal')).toHaveAttribute(
       'aria-label',
@@ -90,7 +90,7 @@ describe('LauncherOpenAppsRow — DOM / aria contract', () => {
       'aria-current',
       'step',
     );
-    expect(screen.getByTestId('launcher-open-app-entry-browser-preview')).not.toHaveAttribute(
+    expect(screen.getByTestId('launcher-open-app-entry-wireframe')).not.toHaveAttribute(
       'aria-current',
     );
     expect(screen.getByTestId('launcher-open-app-entry-terminal')).not.toHaveAttribute(
@@ -126,11 +126,11 @@ describe('LauncherOpenAppsRow — DOM / aria contract', () => {
 describe('LauncherOpenAppsRow — activation / close wiring', () => {
   it('dispatches onActivate with the clicked window', () => {
     const onActivate = vi.fn();
-    const target = win({ id: 'browser-preview', title: 'Browser' });
+    const target = win({ id: 'wireframe', title: 'Wireframe' });
     renderWithChakra(
       <LauncherOpenAppsRow windows={[target]} onActivate={onActivate} onClose={noop} />,
     );
-    fireEvent.click(screen.getByTestId('launcher-open-app-entry-browser-preview'));
+    fireEvent.click(screen.getByTestId('launcher-open-app-entry-wireframe'));
     expect(onActivate).toHaveBeenCalledTimes(1);
     expect(onActivate).toHaveBeenCalledWith(target);
   });

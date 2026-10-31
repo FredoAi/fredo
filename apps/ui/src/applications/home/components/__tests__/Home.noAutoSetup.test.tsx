@@ -82,10 +82,6 @@ vi.mock('@/applications/home/components/background/DesktopBackdrop', () => ({
 vi.mock('@/applications/home/hooks/useAppOpenRequests', () => ({
   useAppOpenRequests: vi.fn(),
 }));
-vi.mock('@/applications/my-workitems', () => ({
-  myWorkItemsFeature: { id: 'my-workitems' },
-  createWorkItemFeature: { id: 'create-workitem' },
-}));
 vi.mock('@/applications/dev-mode', () => ({ devModeFeature: { id: 'dev-mode' } }));
 vi.mock('@/applications/allApplications', () => ({}));
 vi.mock('@/shared/application-data/registry', () => ({
