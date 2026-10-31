@@ -36,6 +36,7 @@ import {
   NOTHING_TO_UNDO,
   createJournalStore,
   type ConfirmationRequest,
+  type ContextSnapshot,
   type Intent,
   type JournalStore,
 } from '@/shared/navigation';
@@ -49,6 +50,7 @@ import {
 import {
   FIXTURE_APP_ID,
   FIXTURE_PLACES,
+  fixtureSelection,
   fixtureSnapshot,
   navTestSurface,
   seedEntries,
@@ -138,6 +140,8 @@ const disposers: Array<() => void> = [];
 interface HostOptions {
   readonly journal?: JournalStore;
   readonly confirm?: (request: ConfirmationRequest, intent: Intent) => boolean | Promise<boolean>;
+  /** ST-1-R3/T3 — a mutable injected context so a refresh can be observed without a dispatch. */
+  readonly getContext?: () => ContextSnapshot;
 }
 
 function makeHost(options: HostOptions = {}): {
@@ -148,7 +152,7 @@ function makeHost(options: HostOptions = {}): {
   const journal = options.journal ?? createJournalStore();
   const host = createNavigationHost({
     surface,
-    getContext: () => fixtureSnapshot([FIXTURE_PLACES.canvas]),
+    getContext: options.getContext ?? (() => fixtureSnapshot([FIXTURE_PLACES.canvas])),
     journal,
     now: () => '2026-01-01T09:00:00.000Z',
     applyPatch: () => undefined,
@@ -891,5 +895,73 @@ describe('LauncherShell — no-surface fallback (R-1.2)', () => {
     expect(companionDispatchMock.askActiveCompanion.mock.calls[0][1]).toBeUndefined();
     expect(responseLine()).toBeNull();
     expect(screen.queryByTestId(LAUNCHER_PALETTE_LIST_TESTID)).toBeNull();
+  });
+});
+
+/* ──────────────── 12. root selection freshness in the context header (R-1.1 root leg) ──────────────── */
+
+/**
+ * Spec #3120 (P6), ST-1-R3 / ST-6-R3 — the launcher memo is keyed on the host epoch, so a
+ * store-only selection change (published through `refreshContext()`) must re-derive the header
+ * and the companion grounding envelope WITHOUT a remount. The shell needed NO code change;
+ * these cases prove its existing memo is now driven.
+ */
+describe('LauncherShell — root selection freshness in the context header (R-1.1 root leg)', () => {
+  function selectedContext(): ContextSnapshot {
+    return fixtureSnapshot([FIXTURE_PLACES.canvas], {
+      selection: fixtureSelection({
+        count: 1,
+        ids: ['e1'],
+        kinds: ['shape'],
+        label: 'Rectangle',
+      }),
+    });
+  }
+
+  it('the header renders the CURRENT selection after a store refresh, without a remount', () => {
+    let current = fixtureSnapshot([FIXTURE_PLACES.canvas]);
+    const { host } = makeHost({ getContext: () => current });
+    focusWindow(FIXTURE_APP_ID);
+    renderShell();
+    ctrlSpace();
+
+    const header = screen.getByTestId(LAUNCHER_CONTEXT_TESTID);
+    expect(screen.getByTestId(LAUNCHER_CONTEXT_PATH_TESTID)).toHaveTextContent('Canvas');
+    expect(screen.queryByTestId(LAUNCHER_CONTEXT_SELECTION_TESTID)).toBeNull();
+
+    current = selectedContext();
+    act(() => {
+      host.refreshContext();
+    });
+
+    expect(screen.getByTestId(LAUNCHER_CONTEXT_SELECTION_TESTID)).toHaveTextContent('Rectangle');
+    expect(screen.getByTestId(LAUNCHER_CONTEXT_PATH_TESTID)).toHaveTextContent('Canvas');
+    // R-1.3 no remount — the very same DOM node is reused.
+    expect(screen.getByTestId(LAUNCHER_CONTEXT_TESTID)).toBe(header);
+  });
+
+  it('a plain query is grounded on the CURRENT selection envelope', async () => {
+    companionMock.current.state.isVisible = true;
+    let current = fixtureSnapshot([FIXTURE_PLACES.canvas]);
+    const { host } = makeHost({ getContext: () => current });
+    focusWindow(FIXTURE_APP_ID);
+    renderShell();
+    ctrlSpace();
+
+    current = selectedContext();
+    act(() => {
+      host.refreshContext();
+    });
+
+    type('make this rectangle accent');
+    await pressEnter();
+
+    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledTimes(1);
+    const [, options] = companionDispatchMock.askActiveCompanion.mock.calls[0];
+    const context = (
+      options as { context?: { selection: { count: number; label: string | null } } }
+    )?.context;
+    expect(context?.selection.count).toBe(1);
+    expect(context?.selection.label).toBe('Rectangle');
   });
 });

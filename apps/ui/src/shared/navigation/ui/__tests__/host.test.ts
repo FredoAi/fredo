@@ -20,6 +20,7 @@ import {
   NOTHING_TO_UNDO,
   createJournalStore,
   resolveStroke,
+  type ContextSnapshot,
   type JsonPatch,
   type JournalStore,
   type KeyBinding,
@@ -38,6 +39,7 @@ import {
 import { createNavigationHost, useNavigationHostSnapshot, type NavigationHost } from '../host';
 import {
   FIXTURE_PLACES,
+  fixtureSelection,
   fixtureSnapshot,
   fixtureTimestamp,
   navTestSurface,
@@ -180,6 +182,88 @@ describe('N-04 — stable snapshot, one epoch advance per mutation, zero per ren
     }
     expect(harness.host.getSnapshot().epoch).toBe(1);
     expect(view.getByTestId('epoch-probe')).toHaveTextContent('5:1');
+  });
+});
+
+/* ───────────────────────── N-04b — context freshness (R-1.1 root leg) ───────────────────────── */
+
+/**
+ * Spec #3120 (P6), ST-1-R3 — the host seam that publishes a store-only context change. The
+ * launcher memo keys on `epoch`; without this advance a root-place selection never reaches the
+ * header or the companion grounding envelope (the round-3 defect). `describeContext()` was
+ * already fresh — the missing piece was the notification.
+ */
+describe('N-04b — context freshness (R-1.1 root leg)', () => {
+  function createContextHost(getContext: () => ContextSnapshot): NavigationHost {
+    return createNavigationHost({
+      surface: navTestSurface(),
+      getContext,
+      journal: createJournalStore(),
+      now: () => fixtureTimestamp(0),
+      applyPatch: () => undefined,
+      confirm: () => true,
+    });
+  }
+
+  it('refreshContext commits ONE epoch and rebuilds the snapshot when the injected context changed', () => {
+    const announcements: string[] = [];
+    disposers.push(
+      subscribeNavigationAnnouncement(() => {
+        announcements.push(getNavigationAnnouncement());
+      }),
+    );
+
+    let current = fixtureSnapshot();
+    const host = createContextHost(() => current);
+    expect(host.getSnapshot().epoch).toBe(0);
+    const before = host.getSnapshot();
+
+    current = fixtureSnapshot([FIXTURE_PLACES.canvas], {
+      selection: fixtureSelection({
+        count: 1,
+        ids: ['e1'],
+        kinds: ['shape'],
+        label: 'Rectangle',
+      }),
+    });
+    host.refreshContext();
+
+    expect(host.getSnapshot()).not.toBe(before);
+    expect(host.getSnapshot().epoch).toBe(1);
+    expect(host.getSnapshot().context.selection.count).toBe(1);
+    expect(host.describeContext().selection.label).toBe('Rectangle');
+    // The refresh is SILENT: no announcement is composed or emitted.
+    expect(host.getSnapshot().announcement).toBe('');
+    expect(announcements).toHaveLength(0);
+  });
+
+  it('refreshContext is a silent no-op for a value-equal context (fresh object each call)', () => {
+    const host = createContextHost(() => fixtureSnapshot());
+    const before = host.getSnapshot();
+
+    host.refreshContext();
+    host.refreshContext();
+
+    // Value fingerprinting, not reference identity — every `getContext()` call is a new object.
+    expect(host.getSnapshot()).toBe(before);
+    expect(host.getSnapshot().epoch).toBe(0);
+  });
+
+  it('describeContext never advances the epoch', () => {
+    let current = fixtureSnapshot();
+    const host = createContextHost(() => current);
+    const before = host.getSnapshot();
+
+    current = fixtureSnapshot([FIXTURE_PLACES.canvas], {
+      selection: fixtureSelection({ count: 1, ids: ['e1'], kinds: ['shape'], label: 'Rectangle' }),
+    });
+    host.describeContext();
+    host.describeContext();
+
+    expect(host.getSnapshot()).toBe(before);
+    expect(host.getSnapshot().epoch).toBe(0);
+    // The read itself is FRESH — only the notification was missing without refreshContext().
+    expect(host.describeContext().selection.count).toBe(1);
   });
 });
 

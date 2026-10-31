@@ -874,6 +874,15 @@ function subscribeNavigationHosts(listener: () => void): () => void;
   journal.entries())` on every read — never a cached snapshot. A missing registration is the
   AC1 fallback (`null`), and the launcher then renders the shipped resting/engaged surface
   byte-identically.
+- **`refreshContext` publishes context changes (never mutations).** The owning application's
+  provider subscribes to its own store and calls `NavigationHost.refreshContext()` when the
+  injected context changed. The decision is a **value** fingerprint over exactly the fields
+  `buildContextEnvelope` consumes (`appId`, `placePath`, `selection.count`/`ids`/`kinds`/`label`,
+  `dirty`) — never reference identity, because the getter allocates a fresh object per call. A
+  real change advances `epoch` by exactly 1 through an empty `commit()` (no announcement, no
+  journal entry, no snapshot-shape change); a value-equal refresh is a strict no-op (the same
+  `getSnapshot()` reference and the same epoch). `describeContext()` stays a pure read and never
+  advances the epoch.
 - **`runIntent` is the only runner.** `NavigationHost.runIntent(intent)` carries the full
   `Intent` (`verbId`, `args`, `channel`, `actor`, `actorRef`) into the ONE `dispatch()` funnel,
   so the launcher and the agent bridge can express `channel:'launcher' | 'voice' | 'agent'`
@@ -887,9 +896,13 @@ function subscribeNavigationHosts(listener: () => void): () => void;
 
 The launcher derives its `activeAppId` from the focused, non-minimized window, memoizes
 `navContext` on the host identity + the host snapshot `epoch` (never an effect + `setState`,
-never a poll), and re-derives on every host notification. The host snapshot subscription
-uses `useSyncExternalStore`, so a dispatch that changes the place updates the header without a
-remount or reload.
+never a poll), and re-derives on every host notification. The `epoch` advances on a host
+mutation **or an injected-context change**: the application's provider publishes its store's
+selection/dirty changes through `NavigationHost.refreshContext()`, so a store-only selection
+change (including at the root place, with no dispatch) re-derives the header and the grounding
+envelope without a remount or reload — as does a dispatch that changes the place. The host
+snapshot subscription uses `useSyncExternalStore`, so neither path remounts or reloads the
+launcher.
 
 ### P6.2 One box, three routes
 

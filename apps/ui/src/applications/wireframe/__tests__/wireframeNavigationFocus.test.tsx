@@ -38,7 +38,15 @@ import {
 } from '../components/WireframeNavigationProvider';
 import { WIREFRAME_SURFACE_APP_ID } from '../wireframeSurface';
 import { WireframeEditor } from '../components/WireframeEditor';
-import { getSnapshot, resetWireframeStoreForTests, select } from '../store/wireframeDocumentStore';
+import {
+  clearSelection,
+  getSnapshot,
+  loadDocument,
+  resetWireframeStoreForTests,
+  select,
+} from '../store/wireframeDocumentStore';
+import { createNewWireframeDocument } from '../model/document';
+import { createDefaultElement } from '../model/elements';
 import { resetWireframeSurfaceForTests } from '../wireframeSurface';
 
 // The Konva canvas is another surface; a static host element keeps the shell real.
@@ -158,6 +166,97 @@ describe('wireframe place-row focus retention (R-9 / AC9)', () => {
     // focus: Escape pops exactly one level back to the Canvas place.
     await press(heading(), 'Escape');
     await waitFor(() => expect(root().getAttribute('data-wireframe-place')).toBe(CANVAS));
+  });
+});
+
+/* ──────────────── P6 root-place context freshness (ST-4-R3, R-1.1 root leg) ──────────────── */
+
+/**
+ * Spec #3120 (P6), ST-4-R3 — the provider publishes its store's context changes to the host.
+ * A store-only selection (`select`/`clearSelection`) never reaches a host mutation, so before
+ * the fix the launcher memo (keyed on `epoch`) kept the root place's stale, selection-less
+ * envelope. Case 1 is the defect's regression pin; case 3 is the apply guard (it already
+ * passed on the pre-fix tip — it is NOT the freshness proof).
+ */
+describe('WireframeNavigationProvider — root-place context freshness (R-1.1 root leg)', () => {
+  /** Load a saved (journal-free) document with one shape element (as wireframeJournal.test.ts does). */
+  function seedShape(id: string): void {
+    const base = createNewWireframeDocument('desktop');
+    const element = createDefaultElement('shape', { page: base.page, elements: [], id });
+    loadDocument({ ...base, elements: [element] }, 'C:/tmp/doc.wireframe.json');
+  }
+
+  it('a store-only selection at the root advances the host epoch and the envelope carries it', async () => {
+    const host = await mountProviderHost();
+    seedShape('shape-1');
+    const before = host.getSnapshot().epoch;
+
+    // NO host dispatch — the store mutator is the ONLY change (the exact defect lever).
+    act(() => {
+      select('shape-1');
+    });
+
+    const snapshot = host.getSnapshot();
+    expect(snapshot.context.placePath).toEqual([CANVAS]);
+    expect(snapshot.epoch).toBeGreaterThan(before);
+    expect(host.describeContext().selection).toEqual({
+      count: 1,
+      ids: ['shape-1'],
+      kinds: ['shape'],
+      // A shape's `documentTitle` is its shape kind (`rect`).
+      label: 'rect',
+    });
+  });
+
+  it('clearing the selection advances the epoch and the envelope carries count 0', async () => {
+    const host = await mountProviderHost();
+    seedShape('shape-2');
+    act(() => {
+      select('shape-2');
+    });
+    const afterSelect = host.getSnapshot().epoch;
+
+    act(() => {
+      clearSelection();
+    });
+
+    expect(host.getSnapshot().epoch).toBeGreaterThan(afterSelect);
+    expect(host.describeContext().selection.count).toBe(0);
+    expect(host.describeContext().selection.label).toBeNull();
+  });
+
+  it('a companion intent at the root applies wireframe.style.fill with its argument', async () => {
+    // NOTE: this leg already passed on the pre-fix tip — it is the AC1 APPLY guard, not the
+    // freshness pin. The defect was that the model was told there was no selection.
+    const host = await mountProviderHost();
+    seedShape('shape-3');
+    act(() => {
+      select('shape-3');
+    });
+
+    let result: Awaited<ReturnType<typeof host.runIntent>> | undefined;
+    await act(async () => {
+      result = await host.runIntent({
+        verbId: 'wireframe.style.fill',
+        args: { fill: 'accent' },
+        channel: 'agent',
+        actor: 'companion',
+      });
+    });
+
+    expect(result?.status).toBe('performed');
+
+    const element = getSnapshot().document.elements[0];
+    expect(element?.type).toBe('shape');
+    if (element?.type !== 'shape') throw new Error('expected the seeded shape element');
+    expect(element.fill).toBe('accent');
+
+    const entries = host.getSnapshot().entries;
+    expect(entries[entries.length - 1]).toMatchObject({
+      verbId: 'wireframe.style.fill',
+      actor: 'companion',
+      label: 'Fill',
+    });
   });
 });
 

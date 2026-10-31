@@ -88,9 +88,11 @@ function WireframeShell(): React.ReactElement {
 
   const [newDialogOpen, setNewDialogOpen] = useState(false);
 
-  // Freshness seam (AC4): a pure selection change notifies the store but writes no
-  // journal entry, so the host snapshot's context can be stale. Rebuild the models
-  // from the live store selection/dirty + the host's current place path.
+  // Freshness seam (AC4) — the host is now the freshness authority: the provider publishes
+  // store selection/dirty changes through `NavigationHost.refreshContext()`, so
+  // `hostSnapshot.context` is current. This composition is a value-identical defensive
+  // merge (the same store selection/dirty plus the host's current place path), not a
+  // second freshness source.
   const storeContext = useMemo<ContextSnapshot>(() => getWireframeContext(), [state]);
   const liveContext = useFreshWireframeContext(hostSnapshot.context, storeContext);
 
