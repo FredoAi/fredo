@@ -142,6 +142,13 @@ interface CompanionContextState {
   // #3120 (rework) ST-2 — the teleport-attached instruction box is open in THIS
   // window's hosting surface. Transient: NEVER persisted, never broadcast.
   composerOpen: boolean;
+  // #3120 (rework) ST-2-R4 — monotonic arrival/request identities. `teleportSeq`
+  // advances on EVERY relocation so the surface that actually SETTLES (the
+  // surviving overlay) can own the settle-open; `composerRequestSeq` advances on
+  // EVERY open request (including a repeat while already open) so focus follows
+  // each request rather than only the first mount. Transient, never persisted.
+  teleportSeq: number;
+  composerRequestSeq: number;
 }
 
 type CompanionAction =
@@ -239,6 +246,18 @@ interface CompanionContextValue {
   composerOpen: boolean;
   openComposer: () => void;
   closeComposer: () => void;
+  /**
+   * #3120 (rework) ST-2-R4 — advanced on every `TELEPORT`. The hosting overlay
+   * keys its settle-open effect on it (the seat can never own — and lose — the
+   * timer, because a same-window teleport unmounts the seat in the same commit).
+   */
+  teleportSeq: number;
+  /**
+   * #3120 (rework) ST-2-R4 — advanced by EVERY `OPEN_COMPOSER` (including a
+   * repeat request while the box is already open). The composer re-focuses on
+   * each value, so a repeated `Ask` re-focuses instead of silently no-oping.
+   */
+  composerRequestSeq: number;
 }
 
 // ── Reducer ──────────────────────────────────────────────────────────────────
@@ -258,6 +277,8 @@ const initialState: CompanionContextState = {
   isHosting: false,
   isInUse: false,
   composerOpen: false,
+  teleportSeq: 0,
+  composerRequestSeq: 0,
 };
 
 function reducer(state: CompanionContextState, action: CompanionAction): CompanionContextState {
@@ -281,8 +302,10 @@ function reducer(state: CompanionContextState, action: CompanionAction): Compani
       // prior idle auto-return) otherwise gates the away overlay off AND keeps the
       // host idle gate disarmed → zero Fredos, stuck until an OFF/ON toggle.
       // #3120 (rework) ST-2: the composer is teleport-attached — it closes during
-      // flight and re-opens on the destination settle.
-      return { ...state, position: action.payload, isAway: true, isAutoHidden: false, isAutoReturning: false, composerOpen: false };
+      // flight and re-opens on the destination settle. ST-2-R4: the seq bump is
+      // the settle-open signal the SURVIVING overlay (not the unmounting seat)
+      // consumes.
+      return { ...state, position: action.payload, isAway: true, isAutoHidden: false, isAutoReturning: false, composerOpen: false, teleportSeq: state.teleportSeq + 1 };
     case 'MARK_AWAY':
       // #2870 ST-1: idempotent local away (cross-window leave).
       // #2870 F-68: clear any prior hide state on relocation too (idempotent when
@@ -302,7 +325,14 @@ function reducer(state: CompanionContextState, action: CompanionAction): Compani
     case 'SET_IN_USE':
       return state.isInUse === action.payload ? state : { ...state, isInUse: action.payload };
     case 'OPEN_COMPOSER':
-      return state.composerOpen ? state : { ...state, composerOpen: true };
+      // #3120 (rework) ST-2-R4: NOT a boolean latch — EVERY request is a new
+      // state (the seq advances even when already open) so a repeat `Ask`
+      // re-renders the composer and re-focuses its input.
+      return {
+        ...state,
+        composerOpen: true,
+        composerRequestSeq: state.composerRequestSeq + 1,
+      };
     case 'CLOSE_COMPOSER':
       return state.composerOpen ? { ...state, composerOpen: false } : state;
     case 'SYNC_PRESENCE': {
@@ -577,6 +607,8 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     sendDuringReply, setSendDuringReply, replyLeaveGraceMs, setReplyLeaveGraceMs,
     replyInFlight, setReplyInFlight, queuedSendCount, setQueuedSendCount,
     composerOpen: state.composerOpen, openComposer, closeComposer,
+    teleportSeq: state.teleportSeq,
+    composerRequestSeq: state.composerRequestSeq,
   }), [
     state, setState, showMessage, hideMessage, setVisible, teleport, markAway,
     notifyInteraction, idleTimeoutSeconds, setIdleTimeoutSeconds,

@@ -54,6 +54,7 @@ import { CompanionProvider, useCompanion } from '@/shared/contexts/CompanionCont
 import { CompanionEntity, FredoCompanion } from '@/shared/components/companion';
 import { getActiveCompanionEntity } from '@/shared/components/companion/CompanionEntity';
 import {
+  COMPANION_COMPOSER_DISMISS_TESTID,
   COMPANION_COMPOSER_INPUT_TESTID,
   COMPANION_COMPOSER_TARGET_TESTID,
   COMPANION_COMPOSER_TESTID,
@@ -134,7 +135,7 @@ function registerHost(appId: string, envelope: ContextEnvelope): void {
 // ── harnesses ────────────────────────────────────────────────────────────────
 
 function AppRoot() {
-  return <div data-testid="app-root" data-fredo-app-id="wireframe" />;
+  return <div data-testid="app-root" data-fredo-app-id="wireframe" tabIndex={-1} />;
 }
 
 /** The home seat predicate (mirrors LauncherShell): interactive seat while ON + home. */
@@ -231,7 +232,15 @@ describe('CompanionComposer — teleport-attached instruction box', () => {
     expect(consoleError).not.toHaveBeenCalled();
   });
 
-  it('auto-opens on the teleport-in settle', async () => {
+  /**
+   * #3120 (rework) ST-2-R4 (R-3.1) — REGRESSION PIN for the first same-window
+   * seat→overlay teleport. The out and in timers are advanced in SEPARATE `act`
+   * flushes so React COMMITS the `TELEPORT` that unmounts the seat (and clears its
+   * timer) between them — the live ordering. On the pre-fix tip the seat owned
+   * the only settle-open timer, so its unmount killed it and no composer ever
+   * appeared; here the surviving overlay owns the settle-open.
+   */
+  it('the FIRST seat→overlay teleport opens exactly one focused overlay composer (phased flush)', async () => {
     const { container, getByTestId, queryAllByTestId } = renderWithChakra(
       <CompanionProvider>
         <AppRoot />
@@ -244,19 +253,109 @@ describe('CompanionComposer — teleport-attached instruction box', () => {
     expect(queryAllByTestId(COMPANION_COMPOSER_TESTID)).toHaveLength(0);
 
     vi.useFakeTimers();
-    await act(async () => {
+    // 1) the gesture starts the out motion on the SEAT.
+    act(() => {
       window.dispatchEvent(
         new MouseEvent('mousedown', { button: 2, ctrlKey: true, clientX: 520, clientY: 420 }),
       );
-      // out settle → overlay mounts, then in settle → the composer opens.
+    });
+    // 2) the out settle → the seat plays teleport-in → TELEPORT → the seat unmounts
+    //    in THIS commit and the overlay mounts (the surviving settle-open owner).
+    act(() => {
       vi.advanceTimersByTime(450);
+    });
+    expect(container.querySelectorAll('.fredo-companion-avatar')).toHaveLength(1);
+    expect(getActiveCompanionEntity()?.surface).toBe('overlay');
+    expect(queryAllByTestId(COMPANION_COMPOSER_TESTID)).toHaveLength(0);
+    // 3) the overlay's teleport-in settle → the ONE open.
+    act(() => {
       vi.advanceTimersByTime(450);
-      await Promise.resolve();
     });
 
     expect(queryAllByTestId(COMPANION_COMPOSER_TESTID)).toHaveLength(1);
+    expect(getByTestId(COMPANION_COMPOSER_TESTID).getAttribute('data-composer-surface')).toBe('overlay');
     const input = getByTestId(COMPANION_COMPOSER_INPUT_TESTID) as HTMLTextAreaElement;
     expect(document.activeElement).toBe(input);
+  });
+
+  /**
+   * #3120 (rework) ST-2-R4 — the away→away leg (the overlay survives the whole
+   * sequence) still opens exactly one focused composer at the settle, with the
+   * same phased flush shape as the seat→overlay pin above.
+   */
+  it('an away→away teleport opens exactly one focused composer at the settle (phased flush)', async () => {
+    const { container, getByTestId, queryAllByTestId } = renderWithChakra(
+      <CompanionProvider>
+        <AppRoot />
+        <OverlayHarness />
+      </CompanionProvider>,
+    );
+    await waitFor(() => expect(container.querySelector('.fredo-companion-avatar')).not.toBeNull());
+    await waitFor(() => expect(getActiveCompanionEntity()?.surface).toBe('overlay'));
+    // The harness's own teleport settles open; close it so the second leg is unambiguous.
+    await waitFor(() => expect(queryAllByTestId(COMPANION_COMPOSER_TESTID)).toHaveLength(1));
+    fireEvent.click(getByTestId(COMPANION_COMPOSER_DISMISS_TESTID));
+    await waitFor(() => expect(queryAllByTestId(COMPANION_COMPOSER_TESTID)).toHaveLength(0));
+
+    vi.useFakeTimers();
+    // Same-window teleport driven through the host's own entity handle (the
+    // `FredoCompanion` window listener is not mounted in this harness).
+    act(() => {
+      getActiveCompanionEntity()?.teleportTo({ x: 480, y: 380 });
+    });
+    expect(container.querySelector('.fredo-companion-avatar')?.getAttribute('data-state')).toBe('teleport-out');
+    act(() => {
+      vi.advanceTimersByTime(450);
+    });
+    expect(container.querySelector('.fredo-companion-avatar')?.getAttribute('data-state')).toBe('teleport-in');
+    // The overlay survives the TELEPORT; this commit only re-arms the settle.
+    expect(getActiveCompanionEntity()?.surface).toBe('overlay');
+    expect(queryAllByTestId(COMPANION_COMPOSER_TESTID)).toHaveLength(0);
+    act(() => {
+      vi.advanceTimersByTime(450);
+    });
+
+    expect(queryAllByTestId(COMPANION_COMPOSER_TESTID)).toHaveLength(1);
+    expect(getByTestId(COMPANION_COMPOSER_TESTID).getAttribute('data-composer-surface')).toBe('overlay');
+    expect(document.activeElement).toBe(getByTestId(COMPANION_COMPOSER_INPUT_TESTID));
+  });
+
+  /**
+   * #3120 (rework) ST-2-R4 (R-1.8) — a REPEAT open request while the box is
+   * already open must re-focus the input (the old boolean latch produced no
+   * state change → no render → no focus), and must never mount a second box.
+   */
+  it('a repeated open request re-focuses the input and keeps exactly one composer', async () => {
+    const { getByTestId, queryAllByTestId } = renderWithChakra(
+      <CompanionProvider>
+        <AppRoot />
+        <OverlayHarness />
+      </CompanionProvider>,
+    );
+    await waitFor(() => expect(document.querySelector('.fredo-companion-avatar')).not.toBeNull());
+    await waitFor(() => expect(getActiveCompanionEntity()?.surface).toBe('overlay'));
+
+    act(() => {
+      requestCompanionComposerOpen({ source: 'command-bar-ask', appId: 'wireframe', focus: true });
+    });
+    await waitFor(() => expect(queryAllByTestId(COMPANION_COMPOSER_TESTID)).toHaveLength(1));
+    const input = getByTestId(COMPANION_COMPOSER_INPUT_TESTID) as HTMLTextAreaElement;
+    expect(document.activeElement).toBe(input);
+    expect(getByTestId(COMPANION_COMPOSER_TARGET_TESTID).textContent).toBe('for Wireframe');
+
+    // Move focus away (as a pointer activation of the command bar does), then ask again.
+    act(() => {
+      getByTestId('app-root').focus();
+    });
+    expect(document.activeElement).toBe(getByTestId('app-root'));
+
+    act(() => {
+      requestCompanionComposerOpen({ source: 'command-bar-ask', appId: 'wireframe', focus: true });
+    });
+
+    expect(queryAllByTestId(COMPANION_COMPOSER_TESTID)).toHaveLength(1);
+    expect(document.activeElement).toBe(input);
+    expect(getByTestId(COMPANION_COMPOSER_TARGET_TESTID).textContent).toBe('for Wireframe');
   });
 
   it('Escape closes the box and returns focus to the app root, never body', async () => {

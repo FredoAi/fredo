@@ -54,6 +54,12 @@ const COMPOSER_PAD = 4;
 
 export interface CompanionComposerProps {
   readonly surface: 'seat' | 'overlay';
+  /**
+   * #3120 (rework) ST-2-R4 — the provider's `composerRequestSeq`. It advances on
+   * EVERY open request, so the focus layout effect below re-runs per request (a
+   * repeated `Ask` re-focuses the input instead of silently no-oping).
+   */
+  readonly focusNonce: number;
   readonly avatarRect: ReplyAvatarRect | null;
   /** The visible SpeechBubble rect (viewport px), or `null`. */
   readonly avoidRect: ReplyRect | null;
@@ -113,7 +119,7 @@ function focusLandingApp(appId: string | null): void {
 }
 
 export function CompanionComposer(props: CompanionComposerProps): React.ReactElement {
-  const { surface, avatarRect, avoidRect, viewport, target, onSubmit, onDismiss } = props;
+  const { surface, focusNonce, avatarRect, avoidRect, viewport, target, onSubmit, onDismiss } = props;
 
   const [value, setValue] = useState('');
   // The textarea's content height (excludes the card padding). Resting 32 px so
@@ -126,17 +132,23 @@ export function CompanionComposer(props: CompanionComposerProps): React.ReactEle
   // Capture the pre-open focus and open ⇒ focus in a LAYOUT effect (no click, no
   // rAF chain, no effect loop). The capture happens BEFORE the input is focused,
   // so Esc can return focus to the element the user was on.
+  //
+  // #3120 (rework) ST-2-R4 — keyed on `focusNonce` (the provider's
+  // `composerRequestSeq`), NOT mount-only: EVERY open request re-focuses the
+  // input, including a repeat `Ask` while the box is already open. An already
+  // focused input is never captured as its own "pre-open" element.
   useLayoutEffect(() => {
     const active = typeof document === 'undefined' ? null : document.activeElement;
-    preOpenFocusRef.current =
+    if (
       active instanceof HTMLElement &&
       active !== inputRef.current &&
       active !== document.body &&
       active !== document.documentElement
-        ? active
-        : null;
+    ) {
+      preOpenFocusRef.current = active;
+    }
     inputRef.current?.focus();
-  }, []);
+  }, [focusNonce]);
 
   // Auto-grow: measure the wrapped content height and apply the capped size.
   useLayoutEffect(() => {

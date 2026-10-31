@@ -63,6 +63,18 @@ export function peekCompanionComposerRequest(): CompanionComposerOpenRequest | n
   return lastRequest;
 }
 
+/**
+ * #3120 (rework) ST-2-R4 — read-AND-CLEAR the retained request. The hosting
+ * overlay calls it once it has APPLIED the request (target resolved), so the
+ * retention is a hand-off rather than a forever-live value a later mount could
+ * re-read as if it were a fresh request.
+ */
+export function consumeCompanionComposerRequest(): CompanionComposerOpenRequest | null {
+  const consumed = lastRequest;
+  lastRequest = null;
+  return consumed;
+}
+
 /** Test-only: drop the retained request + subscribers. Never call from app code. */
 export function resetCompanionComposerBridgeForTests(): void {
   lastRequest = null;

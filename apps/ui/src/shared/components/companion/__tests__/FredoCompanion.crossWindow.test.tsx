@@ -21,6 +21,10 @@ import { act, cleanup, waitFor } from '@testing-library/react';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { CompanionProvider, useCompanion } from '@/shared/contexts/CompanionContext';
 import { CompanionEntity, FredoCompanion } from '@/shared/components/companion';
+import {
+  COMPANION_COMPOSER_INPUT_TESTID,
+  COMPANION_COMPOSER_TESTID,
+} from '@/shared/components/companion/CompanionComposer';
 import { DevAdapter } from '@/app/adapters/DevAdapter';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
 import { AVATAR_SM } from '@/shared/components/fredo-avatar/fredoAvatarSizes';
@@ -242,7 +246,7 @@ describe('FredoCompanion cross-window companion-teleport listener (#2870 ST-2c)'
   });
 
   it('leaving drops the home seat and settles hosting; arrival mounts the overlay and plays in', async () => {
-    const { container, getByTestId } = await renderCompanion();
+    const { container, getByTestId, queryAllByTestId } = await renderCompanion();
     const cb = await teleportListener();
 
     vi.useFakeTimers();
@@ -271,6 +275,11 @@ describe('FredoCompanion cross-window companion-teleport listener (#2870 ST-2c)'
     });
     expect(avatar(container).getAttribute('data-state')).toBe('idle');
     expect(getByTestId('hosting-probe').getAttribute('data-hosting')).toBe('true');
+    // #3120 (rework) ST-2-R4 (R-3.1) — the DESTINATION overlay owns the settle-open:
+    // one composer, on the overlay surface, with its input focused.
+    expect(queryAllByTestId(COMPANION_COMPOSER_TESTID)).toHaveLength(1);
+    expect(getByTestId(COMPANION_COMPOSER_TESTID).getAttribute('data-composer-surface')).toBe('overlay');
+    expect(document.activeElement).toBe(getByTestId(COMPANION_COMPOSER_INPUT_TESTID));
     expect(consoleError).not.toHaveBeenCalled();
   });
 

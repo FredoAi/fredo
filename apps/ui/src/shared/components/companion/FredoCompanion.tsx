@@ -54,24 +54,24 @@ export const FredoCompanion: React.FC = () => {
   // the seat).
   useEffect(() => { setHosting(isAway && isInThisWindow); }, [isAway, isInThisWindow, setHosting]);
 
-  // #3120 (rework) ST-2 — a composer open request (command-bar `Ask`, keyboard)
-  // that lands in a window NOT hosting Fredo teleports him to the default point
-  // FIRST, then opens the box on the arrival settle. When this window already
-  // hosts the overlay, the active entity's own subscription opens it in place and
-  // this handler is a no-op (the hosting predicate gates every mount).
+  // #3120 (rework) ST-2 / ST-2-R4 — a composer open request (command-bar `Ask`,
+  // keyboard) is handled in exactly ONE of two ways, and never both:
+  //   - ALREADY HOSTED → open the box in place; no teleport, no arrival bump.
+  //   - NOT HOSTED → queue the teleport to the default point; the OPEN is owned by
+  //     the destination OVERLAY's settle effect (keyed on `teleportSeq`), so the
+  //     `TELEPORT` reset can never discard the requested open.
   useEffect(() => {
     return subscribeCompanionComposerOpen(() => {
-      if (!hostedHereRef.current) {
-        const dest = defaultComposerTeleportPoint();
-        isInThisWindowRef.current = true;
-        pendingTeleportInRef.current = dest;
-        teleport(dest.x, dest.y);
-        setIsInThisWindow(true);
-        setArrivalSeq((n) => n + 1);
+      if (hostedHereRef.current) {
+        openComposer();
+        return;
       }
-      // Idempotent: the active overlay entity also opens it; either path lands on
-      // the SAME context flag (never a second surface).
-      openComposer();
+      const dest = defaultComposerTeleportPoint();
+      isInThisWindowRef.current = true;
+      pendingTeleportInRef.current = dest;
+      teleport(dest.x, dest.y);
+      setIsInThisWindow(true);
+      setArrivalSeq((n) => n + 1);
     });
   }, [teleport, openComposer]);
 

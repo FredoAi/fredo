@@ -27,6 +27,7 @@ import { CompanionComposer } from './CompanionComposer';
 import { REPLY_SURFACE_TESTID } from './SpeechBubble';
 import type { ReplyRect } from './replySurfaceLayout';
 import {
+  consumeCompanionComposerRequest,
   peekCompanionComposerRequest,
   subscribeCompanionComposerOpen,
 } from '../../companion/composerBridge';
@@ -400,7 +401,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     const {
       state, setState, teleport, hideMessage, notifyInteraction, setInUse,
       sendDuringReply, replyLeaveGraceMs, setReplyInFlight, setQueuedSendCount,
-      composerOpen, openComposer, closeComposer,
+      composerOpen, openComposer, closeComposer, teleportSeq, composerRequestSeq,
     } = useCompanion();
     const { animState, message, isVisible, isAutoHidden, isHosting } = state;
 
@@ -721,16 +722,48 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     // Retained across the not-hosted teleport: the entity mounts AFTER the request
     // and reads the bridge's retained request so target resolution still honours it.
     const requestedAppIdRef = useRef<string | null>(null);
+    // #3120 (rework) ST-2-R4 — ONE owner: only the OVERLAY applies an open request.
+    // The seat can never render the composer (`CompanionEntity.tsx` render gate), so
+    // having it "consume" the request was wrong-mount consumption. A retained request
+    // (published before this overlay mounted) is applied here once — resolving the
+    // target and then CONSUMING it from the bridge so no later mount re-reads it as
+    // if it were fresh. The settle-open itself stays with the seq effect below.
     useEffect(() => {
+      if (surface !== 'overlay') return;
       const applyRequest = (request: CompanionComposerOpenRequest) => {
         requestedAppIdRef.current = request.appId ?? null;
         openComposer();
+        consumeCompanionComposerRequest();
       };
       const retained = peekCompanionComposerRequest();
-      if (retained) requestedAppIdRef.current = retained.appId ?? null;
+      if (retained) {
+        requestedAppIdRef.current = retained.appId ?? null;
+        // Applied on mount (the late-mount target resolution) — consume so it is a
+        // one-shot hand-off, never a forever-live value a later mount could re-read.
+        consumeCompanionComposerRequest();
+      }
       const unsubscribe = subscribeCompanionComposerOpen(applyRequest);
       return unsubscribe;
-    }, [openComposer]);
+    }, [surface, openComposer]);
+
+    // #3120 (rework) ST-2-R4 (R-3.1) — the ONE settle-open owner. Every relocation
+    // bumps `teleportSeq`; the surface that actually SETTLES owns the open. On a
+    // same-window seat→overlay teleport the seat unmounts in the same commit that
+    // `TELEPORT` lands (its timer cleanup would have killed the old open), and this
+    // overlay is the survivor — it arms the settle here. Away→away re-runs on the
+    // seq bump on the surviving overlay; a fresh overlay mount (seat→overlay, or a
+    // cross-window arrival) arms on its first run because nothing is handled yet.
+    const handledTeleportSeqRef = useRef<number | null>(null);
+    useEffect(() => {
+      if (surface !== 'overlay') return;
+      if (teleportSeq === 0) return;
+      if (handledTeleportSeqRef.current === teleportSeq) return;
+      handledTeleportSeqRef.current = teleportSeq;
+      const settleTimer = setTimeout(() => {
+        openComposer();
+      }, ANIM_DURATION['teleport-in'] + 50);
+      return () => clearTimeout(settleTimer);
+    }, [surface, teleportSeq, openComposer]);
 
     // #2853 ST-3 (round 2): report CONTINUOUS use so the host idle gate suppresses
     // auto-return while Fredo is actively engaged — an open TicTacToe, an active
@@ -946,13 +979,8 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         pendingDestRef.current = null;
         playAnim('idle');
         setState('idle');
-        // #3120 (rework) ST-2 (R-3.1/R-3.2) — the teleport-in SETTLE is the open
-        // trigger: the composer appears (and focuses its input in its own layout
-        // effect) in the destination window, with no click and no polling. The
-        // render is gated to the hosting overlay surface below.
-        openComposer();
       }, ANIM_DURATION['teleport-in'] + 50);
-    }, [clearTimer, teleport, playAnim, setState, openComposer]);
+    }, [clearTimer, teleport, playAnim, setState]);
 
     const startTeleportOut = useCallback((dest: { x: number; y: number }) => {
       clearTimer();
@@ -1778,6 +1806,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         {surface === 'overlay' && composerOpen ? (
           <CompanionComposer
             surface="overlay"
+            focusNonce={composerRequestSeq}
             avatarRect={avatarRect}
             avoidRect={avoidRect}
             viewport={viewport}

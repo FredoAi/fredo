@@ -39,6 +39,19 @@ import {
   subscribeCompanionComposerOpen,
   type CompanionComposerOpenRequest,
 } from '@/shared/companion/composerBridge';
+import {
+  COMPANION_COMPOSER_INPUT_TESTID,
+  COMPANION_COMPOSER_TARGET_TESTID,
+  COMPANION_COMPOSER_TESTID,
+} from '@/shared/components/companion/CompanionComposer';
+import { CompanionEntity, FredoCompanion } from '@/shared/components/companion';
+import { CompanionProvider, useCompanion } from '@/shared/contexts/CompanionContext';
+import {
+  registerApplication,
+  resetApplicationRegistryForTests,
+} from '@/applications/applicationRegistry';
+import type { FredoApplicationClass } from '@/shared/classes';
+import { adapterBridge } from '@/shared/utils/adapterBridge';
 import { resetHotkeyAnnouncer } from '@/shared/hotkeys/announcer';
 import {
   WireframeNavigationProvider,
@@ -377,6 +390,124 @@ describe('WireframeNavigationProvider — host registry + composer bridge (R-1.8
     expect(requests).toEqual([{ source: 'keyboard', appId: 'wireframe', focus: true }]);
     // Ask is not an editor mutation — the consumed stroke appends no journal entry.
     expect(getNavigationJournal().entries().length).toBe(entriesBefore);
+  });
+});
+
+/* ──────────────── R-1.8 end-to-end: pointer/keyboard `Ask` parity (ST-6-R4) ──────────────── */
+
+/**
+ * Spec #3120 (rework) ST-6-R4 — the FAILED round-4 row pinned at the shell seam.
+ *
+ * The durable tests above pin the PUBLISHED REQUEST only; the tester's failure was the
+ * OBSERVABLE: pointer `Ask` #1 opened the composer without focusing its input, and pointer
+ * `Ask` #2 opened nothing at all. This harness mounts the REAL shell plus the REAL companion
+ * (provider + host + seat), so the whole chain — bar activation → bridge request → not-hosted
+ * teleport → overlay settle-open → focus — is exercised as one flow.
+ */
+
+/** Mirrors the launcher's seat predicate (the full launcher shell is a separate surface). */
+function CompanionSeat(): React.ReactElement | null {
+  const { state } = useCompanion();
+  if (!state.isVisible || state.isAway) return null;
+  return <CompanionEntity surface="seat" />;
+}
+
+function FullStack(): React.ReactElement {
+  return (
+    <CompanionProvider>
+      <CompanionSeat />
+      <FredoCompanion />
+      <WireframeEditor />
+    </CompanionProvider>
+  );
+}
+
+function composerCount(): number {
+  return screen.queryAllByTestId(COMPANION_COMPOSER_TESTID).length;
+}
+
+/** The R-1.8 observable: exactly ONE composer, overlay-mounted, focused, `for Wireframe`. */
+async function expectFocusedComposerForWireframe(): Promise<void> {
+  // The overlay's settle-open is a real 450 ms timer in this file (real timers).
+  await waitFor(() => expect(composerCount()).toBe(1));
+  expect(screen.getByTestId(COMPANION_COMPOSER_TESTID).getAttribute('data-composer-surface')).toBe('overlay');
+  expect(screen.getByTestId(COMPANION_COMPOSER_TARGET_TESTID).textContent).toBe('for Wireframe');
+  const input = screen.getByTestId(COMPANION_COMPOSER_INPUT_TESTID);
+  await waitFor(() => expect(document.activeElement).toBe(input));
+  // The request must never open the launcher (a separate mount, absent here by design).
+  expect(screen.queryByTestId('launcher-context')).toBeNull();
+  expect(document.querySelector('[data-testid^="launcher-palette-"]')).toBeNull();
+}
+
+async function mountFullStack(): Promise<void> {
+  localStorage.setItem('Fredo_companion_visible', 'true');
+  renderWithChakra(React.createElement(FullStack));
+  // The seat must be the live entity before any activation (non-vacuity).
+  await waitFor(() => expect(document.querySelector('.fredo-companion-avatar')).not.toBeNull());
+}
+
+/** Move focus off the composer, as a pointer activation of the bar does. */
+function moveFocusToCanvas(): void {
+  const canvas = screen.getByTestId('wireframe-canvas');
+  if (!canvas.hasAttribute('tabindex')) canvas.setAttribute('tabindex', '-1');
+  canvas.focus();
+  expect(document.activeElement).toBe(canvas);
+}
+
+describe('Wireframe `Ask` → companion composer, end-to-end (R-1.8 / ST-6-R4)', () => {
+  beforeEach(() => {
+    localStorage.setItem('Fredo_companion_visible', 'true');
+    registerApplication({
+      id: 'wireframe',
+      name: 'Wireframe',
+      showable: true,
+      icon: () => null,
+      render: () => null,
+    } as unknown as FredoApplicationClass);
+    adapterBridge.setInvoke(async () => undefined);
+    adapterBridge.setListen(() => Promise.resolve(() => {}));
+  });
+
+  afterEach(() => {
+    adapterBridge.setInvoke(undefined as never);
+    adapterBridge.setListen(undefined as never);
+    resetApplicationRegistryForTests();
+    localStorage.removeItem('Fredo_companion_visible');
+  });
+
+  it('pointer `Ask` opens one focused composer, and a second pointer activation re-focuses it', async () => {
+    await mountFullStack();
+
+    fireEvent.click(screen.getByTestId(NAV_RAIL_ASK_TESTID));
+    await expectFocusedComposerForWireframe();
+
+    // Second activation with focus moved away: exactly one composer, focused again.
+    moveFocusToCanvas();
+    expect(document.activeElement).not.toBe(screen.getByTestId(COMPANION_COMPOSER_INPUT_TESTID));
+
+    fireEvent.click(screen.getByTestId(NAV_RAIL_ASK_TESTID));
+
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId(COMPANION_COMPOSER_INPUT_TESTID)));
+    expect(composerCount()).toBe(1);
+    expect(screen.getByTestId(COMPANION_COMPOSER_TARGET_TESTID).textContent).toBe('for Wireframe');
+  });
+
+  it('the `k` stroke produces the same observable, and a repeat `k` re-focuses', async () => {
+    await mountFullStack();
+
+    await act(async () => {
+      fireEvent.keyDown(root(), { key: 'k' });
+    });
+    await expectFocusedComposerForWireframe();
+
+    moveFocusToCanvas();
+    await act(async () => {
+      fireEvent.keyDown(root(), { key: 'k' });
+    });
+
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId(COMPANION_COMPOSER_INPUT_TESTID)));
+    expect(composerCount()).toBe(1);
+    expect(screen.getByTestId(COMPANION_COMPOSER_TARGET_TESTID).textContent).toBe('for Wireframe');
   });
 });
 
