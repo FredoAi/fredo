@@ -4,12 +4,10 @@
 
 ## Context
 
-One capability fans out to five derived sites today — the root keymap
-(`wireframeCommandSurface.ts:216-228`), the `data-hotkey` carrier
-(`WireframeHotkeyCarrier.tsx:40-50`), `TABLE_COMMANDS` (`wireframeCommandSurface.ts:328-342`), the
-companion manifest (`manifest.ts:89-104`), and a toolbar control — and the toolbar list is
-hand-maintained twice. `docs/UX_FLUENCY_RESEARCH.md` §3.3 item 2 names this as "one capability, five
-derived sites". Each hand-maintained list drifts from the others.
+One capability fanned out to five derived sites — the root keymap, the per-element key carrier,
+the table-command spec, the companion manifest (`manifest.ts:89-104`), and a toolbar control —
+and the toolbar list was hand-maintained twice. `docs/UX_FLUENCY_RESEARCH.md` §3.3 item 2 names
+this as "one capability, five derived sites". Each hand-maintained list drifted from the others.
 
 ## Decision
 

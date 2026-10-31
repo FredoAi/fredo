@@ -140,10 +140,10 @@ AI calls: kubectl_restart_deployment({"namespace": "default", "name": "ess-pagel
 
 ### When user reports "it didn't work"
 1. Check browser console logs for:
-   - `[DiagramFeature] Received event: kubectl_restart_deployment Init`
-   - `[DiagramFeature] ✅ Focus target set`
-   - `[ArchitectureDiagram] Auto-focusing on default/ess-pagelayouts-9x`
-   - `[ArchitectureDiagram] Searching for node`
+   - `[Diagram Feature] Received event: kubectl_restart_deployment Init`
+   - `[Diagram Feature] ✅ Focus target set`
+   - `[Architecture Diagram] Auto-focusing on default/ess-pagelayouts-9x`
+   - `[Architecture Diagram] Searching for node`
 
 2. If no focus event:
    - Event might not have reached browser

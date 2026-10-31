@@ -4,10 +4,9 @@
 
 ## Context
 
-Auto-apply is only acceptable when a mistake is reversible and attributable. Today
-`ApplicationCommandSpec` (`apps/ui/src/shared/hotkeys/commandSurface.ts:81-101`) carries no `risk`
-field, and `ApplicationCommandOutcome` (`apps/ui/src/shared/hotkeys/commandSurfaceStore.ts:91-95`)
-carries no journal — nothing records who changed what or how to reverse it.
+Auto-apply is only acceptable when a mistake is reversible and attributable. The retired
+per-application command spec carried no `risk` field, and its outcome type carried no journal —
+nothing recorded who changed what or how to reverse it.
 
 ## Decision
 

@@ -7,17 +7,17 @@
 Seven application surfaces cannot migrate atomically. Adapters are the seam that lets a legacy
 surface keep working while the NavigationEngine lands, but a seam without an end becomes a second
 system — which ADR-2 forbids. The plan names fifteen adapters, each wrapping a specific legacy
-declaration (`WIREFRAME_ACTIONS`, the command surface, the hotkey registry, `data-hotkey` sites).
+declaration (`WIREFRAME_ACTIONS`, the command surface, the hotkey registry, per-element key sites).
 
 ## Decision
 
 Adapters are temporary and exist only during migration, each with a hard deletion deadline. Every
 adapter id `ADP-01` … `ADP-15` carries a `deleteBy` phase: `ADP-01`–`ADP-04` → `P5`,
 `ADP-05`–`ADP-12` → `P7`, and `ADP-13`–`ADP-15` → `P8`. P8 is complete only when a single grep for
-every `ADP-` id over `apps/ui/src/` returns **zero matches**. An adapter MAY expose a legacy surface
+every `ADP-` id over `apps/ui/src/` returns **zero matches** — the condition met since P8 (#3122). An adapter MAY expose a legacy surface
 as declared verbs and MAY translate legacy args; it MUST NOT own state and MUST NOT duplicate
 validation — the `validateSurface()` result is authoritative. App order is Wireframe → terminal
-pass-through + window traversal → diagram → mission-monitor → optimizely → my-work-items → dev-mode.
+pass-through + window traversal → Mission Monitor → Dev Mode.
 
 ## Consequences
 

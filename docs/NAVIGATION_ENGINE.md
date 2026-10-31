@@ -113,7 +113,7 @@ The shape encodes the following binding invariants:
 - **Sticky base.** When a verb completes in a `sticky` place, the place MUST remain current; only `Escape` leaves it.
 - **Root.** `Escape` at the root MUST dispatch nothing and MUST close the innermost open overlay.
 
-The shape matches the shipped command surface — `transient` defaults to true and `sticky` to false at `apps/ui/src/shared/hotkeys/commandSurface.ts:121-124`, and the engine's Escape stack rule is described at `apps/ui/src/shared/hotkeys/sequence.ts:24-26`. This section makes both normative.
+The shape matches the shipped navigation declaration's own transience/stickiness contract and its Escape stack rule (`shared/navigation/resolver.ts`). This section makes both normative.
 
 ### 2.3 Cursor, operator, hooks and aliases
 
@@ -183,7 +183,7 @@ namespace ∈ { place, app, window, journal, companion, <applicationId> }
 
 `place.*` MUST be engine-owned and application-agnostic: the same id means the same thing in every application that declares the matching objects. An application-specific capability MUST use its own namespace (`wireframe.document.new`). **Verb ids are stable public identifiers referenced by the companion manifest and the journal.** Renaming one MUST be treated as a breaking change to `describeContext.version` (§7), and an id MUST NOT be reused for a different capability.
 
-The descriptor is a strict superset of the shipped command spec (`id`/`title`/`description`/`prompt`/`args`/`run` at `apps/ui/src/shared/hotkeys/commandSurface.ts:81-101`), which carries no `risk`, no `appliesTo` and no `undo`. This section adds exactly those three obligations.
+The descriptor replaces the retired per-application command spec (`id`/`title`/`description`/`prompt`/`args`/`run`), which carried no `risk`, no `appliesTo` and no `undo`. This section adds exactly those three obligations.
 
 ## 4. Key resolution
 
@@ -291,8 +291,8 @@ Reserved tokens are matched case-insensitively and canonicalise to their declare
 `+` and `-` are single characters and pass through verbatim. The P5 surface uses the arrows
 for selection (root) and alignment (Arrange) and `+`/`-` for zoom (View).
 
-**`?` and `/` are NOT bindable**: neither shipped grammar can express them
-(`apps/ui/src/shared/hotkeys/hotkeyGrammar.ts:25`, `apps/ui/src/shared/hotkeys/commandSurface.ts:143`),
+**`?` and `/` are NOT bindable**: the declaration grammar cannot express them
+(`shared/navigation/keys.ts`, `shared/navigation/resolver.ts`),
 so the contract binds the map to `m` and ask to `k`. `?` and `/` MAY appear only as *display
 glyphs* in copy (the map and ask affordances); they MUST NOT appear as binding values or as
 tooltip keys. A surface adapter MAY dispatch `?` straight to the declared `app.map` verb
@@ -305,7 +305,7 @@ is fixed at seven.
 
 ### 5.1 One entry point
 
-**All six channels** — `keyboard`, `pointer`, `launcher`, `voice`, `agent` and `system` — MUST call one function, `dispatch(intent)`. **No channel may call a verb's `run` directly**; a direct `run` call is a contract violation. The funnel mirrors the shipped single `executeCommand` (`apps/ui/src/shared/hotkeys/commandSurfaceStore.ts:437`) and its `performed|noop|rejected|failed` outcome vocabulary (`:91-95`).
+**All six channels** — `keyboard`, `pointer`, `launcher`, `voice`, `agent` and `system` — MUST call one function, `dispatch(intent)`. **No channel may call a verb's `run` directly**; a direct `run` call is a contract violation. The funnel is the ONE `dispatch()` entry point with its `performed|noop|rejected|failed` outcome vocabulary.
 
 ```ts
 type Channel = 'keyboard' | 'pointer' | 'launcher' | 'voice' | 'agent' | 'system';
@@ -463,7 +463,7 @@ interface CapabilityLimits {
 | `dirty` | MUST be `true` when the document has unsaved mutations |
 | `limits` | MUST publish the numeric `CapabilityLimits` above; they are the declared ceilings of every field |
 
-The envelope is the **only** read model. The command bar, the teleport-attached composer and the companion **MAY read no other application state**: they MUST NOT read an application store, the command surface, any `data-hotkey` listing, or the journal directly — every value they need MUST arrive in the envelope. `version` MUST bump on any breaking change to the envelope or to a verb id (§3.3).
+The envelope is the **only** read model. The command bar, the teleport-attached composer and the companion **MAY read no other application state**: they MUST NOT read an application store, a binding listing, or the journal directly — every value they need MUST arrive in the envelope. `version` MUST bump on any breaking change to the envelope or to a verb id (§3.3).
 
 ## 8. Discovery derivations
 
@@ -479,7 +479,7 @@ Every discoverable surface MUST be derived from the single declaration — §2 `
 | Hint / next-step | pending prefix + `PlaceTree` + `available(ctx)` | which-key rows 250 ms after arming; after a verb, the place's next 3 available verbs; empty when a hint would duplicate the rail |
 | Onboarding | `PlaceTree` shape (root keys, place count, direct aliases) | the fixed tour steps (root → each place), each step naming that place's `keys`; no hand-written step list |
 | Tooltips | `VerbDescriptor.title` + bound `keys` + `risk` | one string per surface: `"<title> (<binding keys joined by ', '>)"`, plus `" — <risk>"` when risk ≠ safe |
-| Companion manifest | `VerbDescriptor` where `publish === true`, declaration order | `CompanionManifest` — `appId/appName/skillName/description/commands[{id,label,description,risk,args,aliases}]` in declaration order, then the engine-owned `journal.undo` command (`risk: mutating`; optional `actor`/`count` args; aliases `undo`/`revert`), plus the reserved `listActions` entry. The published manifest projects a registered navigation surface ahead of a legacy `commandSurface` for the same `appId` (P6, §P6.7) |
+| Companion manifest | `VerbDescriptor` where `publish === true`, declaration order | `CompanionManifest` — `appId/appName/skillName/description/commands[{id,label,description,risk,args,aliases}]` in declaration order, then the engine-owned `journal.undo` command (`risk: mutating`; optional `actor`/`count` args; aliases `undo`/`revert`), plus the reserved `listActions` entry. The published manifest projects the registered navigation surface for an `appId` — the ONE source since P8 (#3122, §P6.7) |
 | Docs index | `PlaceTree` + `VerbDescriptor.id` | `docs/README.md` rows anchored per place; `app.docs` deep-links to `#<place-slug>` |
 
 ### 8.2 Derivation is the only mechanism
@@ -528,7 +528,7 @@ A surface MUST be reproducible from the declaration alone, and any difference be
 | V-11 | no complete binding is a strict prefix of another binding in the same place | `NAV-E011` | `key "<short>" shadows the longer sequence "<long>" in place "<id>"` |
 | V-12 | every verb has non-empty `title`, `description` and `appliesTo` | `NAV-E012` | `verb "<id>" is incomplete (missing <field>)` |
 
-V-01…V-10 cover the nine §10 obligations (the parent rule splits into V-03 and V-04); V-11 and V-12 are additive and equally binding. V-11 MUST enforce the same strict-prefix shadowing rule the shipped element registry applies (`apps/ui/src/shared/hotkeys/hotkeyElements.ts:220-232`), so a surface that violates it MUST be rejected before dispatch. `valid` MUST be `true` only when `diagnostics` is empty.
+V-01…V-10 cover the nine §10 obligations (the parent rule splits into V-03 and V-04); V-11 and V-12 are additive and equally binding. V-11 MUST enforce the same strict-prefix shadowing rule the shipped declaration validator enforces (`shared/navigation/validation.ts`), so a surface that violates it MUST be rejected before dispatch. `valid` MUST be `true` only when `diagnostics` is empty.
 
 ## 11. Metrics
 
@@ -553,31 +553,31 @@ Legacy surfaces MUST be replaced by declared verbs, not wrapped indefinitely (§
 
 An adapter **MAY** expose its legacy surface as declared verbs and **MAY** translate legacy arguments into `Intent.args`. An adapter **MUST NOT** own state and **MUST NOT** duplicate validation: the `validateSurface()` result (§10) is authoritative, and an adapter MUST NOT carry a second copy of it.
 
-Applications MUST migrate in this fixed order: Wireframe → terminal passthrough + window traversal → diagram → mission-monitor → optimizely → my-work-items → dev-mode.
+Applications MUST migrate in this fixed order: Wireframe → terminal passthrough + window traversal → Mission Monitor → Dev Mode.
 
 ### 12.2 Adapter deletion deadlines
 
-Every adapter MUST be deleted by its `deleteBy` phase; a phase is a hard deadline, not a target, and a `deleteBy` value MUST be one of `P5`, `P6`, `P7` or `P8`.
+Every adapter MUST be deleted by its `deleteBy` phase; a phase is a hard deadline, not a target, and a `deleteBy` value MUST be one of `P5`, `P6`, `P7` or `P8`. **Every adapter below is DELETED** — `ADP-13` and `ADP-15` by P8 (#3122), the rest by their earlier phase.
 
-| Adapter id | Legacy surface it wraps | Target | `deleteBy` |
-|---|---|---|---|
-| `ADP-01-wireframe-actions` | `WIREFRAME_ACTIONS` (`wireframeActions.ts:365-645`) | P5 | **P5** |
-| `ADP-02-wireframe-command-surface` | command-surface declaration (`wireframeCommandSurface.ts:438-444`) | P5 | **P5** |
-| `ADP-03-wireframe-toolbar-list` | hand-listed toolbar groups (`WireframeToolbar.tsx`) | P5 | **P5** |
-| `ADP-04-wireframe-hotkey-carrier` | two-step `data-hotkey` carrier (`WireframeHotkeyCarrier.tsx:73`) | P5 | **P5** |
-| `ADP-05-data-hotkey-discovery` | element listing (`hotkeyElements.ts:47-62`, `:399-421`) | P7 | **P7** |
-| `ADP-06-terminal-passthrough` | implicit terminal passthrough (`terminalMode.ts`) | P7 | **P7** |
-| `ADP-07-window-traversal` | `KEPT_GLOBAL_BINDINGS` (`defaults.ts:38-57`) + `DEFAULT_FREDO_ACTION_DEFS` (`engine.ts:91-120`) | P7 | **P7** |
-| `ADP-08-diagram-key` | `data-hotkey="d"` (`ArchitectureDiagram.tsx:680`) | P7 | **P7** |
-| `ADP-09-mission-monitor-key` | `data-hotkey` in the history drawer | P7 | **P7** |
-| `ADP-10-optimizely-keys` | `data-hotkey` `f/e/c/q` (`OptimizelyFlagsPanel.tsx:461,491,506,533`) | P7 | **P7** |
-| `ADP-11-my-workitems-keys` | `data-hotkey` (`MyWorkItemsContainer.tsx:155`) | P7 | **P7** |
-| `ADP-12-dev-mode-keys` | `data-hotkey` `v` (`DevMode.tsx:609`) | P7 | **P7** |
-| `ADP-13-hotkey-registry` | the third declaration (`registry.ts:59-77`, `:139-166`) | P7 | **P8** |
-| `ADP-14-launcher-palette` | the legacy launcher action palette (`launcherActionPalette.ts`) — **DELETED in P6 (ST-7)** with the `>` palette | P6 | **P6** |
-| `ADP-15-companion-manifest` | `manifest.ts:73-119` + `publisher.ts:55-80` projection | P6 | **P8** |
+| Adapter id | Legacy surface it wrapped | Target | `deleteBy` | Status |
+|---|---|---|---|---|
+| `ADP-01-wireframe-actions` | `WIREFRAME_ACTIONS` (`wireframeActions.ts:365-645`) | P5 | **P5** | **DELETED** |
+| `ADP-02-wireframe-command-surface` | the retired command-mode declaration (`wireframeCommandSurface.ts:438-444`) | P5 | **P5** | **DELETED** |
+| `ADP-03-wireframe-toolbar-list` | hand-listed toolbar groups (`WireframeToolbar.tsx`) | P5 | **P5** | **DELETED** |
+| `ADP-04-wireframe-hotkey-carrier` | the two-step key carrier (`WireframeHotkeyCarrier.tsx:73`) | P5 | **P5** | **DELETED** |
+| `ADP-05-element-key-discovery` | the element listing (`hotkeyElements.ts:47-62`, `:399-421`) | P7 | **P7** | **DELETED** |
+| `ADP-06-terminal-passthrough` | implicit terminal passthrough (`terminalMode.ts`) | P7 | **P7** | **DELETED** |
+| `ADP-07-window-traversal` | the global default bindings (`defaults.ts:38-57`) + the engine's default action defs (`engine.ts:91-120`) | P7 | **P7** | **DELETED** |
+| `ADP-08-diagram-key` | the retired diagram app's single-key binding | P7 | **P7** | **DELETED** |
+| `ADP-09-mission-monitor-key` | the per-element key attribute in the Mission Monitor history drawer | P7 | **P7** | **DELETED** |
+| `ADP-10-feature-flags-keys` | the retired feature-flags app's `f/e/c/q` element keys | P7 | **P7** | **DELETED** |
+| `ADP-11-work-items-keys` | the retired work-items app's element keys | P7 | **P7** | **DELETED** |
+| `ADP-12-dev-mode-keys` | the Dev Mode view's element key `v` | P7 | **P7** | **DELETED** |
+| `ADP-13-hotkey-registry` | the third declaration (the element key registry) | P7 | **P8** | **DELETED in P8 (#3122)** |
+| `ADP-14-launcher-palette` | the legacy launcher action palette (`launcherActionPalette.ts`) — **DELETED in P6 (ST-7)** with the `>` palette | P6 | **P6** | **DELETED** |
+| `ADP-15-companion-manifest` | the second companion-manifest projection (`manifest.ts:73-119` + `publisher.ts:55-80`) | P6 | **P8** | **DELETED in P8 (#3122)** |
 
-The **P8 exit criterion** is a checkable predicate: a single grep for every `ADP-` id over `apps/ui/src/` MUST return ZERO matches. Any match at P8 MUST be treated as an unfinished migration, not as deferred cleanup.
+The **P8 exit criterion** is a checkable predicate: a single grep for every `ADP-` id over `apps/ui/src/` MUST return ZERO matches. Any match at P8 MUST be treated as an unfinished migration, not as deferred cleanup. The predicate is met since P8 (#3122).
 
 ## 13. Testing strategy
 
@@ -1060,14 +1060,13 @@ and agent origins share the one funnel.
 
 ### P6.7 The unified companion manifest and the engine `journal.undo` row
 
-The published manifest is now ONE projection with two possible sources
+The published manifest is ONE projection from ONE source
 (`shared/companion/manifest.ts`): a registered navigation `Surface` projected through
-`shared/navigation/manifest.ts`, or the legacy `feature.commandSurface` projection (the P7
-migration path). **Navigation wins per `appId`** — a registered navigation surface suppresses
-the legacy projection for that app, so an application never publishes two competing capability
-sets; legacy applications keep publishing exactly as before. A navigation command always
-carries all six fields (`id`, `label`, `description`, `risk`, `args`, `aliases`) read from the
-projection, never re-derived from the source verb.
+`shared/navigation/manifest.ts`. There is no second projection and no per-app precedence
+rule — the declaration is the only source, so an application can never publish two competing
+capability sets. A navigation command always carries all six fields (`id`, `label`,
+`description`, `risk`, `args`, `aliases`) read from the projection, never re-derived from the
+source verb.
 
 `journal.undo` has no `VerbDescriptor` (it is an engine verb), so it is appended explicitly by
 `buildCompanionManifest(surface)` after the published verbs and BEFORE the reserved
