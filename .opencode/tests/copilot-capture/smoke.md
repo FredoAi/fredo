@@ -24,7 +24,7 @@
 - **S-1 PASS** — non-empty `<body>` (3 children) after `dev-env.ps1 -Action Up -Spec 2933`.
 - **S-2 PASS** — 0 console `Error:`/`Uncaught`/`Maximum update depth exceeded` (only a pre-existing `motion()` deprecation WARN).
 - **S-3 PASS** — Mission Monitor opened; 14 session rows listed incl. all 3 Copilot fixtures; the Stepper Probe row path is the same `useEventRows` store (verified by the live delivery capture, F-2).
-- **S-4 PASS** — Settings surface opened with the sidebar sections visible (Companion / Appearance / Fredo Setup / Telemetry + feature sections My Work Items / Infrastructure Diagram / Model Storage / Run CLI); Telemetry was NOT opened (G-145 wedge avoided).
+- **S-4 PASS** — Settings surface opened with the sidebar sections visible (the static Companion / Appearance / Fredo Setup / Telemetry sections + the then-discovered feature sections); Telemetry was NOT opened (G-145 wedge avoided). (After P8 the discovered set is the retained `database-client` settings.)
 - **S-5 PASS** — `.opencode/tmp/2933/e2e/smoke.jpeg` captured.
 - **S-6 PASS** — `pragma_table_info` lists a `provider` column on `chat_rows`, `tool_use_rows`, `agent_session_rows`.
 - **S-7 PASS** — `fredo::otlp` logged `HTTP receiver listening` / `gRPC receiver listening`; `telemetry_spans` has recent rows.
