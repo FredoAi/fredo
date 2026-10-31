@@ -1,5 +1,6 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, HStack, Text } from '@chakra-ui/react';
+import { registerDatabaseClientActionHandlers } from '../databaseClientSurface';
 import { toCsv } from '../lib/csv';
 import { toJson } from '../lib/json';
 import type { DbColumn } from '../lib/types';
@@ -65,6 +66,29 @@ export const ExportMenu: React.FC<ExportMenuProps> = ({ columns, rows, disabled 
       setStatus(`Exported ${filename}`);
     },
     [columns, rows],
+  );
+
+  // Spec #3121 (P7), ST-4 — the declared `sql-studio.results.exportCsv` / `.exportJson` verbs
+  // delegate to the SAME frontend download handler (no new capability, no backend write).
+  const exportRef = useRef({ runExport, canExport });
+  exportRef.current = { runExport, canExport };
+  useEffect(
+    () =>
+      registerDatabaseClientActionHandlers({
+        resultsExportCsv: () => {
+          const current = exportRef.current;
+          if (!current.canExport) return false;
+          current.runExport('csv');
+          return true;
+        },
+        resultsExportJson: () => {
+          const current = exportRef.current;
+          if (!current.canExport) return false;
+          current.runExport('json');
+          return true;
+        },
+      }),
+    [],
   );
 
   return (

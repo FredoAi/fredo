@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Button, Flex, Text } from '@chakra-ui/react';
 import { LuPlus, LuX } from 'react-icons/lu';
 import { dbQueryExecute, normalizeDbError } from '../lib/api';
+import { registerDatabaseClientActionHandlers } from '../databaseClientSurface';
 import {
   DBCLIENT_LAYOUT_LIMITS,
   DEFAULT_DB_CLIENT_LAYOUT,
@@ -117,6 +118,12 @@ export interface QueryTabsProps {
   /** Report the active tab's SQL upward (R-4.3 "save current query"). */
   onActiveSqlChange?: (sql: string) => void;
   /**
+   * Spec #3121 (P7), ST-4 — report the active tab id and its active result-set id upward so
+   * the surface's `ctx.selection` carries `query` (C-4: `tab.close` availability) and
+   * `resultSet` (results verbs). Same additive seam shape as `onActiveSqlChange`.
+   */
+  onSelectionChange?: (tabId: string | null, resultSetId: string | null) => void;
+  /**
    * Render an export affordance beside the results grid (R-4.4, ST-7
    * integration). Receives the first result set (or `null`) and the running flag.
    */
@@ -143,12 +150,16 @@ export const QueryTabs: React.FC<QueryTabsProps> = ({
   openRequest = null,
   onQueryComplete,
   onActiveSqlChange,
+  onSelectionChange,
   renderExport,
   editorHeight = DEFAULT_DB_CLIENT_LAYOUT.editorResultsHeight,
   onEditorHeightChange,
 }) => {
   const [tabs, setTabs] = useState<QueryTab[]>(() => [newTab(1)]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  // Spec #3121 (P7), ST-4 — the active result set id reported by `ResultsGrid` (that grid owns
+  // the result-set selector state; the tab row does not).
+  const [activeResultSetId, setActiveResultSetId] = useState<string | null>(null);
 
   // ── Editor ↔ results split (Spec #3049, ST-3) ──────────────────────────────
   // The committed height is a prop (persisted by the shell); the in-flight drag
@@ -219,6 +230,21 @@ export const QueryTabs: React.FC<QueryTabsProps> = ({
   useEffect(() => {
     onActiveSqlChangeRef.current?.(activeTab?.sql ?? '');
   }, [activeTab?.sql]);
+
+  // Spec #3121 (P7), ST-4 — report the active tab + its active result set upward so the
+  // surface's `ctx.selection` carries `query` and `resultSet` (§D.4 / C-4).
+  const onSelectionChangeRef = useRef(onSelectionChange);
+  useEffect(() => {
+    onSelectionChangeRef.current = onSelectionChange;
+  }, [onSelectionChange]);
+
+  useEffect(() => {
+    setActiveResultSetId(activeTab?.resultSets[0]?.resultSetId ?? null);
+  }, [activeTab?.id]);
+
+  useEffect(() => {
+    onSelectionChangeRef.current?.(activeTab?.id ?? null, activeResultSetId);
+  }, [activeTab?.id, activeResultSetId]);
 
   // Load external SQL into the active tab (no auto-execute — R-4.2/R-4.3).
   useEffect(() => {
@@ -388,6 +414,28 @@ export const QueryTabs: React.FC<QueryTabsProps> = ({
     [tabs, activeId],
   );
 
+  // Spec #3121 (P7), ST-4 — the declared `sql-studio.tab.new` / `.tab.close` verbs delegate to
+  // the SAME handlers the pointer controls use (one latest-value ref; no stale closures).
+  const tabActionsRef = useRef({ tabs, addTab, closeTab });
+  tabActionsRef.current = { tabs, addTab, closeTab };
+  useEffect(
+    () =>
+      registerDatabaseClientActionHandlers({
+        tabNew: () => {
+          tabActionsRef.current.addTab();
+          return true;
+        },
+        tabClose: (tabId) => {
+          const current = tabActionsRef.current;
+          if (current.tabs.length <= 1) return false;
+          if (!current.tabs.some((tab) => tab.id === tabId)) return false;
+          current.closeTab(tabId);
+          return true;
+        },
+      }),
+    [],
+  );
+
   const completions = useMemo<DbCompletion[]>(
     () => schemaNodes.map((node) => ({ label: node.name, kind: node.kind })),
     [schemaNodes],
@@ -536,6 +584,7 @@ export const QueryTabs: React.FC<QueryTabsProps> = ({
                   running={activeTab.running}
                   onResultSetUpdated={handleResultSetUpdated}
                   onLoadMoreError={handleLoadMoreError}
+                  onActiveResultSetChange={setActiveResultSetId}
                 />
               </Box>
             </Flex>

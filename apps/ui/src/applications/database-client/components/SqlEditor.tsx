@@ -1,6 +1,7 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Button, Flex, HStack, Text, Textarea } from '@chakra-ui/react';
 import { LuPlay, LuTriangleAlert } from 'react-icons/lu';
+import { registerDatabaseClientActionHandlers } from '../databaseClientSurface';
 import type { DbObjectKind, DbQueryError, QueryMode, TextRange } from '../lib/types';
 
 /**
@@ -244,6 +245,30 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
     if (disabled || running) return;
     onRun({ mode: 'all', selection: null });
   }, [disabled, running, onRun]);
+
+  // Spec #3121 (P7), ST-4 — the declared `sql-studio.query.run` / `.runAll` verbs delegate to
+  // these SAME handlers, so the declared outcome is byte-identical to the shipped chord/button.
+  // `Ctrl/Cmd+Enter` is NOT moved out of the editor (D-3(b)): the text-entry owner keeps it.
+  const runRef = useRef({ runSingle, runAll, disabled, running });
+  runRef.current = { runSingle, runAll, disabled, running };
+  useEffect(
+    () =>
+      registerDatabaseClientActionHandlers({
+        queryRun: () => {
+          const current = runRef.current;
+          if (current.disabled || current.running) return false;
+          current.runSingle();
+          return true;
+        },
+        queryRunAll: () => {
+          const current = runRef.current;
+          if (current.disabled || current.running) return false;
+          current.runAll();
+          return true;
+        },
+      }),
+    [],
+  );
 
   const accept = useCallback(
     (label: string) => {
