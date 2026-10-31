@@ -25,7 +25,7 @@ import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/re
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { deriveMap } from '@/shared/navigation';
-import { getFocusableElements } from '@/shared/hotkeys/traversal';
+import { getFocusableElements } from '@/shared/window-system/traversal';
 import {
   NAV_GLYPH_ACCESSIBLE_NAME,
   NAV_MAP_ALIASES_HEADING,

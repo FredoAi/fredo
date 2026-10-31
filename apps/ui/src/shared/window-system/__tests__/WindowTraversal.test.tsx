@@ -26,10 +26,11 @@ import {
   resetWindowStoreForTests,
   subscribeWindows,
 } from '../windowStore';
-import { installHotkeyEngine, resetHotkeyEngineForTests } from '@/shared/hotkeys/engine';
-import { resetRegistryForTests } from '@/shared/hotkeys/registry';
-import { resetKeymapStoreForTests } from '@/shared/hotkeys/store';
-import { focusPreviousWindow, resetWindowTraversalForTests } from '@/shared/hotkeys/traversal';
+import {
+  installNavigationKeyDispatch,
+  resetNavigationKeyDispatchForTests,
+} from '@/shared/navigation/ui';
+import { focusPreviousWindow, resetWindowTraversalForTests } from '../traversal';
 
 function WindowHarness() {
   const windows = useSyncExternalStore(subscribeWindows, getWindowSnapshot, getWindowSnapshot);
@@ -64,10 +65,8 @@ let scrollSpy: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   resetWindowStoreForTests();
-  resetRegistryForTests();
-  resetKeymapStoreForTests();
   resetWindowTraversalForTests();
-  resetHotkeyEngineForTests();
+  resetNavigationKeyDispatchForTests();
   document.body.innerHTML = '';
   scrollSpy = vi.fn();
   (HTMLElement.prototype as unknown as { scrollIntoView?: unknown }).scrollIntoView = scrollSpy;
@@ -76,8 +75,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   resetWindowTraversalForTests();
-  resetHotkeyEngineForTests();
-  resetRegistryForTests();
+  resetNavigationKeyDispatchForTests();
   resetWindowStoreForTests();
   document.body.innerHTML = '';
   delete (HTMLElement.prototype as unknown as { scrollIntoView?: unknown }).scrollIntoView;
@@ -107,9 +105,9 @@ describe('WindowFrame — traversal DOM hooks (contract block 7)', () => {
 
 // ── R-1.1/R-1.2 — engine chord raises + places content focus ─────────────────
 
-describe('traversal — keyboard raise via the engine chord (R-1.1/R-1.2)', () => {
+describe('traversal — keyboard raise via the navigation chord (R-1.1/R-1.2)', () => {
   it('Ctrl+Tab raises the next window and focuses its first CONTENT control', () => {
-    installHotkeyEngine();
+    installNavigationKeyDispatch();
     openFeature('a');
     openFeature('b'); // 'b' focused
     renderWithChakra(<WindowHarness />);
@@ -126,8 +124,8 @@ describe('traversal — keyboard raise via the engine chord (R-1.1/R-1.2)', () =
     expect(document.activeElement).not.toBe(document.body);
   });
 
-  it('ctrl+1..9 no longer switches windows (digits freed for element hotkeys)', () => {
-    installHotkeyEngine();
+  it('ctrl+1..9 no longer switches windows (digits belong to element-scoped keys)', () => {
+    installNavigationKeyDispatch();
     openFeature('a');
     openFeature('b');
     renderWithChakra(<WindowHarness />);

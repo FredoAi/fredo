@@ -46,7 +46,7 @@ import { registerHotkeyHandler, resetRegistryForTests } from '@/shared/hotkeys/r
 import {
   isWindowTraversalInstalled,
   resetWindowTraversalForTests,
-} from '@/shared/hotkeys/traversal';
+} from '../traversal';
 import { WindowManager } from '../WindowManager';
 import {
   WINDOW_FOCUS_NEXT_VERB_ID,

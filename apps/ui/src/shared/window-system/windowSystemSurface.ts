@@ -26,7 +26,7 @@ import type {
   VerbDescriptor,
   VerbEffect,
 } from '../navigation';
-import { focusNextWindow, focusPreviousWindow } from '../hotkeys/traversal';
+import { focusNextWindow, focusPreviousWindow } from './traversal';
 import { runWindowLauncherToggle } from './launcherToggleSeam';
 import { getWindowSnapshot } from './windowStore';
 

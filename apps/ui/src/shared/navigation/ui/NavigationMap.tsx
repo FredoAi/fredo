@@ -28,12 +28,12 @@ import { Box, chakra, Dialog, Icon, Text } from '@chakra-ui/react';
 import { LuCircleSlash, LuExternalLink, LuSearch, LuTriangleAlert } from 'react-icons/lu';
 import type { IconType } from 'react-icons';
 
-import type { Platform } from '../../hotkeys/types';
+import type { Platform } from '../types';
 import {
   getFocusableElements,
   restoreTransientFocus,
   scrollIntoViewIfNeeded,
-} from '../../hotkeys/traversal';
+} from '../../window-system/traversal';
 import {
   NAV_AVAILABILITY_ATTR,
   NAV_CURRENT_ATTR,

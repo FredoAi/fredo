@@ -429,3 +429,42 @@ export interface ConfirmationRequest {
     | { readonly undoable: false; readonly reason: typeof NOT_UNDOABLE_REASON };
   readonly externalParty: string | null;
 }
+
+/* ───────────── Spec #3122 (P8), ST-1 — relocated keyboard vocabulary ───────────── */
+
+/**
+ * A platform the primary-modifier decision is made for (relocated verbatim from the
+ * retired hotkey types; the navigation layer now owns the ONE key model).
+ */
+export type Platform = 'win32' | 'linux' | 'darwin';
+
+/**
+ * One chord step. `key` is the TYPED CHARACTER (`KeyboardEvent.key`), never `code`:
+ * a single character is stored verbatim (case-sensitive, Shift folded in); a named key
+ * becomes its lowercase token (`space`, `tab`, `escape`, `f10`, …).
+ *
+ * `primary` is the platform-neutral primary modifier (Ctrl on win32/linux, Meta on darwin);
+ * `ctrl`/`meta` are the EXPLICIT platform-specific modifiers and are never set while that
+ * modifier is acting as the primary one.
+ */
+export interface KeyStroke {
+  readonly key: string;
+  readonly primary: boolean;
+  readonly ctrl: boolean;
+  readonly alt: boolean;
+  readonly shift: boolean;
+  readonly meta: boolean;
+}
+
+/** Ordered chord steps; a real binding has length >= 1. */
+export type KeySequence = readonly KeyStroke[];
+
+/**
+ * The focus classification of `document.activeElement` (the ONE focus vocabulary):
+ * - `text-entry`  — INPUT / TEXTAREA / SELECT / contenteditable / role=textbox
+ * - `terminal`    — inside `[data-fredo-terminal-root="true"]`
+ * - `modal`       — inside `[role="dialog"][aria-modal="true"]`, or a global open modal
+ * - `interactive` — a focusable control that may natively act on a bare key
+ * - `default`     — everywhere else
+ */
+export type FocusContext = 'text-entry' | 'terminal' | 'modal' | 'interactive' | 'default';

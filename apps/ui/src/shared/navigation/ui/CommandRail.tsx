@@ -41,7 +41,7 @@ import { Box, chakra, Icon, Separator, Text, VisuallyHidden } from '@chakra-ui/r
 import { LuCircleSlash, LuExternalLink, LuTriangleAlert } from 'react-icons/lu';
 import type { IconType } from 'react-icons';
 
-import type { Platform } from '../../hotkeys/types';
+import type { Platform } from '../types';
 import {
   NAV_BAR_MIN_HEIGHT_PX,
   NAV_BAR_ROW_GAP_PX,
