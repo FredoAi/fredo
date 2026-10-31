@@ -25,9 +25,10 @@
 > `wireframe-file-error` (rendered by ST-6's `WireframeFileError` in the editor shell,
 > between the canvas and the status bar — C8 adjudication 3). There is **no**
 > `data-wireframe-selection-props`: that hook is DECLINED (C7 adjudication 7 / G-324).
-> Shipped hooks consumed: `data-fredo-hotkey-count`, `data-fredo-hotkey-duplicate`,
-> `data-fredo-hotkeys-disabled`, `data-fredo-focus-context`, `hotkeys-keybar`,
-> `hotkeys-keybar-row` (+ `data-hotkey-key`), `hotkeys-duplicate-error`.
+> Shipped hooks consumed: `data-fredo-passthrough` (terminal) and the navigation hooks
+> `data-nav-keycap`, `data-nav-verb-id`, `data-nav-availability` (bound in
+> `shared/navigation/ui/constants.ts`). The legacy element-key hooks were DELETED in P8 / #3122;
+> their absence is gate-owned by `legacyAbsence.test.ts`.
 
 ## Harness (run before every leg)
 
@@ -42,9 +43,9 @@
   `OPEN_PATH` per bad-document fixture (F-50/F-51/F-52).
 - **Driver:** `tauri_driver_session start`, `appIdentifier` = the env's MCP port as a decimal
   string (`"16001"` for slot 1) — never the bare bundle id.
-- **Focus gate before every hotkey press:** `document.activeElement === document.body`,
-  `document.body[data-fredo-focus-context]`=`default`, and
-  `document.body[data-fredo-hotkeys-disabled]` not `true`. A focused interactive control
+- **Focus gate before every key press:** `document.activeElement === document.body` and no
+  text-entry control focused (the navigation `text-entry` focus context must not suppress the
+  declared stroke). A focused interactive control
   (`<button>`, `[tabindex>=0]`) makes bare keys pass through (`sequence.ts:146`), and the canvas
   host is itself `tabIndex={0}` — so NEVER `.focus()` it: reach the gate via a pointer-down on
   the empty canvas (explicit blur, UI/UX §2.3) or a pointer toolbar activation (`detail > 0`
@@ -263,7 +264,7 @@
       Slice-1 bare `g`/`m` by Spec #3071 ST-4 — change `-zoom` by the same declared step each
       press (record consecutive values); the page visibly scales; `-element-count` and the
       document are unchanged. The bare key `g` now only ARMS the two-step namespace
-      (`hotkeys-keybar-pending`), and the freed first step `m` dispatches nothing.
+      (the navigation bar's 250 ms pending hint), and the freed first step `m` dispatches nothing.
       **Edge:** at 100 %; with a selection (handles scale, selection kept); alternate
       `g i`/`g o` back to 100.
 - [ ] **F-27 (R-4.3)** Pan mode translates the VIEW only.
@@ -383,42 +384,35 @@
       sequences** in the `g` namespace — `g i` (zoom in) / `g o` (zoom out), re-bound from the
       Slice-1 bare `g`/`m`, plus the 10 arrange rows `g g` / `g u` / `g l` / `g s` / `g a` /
       `g c` / `g r` / `g d` / `g f` / `g b` — produces its action's observable effect (the
-      `hotkeys-keybar-pending` chip shows between the two strokes). Clicking its
+      navigation bar's pending hint shows between the two strokes). Clicking its
       `[data-testid="wireframe-action-<suffix>"]` produces an INDISTINGUISHABLE effect. A
       POINTER toolbar activation blurs the control (UI/UX §3.14), so the very next bare key
       fires — verify that loop for at least `1`, `p`, `u`.
       **Edge:** `u`/`y` on empty history; `l`/`p`/`k` with no selection; `w`/`o`/`t` in the
       seam env (all three path seams set at once); each key pressed twice; a lone `g` does
       nothing after the 1000 ms prefix timeout.
-- [ ] **F-38 (R-5.2)** The always-on bar lists all 32 while focused.
-      **Expected:** `[data-testid="hotkeys-keybar-row"]` contains a row for every one of the
-      32 bindings — 21 distinct `data-hotkey-key` first-step values (the 20 bare keys plus the
-      shared `g` namespace, which may now repeat) — each with a non-empty human title;
-      `document.body[data-fredo-hotkey-count]` is exactly 32 higher than with the host
-      unfocused.
-      **Edge:** other windows open (their rows also listed); narrow viewport (rows
-      scroll/are not clipped); the digit key `0` renders correctly; each of the 12
-      `g`-namespace rows renders as TWO chips.
-- [ ] **F-39 (R-5.3)** Text-entry suppression in the property panel.
-      **Expected:** with a panel field focused, typing `1`, `p`, `k`, `n` lands the characters
-      in the field, `data-fredo-hotkeys-disabled`=`true`, and count + document are UNCHANGED.
+- [ ] **F-38 (R-5.2 — historical; current model).** The bar lists the declaration's rows.
+      **Expected (current):** `navigation-bar` contains a row (`data-nav-verb-id`) for the
+      current place's declared verbs, each with a non-empty title and a `data-nav-keycap` hint;
+      no legacy element-key row exists (the committed `legacyAbsence.test.ts` owns the literal
+      absence). **Edge:** other windows open; narrow viewport (rows scroll/are not clipped); the
+      digit/arrow reserved strokes render their glyphs.
+- [ ] **F-39 (R-5.3 — historical; current model).** Text-entry suppression in the property
+      panel. **Expected:** with a panel field focused, typing `1`, `p`, `k`, `n` lands the
+      characters in the field and no navigation verb fires (the declaration's `text-entry`
+      focus-context rule); the document is unchanged.
       **Edge:** each text-entry control (label, content, numeric dims); blur then press `1`
       (fires); a digit typed into the page width field.
-- [ ] **F-40 (R-5.4)** Unfocused Wireframe neither dispatches nor lists.
-      **Expected:** focus another window ⇒ the 32 `data-hotkey` attributes are gone from
-      `[data-testid="wireframe-toolbar"]`, `data-fredo-hotkey-count` drops by exactly 32, no
-      wireframe row remains, and pressing `1` from the other window's `default` context adds
-      nothing. The toolbar buttons stay VISIBLE and CLICKABLE and **no keychip slot exists in
-      either state** (Spec #3087 — the on-control chip is REMOVED, not hidden) so the toolbar
-      height still does not change across focus (UI/UX §3.13, superseded by #3087).
-      **Edge:** focus returns (attributes restored, count back up 32, **no chip in either
-      state**); toolbar height unfocused vs focused (±0 px); two windows open.
-- [ ] **F-41 (R-5.5)** No duplicate-key collision.
-      **Expected:** `document.body[data-fredo-hotkey-duplicate]` is ABSENT with Wireframe
-      focused, with it open-but-unfocused, and with Mission Monitor + Diagram + Wireframe all
-      open; `[data-testid="hotkeys-duplicate-error"]` absent; console clean of the DEV
-      duplicate throw.
-      **Edge:** every launcher app open at once; focus toggled 10×.
+- [ ] **F-40 (R-5.4 — historical; current model).** Unfocused Wireframe neither dispatches nor
+      lists. **Expected:** focus another window ⇒ the Wireframe rows leave the bar; pressing `1`
+      from the other window's context adds nothing to Wireframe. No legacy element-key attribute
+      exists in either state (`legacyAbsence.test.ts` green).
+      **Edge:** focus returns (rows restored); two windows open.
+- [ ] **F-41 (R-5.5 — historical; current model).** No duplicate-stroke collision.
+      **Expected:** `validation.test.ts` V-07 yields exactly one `NAV-E007` for a duplicate-stroke
+      fixture; the shipped Wireframe surface validates with zero diagnostics; console clean of
+      any duplicate throw.
+      **Edge:** every retained app open at once; focus toggled 10×.
 - [ ] **F-42 (R-5.1 platform note, non-AC)** Bare key with a toolbar `<button>` focused.
       **Expected:** NOTHING happens (shipped `native-consumer` rule, `sequence.ts:146`).
       Record as expected platform behaviour — a no-op here is NOT a FAIL; the AC path is the
@@ -843,12 +837,12 @@ plan; the two REQ-1 named presets clear 4.5.
 > `telemetry_spans` receipt expected; per-row evidence is a quoted `tauri_webview_*` result
 > carrying the named testid + the OBSERVED value, plus an uploaded capture for the visual rows.
 >
-> **RE-BASELINE (never delete — G-125).** This slice adds 10 hotkeyed controls, so the Slice-1
-> exact-count assertions change **22 → 32**: `F-37` (all bindings), `F-38` (bar rows),
-> `F-39`/`F-40` (mounted-count deltas), `smoke.md` `S-9`, and `regression.md` `R-1`/`R-2`/`R-3`.
-> The tester re-baselines the COUNT to 32 and keeps every other clause; no assertion is deleted
-> or weakened. The new rows' `data-hotkey-key` is the FIRST step `g` (now repeated across the
-> namespace) and their serialized display is the two-step form.
+> **RE-BASELINE (never delete — G-125).** This slice added 10 hotkeyed controls, so the legacy
+> count assertions moved 22 → 32 at #3071. **P5/P8 supersession:** the legacy element-key channel
+> and its counts are DELETED; the current surface is the declaration-driven place surface
+> (`navigation-bar` + `data-nav-*`). The rows below keep their behavioural outcomes (selection,
+> grouping, snap, alignment, undo), with the invoker re-pointed to the declared keys (`a g`,
+> `a s`, `a ←`).
 >
 > **Other Slice-1 rows re-baselined in place (expected value only, never deleted):**
 > `F-7` (selection chrome now `palette.accent`, not `--accent-strong`), `F-9` (shift-click ADDS
@@ -876,8 +870,8 @@ plan; the two REQ-1 named presets clear 4.5.
       **Edge:** remove down to empty; remove the primary (primary becomes the new last in
       document order); remove then re-add; remove all then a plain click selects one.
 - [ ] **F-63 (R-1.3)** Group creates ONE group, geometry unchanged.
-      **Expected:** select ≥2, invoke `wireframe.arrange.group` (hotkey `g+g` / toolbar
-      `wireframe-action-arrange-group` / Companion id) ⇒ `-group-count` +1, `-selection-group` =
+      **Expected:** select ≥2, invoke `wireframe.arrange.group` (declared stroke `a` then `g` /
+      map row / Companion id) ⇒ `-group-count` +1, `-selection-group` =
       the NEW group id, `wireframe-tag-group` shown, `-selection-ids` unchanged, and EVERY
       member's `-selection-geometry` is string-identical pre/post.
       **Edge:** exactly 2; the whole page; each of the three invokers; members already in another
@@ -922,10 +916,10 @@ plan; the two REQ-1 named presets clear 4.5.
       **Edge:** lock 2 of 3; resize the group; the locked member's former handle coordinates do
       nothing; unlock mid-group and re-drag.
 - [ ] **F-69 (R-2.1)** `toggleSnap` flips + reports state.
-      **Expected:** `wireframe.arrange.toggleSnap` (`g+s` / `wireframe-action-arrange-toggleSnap`
-      / Companion) ⇒ `wireframe-root[data-wireframe-snap]` flips `'false'`↔`'true'` AND the
-      toolbar control's `aria-pressed` matches; `-dirty` and the undo depth UNCHANGED (editor
-      state, not document state).
+      **Expected:** `wireframe.arrange.toggleSnap` (declared stroke `a` then `s` / map row /
+      Companion) ⇒ `wireframe-root[data-wireframe-snap]` flips `'false'`↔`'true'` AND the
+      map/rail row's state matches; `-dirty` and the undo depth UNCHANGED (editor state, not
+      document state).
       **Edge:** toggle twice; toggle then Save/Open (snap absent from the document); toggle with
       a selection; each invoker.
 - [ ] **F-70 (R-2.2)** Snap lands the origin on the nearest grid multiple.
@@ -979,16 +973,13 @@ plan; the two REQ-1 named presets clear 4.5.
       "nothing changed".
       **Edge:** each invoker × each under-sized case; a visibly-disabled toolbar control still
       no-ops when invoked; the Companion reply text is honest.
-- [ ] **F-76 (R-3.1)** Hotkey / toolbar / Companion parity + bar listing for all 10 actions.
-      **Expected:** for each of the 10 new actions the always-on bar lists a
-      `hotkeys-keybar-row` with `data-hotkey-key`=`g` and the two-step serialized form; the
-      hotkey (ARMED — `document.body[data-fredo-pending-sequence]`=`g` then the second key, with
-      `hotkeys-keybar-pending` shown) produces the SAME visible change as the toolbar
-      `wireframe-action-arrange-*` control and as the Companion action id;
+- [ ] **F-76 (R-3.1 — historical; current model)** Declaration / map / Companion parity.
+      **Expected:** for each of the 10 actions the `navigation-bar` lists a row
+      (`data-nav-verb-id`) with its `data-nav-keycap` hint; the declared stroke produces the SAME
+      visible change as the map row and as the Companion command id;
       `wireframe.companion.listActions` contains all 10 ids with non-empty descriptions.
-      **Edge:** each action × all three invokers; the pending chip after the first `g`; re-bound
-      `zoom.in` `g+i` / `zoom.out` `g+o` still work; a lone `g` does nothing after the 1000 ms
-      timeout; `m` is free (no duplicate).
+      **Edge:** each action × all three invokers; the 250 ms prefix hint after the first stroke;
+      `zoom.in` (`v` `+`) / `zoom.out` (`v` `-`) still work; no duplicate stroke (V-07).
 - [ ] **F-77 (R-3.2)** Save As…/Open restores groups + stacking.
       **Expected:** build a document with ≥2 groups (one locked) and a non-default stacking
       order, Save As…, then `document.new` + Open ⇒ `-group-count` matches, the saved JSON
@@ -1072,59 +1063,45 @@ plan; the two REQ-1 named presets clear 4.5.
 > -EnvSlot 1 -RequireIsolation`; driver `tauri_driver_session start` with `appIdentifier` = the
 > env MCP port decimal string. Do **not** synthesize key events (E-22).
 
-- [ ] **F-84 (R-1)** No hotkey chip on any toolbar control while FOCUSED.
-      **Expected:** with the host focused (`data-fredo-focus-context=default`),
-      `document.querySelectorAll('[data-testid="wireframe-toolbar"] [data-testid="wireframe-hotkey-chip"]').length === 0`
-      AND `... [data-testid="hotkeys-keycap"]').length === 0`; all **33**
-      `[data-testid^="wireframe-action-"]` controls render; exactly **32** carry `data-hotkey`.
-      A capture of the toolbar is uploaded.
-      **Edge:** two-step controls (`g+g`…`g+b`); `wireframe-action-document-new` (no binding);
-      the two insert-menu chevrons (never had a chip); `full` (insert) and `compact` densities.
-- [ ] **F-85 (R-1.2)** No hotkey chip on any toolbar control while UNFOCUSED.
-      **Expected:** focus another window (or the app's own `app-wireframe` host) ⇒ the same two
-      counts are `0` and `[data-testid="wireframe-toolbar"] [data-hotkey]` count is `0`; the
-      attribute is REMOVED, never `''`. A chip present even with `visibility:hidden` = FAIL.
-      **Edge:** toggle focus 10×; the toolbar renders no chip in either state.
-- [ ] **F-86 (R-2)** The bar lists every shortcut and a shortcut still performs its action.
-      **Expected:** focused `data-fredo-hotkey-count` − unfocused count `=== 32`; one
-      `[data-testid="hotkeys-keybar-row"]` per mounted `data-hotkey` control, each with a
-      non-empty title; pressing bare `1` then the two-step `g` `g` (real driver keys, from the
-      `default` context) produces the SAME store/document delta as clicking
-      `wireframe-action-add-text` / `wireframe-action-arrange-group`.
-      **Edge:** `wireframe.document.new` has NO bar row; two-step rows render two chips; a bare
-      key after a pointer toolbar activation still fires (UI/UX §3.14).
-- [ ] **F-87 (R-3)** Keyboard operability + accessible name/tooltip unchanged.
-      **Expected:** Tab order is identical to the pre-change order; every control's `aria-label`
-      is `${label|description} (${hotkey})`; the compact-control tooltip is
-      `${description} (${hotkey})`; nothing derives from the removed (aria-hidden) chip.
-      **Edge:** `document.new` (no `(hotkey)` suffix); a locked control (`aria-pressed=true`); a
-      disabled control.
-- [ ] **F-88 (R-4)** Unit suite + build.
-      **Expected:** `pnpm --filter @fredo/ui test:run -- WireframeToolbar.hotkeys` green with the
-      chip-**absence** pins (no `wireframe-hotkey-chip` / "2 chips / 1 chip" assertion survives);
-      `pnpm --filter @fredo/ui build` exit 0 zero TS errors. No weakened/deleted assertion
-      (G-125). Cross-ref `regression.md` R-19.
+- [ ] **F-84 (R-1 — historical #3087; current model)** No on-control key chip exists.
+      **Expected (current):** the deleted toolbar/chip has no successor; the bar renders key
+      hints through `NavKeycap` (`data-nav-keycap`) and the rail/map rows carry
+      `data-nav-verb-id`; zero legacy element-key attributes under `wireframe-root`
+      (`legacyAbsence.test.ts` green). A capture of the bar is uploaded.
+      **Edge:** every place; the insert affordance; both theme presets.
+- [ ] **F-85 (R-1.2 — historical)** The absence holds unfocused too.
+      **Expected:** focus another window ⇒ the Wireframe rows leave the bar and no legacy
+      element-key attribute appears in either state. **Edge:** toggle focus 10×.
+- [ ] **F-86 (R-2 — historical)** A declared key performs its verb.
+      **Expected:** with the Wireframe host focused, pressing a declared stroke (`c`, then `t`)
+      produces the SAME document delta as activating the corresponding map/rail row.
+      **Edge:** a place with no bound verbs (no row); a two-step prefix renders its hint.
+- [ ] **F-87 (R-3 — historical)** Keyboard operability + accessible name/tooltip.
+      **Expected:** Tab order is identical to the pre-change order; every retained control's
+      accessible name is unchanged; the map/rail rows expose the verb title + `data-nav-keycap`
+      hint; nothing derives from a removed chip.
+      **Edge:** a disabled (unavailable) row; a locked control.
+- [ ] **F-88 (R-4 — historical)** Unit suite + build.
+      **Expected:** `pnpm --filter @fredo/ui test:run -- src/shared/navigation` green (including
+      `keycap.test.tsx`); `pnpm --filter @fredo/ui build` exit 0 zero TS errors; no
+      weakened/deleted assertion (G-125). Cross-ref `regression.md` R-19.
       **Edge:** full `test:run` green; `contrast:gate` zero wireframe hits.
-- [ ] **F-89 (edge)** Toolbar height stable across focus (no reserved slot).
-      **Expected:** `wireframe-toolbar` height focused vs unfocused is identical (±0 px); no
-      keychip slot exists in either state (supersedes UI/UX §3.13).
-      **Edge:** toolbar width/wrap may differ ONCE from the pre-change build (static, identical
-      in both states) — NOT a focus reflow.
-- [ ] **F-90 (edge)** `Keycap`'s other consumers intact.
-      **Expected:** `hotkeys-keycap` chips still render in the always-on bar's non-Wireframe rows
-      (`HotkeyBar.tsx:154,318`) and in `LauncherActionList.tsx:114`; `src/index.ts:32` still
-      re-exports `Keycap`; `Keycap.test.tsx` green.
-      **Edge:** a two-step Wireframe bar row still renders two chips.
+- [ ] **F-89 (edge — historical)** Bar height stable across focus.
+      **Expected:** `navigation-bar` height focused vs unfocused is identical (±0 px); no
+      reserved chip slot exists in either state.
+      **Edge:** wrap may change once between states — NOT a focus reflow.
+- [ ] **F-90 (edge — historical)** `NavKeycap` consumers intact.
+      **Expected:** `data-nav-keycap` hints render in the bar/map/rail; the navigation barrel
+      exports `NavKeycap`; `keycap.test.tsx` green.
+      **Edge:** a two-key hint renders two glyphs.
 
 ## Spec #3119 (P5) — Wireframe pilot: RE-BASELINE of every keyboard / toolbar / bar recipe
 
 > **Nothing above is deleted (G-125).** Spec #3119 replaces the toolbar + element hotkeys with a
 > **declaration-driven place surface**: `applications/wireframe/wireframeSurface.ts` (six places
 > under `Canvas`, 55 verbs, 3 root direct aliases) mounted with `CommandRail` +
-> `NavigationMap` + `ActivityTrail`. `wireframeCommandSurface.ts`,
-> `components/WireframeHotkeyCarrier.tsx` and `components/WireframeToolbar.tsx` are DELETED;
-> `WIREFRAME_ACTIONS.hotkey` and every `g+*` binding are REMOVED; no Wireframe element carries
-> `data-hotkey`.
+> `NavigationMap` + `ActivityTrail`. The legacy toolbar, carrier, command surface and every
+> element-key binding are DELETED; no Wireframe element carries a legacy key attribute.
 >
 > **Authoritative amendments below.** Where a row above names a removed key, hook or testid,
 > the amendment in this section is the executable recipe — the row's EXPECTED OUTCOME is
@@ -1133,15 +1110,14 @@ plan; the two REQ-1 named presets clear 4.5.
 > `.opencode/tests/wireframe-navigation/functional.md` (F-N1…F-N24) and are not duplicated here.
 >
 > **Deleted hooks / premises (a row that reads one of these is a technique error, not a FAIL
-> of the product):** `wireframe-toolbar`, `wireframe-hotkey-carrier`, `wireframe-action-<suffix>`,
-> `wireframe-hotkey-chip`, `data-hotkey` inside `wireframe-root`, the `g` two-step namespace,
-> `data-fredo-pending-sequence` for Wireframe strokes, `hotkeys-keybar-row` rows for Wireframe,
-> the 32-binding counts (22 → 32 history); the companion `commandSurface` path
-> (`wireframe.companion.*`) is deferred to P6 (see Q-1 below).
+> of the product):** the legacy toolbar/carrier/action testids, the legacy on-control chip, any
+> legacy element-key attribute inside `wireframe-root`, the retired two-step namespace, the
+> legacy pending-sequence marker for Wireframe strokes, legacy bar rows for Wireframe, and the
+> retired binding counts. The absence is gate-owned by `legacyAbsence.test.ts`.
 >
-> **Two timeouts:** the NAV ENGINE prefix times out at **250 ms**
-> (`PENDING_TIMEOUT_MS`, `shared/navigation/types.ts:17`). The legacy 1000 ms
-> `PENDING_SEQUENCE_TIMEOUT_MS` (`shared/hotkeys/engine.ts:64`) no longer governs Wireframe.
+> **One timeout:** the NAV ENGINE prefix times out at **250 ms**
+> (`PENDING_TIMEOUT_MS`, `shared/navigation/types.ts:17`). The legacy 1000 ms sequence timeout
+> belonged to the deleted engine and no longer governs Wireframe.
 >
 > **Three surface facts that change what a row can assert (UI/UX §4/§8/§9, binding):**
 > 1. **Availability is kind+count gated.** `fill`/`border`/`radius` need ONE **shape**;
@@ -1183,7 +1159,7 @@ plan; the two REQ-1 named presets clear 4.5.
 | F-36, F-44c | `document.new` | `f` `n` (opens the discard dialog when dirty — see F-57a) |
 | F-61…F-83 (+ `g` rows) | `g g` / `g u` / `g s` / `g a` / `g r` / `g d` / `g f` / `g b` | `a` `g` / `a` `u` / `a` `s` / `a` `←` / `a` `→` / `a` `d` / `a` `f` / `a` `b` |
 | F-63, F-67, F-69, F-71, F-76 | `wireframe-action-arrange-*` | `navigation-rail-row` / `navigation-map-row` (`data-nav-verb-id`), or `a <key>` |
-| F-69, F-73, F-76 | toolbar `aria-pressed`, `g+i`/`g+o` | rail/map row `data-nav-availability` + `data-wireframe-snap`; `v` `+` / `v` `-` |
+| F-69, F-73, F-76 | toolbar `aria-pressed`, retired zoom chord | rail/map row `data-nav-availability` + `data-wireframe-snap`; `v` `+` / `v` `-` |
 | F-63, F-67 | `WIREFRAME_GROUP_MIN_MEMBERS` etc. | unchanged (document semantics untouched) |
 | F-71 | `alignCenter` via `g c` | `alignCenter` is **unbound** → **map › Arrange › Align centre** |
 | F-67 | `toggleGroupLock` via `g l` | **unbound** → **map › Arrange › Lock group** |
@@ -1223,12 +1199,13 @@ shell root with the key gate satisfied.
   case) and confirm each performs its verb; `wireframe-navigation/functional.md` F-N13 proves
   the 33 capabilities are still reachable.
 - **F-38/F-39/F-40** — **SUPERSEDED for the 32-row/32-attribute counts.** New expectations:
-  Wireframe contributes **0** bar rows and `data-fredo-hotkey-count` delta **0** while focused
+  Wireframe contributes **0** LEGACY bar rows while focused (the current rows are the navigation
+  bar's declaration rows)
   (the global bar model is empty for Wireframe); text-entry suppression still works on the ONE
   element-scoped nav handler (typing into a panel field dispatches nothing and lands the
   characters); an unfocused Wireframe still dispatches nothing.
 - **F-41** — duplicate-key guard: Wireframe contributes **zero** bindings, so the risk is now
-  the inverse (a stray `data-hotkey` reintroduced) — covered by `wireframe-navigation`
+  the inverse (a stray legacy element-key reintroduced) — covered by `legacyAbsence.test.ts` and `wireframe-navigation`
   F-N11/F-N22.
 - **F-42** — unchanged in spirit: a bare stroke with a `<button>` focused must not be treated as
   a text-entry passthrough by the nav engine (only text controls pass through), so record the
@@ -1267,7 +1244,7 @@ shell root with the key gate satisfied.
   its declared verb with explicit args and **never changes the place** and never enters Create.
   It is the only toolbar-shaped affordance left; `wireframe-toolbar` stays deleted.
 - **S-9/S-15/S-16 (smoke.md)** — superseded: Wireframe now shows **0** bar rows and **0**
-  `data-hotkey` attributes; `wireframe-toolbar` is gone. See `smoke.md`'s P5 section.
+  legacy element-key attributes; `wireframe-toolbar` is gone. See `smoke.md`'s P5 section.
 - **F-57a (NEW, P5 regression — the New dialog).** `f n` on a dirty document opens
   `[data-testid="wireframe-new-document-dialog"]`; Cancel keeps the document and dirty state,
   Discard resets to an empty document (`-element-count="0"`, `-dirty="true"`, path `''`); on a
