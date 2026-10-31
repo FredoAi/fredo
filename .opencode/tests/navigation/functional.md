@@ -342,10 +342,11 @@ browser is **not** a sanctioned receipt (no committed browser driver).
   `Undid Rectangle`, `Nothing to undo.`, `Couldn't undo Rectangle`; a subscription counter fires
   **exactly once** per event (never twice for one stroke); a `timeout` and a `passthrough` announce
   nothing; with a text-entry control focused `handleStroke` returns `null`, journals nothing and
-  announces nothing. `singleLiveRegion.test.tsx`: `<HotkeyAnnouncer />` + `<NavigationAnnouncer
-  channel="legacy" />` + all three surfaces → `countActiveLiveRegions() === 1`, the surviving region
-  is `hotkeys-announcer`, and a forwarded message appears in **that** region's text; the
-  non-vacuity control (default channel + `HotkeyAnnouncer`) yields `2`.
+  announces nothing. `singleLiveRegion.test.tsx` (P8 single channel): exactly ONE `<NavigationAnnouncer
+  />` (test id `navigation-announcer`) + all three surfaces → `countActiveLiveRegions() === 1`, the
+  surviving region is `navigation-announcer`, and a forwarded message appears in **that** region's
+  text; the non-vacuity control (a second `NavigationAnnouncer` mounted in the harness) yields `2`.
+  The legacy announcer and the `channel="legacy"` option are DELETED in P8.
   **Edge:** identical consecutive messages deduplicate (assert one update, not two); partial undo;
   re-arming the same prefix; enter immediately followed by exit.
 
@@ -482,9 +483,9 @@ exits + source reads). The pilot's live rows are in `.opencode/tests/wireframe-n
 > `pnpm --filter @fredo/ui test:run src/shared/navigation`, `pnpm --filter @fredo/ui typecheck`,
 > `pnpm --filter @fredo/ui build`.
 >
-> **Two timeouts, do not conflate:** `PENDING_TIMEOUT_MS = 250` (`types.ts:17`) governs the nav
-> engine. `PENDING_SEQUENCE_TIMEOUT_MS = 1000` (`shared/hotkeys/engine.ts:64`) is the legacy
-> hotkey engine and is NOT part of this contract.
+> **One timeout:** `PENDING_TIMEOUT_MS = 250` (`types.ts:17`) governs the nav engine. The legacy
+> hotkey engine (and its 1000 ms sequence timeout) was DELETED in P8 / #3122 and is not part of
+> this contract.
 
 ## Cases — P5
 
@@ -612,3 +613,107 @@ modules); no `.skip`/`.todo`/`.only` in `shared/navigation`.
 | F-32 | `place rows list child places in declaration order`, `place rows stay out of the eight row verb cap`, `the rail verb rows still exclude the two globals` present verbatim and green; live rail shows the six `navigation-rail-place-row`s at Canvas above 2 verb rows. |
 | F-33 | The five trace titles present verbatim and green; `fixtures.ts` + `traces.test.ts` re-baselined to the `wireframe.*` tree. |
 | F-34 | `purity.test.ts › declares exactly eleven modules and a __tests__ directory` green (no new module); typecheck clean; build exit 0; `package.json`/lockfile importer unchanged (`git diff` empty). |
+
+---
+
+# P8 — decommission (issue #3122)
+
+Feature: the legacy hotkey runtime and every ADR-7 adapter are deleted; exactly ONE navigation
+system remains, mounted once per webview, fed by the declaration, with a single companion manifest
+and an exact retained application set.
+
+Verification policy: **live** — F-47…F-50 are the genuine runtime legs (Konami/Dev Mode, the
+end-to-end Wireframe keyboard + companion change + undo smoke, terminal passthrough, the single
+announcement region). F-35…F-46 are `[static]` prove-a-negative/deletion/build/config receipts.
+**A static-only PASS for F-47…F-50 is a FALSE PASS.** If the isolated env has no OTLP producer,
+record a named **E-SPAN blocker** and carry the live row on its DOM/measurement/log receipt.
+
+> **Precondition.** `spec/3122` tree; run from the repo root. Isolated env:
+> `dev-env.ps1 -Up -Spec 3122 -EnvId <id> -EnvSlot <n> -RequireIsolation`; ports from
+> `.opencode/tmp/envs/<id>/manifest.json`; `tauri_driver_session start {port: ports.mcp}`.
+
+## Cases — P8
+
+- [ ] **F-35 `[static]` (R-1 / AC1) — the legacy runtime is gone and the tree is clean.**
+  `rg -n "shared/hotkeys|HotkeysProvider|HotkeyAnnouncer|HotkeyBar|hotkeyBarModel|hotkeyElements|hotkeyGrammar|commandSurfaceStore|commandSurfaceFixture|ApplicationCommandSurface|FredoApplicationClass\.commandSurface|data-hotkey|data-fredo-hotkey|data-fredo-pending-sequence|WIREFRAME_ACTIONS\.hotkey" apps/ .opencode/tests/ docs/ --glob '!docs/archive/**'`; `pnpm --filter @fredo/ui build`; `pnpm --filter @fredo/ui test:run`.
+  **Expected:** zero matches; both commands exit 0; no new failure vs `main`; `legacyAbsence.test.ts` green.
+  **Edge:** the archive exclusion (D-3) recorded; a comment/string token (the guard strips literal text but scans template interpolations); a skipped test.
+
+- [ ] **F-36 `[static]` (R-2 / AC2) — no `data-hotkey`, no discovery observer, one mount.**
+  `rg -n "data-hotkey" apps/`; `rg -n "installHotkeyElementDiscovery|MutationObserver" apps/ui/src`; read both `main.tsx`.
+  **Expected:** zero for both greps in the hotkey/discovery path; `apps/ui/src/main.tsx` and `apps/tauri/src/main.tsx` each mount `NavigationProvider` exactly once and `HotkeysProvider` zero times; `StandaloneAppWindow.tsx` drops `resetApplicationMode`; the only `data-nav-*` hooks are the bound `constants.ts` set; `data-fredo-passthrough` is KEPT.
+  **Edge:** a fixture under `apps/`; two providers (two announcers); a dev-only route provider.
+
+- [ ] **F-37 `[static]` (R-3 / AC3) — old Keycap and `commandSurface` opt-in gone; nav API exported.**
+  Read `apps/ui/src/shared/components/hotkeys/Keycap.tsx` (absent); `rg -n "commandSurface" apps/ui/src/shared/classes apps/ui/src/applications` (zero — the TS opt-in only, D-1); read `apps/ui/src/index.ts`; `pnpm --filter @fredo/ui build`.
+  **Expected:** Keycap absent and zero importers; zero TS `commandSurface`; the root exports `./shared/navigation` and `./shared/navigation/ui` and none of `Keycap`, `HotkeysProvider`, `HotkeyAnnouncer`, `HotkeyBar`, `ApplicationCommandSurface`, engine/registry/store/defaults/terminalMode; build exit 0.
+  **Edge:** a type-only import of a deleted module (build FAIL); the retained Rust transport names (`register_app_command_surfaces`, `app_command_surfaces`, `AppCommandSurfaceRegistry`) are **not** a failure.
+
+- [ ] **F-38 `[static]` (R-4 / AC4) — the manifest is generated from the declaration.**
+  `pnpm --filter @fredo/ui test:run src/shared/companion`; read the golden fixture; `cargo test surface_registry_is_transport_only_and_cannot_diverge` from `apps/tauri/src-tauri`.
+  **Expected:** `manifest.parity.test.ts` green; fixture `schemaVersion: 3` with exactly `staticOffer`, `manifest`, `offer`; every projected command carries `id`, `label`, `description`, `risk`, `args`, `aliases`; `offer` action enum = manifest ids in order + one `listActions`; the Rust test green (no local catalog).
+  **Edge:** a fixture regenerated at test time; a legacy `feature.commandSurface` projection branch; `risk`/`aliases` asserted on the source verb instead of the projection (G-418).
+
+- [ ] **F-39 `[static]` (R-5 / AC5) — no dead settings.**
+  Read `LayoutSettings.tsx`; `rg -n "shared/hotkeys|resetHotkey|HotkeysSettings" apps/ui/src/applications/settings-app`; `pnpm --filter @fredo/ui test:run src/applications/settings-app`.
+  **Expected:** imports `announceNavigation` from `shared/navigation/ui` and `resolvePrimaryModifier` from `shared/navigation/keys`; zero legacy import; zero control/copy resetting a removed runtime; settings tests green.
+  **Edge:** a disabled-but-present reset control (FAIL); a test weakened.
+
+- [ ] **F-40 `[static]` (R-6 / AC6) — every ADR-7 adapter deleted.**
+  `rg -n "ADP-" apps/ui/src`; read `docs/NAVIGATION_ENGINE.md` §12; `rg -n "announcementChannel|legacySurfaceToManifest|AnnouncementChannel|configureNavigationAnnouncer" apps/ui/src`.
+  **Expected:** zero `ADP-`; all `ADP-01`…`ADP-15` marked `DELETED` (including `ADP-13-hotkey-registry`, `ADP-15-companion-manifest`); zero compatibility shim.
+  **Edge:** a renamed shim that dodges the token (inspect the branch); a row left pending.
+
+- [ ] **F-41 `[static]` (R-7 / AC7) — no coverage loss.**
+  List `.opencode/tests/`; read `.opencode/tests/navigation/coverage-map.md`; run the navigation suites.
+  **Expected:** `.opencode/tests/hotkeys/` absent; `.opencode/tests/navigation/` has `functional.md`, `regression.md`, `smoke.md`, `exploratory.md`, `coverage-map.md`; the map has one row per deleted `shared/hotkeys/__tests__/` suite (26) and per deleted durable file (4), each naming an existing successor or the D-10 retired-tooling entry; the navigation + JSON-journal suites green.
+  **Edge:** an invented successor (no such file — FAIL); a deleted suite with no row.
+
+- [ ] **F-42 `[static]` (R-8 / AC8) — docs describe only the new model.**
+  `rg -n "shared/hotkeys|data-hotkey|commandSurface|HotkeysProvider|HotkeyBar|HotkeyAnnouncer" docs/ --glob '!docs/archive/**'`; `git diff --quiet -- AGENTS.md opencode.json`; read `docs/ARCHITECTURE.md` (keyboard/navigation) and `docs/ENGINEERING_RULES.md:66`.
+  **Expected:** zero docs matches (archive excluded per D-3); both doc sections describe the declaration + ONE dispatch funnel only; `git diff --quiet` exit 0 (human-owned files byte-unchanged).
+  **Edge:** `docs/UX_FLUENCY_RESEARCH.md` is NOT archived (in scope); an `AGENTS.md`/`opencode.json` edit (FAIL).
+
+- [ ] **F-43 `[static]` (R-9 / AC9) — final program verification.**
+  Run `validateSurface()` for every shipped surface; `pnpm --filter @fredo/ui test:run src/applications/__tests__/navigationParityMatrix.test.ts`; fresh-clone build + full suite.
+  **Expected:** six `{valid:true, diagnostics:[]}`; matrix green for the retained set; the fresh clone (`pnpm install` + `pnpm --filter @fredo/ui build` + `pnpm --filter @fredo/ui test:run`) green and quoted in `## Tests Runs` with the clone path + HEAD sha.
+  **Edge:** a stale clone; a cached `dist`/`node_modules` (FAIL — not fresh).
+
+- [ ] **F-44 `[static]` (R-10.1 / AC10) — no retired application survives.**
+  Two precise greps over `apps/ .opencode/tests/ docs/ --glob '!docs/archive/**'`: **(a1)** module/class tokens `rg -n "applications/(diagram|my-workitems|optimizely|docs-viewer|github-viewer|browser-preview|model-storage)|ArchitectureDiagram|DiagramFeature|MyWorkItemsFeature|CreateWorkItemFeature|MyWorkItemsContainer|OptimizelyFeature|DocsViewerFeature|GithubViewerFeature|BrowserPreviewFeature|ModelStorageFeature"`; **(a2)** quoted id literals `rg -n "['\"](diagram|my-workitems|create-workitem|optimizely|docs-viewer|github-viewer|browser-preview|model-storage)['\"]"` (this scopes the app ids without failing on unrelated prose like "sequence diagram").
+  **Expected:** zero matches from both; the eight `applications/<id>/` trees absent; the Rust label-only literal `app_window.rs:328` deleted.
+  **Edge:** `create-workitem` is a feature id inside `my-workitems/index.ts:12-17` (not a folder); a hit in an archive file (recorded, not failed); a bare prose word like "diagram" is NOT an app reference (the quoted-id/module/class scan is binding).
+
+- [ ] **F-45 `[static]` (R-10.2 / AC10) — the boot set is exactly the retained eight.**
+  Run `pnpm --filter @fredo/ui test:run src/applications/__tests__/retainedApplicationSet.test.ts`.
+  **Expected:** `getApplications()` ids deep-equal `{wireframe, terminal, mission-monitor, database-client, theming, setup, settings, dev-mode}`; no retired id; `showable` flags unchanged.
+  **Edge:** a duplicate registration (first-wins); `home`/`doom` are not registry features.
+
+- [ ] **F-46 `[static]` (R-10.3, R-10.5 / AC10) — no entry point can open a retired id.**
+  Read `Router.tsx`, `Home.tsx`, the launcher grid, `useAppOpenRequests`, `app_window.rs`, and the companion manifest; confirm the page-router dead branches are removed.
+  **Expected:** no retired id in any route/launcher/companion/CLI/`open_app_window`/Easter-egg path; `open_app_window` resolves through the frontend registry (`resolveAppIdentity`); removing `showDiagram` / `currentPage === 'dev-mode'` does not remove the Konami → Dev Mode path.
+  **Edge:** a stale companion manifest entry; a `fredo open-app` identity alias; a hidden launcher tile.
+
+- [ ] **F-47 `[live]` (R-10.4 / AC10) — Konami still opens Dev Mode and its verbs dispatch.**
+  Press `ArrowUp ArrowUp ArrowDown ArrowDown ArrowLeft ArrowRight ArrowLeft ArrowRight b a` on the resting desktop; then `v`, then `x`.
+  **Expected:** exactly one Dev Mode window opens through the window kernel; `navigation-bar` renders over `devModeSurface` (root `dev-mode.events`); `v` moves to `dev-mode.applicationData` + one navigation entry; `x` runs `dev-mode.events.clear` or noops; console clean.
+  **Edge:** focus in an editable control; Dev Mode stays hidden (no tile/nav entry); closing leaves no stale mode.
+
+- [ ] **F-48 `[live]` (R-1 / AC1) — the one end-to-end smoke: wireframe keyboard + companion change + undo.**
+  Open Wireframe from the launcher; press `c` then `t` (declared strokes). Relay `tauri_ipc_execute_command` `app_command_intent` `{requestId:"3122-smoke-1", appId:"wireframe", action:"wireframe.add.button", arguments:{}}`; wait for `app_command_intent_result` `outcome:"Performed"`. Activate the newest `navigation-trail` undo twice.
+  **Expected:** `c` enters `wireframe.create` (bar breadcrumb `navigation-bar-place`); `t` adds one text element + one human mutation; the relay adds one button + one `actor:'companion'` / `channel:'agent'` mutation; the first undo removes the button and appends one `system` mutation; the second removes the text and restores the pre-smoke document; console clean.
+  **Edge:** the relay rejected because Wireframe is not in `wireframe.create` (re-enter `c` first); `Noop`/`Invalid` (FAIL); undo-of-newest touching the older entry (FAIL); a pointer event required (FAIL). E-SPAN: record a named blocker and carry the row on the DOM/log receipt.
+
+- [ ] **F-49 `[live]` (R-2 / AC2) — terminal passthrough survives the deletion.**
+  `spawn_terminal_session {cli:"shell"}`; focus the terminal; type `echo 3122-passthrough`; press `Ctrl+Space`.
+  **Expected:** `document.body[data-fredo-passthrough="true"]` while focused; the characters reach the PTY; no navigation verb fires; `Ctrl+Space` is suppressed in the terminal and opens the launcher from a non-terminal focus; console clean.
+  **Edge:** no live session (`[]`) is a named blocker, not a PASS.
+
+- [ ] **F-50 `[live]` (R-2, R-11 / AC2) — exactly one navigation live region per webview.**
+  Read `document.querySelectorAll('[data-testid="navigation-announcer"]')` and `[data-testid="hotkeys-announcer"]`, and enumerate every other `[aria-live]` region in the main webview and in the terminal/standalone windows; drive one navigation announcement.
+  **Expected:** exactly ONE `navigation-announcer` per webview; ZERO `hotkeys-announcer`; any other `[aria-live]` region is enumerated and is not a navigation announcer (never a global `[aria-live]` count of 1 — the shipped status bar may be a live region, G-424); the announcement text appears in the nav region once (subscription count 1); the non-vacuity control (a second mount in a harness) yields 2 and is a FAIL in product.
+  **Edge:** a standalone app window (its own webview) has its own single region; the launcher adds no second navigation region.
+
+## Suite-level pass/fail — P8
+
+PASS = F-35…F-50 green, every `[static]` scan returning no lines and every `[live]` value quoted from the running webview. A static-only live row, a second mount/region, a retired app in the boot set, an invented coverage successor, a docs hit in a live doc, or a fresh-clone leg that was not fresh is a FAIL. The receipt is the POSTED `## Tests Runs` comment plus the committed files/guards.
