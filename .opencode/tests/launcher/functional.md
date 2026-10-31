@@ -2134,6 +2134,27 @@ The FIXED composition suppresses the hint chip in model mode (REQ-3), so the mod
   **Edge:** no selection (count 0 → no selection node); multi-select; transient place
   (`Canvas › Create`); empty envelope → one muted `No context` line, no selection/verbs rows.
   **Receipt:** E-DOM (the region subtree) + E-SHOT + the derived available-verb list.
+- [ ] F-126 root-leg (R-1.1, **selection changed AFTER the last dispatch** — the round-2 coverage
+  gap): L1 fresh load → open Wireframe at the ROOT place (`data-wireframe-place="wireframe.canvas"`);
+  have exactly one shape; deselect it with a **canvas pointer click on empty stage** (store-only
+  `clearSelection`); force ONE host commit while the selection is empty (enter `f` →
+  `Canvas › File`, `Escape` back) so the header memo's last envelope is the no-selection one; then
+  **pointer-click the rectangle on the canvas** (store-only `select()` — no place dispatch) and
+  `Ctrl+Space`. Record the surface state (`data-wireframe-place`, `data-wireframe-selection-count`,
+  `data-wireframe-selection-id`/`-type`) **separately** from the launcher read so place and selection
+  cannot be conflated.
+  **Expected:** `launcher-context` present with `pathText === 'Canvas'`; `launcher-context-selection`
+  **PRESENT** and equal to the element's label (`rect`); verb chips = the first 3 of the
+  *with-selection* availability set and overflow **`+44` (47 available)** — NOT `+28` / 31 (the
+  no-selection set). This is the resident defect the round-2 PASS missed: F-126/F-128 previously
+  proved only dispatch-driven freshness (place entry), and a store-only selection change left the
+  header and the companion grounding envelope on the empty-selection snapshot. The fix is
+  `NavigationHost.refreshContext()` (value fingerprint over `appId`/`placePath`/`selection.*`/`dirty`,
+  silent ONE-epoch advance) published by the Wireframe provider's store subscription.
+  **Edge:** deselect store-only at the root → the header drops the selection node and returns to the
+  no-selection set (`+28`); reselect → it returns without a reload.
+  **Receipt:** E-DOM (the exact `hasContext`/`pathText`/`selectionPresent`/`selectionText`/`overflow`
+  object) + E-SHOT + the separate surface-state read.
 - [ ] F-126 edge: a MINIMIZED Wireframe window is not the active app — the launcher falls back
   (F-127), never a stale header.
 
@@ -2161,6 +2182,24 @@ The FIXED composition suppresses the hint chip in model mode (REQ-3), so the mod
   **Edge:** then dispatch a mutating verb from the transient place → exactly one level popped back
   to `Canvas`; several navigation dispatches in a row; `Ctrl+Space` reopen after a dispatch.
   **Receipt:** E-DOM before/after (both texts) + E-SHOT.
+- [ ] F-128 store-only (R-1.1/R-1.3 — freshness without a dispatch): **alongside** the place-entry
+  refresh above, prove the OTHER freshness source. With the launcher CLOSED and the app at the
+  root `Canvas` place, change the selection with a **canvas pointer click** (select an element /
+  clear the selection) — a store-only mutation that dispatches no verb and writes no journal entry —
+  then `Ctrl+Space`.
+  **Expected:** the header reflects the POST-change envelope on open (`launcher-context-selection`
+  present + the new label, or absent when the selection was cleared), with the path unchanged
+  (`Canvas`) and no page reload; the companion grounding envelope carries the same
+  `selection.count`/`ids`/`kinds`/`label`. While the launcher is OPEN a store-only change cannot be
+  made by pointer (the launcher overlays the canvas), so the in-open no-remount proof is the
+  deterministic pin: `LauncherShell.navigationPalette.test.tsx` (`root selection freshness …`) asserts
+  the header updates on `host.refreshContext()` and `launcher-context` stays the **same DOM node**
+  (E-UNIT), and `host.test.ts` `N-04b` pins value-fingerprinting, the ONE-epoch advance, the silent
+  no-op and `describeContext()` never advancing the epoch. A store-only change must never write a
+  journal entry.
+  **Edge:** pan/zoom (`setView`) fires store notifications with an unchanged selection — the provider
+  pre-filter must not advance the host epoch (no header churn, no announcement).
+  **Receipt:** E-DOM before/after + E-SHOT + the named unit pins.
 
 ## F-129 (R-2.1 projection) — grouped Place→Verb model: parity, order, path/key/risk, recents
 
