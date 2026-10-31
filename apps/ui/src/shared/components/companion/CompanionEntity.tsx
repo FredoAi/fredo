@@ -21,8 +21,29 @@ import {
   shouldAnnounceProtection,
   useReplyProtection,
 } from './replyProtection';
-import { createCompanionSendQueue, resolveSendOutcome } from './companionDispatch';
-import type { CompanionSendQueue, CompanionSendResult } from './companionDispatch';
+import { buildCompanionTurnMessages, createCompanionSendQueue, resolveSendOutcome } from './companionDispatch';
+import type { CompanionAskOptions, CompanionSendQueue, CompanionSendResult } from './companionDispatch';
+import { CompanionComposer } from './CompanionComposer';
+import { REPLY_SURFACE_TESTID } from './SpeechBubble';
+import type { ReplyRect } from './replySurfaceLayout';
+import {
+  consumeCompanionComposerRequest,
+  peekCompanionComposerRequest,
+  subscribeCompanionComposerOpen,
+} from '../../companion/composerBridge';
+import type { CompanionComposerOpenRequest } from '../../companion/composerBridge';
+import {
+  resolveCompanionTargetApp,
+  resolveNamedAppMention,
+} from '../../companion/composerTarget';
+import type {
+  CompanionTargetFrame,
+  CompanionTurnTarget,
+  FredoAppRef,
+} from '../../companion/composerTarget';
+import { getApplications } from '../../../applications/applicationRegistry';
+import { getWindowSnapshot } from '../../window-system/windowStore';
+import { describeContext } from '../../navigation/ui/hostRegistry';
 
 // #2883 ST-6 — the plan-declared ADDITIVE `SpeechBubble` props (`## API Contracts
 // & Data Models`). Typed here so this workstream compiles before ST-4 attaches
@@ -158,11 +179,18 @@ function registerActiveCompanionEntity(handle: CompanionEntityHandle): () => voi
  *   `{ outcome: 'rejected' }`       → not accepted (keep text)
  * This is the ONE dispatch path (G-149) — both surfaces register the same handle
  * into this registry; never add a second, surface-specific route.
+ *
+ * #3120 ST-3 — the launcher may pass the focused app's current `ContextEnvelope`;
+ * the entity prepends exactly one grounding `system` message to the SAME legacy
+ * persona + user turn (no transcript/history is added).
  */
-export function askActiveCompanion(text: string): CompanionSendResult | null {
+export function askActiveCompanion(
+  text: string,
+  options?: CompanionAskOptions,
+): CompanionSendResult | null {
   const entity = activeCompanionEntity;
   if (!entity) return null;
-  return entity.ask(text);
+  return entity.ask(text, options);
 }
 
 /**
@@ -176,11 +204,17 @@ export function askActiveCompanion(text: string): CompanionSendResult | null {
  *   `null`                       → no entity mounted in this window
  *   `{ outcome: 'dispatched' }`  → accepted, audio generation started
  *   `{ outcome: 'rejected' }`    → not accepted (a teleport owns the entity)
+ *
+ * #3120 ST-3 — `options.context` grounds the voice turn exactly like the typed
+ * one; the clip remains the turn's input (an empty user turn, no transcript).
  */
-export function askActiveCompanionWithAudio(clipBase64: string): CompanionSendResult | null {
+export function askActiveCompanionWithAudio(
+  clipBase64: string,
+  options?: CompanionAskOptions,
+): CompanionSendResult | null {
   const entity = activeCompanionEntity;
   if (!entity) return null;
-  return entity.askWithAudio(clipBase64);
+  return entity.askWithAudio(clipBase64, options);
 }
 
 /**
@@ -198,6 +232,77 @@ export function computeTeleportTarget(
     x: Math.max(0, Math.min(clientX - width / 2, window.innerWidth - width)),
     y: Math.max(0, Math.min(clientY - height / 2, window.innerHeight - height)),
   };
+}
+
+// ── #3120 (rework) ST-2 — composer target inputs ─────────────────────────────
+
+/** This webview's standalone app id (`?view=app&id=<appId>`), else `null`. */
+function readWindowAppId(): string | null {
+  if (typeof window === 'undefined') return null;
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('view') !== 'app') return null;
+  const id = params.get('id')?.trim();
+  return id ? id : null;
+}
+
+/** The registered applications as the pure matcher's narrow view. */
+function readAppRefs(): FredoAppRef[] {
+  return getApplications().map((application) => ({
+    id: application.id,
+    name: application.name,
+    showable: application.showable,
+  }));
+}
+
+function toTargetRect(rect: DOMRect): ReplyRect {
+  return {
+    left: rect.left,
+    top: rect.top,
+    right: rect.right,
+    bottom: rect.bottom,
+    width: rect.width,
+    height: rect.height,
+  };
+}
+
+/**
+ * In-window app frames, LOW z → HIGH z. The window kernel owns the z-order and
+ * the `[data-fredo-app-id]` root is the geometry source, so the pure resolver
+ * can pick the TOPMOST frame containing Fredo's landing point.
+ */
+function measureAppFrames(): CompanionTargetFrame[] {
+  if (typeof document === 'undefined') return [];
+  const entries = getWindowSnapshot()
+    .filter((entry) => !entry.isMinimized)
+    .slice()
+    .sort((a, b) => a.zIndex - b.zIndex);
+  const frames: CompanionTargetFrame[] = [];
+  for (const entry of entries) {
+    const escaped = entry.id.replace(/"/g, '\\"');
+    const el = document.querySelector<HTMLElement>(`[data-fredo-app-id="${escaped}"]`);
+    if (!el) continue;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    frames.push({ appId: entry.id, rect: toTargetRect(rect) });
+  }
+  return frames;
+}
+
+/** The focused, non-minimized window in this webview (the resolver's last step). */
+function readFocusedAppId(): string | null {
+  const focused = getWindowSnapshot().find((entry) => entry.focused && !entry.isMinimized);
+  return focused?.id ?? null;
+}
+
+/** Two rects within the same sub-pixel tolerance (the state-write loop guard). */
+function nearRect(a: ReplyRect | null, b: ReplyRect | null): boolean {
+  if (a === null || b === null) return a === b;
+  return (
+    Math.abs(a.left - b.left) < AVATAR_RECT_EPSILON_PX &&
+    Math.abs(a.top - b.top) < AVATAR_RECT_EPSILON_PX &&
+    Math.abs(a.right - b.right) < AVATAR_RECT_EPSILON_PX &&
+    Math.abs(a.bottom - b.bottom) < AVATAR_RECT_EPSILON_PX
+  );
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
@@ -274,8 +379,10 @@ export interface CompanionEntityHandle {
    * #2892 ST-4 (REQ-5/REQ-6/REQ-7/REQ-8) — returns the typed acceptance result;
    * while a generation is in flight the persisted disposition decides between
    * queueing (FIFO, auto-drained on settle) and a logical interrupt. Never void.
+   * #3120 ST-3 — `options.context` prepends exactly one grounding `system` message
+   * (the current `ContextEnvelope`) before the legacy persona + user turn.
    */
-  ask: (text: string) => CompanionSendResult;
+  ask: (text: string, options?: CompanionAskOptions) => CompanionSendResult;
   /**
    * #2897 ST-3 (REQ-5) — model-audio turn: `clipBase64` is the captured 16 kHz
    * mono WAV from `stt_take_audio_clip`. Streams the reply on the SAME channels
@@ -283,8 +390,10 @@ export interface CompanionEntityHandle {
    * the audio turn cannot join the TEXT FIFO, an in-flight generation is
    * superseded via the same logical-interrupt path (the clip is never dropped).
    * `rejected` only when a teleport owns the entity.
+   * #3120 ST-3 — `options.context` grounds the audio turn too; the clip stays the
+   * turn's input (never a transcript).
    */
-  askWithAudio: (clipBase64: string) => CompanionSendResult;
+  askWithAudio: (clipBase64: string, options?: CompanionAskOptions) => CompanionSendResult;
 }
 
 export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntityProps>(
@@ -292,6 +401,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     const {
       state, setState, teleport, hideMessage, notifyInteraction, setInUse,
       sendDuringReply, replyLeaveGraceMs, setReplyInFlight, setQueuedSendCount,
+      composerOpen, openComposer, closeComposer, teleportSeq, composerRequestSeq,
     } = useCompanion();
     const { animState, message, isVisible, isAutoHidden, isHosting } = state;
 
@@ -567,6 +677,99 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       }
       avatarFrameRef.current = null;
     }, []);
+
+    // ── #3120 (rework) ST-2 — composer support ────────────────────────────────
+    // The viewport is an INPUT of the placement (resize re-derives it, never a
+    // poll). Equality-guarded so a sub-pixel resize never writes state (#523).
+    const [viewport, setViewport] = useState(() => ({
+      width: typeof window === 'undefined' ? 0 : window.innerWidth,
+      height: typeof window === 'undefined' ? 0 : window.innerHeight,
+    }));
+    useEffect(() => {
+      const onResize = () => {
+        setViewport((prev) =>
+          prev.width === window.innerWidth && prev.height === window.innerHeight
+            ? prev
+            : { width: window.innerWidth, height: window.innerHeight },
+        );
+      };
+      window.addEventListener('resize', onResize);
+      return () => window.removeEventListener('resize', onResize);
+    }, []);
+
+    // The visible SpeechBubble rect — the composer must never intersect it. The
+    // bubble repositions while a reply streams, so this is measured post-commit
+    // with the same epsilon guard (no state write when the box did not move).
+    const [avoidRect, setAvoidRect] = useState<ReplyRect | null>(null);
+    const avoidRectRef = useRef<ReplyRect | null>(null);
+    useLayoutEffect(() => {
+      if (!replyOnScreen || typeof document === 'undefined') {
+        if (avoidRectRef.current !== null) {
+          avoidRectRef.current = null;
+          setAvoidRect(null);
+        }
+        return;
+      }
+      const el = document.querySelector<HTMLElement>(`[data-testid="${REPLY_SURFACE_TESTID}"]`);
+      const next = el ? toTargetRect(el.getBoundingClientRect()) : null;
+      const normalized = next !== null && next.width > 0 && next.height > 0 ? next : null;
+      if (nearRect(avoidRectRef.current, normalized)) return;
+      avoidRectRef.current = normalized;
+      setAvoidRect(normalized);
+    });
+
+    // The app named by the most recent bridge request (the command bar's `Ask`).
+    // Retained across the not-hosted teleport: the entity mounts AFTER the request
+    // and reads the bridge's retained request so target resolution still honours it.
+    const requestedAppIdRef = useRef<string | null>(null);
+    // #3120 (rework) ST-2-R4 — ONE owner: only the OVERLAY applies an open request.
+    // The seat can never render the composer (`CompanionEntity.tsx` render gate), so
+    // having it "consume" the request was wrong-mount consumption. A retained request
+    // (published before this overlay mounted) is applied here once — resolving the
+    // target and then CONSUMING it from the bridge so no later mount re-reads it as
+    // if it were fresh. The settle-open itself stays with the seq effect below.
+    useEffect(() => {
+      if (surface !== 'overlay') return;
+      const applyRequest = (request: CompanionComposerOpenRequest) => {
+        requestedAppIdRef.current = request.appId ?? null;
+        openComposer();
+        consumeCompanionComposerRequest();
+      };
+      const retained = peekCompanionComposerRequest();
+      if (retained) {
+        requestedAppIdRef.current = retained.appId ?? null;
+        // Applied on mount (the late-mount target resolution) — consume so it is a
+        // one-shot hand-off, never a forever-live value a later mount could re-read.
+        consumeCompanionComposerRequest();
+      }
+      const unsubscribe = subscribeCompanionComposerOpen(applyRequest);
+      return unsubscribe;
+    }, [surface, openComposer]);
+
+    // #3120 (rework) ST-2-R4/R5 (R-3.1) — the ONE settle-open owner. Every
+    // relocation bumps `teleportSeq`; the surface that actually SETTLES owns the
+    // open. On a same-window seat→overlay teleport the seat unmounts in the same
+    // commit that `TELEPORT` lands (its timer cleanup would have killed the old
+    // open), and this overlay is the survivor — it arms the settle here.
+    //
+    // RULE (ST-2-R5, G-409): the open is keyed on the EFFECT RUN, never on a
+    // remembered "handled" sequence. React.StrictMode's dev replay runs cleanup
+    // (`clearTimeout`) then re-runs this effect, and the re-run MUST re-arm. A
+    // persistent handled-ref would survive the replay's cleanup and suppress the
+    // re-arm (the round-5 defect: the timer armed and was cleared in the same
+    // millisecond, then the early return skipped the arm → the composer never
+    // opened on the first seat→overlay teleport). Exactly one timer can be live
+    // because React runs the cleanup before every re-run, and `openComposer`
+    // (`CompanionContext.tsx:543-545`) + `surface` are stable, so dependency
+    // churn alone cannot re-arm for an already-settled seq.
+    useEffect(() => {
+      if (surface !== 'overlay') return;
+      if (teleportSeq === 0) return;
+      const settleTimer = setTimeout(() => {
+        openComposer();
+      }, ANIM_DURATION['teleport-in'] + 50);
+      return () => clearTimeout(settleTimer);
+    }, [surface, teleportSeq, openComposer]);
 
     // #2853 ST-3 (round 2): report CONTINUOUS use so the host idle gate suppresses
     // auto-return while Fredo is actively engaged — an open TicTacToe, an active
@@ -1119,10 +1322,16 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       if (!next) { setQueuedSendCount(0); return; }
       setQueuedSendCount(queue.size());
       announceGenerationRef.current = true;
-      runGeneration([
-        { role: 'system', content: FREDO_CHAT_PERSONA },
-        { role: 'user', content: next.text },
-      ], true);
+      // #3120 ST-3 — the queued turn keeps its grounding envelope across the wait;
+      // a legacy send (absent key) rebuilds the byte-identical legacy pair.
+      runGeneration(
+        buildCompanionTurnMessages(
+          next.text,
+          FREDO_CHAT_PERSONA,
+          next.context !== undefined ? { context: next.context } : undefined,
+        ),
+        true,
+      );
     };
 
     // #2893 ST-7 — apply the deterministic app-open reply pushed by ST-6's
@@ -1232,7 +1441,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     // `open_app` selection is marked skill-pending and its settle is deferred until
     // the pushed deterministic reply lands (or the watchdog fires). The joke path
     // above stays on the unchanged `llmChat`.
-    const ask = useCallback((text: string): CompanionSendResult => {
+    const ask = useCallback((text: string, options?: CompanionAskOptions): CompanionSendResult => {
       // #2871 a11y — mark this generation as the bar-send path so it announces
       // "Message sent to Fredo" + the settled reply in the live region.
       announceGenerationRef.current = true;
@@ -1247,8 +1456,9 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         const queue = sendQueueRef.current;
         if (!queue) return { outcome: 'rejected' };
         // REQ-5/REQ-6 — accept and wait, visibly; the settle handlers drain the
-        // FIFO exactly once (synchronous dequeue before dispatch).
-        const result = queue.enqueue(text);
+        // FIFO exactly once (synchronous dequeue before dispatch). #3120 ST-3 —
+        // the grounding envelope rides along with the queued turn.
+        const result = queue.enqueue(text, options);
         setQueuedSendCount(queue.size());
         return result;
       }
@@ -1263,10 +1473,9 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         isGeneratingRef.current = false;
       }
 
-      runGeneration([
-        { role: 'system', content: FREDO_CHAT_PERSONA },
-        { role: 'user', content: text },
-      ], true);
+      // #3120 ST-3 — the ONE message builder: a bounded context prepends exactly
+      // one grounding `system` message; without one this is the legacy pair.
+      runGeneration(buildCompanionTurnMessages(text, FREDO_CHAT_PERSONA, options), true);
       return { outcome: 'dispatched' };
     }, [runGeneration, sendDuringReply, clearTimer, setQueuedSendCount]);
 
@@ -1283,7 +1492,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     // `generationUsesSkillsRef` gate in `applyAppOpenReply`. Starting it with
     // `false` (the #2897 shipped value) is exactly the reported bug: the push was
     // discarded and the bubble settled on prose that claimed the action.
-    const askWithAudio = useCallback((clipBase64: string): CompanionSendResult => {
+    const askWithAudio = useCallback((clipBase64: string, options?: CompanionAskOptions): CompanionSendResult => {
       announceGenerationRef.current = true;
       // A teleport owns the entity: there is no generation to stream into, so the
       // clip is not accepted (the caller keeps the clip rather than losing it).
@@ -1295,12 +1504,70 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         isGeneratingRef.current = false;
       }
 
-      runGeneration([
-        { role: 'system', content: FREDO_CHAT_PERSONA },
-        { role: 'user', content: '' },
-      ], true, clipBase64);
+      // #3120 ST-3 — grounding is orthogonal to the voice path: the SAME builder
+      // prepends the one system message, the user turn stays empty, and the clip
+      // remains the turn's input (the backend attaches the single `input_audio`
+      // part). No transcript is ever fabricated.
+      runGeneration(
+        buildCompanionTurnMessages('', FREDO_CHAT_PERSONA, options),
+        true,
+        clipBase64,
+      );
       return { outcome: 'dispatched' };
     }, [runGeneration, clearTimer]);
+
+    // ── #3120 (rework) ST-2 — the composer's turn target + submit ─────────────
+    // The default target is the app Fredo is in front of (requested → topmost
+    // frame at his landing point → this window's app → focused window → null);
+    // an explicitly named SHOWABLE app in the instruction overrides it.
+    const resolveBaseTargetApp = useCallback((): string | null => {
+      const point = avatarRect
+        ? {
+            x: avatarRect.left + avatarRect.width / 2,
+            y: avatarRect.top + avatarRect.height / 2,
+          }
+        : { x: displayPos.x + AVATAR_SM.width / 2, y: displayPos.y + AVATAR_SM.height / 2 };
+      return resolveCompanionTargetApp({
+        requestedAppId: requestedAppIdRef.current,
+        windowAppId: readWindowAppId(),
+        frames: measureAppFrames(),
+        point,
+        focusedAppId: readFocusedAppId(),
+      });
+    }, [avatarRect, displayPos.x, displayPos.y]);
+
+    const buildTurnTarget = useCallback(
+      (baseAppId: string | null, text: string): CompanionTurnTarget => {
+        const apps = readAppRefs();
+        const namedId = text.trim() === '' ? null : resolveNamedAppMention(text, apps);
+        const appId = namedId ?? baseAppId;
+        const appName = appId === null
+          ? null
+          : (apps.find((application) => application.id === appId)?.name ?? null);
+        return {
+          appId,
+          appName,
+          // The grounding envelope is built ON DEMAND for the resolved target; a
+          // turn for an unregistered app stays ungrounded (never a stale envelope).
+          envelope: appId === null ? null : describeContext(appId),
+          // Re-naming the SAME app is not an override (R-3.5).
+          explicit: namedId !== null && namedId !== baseAppId,
+        };
+      },
+      [],
+    );
+
+    const composerTarget: CompanionTurnTarget = composerOpen
+      ? buildTurnTarget(resolveBaseTargetApp(), '')
+      : { appId: null, appName: null, envelope: null, explicit: false };
+
+    const handleComposerSubmit = useCallback((text: string) => {
+      const resolved = buildTurnTarget(resolveBaseTargetApp(), text);
+      // The ONE dispatch funnel: the existing `ask` (skill-aware, same persona),
+      // grounded with `describeContext(targetApp)` when the app is registered.
+      // An ungrounded turn omits the option key entirely (never `undefined`).
+      ask(text, resolved.envelope ? { context: resolved.envelope } : undefined);
+    }, [ask, buildTurnTarget, resolveBaseTargetApp]);
 
     // #2883 ST-6 (R-4.1/R-4.2/R-4.3) — the surface protection handlers. The
     // pointer and the keyboard are tracked as SEPARATE sources, so focus inside the
@@ -1537,6 +1804,23 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         >
           {a11yAnnouncement}
         </div>
+
+        {/* #3120 (rework) ST-2 — the ONE teleport-attached instruction box. It is
+            rendered ONLY on the hosting OVERLAY (the composer never mounts at the
+            home seat, in a non-hosting window, or while auto-hidden), and it sits
+            beside Fredo / the SpeechBubble by the pure placement decision. */}
+        {surface === 'overlay' && composerOpen ? (
+          <CompanionComposer
+            surface="overlay"
+            focusNonce={composerRequestSeq}
+            avatarRect={avatarRect}
+            avoidRect={avoidRect}
+            viewport={viewport}
+            target={composerTarget}
+            onSubmit={handleComposerSubmit}
+            onDismiss={closeComposer}
+          />
+        ) : null}
 
         {/* Interactive avatar wrapper — real click box is the avatar's layout
             width AND height (sm = 80 wide x 100 tall). The wrapper carries the

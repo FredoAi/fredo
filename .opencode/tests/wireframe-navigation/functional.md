@@ -487,3 +487,359 @@ Unit pins (green in the full run): `commandRailFocus.test.tsx` **3/3**,
 `wireframeNavigationFocus.test.tsx` **4/4**, `commandRail.test.tsx` (no focus move on mount),
 `wireframePlaceLifecycle.test.ts` (focus + one announcement), `wireframeRailParity.test.tsx`
 **10/10**, `wireframeLegacySurface.test.ts` **7/7**.
+
+---
+
+## #3120 rescope extension — the bottom command bar (human-directed rescope)
+
+> **HUMAN-DIRECTED RESCOPE.** The left rail the human rejected is replaced by ONE full-width horizontal
+> command bar docked at the BOTTOM of the Wireframe editor: breadcrumb left, the SIX child place rows
+> (Create / Edit / Arrange / Style / View / File) and then the current place's contextual verbs centre
+> (declaration order, ≤ 8), a vertical `Separator` between the two groups when both are present,
+> `? Map`/`Ask` right, no horizontal scroll. Rows map 1:1 to `.opencode/tmp/3120/triage.md` `## QA Expert` keyed **R-1**,
+> **R-4** (declaration), **R-5**, **R-6**, **R-7** and **R-8** (live half).
+> **Verification policy: live**, except **F-N35** and **F-N38** which are `static` (prove-a-negative
+> source scans — G-408). Evidence record: the POSTED `## Tests Runs` comment, never a
+> `.opencode/tmp/3120/` draft (G-415).
+>
+> **This durable suite is the source of truth.** `functional.md` (with `smoke.md`, `regression.md`
+> and `e2e.md`) — not the `.opencode/tmp/3120/` drafts, the triage plan or an issue comment —
+> defines what the tester executes and scores. **The pipeline does not run Gate H**: the
+> pilot-exit review needs human-produced participant data, no participant data exists in this spec,
+> and its absence is never a test failure.
+>
+> **Binding names (consume verbatim).** Bar root `[data-testid="navigation-bar"]` (symbol
+> `NAV_RAIL_TESTID`, value `navigation-bar`; `aria-label` `Command bar`; `data-nav-surface="bar"`);
+> `navigation-bar-breadcrumb`; the child-place list `navigation-rail-places` (**retained** testid
+> string, `NAV_RAIL_PLACES_TESTID`; `role="list"`/`<ul>`) whose six `navigation-rail-place-row`
+> buttons (`NAV_RAIL_PLACE_ROW_TESTID`) each sit inside a `role="listitem"` `li`, are real
+> `button`s carrying `data-nav-place-id`, the row tooltip as `title`/`aria-label`, and a keycap, and
+> are rendered BEFORE the verb cluster (with a vertical `Separator` between the two groups when both
+> are present); `navigation-bar-place` (the LAST breadcrumb segment, the focus anchor,
+> `tabindex="-1"`); `navigation-bar-list`; `navigation-bar-row` (each carries `data-nav-verb-id`);
+> `navigation-bar-more` (`more…`); `navigation-bar-map` (`? Map`); `navigation-bar-ask` (`Ask`);
+> shell hooks `wireframe-command-bar`, `wireframe-details-column`, `wireframe-status-bar`, and
+> `data-wireframe-region="canvas|details"`. Constants: `NAV_BAR_MIN_HEIGHT_PX = 44`,
+> `NAV_BAR_ROW_MIN_WIDTH_PX = 96`, `NAV_BAR_ROW_GAP_PX = 2`, `NAV_RAIL_MAX_ROWS = 8`. The COMPONENT
+> and MODEL symbols keep their historic names (`CommandRail`, `buildCommandRailModel`,
+> `CommandRailModel`); `model.placeRows` IS rendered as the bar's child-place list. **Naming note
+> (verified on the tip):** the `navigation-bar-places` / `navigation-bar-place-row` spellings do NOT
+> exist on this tip — the shipped constants are the retained `navigation-rail-places` /
+> `navigation-rail-place-row` values. Do NOT assert those two strings absent: they now identify the
+> BAR's place list/rows. The legacy LEFT rail itself is gone (`[data-testid="navigation-rail"]` = 0).
+>
+> **Supersession.** The #3119 rail rows F-N2/F-N12/F-N23 pinned place ROWS and the rail TESTIDS
+> `navigation-rail*`; those testid strings and the place-row rendering are SUPERSEDED by
+> F-N25..F-N31/F-N39/F-N44. The BEHAVIOUR pins (declaration order, ≤ 8, one announcement, focus
+> re-home, no store mutation outside `dispatch`, one key adapter) remain in force and are restated
+> below against the bar. F-N1/F-N3..F-N10/F-N13..F-N22/F-N24 are NOT superseded — run them unchanged.
+
+- [ ] **F-N25 (R-1.1) — horizontal placement: breadcrumb left, verbs centre, `? Map` and `Ask` right.**
+  **Steps:** open Wireframe (launcher `wire` + Enter); read the rects in ONE `execute_js` task — the
+  root `navigation-bar`, `navigation-bar-breadcrumb`, every `navigation-bar-row`,
+  `navigation-bar-map`, `navigation-bar-ask`, and the containing `wireframe-command-bar`.
+  **Expected:** the bar root is INSIDE `wireframe-command-bar`; `data-nav-surface="bar"`; root
+  accessible name `Command bar`; computed `min-height` ≥ `NAV_BAR_MIN_HEIGHT_PX` (**44**);
+  `breadcrumb.right ≤ firstRow.left`; every row's horizontal centre lies between `breadcrumb.right`
+  and `map.left`; `map.right ≤ ask.left`; **Ask is the rightmost control and flushes the bar's
+  CONTENT box:** `ask.right ≥ contentRight − 1`, where
+  `contentRight = root.right − paddingRight − borderRightWidth` read from
+  `getComputedStyle(root)` (the bar carries 12 px symmetric horizontal padding — `px="3"` — plus its
+  1 px top border, so the content box ends ~13 px inside the border box; a `root.right − 1` bound
+  would instead demand Ask sit on the padding and is NOT the shipped contract), and no row, `? Map`
+  or breadcrumb segment has a `right` greater than `ask.right`; the breadcrumb renders the
+  place path (`Canvas` at root, `Canvas › <place>` inside a place); the bar spans the editor width
+  (`bar.left` ≈ editor.left, `bar.right` ≈ editor.right).
+  - **Edge:** root place (one segment); a long place label; 1280×800 and 900×600; `? Map`/`Ask` keep
+    their accessible names; the bar's own height does not clip a row.
+  - **Receipt:** the rect table + E-SHOT.
+
+- [ ] **F-N26 (R-1.2) — declaration order and the eight-row cap, never padded, sorted or sliced by the component.**
+  **Steps:** walk the six places with `c e a s v f` (+ `Escape`); read `data-nav-verb-id` per
+  `navigation-bar-row` and the `navigation-bar-more` node.
+  **Expected:** every place `rows.length ≤ 8`; **Create** = **8** rows in declaration order
+  `Rectangle, Ellipse, Text, Button, Input, Image, Card, Section` + `navigation-bar-more` (`more…`);
+  **Arrange** = 8 rows (no `more…`); **Edit/Style/View** = their declared 5; **File** = its declared 4;
+  **Canvas** = its true 2 (the bar is NEVER padded to a minimum — the 4–8 band applies to the six child
+  places, root renders its real count); order equals the declaration's `deriveRail` order; no row is
+  rendered twice.
+  - **Edge:** re-enter Create (same order); a leaf place; the 9th Create verb (`Line`) is NOT a row but
+    IS in the filtered map (F-N29); a 520-px-wide window.
+  - **Receipt:** E-DOM (verb ids per place) + E-SHOT of Create.
+
+- [ ] **F-N27 (R-1.3) — the bar never scrolls horizontally and the title is the one ellipsizing child.**
+  **Steps:** at 1280×800 and 900×600, read `overflowX` for every element in the bar subtree and
+  `scrollWidth`/`clientWidth` for the bar root, the breadcrumb and the verb list; read
+  `text-overflow`/`white-space`/`overflow` of each row title and breadcrumb segment.
+  **Expected:** the bar root's `overflowX` is `hidden` (never `auto`/`scroll`); NO element in the bar
+  subtree computes `overflow-x: auto|scroll`; `scrollWidth ≤ clientWidth` on the bar root, the
+  breadcrumb and the verb list at BOTH widths (no horizontal scrollbar); exactly ONE ellipsizing child
+  per row (the title) and the breadcrumb segments ellipsize, never wrap; every verb row is at least
+  `NAV_BAR_ROW_MIN_WIDTH_PX` (**96**) wide; when 8 rows cannot fit one line at 900 px the verb cluster
+  GROWS VERTICALLY (the bar's measured height increases; the status bar stays directly below it) —
+  vertical growth is the agreed escape valve (UIUX-D6), horizontal scroll is never one; **the scored
+  observables are NO horizontal scroll, every row ≥ 96 px, and the status bar still below the bar**
+  (see Discussion QA-1 for the R-1 `minWidth: 0` wording).
+  - **Edge:** a 60-char verb title; 8 rows at 900 px (vertical-growth leg); a long breadcrumb; a resize
+    while the map is open.
+  - **Receipt:** the computed-style + scroll table at both widths + E-SHOT.
+
+- [ ] **F-N28 (R-1.4) — the bar renders the child-place list before the verb cluster; the legacy left rail is gone.**
+  **Steps:** at the root, read `[data-testid="navigation-bar"]`; count the
+  `[data-testid="navigation-rail-places"]` list's `[data-testid="navigation-rail-place-row"]`
+  children and read their `data-nav-place-id` order, labels, role and `aria-label`/`title`; confirm
+  every place row precedes the first `[data-testid="navigation-bar-row"]` in document order; scan the
+  whole Wireframe subtree for the OLD left-rail root `[data-testid="navigation-rail"]`; then open
+  `? Map` and confirm the six place blocks exist.
+  **Expected:** the child-place list renders at the ROOT with the SIX child places in declaration
+  order — `wireframe.create`, `wireframe.edit`, `wireframe.arrange`, `wireframe.style`,
+  `wireframe.view`, `wireframe.file` (labels Create / Edit / Arrange / Style / View / File) — each
+  row a real `button` inside a `role="listitem"` `li`, inside a `role="list"`/`<ul>` list, carrying
+  `data-nav-place-id` and a non-empty accessible name; the place group renders BEFORE the verb
+  cluster (the first place row precedes the first verb row; a vertical `Separator` separates the two
+  groups); `[data-testid="navigation-rail"]` count **0** (the old LEFT rail is absent); the map has
+  the SIX place blocks with their verbs (non-vacuity — discovery remains, the absence of the old rail
+  is not vacuous).
+  - **Edge:** every one of the six places; the map open; the transient Create chip is NOT a place
+    list; a second Wireframe window.
+  - **Receipt:** E-DOM (the list + rows + order + the legacy-root absence + the map blocks) + E-SHOT.
+
+- [ ] **F-N29 (R-1.5) — `more…` opens the navigation map filtered to the current place.**
+  **Steps:** `c` (Create), click `[data-testid="navigation-bar-more"]`; read the `navigation-map`
+  dialog, its search input (`NAV_MAP_SEARCH_TESTID`) and the Create block; close it and read focus.
+  **Expected:** the map opens; its search value is seeded from the current place path; the Create block
+  lists the declaration's ACTUAL create set — **11** verbs: `wireframe.create.rect`,
+  `wireframe.create.ellipse`, `wireframe.add.text`, `wireframe.add.button`, `wireframe.add.input`,
+  `wireframe.add.image`, `wireframe.add.icon`, `wireframe.add.card`, `wireframe.add.section`,
+  `wireframe.add.shape`, `wireframe.add.line` (Rectangle … Line) — i.e. every declared verb whose
+  `places` includes `wireframe.create`, counted from the declaration at read time; the block's row
+  count EQUALS that count (8 bar rows + the 3 overflow verbs `Icon`, `Shape`, `Line`) and the block is
+  never truncated — derive the expected set/count from `wireframeSurface.ts`, never from a stale
+  literal; closing the map restores focus to the `more…` button.
+  - **Edge:** keyboard activation (Enter/Space) of `more…`; Arrange (no `more…` — open the map from
+    `? Map` with no filter and see all six places); Canvas (2 rows, no `more…`); `Escape` closes the
+    map only (the place does NOT pop — F-N9).
+  - **Receipt:** E-DOM (search value + block rows) + E-SHOT.
+
+- [ ] **F-N30 (R-1.6) — a place transition re-homes focus to the same control or the current-place breadcrumb; focus elsewhere is never stolen.**
+  **Steps:** (a) focus a `navigation-bar-row` at the root and press a stroke that changes place;
+  (b) focus the same verb row in a place, leave the place, re-enter it; (c) focus
+  `[data-testid="wireframe-canvas"]` and press `v`; (d) focus an element in another app window and
+  trigger a Wireframe place change.
+  **Expected:** (a) the control unmounted → `document.activeElement` is the LAST breadcrumb segment
+  `[data-testid="navigation-bar-place"]` (`tabindex="-1"`, text = the new place label), NEVER `body`
+  and never an out-of-app node; (b) on re-entry the SAME control (verb row) is focused when it renders
+  again; (c) the canvas keeps focus (the bar never steals); (d) focus outside the app is untouched.
+  `data-wireframe-place` is the new place in (a)-(c).
+  - **Edge:** a place entered by pointer (breadcrumb/map) vs keyboard; the transient place auto-exit;
+    reduced motion; the map dialog's own focus restore.
+  - **Receipt:** E-DOM (`activeElement` tag/testid/text per step).
+
+- [ ] **F-N31 (R-1.7) — the canvas and details fill the workspace and the status bar sits below the bar.**
+  **Steps:** at 1280×800 read `getBoundingClientRect()` of the workspace row, the bar row, the canvas
+  region, the details column and `[data-testid="wireframe-status-bar"]`; enumerate the workspace row's
+  ELEMENT children.
+  **Expected:** `wireframe-command-bar` sits BELOW the workspace row (`bar.top ≥ workspace.bottom − 1`)
+  and ABOVE the status bar (`status.top ≥ bar.bottom − 1`); the workspace row's element children are
+  EXACTLY two — `[data-wireframe-region="canvas"]` and `[data-wireframe-region="details"]`; NO element
+  with a ~266-px-wide left command column exists; the canvas fills the remaining width
+  (`canvas.width ≥ details.width × 2`); `[data-testid="wireframe-details-column"]` contains the
+  property panel AND the compact `navigation-trail` (the trail is not in the bar); the bar spans the
+  full editor width.
+  - **Edge:** 900×600; details panel open vs. empty; both themes; the map dialog open.
+  - **Receipt:** the rect table + E-SHOT of the full editor.
+
+- [ ] **F-N32 (R-5.1) — typing then Backspace empties the details text field and focus stays on the input.**
+  **Steps:** L1/L3 one **card** selected (the recipes in the #3119 harness above); focus
+  `[data-testid="wireframe-card-label"]`; type `a`; read the store value + `document.activeElement` +
+  the journal length; press `Backspace`; read again; read the console.
+  **Expected:** after `a` the label is `a` and ONE journal entry (`Set label`) exists; after
+  `Backspace` the store label is `''` (the input renders empty) and EXACTLY ONE more journal entry
+  (`Set label`, patch `label: ''`) is appended — never an `invalid-args` rejection, never a revert to
+  `a`; `document.activeElement` is STILL `wireframe-card-label` after both commits; console clean.
+  - **Edge:** a whitespace-only value (`' '`) — free text may be blank under `allowEmpty` (record;
+    never an `invalid-args` FAIL); a card with a pre-existing label cleared to `''`; the same leg on
+    `wireframe-button-label` and `wireframe-input-placeholder`; reduced motion.
+  - **Receipt:** E-DOM (value + `activeElement` + journal ids) + E-SHOT.
+
+- [ ] **F-N33 (R-5.2) — focus survives two consecutive store commits in the details text field.**
+  **Steps:** same focus; type `a`, then `ab`; read `document.activeElement` + the caret/selection after
+  EACH keystroke commit.
+  **Expected:** the input keeps focus after BOTH commits (`document.activeElement` is the same DOM
+  node — never a remounted clone); the caret stays at the typed position; exactly TWO journal entries
+  (one per typed character; no coalescing); console clean; no `Maximum update depth exceeded`.
+  - **Edge:** type → pause → continue; a store update from another source (undo) while focused
+    (record focus/caret); rapid typing; a panel re-render from an unrelated selection change.
+  - **Receipt:** E-DOM (node identity + selection) + the journal entries.
+
+- [ ] **F-N34 (R-5.3) — a printable key inside a text control never dispatches a verb (passthrough preserved).**
+  **Steps:** focus `wireframe-card-label`; press the bound root strokes `c`, `e`, `a`, `s`, `v`, `f`
+  one at a time; then press `Backspace`; then move focus to `wireframe-canvas` and press `f`.
+  **Expected:** inside the text control every printable stroke is INSERTED into the input (or edits
+  it) with `data-wireframe-place` UNCHANGED, ZERO new journal entries and zero announcements;
+  `Backspace` deletes and dispatches nothing; at the canvas root `f` enters `wireframe.file` (the
+  non-vacuity control — the adapter is alive, not disabled).
+  - **Edge:** `Escape` in the field (shipped focus move to the canvas root, no dispatch); a
+    contenteditable element; `Ctrl+Space` while typing (must not fire); a modifier chord in the field.
+  - **Receipt:** E-DOM (place + value + journal length per stroke).
+
+- [ ] **F-N35 (R-6.1 static) — one declaration-derived bar; no second key table or per-place literal verb list.**
+  **Steps:** on the tested tip, strip comments + string-literal text (keep interpolations as CODE) and
+  scan `apps/ui/src/shared/navigation/ui/**` + `apps/ui/src/applications/wireframe/**` (excluding
+  `__tests__`) for a second per-place verb table / key map (a `PLACE_VERBS`-/`VERBS_BY_PLACE`-shaped
+  literal, a hardcoded verb-id array outside `wireframeSurface.ts`, or a `key → verbId` table outside
+  the declaration); read `CommandRail.tsx` and confirm it renders ONLY a `CommandRailModel`.
+  **Expected:** ZERO second key table; every rendered `data-nav-verb-id` is declared in
+  `wireframeSurface.ts` (compare the live row ids against the declaration); `buildCommandRailModel` is
+  the ONLY derivation feeding the bar AND the map; a seeded second-table token in a scratch copy is
+  found (negative control).
+  - **Edge:** a per-place list inside `__tests__` (excluded); a verb-id string in a comment (stripped);
+    a derived constant naming the SAME declaration (allowed).
+  - **Receipt:** E-STATIC (scan scope + hit count + negative control) + the live row-id comparison.
+
+- [ ] **F-N36 (R-6.2) — one dispatch funnel: bar, map and trail mutations all commit through `dispatch`.**
+  **Steps:** run `pnpm --filter @fredo/ui test:run src/applications/wireframe/__tests__/wireframeLegacySurface`
+  → `no ui handler mutates the store outside dispatch`; live: click a bar verb row (`lock`), a map
+  verb row, and the trail's per-entry Undo; read the journal.
+  **Expected:** the cited title is green (verbatim in the reporter); each live leg appends exactly ONE
+  journal entry carrying the DECLARED `verbId` and a real effect (a mutation for `lock`; the map leg
+  performs the same verb; the trail undo appends one `Undo <label>` entry) — no direct store write is
+  reachable from a UI handler; the document changes accordingly.
+  - **Edge:** an `aria-disabled` row (dispatch nothing, no entry); a `did-nothing` no-op (no entry); a
+    failed dispatch (no entry); the same verb from the bar and the map yields the same entry shape.
+  - **Receipt:** the quoted vitest summary + E-DOM (journal per leg).
+
+- [ ] **F-N37 (R-6.3) — one element-scoped key adapter; no new `document` or `window` keydown listener.**
+  **Steps:** before opening Wireframe, wrap `document.addEventListener`/`window.addEventListener` on the
+  page and count `keydown` registrations; open Wireframe, drive 10 strokes, close it; compare. Read the
+  Wireframe provider's handler registration (element-scoped) and count the keydown handlers on the
+  shell element.
+  **Expected:** the number of `document`/`window` `keydown` listeners is UNCHANGED across open/close
+  (delta **0**); the shell has exactly ONE element-scoped keydown handler (the bar adds none); strokes
+  resolve synchronously in the same task (the existing NFR pin); the map dialog's Escape path still
+  works.
+  - **Edge:** two Wireframe windows (one adapter per window); the bar's `more…` map open (Escape closes
+    the map only); text-control focus (suppression); the composer open (no new listener).
+  - **Receipt:** the listener counts before/after + the source read of the registration site.
+
+- [ ] **F-N38 (R-6.4) — no cross-application import is introduced.**
+  **Steps:** static scan `apps/ui/src/applications/wireframe/**`, `apps/ui/src/shared/navigation/**` and
+  `apps/ui/src/shared/components/companion/**` for `from '…applications/<other>'` /
+  `features/<other>` imports (strip comments + string text, keep interpolations as code).
+  **Expected:** ZERO cross-application imports; shared modules only (`shared/**`); no new
+  `features/<x>` path; a seeded import in a scratch copy is found (negative control).
+  - **Edge:** a type-only import (still a FAIL); a re-export barrel; a path alias resolving to another
+    application.
+  - **Receipt:** E-STATIC (scope + hits + negative control).
+
+- [ ] **F-N39 (R-6.5) — the bar adds no second live region; navigation still announces once on the shipped announcer.**
+  **Steps:** transition through three places; read the bar subtree's `[aria-live]` count, the
+  `[data-testid="hotkeys-announcer"]` text (role/`aria-live`), and confirm
+  `[data-testid="navigation-announcer"]` is absent; read the shipped status bar's own live region.
+  **Expected:** the bar subtree contains **0** `aria-live` nodes; each transition writes exactly ONE
+  update to `hotkeys-announcer` (`role="status"`, `aria-live="polite"`) equal to the composer output
+  (`navPlaceEnterMessage('Create', n)`); `navigation-announcer` absent; the shipped
+  `WireframeStatusBar` live region still exists and is UNCHANGED (non-vacuity). **Do NOT assert a
+  global `[aria-live].length === 1`** — the status bar is a live region too (G-424).
+  - **Edge:** a failed/quiet transition (no announcement); two transitions in a row (two distinct
+    messages); reduced motion; a theme switch (no announcement).
+  - **Receipt:** E-DOM (the announcer text + the scoped counts per step).
+
+- [ ] **F-N40 (R-4.1) — the three text-edit verbs are declared, published, kind-gated and default to the primary selection.**
+  **Steps:** run `pnpm --filter @fredo/ui test:run src/applications/wireframe/__tests__/wireframeSurface`;
+  live: select one **card**, one **text**, one **input**, then nothing; invoke
+  `wireframe.element.setLabel` with NO `id` and `{value:'Reports'}` through the sanctioned scripted
+  routed intent (`app_command_intent`); repeat for `setText` (text) and `setPlaceholder` (input).
+  **Expected:** the unit run reports **58** declared verbs (55 → 58) and
+  `wireframe.element.setLabel`/`.setText`/`.setPlaceholder` each declared in `wireframe.edit`,
+  `risk:'mutating'`, `publish:true`, with a `value` arg carrying `allowEmpty:true`; availability is
+  `selection.count === 1` AND the primary kind matches (card/button → `setLabel`; text → `setText`;
+  input → `setPlaceholder`); with no `id` the PRIMARY selected element is patched (quote the id from
+  `data-wireframe-selection-id`); each leg appends ONE journal entry
+  (`Set label`/`Set text`/`Set placeholder`) and the live value changes; an empty selection is
+  `unavailable` and applies nothing.
+  - **Edge:** an explicit `id` overrides the primary; count 2 ⇒ unavailable; the wrong kind ⇒
+    unavailable; a locked element (available, may no-op); `setField`'s generic contract unchanged.
+  - **Receipt:** the vitest summary + E-DOM (declaration + availability + patched id) per leg.
+
+- [ ] **F-N41 (R-7.1) — a companion edit is attributed to `Companion` in the trail.**
+  **Steps:** one selected card; relay `wireframe.element.setLabel {value:'Reports'}` via
+  `app_command_intent` (channel `agent`, `actor:'companion'`); read the newest
+  `[data-testid="navigation-trail-entry"]`.
+  **Expected:** `data-nav-actor="companion"`; `navigation-trail-actor` text `Companion`
+  (`NAV_ACTOR_LABELS`); the entry carries the declared verb label + the dispatch-time place path; the
+  card label is `Reports`; exactly ONE entry appended; a following HUMAN edit appends its own `You`
+  entry (the companion entry is untouched).
+  - **Edge:** a companion NAVIGATION entry (actor `Companion`, effect `navigation`); no coalescing; a
+    companion no-op (no entry); the trail scrolled to the newest entry.
+  - **Receipt:** E-DOM (both entries' actor/label) + E-SHOT of the trail.
+
+- [ ] **F-N42 (R-7.2) — `journal.undo` with a `verbId` filter reverts exactly that entry and no other.**
+  **Steps:** on one card: (1) companion `setLabel {value:'Reports'}`; (2) a HUMAN `toggleLock`
+  (different verb); then dispatch `journal.undo {verbId:'wireframe.element.setLabel', count:'1'}`
+  through the ONE funnel; read the label, the lock flag and the journal. **Multi-match leg:** on a
+  fresh card add TWO matching `setLabel` entries — the older `setLabel {value:'Alpha'}` then the newer
+  `setLabel {value:'Beta'}`, BOTH as companion edits (`app_command_intent`, `actor:'companion'`) — then
+  `journal.undo {verbId:'wireframe.element.setLabel', count:'1'}` and read the label; then repeat the
+  same `verbId`-only undo once more and read the label; then walk back with the actor-scoped undo
+  `journal.undo {verbId:'wireframe.element.setLabel', actor:'companion', count:'1'}` and read the
+  label.
+  **Expected:** the manifest-declared undo command ACCEPTS the `verbId` arg (no `invalid-args`); on
+  the single-match leg the label reverts to its pre-edit value (`''`), the lock flag is UNCHANGED,
+  exactly ONE new `Undo Set label` entry is appended and the original entries remain (append-only);
+  an unknown filter (`wireframe.nope`) is a `no-matches` noop (`Nothing to undo.`, nothing applied);
+  a `count:'2'` with only one matching entry applies one and reports 1. **On the multi-match leg the
+  undo is NEWEST-first over the append-only journal (shipped `seq DESC`), and R-7's literal "newest
+  matching entry" holds:** the first `verbId`-only `count:'1'` reverts the NEWER companion edit
+  (`Beta` → label `Alpha`) and leaves the OLDER `setLabel` entry intact. **That reversal is itself
+  journaled under the SAME `verbId`** (`wireframe.element.setLabel`, `effect:'mutation'`, non-null
+  `inverse`), so a SECOND identical `verbId`-only undo re-targets the REVERSAL — a REDO: the label
+  returns to `Beta` and one more `Undo Set label` entry is appended; expect the redo (not a defect,
+  and not a contradiction of R-7). To reach the OLDER original edit instead, scope the filter past
+  the human-attributed reversal with `actor:'companion'` — the actor-scoped undo skips the reversal
+  and reverts the older companion edit (label back to its pre-edit `''`); exactly one new
+  `Undo Set label` entry per undo, the other journal entries untouched.
+  - **Edge:** no matching entry; a matching NAVIGATION entry (inverse `null` → skipped); a `verbId` on
+    a legacy command-surface app; the undo while the app is closed (queued `_take`); three matching
+    entries with `count:'2'` reverts the two NEWEST and leaves the oldest.
+  - **Receipt:** E-DOM (label + lock + the new entry) + the result event.
+
+- [ ] **F-N43 (R-7.3) — the reversal entry is attributed to the requester.**
+  **Steps:** same run as F-N42; read the reversal entry's actor; then relay the same undo through
+  `app_command_intent` (a companion-channel request) and read the new reversal's actor.
+  **Expected:** a user/host-requested undo appends an entry with `data-nav-actor="human"` /
+  `navigation-trail-actor` `You`; a companion-channel undo REQUEST journals the reversal as `human`
+  (the companion → human rule); the ORIGINAL companion entry still reads `Companion`; the
+  `NOTHING_TO_UNDO` path adds no entry; a system-originated undo keeps `System`.
+  - **Edge:** undo of a companion entry vs a human entry; repeated undo; the trail's per-entry Undo
+    button (`host.undoEntry`) also reads `You`.
+  - **Receipt:** E-DOM (each reversal's actor) + the named rule source.
+
+- [ ] **F-N44 (R-8 live half — wireframe) — no left rail and no palette node in the running webview; the child-place rows live in the bottom bar.**
+  **Steps:** open Wireframe; scan the whole document for the old left-rail root
+  `[data-testid="navigation-rail"]` and for `[data-testid^="launcher-palette-"]`; read the workspace
+  row's children + the leftmost column's computed width; read the bar's
+  `[data-testid="navigation-rail-places"]` list and its six `navigation-rail-place-row` buttons; walk
+  all six places and repeat.
+  **Expected:** the legacy LEFT rail root `[data-testid="navigation-rail"]` counts **0** and no
+  ~266-px left command column exists; the SIX child-place rows render INSIDE the bottom bar
+  (`navigation-rail-places` / `navigation-rail-place-row`, the retained testid symbols) ABOVE the
+  verb rows (non-vacuity — the rows were relocated, not deleted); the workspace has exactly the
+  canvas + details children; the bar root is `[data-testid="navigation-bar"]` at the BOTTOM (F-N31);
+  zero palette nodes in the document; the canvas/details/bar are all present.
+  - **Edge:** each of the six places; the map open; a text control focused; light + dark; a second
+    Wireframe window.
+  - **Receipt:** E-DOM per place + E-SHOT.
+
+- [ ] **F-N45 (R-1.8 / R-3 Ask re-point) — `Ask` and `app.ask` open the ONE composer with a target, never the launcher.**
+  **Steps:** click `[data-testid="navigation-bar-ask"]`; then press `k` at the root; then invoke the
+  `app.ask` verb through the sanctioned routed intent; read the launcher state + the composer.
+  **Expected:** each leg publishes exactly ONE `requestCompanionComposerOpen` request
+  (`source:'command-bar-ask'`, `appId:'wireframe'`, `focus:true`) and opens exactly ONE
+  `fredo-companion-composer` with its input focused and the chip reading `for Wireframe`; the LAUNCHER
+  does NOT open and no `launcher-*` palette/context node appears; `launcherBridge.ts` is not involved
+  (retired).
+  - **Edge:** `Ask` while the launcher is already open (no double open); `app.ask` from a no-surface
+    app (no request, shipped no-op — record); `Ask` with no focused app frame (the default/no-target
+    chip); activation by pointer and by `k`.
+  - **Receipt:** E-DOM (composer + launcher absence) + the composer-request count.

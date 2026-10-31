@@ -32,6 +32,7 @@ export function WireframeStatusBar(): React.ReactElement {
 
   return (
     <Flex
+      data-testid="wireframe-status-bar"
       align="center"
       gap={3}
       px={3}

@@ -38,9 +38,12 @@ import {
   askActiveCompanion,
   askActiveCompanionWithAudio,
   CompanionEntity,
+  FREDO_CHAT_PERSONA,
 } from '@/shared/components/companion/CompanionEntity';
 import type { CompanionEntityHandle } from '@/shared/components/companion/CompanionEntity';
 import type { CompanionSendResult } from '@/shared/components/companion/companionDispatch';
+import { CAPABILITY_LIMITS } from '@/shared/navigation/types';
+import type { ContextEnvelope } from '@/shared/navigation/types';
 import { pushAppOpenReply } from '@/shared/components/companion/skillBridge';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
 import type { LlmMessage, LlmSkillCall } from '@/app/adapters/HostAdapter';
@@ -100,7 +103,7 @@ type LlmDriver = {
   onError: (message: string) => void;
 };
 
-type Generation = { text: string; driver: LlmDriver };
+type Generation = { text: string; messages: LlmMessage[]; driver: LlmDriver };
 let generations: Generation[] = [];
 
 // #2897 ST-3 — the model-audio dispatch captures: the clip + the messages the
@@ -154,6 +157,45 @@ function askNow(ref: React.RefObject<CompanionEntityHandle>, text: string): Comp
   return result as CompanionSendResult;
 }
 
+/** #3120 ST-3 — `ask` with grounding options, synchronously inside `act`. */
+function askNowWith(
+  ref: React.RefObject<CompanionEntityHandle>,
+  text: string,
+  options?: { context?: ContextEnvelope },
+): CompanionSendResult {
+  let result: CompanionSendResult | undefined;
+  act(() => { result = ref.current?.ask(text, options); });
+  return result as CompanionSendResult;
+}
+
+/**
+ * #3120 ST-3 — a minimal wireframe-shaped envelope. Deliberately a literal (not
+ * `buildContextEnvelope`) so the seam's assertion is about the EXACT object the
+ * launcher hands over, including array/object ordering in `JSON.stringify`.
+ */
+function makeContext(overrides: Partial<ContextEnvelope> = {}): ContextEnvelope {
+  return {
+    version: 1,
+    appId: 'wireframe',
+    placePath: [{ id: 'root', label: 'Wireframe', transient: false, sticky: true }],
+    selection: { count: 1, kinds: ['element'], label: 'Rectangle', ids: ['el-1'] },
+    verbs: [
+      {
+        id: 'wireframe.element.delete',
+        title: 'Delete element',
+        risk: 'destructive',
+        keys: ['d'],
+        available: true,
+        unavailableReason: null,
+      },
+    ],
+    journal: { last: [], undoableCount: 0 },
+    dirty: true,
+    limits: CAPABILITY_LIMITS,
+    ...overrides,
+  };
+}
+
 let consoleError: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
@@ -168,9 +210,10 @@ beforeEach(() => {
 
   adapterBridge.setInvoke(async () => undefined);
   adapterBridge.setListen(() => Promise.resolve(() => {}));
-  adapterBridge.setLlmChat(async (_messages, onToken, onDone, onError) => {
+  adapterBridge.setLlmChat(async (messages, onToken, onDone, onError) => {
     generations.push({
       text: 'joke',
+      messages,
       driver: { onToken, onDone, onSkillCall: () => {}, onError: (m: string) => onError?.(m) },
     });
   });
@@ -178,6 +221,7 @@ beforeEach(() => {
     const last = messages[messages.length - 1] as { content: string };
     generations.push({
       text: last.content,
+      messages,
       driver: { onToken, onDone, onSkillCall, onError: (m: string) => onError?.(m) },
     });
   });
@@ -219,6 +263,7 @@ beforeEach(() => {
         const last = messages[messages.length - 1] as { content: string };
         generations.push({
           text: last.content,
+          messages,
           driver: {
             onToken,
             onDone,
@@ -230,6 +275,7 @@ beforeEach(() => {
       }
       generations.push({
         text: 'joke',
+        messages,
         driver: { onToken, onDone, onSkillCall: () => {}, onError: (m: string) => onError?.(m) },
       });
     },
@@ -647,5 +693,132 @@ describe('#2903 ST-2 — model-audio generations are skill-aware', () => {
     expect(surfaceText()).toContain('Opening Settings');
     expect(surfaceText()).not.toContain('I can certainly open Settings for you.');
     expect(liveRegion().textContent).toBe('Opening Settings');
+  });
+});
+
+// ── #3120 ST-3 — companion grounding seam ─────────────────────────────────────
+//
+// R-2.2: the launcher hands the current `ContextEnvelope` to the typed/voice turn.
+// With `{ context }` the entity prepends EXACTLY ONE `system` message carrying
+// `JSON.stringify(context)` before the existing FREDO_CHAT_PERSONA + user turn and
+// adds NO transcript/history. Without a context the legacy array is byte-identical.
+// The audio clip remains the turn's input (an empty user turn, never a transcript).
+
+describe('#3120 ST-3 — companion grounding seam', () => {
+  it('prepends exactly one grounding system message before the persona + user turn', async () => {
+    const { ref } = await mountEntity();
+    vi.useFakeTimers();
+    const context = makeContext();
+
+    expect(askNowWith(ref, 'where am I?', { context })).toEqual({ outcome: 'dispatched' });
+
+    const messages = lastGen().messages;
+    expect(messages).toHaveLength(3);
+    expect(messages[0]).toEqual({ role: 'system', content: JSON.stringify(context) });
+    expect(messages[1]).toEqual({ role: 'system', content: FREDO_CHAT_PERSONA });
+    expect(messages[2]).toEqual({ role: 'user', content: 'where am I?' });
+
+    // Exactly ONE grounding system message was added (the persona is the shipped one).
+    expect(messages.filter((m) => m.role === 'system')).toHaveLength(2);
+    // No transcript/history: no assistant turns, no prior user turns.
+    expect(messages.filter((m) => m.role === 'assistant')).toHaveLength(0);
+    expect(messages.filter((m) => m.role === 'user')).toHaveLength(1);
+    // The grounding payload round-trips to the exact envelope handed over.
+    expect(JSON.parse(messages[0].content)).toStrictEqual(context);
+  });
+
+  it('keeps the legacy message array byte-identical when no context is supplied', async () => {
+    const { ref } = await mountEntity();
+    vi.useFakeTimers();
+
+    expect(askNow(ref, 'hello')).toEqual({ outcome: 'dispatched' });
+
+    // Exactly the shipped pair — zero grounding system messages.
+    expect(lastGen().messages).toStrictEqual([
+      { role: 'system', content: FREDO_CHAT_PERSONA },
+      { role: 'user', content: 'hello' },
+    ]);
+  });
+
+  it('askActiveCompanion forwards the grounding options through the ONE registry', async () => {
+    await mountEntity();
+    vi.useFakeTimers();
+    const context = makeContext({ appId: 'wireframe-map' });
+
+    let result: CompanionSendResult | null = null;
+    act(() => { result = askActiveCompanion('describe this', { context }); });
+
+    expect(result).toEqual({ outcome: 'dispatched' });
+    expect(lastGen().messages[0]).toEqual({ role: 'system', content: JSON.stringify(context) });
+    expect(lastGen().messages[2]).toEqual({ role: 'user', content: 'describe this' });
+  });
+
+  it('a queued send keeps its context across the wait and grounds the drained turn', async () => {
+    const { ref } = await mountEntity();
+    vi.useFakeTimers();
+    const context = makeContext({ dirty: false });
+
+    expect(askNow(ref, 'alpha')).toEqual({ outcome: 'dispatched' });
+    // First generation is in flight — the grounded send is accepted into the FIFO.
+    const queued = askNowWith(ref, 'beta', { context });
+    expect(queued.outcome).toBe('queued');
+    expect(generations).toHaveLength(1);
+
+    act(() => { lastGen().driver.onToken('reply alpha'); });
+    act(() => { lastGen().driver.onDone(); });
+
+    // The drained generation carries the SAME envelope the queued send supplied.
+    expect(generations.map((g) => g.text)).toEqual(['alpha', 'beta']);
+    expect(lastGen().messages).toStrictEqual([
+      { role: 'system', content: JSON.stringify(context) },
+      { role: 'system', content: FREDO_CHAT_PERSONA },
+      { role: 'user', content: 'beta' },
+    ]);
+  });
+
+  it('an over-cap context is never injected (the grounding payload stays bounded)', async () => {
+    const { ref } = await mountEntity();
+    vi.useFakeTimers();
+    // 20k ASCII bytes > CAPABILITY_LIMITS.maxContextBytes (16384).
+    const oversized = makeContext({ appId: 'x'.repeat(20_000) });
+
+    expect(askNowWith(ref, 'hello', { context: oversized })).toEqual({ outcome: 'dispatched' });
+    expect(lastGen().messages).toStrictEqual([
+      { role: 'system', content: FREDO_CHAT_PERSONA },
+      { role: 'user', content: 'hello' },
+    ]);
+  });
+
+  it('grounds a voice turn while the clip remains the turn input (no transcript)', async () => {
+    const { ref } = await mountEntity();
+    vi.useFakeTimers();
+    const context = makeContext();
+
+    let result: CompanionSendResult | undefined;
+    act(() => { result = ref.current?.askWithAudio('UklGRg==', { context }); });
+    expect(result).toEqual({ outcome: 'dispatched' });
+
+    const audio = lastAudioGen();
+    expect(audio.audioBase64).toBe('UklGRg==');
+    expect(audio.messages).toStrictEqual([
+      { role: 'system', content: JSON.stringify(context) },
+      { role: 'system', content: FREDO_CHAT_PERSONA },
+      { role: 'user', content: '' },
+    ]);
+    // The clip IS the input — no transcript text was fabricated and no text channel used.
+    expect(generations).toHaveLength(0);
+  });
+
+  it('keeps the legacy audio messages when no context is supplied', async () => {
+    const { ref } = await mountEntity();
+    vi.useFakeTimers();
+
+    act(() => { ref.current?.askWithAudio('QUJD'); });
+
+    expect(lastAudioGen().audioBase64).toBe('QUJD');
+    expect(lastAudioGen().messages).toStrictEqual([
+      { role: 'system', content: FREDO_CHAT_PERSONA },
+      { role: 'user', content: '' },
+    ]);
   });
 });

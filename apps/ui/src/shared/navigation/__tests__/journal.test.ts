@@ -311,7 +311,7 @@ describe('§6.2 undo and redo', () => {
     expect(navigationHarness.journal.redo()).toStrictEqual([2]);
   });
 
-  it('applied inverse is journaled as a system mutation', async () => {
+  it('applied inverse is journaled for the requester (a human undo stays human)', async () => {
     const harness = makeHarness(twoVerbSurface());
     await dispatch(harness.deps, intent('app.a'));
     const original = harness.journal.entries()[0];
@@ -321,7 +321,8 @@ describe('§6.2 undo and redo', () => {
     const entries = harness.journal.entries();
     expect(entries).toHaveLength(2);
     const inverseEntry = entries[1];
-    expect(inverseEntry.actor).toBe('system');
+    expect(inverseEntry.actor).toBe('human');
+    expect(inverseEntry.channel).toBe('keyboard');
     expect(inverseEntry.effect).toBe('mutation');
     expect(inverseEntry.verbId).toBe('app.a');
     expect(inverseEntry.undoable).toBe(true);
@@ -578,7 +579,9 @@ describe('§6.4 queries', () => {
     // ONLY the companion entry's inverse was applied; human entries are untouched.
     expect(calls).toStrictEqual([{ h: 1 }]);
     expect(journal.entries()).toHaveLength(4);
-    expect(journal.entries()[3].actor).toBe('system');
+    // Spec #3120 §3.10 — the undo request itself is the human's (companion → human).
+    expect(journal.entries()[3].actor).toBe('human');
+    expect(journal.entries()[3].channel).toBe('system');
   });
 
   it('canonical count and actor query undoes newest N', async () => {
@@ -653,7 +656,8 @@ describe('§10.2 undo(run(x)) ≡ before', () => {
     expect(undo.status).toBe('performed');
     expect(doc.doc).toStrictEqual(before);
     const undoEntry = journal.entries()[journal.entries().length - 1];
-    expect(undoEntry.actor).toBe('system');
+    expect(undoEntry.actor).toBe('human');
+    expect(undoEntry.channel).toBe('keyboard');
     expect(undoEntry.effect).toBe('mutation');
 
     const redo = await dispatch(deps, intent('journal.redo'));
@@ -681,7 +685,7 @@ describe('§10.2 undo(run(x)) ≡ before', () => {
       expect((await dispatch(pairDeps, intent('journal.undo'))).status).toBe('performed');
       expect(pairDoc.doc).toStrictEqual(pairBefore);
       const lastEntry = pairJournal.entries()[pairJournal.entries().length - 1];
-      expect(lastEntry.actor).toBe('system');
+      expect(lastEntry.actor).toBe('human');
       expect((await dispatch(pairDeps, intent('journal.redo'))).status).toBe('performed');
       expect(pairDoc.doc).toStrictEqual(pairAfter);
     }

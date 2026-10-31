@@ -51,14 +51,16 @@ fn fixture() -> GoldenFixture {
     serde_json::from_str(GOLDEN_FIXTURE).expect("the shared golden fixture parses")
 }
 
-fn command(id: &str) -> CompanionCommandManifest {
-    CompanionCommandManifest {
-        id: id.to_string(),
-        label: "Label".to_string(),
-        description: format!("Do {id}"),
-        args: Vec::new(),
+    fn command(id: &str) -> CompanionCommandManifest {
+        CompanionCommandManifest {
+            id: id.to_string(),
+            label: "Label".to_string(),
+            description: format!("Do {id}"),
+            risk: None,
+            args: Vec::new(),
+            aliases: Vec::new(),
+        }
     }
-}
 
 fn surface(app_id: &str) -> CompanionSurfaceManifest {
     CompanionSurfaceManifest {

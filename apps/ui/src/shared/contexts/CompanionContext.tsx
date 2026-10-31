@@ -139,6 +139,16 @@ interface CompanionContextState {
   // is actively in use (open TicTacToe / active joke stream / talk hold). Host-
   // local and transient: never persisted, never broadcast.
   isInUse: boolean;
+  // #3120 (rework) ST-2 — the teleport-attached instruction box is open in THIS
+  // window's hosting surface. Transient: NEVER persisted, never broadcast.
+  composerOpen: boolean;
+  // #3120 (rework) ST-2-R4 — monotonic arrival/request identities. `teleportSeq`
+  // advances on EVERY relocation so the surface that actually SETTLES (the
+  // surviving overlay) can own the settle-open; `composerRequestSeq` advances on
+  // EVERY open request (including a repeat while already open) so focus follows
+  // each request rather than only the first mount. Transient, never persisted.
+  teleportSeq: number;
+  composerRequestSeq: number;
 }
 
 type CompanionAction =
@@ -156,6 +166,9 @@ type CompanionAction =
   | { type: 'CANCEL_AUTO_RETURN' }
   | { type: 'SET_HOSTING'; payload: boolean }
   | { type: 'SET_IN_USE'; payload: boolean }
+  // #3120 (rework) ST-2 — the ONE open/close pair for the instruction composer.
+  | { type: 'OPEN_COMPOSER' }
+  | { type: 'CLOSE_COMPOSER' }
   | { type: 'SYNC_PRESENCE'; payload: { visible?: boolean; autoHidden?: boolean; away?: boolean } };
 
 interface CompanionContextValue {
@@ -225,6 +238,26 @@ interface CompanionContextValue {
   setHosting: (hosting: boolean) => void;
   /** FredoCompanion reports continuous use (open game / active stream / talk). */
   setInUse: (inUse: boolean) => void;
+  /**
+   * #3120 (rework) ST-2 — the teleport-attached instruction box is open.
+   * Transient state owned by this provider; the entity/host write it, the
+   * composer reads it. NEVER persisted.
+   */
+  composerOpen: boolean;
+  openComposer: () => void;
+  closeComposer: () => void;
+  /**
+   * #3120 (rework) ST-2-R4 — advanced on every `TELEPORT`. The hosting overlay
+   * keys its settle-open effect on it (the seat can never own — and lose — the
+   * timer, because a same-window teleport unmounts the seat in the same commit).
+   */
+  teleportSeq: number;
+  /**
+   * #3120 (rework) ST-2-R4 — advanced by EVERY `OPEN_COMPOSER` (including a
+   * repeat request while the box is already open). The composer re-focuses on
+   * each value, so a repeated `Ask` re-focuses instead of silently no-oping.
+   */
+  composerRequestSeq: number;
 }
 
 // ── Reducer ──────────────────────────────────────────────────────────────────
@@ -243,6 +276,9 @@ const initialState: CompanionContextState = {
   isAutoReturning: false,
   isHosting: false,
   isInUse: false,
+  composerOpen: false,
+  teleportSeq: 0,
+  composerRequestSeq: 0,
 };
 
 function reducer(state: CompanionContextState, action: CompanionAction): CompanionContextState {
@@ -258,14 +294,18 @@ function reducer(state: CompanionContextState, action: CompanionAction): Compani
       // companion is designated present again — without touching the persisted key.
       // #2870 ST-1: a role change also returns Fredo HOME (R-3 — OFF renders the
       // decorative mascot at the seat; ON renders the companion in place).
-      return { ...state, isVisible: action.payload, isAway: false, isAutoHidden: false, isAutoReturning: false };
+      return { ...state, isVisible: action.payload, isAway: false, isAutoHidden: false, isAutoReturning: false, composerOpen: false };
     case 'TELEPORT':
       // #2870 ST-1: the ONLY relocation mechanism — any teleport leaves the seat.
       // #2870 F-68: a relocation MUST clear any prior hide state so the relocated
       // Fredo is present at its new location. A stale `isAutoHidden` (left by a
       // prior idle auto-return) otherwise gates the away overlay off AND keeps the
       // host idle gate disarmed → zero Fredos, stuck until an OFF/ON toggle.
-      return { ...state, position: action.payload, isAway: true, isAutoHidden: false, isAutoReturning: false };
+      // #3120 (rework) ST-2: the composer is teleport-attached — it closes during
+      // flight and re-opens on the destination settle. ST-2-R4: the seq bump is
+      // the settle-open signal the SURVIVING overlay (not the unmounting seat)
+      // consumes.
+      return { ...state, position: action.payload, isAway: true, isAutoHidden: false, isAutoReturning: false, composerOpen: false, teleportSeq: state.teleportSeq + 1 };
     case 'MARK_AWAY':
       // #2870 ST-1: idempotent local away (cross-window leave).
       // #2870 F-68: clear any prior hide state on relocation too (idempotent when
@@ -277,13 +317,24 @@ function reducer(state: CompanionContextState, action: CompanionAction): Compani
       return state.isAutoReturning ? state : { ...state, isAutoReturning: true };
     case 'AUTO_RETURN_SETTLED':
       // #2870 ST-1: the idle auto-return is a RETURN to the home seat (R-3/R-5).
-      return { ...state, isAway: false, isAutoHidden: true, isAutoReturning: false };
+      return { ...state, isAway: false, isAutoHidden: true, isAutoReturning: false, composerOpen: false };
     case 'CANCEL_AUTO_RETURN':
       return state.isAutoReturning ? { ...state, isAutoReturning: false } : state;
     case 'SET_HOSTING':
       return state.isHosting === action.payload ? state : { ...state, isHosting: action.payload };
     case 'SET_IN_USE':
       return state.isInUse === action.payload ? state : { ...state, isInUse: action.payload };
+    case 'OPEN_COMPOSER':
+      // #3120 (rework) ST-2-R4: NOT a boolean latch — EVERY request is a new
+      // state (the seq advances even when already open) so a repeat `Ask`
+      // re-renders the composer and re-focuses its input.
+      return {
+        ...state,
+        composerOpen: true,
+        composerRequestSeq: state.composerRequestSeq + 1,
+      };
+    case 'CLOSE_COMPOSER':
+      return state.composerOpen ? { ...state, composerOpen: false } : state;
     case 'SYNC_PRESENCE': {
       // Remote presence: apply fields that were provided, always clear the local
       // in-flight return. Never persists (setVisible is the only persisted writer).
@@ -487,6 +538,16 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     dispatch({ type: 'SET_IN_USE', payload: inUse });
   }, []);
 
+  // #3120 (rework) ST-2 — the instruction box open/close pair. Idempotent in the
+  // reducer (no state write when already in the requested state).
+  const openComposer = useCallback(() => {
+    dispatch({ type: 'OPEN_COMPOSER' });
+  }, []);
+
+  const closeComposer = useCallback(() => {
+    dispatch({ type: 'CLOSE_COMPOSER' });
+  }, []);
+
   const setIdleTimeoutSeconds = useCallback((s: number) => {
     setIdleTimeout(clampIdleTimeout(s));
   }, [setIdleTimeout]);
@@ -545,6 +606,9 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     voiceDeviceId, setVoiceDeviceId,
     sendDuringReply, setSendDuringReply, replyLeaveGraceMs, setReplyLeaveGraceMs,
     replyInFlight, setReplyInFlight, queuedSendCount, setQueuedSendCount,
+    composerOpen: state.composerOpen, openComposer, closeComposer,
+    teleportSeq: state.teleportSeq,
+    composerRequestSeq: state.composerRequestSeq,
   }), [
     state, setState, showMessage, hideMessage, setVisible, teleport, markAway,
     notifyInteraction, idleTimeoutSeconds, setIdleTimeoutSeconds,
@@ -552,6 +616,7 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     voiceDeviceId, setVoiceDeviceId,
     sendDuringReply, setSendDuringReply, replyLeaveGraceMs, setReplyLeaveGraceMs,
     replyInFlight, setReplyInFlight, queuedSendCount, setQueuedSendCount,
+    openComposer, closeComposer,
   ]);
 
   return (

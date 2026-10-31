@@ -20,7 +20,6 @@ import {
 } from '../../';
 import {
   NAV_ACTOR_LABELS,
-  NAV_ASK_DISABLED_REASON,
   NAV_ASK_VERB_ID,
   NAV_EMPTY_TRAIL_COPY,
   NAV_GLYPH_BY_VERB_ID,
@@ -34,7 +33,6 @@ import {
   NAV_MORE_LABEL,
   NAV_RAIL_EMPTY_COPY,
   NAV_RAIL_MAX_ROWS,
-  NAV_RAIL_MIN_WIDTH_PX,
   NAV_RISK_LABELS,
   NAV_TRANSIENT_MARKER_SUFFIX,
   NAV_UNAVAILABLE_REASON,
@@ -192,15 +190,17 @@ describe('buildCommandRailModel — unavailable verbs stay, disabled with the ge
 
 /* ───────────────────────────── R-1.4 affordances ───────────────────────────── */
 
-describe('buildCommandRailModel — / Ask and ? Map affordances (R-1.4 / Q1-05)', () => {
-  it('renders / Ask disabled with the launcher reason and ? Map enabled', () => {
+describe('buildCommandRailModel — / Ask and ? Map affordances (R-1.4 / Q1-05 / R-7.1)', () => {
+  it('renders / Ask enabled with no reason node and ? Map enabled', () => {
     const rail = railAt([S.canvas]);
     expect(rail.ask.glyph).toBe(NAV_GLYPH_BY_VERB_ID[NAV_ASK_VERB_ID]);
     expect(rail.ask.glyph).toBe('/');
     expect(rail.ask.label).toBe('Ask');
     expect(rail.ask.binding).toBe('k');
-    expect(rail.ask.enabled).toBe(false);
-    expect(rail.ask.reason).toBe(NAV_ASK_DISABLED_REASON);
+    // Spec #3120 (P6) — the launcher ships, so `/ Ask` is a real affordance (R-7.1).
+    expect(rail.ask.enabled).toBe(true);
+    expect(rail.ask.reason).toBeNull();
+    expect(rail.ask.tooltip).toBe('Ask (k)');
 
     expect(rail.map.glyph).toBe(NAV_GLYPH_BY_VERB_ID[NAV_MAP_VERB_ID]);
     expect(rail.map.glyph).toBe('?');
@@ -223,7 +223,8 @@ describe('buildCommandRailModel — / Ask and ? Map affordances (R-1.4 / Q1-05)'
     }
     expect(rail.map.tooltip).toContain('(m)');
     expect(rail.ask.tooltip).toContain('(k)');
-    expect(rail.ask.tooltip).toContain(NAV_ASK_DISABLED_REASON);
+    // The retired P4 disabled reason is gone from the enabled affordance.
+    expect(rail.ask.reason).toBeNull();
   });
 });
 
@@ -238,7 +239,6 @@ describe('buildCommandRailModel — never pads (R-1.5 / Q1-06)', () => {
     expect(rail.more).toBeNull();
     // The bound empty-list copy exists for the component; the model never invents rows.
     expect(NAV_RAIL_EMPTY_COPY).toBe('No actions in this place');
-    expect(NAV_RAIL_MIN_WIDTH_PX).toBe(180);
   });
 
   it('never exceeds the hard cap in any declared state', () => {
@@ -443,7 +443,7 @@ describe('buildNavigationMapModel — the declaration tree and its three section
 /* ───────────────────────────── bound copy constants ───────────────────────────── */
 
 describe('the G-324 copy bundle is bound by value (Architect C8)', () => {
-  it('exports the eight adjudicated strings/values', () => {
+  it('exports the adjudicated copy strings/values', () => {
     expect(NAV_MAP_SEARCH_LABEL).toBe('Search places, actions and keys');
     expect(NAV_MAP_EMPTY_COPY).toBe('No matching places, actions or keys');
     expect(NAV_MAP_ALIASES_HEADING).toBe('Direct aliases');
@@ -451,7 +451,6 @@ describe('the G-324 copy bundle is bound by value (Architect C8)', () => {
     expect(NAV_MAP_CURRENT_LABEL).toBe('Current place');
     expect(NAV_RAIL_EMPTY_COPY).toBe('No actions in this place');
     expect(NAV_MAP_HINT_COPY).toBe('↑ ↓ move · Enter run · Esc close');
-    expect(NAV_RAIL_MIN_WIDTH_PX).toBe(180);
     expect(NAV_EMPTY_TRAIL_COPY).toBe('Nothing yet — your actions will appear here');
   });
 

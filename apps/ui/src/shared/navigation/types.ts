@@ -195,6 +195,15 @@ export interface VerbArg {
   readonly type: 'string' | 'number' | 'boolean' | 'enum';
   readonly required: boolean;
   readonly validate?: (value: string) => boolean;
+  /**
+   * Spec #3120 (P6), ST-1 — the free-text opt-out of the blank rule.
+   *
+   * A declared `''`-capable argument (a label that may be cleared) sets this so the
+   * dispatch argument validator accepts an empty/whitespace-only value. Absent ⇒ the
+   * strict blank rule is unchanged: a non-free-text argument still rejects `''`.
+   * Propagation to the manifest follows the absent-key rule (only `true` is emitted).
+   */
+  readonly allowEmpty?: boolean;
 }
 
 /** §1.1 — one object a verb applies to. */
@@ -269,6 +278,12 @@ export interface VerbDescriptor {
   readonly run: (intent: Intent, ctx: ContextSnapshot) => VerbEffect | Promise<VerbEffect>;
   readonly undo?: (entry: JournalEntry) => VerbEffect | Promise<VerbEffect>;
   readonly consequence?: string;
+  /**
+   * Spec #3120 (P6) — the authored external party for a `risk: 'external'` verb (e.g.
+   * `your file system`). The funnel prefers it over the derived value so the declaration,
+   * not a heuristic, names where the action reaches outside Fredo (§9.1).
+   */
+  readonly externalParty?: string;
   readonly publish: boolean;
 }
 

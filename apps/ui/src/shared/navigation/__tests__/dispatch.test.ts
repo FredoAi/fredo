@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { createDispatcher, dispatch, type EngineDeps } from '../dispatch';
 import { createJournalStore, type JournalStore } from '../journal';
 import {
+  NOTHING_TO_UNDO,
   type ConfirmationRequest,
   type ContextSnapshot,
   type Intent,
@@ -277,6 +278,51 @@ describe('§5.2 existence / availability / arguments', () => {
       expect(harness.patches).toHaveLength(0);
     }
   });
+
+  it('a blank value is rejected unless the argument declares allowEmpty (Spec #3120 ST-1)', async () => {
+    // A non-free-text arg keeps the strict blank rule.
+    const strict = makeVerb({
+      id: 'app.strictLabel',
+      args: [{ name: 'label', type: 'string', required: false }],
+      run: () => mutationEffect('Set label'),
+    });
+    // A declared free-text arg may legitimately be '' (or whitespace-only).
+    const freeText = makeVerb({
+      id: 'app.freeTextLabel',
+      args: [{ name: 'label', type: 'string', required: false, allowEmpty: true }],
+      run: () => mutationEffect('Set label'),
+    });
+    const surface = surfaceOf([strict, freeText]);
+
+    for (const blank of ['', '   ']) {
+      const strictHarness = makeHarness(surface);
+      expect(
+        await dispatch(strictHarness.deps, intent('app.strictLabel', { args: { label: blank } })),
+      ).toStrictEqual({ status: 'rejected', code: 'invalid-args' });
+      expect(strictHarness.journal.entries()).toHaveLength(0);
+      expect(strictHarness.patches).toHaveLength(0);
+    }
+
+    for (const blank of ['', '   ']) {
+      const freeHarness = makeHarness(surface);
+      const result = await dispatch(
+        freeHarness.deps,
+        intent('app.freeTextLabel', { args: { label: blank } }),
+      );
+      expect(result.status).toBe('performed');
+      if (result.status !== 'performed') throw new Error(result.status);
+      expect(result.entry.verbId).toBe('app.freeTextLabel');
+      expect(freeHarness.journal.entries()).toHaveLength(1);
+      expect(freeHarness.patches).toHaveLength(1);
+    }
+
+    // The opt-out is per argument: a non-blank value is still validated as usual.
+    const valueHarness = makeHarness(surface);
+    expect(
+      (await dispatch(valueHarness.deps, intent('app.freeTextLabel', { args: { label: 'Reports' } })))
+        .status,
+    ).toBe('performed');
+  });
 });
 
 describe('§5.2/§5.3 run + effect', () => {
@@ -396,10 +442,11 @@ describe('§6.4/§4.10 multi-entry undo', () => {
     });
     // The B inverse was applied before the failing A inverse.
     expect(calls[calls.length - 1]).toStrictEqual({ b: 0 });
-    // The applied inverse is preserved as a `system` entry.
+    // The applied inverse is preserved for the requester (a human undo stays human).
     const entries = journal.entries();
     expect(entries).toHaveLength(3);
-    expect(entries[2].actor).toBe('system');
+    expect(entries[2].actor).toBe('human');
+    expect(entries[2].channel).toBe('system');
     expect(entries[2].effect).toBe('mutation');
 
     // Failure on the FIRST inverse reports applied 0.
@@ -425,5 +472,154 @@ describe('§6.4/§4.10 multi-entry undo', () => {
       applied: 0,
       failedSeq: 2,
     });
+  });
+});
+
+describe('§6.4 undo by description — the verbId filter (Spec #3120 ST-8)', () => {
+  const LABEL_VERB = 'wireframe.element.setLabel';
+  const LOCK_VERB = 'wireframe.element.toggleLock';
+
+  function undoByDescriptionSurface(): Surface {
+    return surfaceOf([
+      makeVerb({
+        id: LABEL_VERB,
+        title: 'Set label',
+        risk: 'mutating',
+        args: [{ name: 'value', type: 'string', required: false, allowEmpty: true }],
+        run: () =>
+          makeEffect({
+            label: 'Set label',
+            patch: { before: { label: 'old' }, after: { label: 'Reports' } },
+            inverse: { label: 'old' },
+            target: [makeObjectRef('card-1')],
+          }),
+      }),
+      makeVerb({
+        id: LOCK_VERB,
+        title: 'Toggle lock',
+        risk: 'mutating',
+        run: () =>
+          makeEffect({
+            label: 'Toggle lock',
+            patch: { before: { locked: false }, after: { locked: true } },
+            inverse: { locked: false },
+            target: [makeObjectRef('card-1')],
+          }),
+      }),
+    ]);
+  }
+
+  /**
+   * A label verb whose `run` derives `before` from the value it last wrote, so two
+   * successive edits carry DISTINGUISHABLE inverses (`''` and `'Alpha'`) and the
+   * newest-first order can be proven from the applied patches alone.
+   */
+  function labelOnlySurface(): Surface {
+    let current = '';
+    return surfaceOf([
+      makeVerb({
+        id: LABEL_VERB,
+        title: 'Set label',
+        risk: 'mutating',
+        args: [{ name: 'value', type: 'string', required: false, allowEmpty: true }],
+        run: (intent) => {
+          const value = intent.args.value ?? '';
+          const before = { label: current };
+          current = value;
+          return makeEffect({
+            label: 'Set label',
+            patch: { before, after: { label: value } },
+            inverse: before,
+            target: [makeObjectRef('card-1')],
+          });
+        },
+      }),
+    ]);
+  }
+
+  it('reverts exactly the matching verb entries and no other', async () => {
+    const harness = makeHarness(undoByDescriptionSurface(), {
+      now: () => '2026-01-01T00:00:00.000Z',
+    });
+
+    // Two different edits: the label change (companion) then a lock change (human).
+    await dispatch(
+      harness.deps,
+      intent(LABEL_VERB, { channel: 'agent', actor: 'companion', args: { value: 'Reports' } }),
+    );
+    await dispatch(harness.deps, intent(LOCK_VERB, { channel: 'keyboard', actor: 'human' }));
+
+    const result = await dispatch(
+      harness.deps,
+      intent('journal.undo', {
+        channel: 'system',
+        args: { verbId: LABEL_VERB, count: '1' },
+      }),
+    );
+
+    // The verbId is an accepted manifest argument: the funnel never rejects it.
+    expect(result.status).toBe('performed');
+    if (result.status !== 'performed') throw new Error(result.status);
+    expect(result.entry.verbId).toBe(LABEL_VERB);
+    expect(result.entry.label).toBe('Undo Set label');
+
+    // Only the label inverse was applied; the lock inverse was left untouched.
+    expect(harness.patches).toStrictEqual([
+      { label: 'Reports' },
+      { locked: true },
+      { label: 'old' },
+    ]);
+
+    // Append-only: both originals remain; one reversal entry was added.
+    const entries = harness.journal.entries();
+    expect(entries).toHaveLength(3);
+    expect(entries[0].verbId).toBe(LABEL_VERB);
+    expect(entries[1].verbId).toBe(LOCK_VERB);
+    expect(entries[2].verbId).toBe(LABEL_VERB);
+    expect(entries[2].label).toBe('Undo Set label');
+
+    // Newest-first: with two matches, ONE undo reverts the newer label edit and
+    // leaves the older label entry intact.
+    const multi = makeHarness(labelOnlySurface(), {
+      now: () => '2026-01-01T00:00:00.000Z',
+    });
+    await dispatch(multi.deps, intent(LABEL_VERB, { args: { value: 'Alpha' } }));
+    await dispatch(multi.deps, intent(LABEL_VERB, { args: { value: 'Beta' } }));
+    // The two edits carry distinguishable inverses: '' (Alpha) and 'Alpha' (Beta).
+    expect(multi.patches).toStrictEqual([{ label: 'Alpha' }, { label: 'Beta' }]);
+
+    const undo = await dispatch(
+      multi.deps,
+      intent('journal.undo', { channel: 'system', args: { verbId: LABEL_VERB, count: '1' } }),
+    );
+    expect(undo.status).toBe('performed');
+    // Newest-first (`seq DESC`): with two matches only the newer edit is reverted —
+    // the applied inverse is the newer edit's `'Alpha'`, never the older one's `''`.
+    expect(multi.patches.slice(-1)).toStrictEqual([{ label: 'Alpha' }]);
+    // Append-only: both originals remain and exactly one reversal was appended.
+    expect(multi.journal.entries()).toHaveLength(3);
+    expect(multi.journal.entries()[0].verbId).toBe(LABEL_VERB);
+    expect(multi.journal.entries()[1].verbId).toBe(LABEL_VERB);
+    expect(multi.journal.entries()[2].label).toBe('Undo Set label');
+  });
+
+  it('an unknown verbId filter is a no-matches noop', async () => {
+    const harness = makeHarness(undoByDescriptionSurface(), {
+      now: () => '2026-01-01T00:00:00.000Z',
+    });
+    await dispatch(harness.deps, intent(LABEL_VERB, { args: { value: 'Reports' } }));
+
+    const patchesBefore = harness.patches.length;
+    const result = await dispatch(
+      harness.deps,
+      intent('journal.undo', {
+        channel: 'system',
+        args: { verbId: 'wireframe.nope', count: '1' },
+      }),
+    );
+
+    expect(result).toStrictEqual({ status: 'noop', code: 'no-matches', message: NOTHING_TO_UNDO });
+    expect(harness.patches).toHaveLength(patchesBefore);
+    expect(harness.journal.entries()).toHaveLength(1);
   });
 });

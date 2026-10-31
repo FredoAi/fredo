@@ -1,17 +1,19 @@
 /**
- * Companion manifest publisher (Spec #3099, ST-2).
+ * Companion manifest publisher (Spec #3099, ST-2; navigation source added in
+ * Spec #3120, ST-2).
  *
  * Publishes the PURE manifest projection ({@link buildCompanionManifest}) to the
  * host with `register_app_command_surfaces`. The host registry is the published
  * truth the dispatcher and the per-turn offer read (D12) — so this is the ONE
- * write path, and it runs at boot plus on every application registration.
+ * write path, and it runs at boot plus on every application registration and
+ * every navigation-host registration.
  *
- * Timing rules (Spec #3099 ST-2):
+ * Timing rules (Spec #3099 ST-2; Spec #3120 ST-2):
  *   - publication is COALESCED to one invoke per task (`queueMicrotask`), so a
  *     burst of registrations cannot flood the host;
- *   - a webview that never imports `allApplications` (empty registry) publishes
- *     NOTHING — an empty publish would be a no-op host-side, but skipping it
- *     keeps the boot path free of pointless IPC;
+ *   - a webview with neither an application nor a registered navigation host
+ *     publishes NOTHING — an empty publish would be a no-op host-side, but
+ *     skipping it keeps the boot path free of pointless IPC;
  *   - an identical serialized manifest is not re-sent;
  *   - a failed invoke is swallowed (never thrown into a render path) and is
  *     retried by the next registration notification.
@@ -26,6 +28,10 @@ import {
 } from '../../applications/applicationRegistry';
 import { adapterBridge } from '../utils/adapterBridge';
 import {
+  listRegisteredSurfaces,
+  subscribeNavigationHosts,
+} from '../navigation/ui/hostRegistry';
+import {
   buildCompanionManifest,
   type CompanionManifest,
 } from './manifest';
@@ -39,8 +45,11 @@ let _lastPublished: string | undefined;
 /** Number of live installs (idempotent by ref count). */
 let _installCount = 0;
 
-/** The single registration subscription, owned while `_installCount > 0`. */
+/** The single application-registration subscription, owned while `_installCount > 0`. */
 let _unsubscribe: (() => void) | undefined;
+
+/** The single navigation-host subscription, owned while `_installCount > 0`. */
+let _unsubscribeNavigation: (() => void) | undefined;
 
 /** True while a publish is queued for the current task. */
 let _scheduled = false;
@@ -51,9 +60,9 @@ let _scheduled = false;
  */
 let _generation = 0;
 
-/** Project the currently registered applications. */
+/** Project the currently registered applications AND navigation surfaces. */
 export function collectCompanionManifest(): CompanionManifest {
-  return buildCompanionManifest(getApplications());
+  return buildCompanionManifest(getApplications(), listRegisteredSurfaces());
 }
 
 /**
@@ -64,8 +73,9 @@ export function collectCompanionManifest(): CompanionManifest {
  * name is `manifest` (ST-4).
  */
 export async function publishAppCommandSurfaces(): Promise<void> {
-  // A webview without `allApplications` must never publish an empty set.
-  if (getApplications().length === 0) return;
+  // A webview with no application AND no registered navigation host must never
+  // publish an empty set.
+  if (getApplications().length === 0 && listRegisteredSurfaces().length === 0) return;
 
   const manifest = collectCompanionManifest();
   const serialized = JSON.stringify(manifest);
@@ -103,6 +113,10 @@ export function installAppCommandSurfacePublisher(): () => void {
   _installCount += 1;
   if (_installCount === 1) {
     _unsubscribe = subscribeApplications(() => schedulePublish());
+    // A navigation host mounts AFTER boot (an app opens), so its registration
+    // must republish the manifest — otherwise the companion never learns the
+    // declared verbs.
+    _unsubscribeNavigation = subscribeNavigationHosts(() => schedulePublish());
     schedulePublish();
   }
 
@@ -114,16 +128,20 @@ export function installAppCommandSurfacePublisher(): () => void {
     if (_installCount === 0) {
       _unsubscribe?.();
       _unsubscribe = undefined;
+      _unsubscribeNavigation?.();
+      _unsubscribeNavigation = undefined;
     }
   };
 }
 
-/** Test-only reset: drops installs, subscription, watermark and queued work. */
+/** Test-only reset: drops installs, subscriptions, watermark and queued work. */
 export function resetAppCommandPublisherForTests(): void {
   _generation += 1;
   _installCount = 0;
   _unsubscribe?.();
   _unsubscribe = undefined;
+  _unsubscribeNavigation?.();
+  _unsubscribeNavigation = undefined;
   _scheduled = false;
   _lastPublished = undefined;
 }

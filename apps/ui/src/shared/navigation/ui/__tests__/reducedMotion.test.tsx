@@ -14,7 +14,7 @@ import React from 'react';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, screen } from '@testing-library/react';
+import { act, cleanup, screen } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { NAV_RAIL_LIST_TESTID } from '@/shared/navigation/ui/constants';
@@ -48,9 +48,41 @@ function stubMatchMedia(matches: boolean): void {
   }));
 }
 
-function HookProbe(): React.ReactElement {
+/** A `matchMedia` stub whose subscribed `change` listeners the test can drive. */
+function stubMatchMediaDispatcher(initial: boolean): {
+  dispatch: (matches: boolean) => void;
+} {
+  const listeners = new Set<(event: { matches: boolean }) => void>();
+  const query = {
+    matches: initial,
+    media: '(prefers-reduced-motion: reduce)',
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: (_type: string, listener: (event: { matches: boolean }) => void) => {
+      listeners.add(listener);
+    },
+    removeEventListener: (_type: string, listener: (event: { matches: boolean }) => void) => {
+      listeners.delete(listener);
+    },
+    dispatchEvent: () => false,
+  };
+  vi.stubGlobal('matchMedia', () => query);
+  return {
+    dispatch: (matches: boolean) => {
+      query.matches = matches;
+      for (const listener of listeners) listener({ matches });
+    },
+  };
+}
+
+function HookProbe({ label = 'probe' }: { readonly label?: string }): React.ReactElement {
   const reduced = useNavReducedMotion();
-  return <span data-testid="nav-reduced-probe">{reduced ? 'true' : 'false'}</span>;
+  return (
+    <span data-testid="nav-reduced-probe" data-label={label}>
+      {reduced ? 'true' : 'false'}
+    </span>
+  );
 }
 
 function railModel() {
@@ -80,6 +112,31 @@ describe('useNavReducedMotion — the hook (Q5-01a)', () => {
     vi.stubGlobal('matchMedia', undefined);
     renderWithChakra(<HookProbe />);
     expect(screen.getByTestId('nav-reduced-probe').textContent).toBe('false');
+  });
+
+  it('re-reads a post-mount matchMedia replacement', () => {
+    stubMatchMedia(false);
+    // The varying `label` prop re-renders the SAME instance (not a remount), so the new
+    // snapshot comes from a render, never from an effect re-subscribe.
+    const { rerender } = renderWithChakra(<HookProbe label="first" />);
+    expect(screen.getByTestId('nav-reduced-probe').textContent).toBe('false');
+
+    stubMatchMedia(true);
+    rerender(<HookProbe label="next" />);
+
+    expect(screen.getByTestId('nav-reduced-probe').textContent).toBe('true');
+  });
+
+  it('follows a change event on the subscribed list', () => {
+    const controller = stubMatchMediaDispatcher(false);
+    renderWithChakra(<HookProbe />);
+    expect(screen.getByTestId('nav-reduced-probe').textContent).toBe('false');
+
+    act(() => {
+      controller.dispatch(true);
+    });
+
+    expect(screen.getByTestId('nav-reduced-probe').textContent).toBe('true');
   });
 });
 

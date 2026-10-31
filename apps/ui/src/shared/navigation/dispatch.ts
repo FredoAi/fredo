@@ -54,7 +54,13 @@ export interface EngineDeps {
   readonly now: () => string;
   /** Apply a whole-document patch; throwing marks an undo failure. */
   readonly applyPatch: (patch: JsonPatch) => void;
-  readonly confirm: (request: ConfirmationRequest) => boolean;
+  /**
+   * §9 — the risk-policy decision. The intent is passed alongside the request so a host can
+   * gate the dialog on the channel (launcher/voice/agent ask; keyboard/pointer stay shipped).
+   * A promise is awaited: a false (sync or resolved) rejects with `canceled-confirmation`
+   * BEFORE the verb runs. Sync callers keep working unchanged (additive second arg).
+   */
+  readonly confirm: (request: ConfirmationRequest, intent: Intent) => boolean | Promise<boolean>;
   /** Root-Escape only: true when the host has an overlay to close. */
   readonly overlayOpen?: () => boolean;
 }
@@ -103,7 +109,9 @@ function isValidArguments(
       continue;
     }
     if (typeof value !== 'string') return false; // non-string (madcast at the boundary)
-    if (value.trim().length === 0) return false; // blank / whitespace-only
+    // Spec #3120 (P6), ST-1 — a declared free-text argument may legitimately be `''`.
+    // The blank rule stays strict for every argument that does not opt in.
+    if (value.trim().length === 0 && arg.allowEmpty !== true) return false; // blank / whitespace-only
     if (arg.validate !== undefined && !arg.validate(value)) return false; // failed guard
   }
   return true;
@@ -116,6 +124,10 @@ function externalPartyOf(
   context: ContextSnapshot,
   intent: Intent,
 ): string {
+  // Spec #3120 (P6) — an authored party is the declaration's own word; the derivation below is
+  // only the fallback for a verb that does not author one.
+  const authored = verb.externalParty;
+  if (authored !== undefined && authored.trim().length > 0) return authored;
   for (const arg of verb.args) {
     const value = intent.args[arg.name];
     if (value !== undefined && value.trim().length > 0) return value;
@@ -266,10 +278,13 @@ function parseUndoQuery(args: Readonly<Record<string, string>>): JournalQuery {
   return query;
 }
 
-/** §6.2 — LIFO inverses, newest first; every applied inverse is journaled as a system mutation. */
+/** §6.2 — LIFO inverses, newest first; every applied inverse is journaled for the requester. */
 function dispatchUndo(deps: EngineDeps, intent: Intent): DispatchResult {
   const query = parseUndoQuery(intent.args);
   const { count } = normalizeQuery(query);
+  // Spec #3120 (P6) §3.10 — the reversal belongs to the requester. A companion-channel undo is
+  // performed BY a human (the trail's `You`); a human/system requester keeps its own identity.
+  const undoActor: Actor = intent.actor === 'companion' ? 'human' : intent.actor;
   const stateEntries = deps.journal.entries();
   // Search the widest window, drop non-invertible entries, then apply the newest `count`.
   const candidates = queryEntries(stateEntries, { ...query, count: 100 }).filter(
@@ -301,7 +316,7 @@ function dispatchUndo(deps: EngineDeps, intent: Intent): DispatchResult {
       { entries, redo },
       {
         verbId: target.verbId,
-        actor: 'system',
+        actor: undoActor,
         channel: intent.channel,
         label: `Undo ${target.label}`,
         effect: 'mutation',
@@ -387,9 +402,32 @@ function dispatchPlaceExit(deps: EngineDeps, intent: Intent): DispatchResult {
 
 /* ───────────────────────────── the funnel ───────────────────────────── */
 
-function isPromiseLike(value: VerbEffect | Promise<VerbEffect>): value is Promise<VerbEffect> {
+function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
   if (value === null || typeof value !== 'object') return false;
   return typeof (value as { then?: unknown }).then === 'function';
+}
+
+/** All four validation steps passed — run the verb and apply its one effect (§5.2 step 4 tail). */
+function runValidatedVerb(
+  deps: EngineDeps,
+  intent: Intent,
+  verb: VerbDescriptor,
+  context: ContextSnapshot,
+): DispatchOutcome {
+  let result: VerbEffect | Promise<VerbEffect>;
+  try {
+    result = verb.run(intent, context);
+  } catch {
+    return { status: 'failed', code: 'failed-run' };
+  }
+
+  if (isPromiseLike(result)) {
+    return Promise.resolve(result).then(
+      (effect) => applyEffect(deps, intent, verb, context, effect),
+      (): DispatchResult => ({ status: 'failed', code: 'failed-run' }),
+    );
+  }
+  return applyEffect(deps, intent, verb, context, result);
 }
 
 /**
@@ -419,28 +457,20 @@ export function dispatch(deps: EngineDeps, intent: Intent): DispatchOutcome {
   // Step 3 — arguments.
   if (!isValidArguments(verb, intent.args)) return rejected('invalid-args');
 
-  // Step 4 — risk policy.
+  // Step 4 — risk policy. A promise decision defers the run until it resolves; a falsy sync
+  // decision rejects BEFORE the verb runs. The order above is unchanged.
   if (verb.risk === 'destructive' || verb.risk === 'external') {
-    if (!deps.confirm(buildConfirmation(verb, context, intent))) {
-      return rejected('canceled-confirmation');
+    const decision = deps.confirm(buildConfirmation(verb, context, intent), intent);
+    if (isPromiseLike(decision)) {
+      return Promise.resolve(decision).then((accepted) =>
+        accepted ? runValidatedVerb(deps, intent, verb, context) : rejected('canceled-confirmation'),
+      );
     }
+    if (!decision) return rejected('canceled-confirmation');
   }
 
   // All four steps passed — run the verb.
-  let result: VerbEffect | Promise<VerbEffect>;
-  try {
-    result = verb.run(intent, context);
-  } catch {
-    return { status: 'failed', code: 'failed-run' };
-  }
-
-  if (isPromiseLike(result)) {
-    return Promise.resolve(result).then(
-      (effect) => applyEffect(deps, intent, verb, context, effect),
-      (): DispatchResult => ({ status: 'failed', code: 'failed-run' }),
-    );
-  }
-  return applyEffect(deps, intent, verb, context, result);
+  return runValidatedVerb(deps, intent, verb, context);
 }
 
 /** §4.1 — bind the funnel to one dependency set. */

@@ -1,7 +1,7 @@
 /**
  * Spec #3119 (P5), ST-3 — the ONE Wireframe surface declaration.
  *
- * Wireframe becomes an ordinary NavigationEngine consumer: places, keys and the 55
+ * Wireframe becomes an ordinary NavigationEngine consumer: places, keys and the 58
  * verbs are data here, not a Wireframe-specific runtime. The shell (ST-4) mounts the
  * P4 `CommandRail` / `NavigationMap` / `ActivityTrail` over this declaration, the
  * pointer gestures (ST-5) and the details view (ST-6) dispatch the SAME verb ids, and
@@ -48,6 +48,7 @@ import type {
   VerbEffect,
 } from '../../shared/navigation';
 
+import { requestCompanionComposerOpen } from '../../shared/companion/composerBridge';
 import { runWireframeAction } from './actions/wireframeActions';
 import {
   DEFAULT_ICON_ID,
@@ -87,6 +88,7 @@ import {
   type WireframeDocument,
   type WireframePage,
 } from './model/document';
+import { diffDocument } from './model/documentDelta';
 import type { WireframePagePreset } from './model/pagePresets';
 import {
   dispatch,
@@ -276,7 +278,10 @@ function navigation(label: string, target: readonly ObjectRef[] = []): VerbEffec
 
 /**
  * The ONE mutation seam: read the snapshot, run the PURE plan, and hand the engine a
- * whole-document checkpoint. `null` from `reduceDocument` is a true no-op (no entry).
+ * FIELD-SCOPED delta (Spec #3120 round 2, ST-4-REWORK / AC6) — one entry's inverse
+ * must never revert a later independent edit. The forward delta keeps the post-commit
+ * selection; the inverse never carries one. `null` from `reduceDocument` is a true
+ * no-op (no entry).
  */
 function mutate(
   action: WireframeStoreAction,
@@ -288,14 +293,17 @@ function mutate(
   const before = state.document;
   const next = reduceDocument(state, action, args);
   if (next === null) return noop(label);
+  const { patch: forward, inverse } = diffDocument(before, next.document);
   return {
     effect: 'mutation',
     label,
     patch: {
-      before: documentCheckpoint(before),
-      after: documentCheckpoint(next.document, next.selectedIds),
+      before: { delta: inverse } as unknown as JsonPatch,
+      after: {
+        delta: { ...forward, selection: [...next.selectedIds] },
+      } as unknown as JsonPatch,
     },
-    inverse: documentCheckpoint(before),
+    inverse: { delta: inverse } as unknown as JsonPatch,
     target,
   };
 }
@@ -362,6 +370,17 @@ function optionalNumber(name: string): VerbArg {
 
 function optionalString(name: string, validate?: (value: string) => boolean): VerbArg {
   return { name, type: 'string', required: false, ...(validate === undefined ? {} : { validate }) };
+}
+
+/**
+ * A free-text argument that may legitimately be cleared (Spec #3120 ST-3 / R-4).
+ *
+ * The dispatch funnel rejects a blank/whitespace-only value unless the argument
+ * opts in (ST-1's `allowEmpty`), so a label/text/placeholder edit that backspaces
+ * to `''` must declare this argument or the field can never be emptied.
+ */
+function optionalStringText(name: string): VerbArg {
+  return { name, type: 'string', required: false, allowEmpty: true };
 }
 
 function isSectionPreset(value: string): value is WireframeSectionPreset {
@@ -663,6 +682,28 @@ function setElementField(intent: Intent): VerbEffect {
   return mutate('element.update', { id, patch }, `Set ${field}`, targetsForIds([id]));
 }
 
+/* ─────────────────────── named text-edit verbs (Spec #3120 ST-3) ─────────────────────── */
+
+type WireframeTextField = 'label' | 'text' | 'placeholder';
+
+/**
+ * The unambiguous card-label path (R-4): one verb per text field, defaulting the
+ * target to the PRIMARY selection so a companion instruction needs no element id.
+ * An empty `value` is a real edit (ST-1's `allowEmpty`), never an invalid-args refusal.
+ */
+function setElementText(
+  field: WireframeTextField,
+  label: string,
+): (intent: Intent) => VerbEffect {
+  return (intent) => {
+    const value = intent.args.value;
+    if (value === undefined) return noop(label);
+    const id = intent.args.id ?? primarySelectedId(getSnapshot());
+    if (id === null) return noop(label);
+    return mutate('element.update', { id, patch: { [field]: value } }, label, targetsForIds([id]));
+  };
+}
+
 function updatePage(intent: Intent): VerbEffect {
   const presetArg = intent.args.preset ?? intent.args.page;
   const page: Partial<WireframePage> = {};
@@ -894,6 +935,13 @@ interface VerbSpec {
   readonly args?: readonly VerbArg[];
   readonly undo?: (entry: JournalEntry) => VerbEffect;
   readonly publish?: boolean;
+  /**
+   * Spec #3120 (P6) — the authored consequence of a destructive/external action. The builder
+   * previously dropped it, so the confirmation had no honest description (QA Q-3).
+   */
+  readonly consequence?: string;
+  /** Spec #3120 (P6) — where an external action reaches outside Fredo (QA Q-2). */
+  readonly externalParty?: string;
 }
 
 function defineVerb(spec: VerbSpec): VerbDescriptor {
@@ -908,6 +956,8 @@ function defineVerb(spec: VerbSpec): VerbDescriptor {
     aliases: [],
     run: spec.run,
     ...(spec.undo === undefined ? {} : { undo: spec.undo }),
+    ...(spec.consequence === undefined ? {} : { consequence: spec.consequence }),
+    ...(spec.externalParty === undefined ? {} : { externalParty: spec.externalParty }),
     publish: spec.publish ?? true,
   };
 }
@@ -926,6 +976,14 @@ const renamable = (ctx: ContextSnapshot): boolean =>
   ctx.selection.count === 1 &&
   ctx.selection.kinds[0] !== undefined &&
   ['text', 'button', 'input', 'card'].includes(ctx.selection.kinds[0]);
+/** Spec #3120 ST-3 — the text-edit verbs gate on ONE selection of the matching kind. */
+const singleKind =
+  (...kinds: readonly string[]) =>
+  (ctx: ContextSnapshot): boolean =>
+    ctx.selection.count === 1 && kinds.includes(ctx.selection.kinds[0] ?? '');
+const singleLabel = singleKind('button', 'card');
+const singleTextOnly = singleKind('text');
+const singleInput = singleKind('input');
 
 const OBJECT_PAGE = ['page'] as const;
 const OBJECT_ELEMENT = ['element'] as const;
@@ -962,7 +1020,7 @@ function deleteUndo(entry: JournalEntry): VerbEffect {
   };
 }
 
-/* ───────────────────────────── the 55 verbs ───────────────────────────── */
+/* ───────────────────────────── the 58 verbs ───────────────────────────── */
 
 const CANVAS = WIREFRAME_ROOT_PLACE_ID;
 const CREATE = WIREFRAME_CREATE_PLACE_ID;
@@ -995,12 +1053,22 @@ const VERBS: readonly VerbDescriptor[] = [
   defineVerb({
     id: APP_ASK_VERB_ID,
     title: 'Ask',
-    description: 'Ask the launcher to run a request — unavailable until the launcher ships in P6.',
+    description: 'Open the companion instruction box for the Wireframe application.',
     objects: OBJECT_PAGE,
     places: [CANVAS],
     risk: 'safe',
-    available: () => false,
-    run: () => navigation('Ask'),
+    // Spec #3120 (rework), ST-3 — Ask is attached to Fredo's instruction composer now,
+    // never the retired launcher surface (R-3, AC4).
+    available: always,
+    run: () => {
+      // The navigation effect is the perform; the composer bridge is what makes it visible.
+      requestCompanionComposerOpen({
+        source: 'command-bar-ask',
+        appId: WIREFRAME_SURFACE_APP_ID,
+        focus: true,
+      });
+      return navigation('Ask');
+    },
   }),
   defineVerb({
     id: 'wireframe.selection.previous',
@@ -1178,9 +1246,12 @@ const VERBS: readonly VerbDescriptor[] = [
     description: 'Delete every selected element.',
     objects: OBJECT_ELEMENT,
     places: [EDIT],
-    // Destructive with an undo (the journal checkpoint), so V-10 passes and the host's
-    // default confirm (true) shows no prompt — the shipped no-confirm behaviour.
+    // Destructive with an undo (the journal checkpoint), so V-10 passes; the keyboard/pointer
+    // path keeps the shipped no-confirm behaviour, while launcher/voice/agent confirmation
+    // names the authored consequence (QA Q-3).
     risk: 'destructive',
+    consequence:
+      'Deletes the selected element and its contents. This can be undone from the trail.',
     available: hasSelection,
     run: deleteSelection,
     undo: deleteUndo,
@@ -1215,6 +1286,40 @@ const VERBS: readonly VerbDescriptor[] = [
     risk: 'safe',
     available: renamable,
     run: renameSelection,
+  }),
+  defineVerb({
+    id: 'wireframe.element.setLabel',
+    title: 'Set label',
+    description: 'Set the selected button or card label (defaults to the primary selection).',
+    objects: OBJECT_ELEMENT,
+    places: [EDIT],
+    risk: 'mutating',
+    available: singleLabel,
+    args: [optionalString('id'), optionalStringText('value')],
+    run: setElementText('label', 'Set label'),
+  }),
+  defineVerb({
+    id: 'wireframe.element.setText',
+    title: 'Set text',
+    description: 'Set the selected text element contents (defaults to the primary selection).',
+    objects: OBJECT_ELEMENT,
+    places: [EDIT],
+    risk: 'mutating',
+    available: singleTextOnly,
+    args: [optionalString('id'), optionalStringText('value')],
+    run: setElementText('text', 'Set text'),
+  }),
+  defineVerb({
+    id: 'wireframe.element.setPlaceholder',
+    title: 'Set placeholder',
+    description:
+      'Set the selected input placeholder (defaults to the primary selection).',
+    objects: OBJECT_ELEMENT,
+    places: [EDIT],
+    risk: 'mutating',
+    available: singleInput,
+    args: [optionalString('id'), optionalStringText('value')],
+    run: setElementText('placeholder', 'Set placeholder'),
   }),
 
   /* ── geometry + fields (details view / pointer callers) ── */
@@ -1258,7 +1363,7 @@ const VERBS: readonly VerbDescriptor[] = [
     places: [EDIT],
     risk: 'mutating',
     available: hasSelection,
-    args: [optionalString('id'), optionalString('field'), optionalString('value')],
+    args: [optionalString('id'), optionalString('field'), optionalStringText('value')],
     run: setElementField,
   }),
   defineVerb({
@@ -1558,7 +1663,12 @@ const VERBS: readonly VerbDescriptor[] = [
     description: 'Export the page as a PNG.',
     objects: OBJECT_DOCUMENT,
     places: [FILE],
-    risk: 'mutating',
+    // Spec #3120 (P6) QA Q-2 — a file write leaves Fredo, so it is the one declared external
+    // verb. The other three file verbs stay `mutating` this round.
+    risk: 'external',
+    consequence:
+      "Writes a PNG file outside Fredo's document history. It cannot be undone from the trail.",
+    externalParty: 'your file system',
     available: always,
     run: fileActionVerb('wireframe.file.exportPng', 'Export PNG'),
   }),

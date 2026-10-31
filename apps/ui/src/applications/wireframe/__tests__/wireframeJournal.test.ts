@@ -147,6 +147,22 @@ describe('the journal is the single mutation authority (R-5)', () => {
     expect(getSnapshot().canUndo).toBe(true);
   });
 
+  it('the legacy funnel undo reverts only the newest entry\'s field (AC6 / R-6.1)', () => {
+    seed(['a']);
+    const originalY = getSnapshot().document.elements[0].y;
+
+    // Two independent human edits on DIFFERENT fields of the same element.
+    dispatch('element.update', { id: 'a', patch: { x: 12 } });
+    dispatch('element.update', { id: 'a', patch: { y: 34 } });
+
+    undo();
+
+    const element = getSnapshot().document.elements[0];
+    // Only the second entry's field (`y`) reverts; the earlier independent `x` survives.
+    expect(element.x).toBe(12);
+    expect(element.y).toBe(originalY);
+  });
+
   it('undoing a selection-scoped verb after the selection changed leaves no stale id', () => {
     seed(['a']);
     dispatch('element.add', { element: makeElement('text', 'b') });
@@ -191,7 +207,11 @@ describe('the journal is the single mutation authority (R-5)', () => {
 
     // One counter: consecutive seqs, no gap, and the host reads the SAME array.
     expect(journal.entries().map((entry) => entry.seq)).toEqual([1, 2, 3, 4]);
-    expect(journal.entries().filter((entry) => entry.actor === 'system')).toHaveLength(2);
+    // Spec #3120 (P6) §3.10 — the store's own undo stays `system`; the host's undoLast is the
+    // requester's (a human on the pointer channel), replacing the old hardcoded system entry.
+    expect(journal.entries().filter((entry) => entry.actor === 'system')).toHaveLength(1);
+    expect(journal.entries()[3].actor).toBe('human');
+    expect(journal.entries()[3].channel).toBe('pointer');
     expect(host.getSnapshot().entries.map((entry) => entry.seq)).toEqual([1, 2, 3, 4]);
   });
 

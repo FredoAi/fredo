@@ -33,6 +33,11 @@ import {
   resetApplicationRegistryForTests,
 } from '@/applications/applicationRegistry';
 import type { FredoApplicationClass } from '@/shared/classes';
+import type { DispatchResult, Intent, Surface } from '@/shared/navigation';
+import {
+  registerNavigationHost,
+  type NavigationHost,
+} from '@/shared/navigation/ui/hostRegistry';
 import {
   APP_COMMAND_INTENT_EVENT,
   APP_COMMAND_INTENT_RESULT_COMMAND,
@@ -287,5 +292,138 @@ describe('drain helper', () => {
   it('is a no-op for a blank appId', async () => {
     await drainAppCommandIntents('   ');
     expect(takeCalls()).toBe(0);
+  });
+});
+
+/* ───────────────────── navigation-host relay (Spec #3120, ST-4) ───────────────────── */
+
+const EMPTY_SURFACE: Surface = {
+  tree: { appId: APP_ID, root: 'root', places: [], directAliases: {} },
+  verbs: [],
+  companion: null,
+};
+
+/** Register a stub NavigationHost for this app; the disposer unregisters it. */
+function registerHost(
+  runIntent: (intent: Intent) => Promise<DispatchResult>,
+): { runIntent: ReturnType<typeof vi.fn>; unregister: () => void } {
+  const spy = vi.fn(runIntent);
+  const unregister = registerNavigationHost({
+    appId: APP_ID,
+    surface: EMPTY_SURFACE,
+    host: { runIntent: spy } as unknown as NavigationHost,
+  });
+  return { runIntent: spy, unregister };
+}
+
+describe('navigation-host relay (R-4.1 / R-4.2)', () => {
+  it('executes through host.runIntent with channel agent and actor companion', async () => {
+    const { runIntent, unregister } = registerHost(async () => ({
+      status: 'performed',
+      entry: {},
+    }) as unknown as DispatchResult);
+    try {
+      await handleAppCommandIntent(intent({ requestId: 'relay', action: 'wireframe.element.delete' }));
+    } finally {
+      unregister();
+    }
+
+    expect(runIntent).toHaveBeenCalledTimes(1);
+    expect(runIntent).toHaveBeenCalledWith({
+      verbId: 'wireframe.element.delete',
+      args: {},
+      channel: 'agent',
+      actor: 'companion',
+    });
+    // The shipped command-surface executor is NOT consulted when a host is registered.
+    expect(addSpy).not.toHaveBeenCalled();
+    expect(resultCalls()[0][1]).toEqual({
+      requestId: 'relay',
+      appId: APP_ID,
+      outcome: 'Performed',
+      performed: ['wireframe.element.delete'],
+      detail: null,
+    });
+  });
+
+  it('passes a present non-object argument through (the funnel types the rejection)', async () => {
+    const { runIntent, unregister } = registerHost(async () => ({
+      status: 'rejected',
+      code: 'invalid-args',
+    }) as DispatchResult);
+    try {
+      await handleAppCommandIntent(intent({ requestId: 'bad-args', arguments: 'not-an-object' }));
+    } finally {
+      unregister();
+    }
+
+    expect(runIntent).toHaveBeenCalledWith({
+      verbId: 'demo.add',
+      args: 'not-an-object',
+      channel: 'agent',
+      actor: 'companion',
+    });
+    expect(resultCalls()[0][1]).toMatchObject({
+      outcome: 'Invalid',
+      performed: [],
+      detail: 'invalid-args',
+    });
+  });
+
+  it('maps noop to Noop with an empty performed list', async () => {
+    const { unregister } = registerHost(async () => ({
+      status: 'noop',
+      code: 'did-nothing',
+      message: null,
+    }) as DispatchResult);
+    try {
+      await handleAppCommandIntent(intent({ requestId: 'noop' }));
+    } finally {
+      unregister();
+    }
+
+    expect(resultCalls()[0][1]).toMatchObject({ outcome: 'Noop', performed: [], detail: null });
+  });
+
+  it('maps a typed rejection to Invalid with the code as detail (R-4.2)', async () => {
+    const { unregister } = registerHost(async () => ({
+      status: 'rejected',
+      code: 'unavailable',
+    }) as DispatchResult);
+    try {
+      await handleAppCommandIntent(intent({ requestId: 'rejected' }));
+    } finally {
+      unregister();
+    }
+
+    expect(resultCalls()[0][1]).toMatchObject({
+      outcome: 'Invalid',
+      performed: [],
+      detail: 'unavailable',
+    });
+  });
+
+  it('maps failed to Failed (never a silent drop)', async () => {
+    const { unregister } = registerHost(async () => ({
+      status: 'failed',
+      code: 'failed-run',
+    }) as DispatchResult);
+    try {
+      await handleAppCommandIntent(intent({ requestId: 'failed' }));
+    } finally {
+      unregister();
+    }
+
+    expect(resultCalls()[0][1]).toMatchObject({ outcome: 'Failed', performed: [] });
+  });
+
+  it('keeps the shipped executeCommand path when no host is registered', async () => {
+    // No registerHost here — the application registry's command surface answers instead.
+    await handleAppCommandIntent(intent({ requestId: 'legacy' }));
+    expect(addSpy).toHaveBeenCalledTimes(1);
+    expect(resultCalls()[0][1]).toMatchObject({
+      outcome: 'Performed',
+      performed: ['demo.add'],
+    });
   });
 });

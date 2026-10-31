@@ -8,11 +8,14 @@
  * every shipped `data-wireframe-*` hook (same names and meanings) and gains
  * `data-wireframe-place` + `data-wireframe-arm`.
  *
- * Layout (UI/UX §1):
- *   ≥ lg — left column 266 px (rail over compact trail), canvas `flex:1`,
- *          details 288 px right; file error + status bar span the full width.
- *   < lg — rail band (wrap) → canvas → details (bottom, ≤ 45%) → file error →
- *          status bar.
+ * Layout (UI/UX §1 / Spec #3120 ST-6):
+ *   workspace row (`flex:1; minH:0`) holds EXACTLY two children — canvas
+ *   (`flex:1; minWidth:0`) and the details column (`w:288px; flexShrink:0`,
+ *   property-panel scroller over the compact trail footer). Below it the
+ *   full-width bottom command bar (`flexShrink:0`), then the status bar
+ *   (`flexShrink:0`). There is no left rail / 266 px command column (R-8).
+ *   < lg — the workspace stacks (canvas → details at ≤ 45%); the bar and the
+ *   status bar stay pinned at the bottom.
  * The retired hotkey-bar band padding is gone (Wireframe renders no HotkeyBar).
  *
  * The ONE element-scoped keydown adapter is attached here (no document
@@ -39,6 +42,7 @@ import {
   buildCommandRailModel,
   buildNavigationMapModel,
 } from '../../../shared/navigation/ui';
+import { requestCompanionComposerOpen } from '../../../shared/companion/composerBridge';
 import { useAppCommandIntent } from '../../../shared/companion/useAppCommandIntent';
 import { formatGeometry } from '../model/geometry';
 import { WIREFRAME_APP_ID } from '../model/document';
@@ -67,11 +71,6 @@ import { WireframePropertyPanel } from './WireframePropertyPanel';
 import { WireframeStatusBar } from './WireframeStatusBar';
 
 export function WireframeEditor(): React.ReactElement {
-  // Spec #3099 ST-6 — the generic Companion relay. It stays mounted so a
-  // companion intent reports a clean `Invalid` (the declared command surface was
-  // retired in ST-4) instead of a timeout; P6 re-homes the capability.
-  useAppCommandIntent(WIREFRAME_APP_ID);
-
   return (
     <WireframeNavigationProvider>
       <WireframeShell />
@@ -81,6 +80,10 @@ export function WireframeEditor(): React.ReactElement {
 
 function WireframeShell(): React.ReactElement {
   const { host, surface } = useWireframeNavigation();
+  // Spec #3120 (P6) — the generic Companion relay now resolves this app's registered
+  // navigation host and executes through `host.runIntent(actor:'companion')`. Mounted
+  // INSIDE the provider so the host is registered before an intent can drain.
+  useAppCommandIntent(WIREFRAME_APP_ID);
   const hostSnapshot = useWireframeHostSnapshot(host);
   const placeView = useWireframePlaceView(host);
   const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
@@ -88,9 +91,11 @@ function WireframeShell(): React.ReactElement {
 
   const [newDialogOpen, setNewDialogOpen] = useState(false);
 
-  // Freshness seam (AC4): a pure selection change notifies the store but writes no
-  // journal entry, so the host snapshot's context can be stale. Rebuild the models
-  // from the live store selection/dirty + the host's current place path.
+  // Freshness seam (AC4) — the host is now the freshness authority: the provider publishes
+  // store selection/dirty changes through `NavigationHost.refreshContext()`, so
+  // `hostSnapshot.context` is current. This composition is a value-identical defensive
+  // merge (the same store selection/dirty plus the host's current place path), not a
+  // second freshness source.
   const storeContext = useMemo<ContextSnapshot>(() => getWireframeContext(), [state]);
   const liveContext = useFreshWireframeContext(hostSnapshot.context, storeContext);
 
@@ -136,6 +141,18 @@ function WireframeShell(): React.ReactElement {
 
   const beforeDispatch = useCallback(
     (verbId: string): boolean => {
+      // Spec #3120 (P6) R-1.8 — `k` resolves to `app.ask`; Ask opens Fredo's
+      // teleport-attached instruction box (the composer bridge), never the launcher.
+      // The stroke is consumed here so the surface's `app.ask` run never publishes a
+      // second request. The binding itself is unchanged (still `k` → `app.ask`).
+      if (verbId === 'app.ask') {
+        requestCompanionComposerOpen({
+          source: 'keyboard',
+          appId: WIREFRAME_APP_ID,
+          focus: true,
+        });
+        return true;
+      }
       if (verbId === 'wireframe.document.new' && dirty) {
         setNewDialogOpen(true);
         return true;
@@ -156,6 +173,15 @@ function WireframeShell(): React.ReactElement {
     setNewDialogOpen(false);
     void performVerb('wireframe.document.new', 'pointer');
   }, [performVerb]);
+
+  /** Spec #3120 (P6) R-1.8 — `Ask` publishes ONE composer request for this app. */
+  const openCompanionComposer = useCallback(() => {
+    requestCompanionComposerOpen({
+      source: 'command-bar-ask',
+      appId: WIREFRAME_APP_ID,
+      focus: true,
+    });
+  }, []);
 
   const primaryId = primarySelectedId(state);
   const selectedElement =
@@ -198,51 +224,18 @@ function WireframeShell(): React.ReactElement {
       bg="bg.canvas"
       onKeyDown={onKeyDown}
     >
+      {/* ── Workspace row: EXACTLY two children — canvas + details (R-1.7) ── */}
       <Flex
+        data-testid="wireframe-workspace"
         flex="1"
         minH={0}
         display="flex"
         flexDirection={{ base: 'column', lg: 'row' }}
         gap={{ base: 2, lg: 0 }}
       >
-        {/* ── Left column: rail over compact trail (≥lg) / rail band (<lg) ── */}
-        <Flex
-          flexDirection={{ base: 'row', lg: 'column' }}
-          flexWrap={{ base: 'wrap', lg: 'nowrap' }}
-          alignItems="flex-start"
-          gap={3}
-          w={{ base: '100%', lg: '266px' }}
-          flexShrink={0}
-          minWidth="0"
-          maxH={{ base: '220px', lg: 'none' }}
-          overflowY={{ base: 'auto', lg: 'hidden' }}
-          p={{ base: 0, lg: 2 }}
-        >
-          <CommandRail
-            model={railModel}
-            onRunVerb={runVerb}
-            onOpenMap={(filterPlaceId) => host.openMap(filterPlaceId ?? null)}
-          />
-          <Box
-            flex="1"
-            minWidth="0"
-            maxW={{ base: '360px', lg: '100%' }}
-            overflowY="auto"
-            display="flex"
-            alignItems="flex-start"
-          >
-            <ActivityTrail
-              model={trailModel}
-              compact
-              onUndo={(seq) => {
-                void host.undoEntry(seq);
-              }}
-            />
-          </Box>
-        </Flex>
-
-        {/* ── Canvas region: the pointer-only insert pill (ST-6) over the stage ── */}
+        {/* Canvas region: the pointer-only insert pill over the stage. */}
         <Box
+          data-wireframe-region="canvas"
           flex="1"
           minWidth="0"
           minH={{ base: '320px', lg: 0 }}
@@ -254,20 +247,51 @@ function WireframeShell(): React.ReactElement {
           <WireframeCanvas />
         </Box>
 
-        {/* ── Details view: the selection's verbs (ST-6) ── */}
-        <Box
+        {/* Details column: the property panel over the compact trail footer. */}
+        <Flex
+          data-testid="wireframe-details-column"
+          data-wireframe-region="details"
+          flexDirection="column"
           w={{ base: '100%', lg: '288px' }}
-          maxW={{ base: '100%', lg: '72' }}
           maxH={{ base: '45%', lg: 'none' }}
           flexShrink={0}
           minWidth="0"
-          overflowY="auto"
+          minH={0}
+          overflow="hidden"
         >
-          <WireframePropertyPanel />
-        </Box>
+          <Box flex="1" minH={0} overflowY="auto" display="flex" flexDirection="column">
+            <WireframePropertyPanel />
+          </Box>
+          <Box flexShrink={0} maxH="50" overflowY="auto" p={2}>
+            <ActivityTrail
+              model={trailModel}
+              compact
+              onUndo={(seq) => {
+                void host.undoEntry(seq);
+              }}
+            />
+          </Box>
+        </Flex>
       </Flex>
 
       <WireframeFileError />
+
+      {/* ── Bottom command bar: breadcrumb · verbs · globals (R-1.1) ── */}
+      <Box
+        data-testid="wireframe-command-bar"
+        data-wireframe-region="command-bar"
+        flexShrink={0}
+        w="100%"
+        minWidth="0"
+      >
+        <CommandRail
+          model={railModel}
+          onRunVerb={runVerb}
+          onOpenMap={(filterPlaceId) => host.openMap(filterPlaceId ?? null)}
+          onAsk={openCompanionComposer}
+        />
+      </Box>
+
       <WireframeStatusBar />
 
       <NavigationMap

@@ -8,11 +8,20 @@ import {
   computeTeleportTarget,
   getActiveCompanionEntity,
 } from './CompanionEntity';
+import { subscribeCompanionComposerOpen } from '../../companion/composerBridge';
+
+/** The default landing point for a composer request when Fredo is not hosted here. */
+function defaultComposerTeleportPoint(): { x: number; y: number } {
+  return computeTeleportTarget(window.innerWidth - 24, window.innerHeight - 24);
+}
 
 // ── Component ────────────────────────────────────────────────────────────────
 
 export const FredoCompanion: React.FC = () => {
-  const { state, confirmAutoReturn, setHosting, markAway, notifyInteraction, teleport } = useCompanion();
+  const {
+    state, confirmAutoReturn, setHosting, markAway, notifyInteraction, teleport,
+    openComposer, closeComposer,
+  } = useCompanion();
   const { isAway, isAutoHidden, isAutoReturning, position } = state;
 
   // The interactive body lives in CompanionEntity. The host keeps every
@@ -24,6 +33,10 @@ export const FredoCompanion: React.FC = () => {
   // it is this host's OVERLAY.
   const isInThisWindowRef = useRef(MY_WINDOW === 'main');
   const [isInThisWindow, setIsInThisWindow] = useState(MY_WINDOW === 'main');
+  // #3120 (rework) ST-2 — the ONE hosting predicate (R-3.12), mirrored into a ref
+  // so the bridge subscription never re-registers on a presence change.
+  const hostedHereRef = useRef(false);
+  hostedHereRef.current = isAway && isInThisWindow && !isAutoHidden;
   // Pending teleport-in destination — applied once the overlay becomes active
   const pendingTeleportInRef = useRef<{ x: number; y: number } | null>(null);
   // Bumped on every cross-window arrival so the arrive effect fires even when
@@ -41,6 +54,33 @@ export const FredoCompanion: React.FC = () => {
   // the seat).
   useEffect(() => { setHosting(isAway && isInThisWindow); }, [isAway, isInThisWindow, setHosting]);
 
+  // #3120 (rework) ST-2 / ST-2-R4 — a composer open request (command-bar `Ask`,
+  // keyboard) is handled in exactly ONE of two ways, and never both:
+  //   - ALREADY HOSTED → open the box in place; no teleport, no arrival bump.
+  //   - NOT HOSTED → queue the teleport to the default point; the OPEN is owned by
+  //     the destination OVERLAY's settle effect (keyed on `teleportSeq`), so the
+  //     `TELEPORT` reset can never discard the requested open.
+  useEffect(() => {
+    return subscribeCompanionComposerOpen(() => {
+      if (hostedHereRef.current) {
+        openComposer();
+        return;
+      }
+      const dest = defaultComposerTeleportPoint();
+      isInThisWindowRef.current = true;
+      pendingTeleportInRef.current = dest;
+      teleport(dest.x, dest.y);
+      setIsInThisWindow(true);
+      setArrivalSeq((n) => n + 1);
+    });
+  }, [teleport, openComposer]);
+
+  // Leaving this window (or an auto-hide) closes the instruction box; the next
+  // arrival settle re-opens it.
+  useEffect(() => {
+    if (!isInThisWindow || isAutoHidden) closeComposer();
+  }, [isInThisWindow, isAutoHidden, closeComposer]);
+
   // Once this window becomes active (cross-window arrival), fire the queued
   // teleport-in. Keyed on `arrivalSeq` (not `isInThisWindow`) so a return leg
   // whose state was already true still plays the in motion; the overlay mounts in
@@ -53,12 +93,22 @@ export const FredoCompanion: React.FC = () => {
     getActiveCompanionEntity()?.arrive(dest);
   }, [arrivalSeq]);
 
-  // Cross-window teleport via Tauri global events
+  // Cross-window teleport via Tauri global events.
+  // #3120 (rework) ST-2-R5b — the `listen` promise resolves AFTER React's
+  // StrictMode cleanup (which runs synchronously during the mount replay), so a
+  // `cancelled` gate is REQUIRED on both sides of the async boundary (the same
+  // shipped idiom as `CompanionContext.tsx:568-587`): bail BEFORE calling
+  // `listen` if we were already cleaned up, and if the cleanup lands while
+  // `listen` is in flight, immediately call the resolved unlisten. Without it a
+  // StrictMode remount leaks a second `companion-teleport` listener → every emit
+  // dispatches `teleportTo` twice (two 450 ms timers per gesture).
   useEffect(() => {
     if (!IS_TAURI) return;
     let unlisten: (() => void) | null = null;
+    let cancelled = false;
 
     import('@tauri-apps/api/event').then(({ listen }) => {
+      if (cancelled) return;
       listen<{ toWindow: string; x: number; y: number }>('companion-teleport', (ev) => {
         const { toWindow, x, y } = ev.payload;
 
@@ -100,10 +150,17 @@ export const FredoCompanion: React.FC = () => {
             setIsInThisWindow(false);
           }
         }
-      }).then(fn => { unlisten = fn; });
+      }).then(fn => {
+        if (cancelled) { fn(); return; }
+        unlisten = fn;
+      });
     });
 
-    return () => { unlisten?.(); };
+    return () => {
+      cancelled = true;
+      unlisten?.();
+      unlisten = null;
+    };
   }, [markAway, teleport]);
 
   // ── Idle auto-return (host-initiated, distinct from teleport) ──────────────

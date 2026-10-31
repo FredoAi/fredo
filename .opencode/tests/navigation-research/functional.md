@@ -194,3 +194,64 @@ spec diff. There is no telemetry/webview/app-launch surface for this feature; no
 PASS overall = F-1..F-7 all green, each with the exact file/section read and observed value
 quoted. A single unaddressed gate-arithmetic mismatch is a FAIL. A row needing human data with
 none is BLOCKED (report the ST-6 precondition), never PASS. NO-GO is a PASS of F-5.
+
+---
+
+## #3120 rescope extension — Gate H instrument replacement (static, NOT pipeline-run)
+
+> Issue #3120's human-directed rescope REPLACES the launcher-centric pilot-exit instrument with one
+> that exercises the reworked experience. Rows map 1:1 to the QA Plan `R-9` in
+> `.opencode/tmp/3120/triage.md` `## QA Expert`. **Verification policy: static** — the deliverable is
+> the committed instrument's CONTENT; there is no app/webview/telemetry surface for it, and the
+> pipeline does NOT run it and never fills participant data (G-414). Required artifact:
+> `docs/agentic-pipeline/evaluations/3120-pilot-exit-review-template.md` (committed on `spec/3120`,
+> owned by ST-9). Method source (READ-ONLY, never edited):
+> `spikes/3115-navigation-engine/session-protocol.md`.
+
+- [ ] **F-8 (R-9.1, static) — the committed instrument exercises the reworked experience.**
+  **Steps:** `Read` the template by exact path; extract its task script; map each task to the reworked
+  surfaces.
+  **Expected:** the task script contains a task for EACH of: (a) the BOTTOM command bar with place
+  breadcrumbs (show the bar's shape; name what a place change does), (b) the teleport instruction box
+  AUTO-FOCUSED on arrival (no click), (c) the DEFAULT target (the app Fredo is in front of) vs an
+  EXPLICITLY NAMED app, (d) a companion CARD-LABEL edit, (e) UNDO-BY-DESCRIPTION (`undo the label
+  change`), (f) the details-panel text-input DELETION fix (type then Backspace). A task tally is
+  quoted (task id → surface). The retired `>` palette is NOT taught or run.
+  - **Edge:** a task that only names a surface without an observable step is a FAIL; a task that
+    teaches the removed `>` palette is a FAIL.
+  - **Receipt:** E-STATIC (the task-script excerpt per surface).
+
+- [ ] **F-9 (R-9.2, static) — the participant gate, cohort quotas, verbatim questions and six gate lines are preserved.**
+  **Steps:** read the same file; compare with the protocol's §4.4/§4.5/§7.3.
+  **Expected:** the template states **5–8 participants with a minimum of 5 completed**; keeps the
+  three cohort predicates verbatim —
+  `keyboard_first_or_vim = count(keyboard_profile=="keyboard-first" OR vim_comfortable=="yes") >= 2`,
+  `non_vim = count(keyboard_profile=="non-vim" AND vim_comfortable=="no") >= 2`,
+  `wireframe_new = count(wireframe_new=="yes") >= 2` — and the per-cohort reporting rule; keeps the
+  QUESTION SET verbatim (Q-WHERE, Q-UX ×2, Q-TRUST, Q-SYS, Q-RECALL); keeps the SIX gate lines
+  byte-matching protocol §8 (`GO` iff `PRE-1 ∧ PRE-2 ∧ GO-1 ∧ GO-2 ∧ GO-3 ∧ GO-4`); carries a
+  `notice` that the task script supersedes the protocol's task list while the method/questions/gates
+  stand; `session-protocol.md` is NOT modified (no diff entry).
+  - **Edge:** a wrapped gate line (every token still matches); a renamed task id with the six lines
+    intact (allowed); a quota predicate reworded (FAIL); a question paraphrased (FAIL).
+  - **Receipt:** E-STATIC (the quoted gate/quota/question text).
+
+- [ ] **F-10 (R-9.3, static) — no participant data, no prefilled verdict; the pipeline did not run the instrument.**
+  **Steps:** read the template; scan the spec branch for participant artifacts (`P1`–`P8` rows with
+  ratings/quotes, `session-notes.md`, `participant-notes.md`, session recordings) and for a prefilled
+  verdict; read `.opencode/tmp/3120/` only to confirm no run was recorded (a draft is never evidence —
+  G-415).
+  **Expected:** the banner `PARTICIPANT DATA IS HUMAN-PRODUCED; THE PIPELINE DOES NOT RUN THIS` (or its
+  exact committed wording) is present; every data cell is an empty slot (zero participant rows /
+  ratings / quotes); exactly ONE `^Verdict: (GO|NO-GO)$` line and it is EMPTY/unfilled (never a
+  prefilled `GO`/`NO-GO`); no committed participant artifact exists anywhere on the branch; no
+  pipeline role's event/comment records a participant session; the task is handed to the human.
+  - **Edge:** an empty quote slot (`[]` is wrong — an empty slot is correct); an interim percentage; a
+    fabricated baseline; a verdict line added by a developer (a FAIL — the verdict is the human's).
+  - **Receipt:** E-STATIC (the banner + the empty-cell/verdict facts + the absence scan).
+
+## Suite-level pass/fail (this extension)
+
+PASS = F-8..F-10 green, each quoting the exact file/section read and the observed value, with the
+artifact's commit on `spec/3120` named. A row that needs participant data is BLOCKED (human leg),
+never PASS; the pipeline must not fabricate one. The pipeline never runs this instrument.

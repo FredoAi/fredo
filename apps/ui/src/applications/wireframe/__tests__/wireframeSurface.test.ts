@@ -16,6 +16,7 @@ import {
   ENGINE_VERB_IDS,
   validateSurface,
   type ContextSnapshot,
+  type Risk,
   type Surface,
   type VerbDescriptor,
 } from '../../../shared/navigation';
@@ -24,7 +25,23 @@ import {
   buildNavigationMapModel,
   NAV_UNAVAILABLE_REASON,
 } from '../../../shared/navigation/ui';
-import { getSnapshot, resetWireframeStoreForTests } from '../store/wireframeDocumentStore';
+import { createNavigationHost } from '../../../shared/navigation/ui/host';
+import {
+  resetCompanionComposerBridgeForTests,
+  subscribeCompanionComposerOpen,
+  type CompanionComposerOpenRequest,
+} from '../../../shared/companion/composerBridge';
+import { createDefaultElement, type WireframeElementType } from '../model/elements';
+import {
+  applyDocumentPatch,
+  dispatch,
+  getNavigationJournal,
+  getSnapshot,
+  getWireframeContext,
+  resetWireframeStoreForTests,
+  select,
+  type WireframeDocumentPatch,
+} from '../store/wireframeDocumentStore';
 import {
   WIREFRAME_MAP_DEFAULT_ARGS,
   WIREFRAME_ROOT_PLACE_ID,
@@ -92,9 +109,41 @@ function intentFor(verbId: string, args: Readonly<Record<string, string>> = {}) 
   return { verbId, args, channel: 'pointer' as const, actor: 'human' as const };
 }
 
+let seedCounter = 0;
+
+/** Seed one element through the shipped store funnel (auto-selects the new element). */
+function seedElement(type: WireframeElementType) {
+  seedCounter += 1;
+  const snapshot = getSnapshot();
+  const element = createDefaultElement(type, {
+    page: snapshot.document.page,
+    elements: snapshot.document.elements,
+    id: `surface-element-${seedCounter}`,
+  });
+  dispatch('element.add', { element });
+  return element;
+}
+
+function elementFromStore(id: string) {
+  const found = getSnapshot().document.elements.find((element) => element.id === id);
+  if (!found) throw new Error(`element ${id} missing`);
+  return found;
+}
+
+/** The label of a button/card element (the union's only members that carry one). */
+function labelFromStore(id: string): string {
+  const element = elementFromStore(id);
+  if (element.type !== 'button' && element.type !== 'card') {
+    throw new Error(`element ${id} has no label field`);
+  }
+  return element.label;
+}
+
 beforeEach(() => {
+  seedCounter = 0;
   resetWireframeStoreForTests();
   resetWireframeSurfaceForTests();
+  resetCompanionComposerBridgeForTests();
 });
 
 describe('wireframeSurface — the declaration', () => {
@@ -165,7 +214,7 @@ describe('wireframeSurface — the declaration', () => {
 
   it('the declaration stays inside the capability envelope', () => {
     const ids = wireframeSurface.verbs.map((verb) => verb.id);
-    expect(ids).toHaveLength(55);
+    expect(ids).toHaveLength(58);
     expect(ids.length).toBeLessThanOrEqual(CAPABILITY_LIMITS.maxVerbs);
     expect(new Set(ids).size).toBe(ids.length);
 
@@ -378,5 +427,186 @@ describe('wireframeSurface — the declaration', () => {
     }
     expect(getSnapshot().document).toBe(before);
     expect(getSnapshot().canUndo).toBe(false);
+  });
+});
+
+/* ───────────────────── P6 declaration policy (Q-2 / Q-3 / R-7.1) ───────────────────── */
+
+describe('wireframeSurface — P6 declaration policy', () => {
+  it('authors the consequence for delete and the external export party (Q-2 / Q-3)', () => {
+    const del = VERBS_BY_ID.get('wireframe.element.delete');
+    expect(del?.risk).toBe('destructive');
+    expect(del?.consequence?.trim().length ?? 0).toBeGreaterThan(0);
+
+    // `defineVerb` copies both fields instead of dropping them (the Q-2/Q-3 defect).
+    const exportPng = VERBS_BY_ID.get('place.exportPng');
+    expect(exportPng?.title).toBe('Export PNG');
+    expect(exportPng?.risk).toBe('external');
+    expect(exportPng?.externalParty).toBe('your file system');
+    expect(exportPng?.consequence?.trim().length ?? 0).toBeGreaterThan(0);
+
+    // The other three file verbs stay `mutating` this round (one external verb only).
+    for (const verbId of ['place.open', 'place.saveAs', 'wireframe.document.new']) {
+      expect(VERBS_BY_ID.get(verbId)?.risk, verbId).toBe('mutating');
+    }
+  });
+
+  it('re-derives the risk classes from the declaration', () => {
+    const counts: Record<Risk, number> = { safe: 0, mutating: 0, destructive: 0, external: 0 };
+    for (const verb of wireframeSurface.verbs) counts[verb.risk] += 1;
+
+    expect(counts.destructive).toBe(1);
+    expect(counts.external).toBe(1);
+    expect(counts.safe + counts.mutating + counts.destructive + counts.external).toBe(
+      wireframeSurface.verbs.length,
+    );
+    expect(wireframeSurface.verbs).toHaveLength(58);
+
+    const byRisk = (risk: Risk): string[] =>
+      wireframeSurface.verbs.filter((verb) => verb.risk === risk).map((verb) => verb.id);
+    expect(byRisk('external')).toEqual(['place.exportPng']);
+    expect(byRisk('destructive')).toEqual(['wireframe.element.delete']);
+  });
+
+  it('makes app.ask available and routes it to the companion composer bridge (R-3)', async () => {
+    const ask = VERBS_BY_ID.get('app.ask');
+    expect(ask).toBeDefined();
+    expect(ask!.available(context())).toBe(true);
+
+    const requests: CompanionComposerOpenRequest[] = [];
+    const unsubscribeComposer = subscribeCompanionComposerOpen((request) =>
+      requests.push(request),
+    );
+    let effect: Awaited<ReturnType<VerbDescriptor['run']>>;
+    try {
+      effect = await ask!.run(intentFor('app.ask'), context());
+    } finally {
+      unsubscribeComposer();
+    }
+
+    expect(effect.effect).toBe('navigation');
+    expect(effect.patch).toBeNull();
+    // The instruction box, not the retired launcher surface.
+    expect(requests).toEqual([
+      { source: 'command-bar-ask', appId: 'wireframe', focus: true },
+    ]);
+  });
+});
+
+/* ───────────────────── ST-3 text-edit verbs (R-4) ───────────────────── */
+
+const TEXT_EDIT_VERB_IDS = [
+  'wireframe.element.setLabel',
+  'wireframe.element.setText',
+  'wireframe.element.setPlaceholder',
+] as const;
+
+describe('wireframeSurface — ST-3 text-edit verbs (R-4)', () => {
+  it('declares the three verbs in wireframe.edit, mutating, published, with an empty-tolerant value', () => {
+    for (const verbId of TEXT_EDIT_VERB_IDS) {
+      const verb = VERBS_BY_ID.get(verbId);
+      expect(verb, verbId).toBeDefined();
+      expect(verb!.appliesTo.places, verbId).toEqual([EDIT]);
+      expect(verb!.risk, verbId).toBe('mutating');
+      expect(verb!.publish, verbId).toBe(true);
+
+      const idArg = verb!.args.find((arg) => arg.name === 'id');
+      expect(idArg, verbId).toBeDefined();
+      expect(idArg!.required, verbId).toBe(false);
+
+      const valueArg = verb!.args.find((arg) => arg.name === 'value');
+      expect(valueArg, verbId).toBeDefined();
+      expect(valueArg!.required, verbId).toBe(false);
+      expect(valueArg!.allowEmpty, verbId).toBe(true);
+    }
+  });
+
+  it('gates availability on one selection of the matching kind (empty selection unavailable)', () => {
+    const available = (verbId: string, count: number, kinds: readonly string[]): boolean =>
+      VERBS_BY_ID.get(verbId)!.available(selectedContext(count, kinds));
+
+    // card / button → label only; text → text only; input → placeholder only.
+    expect(available('wireframe.element.setLabel', 1, ['button'])).toBe(true);
+    expect(available('wireframe.element.setLabel', 1, ['card'])).toBe(true);
+    expect(available('wireframe.element.setLabel', 1, ['text'])).toBe(false);
+    expect(available('wireframe.element.setLabel', 1, ['input'])).toBe(false);
+
+    expect(available('wireframe.element.setText', 1, ['text'])).toBe(true);
+    expect(available('wireframe.element.setText', 1, ['card'])).toBe(false);
+    expect(available('wireframe.element.setText', 1, ['button'])).toBe(false);
+
+    expect(available('wireframe.element.setPlaceholder', 1, ['input'])).toBe(true);
+    expect(available('wireframe.element.setPlaceholder', 1, ['text'])).toBe(false);
+    expect(available('wireframe.element.setPlaceholder', 1, ['card'])).toBe(false);
+
+    for (const verbId of TEXT_EDIT_VERB_IDS) {
+      expect(available(verbId, 0, []), verbId).toBe(false);
+      // A multi-selection is never a single-target edit, even with a matching first kind.
+      expect(available(verbId, 2, ['card', 'card']), verbId).toBe(false);
+    }
+
+    // The shipped map projection agrees with the declaration for a card selection.
+    const map = buildNavigationMapModel(wireframeSurface, placeContext(EDIT, 1, ['card']));
+    const edit = map.places.find((place) => place.placeId === EDIT);
+    const mapAvailable = (verbId: string): boolean | undefined =>
+      edit?.verbs.find((verb) => verb.verbId === verbId)?.available;
+    expect(mapAvailable('wireframe.element.setLabel')).toBe(true);
+    expect(mapAvailable('wireframe.element.setText')).toBe(false);
+    expect(mapAvailable('wireframe.element.setPlaceholder')).toBe(false);
+  });
+
+  it('defaults the target to the primary selection when no id is supplied', async () => {
+    const button = seedElement('button');
+    const card = seedElement('card'); // added last ⇒ the primary selection
+    expect(getSnapshot().selectedIds).toEqual([card.id]);
+
+    const setLabel = VERBS_BY_ID.get('wireframe.element.setLabel')!;
+    const effect = await setLabel.run(
+      intentFor('wireframe.element.setLabel', { value: 'Reports' }),
+      context(),
+    );
+
+    const after = effect.patch?.after as {
+      delta?: { elements?: Record<string, { set?: Record<string, unknown> }> };
+    };
+    expect(after.delta?.elements?.[card.id]?.set).toMatchObject({ label: 'Reports' });
+    expect(after.delta?.elements?.[button.id]).toBeUndefined();
+    expect(effect.target.map((target) => target.id)).toEqual([card.id]);
+
+    // An explicit id overrides the primary selection.
+    select(button.id);
+    const explicit = await setLabel.run(
+      intentFor('wireframe.element.setLabel', { id: card.id, value: 'Archive' }),
+      context(),
+    );
+    const explicitAfter = explicit.patch?.after as {
+      delta?: { elements?: Record<string, { set?: Record<string, unknown> }> };
+    };
+    expect(explicitAfter.delta?.elements?.[card.id]?.set).toMatchObject({ label: 'Archive' });
+    expect(explicitAfter.delta?.elements?.[button.id]).toBeUndefined();
+  });
+
+  it('accepts an empty value as one real journal entry and empties the label', async () => {
+    const card = seedElement('card');
+    const host = createNavigationHost({
+      surface: wireframeSurface,
+      getContext: () => getWireframeContext(),
+      journal: getNavigationJournal(),
+      applyPatch: (patch) =>
+        applyDocumentPatch(patch as unknown as WireframeDocumentPatch),
+      confirm: () => true,
+    });
+    const before = getNavigationJournal().entries().length;
+
+    const result = await host.runVerb('wireframe.element.setLabel', 'agent', { value: '' });
+
+    expect(result.status).toBe('performed');
+    const entries = getNavigationJournal().entries();
+    expect(entries).toHaveLength(before + 1);
+    const entry = entries[entries.length - 1];
+    expect(entry.verbId).toBe('wireframe.element.setLabel');
+    expect(entry.label).toBe('Set label');
+    expect(entry.actor).toBe('companion');
+    expect(labelFromStore(card.id)).toBe('');
   });
 });

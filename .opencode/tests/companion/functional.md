@@ -3033,3 +3033,252 @@ Verdict: **PASS** — ST-8/ST-9 release the turn-scoped status on every hold-can
       alias). This row is the focused subset of F-160's full matrix — both must pass.
   - **Edge:** a `skillName` differing only by case from a reserved name (record the resolved rule);
     `listActions` as a `skillName` (reserved, `Err`).
+
+---
+
+## #3120 rescope extension — teleport-attached instruction composer (human-directed rescope)
+
+> **HUMAN-DIRECTED RESCOPE.** The launcher-only conversation (old AC7) is REPLACED: the companion's
+> ONE conversation surface is an instruction composer attached to Fredo's teleport. Rows map 1:1 to
+> `.opencode/tmp/3120/triage.md` `## QA Expert` keyed **R-3**, **R-4** (natural-language leg) and
+> **R-7** (the trail/undo legs live in `wireframe-navigation` F-N41..F-N43).
+> **Verification policy: live** — every row is provable only on the running app. Evidence per case:
+> `tauri_webview_dom_snapshot` / `tauri_webview_execute_js` / `tauri_webview_screenshot` /
+> `tauri_webview_interact` / `tauri_read_logs(source="console")`; the mandatory live receipt is F-178
+> (a static-only PASS is a FALSE PASS). Record: the POSTED `## Tests Runs` comment (G-415).
+>
+> **Binding names (consume verbatim).** Root `fredo-companion-composer` (`role="group"`,
+> `aria-label="Tell Fredo what to change"`); input `fredo-companion-composer-input`
+> (`aria-label="Instruction for Fredo"`, placeholder `Tell Fredo what to change…`); submit
+> `fredo-companion-composer-submit` (accessible name `Send instruction`); target
+> `fredo-companion-composer-target` (text `for <App>` via `COMPANION_COMPOSER_TARGET_PREFIX`, or
+> `No app in front of Fredo`); dismiss `fredo-companion-composer-dismiss` (`Close instruction box`).
+> New modules `shared/companion/composerBridge.ts`, `shared/companion/composerTarget.ts`,
+> `shared/components/companion/CompanionComposer.tsx`; placement `computeComposerPlacement` with
+> `COMPOSER_W=320`/`COMPOSER_H=40`/`COMPOSER_GAP=8` and `REPLY_AVATAR_CLEARANCE=14`.
+>
+> **Reach recipes.** Same-window teleport = `mousedown {button:2, ctrlKey:true}` on
+> `.fredo-companion-avatar`; cross-window = the shipped `companion-teleport` event into
+> `run-cli-terminal` (`tauri_ipc_emit_event`); scripted routed intent =
+> `tauri_ipc_execute_command({command:"app_command_intent", args:{requestId:"qa-3120-c<n>",
+> appId:"wireframe", action:"<verbId>", arguments:{…}}})` (actor `companion`, the SAME funnel the
+> composer's turn uses); model turn = a real managed `llama-server`.
+>
+> **Supersession.** Launcher rows F-144..F-151 (launcher-only conversation / undo routing /
+> `/ Ask` → launcher / no-chat-panel) are SUPERSEDED by F-164..F-178 and `wireframe-navigation`
+> F-N41..F-N43. F-7/F-8/F-9/F-10 (click/joke, game, teleport), F-31/F-32 (states),
+> F-99/F-100/F-102 (skill contract, reply copy, stability) and F-79..F-98 (reply surface growth /
+> never-cover / scroll) remain IN FORCE and are the regression baseline for the reply path.
+
+- [ ] **F-164 (R-3.1) — the composer auto-opens on the teleport-in settle.**
+  **Steps:** companion ON; record the DOM before a teleport; drive a same-window teleport
+  (`mousedown {button:2, ctrlKey:true}` at (400,400)); sample
+  `[data-testid="fredo-companion-composer"]` + the avatar `data-state` every ~50 ms with
+  `performance.now()`; repeat with a cross-window `companion-teleport` into `run-cli-terminal`.
+  **Expected:** the composer is ABSENT while `data-state` is `teleport-out`/`teleport-in` and appears
+  at the `teleport-in` settle (`ANIM_DURATION['teleport-in'] + 50` = 450 ms after arrival, tolerance
+  +150 ms) in the DESTINATION window — same-window and cross-window arrival both open it; no click,
+  no keypress is required; exactly ONE composer node (never one per window); the composer root carries
+  `role="group"` + the bound aria-label.
+  - **Edge:** a teleport while a joke streams (the bubble is cleaned; the composer still opens); a
+    teleport to the same point; reduced motion (opens at the settle, no motion dependence); a teleport
+    while the composer is already open (no duplicate).
+  - **Receipt:** the (t, state, composerPresent) samples for both legs + E-SHOT.
+
+- [ ] **F-165 (R-3.2) — the composer input receives focus without a click.**
+  **Steps:** after F-164's open, read `document.activeElement` + its attributes; type `abc` with no
+  pointer event; repeat after a second teleport.
+  **Expected:** `document.activeElement` IS `[data-testid="fredo-companion-composer-input"]`; its
+  `aria-label` is `Instruction for Fredo` and its placeholder `Tell Fredo what to change…`; focus lands
+  in the SAME task as the settle (measured delta ≤ one frame, ≤ 50 ms); typing immediately inserts
+  `abc`; no pointer/click event was issued.
+  - **Edge:** the OS window was not in the foreground — bring it to the front and repeat (DOM focus is
+    the assertion; record if the webview cannot take OS focus); a second teleport re-lands focus on
+    the input; the composer opened while the launcher is visible; reduced motion.
+  - **Receipt:** E-DOM (`activeElement` per step + the measured delta).
+
+- [ ] **F-166 (R-3.3) — the composer never covers Fredo: zero intersection and at least 14 px separation.**
+  **Steps:** with the composer open, sample `getBoundingClientRect()` of the composer and the avatar
+  (the LAYOUT box, as #2886 round 2 established) in the SAME task every ~100 ms for 2 s, then after
+  typing, after a reply bubble appears, and with Fredo teleported to each screen edge; compute
+  `intersectionArea` and `dx`/`dy`.
+  **Expected:** `intersectionArea(composer, avatar) === 0` at EVERY sample and
+  `dx ≥ 14 || dy ≥ 14` (`REPLY_AVATAR_CLEARANCE`); the composer ROOT carries
+  `data-composer-placement` whose value is exactly one of `above|right|left` and matches the measured
+  side, plus `data-composer-clearance` whose value is an integer `>= 14` matching the measured facing
+  separation; `below` is NOT a valid value (its absence is asserted — a `below` value at the seat is a
+  FAIL); rect measurement is the fallback ONLY if a hook is absent, and an absent hook is itself a
+  FAIL of UIUX-D1 (it should not be absent); when the `SpeechBubble` is visible the composer rect does
+  not intersect the bubble rect either; at 900×600 (shipped minimum) the composer stays fully
+  on-screen and still clears the avatar; the facing edge is stable across the open lifetime (no
+  motion-collapsed gap — measure the transform envelope, G-169).
+  - **Edge:** all four screen edges; the bubble visible; the game bubble open (out of scope — record);
+    a window resize while open; reduced motion; a near-zero-gap candidate must fall through to the
+    next side; a `below` value or a clearance < 14 on the root is a FAIL.
+  - **Receipt:** the per-sample rect/area/gap table + E-SHOT.
+
+- [ ] **F-167 (R-3.4) — the default target is the app Fredo is in front of.**
+  **Steps:** teleport Fredo over the Wireframe window frame (`[data-fredo-app-id="wireframe"]`) with no
+  other app focused; read the target chip; submit a grounded instruction; repeat with Fredo on empty
+  desktop while the focused window is Wireframe; repeat in a standalone app window whose root carries
+  `data-fredo-app-id`.
+  **Expected:** resolution order `requestedAppId → topmost frame containing the landing point →
+  windowAppId → focusedAppId → null`; the chip reads `for Wireframe`; the submitted turn's envelope
+  equals `describeContext('wireframe')` (path/selection — the live grounding plus the unit pin
+  `composerTarget.test.ts`); `explicit === false`; with NO resolvable app the chip reads
+  `No app in front of Fredo` and submit sends the shipped UNGROUNDED turn (envelope null).
+  - **Edge:** overlapping frames (the TOPMOST by z at the landing point wins); a minimized window
+    (not focused → fall through); a frame of a non-showable app (the default rule does NOT filter
+    showable — record); a landing point exactly on a frame edge.
+  - **Receipt:** E-DOM (chip + the envelope/path) + the unit pin summary.
+
+- [ ] **F-168 (R-3.5) — an explicitly named showable app overrides the default target.**
+  **Steps:** Fredo over Wireframe; type an instruction naming `Mission Monitor` (e.g. `open Mission
+  Monitor`); then one naming `Wireframe`; then an ambiguous mention; then `mission monitor` in lower
+  case.
+  **Expected:** `resolveNamedAppMention` is whole-word, case-insensitive, longest match over `name` AND
+  `id`; when the named app is showable and DIFFERENT from the default, the chip reads
+  `for Mission Monitor` and `explicit === true`; the turn grounds on
+  `describeContext('mission-monitor')` (null if unregistered) and executes through the SAME dispatch
+  (F-169); naming the SAME app as the default does not set `explicit`; an AMBIGUOUS mention (2+
+  distinct matches) resolves `null` and the default target is used; a mention of a NON-showable app
+  does not match; a partial word (`mission`) does not match (`Mission Monitor` is whole-word).
+  - **Edge:** case variants; the app `id` instead of its name; two apps whose names share a prefix; an
+    instruction naming two different apps (ambiguous → default).
+  - **Receipt:** E-DOM (chip + explicit flag) per leg + the unit `composerTarget.test.ts` summary.
+
+- [ ] **F-169 (R-3.6) — submit grounds the turn in `describeContext(targetApp)` and executes through the one `dispatch` funnel as the companion.**
+  **Steps:** target Wireframe with one CARD selected; type `change the card label to Reports` in the
+  composer; press Enter; capture the generation, the grounding envelope (unit pin / routed-intent
+  result) and the journal.
+  **Expected:** exactly ONE generation; the grounding envelope is `describeContext('wireframe')`
+  (path `Canvas`, the selected card's id/label) — one envelope per turn; the selected application
+  command executes through the ONE `dispatch` funnel with `actor:'companion'` (the relay result
+  `outcome:"Performed"`, `performed` naming the text verb) — the composer adds NO second dispatch
+  path; the card's `label` becomes `Reports`; exactly ONE journal entry attributed `Companion`; undo
+  reverts it. **The natural-language leg is scored on the AC's observable (the label becomes
+  `Reports`), not on a particular verb id** — any declared text verb that produces the label is
+  acceptable (quote the selected verb); a turn that selects no text verb and leaves the label
+  unchanged is a FAIL of R-4's natural-language clause.
+  - **Edge:** the model selects `setField` instead of `setLabel` (acceptable if the label becomes
+    `Reports`); a target with no registered host (envelope null → ungrounded, nothing performed);
+    Shift+Enter inserts a newline and submits nothing; one generation per submit.
+  - **Receipt:** E-DOM (label + journal + actor) + the grounding envelope + the reply transcript.
+
+- [ ] **F-170 (R-3.7) — an empty submit is a no-op.**
+  **Steps:** focus the input; press Enter on an empty value, then on `'   '` (whitespace); count
+  generations; read focus + the composer.
+  **Expected:** ZERO generations for both; no turn is sent; no journal entry; the composer STAYS open;
+  `document.activeElement` stays the input; the submit control does nothing; text is trimmed
+  (leading/trailing whitespace never becomes a turn).
+  - **Edge:** type `abc` then delete it and press Enter; Enter during an in-flight generation from a
+    prior submit (the one-in-flight guard; record); Shift+Enter (newline, no submit).
+  - **Receipt:** E-DOM (generation count + focus + composer presence).
+
+- [ ] **F-171 (R-3.8) — Escape closes the composer and returns focus to the app, never `body`.**
+  **Steps:** record the element focused BEFORE the composer opens (e.g.
+  `[data-testid="wireframe-canvas"]` or the app root); open the composer; press `Escape`; read
+  `document.activeElement` + the composer presence; repeat with the dismiss control
+  `fredo-companion-composer-dismiss`.
+  **Expected:** the composer is GONE (`composerOpen === false`, node count 0); `document.activeElement`
+  is the element focused before it opened (when still connected), else the landing app frame
+  (`[data-fredo-app-id]`), else the app root container — NEVER `body`; Escape again is a no-op; the
+  dismiss control (accessible name `Close instruction box`) closes with the same focus restoration.
+  - **Edge:** Escape while a reply streams (the stream continues; the composer closes); the pre-open
+    element unmounted (app-root fallback, never body); the user moved focus elsewhere before Esc
+    (restore per the contract; record); the composer not open (no-op).
+  - **Receipt:** E-DOM (activeElement before/after) + E-SHOT.
+
+- [ ] **F-172 (R-3.9) — the destructive and external confirmation policy is preserved on the teleport path.**
+  **Steps:** one element selected in Wireframe; relay `wireframe.element.delete` through the SAME
+  companion funnel the composer turn uses (`app_command_intent`); read the dialog; Cancel; then repeat
+  with Accept. Then relay `place.exportPng` (external) and Cancel only.
+  **Expected:** a destructive verb reaches `requestLauncherConfirmation` and renders
+  `[data-testid="launcher-confirmation"]` (`role="alertdialog"`) with verb/target/consequence/undo and
+  **Cancel focused**; NOTHING is applied before accept (element present, journal unchanged); Accept
+  applies exactly ONE mutation + one journal entry (undo restores); Cancel/Esc/outside-click journal
+  nothing and the element stays; the external verb is cancel-only (never press Accept — it opens an OS
+  save dialog) and reports `Not undoable`.
+  - **Edge:** a second destructive intent while one is pending; the dialog while the composer is open;
+    a companion-origin destructive intent with no launcher mounted (resolves `false`, nothing applied).
+  - **Receipt:** E-DOM (dialog + post-cancel/accept journal) + E-SHOT.
+
+- [ ] **F-173 (R-3.10) — safe and mutating turns auto-apply and journal exactly one entry.**
+  **Steps:** with one element selected, submit a SAFE instruction (e.g. `fit the page`) and a MUTATING
+  instruction (e.g. `lock it`) through the composer (real model) and, deterministically, relay the same
+  verbs; read the dialog absence + the journal.
+  **Expected:** NO `launcher-confirmation` node for either class; each applies immediately and appends
+  exactly ONE journal entry (safe → effect `navigation`, no patch; mutating → effect `mutation` with a
+  real patch); the change is visible after the composer closes; the attribution is `Companion`
+  (F-N41).
+  - **Edge:** a `did-nothing` mutating verb (no entry); double Enter must not double-apply; a safe verb
+    that changes no document state.
+  - **Receipt:** E-DOM (journal + document) + E-SHOT.
+
+- [ ] **F-174 (R-3.11) — no chat panel or history: the reply is the existing `SpeechBubble` with its states unchanged.**
+  **Steps:** submit two turns in a row; inspect the composer/overlay subtree and the document for a
+  message list / transcript / scrollback / a second reply surface; stop the managed server and submit
+  to induce the error path; read the bubble text, the state sequence and the live region.
+  **Expected:** NO chat panel, message list, scrollback or history node exists (the composer root is
+  the ONLY new node); each turn's reply renders in the EXISTING `SpeechBubble` (the shipped 240×120
+  base tier or its grown/scrolling tier) and the prior reply is REPLACED (single-shot);
+  `thinking → joking → happy → idle` unchanged; the error path renders the curated sentence
+  `Fredo couldn't reply just now. Try again in a moment.` with no false `happy`, exactly ONE polite
+  announcement and a clean recovery. `composerOpen` is transient: it is NOT persisted (reload →
+  closed; no new storage key; grep localStorage/AppStore for a composer key → zero).
+  - **Edge:** a long reply (the grown/scrolling tier unchanged); a reload mid-composer; a reply while
+    the composer is open; two turns back-to-back (latest only).
+  - **Receipt:** E-DOM (absence + bubble text per state) + the state samples + the console read.
+
+- [ ] **F-175 (R-3.12) — the composer opens only in a window that is hosting Fredo.**
+  **Steps:** open `run-cli-terminal`; keep Fredo in the main window (not away); open a standalone app
+  window (`index.html?view=app&id=<appId>`); emit `companion-teleport {toWindow:'main', x, y}` with
+  `tauri_ipc_emit_event`; count composer nodes per window; then teleport into the terminal and back.
+  **Expected:** the composer opens ONLY in the window that hosts Fredo, gated by the existing
+  served-overlay gate (`isAway && isInThisWindow && !isAutoHidden`); the standalone app window (which
+  reports `MY_WINDOW='main'`) NEVER opens a composer while it is not hosting; exactly ONE composer
+  exists globally at any settle; an auto-hidden away state opens none. This row does NOT change the
+  `MY_WINDOW` identity (the Architect's out-of-scope wrinkle) — it proves the gate holds it.
+  - **Edge:** teleport source vs destination windows; a window (re)loaded mid-transit; auto-hidden
+    away; closing the terminal mid-transit.
+  - **Receipt:** per-window composer counts + the `data-state` of each window.
+
+- [ ] **F-176 (R-3.13) — composer a11y, copy and token-native theming.**
+  **Steps:** read the composer's roles/names/attributes; inspect computed colors in dark base, a light
+  preset and a non-default accent; re-theme with the composer open; check the live-region count.
+  **Expected:** root `role="group"` named `Tell Fredo what to change`; input `aria-label="Instruction
+  for Fredo"`; icon-only submit named `Send instruction`; dismiss named `Close instruction box`;
+  target chip text `for <App>` or `No app in front of Fredo`; every control Tab-reachable with a
+  non-empty accessible name (G-423); colors are theme tokens / `tint()` only (zero `#rrggbb`,
+  `rgba(`, `var(--x)NN` alpha-append) and re-tint live with no stale color; the composer adds ZERO
+  `aria-live` regions (the reply still announces once on the shipped polite region); a focus-visible
+  ring is present; under reduced motion the composer's own entrance (if any) is opacity/transform-only
+  or absent.
+  - **Edge:** a long target app name (record wrap/ellipsis); 900×600; light + dark + Matrix; the
+    composer over a light window; a long instruction: the composer auto-grows to ≤ 96 px (4 lines) then
+    scrolls (UIUX-D3) — `COMPOSER_H=40` is the resting minimum — never growing the launcher.
+  - **Receipt:** E-DOM (roles/names) + the computed-color table + E-SHOT per theme.
+
+- [ ] **F-177 (NFR) — the composer opens in the settle task, never polls, and keeps the console clean.**
+  **Steps:** measure open/focus latency across 20 teleports; static-read the composer/placement code
+  for timers/effects; read the console after every leg; resize while open.
+  **Expected:** open + focus land in the settle task (no interval, no polling, no extra host
+  subscription beyond the existing teleport event); the placement is a PURE function of measured rects
+  (no `useEffect` + `setState` loop; no effect deps on array `.length`/fresh objects — #523); no
+  `Error:`/`Uncaught`/`Maximum update depth exceeded`; a resize while open re-derives the placement
+  with no overlap and no flicker; the launcher command-bar `y` is unchanged (no layout participation).
+  - **Edge:** 50 open/close cycles; rapid teleports; a theme switch while open; reduced motion.
+  - **Receipt:** the latency series + the console read + the source read.
+
+- [ ] **F-178 (LIVE) — mandatory `telemetry_spans` and rendered-webview receipt for the reworked turn.**
+  **Steps:** same run as F-164..F-177: exercise the composer end-to-end; run
+  `fredo emit --event-type chat --session-id e2e-3120r-composer-chat` and
+  `--event-type tool_use --session-id e2e-3120r-composer-tool --tool-name read_file`; query
+  `telemetry_spans` + `chat_rows`/`tool_use_rows` (telemetry-query skill, against the env's PostgreSQL
+  manifest); retain the composer DOM/screenshot receipts.
+  **Expected:** both emits return `{"queued":true}` and classify under their session ids;
+  `telemetry_spans` returns a NON-ZERO count with a recent `max(ingested_at)`; a rendered-webview
+  receipt exists for every row. **A static-only PASS is a FALSE PASS.** Never fabricate a query.
+  - **Edge:** re-run on the tested tip; keep the emit + query output verbatim; disclose the DB port;
+    if the pool refuses `psql`, use the named telemetry fallback and DISCLOSE.
+  - **Receipt:** E-SPAN + E-SHOT.

@@ -23,6 +23,7 @@ import type { NavigationHost } from '@/shared/navigation/ui/host';
 import { WireframePropertyPanel } from '../components/WireframePropertyPanel';
 import {
   WireframeNavigationProvider,
+  handleWireframeKeyDown,
   useWireframeNavigation,
 } from '../components/WireframeNavigationProvider';
 import {
@@ -74,11 +75,40 @@ function elementFromStore(id: string): WireframeElement {
   return found;
 }
 
+/** The label of a button/card element (the union's only members that carry one). */
+function labelFromStore(id: string): string {
+  const element = elementFromStore(id);
+  if (element.type !== 'button' && element.type !== 'card') {
+    throw new Error(`element ${id} has no label field`);
+  }
+  return element.label;
+}
+
 function renderPanel() {
   return renderWithChakra(
     <WireframeNavigationProvider>
       <HostCapture />
       <WireframePropertyPanel />
+    </WireframeNavigationProvider>,
+  );
+}
+
+/**
+ * The panel under the SAME element-scoped key adapter the shell attaches
+ * (`handleWireframeKeyDown`), so the `isTextControl` passthrough is exercised
+ * without mounting the shell (Spec #3120 ST-4 — the adapter must not be weakened).
+ */
+function renderPanelWithAdapter() {
+  return renderWithChakra(
+    <WireframeNavigationProvider>
+      <HostCapture />
+      <div
+        data-testid="adapter-root"
+        tabIndex={-1}
+        onKeyDown={(event) => handleWireframeKeyDown(event, host(), Date.now())}
+      >
+        <WireframePropertyPanel />
+      </div>
     </WireframeNavigationProvider>,
   );
 }
@@ -683,5 +713,123 @@ describe('the panel is the details view — every edit dispatches a declared ver
     } finally {
       canvas.remove();
     }
+  });
+});
+
+/* ───────────── details text input — deletion + focus retention (Spec #3120 ST-4, R-5) ───────────── */
+
+describe('details text input — deletion and focus retention (R-5.1 / R-5.2 / R-5.3)', () => {
+  /** Seed a card whose label field starts EMPTY (the live repro's starting state). */
+  function seedEmptyLabelCard(): WireframeElement {
+    const element = addElement('card');
+    act(() => {
+      dispatch('element.update', { id: element.id, patch: { label: '' } });
+    });
+    return element;
+  }
+
+  it('a then Backspace empties the label, appends one entry per keystroke and keeps focus', async () => {
+    const user = userEvent.setup();
+    const element = seedEmptyLabelCard();
+    renderPanel();
+
+    const input = screen.getByTestId('wireframe-card-label') as HTMLInputElement;
+    expect(input).toHaveValue('');
+    input.focus();
+    expect(input).toHaveFocus();
+
+    const before = getNavigationJournal().entries().length;
+
+    // Discrimination instrumentation (ST-4(c)): record every activeElement change while the
+    // user types + deletes. A remount would surface here as a blur to `body`.
+    const activeOnKeydown: (Element | null)[] = [];
+    const blurs: (Element | null)[] = [];
+    const onKeyDown = (): void => {
+      activeOnKeydown.push(document.activeElement);
+    };
+    const onBlur = (): void => {
+      blurs.push(document.activeElement);
+    };
+    input.addEventListener('keydown', onKeyDown);
+    input.addEventListener('blur', onBlur);
+    try {
+      await user.type(input, 'a');
+
+      expect(labelFromStore(element.id)).toBe('a');
+      expect(getNavigationJournal().entries()).toHaveLength(before + 1);
+      // The focus-loss half: the SAME DOM node is still the active element after the commit.
+      expect(document.activeElement).toBe(input);
+
+      await user.keyboard('{Backspace}');
+
+      expect(labelFromStore(element.id)).toBe('');
+      const entries = getNavigationJournal().entries();
+      expect(entries).toHaveLength(before + 2);
+      const entry = entries[entries.length - 1];
+      expect(entry.verbId).toBe('wireframe.element.setField');
+      expect(entry.label).toBe('Set label');
+      // NEVER `invalid-args`, never a silent revert.
+      expect(entry.actor).toBe('human');
+      expect(document.activeElement).toBe(input);
+      // No panel-side remount: the input never blurred and every keydown saw the input.
+      expect(blurs).toEqual([]);
+      expect(activeOnKeydown.length).toBeGreaterThan(0);
+      expect(activeOnKeydown.every((active) => active === input)).toBe(true);
+    } finally {
+      input.removeEventListener('keydown', onKeyDown);
+      input.removeEventListener('blur', onBlur);
+    }
+  });
+
+  it('focus survives two consecutive store commits (a then ab) on the same DOM node', async () => {
+    const user = userEvent.setup();
+    const element = seedEmptyLabelCard();
+    renderPanel();
+
+    const input = screen.getByTestId('wireframe-card-label') as HTMLInputElement;
+    input.focus();
+    const before = getNavigationJournal().entries().length;
+
+    await user.type(input, 'a');
+    expect(labelFromStore(element.id)).toBe('a');
+    expect(document.activeElement).toBe(input);
+    const caretAfterFirst = input.selectionStart;
+
+    await user.type(input, 'b');
+    expect(labelFromStore(element.id)).toBe('ab');
+    expect(input).toHaveValue('ab');
+    expect(getNavigationJournal().entries()).toHaveLength(before + 2);
+    // Same node, caret preserved at the end of the two-character draft.
+    expect(document.activeElement).toBe(input);
+    expect(caretAfterFirst).toBe(1);
+    expect(input.selectionStart).toBe(2);
+  });
+
+  it('a printable key in the text control never dispatches a verb (adapter passthrough preserved)', async () => {
+    const element = seedEmptyLabelCard();
+    renderPanelWithAdapter();
+
+    const input = screen.getByTestId('wireframe-card-label') as HTMLInputElement;
+    input.focus();
+    const before = getNavigationJournal().entries().length;
+
+    fireEvent.keyDown(input, { key: 'f' });
+    await settle();
+
+    // The text control keeps the key: no place transition, no journal entry.
+    expect(getNavigationJournal().entries()).toHaveLength(before);
+    expect(host().getSnapshot().context.placePath).toEqual(['wireframe.canvas']);
+    expect(labelFromStore(element.id)).toBe('');
+
+    // Non-vacuity: the SAME stroke outside a text control enters File (it would otherwise fire).
+    const root = screen.getByTestId('adapter-root');
+    root.focus();
+    fireEvent.keyDown(root, { key: 'f' });
+    await settle();
+    expect(getNavigationJournal().entries()).toHaveLength(before + 1);
+    expect(host().getSnapshot().context.placePath).toEqual([
+      'wireframe.canvas',
+      'wireframe.file',
+    ]);
   });
 });

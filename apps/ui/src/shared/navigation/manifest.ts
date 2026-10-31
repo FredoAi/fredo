@@ -23,6 +23,12 @@ export interface CompanionArg {
   name: string;
   required: boolean;
   description?: string;
+  /**
+   * Spec #3120 (P6), ST-1 — the declared free-text capability crosses the manifest
+   * boundary under the ABSENT-KEY rule: `true` is emitted, a plain/false argument
+   * carries no key at all (the wire never sends `allowEmpty: false`).
+   */
+  allowEmpty?: boolean;
 }
 
 /**
@@ -53,6 +59,31 @@ export interface CompanionManifest {
 }
 
 /**
+ * Spec #3120 (P6), ST-2 — the engine-owned `journal.undo` command.
+ *
+ * `journal.undo` has no declared `VerbDescriptor` (`ENGINE_VERB_IDS`), so it can never be
+ * projected from `surface.verbs`. It is appended to EVERY navigation manifest after the
+ * published verbs and before the reserved `listActions` id, giving a spoken undo a
+ * manifest action that reaches the same dispatch funnel as every other command.
+ */
+export const ENGINE_COMPANION_UNDO_COMMAND: CompanionCommand = {
+  id: 'journal.undo',
+  label: 'Undo',
+  description:
+    'Undo the newest change; optionally filter by verb (verbId), actor (human, companion or system) and count (1..100).',
+  risk: 'mutating',
+  args: [
+    { name: 'actor', required: false },
+    { name: 'count', required: false },
+    // Spec #3120 (P6), ST-8 — undo by description: `verbId` narrows the undo to the
+    // named verb's entries (newest-first), so "undo the label change" reaches the
+    // label edit and no other journal entry.
+    { name: 'verbId', required: false },
+  ],
+  aliases: ['undo', 'revert'],
+};
+
+/**
  * `VerbArg` does not declare `description`, but a declaration MAY author one; read it
  * structurally so an authored description round-trips while an unauthored one omits the
  * key entirely (no existing golden `args` row changes).
@@ -61,23 +92,26 @@ interface AuthoredArg {
   readonly name: string;
   readonly required: boolean;
   readonly description?: string;
+  readonly allowEmpty?: boolean;
 }
 
-/** Project one declared argument onto the manifest wire shape. */
+/** Project one declared argument onto the manifest wire shape (absent-key rule, G-413). */
 function toCompanionArg(arg: VerbArg): CompanionArg {
   const source: AuthoredArg = arg;
   return {
     name: source.name,
     required: source.required === true,
     ...(source.description === undefined ? {} : { description: source.description }),
+    ...(source.allowEmpty === true ? { allowEmpty: true } : {}),
   };
 }
 
 /**
  * §8.1 — build the companion manifest for one surface.
  *
- * Stable and byte-identical for identical input: command order is declaration order and
- * the only appended id is the single reserved `listActions` (never a second one).
+ * Stable and byte-identical for identical input: command order is declaration order, then
+ * the engine-owned `journal.undo` (Spec #3120 ST-2 — never duplicated), and the only
+ * appended id is the single reserved `listActions` (never a second one).
  */
 export function buildCompanionManifest(surface: Surface): CompanionManifest {
   const commands: CompanionCommand[] = [];
@@ -91,6 +125,12 @@ export function buildCompanionManifest(surface: Surface): CompanionManifest {
       args: verb.args.map(toCompanionArg),
       aliases: verb.aliases,
     });
+  }
+
+  // The engine owns `journal.undo`; it is not a declared verb. Append it after the
+  // published verbs, guarding against a hand-published duplicate.
+  if (!commands.some((command) => command.id === ENGINE_COMPANION_UNDO_COMMAND.id)) {
+    commands.push(ENGINE_COMPANION_UNDO_COMMAND);
   }
 
   const appId = surface.tree.appId;

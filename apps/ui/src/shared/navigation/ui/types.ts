@@ -48,7 +48,7 @@ export interface NavAffordance {
   readonly tooltip: string;
 }
 
-/** R-1.1 — one child-place row (the "Places" rail section above the verbs). */
+/** R-1.1 — one child-place row (rendered in the bar before the verb cluster). */
 export interface CommandRailPlaceRow {
   readonly placeId: string;
   readonly label: string;
@@ -71,7 +71,7 @@ export interface CommandRailModel {
   readonly overflow: number; // bound verbs beyond 8, excluding the two globals
   readonly actionCount: number; // rows.length + overflow, excluding the two globals
   readonly more: { readonly label: string; readonly opensFilteredTo: string } | null;
-  readonly ask: NavAffordance; // enabled === false in P4
+  readonly ask: NavAffordance; // enabled once the launcher ships (P6)
   readonly map: NavAffordance; // enabled === true
 }
 

@@ -63,13 +63,24 @@ pub struct CompanionCommandArgManifest {
 }
 
 /// One published command (wire shape, camelCase).
+///
+/// Spec #3120 (P6), ST-2 — the declaration's `risk` and `aliases` cross the wire:
+///
+/// * `risk` is `None` (and therefore an ABSENT KEY) for a legacy `commandSurface`
+///   command, and `Some(..)` for a navigation-declared command.
+/// * `aliases` is an ABSENT KEY when empty (never `null`), matching the TS
+///   optional-field contract (G-413).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompanionCommandManifest {
     pub id: String,
     pub label: String,
     pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk: Option<String>,
     pub args: Vec<CompanionCommandArgManifest>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
 }
 
 /// One published application surface (wire shape, camelCase). `skill_name` is
@@ -298,7 +309,9 @@ mod tests {
             id: id.to_string(),
             label: "Label".to_string(),
             description: format!("Do {id}"),
+            risk: None,
             args: Vec::new(),
+            aliases: Vec::new(),
         }
     }
 
@@ -563,5 +576,158 @@ mod tests {
             !offer.contains(&"wireframe.two".to_string()),
             "the removed id must disappear from the next offer"
         );
+    }
+
+    /* ── Spec #3120 (P6) ST-2 — risk/aliases across the wire (G-413) ── */
+
+    fn navigation_command() -> CompanionCommandManifest {
+        CompanionCommandManifest {
+            id: "journal.undo".to_string(),
+            label: "Undo".to_string(),
+            description: "Undo the newest change.".to_string(),
+            risk: Some("mutating".to_string()),
+            args: vec![CompanionCommandArgManifest {
+                name: "actor".to_string(),
+                required: false,
+                description: None,
+            }],
+            aliases: vec!["undo".to_string(), "revert".to_string()],
+        }
+    }
+
+    #[test]
+    fn a_navigation_command_serializes_risk_and_aliases_and_round_trips() {
+        let command = navigation_command();
+        let wire = serde_json::to_value(&command).expect("the command serializes");
+        let object = wire.as_object().expect("the command is a JSON object");
+
+        assert_eq!(wire["risk"], "mutating", "risk is present for a navigation command");
+        assert_eq!(
+            wire["aliases"],
+            json!(["undo", "revert"]),
+            "aliases are present when declared"
+        );
+        assert!(object.contains_key("risk"));
+        assert!(object.contains_key("aliases"));
+
+        // Consuming side: the wire shape deserializes back to the same value.
+        let parsed: CompanionCommandManifest =
+            serde_json::from_value(wire).expect("the navigation wire shape parses");
+        assert_eq!(parsed, command);
+    }
+
+    #[test]
+    fn a_navigation_command_with_no_aliases_omits_the_key_never_null() {
+        let mut command = navigation_command();
+        command.risk = Some("safe".to_string());
+        command.aliases.clear();
+
+        let wire = serde_json::to_value(&command).expect("the command serializes");
+        let object = wire.as_object().expect("the command is a JSON object");
+        assert_eq!(wire["risk"], "safe", "risk stays present for a navigation command");
+        assert!(
+            !object.contains_key("aliases"),
+            "an empty aliases list is an ABSENT key, never `null`"
+        );
+        assert!(wire.get("aliases").is_none());
+
+        let parsed: CompanionCommandManifest =
+            serde_json::from_value(wire).expect("a navigation wire shape without aliases parses");
+        assert_eq!(parsed.risk.as_deref(), Some("safe"));
+        assert!(parsed.aliases.is_empty());
+    }
+
+    #[test]
+    fn a_legacy_command_omits_risk_and_aliases() {
+        let legacy = command("alpha.one");
+        let wire = serde_json::to_value(&legacy).expect("the legacy command serializes");
+        let object = wire.as_object().expect("the command is a JSON object");
+        assert!(
+            !object.contains_key("risk"),
+            "a legacy command-surface command carries no risk key"
+        );
+        assert!(
+            !object.contains_key("aliases"),
+            "a legacy command-surface command carries no aliases key"
+        );
+    }
+
+    #[test]
+    fn both_wire_shapes_deserialize_and_publish_through_the_registry() {
+        // One surface declared by the navigation engine (risk present; aliases present
+        // on `journal.undo`, absent on a verb with none) and one legacy surface (neither
+        // key at all) — the exact two shapes a live webview publishes.
+        let raw = json!({
+            "surfaces": [
+                {
+                    "appId": "wireframe",
+                    "appName": "Wireframe",
+                    "skillName": "wireframe",
+                    "description": "Draw and arrange wireframe pages.",
+                    "commands": [
+                        {
+                            "id": "journal.undo",
+                            "label": "Undo",
+                            "description": "Undo the newest change.",
+                            "risk": "mutating",
+                            "args": [
+                                { "name": "actor", "required": false },
+                                { "name": "count", "required": false }
+                            ],
+                            "aliases": ["undo", "revert"]
+                        },
+                        {
+                            "id": "wireframe.view.fitPage",
+                            "label": "Fit page",
+                            "description": "Fit the page to the screen.",
+                            "risk": "safe",
+                            "args": []
+                        }
+                    ]
+                },
+                {
+                    "appId": "legacy",
+                    "appName": "Legacy",
+                    "skillName": "legacy",
+                    "description": "A legacy command surface.",
+                    "commands": [
+                        {
+                            "id": "legacy.one",
+                            "label": "One",
+                            "description": "Do one thing.",
+                            "args": []
+                        }
+                    ]
+                }
+            ]
+        });
+
+        let manifest: CompanionManifest =
+            serde_json::from_value(raw).expect("both wire shapes parse");
+        let registry = AppCommandSurfaceRegistry::new();
+        registry.publish(manifest).expect("both wire shapes publish");
+
+        let surfaces = registry.surfaces();
+        assert_eq!(surfaces[0].commands[0].risk.as_deref(), Some("mutating"));
+        assert_eq!(surfaces[0].commands[0].aliases, vec!["undo", "revert"]);
+        assert_eq!(surfaces[0].commands[1].risk.as_deref(), Some("safe"));
+        assert!(surfaces[0].commands[1].aliases.is_empty());
+        assert!(surfaces[1].commands[0].risk.is_none());
+        assert!(surfaces[1].commands[0].aliases.is_empty());
+
+        // The read view (`app_command_surfaces` returns the same registry) keeps the
+        // optional-field contract on the outbound wire.
+        let wire = serde_json::to_value(CompanionManifest {
+            surfaces: registry.surfaces(),
+        })
+        .expect("the registry read serializes");
+        assert_eq!(wire["surfaces"][0]["commands"][0]["risk"], "mutating");
+        assert_eq!(
+            wire["surfaces"][0]["commands"][0]["aliases"],
+            json!(["undo", "revert"])
+        );
+        assert!(wire["surfaces"][0]["commands"][1].get("aliases").is_none());
+        assert!(wire["surfaces"][1]["commands"][0].get("risk").is_none());
+        assert!(wire["surfaces"][1]["commands"][0].get("aliases").is_none());
     }
 }
