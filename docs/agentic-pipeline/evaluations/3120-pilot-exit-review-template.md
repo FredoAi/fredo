@@ -94,7 +94,7 @@ are the metric `task_id` values; do not renumber or drop one. The moderator does
 point at a control or name a surface (protocol §4 rules 1–3 still apply). The participant's first
 affordance is recorded as `discovery_source` (§7.2); **discovery is measured, never asserted**.
 
-- **T1** — Look at the bottom command bar. Tell me where you are and what you could do next,
+- **T1** — Look at the bottom command bar. Tell me where you are, what places you can move to, and what you could do next,
   without me telling you any keys. Then show me how you would find the rest of the actions for
   this place.
 - **T2** — Move to a different place at the same level as the one you are in. Find it yourself —
@@ -115,7 +115,7 @@ questions (§6) are asked **after T7**, so the questionnaire never primes the re
 
 | Task | Reworked surface exercised | Observable outcome |
 |---|---|---|
-| T1 | Bottom command bar + breadcrumbs | the place path is visible; 4–8 contextual verb rows (fewer only when the place has fewer bound verbs); no horizontal scrolling; `more…` is present when the place overflows and opens the map **filtered to the current place** |
+| T1 | Bottom command bar + breadcrumbs | the place path is visible; the child places are visible in the bar; 4–8 contextual verb rows (fewer only when the place has fewer bound verbs); no horizontal scrolling; `more…` is present when the place overflows and opens the map **filtered to the current place** |
 | T2 | `? Map` sibling-place move | the participant reaches a sibling place; `discovery_source` records `map`, `bar`, `guessing` or `other` — the route is measured, not prescribed |
 | T3 | Teleport-attached composer | the instruction box opens on the teleport arrival and its input receives focus **with no click** |
 | T4 | Default target | the turn is grounded on the app Fredo is in front of (the app frame containing his landing point; else the focused app) — no app is named |

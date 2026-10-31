@@ -185,17 +185,29 @@ describe('CommandRail — the command bar is a horizontal row (F-N25 / R-1.1)', 
 /* ─────────────────── F-N28 — no child-place list, breadcrumb anchor ─────────────────── */
 
 describe('CommandRail — no child-place list and the breadcrumb is the current-place anchor (F-N28 / R-1.4)', () => {
-  it('renders NO child-place list or place rows anywhere in the bar', () => {
+  it('renders the child-place list at the root alongside the contextual verbs', () => {
     renderRail(modelAt(ROOT_PATH));
 
-    expect(screen.queryByTestId('navigation-rail-places')).toBeNull();
-    expect(screen.queryByTestId('navigation-rail-place-row')).toBeNull();
-    expect(screen.queryByTestId('navigation-bar-places')).toBeNull();
+    const places = screen.getByTestId('navigation-rail-places');
+    const placeRows = screen.getAllByTestId('navigation-rail-place-row');
+    expect(places).toBeInTheDocument();
+    expect(placeRows.length).toBeGreaterThan(0);
+    for (const row of placeRows) {
+      expect(row).toHaveAttribute('data-nav-place-id');
+    }
     expect(document.querySelectorAll('[data-nav-place-id]').length).toBeGreaterThan(0);
 
     const root = screen.getByTestId(NAV_RAIL_TESTID);
-    // The bar holds only the breadcrumb, the verb cluster and the two globals.
-    expect(root.children).toHaveLength(3);
+    // Breadcrumb + child-place list + divider + verb cluster + the two globals.
+    expect(root.children.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('clicking a child-place row runs that place id', () => {
+    const { onRunVerb } = renderRail(modelAt(ROOT_PATH));
+
+    const first = screen.getAllByTestId('navigation-rail-place-row')[0];
+    fireEvent.click(first);
+    expect(onRunVerb).toHaveBeenCalledWith(first.getAttribute('data-nav-place-id'));
   });
 
   it('makes the LAST breadcrumb segment the current place (the ONLY ellipsis + focus anchor)', () => {

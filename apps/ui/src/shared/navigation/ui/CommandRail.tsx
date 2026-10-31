@@ -33,7 +33,7 @@
  */
 
 import React from 'react';
-import { Box, chakra, Icon, Text, VisuallyHidden } from '@chakra-ui/react';
+import { Box, chakra, Icon, Separator, Text, VisuallyHidden } from '@chakra-ui/react';
 import { LuCircleSlash, LuExternalLink, LuTriangleAlert } from 'react-icons/lu';
 import type { IconType } from 'react-icons';
 
@@ -50,7 +50,9 @@ import {
   NAV_RAIL_MAP_TESTID,
   NAV_RAIL_MORE_TESTID,
   NAV_MORE_ARIA_LABEL,
+  NAV_RAIL_PLACE_ROW_TESTID,
   NAV_RAIL_PLACE_TESTID,
+  NAV_RAIL_PLACES_TESTID,
   NAV_RAIL_RISK_TESTID,
   NAV_RAIL_ROW_TESTID,
   NAV_RAIL_TESTID,
@@ -59,7 +61,12 @@ import {
   NAV_MOTION_MS,
 } from './constants';
 import { NavKeycap } from './Keycap';
-import type { CommandRailModel, CommandRailRow, NavRiskCue } from './types';
+import type {
+  CommandRailModel,
+  CommandRailPlaceRow,
+  CommandRailRow,
+  NavRiskCue,
+} from './types';
 import { useNavReducedMotion } from './useReducedMotion';
 import { usePlaceTransitionFocus } from './usePlaceTransitionFocus';
 
@@ -212,6 +219,59 @@ function RailRow({
 
 // ── The bar ─────────────────────────────────────────────────────────────────
 
+function PlaceRow({
+  row,
+  platform,
+  onRunVerb,
+}: {
+  readonly row: CommandRailPlaceRow;
+  readonly platform?: Platform;
+  readonly onRunVerb: (placeId: string) => void;
+}): React.ReactElement {
+  return (
+    <chakra.li role="listitem" display="flex" flexShrink={0} minWidth="0">
+      <chakra.button
+        type="button"
+        data-testid={NAV_RAIL_PLACE_ROW_TESTID}
+        data-nav-place-id={row.placeId}
+        title={row.tooltip}
+        aria-label={row.tooltip}
+        onClick={() => onRunVerb(row.placeId)}
+        display="flex"
+        alignItems="center"
+        gap="1.5"
+        flexShrink={0}
+        minWidth={`${NAV_BAR_ROW_MIN_WIDTH_PX}px`}
+        maxWidth={`${ROW_MAX_WIDTH_PX}px`}
+        height="28px"
+        px="2"
+        borderRadius="sm"
+        borderWidth="0"
+        bg="transparent"
+        color="fg.default"
+        fontSize="xs"
+        cursor="pointer"
+        overflow="hidden"
+        _hover={{ bg: 'bg.hover' }}
+        _focusVisible={FOCUS_VISIBLE}
+      >
+        <NavKeycap keys={row.keys} platform={platform} />
+        <Text
+          flex="1 1 auto"
+          minWidth={`${NAV_RAIL_TITLE_MIN_WIDTH_PX}px`}
+          overflow="hidden"
+          textOverflow="ellipsis"
+          whiteSpace="nowrap"
+          fontSize="xs"
+          color="fg.default"
+        >
+          {row.label}
+        </Text>
+      </chakra.button>
+    </chakra.li>
+  );
+}
+
 export function CommandRail({
   model,
   platform,
@@ -326,6 +386,37 @@ export function CommandRail({
       )}
 
       {/* ── Centre: the wrapping verb cluster (`more…` inline at its end) ── */}
+      {model.placeRows.length === 0 ? null : (
+        <Box
+          data-testid={NAV_RAIL_PLACES_TESTID}
+          role="list"
+          as="ul"
+          display="flex"
+          flexWrap="wrap"
+          alignItems="center"
+          justifyContent="center"
+          gap="1"
+          flexShrink={0}
+          minWidth="0"
+          listStyleType="none"
+          p="0"
+          m="0"
+        >
+          {model.placeRows.map((placeRow) => (
+            <PlaceRow
+              key={placeRow.placeId}
+              row={placeRow}
+              platform={platform}
+              onRunVerb={onRunVerb}
+            />
+          ))}
+        </Box>
+      )}
+
+      {model.placeRows.length > 0 && model.rows.length > 0 ? (
+        <Separator orientation="vertical" height="20px" borderColor="border.subtle" />
+      ) : null}
+
       <Box
         data-testid={NAV_RAIL_LIST_TESTID}
         role="list"
