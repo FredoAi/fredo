@@ -30,14 +30,14 @@ spec diff. There is no telemetry/webview/app-launch surface for this feature; no
   **Required path:** `docs/UX_FLUENCY_RESEARCH.md`.
   - [ ] **F-1a** §2.1 has ≥10 principle rows, each with an `http(s)://` source, a non-empty
     Fredo-specific rule, and the observable §4.1 scores.
-  - [ ] **F-1b** §3.2 names all 9 surfaces (Wireframe, terminal, diagram, mission-monitor,
-    optimizely, my-workitems, dev-mode, window traversal, launcher), each with `file:line`
-    anchors.
-  - [ ] **F-1c** counts re-derived with the Architect §3.1 recipe match the report: Wireframe
-    **36** simultaneous (24 mode keys + 12 carrier), **33** toolbar controls, **4** modes,
-    listed rows **24 root / 4 draw**, kept globals **3**; other-app `data-hotkey` MM 1,
-    diagram 1, my-workitems 4, optimizely 4, dev-mode 4, terminal 0, launcher 0; global
-    first-step union **15 of 36**.
+  - [ ] **F-1b** §3.2 names the then-shipped surfaces, each with `file:line` anchors. **P8
+    supersession:** the current surface inventory is the retained set (`wireframe`, `terminal`,
+    `mission-monitor`, `database-client`, `dev-mode`, `window-system`, launcher), asserted by
+    `retainedApplicationSet.test.ts`; the report is historical for #3115.
+  - [ ] **F-1c** counts re-derived with the Architect §3.1 recipe match the report for the
+    then-shipped surfaces. **P8 supersession:** legacy element-key counts are historical and the
+    committed `legacyAbsence.test.ts` now owns the zero-reference gate; the current counts are the
+    declaration's published verbs/places, asserted by the navigation suites.
   - [ ] **F-1d** §4.1 rubric exists; §4.2 has ≥1 finding per surface and **every** finding
     cites ≥1 repo path (spot-read ≥2 cited paths).
   - [ ] **F-1e** §3.3 duplicate-declaration analysis and §3.4 claimed→verified corrections are
