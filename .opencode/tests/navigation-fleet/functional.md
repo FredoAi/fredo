@@ -38,7 +38,7 @@ source of truth for expected values; this file is how the Tester works it.
   pnpm --filter @fredo/ui test:run
   pnpm --filter @fredo/ui test:run src/applications/__tests__/navigationParityMatrix
   pnpm --filter @fredo/ui test:run src/applications/__tests__/navigationBindingsCompleteness
-  pnpm --filter @fredo/ui test:run src/applications/__tests__/navigationLegacyRetirement
+  pnpm --filter @fredo/ui test:run src/shared/hotkeys/__tests__/featureHotkeyKeys
   pnpm --filter @fredo/ui test:run src/applications/terminal
   pnpm --filter @fredo/ui test:run src/applications/mission-monitor
   pnpm --filter @fredo/ui test:run src/applications/database-client
@@ -218,14 +218,15 @@ bindings stay frozen until #3122 deletes them.
   matches** (source, comments and tests — comments count, so the scan does NOT strip them).
   Non-vacuity: every root exists with ≥1 file; `data-testid` returns >0 in the four app roots; a
   constructed-attribute control matches. Remaining repo hits are the explicit allowlist, not
-  failures: the deprecated apps (7 sites / 8 keys — `ArchitectureDiagram.tsx:680`;
+  failures: the deprecated apps (7 sites / 9 keys — `ArchitectureDiagram.tsx:680`;
   `OptimizelyFlagsPanel.tsx:461,491,506,533`; `MyWorkItemsContainer.tsx:133,155`) plus non-migrated
   literals in wireframe tests/comments, `shared/hotkeys/**` machinery/tests and comment-only mentions
   (`shared/navigation/context.ts:6`, `FredoApplicationClass.ts:126`, `index.ts:49`).
   **Edge:** a comment hit in a five path (FAIL — ST-3 rewrites `MissionMonitorFeature.tsx:15-20`); a
   test hit in a five path (FAIL); a hit only in a frozen app (allowlisted); `data-Hotkey` is outside
   the literal AC and is stated, not assumed.
-  **File:** `applications/__tests__/navigationLegacyRetirement.test.ts` (ST-6).
+  **File:** `shared/hotkeys/__tests__/featureHotkeyKeys.test.ts`, rewritten by ST-6 to the five-surface
+  truth (AC7-authorized, test-only; no runtime deletion).
 
 - [ ] **F-15 (R-15) `[live]`+`[static]` — no mounted `[data-hotkey]`, no app-owned `g+*`.**
   **Expected:** each of the five mounted apps → `document.querySelectorAll('[data-hotkey]').length
@@ -237,14 +238,15 @@ bindings stay frozen until #3122 deletes them.
 
 - [ ] **F-16 (R-16) `[static]` — existing suites keep every outcome assertion.**
   **Expected:** `pnpm --filter @fredo/ui test:run` exit 0; diff review of the FIVE apps' pre-existing
-  test files shows **0 removed `it(` titles**; dispatch-path edits allowed, outcome observations
-  unchanged. **E-1 precondition:** `shared/hotkeys/__tests__/featureHotkeyKeys.test.ts` still asserts
-  `every shipped feature declares exactly its assigned keys` and `the union over all five shipped
-  features is the 14-key set with no duplicate` and expects the five in-scope keys — removing them
-  reddens it; the PO must approve the single test-only rewrite before the round, else record the
-  plan-level blocker (never a tester FAIL).
+  test files shows **0 removed `it(` titles**, EXCEPT the AC7-authorized rewrite of
+  `shared/hotkeys/__tests__/featureHotkeyKeys.test.ts` — **E-1 RESOLVED**: ST-6 rewrites the old
+  app-specific discovery pin to the five-surface truth (the five migrated surfaces declare no
+  `data-hotkey`; the frozen apps' 7 sites / 9 keys are enumerated; a non-vacuous five-surface
+  assertion is retained; no runtime deletion) — the rewrite re-points the pin and deletes no
+  coverage; dispatch-path edits allowed, outcome observations otherwise unchanged.
   **Edge:** a `.skip`/`.todo`; a renamed title (must be justified); a dropped assertion; a new
-  failure elsewhere; the E-1 rewrite may touch only the inventory pin.
+  failure elsewhere; the E-1 rewrite may touch only the inventory pin (five-surface truth + frozen
+  7-site / 9-key enumeration).
 
 - [ ] **F-17 (R-17) `[static]` — build green.**
   **Expected:** `pnpm --filter @fredo/ui build` exit 0, zero TS errors, zero warnings;
@@ -383,6 +385,7 @@ PASS on a `[live]` row, a `data-hotkey` hit in any of the five in-scope paths, t
 journaling different verb ids, an evidence pointer to a consumed `.opencode/tmp/3121/` draft (G-415),
 or a row treating a removed app as migrated.
 
-UNVERIFIED (named blocker, not FAIL): **E-1** — the stale `featureHotkeyKeys.test.ts` inventory pin
-reddens when the five in-scope attributes are removed unless the PO approves the single test-only
-rewrite; **C-4** — `sql-studio.tab.close` gates on `kinds` ∋ `query`, which §D.4 never projects.
+UNVERIFIED: none. **E-1 RESOLVED** — ST-6 rewrites `shared/hotkeys/__tests__/featureHotkeyKeys.test.ts`
+to the five-surface truth (AC7-authorized test-only rewrite; frozen 7 sites / 9 keys enumerated; no
+runtime deletion). **C-4 RESOLVED** — B.4 marks `query` selectable, §D.4 projects it, and B.5's
+`tab.close` predicate is satisfiable.
