@@ -35,8 +35,8 @@ note). Do not write pass/fail thresholds here; record what you did and what you 
   all inert/acting cases distinguishable (no journal entry on noop, `v` a visible no-op there)?
 - Cross-app: mount two migrated apps at once (dev-mode via Konami + mission-monitor), then read
   `listRegisteredSurfaces()` / `describeContext` for each. Any cross-contamination of appId, verbs or
-  selection? Do the frozen apps' mounted `data-hotkey` elements interact with the migrated surfaces
-  when their windows are open?
+  selection? The retired application trees are deleted in P8, so there is no frozen-app surface left
+  to interact with the migrated ones (the 8-id boot set is pinned by `retainedApplicationSet.test.ts`).
 - Accessibility: with a rail row focused, press `Tab`/`Shift+Tab`. Does focus leave the app window
   or loop? Does the map close and restore the invoker? Does the window dock expose distinguishable
   `Command bar` landmarks?
