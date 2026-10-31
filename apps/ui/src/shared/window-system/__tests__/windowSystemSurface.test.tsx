@@ -40,6 +40,10 @@ import {
   resetHotkeyEngineForTests,
 } from '@/shared/hotkeys/engine';
 import { registerHotkeyHandler, resetRegistryForTests } from '@/shared/hotkeys/registry';
+import {
+  isWindowTraversalInstalled,
+  resetWindowTraversalForTests,
+} from '@/shared/hotkeys/traversal';
 import { WindowManager } from '../WindowManager';
 import {
   WINDOW_FOCUS_NEXT_VERB_ID,
@@ -52,6 +56,10 @@ import {
 import {
   WindowSystemNavigationProvider,
 } from '../WindowSystemNavigationProvider';
+import {
+  resetWindowLauncherToggleForTests,
+  setWindowLauncherToggle,
+} from '../launcherToggleSeam';
 import {
   focusWindow,
   getWindowSnapshot,
@@ -137,6 +145,8 @@ beforeEach(() => {
   resetRegistryForTests();
   resetNavigationAnnouncer();
   resetHotkeyEngineForTests();
+  resetWindowTraversalForTests();
+  resetWindowLauncherToggleForTests();
   registerDefaultFredoActions();
 });
 
@@ -146,6 +156,8 @@ afterEach(() => {
   resetRegistryForTests();
   resetNavigationAnnouncer();
   resetHotkeyEngineForTests();
+  resetWindowTraversalForTests();
+  resetWindowLauncherToggleForTests();
 });
 
 /* ───────────────────────────── R-01: the declaration ───────────────────────────── */
@@ -282,6 +294,8 @@ describe('kept-global delegation — key → verb id → outcome (R-03, R-20)', 
 
   it('Ctrl+Space runs the declared launcher verb and journals window.launcher.toggle', async () => {
     openTestWindow('a');
+    const toggle = vi.fn();
+    setWindowLauncherToggle(toggle);
 
     renderWithChakra(<SurfaceHarness />);
 
@@ -290,13 +304,14 @@ describe('kept-global delegation — key → verb id → outcome (R-03, R-20)', 
     await waitFor(() => {
       expect(newestEntry()?.verbId).toBe(WINDOW_LAUNCHER_TOGGLE_VERB_ID);
     });
+    expect(toggle).toHaveBeenCalledTimes(1);
     expect(newestEntry()?.channel).toBe('keyboard');
   });
 
   it('window.launcher.toggle invokes the shipped launcher toggle (same outcome)', async () => {
     openTestWindow('a');
     const toggle = vi.fn();
-    registerHotkeyHandler(LAUNCHER_TOGGLE_ACTION_ID, toggle);
+    setWindowLauncherToggle(toggle);
 
     renderWithChakra(<SurfaceHarness />);
     const host = getNavigationHost(WINDOW_SYSTEM_APP_ID);
@@ -329,6 +344,137 @@ describe('kept-global delegation — key → verb id → outcome (R-03, R-20)', 
       expect(host!.getSnapshot().context.selection.ids).toStrictEqual(['a']);
     });
     expect(host!.getSnapshot().entries).toHaveLength(before);
+  });
+});
+
+/* ──────────── live override chain: the REAL mounted overrides (R-20) ──────────── */
+
+describe('live override chain — mounted overrides delegate exactly once (R-20)', () => {
+  it('Ctrl+Tab goes through the REAL traversal override → window host once, keeping focus outcome', async () => {
+    openWindow({
+      id: 'a',
+      title: 'A',
+      icon: <span data-testid="icon-a" />,
+      component: (
+        <button data-testid="content-a" type="button">
+          A
+        </button>
+      ),
+      isMaximized: false,
+    });
+    openWindow({
+      id: 'b',
+      title: 'B',
+      icon: <span data-testid="icon-b" />,
+      component: (
+        <button data-testid="content-b" type="button">
+          B
+        </button>
+      ),
+      isMaximized: false,
+    });
+
+    renderWithChakra(<WindowManager />);
+    // The REAL override is armed by the mounted WindowFrame (useWindowTraversal).
+    expect(isWindowTraversalInstalled()).toBe(true);
+
+    const host = getNavigationHost(WINDOW_SYSTEM_APP_ID);
+    expect(host).not.toBeNull();
+    const before = host!.getSnapshot().entries.length;
+
+    press('Tab');
+
+    await waitFor(() => {
+      expect(getWindowSnapshot().find((win) => win.focused)?.id).toBe('a');
+    });
+    expect(document.activeElement).toBe(screen.getByTestId('content-a'));
+    await waitFor(() => {
+      expect(newestEntry()?.verbId).toBe(WINDOW_FOCUS_NEXT_VERB_ID);
+    });
+    expect(newestEntry()?.channel).toBe('keyboard');
+    // Exactly ONE dispatch → ONE journal entry (no engine + override double dispatch).
+    expect(host!.getSnapshot().entries).toHaveLength(before + 1);
+  });
+
+  it('Ctrl+Shift+Tab goes through the REAL traversal override → window host once', async () => {
+    openWindow({
+      id: 'a',
+      title: 'A',
+      icon: <span data-testid="icon-a" />,
+      component: (
+        <button data-testid="content-a" type="button">
+          A
+        </button>
+      ),
+      isMaximized: false,
+    });
+    openWindow({
+      id: 'b',
+      title: 'B',
+      icon: <span data-testid="icon-b" />,
+      component: (
+        <button data-testid="content-b" type="button">
+          B
+        </button>
+      ),
+      isMaximized: false,
+    });
+
+    renderWithChakra(<WindowManager />);
+    expect(isWindowTraversalInstalled()).toBe(true);
+
+    const host = getNavigationHost(WINDOW_SYSTEM_APP_ID);
+    expect(host).not.toBeNull();
+    const before = host!.getSnapshot().entries.length;
+
+    // 'b' is focused; previous wraps to 'a'.
+    press('Tab', { shiftKey: true });
+
+    await waitFor(() => {
+      expect(getWindowSnapshot().find((win) => win.focused)?.id).toBe('a');
+    });
+    expect(document.activeElement).toBe(screen.getByTestId('content-a'));
+    await waitFor(() => {
+      expect(newestEntry()?.verbId).toBe(WINDOW_FOCUS_PREVIOUS_VERB_ID);
+    });
+    expect(newestEntry()?.channel).toBe('keyboard');
+    expect(host!.getSnapshot().entries).toHaveLength(before + 1);
+  });
+
+  it('Ctrl+Space goes through the delegating launcher override → window host once', async () => {
+    openTestWindow('a');
+    const toggle = vi.fn();
+    // The seam the REAL LauncherShell registers (its core selectCtrlSpaceAction + openOverlay).
+    setWindowLauncherToggle(toggle);
+    // Faithful replica of LauncherShell's mounted override: delegate to the declared host.
+    registerHotkeyHandler(LAUNCHER_TOGGLE_ACTION_ID, () => {
+      const host = getNavigationHost(WINDOW_SYSTEM_APP_ID);
+      if (host === null) {
+        toggle();
+        return;
+      }
+      void host.runIntent({
+        verbId: WINDOW_LAUNCHER_TOGGLE_VERB_ID,
+        args: {},
+        channel: 'keyboard',
+        actor: 'human',
+      });
+    });
+
+    renderWithChakra(<WindowManager />);
+    const host = getNavigationHost(WINDOW_SYSTEM_APP_ID);
+    expect(host).not.toBeNull();
+    const before = host!.getSnapshot().entries.length;
+
+    press(' ');
+
+    await waitFor(() => {
+      expect(newestEntry()?.verbId).toBe(WINDOW_LAUNCHER_TOGGLE_VERB_ID);
+    });
+    expect(toggle).toHaveBeenCalledTimes(1);
+    expect(newestEntry()?.channel).toBe('keyboard');
+    // Exactly ONE dispatch → ONE journal entry.
+    expect(host!.getSnapshot().entries).toHaveLength(before + 1);
   });
 });
 

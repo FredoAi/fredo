@@ -26,9 +26,8 @@ import type {
   VerbDescriptor,
   VerbEffect,
 } from '../navigation';
-import { runHotkeyAction } from '../hotkeys/registry';
-import { LAUNCHER_TOGGLE_ACTION_ID } from '../hotkeys/defaults';
 import { focusNextWindow, focusPreviousWindow } from '../hotkeys/traversal';
+import { runWindowLauncherToggle } from './launcherToggleSeam';
 import { getWindowSnapshot } from './windowStore';
 
 /* ───────────────────────────── bound names ───────────────────────────── */
@@ -67,15 +66,17 @@ const OBJECTS = [WINDOW_OBJECT_TYPE] as const;
 const always = (): boolean => true;
 
 /**
- * The launcher toggle run. The SHIPPED toggle lives in `LauncherShell` and is registered
- * with the shared hotkeys registry, so invoking the action reproduces the exact shipped
- * outcome (the `selectCtrlSpaceAction` verdict + `openOverlay`) instead of inventing a
- * second toggle path. During the engine's own delegation the registry resolves the engine
- * default run, which is guarded against re-entry (see `engine.ts`).
+ * The launcher toggle run. The SHIPPED toggle lives in `LauncherShell` and registers itself
+ * with the window-system seam (`launcherToggleSeam.ts`) for its mounted lifetime, so the
+ * declared verb reproduces the exact shipped outcome (`selectCtrlSpaceAction` verdict +
+ * `openOverlay`) without a second toggle path and WITHOUT re-entering the shared hotkeys
+ * registry (whose launcher run is the delegating override — a registry round-trip would
+ * recurse). No shell mounted ⇒ no launcher to toggle ⇒ `noop` (no journal entry).
  */
 function toggleLauncher(): VerbEffect {
-  runHotkeyAction(LAUNCHER_TOGGLE_ACTION_ID, 'binding');
-  return navigation('Toggle launcher');
+  return runWindowLauncherToggle()
+    ? navigation('Toggle launcher')
+    : noop('Toggle launcher');
 }
 
 const VERBS: readonly VerbDescriptor[] = [

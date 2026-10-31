@@ -94,11 +94,9 @@ const WINDOW_SYSTEM_SURFACE_APP_ID = 'window-system';
  * platform globals stay here and DELEGATE into the declared `window-system` host through
  * `runIntent({channel:'keyboard'})`. Key → verb id → outcome is therefore provable without
  * a second key table and without a grammar change. The fallback is the pre-#3121
- * behaviour, used only while the window system is not mounted (no host registered).
- *
- * The re-entry guard terminates a launcher round-trip: the surface's
- * `window.launcher.toggle` run re-enters the shared registry, whose default action run is
- * this same delegation.
+ * The fallback is the pre-#3121 behaviour, used only while the window system is not
+ * mounted (no host registered). The re-entry guard makes a nested delegation a no-op, so a
+ * host verb can never re-trigger this kept-global run recursively.
  */
 let windowHostIntentInFlight = false;
 
