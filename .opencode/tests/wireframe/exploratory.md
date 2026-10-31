@@ -35,10 +35,10 @@ behaviour is wrong.
       the element is still locked?
 - [ ] **E-7 Text-entry suppression vs panel remount.** Select element A (text), focus the content
       field, type `1pkn`, then select element B (button) mid-typing. Do the typed characters stay
-      in the field, and is the wireframe hotkey attribute set restored correctly when focus leaves?
-- [ ] **E-8 Hotkey churn across windows.** Open Wireframe + Mission Monitor, toggle focus 20×
-      while pressing keys. Does `data-fredo-hotkey-count` ever stick, does
-      `data-fredo-hotkey-duplicate` ever appear, and does any key land in the wrong app?
+      in the field, and do the declared navigation strokes resolve correctly when focus leaves?
+- [ ] **E-8 Key churn across windows.** Open Wireframe + Mission Monitor, toggle focus 20× while
+      pressing keys. Does the navigation bar's row set ever stick, does a duplicate-stroke
+      diagnostic ever appear, and does any key land in the wrong app?
 - [ ] **E-9 File seam abuse.** Point `FREDO_WIREFRAME_SAVE_PATH` / `_OPEN_PATH` /
       `_EXPORT_PATH` at (a) a directory, (b) a non-writable location, (c) an existing unrelated
       text file; then Save and Open. Repeat once with ONLY the shared
@@ -227,10 +227,9 @@ behaviour is wrong.
 - [ ] **E-30 Snap vs align-guide conflict.** With snap ON, drag an element so both the grid snap
       and a smart guide want to pull it. Which wins, and does the committed geometry land on the
       grid multiple? Record the guide count and the final x/y.
-- [ ] **E-31 Two-step namespace under text entry / focus churn.** Press `g` then focus a panel
-      field before the second key. Does the pending sequence (`data-fredo-pending-sequence`) leak
-      or fire a stale action after the 1000 ms timeout? Then press `g` `g` across a window
-      focus change.
+- [ ] **E-31 Armed prefix under text entry / focus churn.** Arm the 250 ms navigation prefix,
+      then focus a panel field before the second key. Does the armed prefix leak or fire a stale
+      action after the timeout? Then repeat across a window focus change.
 - [ ] **E-32 Companion under-sized honesty.** Invoke `wireframe.arrange.distribute` via the
       Companion with only 2 elements selected. Does it reply "nothing changed" (honest) or claim
       success? Cross-check `runWireframeAction`'s return.
@@ -245,21 +244,18 @@ behaviour is wrong.
 > `tauri_webview_*` result plus an uploaded capture (document state, no `telemetry_spans`
 > receipt expected). A confirmed finding PROMOTES to `functional.md` as a new `F-` row.
 
-- [ ] **E-34 Chip residue / stale slot after rapid focus churn.** Toggle focus between the
-      Wireframe host and another window 20× (fast), then inspect the toolbar DOM. Does any
-      `wireframe-hotkey-chip` / `hotkeys-keycap` node ever reappear (a stale render, a
-      `visibility` remnant), or does any control keep a `data-hotkey` while unfocused? Record the
-      chip count and the `data-hotkey` count in both states.
-- [ ] **E-35 Bar/duplicate state after the chip deletion.** With Wireframe + Mission Monitor +
-      Diagram open, check `data-fredo-hotkey-count`, `data-fredo-hotkey-duplicate` and the
-      `hotkeys-keybar-row` titles before/after toggling focus. Do the Wireframe titles still read
-      the action label/description (`data-hotkey-label`), never a chip-derived string? A title
-      regression would mean the bar read the wrong source.
+- [ ] **E-34 Stale hook residue after rapid focus churn.** Toggle focus between the Wireframe
+      host and another window 20× (fast), then inspect the bar DOM. Does any legacy element-key
+      hook reappear (a stale render, a `visibility` remnant)? Record the navigation bar's row
+      count in both states and confirm `legacyAbsence.test.ts` is green.
+- [ ] **E-35 Bar row identity across the declaration.** With Wireframe + Mission Monitor + Dev
+      Mode open, check the navigation bar's `data-nav-verb-id` rows before/after toggling focus.
+      Do the Wireframe titles still read the declaration's verb title, never a stale string?
 - [ ] **E-36 Insert-menu composite boundary.** Open both insert menus (Section presets, Shape
-      kinds) and confirm their chevrons still carry no `data-hotkey` and no chip, and that the
-      main insert control beside each chevron renders label + icon with no chip. Also confirm the
-      `wireframe.document.new` control (no binding) renders with no chip and no `(hotkey)` suffix
-      in its accessible name.
+      kinds) and confirm the chevrons carry no legacy key hook and no chip, and that the main
+      insert control beside each chevron renders label + icon with no chip. Also confirm the
+      `wireframe.document.new` row has no `data-nav-keycap` hint and no `(hotkey)` suffix in its
+      accessible name.
 
 ## Spec #3119 (P5) — probes for the declaration-driven surface
 
@@ -285,10 +281,10 @@ behaviour is wrong.
       After the auto-exit, is `document.activeElement` the same rail row (never `body`)? Repeat
       with the map open so the dialog trap closes first.
 - [ ] **E-42 Toolbar/command-surface residue.** Search the running webview for any surviving
-      trace of the deleted path: `[data-testid="wireframe-toolbar"]`,
-      `[data-testid^="wireframe-action-"]`, `[data-hotkey]` under `wireframe-root`,
-      `wireframe-hotkey-carrier`, and any `g`-prefix pending state on `body`. Any residue is a
-      FAIL of AC7 (not an exploratory note).
+      trace of the deleted path: the legacy toolbar/action testids, any legacy element-key
+      attribute under `wireframe-root`, the legacy carrier, and any legacy prefix pending state
+      on `body`. Any residue is a FAIL of AC7 (not an exploratory note); the literal absence is
+      gate-owned by `legacyAbsence.test.ts`.
 - [ ] **E-43 Journal growth.** Perform ~120 small mutations: responsiveness, the 10-entry trail
       cap, and whether undo still walks back. The journal is intentionally unbounded this slice —
       record the memory shape as an observation (named risk), not a defect.
