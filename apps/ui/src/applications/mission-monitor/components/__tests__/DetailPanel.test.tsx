@@ -6,7 +6,7 @@
  * width is persisted (saved width on mount, clamp, corrupt-value fallback)
  * and drag-resizable with a single commit on pointer-up.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { screen, cleanup, waitFor, fireEvent } from '@testing-library/react';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { DetailPanel } from '../DetailPanel';
@@ -749,5 +749,73 @@ describe('Spec #2962 ST-3 (L3): navigable detail sections', () => {
     );
     expect(sectionIds).toEqual(['details']);
     expect(panel.querySelector('[data-mm-active-section]')?.getAttribute('data-mm-detail-section')).toBe('details');
+  });
+});
+
+// ── Spec #3121 R-21 / F-3(e): the shipped Escape close binding ────────────────
+//
+// The detail panel's Escape close is a pair of PRE-EXISTING `window` keydown
+// listeners owned by DetailPanel (#3121 keeps both, behaviour-preserving):
+//   - DetailPanel.tsx:314-328 — the drag owner: cancels an in-progress width drag
+//     (discarding the live width + restoring body userSelect), ELSE closes;
+//   - DetailPanel.tsx:342-349 — the legacy close listener: closes unconditionally.
+// Because both are registered on `window`, both fire in the SAME dispatch, so the
+// SHIPPED outcome is:
+//   - no drag in progress → the panel closes (onClose invoked twice);
+//   - during an in-progress drag → the drag cancels (width returns to the
+//     persisted value, userSelect restored) AND the panel closes (the second
+//     listener runs unconditionally).
+// These tests pin that shipped outcome with a REAL native Escape on the listener
+// target — never a navigation verb/intent call. They do NOT assert "exactly once"
+// and do NOT assert "panel stays open" (neither is the shipped behaviour).
+
+describe('Spec #3121 R-21 / F-3(e) — the shipped Escape close binding', () => {
+  it('R-03(e)/F-3(e) — Escape closes the panel through the shipped window listener(s) (no drag in progress)', () => {
+    const onClose = vi.fn();
+    renderWithChakra(
+      <DetailPanel target={{ kind: 'node', data: makeAgentData() }} onClose={onClose} />,
+    );
+
+    // A real native keydown on the listener's actual target (window) — never
+    // `runIntent` / a verb call.
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    // Both shipped listeners legitimately fire in the same dispatch — assert the
+    // close happened, not a call count.
+    expect(onClose).toHaveBeenCalled();
+    expect(onClose.mock.calls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('R-03(e)/F-3(e) — Escape during an in-progress width drag cancels the drag and closes the panel (the shipped outcome)', async () => {
+    localStorage.setItem(PANEL_WIDTH_KEY, '300');
+    const onClose = vi.fn();
+    renderWithChakra(
+      <DetailPanel target={{ kind: 'node', data: makeAgentData() }} onClose={onClose} />,
+    );
+
+    const panel = screen.getByTestId('detail-panel');
+    await waitFor(() => expect(panel.style.width).toBe('300px'));
+
+    // Start a left-edge drag at clientX 400 and move to 350 → live width 350.
+    const handle = screen.getByTestId('detail-panel-resize-handle');
+    fireEvent(handle, makePointerEvent('pointerdown', { clientX: 400 }));
+    fireEvent(handle, makePointerEvent('pointermove', { clientX: 350 }));
+    expect(panel.style.width).toBe('350px');
+    // The drag disables text selection while the pointer is down.
+    expect(document.body.style.userSelect).toBe('none');
+
+    // Escape during the drag: the shipped drag owner discards the live width, and
+    // the legacy listener closes the panel (both fire in this one dispatch).
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    // The live dragWidth was discarded → the rendered width returns to the
+    // persisted value (300px); body user-select is restored.
+    await waitFor(() => expect(panel.style.width).toBe('300px'));
+    expect(document.body.style.userSelect).toBe('');
+
+    // The shipped outcome: the panel CLOSES (the :342-349 listener is
+    // unconditional). The test does NOT assert "the panel stays open".
+    expect(onClose).toHaveBeenCalled();
+    expect(onClose.mock.calls.length).toBeGreaterThanOrEqual(1);
   });
 });

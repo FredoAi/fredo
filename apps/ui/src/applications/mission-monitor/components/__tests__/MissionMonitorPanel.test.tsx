@@ -8,9 +8,14 @@
  * below the header. It stays hidden when no session is selected.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen, act, within, cleanup, waitFor } from '@testing-library/react';
+import { screen, act, within, cleanup, waitFor, fireEvent } from '@testing-library/react';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { MissionMonitorPanel } from '../MissionMonitorPanel';
+import { getNavigationHost } from '@/shared/navigation/ui';
+import {
+  MISSION_MONITOR_DETAIL_CLOSE_VERB_ID,
+  MISSION_MONITOR_SURFACE_APP_ID,
+} from '../../missionMonitorSurface';
 import type { ContractDelivery } from '../../../../shared/classes/EventSubscription';
 import type { MonitorNodeData } from '../../types';
 import type { StreamHealth } from '@/shared/hooks/streamHealth';
@@ -678,13 +683,13 @@ describe('MissionMonitorPanel', () => {
   });
 });
 
-// ── Spec #2962 ST-3: Mission Monitor nested-flow wiring (descend / unwind) ────
+// ── Spec #3121 R-21 / F-3(e): the shipped detail Escape close binding ────────
 //
-// The declared 3-level chain (ST-2) is made real here: entering L2 seeds a
-// programmatic graph cursor, the reused `n`/`p` keys move it (never DOM focus),
-// `o` opens the cursor node's detail, Escape unwinds exactly one level and
-// restores the parent surface, and the L3 section list is navigated with the
-// same reused keys. Every action produces a named observable effect (G-272).
+// Escape with the detail panel open is closed by the PRE-EXISTING `window`
+// keydown listeners owned by DetailPanel (#3121 keeps them, behaviour-preserving)
+// — NOT by a navigation verb. This mounted-panel test drives the REAL Escape on
+// the listener target and proves the panel closes while the navigation journal
+// gains no `mission-monitor.detail.close` entry.
 
 /** A minimal ReactFlow agent node for the mocked `useDeliveryGraph`. */
 function makeGraphNode(id: string, correlationId: string): any {
@@ -710,3 +715,64 @@ function makeGraphNode(id: string, correlationId: string): any {
     },
   };
 }
+
+describe('R-03(e)/F-3(e) — Escape with the detail panel open closes it in the mounted panel', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDeliveries = [];
+    reactflowState.onNodeDoubleClick = undefined;
+    reactflowState.onPaneClick = undefined;
+    reactflowState.zoomOnDoubleClick = undefined;
+    miniMapState.nodeColor = undefined;
+    mockDeclaredSessions = [
+      { sessionId: 's1', startTime: 1, latestAt: '2026-01-01T00:00:00.000Z' },
+    ];
+    mockSessionsError = null;
+    graphState.nodes = [];
+    graphState.edges = [];
+    mockStreamHealth = 'down';
+  });
+
+  it('R-03(e)/F-3(e) — Escape with the detail panel open closes it in the mounted panel (real window keydown, never a verb intent)', async () => {
+    mockDeliveries = [
+      makeChatDelivery('corr-1', 'init', { prompt: 100 }),
+      makeChatDelivery('corr-1', 'end', { prompt: 100 }),
+    ];
+
+    const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+    // Flush the declared-session read + auto-select so the canvas renders and
+    // the ReactFlow mock captures onNodeDoubleClick.
+    await act(async () => { await Promise.resolve(); });
+    rerender(<MissionMonitorPanel />);
+    await act(async () => { await Promise.resolve(); });
+
+    // Open the shipped detail panel through the double-click seam the mock
+    // captures — the only product path that mounts DetailPanel.
+    act(() => {
+      reactflowState.onNodeDoubleClick?.({}, makeGraphNode('agent-corr-1', 'corr-1'));
+    });
+    expect(screen.getByTestId('detail-panel')).toBeDefined();
+
+    // The mounted navigation provider registered its host; the Escape binding
+    // must NOT add a `mission-monitor.detail.close` journal entry.
+    const host = getNavigationHost(MISSION_MONITOR_SURFACE_APP_ID);
+    expect(host).not.toBeNull();
+    const detailCloseEntries = () =>
+      host!.getSnapshot().entries.filter(
+        (entry) => entry.verbId === MISSION_MONITOR_DETAIL_CLOSE_VERB_ID,
+      ).length;
+    const before = detailCloseEntries();
+
+    // Real native Escape on the listener's actual target (window) — never a
+    // runIntent / verb call.
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Escape' });
+    });
+
+    // The panel closes…
+    expect(screen.queryByTestId('detail-panel')).toBeNull();
+    // …and the binding closed it directly: no detail.close verb was journaled.
+    expect(detailCloseEntries()).toBe(before);
+    expect(detailCloseEntries()).toBe(0);
+  });
+});
