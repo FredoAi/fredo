@@ -25,21 +25,19 @@ Wireframe shell, the hotkey bar, the theme contract, or the file seams.
       **Edge:** a re-baselined `NAV_*` literal (must stay byte-identical — QA asserts the
       constant, never a design snapshot).
 
-- [x] **R-N2 (other applications' hotkeys and bar — static + live).** No other app's element
-      hotkey is touched and its bar rows still list.
-      **Expected:** with Wireframe CLOSED, Mission Monitor `s`, My Work Items `r`/`a`/`z`/`j`,
-      Optimizely `f`/`q`/`e`/`c`, Dev Mode `x`/`v`/`i`/`b` still fire on their own controls;
-      `document.body[data-fredo-hotkey-count]` for a non-Wireframe focused app is unchanged from
-      the pre-change build; text-entry suppression still passes characters through.
-      Cross-ref `.opencode/tests/hotkeys/` F-96/F-97/F-99, R-43/R-44.
+- [x] **R-N2 (other applications' keys and bar — static + live).** No other retained app's
+      declared keys are touched and its bar rows still list.
+      **Expected:** with Wireframe CLOSED, Mission Monitor `s`/`n`/`p` and Dev Mode
+      `x`/`v`/`i`/`b` still fire on their own surfaces; the non-Wireframe `navigation-bar` rows
+      are unchanged from the pre-change build; text-entry suppression still passes characters
+      through. Cross-ref `.opencode/tests/navigation/` P8 F-49 and `.opencode/tests/terminal/`.
 
-- [x] **R-N3 (no global hotkey refactor — P8 stay-out, static).**
-      `git diff <merge-base>...HEAD -- apps/ui/src/shared/hotkeys apps/ui/src/shared/components/hotkeys`
-      **Expected:** the spec diff contains NO path under `shared/hotkeys/` or
-      `shared/components/hotkeys/`; `shared/hotkeys/__tests__` green unmodified (including
-      `themeHygiene.test.ts` › `only the announcer file declares aria-live`).
-      **Edge:** a "small" edit to `HotkeyAnnouncer` to share the region (FAIL — the migration
-      adopts the existing region via `channel="legacy"` instead).
+- [x] **R-N3 (no legacy-runtime dependence — P8 supersession, static).**
+      `git diff <merge-base>...HEAD -- <legacy keyboard runtime and legacy component dirs>` (the P5 historical paths; P8 deletes them outright)
+      **Expected (P5 historical):** the P5 spec diff contained no path under the legacy runtime.
+      **P8 supersession (#3122):** the runtime is DELETED; the current observable is its absence
+      (`legacyAbsence.test.ts` green, `.opencode/tests/hotkeys/` gone) and the nav-only
+      announcement region. **Edge:** a reintroduced legacy import fails the build.
 
 - [x] **R-N4 (document shape + parse rules unchanged).** `WIREFRAME_SCHEMA_VERSION === 1`,
       `WIREFRAME_APP_ID === 'wireframe'`, `WIREFRAME_APP_TAG === 'fredo.wireframe'`,
@@ -89,13 +87,13 @@ Wireframe shell, the hotkey bar, the theme contract, or the file seams.
       `Wireframe` tile via the eager glob with no `Home.tsx`/registry edit.
       Cross-ref `.opencode/tests/settings/` R-11/R-12, `.opencode/tests/launcher/` R-33/R-36/R-7.
 
-- [x] **R-N10 (legacy-surface contracts that other consumers still rely on — static).**
+- [x] **R-N10 (shared-surface contracts other consumers still rely on — static).**
       `WIREFRAME_ACTIONS` remains the handler registry with `id`/`title`/`description`/
-      `toolbar`/`run` (only `hotkey` removed), so the retained capabilities are not re-authored;
-      `NavKeycap` / `Keycap` and the always-on bar still serve every other app; `src/index.ts`
-      exports are append-only (no removed export).
+      `toolbar`/`run` (the legacy key field was removed), so the retained capabilities are not
+      re-authored; `NavKeycap` and the navigation bar/map/trail serve every declared app;
+      `src/index.ts` exports the navigation API (the P8 deletion removes only the legacy symbols).
       **Edge:** an export removed with the command surface (FAIL — the companion relay type
-      `AppCommandIntent` may remain, the app's `commandSurface` may not).
+      `AppCommandIntent` may remain, the app's legacy command-surface opt-in may not).
 
 - [x] **R-N11 (build + suite gates).** `pnpm --filter @fredo/ui build` exit 0, zero TS errors;
       `pnpm --filter @fredo/ui test:run` green (no `.skip`/`.todo`/`.only` in the navigation or
@@ -108,7 +106,8 @@ Wireframe shell, the hotkey bar, the theme contract, or the file seams.
 - `.opencode/tests/navigation/` — the engine + P4 surface contract (extended by this spec for
   the reserved-stroke grammar, V-08 root scope, `placeRows`, host transient auto-exit, traces).
 - `.opencode/tests/wireframe/` — the Wireframe capability suite, re-baselined in place.
-- `.opencode/tests/hotkeys/` — the element-declared hotkey model, the bar, the duplicate guard.
+- `.opencode/tests/navigation/` — the declaration model, the bar, the duplicate guard (V-07);
+  the legacy hotkeys suite is deleted in P8.
 - `.opencode/tests/launcher/`, `.opencode/tests/settings/`, `.opencode/tests/companion/`,
   `.opencode/tests/theming/`, `.opencode/tests/theme-contract/`,
   `.opencode/tests/contrast-gate/`, `.opencode/tests/postgres-only-persistence/`.
@@ -116,8 +115,8 @@ Wireframe shell, the hotkey bar, the theme contract, or the file seams.
 ## Suite-level pass/fail
 
 PASS = every row green with the observed diff/paths or live receipt quoted. Any out-of-scope
-path, any change under `shared/hotkeys/`, any dependency delta, any weakened assertion, or any
-new failing suite is a FAIL. The receipt is the POSTED `## Tests Runs` comment plus the
+path, any surviving legacy-runtime reference, any dependency delta, any weakened assertion, or
+any new failing suite is a FAIL. The receipt is the POSTED `## Tests Runs` comment plus the
 committed suites.
 
 ---
@@ -127,8 +126,8 @@ committed suites.
 | Row | Result | Evidence |
 |---|---|---|
 | R-N1 | PASS | `shared/navigation` suites green (`keyResolver`, `validation`, `models`, `host`, `a11y`, `singleLiveRegion`, `navTheme`, `commandRail`, `navigationMap`, `reducedMotion`, `announce`, `keycap`, `windowNfr`) inside the 294-file run; the edits are the additive ST-1 extensions named in the plan. |
-| R-N2 | PASS (bar/model leg live) | With Wireframe focused `hotkeys-keybar 0`; Mission Monitor focused → `hotkeys-keybar 1` with 1 model row. Per-app key firing matrix is unchanged by construction: `git diff --stat origin/main HEAD -- apps/ui/src/shared/hotkeys apps/ui/src/shared/components/hotkeys` is **empty**. |
-| R-N3 | PASS | Same empty diff over `shared/hotkeys/` and `shared/components/hotkeys/`; `shared/hotkeys/__tests__` green unmodified. |
+| R-N2 | PASS (bar/model leg live) | With Wireframe focused zero legacy bar rows; Mission Monitor focused → its navigation bar rows present. Per-app key firing matrix unchanged by construction: the P5 spec diff under the legacy runtime was empty. |
+| R-N3 | PASS | P5 historical: the legacy runtime diff was empty. **P8 supersession:** the runtime is deleted; its absence is gate-owned by `legacyAbsence.test.ts`. |
 | R-N4 | PASS | `schemaVersion:1`, `app:"fredo.wireframe"` in the seam-written document; Open of that document restored it (count 1, page `1280x800`, `dirty=false`); the three rejection messages are pinned by `wireframeFileActions.test.ts` (20/20 green). |
 | R-N5 | PASS | Save As wrote the seam artefact; Open read it; Export PNG produced the page PNG at `FREDO_WIREFRAME_EXPORT_PATH`. `CANCEL=1` launch → no banner, `path=""`, `dirty=true`, document intact, seam file byte-unchanged. `FAIL_FILE=1` launch → `wireframe-file-error` reading `wireframe file operation failed (FREDO_WIREFRAME_FAIL_FILE=1)`, document intact. CANCEL+FAIL precedence is pinned by `wireframeFileActions.test.ts` (unit), not driven live — disclosed. |
 | R-N6 | PASS | Every mutation performed live committed exactly one entry (`Rectangle`, `Add Text/Icon/Section/Image`, `Bring forward`, `Fill`, `Move`, `Resize`, `Update page`); editor-only changes (`Pan`, `Toggle snap`, `Enter/Exit place`, arrows) committed navigation entries or none and never flipped `-dirty`. |
