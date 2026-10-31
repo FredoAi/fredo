@@ -363,12 +363,13 @@
 - [ ] F-29: With Settings open, DOM-snapshot the section nav; click each nav item and describe its
       rendered content. Compare against the pre-change `ProfileSettingsModal` section set on the
       tested tip.
-  **Expected:** the nav contains Companion, Appearance, Fredo Setup, Telemetry, and every feature
-      whose `hasSettings === true && typeof renderSettings === 'function'` (on the tested tip:
-      Run CLI, My Work Items, Infrastructure Diagram, Model Storage) under the "Features" group;
-      each renders its real content — `CompanionSettingsPanel`; `ThemingSettings` + `DockPositionSettings`;
-      `SetupWizard`; `TelemetrySettings`; each feature's `renderSettings()`. No missing section, no
-      orphan nav item, no blank content.
+  **Expected:** the nav contains the static Companion, Appearance, Fredo Setup and Telemetry
+      sections, plus every retained feature whose `hasSettings === true && typeof renderSettings ===
+      'function'` (after P8 that is `database-client`) under the "Features" group; each renders its
+      real content — `CompanionSettingsPanel`; `ThemingSettings`; `SetupWizard`; `TelemetrySettings`;
+      each feature's `renderSettings()`. No missing section, no orphan nav item, no blank content.
+      (The removed-app sections are gone; the exact boot set is asserted by
+      `retainedApplicationSet.test.ts`.)
   - **Edge:** open each after a theme switch; long feature labels wrap; nav order matches the
     original (Companion, Appearance, Fredo Setup, Telemetry, then Features).
 
@@ -511,7 +512,7 @@
 - **F-26 PASS (live).** A second feature window (Stepper Probe) opened independently while Settings was open — two coexisting frames.
 - **F-27 PASS (live).** Re-invoke from the grid kept `settingsWindows === 1`; minimized → re-invoke restored + focused; grid collapsed.
 - **F-28 PASS (live).** Exactly one Settings window entry/frame across repeated re-invokes.
-- **F-29 PASS (live).** Companion, Appearance, Fredo Setup, Telemetry + discovered Run CLI / My Work Items / Infrastructure Diagram / Model Storage under "Features"; each rendered real content.
+- **F-29 PASS (live, historical #2868).** Companion, Appearance, Fredo Setup and Telemetry plus the then-discovered feature sections under "Features"; each rendered real content. (After P8 the discovered set is the retained `database-client` settings; the removed-app sections no longer exist.)
 - **F-30 PASS (live).** Section switching (Companion → Appearance → Fredo Setup → Telemetry → Run CLI) rendered each with no stale/blank content.
 - **F-31 PASS (live).** Save footer only where a panel registers (`Run CLI saveButtons:1`, `--accent-contrast` white on `--accent-primary`); absent on the 4 static sections (`saveButtons:0`).
 - **F-32 PASS (static/live).** The four registering panels delegate to the unified footer; no standalone inline Save replaced it.
