@@ -94,8 +94,8 @@ import {
  */
 const windowFocus = vi.hoisted(() => ({ focused: 'a', nextCalls: 0, previousCalls: 0 }));
 
-vi.mock('@/shared/hotkeys/traversal', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/shared/hotkeys/traversal')>();
+vi.mock('@/shared/window-system/traversal', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/shared/window-system/traversal')>();
   return {
     ...actual,
     focusNextWindow: () => {

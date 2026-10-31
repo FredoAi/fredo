@@ -10,6 +10,8 @@
  */
 
 export * from './types';
+export * from './keys';
+export * from './focusContext';
 export * from './registry';
 export * from './resolver';
 export * from './keyResolver';
