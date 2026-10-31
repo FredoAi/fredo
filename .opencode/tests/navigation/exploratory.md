@@ -181,3 +181,34 @@ Probes for the four contract changes. Static (pure functions + source reads) unl
 
 PASS = E-13..E-16 probed with the observation quoted. A probe needing a new public API is a plan
 defect — report it, never invent it.
+
+---
+
+# P8 — decommission (issue #3122)
+
+Probes for the post-deletion surface: the states the scripted P8 rows do not drive. A confirmed
+finding PROMOTES to `functional.md` as a new `F-` row with an origin note. Live probes name their
+receipt; a probe that needs a new public API or a new dependency is a plan defect.
+
+- [ ] **E-17 (double mount) — can a second `NavigationProvider`/announcer appear?**
+  Mount a second provider in a harness (or open the terminal window and the main window, then the standalone app window) and read every `[data-testid="navigation-announcer"]` + `[aria-live]`.
+  **Expected:** each webview has exactly ONE announcer and ONE chord listener, idempotent install; a second mount in the same webview is a defect (two regions) — record it as a finding, never a PASS. Probe: is the chord listener re-added on an HMR remount?
+
+- [ ] **E-18 (retired id via every entry point) — does a deleted app fail closed?**
+  Ask the launcher, `fredo open-app <retired-id>`, the companion `open_app` skill and `open_app_window` for a deleted id (e.g. an old saved session or a hand-crafted call). **Expected:** zero windows open, a typed not-found/unknown outcome, no throw/console error; no static list can resolve it. Probe: a stale persisted open-app request from a previous version.
+
+- [ ] **E-19 (old companion client) — a call to a deleted command id is rejected, not silently run.**
+  Invoke `app_command_intent` with a deleted app id and with a deleted command id on a retained app. **Expected:** `app_command_intent_result` reports `Invalid`/`Failed` (never `Performed`), no journal entry, no window; the manifest has no such id. Probe: a command id that exists on another surface.
+
+- [ ] **E-20 (two webviews) — the chord/announcement layer is per-webview.**
+  With the terminal window and the main window open, fire `primary+space` in each. **Expected:** the hosting webview toggles the launcher once per press; the other webview does not double-toggle; each has its own one region; no cross-webview duplicate announcement. Probe: teleporting the companion between windows.
+
+- [ ] **E-21 (host absent) — a stroke with no navigation host mounted.**
+  On a bare harness/frame with no app host, fire a declared app stroke and one global chord. **Expected:** the app stroke does nothing (no throw); the global chord falls back to the shipped `focusNextWindow`/`focusPreviousWindow`/`runWindowLauncherToggle` so the frame stays usable. Probe: a host registered then unregistered mid-sequence.
+
+- [ ] **E-22 (reintroduction attempt) — can a second path quietly come back?**
+  Try to re-add a `data-hotkey` attribute, a legacy element-key module import, or a manual `feature.commandSurface` in a throwaway local edit, then build/test. **Expected:** the `legacyAbsence.test.ts` guard and `pnpm --filter @fredo/ui build` FAIL (a deleted symbol cannot be imported); the reintroduction is rejected before merge. Probe: a name-obfuscated shim (does the ADR-7 table catch it?).
+
+## Suite-level pass/fail — P8
+
+PASS = E-17…E-22 probed with the observation quoted. A probe that needs a new public API/new dependency is a plan defect — report it, never invent it. A confirmed finding is promoted to `functional.md` with an origin note.
