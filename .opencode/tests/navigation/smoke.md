@@ -168,3 +168,65 @@ S-13 PASS — `git diff origin/main HEAD -- apps/ui/src/shared/navigation/types.
 reserved set becoming `['Escape','Enter','Tab','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','+','-']`
 and nothing else in the file; `BINDABLE_STROKE_PATTERN` / `PENDING_TIMEOUT_MS = 250` are
 untouched by the diff.
+
+---
+
+# P8 — decommission (issue #3122)
+
+Feature: the legacy hotkey runtime and every ADR-7 adapter are deleted; exactly ONE navigation
+system remains. Minimum proof that the deletion landed, the one mount is in place, the manifest is
+single-sourced and the retained applications still boot.
+
+Verification policy: **static** for S-14…S-18 (absent-token greps, source reads, committed guards,
+command exits) and **live** for S-19…S-21 (the isolated webview). A static-only PASS for a live row
+is a FALSE PASS.
+
+> **Precondition.** `spec/3122` checked out from the repo root. Isolated env:
+> `dev-env.ps1 -Up -Spec 3122 -EnvId <id> -EnvSlot <n> -RequireIsolation`, ports from
+> `.opencode/tmp/envs/<id>/manifest.json`, `tauri_driver_session start {port: ports.mcp}`.
+
+## Cases — P8
+
+- [ ] **S-14 (R-1 / AC1) — no legacy runtime and no retired token in the tree.**
+  Run `rg -n "shared/hotkeys|HotkeysProvider|HotkeyAnnouncer|HotkeyBar|hotkeyBarModel|hotkeyElements|hotkeyGrammar|commandSurfaceStore|commandSurfaceFixture|ApplicationCommandSurface|FredoApplicationClass\.commandSurface|data-hotkey|data-fredo-hotkey|data-fredo-pending-sequence|WIREFRAME_ACTIONS\.hotkey" apps/ .opencode/tests/ docs/ --glob '!docs/archive/**'`.
+  **Expected:** zero matches; `apps/ui/src/shared/hotkeys/` and `apps/ui/src/shared/components/hotkeys/` absent; the committed `apps/ui/src/shared/navigation/__tests__/legacyAbsence.test.ts` green; `pnpm --filter @fredo/ui build` exit 0.
+  **Edge:** a hit only under `docs/archive/**` (recorded allowlist, not a FAIL); a token in a comment/string (the guard strips them but scans template interpolations); a stale `dist` (delete it first).
+
+- [ ] **S-15 (R-2 / AC2) — exactly one mount and one announcement region.**
+  Read `apps/ui/src/main.tsx` and `apps/tauri/src/main.tsx`.
+  **Expected:** each mounts `<NavigationProvider>` exactly once and contains zero `HotkeysProvider`; `rg -n "HotkeysProvider|resetApplicationMode" apps/ui/src/applications/app-window/StandaloneAppWindow.tsx apps/ui/src/main.tsx apps/tauri/src/main.tsx` returns zero; the live webview has exactly one `[data-testid="navigation-announcer"]` and no second `[aria-live]` navigation region.
+  **Edge:** a double mount (two regions); a dev-only preview provider; an app provider that still renders its own announcer.
+
+- [ ] **S-16 (R-4 / AC4) — one manifest from the declaration.**
+  Read `apps/ui/src/shared/companion/fixtures/wireframe.companion.golden.json`; run `pnpm --filter @fredo/ui test:run src/shared/companion`.
+  **Expected:** `schemaVersion === 3`; top-level keys are exactly `staticOffer`, `manifest`, `offer`; `manifest.parity.test.ts` green; the manifest command ids equal the fixture `offer.parameters.properties.action.enum` minus the single trailing `listActions`; no `navigation` wrapper and no second legacy `manifest`/`offer`.
+  **Edge:** a regenerated-at-test-time fixture; a duplicated `listActions`; an extra top-level key.
+
+- [ ] **S-17 (R-10 / AC10) — the boot set is exactly the retained eight.**
+  Run `pnpm --filter @fredo/ui test:run src/applications/__tests__/retainedApplicationSet.test.ts`; read the test.
+  **Expected:** `getApplications()` ids deep-equal the set `{wireframe, terminal, mission-monitor, database-client, theming, setup, settings, dev-mode}`; no retired id; the eight retired `applications/<id>/` trees are absent; `allApplications.ts` is the glob only.
+  **Edge:** `create-workitem` (a feature id inside the `my-workitems` module — deleted with that tree); a duplicate registration (first-wins); a retired id left in a comment or a Rust test literal.
+
+- [ ] **S-18 (R-9 / AC9) — every shipped surface validates and the matrix is green.**
+  Run `pnpm --filter @fredo/ui test:run src/shared/navigation/validation.test.ts` and `pnpm --filter @fredo/ui test:run src/applications/__tests__/navigationParityMatrix.test.ts`.
+  **Expected:** `validateSurface()` returns `{valid:true, diagnostics:[]}` for `wireframe`, `terminal`, `mission-monitor`, `database-client`, `dev-mode`, `window-system`; the parity matrix is green for the retained set; a fresh clone of `spec/3122` builds and its full suite is green (quote the clone path + HEAD sha in `## Tests Runs`).
+  **Edge:** a surface validated against a stale clone; a cached `node_modules`/`dist` in the "fresh" clone (FAIL — not fresh).
+
+- [ ] **S-19 (R-1, R-2 / AC1, AC2) — the isolated app boots with the one navigation shell.**
+  Load the isolated webview; `tauri_webview_dom_snapshot(type="structure")`.
+  **Expected:** `#root` mounts; the launcher renders; exactly one `[data-testid="navigation-announcer"]`; the Wireframe bar renders `navigation-bar`; no Vite error overlay; `tauri_read_logs(source="console")` has no `Error:`/`Uncaught`/`Maximum update depth exceeded` (a pre-existing warning may remain).
+  **Edge:** a cold-start `about:blank` (Down → Up, then re-read); a stale dev server serving the previous commit.
+
+- [ ] **S-20 (R-10.4 / AC10) — the Konami Easter egg still opens Dev Mode.**
+  On the resting desktop press, in order, `ArrowUp ArrowUp ArrowDown ArrowDown ArrowLeft ArrowRight ArrowLeft ArrowRight b a`; then press `v`.
+  **Expected:** one Dev Mode window opens through the window kernel; its bar renders `navigation-bar` over `devModeSurface` (root `dev-mode.events`); `v` moves to `dev-mode.applicationData` with one navigation journal entry; `x` runs `dev-mode.events.clear` or noops on an empty buffer (never an error); console clean.
+  **Edge:** focus in an editable control (the Konami listener ignores it — focus the desktop); Dev Mode remains hidden (`showable=false`, no launcher tile/settings nav entry).
+
+- [ ] **S-21 (R-2 / AC2) — terminal passthrough is intact.**
+  `spawn_terminal_session {cli:"shell"}`; focus the terminal; type `echo 3122-passthrough`; press `Ctrl+Space`.
+  **Expected:** while focused `document.body[data-fredo-passthrough="true"]`; the typed characters reach the PTY; no navigation verb fires; `Ctrl+Space` is suppressed in the terminal (and opens the launcher only from a non-terminal focus); console clean.
+  **Edge:** no session (`list_terminal_sessions` → `[]`) is a named blocker, not a PASS.
+
+## Suite-level pass/fail — P8
+
+PASS = S-14…S-21 green with every absent-token scan returning no lines and every live value quoted. A static-only live row, a surviving token, a second mount/region, a fixture regenerated at test time, or a retired app in the boot set is a FAIL. The receipt is the POSTED `## Tests Runs` comment plus the committed files/guards.
