@@ -15,7 +15,7 @@
  * every row resolves to a verb DECLARED by its surface (no omission), and every declared
  * `keys` entry in the five trees maps back to a row (no invented key). `app.map` is declared
  * keyless by B.3 and is excluded; the frozen deprecated apps are excluded by scope (their
- * 7 sites / 8 keys stay for #3122 and are not table rows).
+ * 7 sites / 9 keys stay for #3122 and are not table rows).
  */
 
 import { readFileSync } from 'node:fs';

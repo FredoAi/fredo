@@ -15,8 +15,9 @@
  *   2. The frozen deprecated apps are the ONLY remaining application inventory: the exact
  *      7 sites / 9 element keys of `diagram`, `optimizely` and `my-workitems` are enumerated
  *      here and deliberately NOT removed (D-7: #3122 deletes them with the legacy runtime).
- *      The count is RE-DERIVED from source (G-316/G-404); the plan's "8 keys" is an arithmetic
- *      slip — the old 14-key union minus this spec's 5 migrated keys is 9.
+ *      The count is RE-DERIVED from source (G-316/G-404): an earlier plan draft's "8 keys" was
+ *      an arithmetic slip; the corrected inventory is 9 (the old 14-key union minus this spec's
+ *      5 migrated keys).
  *   3. Every remaining literal under `src/` is on the explicit allowlist — the frozen apps,
  *      wireframe's P5 tests/comment (not migrated, not in #3122's deletion list), the
  *      `shared/hotkeys/**` legacy machinery/tests, and three comment-only mentions.
@@ -111,10 +112,10 @@ const FIVE_SCOPE_FILES = FIVE_SCOPE_PATHS.flatMap((path) => filesUnder(path));
  * The exact remaining `data-hotkey` inventory in the FROZEN deprecated apps. `sites` counts
  * attribute declarations; `keys` are the element keys those sites bind. Kept for #3122.
  *
- * RE-DERIVED (G-316/G-404 — not inherited): the briefing/plan prose says "7 sites / 8 keys",
- * but the source yields `diagram 1/1 + optimizely 4/4 + my-workitems 2/4 = 7 sites / 9 keys`.
- * The old pin's 14-key union minus this spec's 5 migrated keys is exactly 9, so the plan's "8"
- * is an arithmetic slip; this test asserts the source truth (7 sites / 9 element keys).
+ * RE-DERIVED (G-316/G-404 — not inherited): an earlier plan draft said "7 sites / 8 keys",
+ * corrected to 9, and the source confirms `diagram 1/1 + optimizely 4/4 + my-workitems 2/4 =
+ * 7 sites / 9 keys`. The old pin's 14-key union minus this spec's 5 migrated keys is exactly 9;
+ * this test asserts the source truth (7 sites / 9 element keys).
  */
 const FROZEN_INVENTORY: readonly {
   readonly file: string;
@@ -215,7 +216,7 @@ describe('R-14 — the five migrated surfaces carry zero legacy element-key attr
 
 /* ───────────────────────────── the frozen inventory is enumerated, not deleted ───────────────────────────── */
 
-describe('the frozen deprecated inventory (7 sites / 8 keys) remains until #3122', () => {
+describe('the frozen deprecated inventory (7 sites / 9 keys) remains until #3122', () => {
   it('enumerates each frozen file with its exact site and key count', () => {
     for (const entry of FROZEN_INVENTORY) {
       const source = readText(resolve(process.cwd(), entry.file));

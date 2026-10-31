@@ -29,6 +29,9 @@ vi.mock('../components/SpatiotemporalManifold', () => ({
 
 import { validateSurface, type ContextSnapshot } from '@/shared/navigation';
 import {
+  NAV_MAP_PLACE_TESTID,
+  NAV_MAP_TESTID,
+  NAV_RAIL_MAP_TESTID,
   NAV_RAIL_MORE_TESTID,
   NAV_RAIL_PLACE_ROW_TESTID,
   NAV_RAIL_ROW_TESTID,
@@ -321,6 +324,24 @@ describe('R-08 / R-15 — the rail is the bound-verb projection; no legacy hotke
       DEV_MODE_VIEW_APPLICATION_DATA_VERB_ID,
     ]);
     expect(screen.queryAllByTestId(NAV_RAIL_PLACE_ROW_TESTID)).toHaveLength(0);
+  });
+
+  it('the map carries both places and all seven declared verbs (ST-8 DOM evidence)', async () => {
+    renderDevMode();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId(NAV_RAIL_MAP_TESTID));
+      await Promise.resolve();
+    });
+
+    const map = await screen.findByTestId(NAV_MAP_TESTID);
+    const blocks = Array.from(map.querySelectorAll(`[data-testid="${NAV_MAP_PLACE_TESTID}"]`)).map(
+      (node) => node.getAttribute('data-nav-place-id'),
+    );
+    expect(blocks).toEqual([DEV_MODE_EVENTS_PLACE_ID, DEV_MODE_APPLICATION_DATA_PLACE_ID]);
+    for (const verbId of DEV_MODE_VERB_IDS) {
+      expect(map.querySelector(`[data-nav-verb-id="${verbId}"]`), verbId).not.toBeNull();
+    }
   });
 });
 

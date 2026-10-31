@@ -17,12 +17,15 @@
  */
 
 import React from 'react';
-import { cleanup, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { validateSurface } from '@/shared/navigation';
 import {
+  NAV_MAP_PLACE_TESTID,
+  NAV_MAP_TESTID,
+  NAV_RAIL_MAP_TESTID,
   describeContext,
   getNavigationHost,
   listRegisteredSurfaces,
@@ -240,6 +243,26 @@ describe('WindowSystemNavigationProvider — mounted once (R-08)', () => {
     // Root declares no keys → the rail is the truthful empty state (window-system 0 rows).
     expect(screen.queryAllByTestId('navigation-bar-row')).toHaveLength(0);
     expect(screen.getByTestId('navigation-bar-place')).toHaveTextContent('Window');
+  });
+
+  it('the map carries the ONE place and all four declared window verbs (ST-8 DOM evidence)', async () => {
+    openTestWindow('a');
+    openTestWindow('b');
+
+    renderWithChakra(<WindowManager />);
+
+    act(() => {
+      fireEvent.click(screen.getByTestId(NAV_RAIL_MAP_TESTID));
+    });
+
+    const map = await screen.findByTestId(NAV_MAP_TESTID);
+    const blocks = Array.from(map.querySelectorAll(`[data-testid="${NAV_MAP_PLACE_TESTID}"]`)).map(
+      (node) => node.getAttribute('data-nav-place-id'),
+    );
+    expect(blocks).toEqual([WINDOW_SYSTEM_ROOT_PLACE_ID]);
+    for (const verbId of VERB_IDS) {
+      expect(map.querySelector(`[data-nav-verb-id="${verbId}"]`), verbId).not.toBeNull();
+    }
   });
 
   it('mounts zero legacy element-key attributes and owns no app g+* sequence (R-15)', () => {
