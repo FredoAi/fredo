@@ -47,7 +47,7 @@
 | `research/**` | OUT (non-product) | 88 |
 | `apps/ui/src/**` other (`index.ts`, app/) | IN | 80 |
 | `apps/tauri/src-tauri/src/infrastructure/storage/feature_store.rs` | IN | 69 |
-| `apps/tools-mcp_DEPRECATED/**` | OUT (Optimizely domain) | 35 |
+| `apps/tools-mcp_DEPRECATED/**` | OUT (retired domain) | 35 |
 | `apps/tauri/**` other | mixed | 33 |
 | `.github/**` | OUT | 5 |
 | `CONTRIBUTING.md` | OUT | 6 |
@@ -66,7 +66,7 @@ across ~300 files** — dominated by the frontend tree (3,299) and the Rust data
 
 | Directory | Occurrences |
 |---|---|
-| `shared/hotkeys/` | 559 |
+| legacy keyboard runtime (deleted in #3122) | 559 |
 | `features/home/` | 496 |
 | `features/settings-app/` | 376 |
 | `features/mission-monitor/` | 307 |
@@ -76,21 +76,21 @@ across ~300 files** — dominated by the frontend tree (3,299) and the Rust data
 | `features/app-window/` | 88 |
 | `shared/classes/` | 83 |
 | `shared/hooks/` | 71 |
-| `features/my-workitems/` | 72 |
+| a retired application tree | 72 |
 | `features/database-client/` | 68 |
-| `features/optimizely/` | 62 |
+| a retired application tree | 62 |
 | `features/__tests__/` | 54 |
 | `shared/contexts/` | 48 |
 | `shared/lib/` | 45 |
-| `features/diagram/` | 39 |
+| a retired application tree | 39 |
 | `shared/utils/` | 22 |
 | `features/query-viewer/` | 21 |
 | `features/stepper-probe/` | 20 |
 | `features/terminal/` | 19 |
 | `features/theming/` | 17 |
-| `features/browser-preview/`, `docs-viewer/`, `github-viewer/` | 15 each |
+| three retired application trees | 15 each |
 | `features/setup/` | 14 |
-| `features/model-storage/` | 13 |
+| a retired application tree | 13 |
 | `features/doom/` | 10 |
 | `shared/components/`, `shared/stores/` | 7 each |
 | `features/settings/` | 6 |
@@ -134,11 +134,11 @@ across ~300 files** — dominated by the frontend tree (3,299) and the Rust data
 ## Top files by occurrences (whole repo)
 
 `lib.rs` 216 · `docs/ARCHITECTURE.md` 186 · `docs/agentic-pipeline/playbooks/references.md` 179 ·
-`feature_data/commands.rs` 176 · `shared/hotkeys/<context module, removed by #3009>` 130 · `features/home/components/Home.tsx` 124 ·
+`feature_data/commands.rs` 176 · legacy keyboard runtime (deleted in #3122) 130 · `features/home/components/Home.tsx` 124 ·
 `docs/archive/.../FEATURE_CLASS_GUIDE.md` 119 · `feature_data/registry.rs` 116 ·
 `.opencode/scripts/pipeline-state.rs` 103 · `feature_data/declaration.rs` 102 ·
 `shared/feature-data/store.ts` 102 · `features/settings-app/.../<hotkey settings surface, removed by #3009>` 92 ·
-`shared/feature-data/client.ts` 83 · `shared/hotkeys/registry.ts` 77 ·
+`shared/feature-data/client.ts` 83 · legacy keyboard runtime 77 ·
 `infrastructure/storage/feature_store.rs` 69 · `shared/hooks/useFeatureData.ts` 67.
 
 ## Top IN-scope identifier tokens (rename targets)
@@ -158,8 +158,8 @@ across ~300 files** — dominated by the frontend tree (3,299) and the Rust data
 | A frozen terminal table | `feature_terminal_sessions` | `features/terminal/persistence.rs:4,20`; 10 files |
 | A frozen column | `feature_id` | metadata column, used across the data layer (store/registry/projection/commands); 19 files |
 | A frozen prefix | `feature_{}_{}` / `feature_{}_` / `feature_{featureId}_{tableName}` / `feature_<sanitized featureId>_<table>` | `infrastructure/storage/feature_store.rs:193-204`; `docs/ARCHITECTURE.md:116,319`, `docs/FAQ.md:208`, `docs/SECURITY.md:212` |
-| B Optimizely | `Feature Flags`, `OptimizelyFlag` | `features/optimizely/OptimizelyFeature.tsx:17`; `OptimizelyFlagsPanel.tsx`; tools-mcp optimizely |
-| B ADO work-item type | `'Feature'` in the type union + create-form option | `shared/utils/azdoApi.ts:363`, `features/my-workitems/types.ts:76`, `CreateWorkItemForm.tsx:256` |
+| B retired domain | `Feature Flags`, the domain flag type | the then-shipped tree; tools-mcp retired domain |
+| B ADO work-item type | `'Feature'` in the type union + create-form option | `shared/utils/azdoApi.ts:363`, the then-shipped work-item tree, the create form |
 | B MIME | `application/json` | 33 files repo-wide (unaffected by a `feature` rename; listed to pin the class) |
 | B Cargo/build | `#[cfg(feature = …)]`, `required-features`, `feature = [`, `bundled`, `doom-stub` | `Cargo.toml`, `features/pg_supervisor/acquisition.rs`, `bin/doom_stub.rs`, `features/doom/*` |
 | B pipeline meta | `.opencode/**`, `docs/agentic-pipeline/**` | whole trees (OUT) |
@@ -179,10 +179,11 @@ allowlist pins only the exact frozen format-string/comment spellings and **no ge
    argument / wire field** renames to `applicationId` (ST-3/ST-4). The gate must not let the
    Class A `feature_id` pin mask a stale `featureId`; the binding names block is explicit that
    only request args rename.
-2. **Optimizely directory is not path-allowlisted wholesale.** Its domain copy (`'Feature Flags'`)
-   and `OptimizelyFlag` are retained, but its app-concept imports (`registerFeature`,
-   `FredoFeatureClass`) still rename when the directory moves under `applications/`. Path-scoping
-   the whole directory would mask a genuine regression (E-5 probes exactly this).
+2. **The retired domain directory is not path-allowlisted wholesale.** Its domain copy
+   (`'Feature Flags'`) and the domain flag type are retained, but its app-concept imports
+   (`registerFeature`, `FredoFeatureClass`) still rename when the directory moves under
+   `applications/`. Path-scoping the whole directory would mask a genuine regression (E-5 probes
+   exactly this). The directory itself is deleted by #3122.
 3. **Class C entries are mostly inert for a `feature` grep** (they contain no `feature`
    substring) — they are listed to pin the binding no-second-churn decision for ST-2/ST-4/ST-6.
 4. **Out-of-gate-scope but high-count trees**: `.opencode/tests/**` (1,292), `docs/agentic-pipeline/**`
