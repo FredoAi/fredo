@@ -32,10 +32,9 @@ interface SessionHistoryDrawerProps {
   settled?: boolean;
   /**
    * Spec #2946 ST-15 (AC2 H-4): a monotonic signal that, when it changes,
-   * focuses the session filter input. The panel increments it when the
-   * `mission-monitor.focusSessionSearch` hotkey fires (and opens the drawer),
-   * so the action works even if the drawer was collapsed. Optional — omitting
-   * it preserves the drawer's existing behavior.
+   * focuses the session filter input. Optional; the panel keeps it for
+   * self-contained consumers, while the Spec #3121 navigation surface focuses
+   * the input through the declared `mission-monitor.session.search` verb.
    */
   focusSearchToken?: number;
 }
@@ -111,8 +110,7 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
   const [hovered, setHovered] = useState(false);
 
   // Spec #2946 ST-15: the session filter input, focused by the
-  // `focusSessionSearch` hotkey (the panel opens the drawer first, so the input
-  // is mounted by the time this effect runs).
+  // `focusSearchToken` signal (the panel keeps this for self-contained consumers).
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -294,7 +292,6 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
             <input
               type="text"
               ref={searchInputRef}
-              data-hotkey="s"
               data-testid="mm-session-search"
               value={searchFilter}
               onChange={(e) => onSearchChange(e.target.value)}

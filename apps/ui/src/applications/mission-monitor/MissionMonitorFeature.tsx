@@ -13,10 +13,11 @@ export class MissionMonitorFeature extends FredoApplicationClass {
   readonly showable = true;
 
   /**
-   * Spec #3009 ST-5: the feature's keys are declared by the mounted controls
-   * themselves via `data-hotkey` (session search = `s`). The platform discovers
-   * them through the ONE element registry — the feature supplies no declaration
-   * code and no per-feature bridge.
+   * Spec #3121 (P7), ST-3: Mission Monitor is a declared NavigationEngine surface
+   * (`missionMonitorSurface.ts`). Its one shipped key — `s`, the session filter focus —
+   * is now the declared `mission-monitor.session.search` verb, resolved through the shared
+   * engine and mounted by `MissionMonitorNavigationProvider`; the feature owns no legacy
+   * element-key attribute and no per-feature key table.
    */
 
   /**
