@@ -38,13 +38,13 @@ source of truth for expected values; this file is how the Tester works it.
   pnpm --filter @fredo/ui test:run
   pnpm --filter @fredo/ui test:run src/applications/__tests__/navigationParityMatrix
   pnpm --filter @fredo/ui test:run src/applications/__tests__/navigationBindingsCompleteness
-  pnpm --filter @fredo/ui test:run src/shared/hotkeys/__tests__/featureHotkeyKeys
+  pnpm --filter @fredo/ui test:run src/shared/navigation/__tests__/legacyAbsence
   pnpm --filter @fredo/ui test:run src/applications/terminal
   pnpm --filter @fredo/ui test:run src/applications/mission-monitor
   pnpm --filter @fredo/ui test:run src/applications/database-client
   pnpm --filter @fredo/ui test:run src/applications/dev-mode
   pnpm --filter @fredo/ui test:run src/shared/window-system
-  pnpm --filter @fredo/ui test:run src/shared/hotkeys
+  pnpm --filter @fredo/ui test:run src/shared/navigation
   pnpm --filter @fredo/ui build
   ```
 - Key gate (live): press keys only when `document.activeElement` is `document.body`/the app root or
@@ -63,9 +63,10 @@ source of truth for expected values; this file is how the Tester works it.
 | SQL Studio | `database-client` | launcher tile (`DatabaseClientFeature.tsx:582` `showable=true`) or `?view=app&id=database-client` (`Router.tsx:32-34` → `StandaloneAppWindow.tsx:60-67`) | live |
 | Dev Mode | `dev-mode` | Konami **10 keys**: `ArrowUp ArrowUp ArrowDown ArrowDown ArrowLeft ArrowRight ArrowLeft ArrowRight b a` (lowercase `b`/`a`, no modifier — `shared/hooks/useKonamiCode.ts:3-14`) on Home (`Home.tsx:69-77`) | live |
 
-**No named blocker in this phase.** Every in-scope surface has a shipped live lever. The three
-removed apps (diagram / optimizely / my-workitems) are not tested at all — their `data-hotkey`
-bindings stay frozen until #3122 deletes them.
+**No named blocker in this phase.** Every in-scope surface has a shipped live lever. The retired
+application trees are not tested at all; #3122 deletes them, so the current observable is the
+retained five-surface fleet above plus the exact 8-id boot set asserted by
+`retainedApplicationSet.test.ts`.
 
 ## Cases
 
@@ -84,8 +85,9 @@ bindings stay frozen until #3122 deletes them.
 - [ ] **F-2 (R-02) `[live]`+`[static]` — strokes resolve through the shared engine.**
   Live per app: press the declared key at the app root. **Expected:** the B.6 outcome occurs and the
   newest journal entry carries the declared `verbId` + `channel:"keyboard"`. Static: the five
-  providers/adapters reference no `data-hotkey`, `hotkeyElements`, `detectDuplicateHotkeys`,
-  `commandSurfaceStore` or `executeCommand`; `host.handleStroke` is the only resolution call.
+  providers/adapters reference no legacy element-key discovery and no per-app command-surface
+  store; `host.handleStroke` is the only resolution call (the legacy runtime is deleted in P8;
+  its absence is gate-owned by `legacyAbsence.test.ts`).
   **Edge:** child-place key pressed at the root (no fall-through); text-entry focused (`null`, no
   `preventDefault`); uppercase `D` normalises to `d`; unbound stroke does nothing and journals
   nothing.
@@ -211,42 +213,33 @@ bindings stay frozen until #3122 deletes them.
   entries.
   **Files:** `applications/__tests__/navigationParityMatrix.test.ts` (ST-6).
 
-- [ ] **F-14 (R-14) `[static]` — zero `data-hotkey` in the five in-scope paths.**
-  **Expected:** a literal search over `apps/ui/src/applications/terminal`,
+- [ ] **F-14 (R-14) `[static]` — zero legacy element-key attributes in the retained five paths.**
+  **Expected:** source + tests under `apps/ui/src/applications/terminal`,
   `.../mission-monitor`, `.../database-client`, `.../dev-mode`,
-  `apps/ui/src/shared/hotkeys/traversal.ts` and `apps/ui/src/shared/window-system` returns **0
-  matches** (source, comments and tests — comments count, so the scan does NOT strip them).
-  Non-vacuity: every root exists with ≥1 file; `data-testid` returns >0 in the four app roots; a
-  constructed-attribute control matches. Remaining repo hits are the explicit allowlist, not
-  failures: the deprecated apps (7 sites / 9 keys — `ArchitectureDiagram.tsx:680`;
-  `OptimizelyFlagsPanel.tsx:461,491,506,533`; `MyWorkItemsContainer.tsx:133,155`) plus non-migrated
-  literals in wireframe tests/comments, `shared/hotkeys/**` machinery/tests and comment-only mentions
-  (`shared/navigation/context.ts:6`, `FredoApplicationClass.ts:126`, `index.ts:49`).
-  **Edge:** a comment hit in a five path (FAIL — ST-3 rewrites `MissionMonitorFeature.tsx:15-20`); a
-  test hit in a five path (FAIL); a hit only in a frozen app (allowlisted); `data-Hotkey` is outside
-  the literal AC and is stated, not assumed.
-  **File:** `shared/hotkeys/__tests__/featureHotkeyKeys.test.ts`, rewritten by ST-6 to the five-surface
-  truth (AC7-authorized, test-only; no runtime deletion).
+  `apps/ui/src/shared/navigation` and `apps/ui/src/shared/window-system` contain no legacy
+  element-key attribute (the committed `legacyAbsence.test.ts` owns the literal token and the
+  archive exclusion). Non-vacuity: every root exists with ≥1 file; `data-testid` returns >0 in the
+  four app roots. **P8 supersession:** the retired application trees are deleted, so no
+  frozen-app allowlist is needed.
+  **Edge:** a comment hit (FAIL — the guard owns the scan); a test hit (FAIL); a reintroduced shim
+  (FAIL — `legacyAbsence.test.ts` + build).
+  **File:** `apps/ui/src/shared/navigation/__tests__/legacyAbsence.test.ts` + `navigationBindingsCompleteness.test.ts`.
 
-- [ ] **F-15 (R-15) `[live]`+`[static]` — no mounted `[data-hotkey]`, no app-owned `g+*`.**
-  **Expected:** each of the five mounted apps → `document.querySelectorAll('[data-hotkey]').length
-  === 0`; `data-fredo-pending-sequence` never set by the app's dispatch; static: no `g`-prefixed
-  sequence in any of the five trees.
-  **Edge:** the legacy `HotkeyBar` may still list frozen apps (not a FAIL — P8 owns removal);
-  wireframe's sibling `g+i`/`g+o` bindings are out of scope and are NOT asserted absent repo-wide;
-  two migrated apps mounted at once still zero.
+- [ ] **F-15 (R-15) `[live]`+`[static]` — no legacy element-key attribute, no retired two-step binding.**
+  **Expected:** each of the five mounted apps → zero legacy element-key attributes (gate-owned by
+  `legacyAbsence.test.ts`); no legacy pending marker set by the app's dispatch; static: no retired
+  two-step binding in any retained tree.
+  **Edge:** two migrated apps mounted at once still zero; the launcher adds no navigation region;
+  a declaration-level prefix still renders its hint.
 
 - [ ] **F-16 (R-16) `[static]` — existing suites keep every outcome assertion.**
   **Expected:** `pnpm --filter @fredo/ui test:run` exit 0; diff review of the FIVE apps' pre-existing
-  test files shows **0 removed `it(` titles**, EXCEPT the AC7-authorized rewrite of
-  `shared/hotkeys/__tests__/featureHotkeyKeys.test.ts` — **E-1 RESOLVED**: ST-6 rewrites the old
-  app-specific discovery pin to the five-surface truth (the five migrated surfaces declare no
-  `data-hotkey`; the frozen apps' 7 sites / 9 keys are enumerated; a non-vacuous five-surface
-  assertion is retained; no runtime deletion) — the rewrite re-points the pin and deletes no
-  coverage; dispatch-path edits allowed, outcome observations otherwise unchanged.
+  test files shows **0 removed `it(` titles**; the P7 app-specific inventory pin was replaced by the
+  P8 `legacyAbsence.test.ts` + the retained `navigationBindingsCompleteness.test.ts` (the rewrite
+  re-points the pin and deletes no coverage); dispatch-path edits allowed, outcome observations
+  otherwise unchanged.
   **Edge:** a `.skip`/`.todo`; a renamed title (must be justified); a dropped assertion; a new
-  failure elsewhere; the E-1 rewrite may touch only the inventory pin (five-surface truth + frozen
-  7-site / 9-key enumeration).
+  failure elsewhere. The P8 coverage map names every deleted suite's successor.
 
 - [ ] **F-17 (R-17) `[static]` — build green.**
   **Expected:** `pnpm --filter @fredo/ui build` exit 0, zero TS errors, zero warnings;
@@ -258,8 +251,8 @@ bindings stay frozen until #3122 deletes them.
   lists exactly the five migrated apps with their declared keys — terminal (`F2`), window traversal
   (`Ctrl+Space`, `Ctrl+Tab`, `Ctrl+Shift+Tab`), Mission Monitor (`s`, detail `Escape`), SQL Studio
   (`Ctrl/Cmd+Enter`), Dev Mode (`x`, `v`, `i`, `b`); the old per-app element list (`:598`) is gone;
-  the P8-bound `shared/hotkeys/` internals may remain (marked legacy); each app name is positively
-  present with keys; the three removed apps are not documented as migrated.
+  the legacy runtime is DELETED in P8 (docs describe only the declared-surface model); each app
+  name is positively present with keys; the retired apps are not documented as migrated.
   **Edge:** a listed key disagreeing with B.3 (FAIL); a measured-UX-gain claim (forbidden); removing
   P8-bound internals (out of scope).
 
@@ -357,7 +350,8 @@ bindings stay frozen until #3122 deletes them.
   **Expected:** from Home, complete `ArrowUp ArrowUp ArrowDown ArrowDown ArrowLeft ArrowRight
   ArrowLeft ArrowRight b a` (lowercase `b`/`a`, no modifier — `useKonamiCode.ts:3-14`; the listener
   is document-level, mounted by `Home.tsx:77`): the Dev Mode window opens, `dev-mode-view-toggle`
-  renders, `x`/`v`/`i`/`b` keep their B.6 outcomes, and the window carries ZERO `[data-hotkey]`.
+  renders, `x`/`v`/`i`/`b` keep their B.6 outcomes, and the window carries zero legacy element-key
+  attributes (gate-owned by `legacyAbsence.test.ts`).
   **Edge:** the old "8 arrows, no B/A" text is WRONG — do not use it; a wrong key resets the
   sequence; `b` uppercase does not complete; opening twice does not stack two windows; the app still
   reports `showable=false` (only Konami/`openFeatureWindow` opens it).
@@ -381,11 +375,11 @@ PASS = F-1…F-30 green, every required title/assertion observed verbatim, `test
 the F-14 per-surface search returns zero with its non-vacuity controls firing, all five app evidence
 packs exist (F-27), and every `[live]` row carries its own running-app receipt in the POSTED
 `## Tests Runs` comment. FAIL-closed on: a vacuous scan, a `.skip`/`.todo`/`.only`, a static-only
-PASS on a `[live]` row, a `data-hotkey` hit in any of the five in-scope paths, two parity channels
-journaling different verb ids, an evidence pointer to a consumed `.opencode/tmp/3121/` draft (G-415),
-or a row treating a removed app as migrated.
+PASS on a `[live]` row, a legacy element-key hit in any of the five in-scope paths, two parity
+channels journaling different verb ids, an evidence pointer to a consumed `.opencode/tmp/3121/`
+draft (G-415), or a row treating a retired app as migrated.
 
-UNVERIFIED: none. **E-1 RESOLVED** — ST-6 rewrites `shared/hotkeys/__tests__/featureHotkeyKeys.test.ts`
-to the five-surface truth (AC7-authorized test-only rewrite; frozen 7 sites / 9 keys enumerated; no
-runtime deletion). **C-4 RESOLVED** — B.4 marks `query` selectable, §D.4 projects it, and B.5's
+UNVERIFIED: none. The P7 app-specific inventory pin was replaced by the P8
+`legacyAbsence.test.ts` + the retained `navigationBindingsCompleteness.test.ts` (the coverage map
+names the successor). **C-4 RESOLVED** — B.4 marks `query` selectable, §D.4 projects it, and B.5's
 `tab.close` predicate is satisfiable.
