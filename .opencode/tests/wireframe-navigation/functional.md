@@ -493,9 +493,10 @@ Unit pins (green in the full run): `commandRailFocus.test.tsx` **3/3**,
 ## #3120 rescope extension — the bottom command bar (human-directed rescope)
 
 > **HUMAN-DIRECTED RESCOPE.** The left rail the human rejected is replaced by ONE full-width horizontal
-> command bar docked at the BOTTOM of the Wireframe editor: breadcrumb left, the current place's
-> contextual verbs centre (declaration order, ≤ 8), `? Map`/`Ask` right, no child-place list, no
-> horizontal scroll. Rows map 1:1 to `.opencode/tmp/3120/triage.md` `## QA Expert` keyed **R-1**,
+> command bar docked at the BOTTOM of the Wireframe editor: breadcrumb left, the SIX child place rows
+> (Create / Edit / Arrange / Style / View / File) and then the current place's contextual verbs centre
+> (declaration order, ≤ 8), a vertical `Separator` between the two groups when both are present,
+> `? Map`/`Ask` right, no horizontal scroll. Rows map 1:1 to `.opencode/tmp/3120/triage.md` `## QA Expert` keyed **R-1**,
 > **R-4** (declaration), **R-5**, **R-6**, **R-7** and **R-8** (live half).
 > **Verification policy: live**, except **F-N35** and **F-N38** which are `static` (prove-a-negative
 > source scans — G-408). Evidence record: the POSTED `## Tests Runs` comment, never a
@@ -509,14 +510,23 @@ Unit pins (green in the full run): `commandRailFocus.test.tsx` **3/3**,
 >
 > **Binding names (consume verbatim).** Bar root `[data-testid="navigation-bar"]` (symbol
 > `NAV_RAIL_TESTID`, value `navigation-bar`; `aria-label` `Command bar`; `data-nav-surface="bar"`);
-> `navigation-bar-breadcrumb`; `navigation-bar-place` (the LAST breadcrumb segment, the focus anchor,
+> `navigation-bar-breadcrumb`; the child-place list `navigation-rail-places` (**retained** testid
+> string, `NAV_RAIL_PLACES_TESTID`; `role="list"`/`<ul>`) whose six `navigation-rail-place-row`
+> buttons (`NAV_RAIL_PLACE_ROW_TESTID`) each sit inside a `role="listitem"` `li`, are real
+> `button`s carrying `data-nav-place-id`, the row tooltip as `title`/`aria-label`, and a keycap, and
+> are rendered BEFORE the verb cluster (with a vertical `Separator` between the two groups when both
+> are present); `navigation-bar-place` (the LAST breadcrumb segment, the focus anchor,
 > `tabindex="-1"`); `navigation-bar-list`; `navigation-bar-row` (each carries `data-nav-verb-id`);
 > `navigation-bar-more` (`more…`); `navigation-bar-map` (`? Map`); `navigation-bar-ask` (`Ask`);
 > shell hooks `wireframe-command-bar`, `wireframe-details-column`, `wireframe-status-bar`, and
 > `data-wireframe-region="canvas|details"`. Constants: `NAV_BAR_MIN_HEIGHT_PX = 44`,
 > `NAV_BAR_ROW_MIN_WIDTH_PX = 96`, `NAV_BAR_ROW_GAP_PX = 2`, `NAV_RAIL_MAX_ROWS = 8`. The COMPONENT
 > and MODEL symbols keep their historic names (`CommandRail`, `buildCommandRailModel`,
-> `CommandRailModel`, `placeRows` stays in the model but MUST NOT render).
+> `CommandRailModel`); `model.placeRows` IS rendered as the bar's child-place list. **Naming note
+> (verified on the tip):** the `navigation-bar-places` / `navigation-bar-place-row` spellings do NOT
+> exist on this tip — the shipped constants are the retained `navigation-rail-places` /
+> `navigation-rail-place-row` values. Do NOT assert those two strings absent: they now identify the
+> BAR's place list/rows. The legacy LEFT rail itself is gone (`[data-testid="navigation-rail"]` = 0).
 >
 > **Supersession.** The #3119 rail rows F-N2/F-N12/F-N23 pinned place ROWS and the rail TESTIDS
 > `navigation-rail*`; those testid strings and the place-row rendering are SUPERSEDED by
@@ -574,17 +584,25 @@ Unit pins (green in the full run): `commandRailFocus.test.tsx` **3/3**,
     while the map is open.
   - **Receipt:** the computed-style + scroll table at both widths + E-SHOT.
 
-- [ ] **F-N28 (R-1.4) — no rendered child-place list in the bar.**
-  **Steps:** at the root and in each place, scan the whole Wireframe subtree for
-  `[data-testid="navigation-rail-places"]`, `[data-testid="navigation-rail-place-row"]`, any
-  `data-testid^="navigation-rail-"` node and `navigation-bar-places`; then open `? Map` and confirm
-  the six place blocks exist.
-  **Expected:** the child-place-list nodes count **0** in the bar and the shell (no place rows
-  rendered); the bar contains ONLY breadcrumb + verb rows + `more…` + `? Map` + `Ask`; the map has the
-  SIX place blocks with their verbs (non-vacuity — discovery remains, the absence is not vacuous).
+- [ ] **F-N28 (R-1.4) — the bar renders the child-place list before the verb cluster; the legacy left rail is gone.**
+  **Steps:** at the root, read `[data-testid="navigation-bar"]`; count the
+  `[data-testid="navigation-rail-places"]` list's `[data-testid="navigation-rail-place-row"]`
+  children and read their `data-nav-place-id` order, labels, role and `aria-label`/`title`; confirm
+  every place row precedes the first `[data-testid="navigation-bar-row"]` in document order; scan the
+  whole Wireframe subtree for the OLD left-rail root `[data-testid="navigation-rail"]`; then open
+  `? Map` and confirm the six place blocks exist.
+  **Expected:** the child-place list renders at the ROOT with the SIX child places in declaration
+  order — `wireframe.create`, `wireframe.edit`, `wireframe.arrange`, `wireframe.style`,
+  `wireframe.view`, `wireframe.file` (labels Create / Edit / Arrange / Style / View / File) — each
+  row a real `button` inside a `role="listitem"` `li`, inside a `role="list"`/`<ul>` list, carrying
+  `data-nav-place-id` and a non-empty accessible name; the place group renders BEFORE the verb
+  cluster (the first place row precedes the first verb row; a vertical `Separator` separates the two
+  groups); `[data-testid="navigation-rail"]` count **0** (the old LEFT rail is absent); the map has
+  the SIX place blocks with their verbs (non-vacuity — discovery remains, the absence of the old rail
+  is not vacuous).
   - **Edge:** every one of the six places; the map open; the transient Create chip is NOT a place
     list; a second Wireframe window.
-  - **Receipt:** E-DOM (absence + the map blocks) + E-SHOT.
+  - **Receipt:** E-DOM (the list + rows + order + the legacy-root absence + the map blocks) + E-SHOT.
 
 - [ ] **F-N29 (R-1.5) — `more…` opens the navigation map filtered to the current place.**
   **Steps:** `c` (Create), click `[data-testid="navigation-bar-more"]`; read the `navigation-map`
@@ -797,15 +815,18 @@ Unit pins (green in the full run): `commandRailFocus.test.tsx` **3/3**,
     button (`host.undoEntry`) also reads `You`.
   - **Receipt:** E-DOM (each reversal's actor) + the named rule source.
 
-- [ ] **F-N44 (R-8 live half — wireframe) — no left rail, no child-place list and no palette node in the running webview.**
-  **Steps:** open Wireframe; scan the whole document for `[data-testid="navigation-rail"]`,
-  `[data-testid="navigation-rail-places"]`, `[data-testid="navigation-rail-place-row"]`,
-  `[data-testid^="launcher-palette-"]`; read the workspace row's children + the leftmost column's
-  computed width; walk all six places and repeat.
-  **Expected:** the legacy rail/places/place-row nodes count **0**; the workspace has exactly the
-  canvas + details children and NO ~266-px left command column; the bar root is
-  `[data-testid="navigation-bar"]` at the BOTTOM (F-N31); zero palette nodes in the document; the
-  canvas/details/bar are all present (non-vacuity).
+- [ ] **F-N44 (R-8 live half — wireframe) — no left rail and no palette node in the running webview; the child-place rows live in the bottom bar.**
+  **Steps:** open Wireframe; scan the whole document for the old left-rail root
+  `[data-testid="navigation-rail"]` and for `[data-testid^="launcher-palette-"]`; read the workspace
+  row's children + the leftmost column's computed width; read the bar's
+  `[data-testid="navigation-rail-places"]` list and its six `navigation-rail-place-row` buttons; walk
+  all six places and repeat.
+  **Expected:** the legacy LEFT rail root `[data-testid="navigation-rail"]` counts **0** and no
+  ~266-px left command column exists; the SIX child-place rows render INSIDE the bottom bar
+  (`navigation-rail-places` / `navigation-rail-place-row`, the retained testid symbols) ABOVE the
+  verb rows (non-vacuity — the rows were relocated, not deleted); the workspace has exactly the
+  canvas + details children; the bar root is `[data-testid="navigation-bar"]` at the BOTTOM (F-N31);
+  zero palette nodes in the document; the canvas/details/bar are all present.
   - **Edge:** each of the six places; the map open; a text control focused; light + dark; a second
     Wireframe window.
   - **Receipt:** E-DOM per place + E-SHOT.

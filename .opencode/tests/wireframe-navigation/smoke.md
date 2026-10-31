@@ -33,8 +33,9 @@ verbs, 3 root direct aliases) and mounted with `CommandRail` + `NavigationMap` +
 - [x] **S-N2: Wireframe opens with the navigation surfaces.**
       Launcher → `Wireframe`. **Expected:** `[data-testid="wireframe-root"]` renders with
       `data-wireframe-place="wireframe.canvas"`, plus `wireframe-canvas`,
-      `navigation-rail`, `navigation-trail` and `wireframe-property-panel`; the rail renders
-      the six place rows (`Create, Edit, Arrange, Style, View, File`) above its verb rows.
+      `navigation-bar`, `navigation-trail` and `wireframe-property-panel`; the bottom command
+      bar renders the six place rows (`Create, Edit, Arrange, Style, View, File`) before its
+      verb rows.
 
 - [x] **S-N3: No toolbar and no hotkey bar for Wireframe.**
       With Wireframe focused: `document.querySelector('[data-testid="wireframe-toolbar"]')`
