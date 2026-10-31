@@ -16,7 +16,7 @@
 12. Migration strategy
 13. Testing strategy
 P4 surfaces (Spec #3118 — appended §11)
-P6 launcher + agent bridge (Spec #3120 — appended)
+P6 command bar, composer + agent bridge (Spec #3120 — appended)
 Open questions
 
 **Normative keywords.** `MUST`, `MUST NOT` and `SHOULD` state binding requirements; `MAY` states an option. A clause without a keyword is descriptive and is never an acceptance target, and a later `MAY` never softens an earlier `MUST NOT`.
@@ -417,7 +417,7 @@ The two canonical queries are defined verbatim:
 
 ## 7. Context protocol
 
-`describeContext(appId)` MUST return one `ContextEnvelope` and MUST NOT read an application store to produce it. The envelope is the read model the launcher and the companion consume.
+`describeContext(appId)` MUST return one `ContextEnvelope` and MUST NOT read an application store to produce it. The envelope is the read model the command bar, the teleport-attached composer and the companion consume.
 
 ### 7.1 Envelope v1
 
@@ -463,7 +463,7 @@ interface CapabilityLimits {
 | `dirty` | MUST be `true` when the document has unsaved mutations |
 | `limits` | MUST publish the numeric `CapabilityLimits` above; they are the declared ceilings of every field |
 
-The envelope is the **only** read model. The launcher and the companion **MAY read no other application state**: they MUST NOT read an application store, the command surface, any `data-hotkey` listing, or the journal directly — every value they need MUST arrive in the envelope. `version` MUST bump on any breaking change to the envelope or to a verb id (§3.3).
+The envelope is the **only** read model. The command bar, the teleport-attached composer and the companion **MAY read no other application state**: they MUST NOT read an application store, the command surface, any `data-hotkey` listing, or the journal directly — every value they need MUST arrive in the envelope. `version` MUST bump on any breaking change to the envelope or to a verb id (§3.3).
 
 ## 8. Discovery derivations
 
@@ -473,7 +473,7 @@ Every discoverable surface MUST be derived from the single declaration — §2 `
 
 | Surface | Input declaration | Deterministic output |
 |---|---|---|
-| Rail | `PlaceTree` + `available(ctx)` + selection | ordered verb rows for the current place: `{verbId, title, risk, keys, enabled, reason}`; 4–8 rows, overflow to the palette |
+| Rail | `PlaceTree` + `available(ctx)` + selection | ordered verb rows for the current place: `{verbId, title, risk, keys, enabled, reason}`; 4–8 rows, overflow to the map (the `more…` affordance) |
 | Map (`app.map`) | `PlaceTree` + every verb's `appliesTo` | the whole tree as rows `{placePath, verbs[], keys[]}` in tree order — root first, declaration order within a place |
 | Palette (`app.palette`, launcher `>`) | `PlaceTree` + `VerbDescriptor[]` + journal recents | flat rows `{verbId, title, placePath, key, risk, section}` grouped by place in tree order; recents first, capped |
 | Hint / next-step | pending prefix + `PlaceTree` + `available(ctx)` | which-key rows 250 ms after arming; after a verb, the place's next 3 available verbs; empty when a hint would duplicate the rail |
@@ -486,7 +486,7 @@ Every discoverable surface MUST be derived from the single declaration — §2 `
 
 A surface MUST be reproducible from the declaration alone, and any difference between the derived output and the declaration MUST be treated as a defect. A hand-maintained second list for any of the eight surfaces is a **contract violation** and MUST NOT be introduced; the declaration is the single source of truth (ADR-6).
 
-**Tooltip wording.** A tooltip MUST emit the **binding keys joined by `', '`** in parentheses after the title — `"Map (m)"`, `"Ask (k)"` — and MUST NEVER print the display glyph. The glyphs `?` and `/` MAY appear only in rail, map and onboarding prose strings; they MUST NOT appear in a tooltip that names a key, because the resolver does not accept them (§4.4).
+**Tooltip wording.** A tooltip MUST emit the **binding keys joined by `', '`** in parentheses after the title — `"Map (m)"`, `"Ask (k)"` — and MUST NEVER print the display glyph. The glyphs `?` and `/` MAY appear only in bar, map and onboarding prose strings; they MUST NOT appear in a tooltip that names a key, because the resolver does not accept them (§4.4).
 
 ## 9. Policy
 
@@ -574,7 +574,7 @@ Every adapter MUST be deleted by its `deleteBy` phase; a phase is a hard deadlin
 | `ADP-11-my-workitems-keys` | `data-hotkey` (`MyWorkItemsContainer.tsx:155`) | P7 | **P7** |
 | `ADP-12-dev-mode-keys` | `data-hotkey` `v` (`DevMode.tsx:609`) | P7 | **P7** |
 | `ADP-13-hotkey-registry` | the third declaration (`registry.ts:59-77`, `:139-166`) | P7 | **P8** |
-| `ADP-14-launcher-palette` | `launcherActionPalette.ts:40-52` fed by `listHotkeyActions()` | P6 | **P8** |
+| `ADP-14-launcher-palette` | the legacy launcher action palette (`launcherActionPalette.ts`) — **DELETED in P6 (ST-7)** with the `>` palette | P6 | **P6** |
 | `ADP-15-companion-manifest` | `manifest.ts:73-119` + `publisher.ts:55-80` projection | P6 | **P8** |
 
 The **P8 exit criterion** is a checkable predicate: a single grep for every `ADP-` id over `apps/ui/src/` MUST return ZERO matches. Any match at P8 MUST be treated as an unfinished migration, not as deferred cleanup.
@@ -619,11 +619,7 @@ Non-normative; never counted among the thirteen sections and never cited by §2�
 > §11.1, §11.2, §11.3 and §11.5. **§11.4 is owned by ST-6** — the recorded manual
 > screen-reader pass — and is appended separately; it is not written here.
 
-The P4 layer makes the headless model perceivable: a **`CommandRail`** (where am I / what can
-I do next), a **`NavigationMap`** (the whole place tree), an **`ActivityTrail`** (what just
-happened) and one polite announcement layer. Every surface is a projection of the SAME
-declaration — no surface carries a key table, a `VerbDescriptor[]` or a second binding
-derivation.
+The P4 layer makes the headless model perceivable: a **`CommandRail`** — since P6 (Spec #3120) the **bottom command bar** (where am I / what can I do next) — a **`NavigationMap`** (the whole place tree), an **`ActivityTrail`** (what just happened) and one polite announcement layer. Every surface is a projection of the SAME declaration — no surface carries a key table, a `VerbDescriptor[]` or a second binding derivation. The teleport-attached instruction composer (§P6.3) is the conversation surface: it grounds each turn through the same `describeContext`/`dispatch()` seam but is not a projection of the declaration.
 
 ### 11.1 The one projection layer
 
@@ -638,26 +634,35 @@ eleven-module purity scan is untouched).
 | `ui/format.ts` | `formatKeyHint`, `formatPlacePathLabel`, `formatTrailTime`, `riskLabel`, `navTooltip`. |
 | `ui/models.ts` | `buildCommandRailModel`, `buildNavigationMapModel`, `buildActivityTrailModel`. |
 | `ui/useReducedMotion.ts` | `useNavReducedMotion()`. |
-| `ui/usePlaceTransitionFocus.ts` | `usePlaceTransitionFocus(model)` — place-transition focus retention for the rail (§11.5); no prop, no document listener. |
+| `ui/usePlaceTransitionFocus.ts` | `usePlaceTransitionFocus(model)` — place-transition focus retention for the bottom command bar (§11.5); no prop, no document listener. |
 
 Each builder is total and pure over the declaration plus the injected read model:
 
-- **Rail** — `buildCommandRailModel(surface, snapshot)` composes the shipped
+- **Command bar** — `buildCommandRailModel(surface, snapshot)` composes the shipped
   `deriveRail` over a declaration whose `app.map` / `app.ask` verbs have been filtered out
   **before** the projection runs, so the two globals can neither occupy a row nor inflate
   `overflow`/`actionCount` (§3.1: V-05 forces both to be declared verbs, so `deriveRail`
   would otherwise return them as ordinary rows for any place that binds `m`/`k`). The
   breadcrumb/current place come from `buildContextEnvelope(...).placePath` (declaration
-  labels), falling back to the declared root. `actionCount = rows.length + overflow`.
-  `more` appears only when `overflow > 0` and opens the map filtered to the current place.
-  The two affordances are always present: `/ Ask` is ENABLED — activation opens the launcher (§P6.3); `? Map` is enabled. Neither tooltip ever contains a glyph (a tooltip names `m`/`k`).
-- **Place rows** — `CommandRailModel.placeRows` lists the current place's **child places** in
-  declaration order (`registry.childrenByParent`), each `{placeId, label, key, keys, keyHint,
-  transient, tooltip}`. An entry stroke is a `{kind:'place'}` binding or a verb whose id is the
-  child place id. Place rows render ABOVE the verb rows and are **not** part of `rows`,
-  `overflow` or `actionCount` (those count the current place's bound verbs only). A leaf place
-  has `placeRows: []`; the root lists its six children. Clicking a place row runs the place id
-  (a place-entry verb's id equals the place id, so the host enters it).
+  labels), falling back to the declared root; the current place is the **last breadcrumb
+  segment** (`navigation-bar-place`, `tabIndex={-1}`, `aria-current="page"`), never a
+  standalone heading. The bar renders **no child-place rows** (§P6.2) and 4–8 contextual verb
+  rows (the declaration's bound verbs, capped at 8; never padded to a minimum).
+  `actionCount = rows.length + overflow`. `more…` appears only when `overflow > 0` and opens the
+  map **filtered to the current place**. The bar is a single horizontal region
+  (`data-nav-surface="bar"`, `aria-label="Command bar"`, `overflowX: hidden`); width-driven
+  overflow wraps the verb cluster and grows the bar vertically (rows never below 96 px), so a
+  horizontal scrollbar is never a state. The two affordances are always present: `? Map` is
+  enabled, and `/ Ask` is ENABLED — activation publishes
+  `requestCompanionComposerOpen({source:'command-bar-ask', appId, focus:true})` (§P6.3). Neither
+  tooltip ever contains a glyph (a tooltip names `m`/`k`).
+- **Place rows (retained in the model, NOT rendered)** — `CommandRailModel.placeRows` still
+  lists the current place's **child places** in declaration order (`registry.childrenByParent`),
+  each `{placeId, label, key, keys, keyHint, transient, tooltip}`, and is used by the derivation
+  and its tests. Since P6 (Spec #3120, ST-5) the bottom command bar renders **no child-place
+  rows** (R-1.4): a place is entered through the `? Map` map or its declared place stroke. The
+  retained `placeRows` never contribute to `rows`, `overflow` or `actionCount` (those count the
+  current place's bound verbs only).
 - **Map** — `buildNavigationMapModel(surface, snapshot, { filteredTo })` composes the shipped
   `deriveMap` tree order with `createRegistry(...).verbsById`, each verb's
   `available(snapshot)` and the shipped `formatTooltip` (through `navTooltip`); it never
@@ -692,55 +697,59 @@ Each builder is total and pure over the declaration plus the injected read model
 Purity: the layer reads no clock (`ts`/`now` are supplied), no DOM, no storage; it adds no
 dependency and no theme token.
 
-**P6 consumers (Spec #3120).** The launcher consumes the same layer and adds its own
-presentational modules under `applications/home/components/launcher/`:
-`launcherNavigationPalette.ts` (the grouped Place → Verb projection, row actions and the pure
-client-side filter), `launcherUndoQuery.ts` (undo-by-description), `launcherRoute.ts` (the pure
-Enter precedence), `LauncherNavigationList.tsx`, `LauncherConfirmation.tsx` and the
-`LauncherShell` integration (context header, secondary actions, response line, ONE announcer).
-The launcher reads the host through `ui/hostRegistry.ts` (`getNavigationHost` /
-`describeContext`) and runs every palette/secondary row through `NavigationHost.runIntent` —
-never `runHotkeyAction`. A performed navigation result keeps the launcher open and announces the
-new place; a performed mutation, external action or `journal.undo` closes it so the change and
-its trail entry are visible; `canceled-confirmation` stays silently; `noop` / `rejected` /
-`failed` stay with the ONE response line. The legacy `>` hotkey-action list remains only for an
-application with no declared surface.
+**P6 surfaces (Spec #3120).** The bottom command bar is the P4 surface re-laid out (ST-5/ST-6) and the teleport-attached instruction composer is the conversation surface (ST-2); the launcher is launch/search + global commands only. The composer resolves its target with the pure `shared/companion/composerTarget.ts`, reads the target application's fresh envelope through `ui/hostRegistry.ts` (`describeContext(targetApp)`), and submits through the same skill-aware `ask` path — never `runHotkeyAction`, never a second dispatch route. The launcher's app grid, open-apps row, launch/search Enter route, voice and `LauncherConfirmation.tsx` are retained; ST-7 deleted the navigation palette projection, the Enter-route module, the undo-query phrase table, the navigation list, the launcher-open bridge and the launcher navigation announcer, and `>` is ordinary search text. The confirmation is the launcher's only await and renders whenever a request is pending, even with the launcher visually closed.
 
 ### 11.2 The bound names block (`ui/constants.ts`)
 
 Every test id, data attribute, accessible name, copy string and bound below is BINDING; a
 surface renders the constant, never an invented literal (G-324/G-419).
 
-- **DOM hooks** — `navigation-rail*`, `navigation-map*`, `navigation-trail*`,
-  `navigation-keycap*`, `navigation-announcer` (one test id per named element).
-- **Data attributes** — `data-nav-surface` (`rail`|`map`|`trail`), `data-nav-keycap`,
+- **DOM hooks** — `navigation-bar*` (the bottom command bar; the retained `navigation-rail-places`
+  / `navigation-rail-place-row` symbols are declared but **never rendered**), `navigation-map*`,
+  `navigation-trail*`, `navigation-keycap*`, `navigation-announcer` (one test id per named
+  element).
+- **Data attributes** — `data-nav-surface` (`bar`|`map`|`trail`), `data-nav-keycap`,
   `data-nav-place-id`, `data-nav-verb-id`, `data-nav-actor`, `data-nav-current`,
   `data-nav-availability`, `data-nav-risk`, `data-nav-compact`.
-- **Accessible names** — `Command rail`, `Navigation map`, `Activity trail`,
+- **Accessible names** — `Command bar`, `Navigation map`, `Activity trail`,
   `Navigation announcements`.
-- **Copy** — `more…`; the empty trail `Nothing yet — your actions will appear here`; the
-  generic disabled reason `Not available for the current selection`; the transient suffix
-  `one action`; risk words `Safe`/`Changes`/`Destructive`/`External`; actor words
-  `You`/`Companion`/`System`;
+- **Copy** — `more…` (the `more…` affordance's accessible name is
+  `More actions in this place — opens the map`); the empty trail
+  `Nothing yet — your actions will appear here`; the generic disabled reason
+  `Not available for the current selection`; the transient suffix `one action`; risk words
+  `Safe`/`Changes`/`Destructive`/`External`; actor words `You`/`Companion`/`System`;
   and the G-324 bundle `Search places, actions and keys`, `No matching places, actions or
   keys`, `Direct aliases`, `Global keys`, `Current place`, `No actions in this place`,
-  `↑ ↓ move · Enter run · Esc close`, plus `NAV_RAIL_MIN_WIDTH_PX = 180` (design intent — the
-  measured no-scroll proof is live, not a jsdom width read). The P4 launcher reason
+  `↑ ↓ move · Enter run · Esc close`. The P4 launcher reason
   `Ask arrives with the launcher in the next phase` is RETIRED — no constant, no rendered node.
 - **Globals** — `app.map` is bound to `m` and displays the glyph `?`; `app.ask` is bound to
   `k` and displays `/`; accessible glyph names are `Question mark` / `Slash`. A glyph is never
   a binding value.
-- **`/ Ask` (P6)** — the rail affordance is ENABLED: `enabled: true`, `reason: null`,
-  `aria-disabled` absent, visible label `Ask`, tooltip `Ask (k)`; activation calls
-  `requestLauncherOpen({source:'rail-ask', focus:true})`, and the declared `app.ask` verb is
-  `available: always` and opens the same seam with `source:'ask-verb'` (§P6.3).
-- **P6 launcher names** — the launcher's DOM hooks, `data-*` attributes, accessible names and
-  copy are a separate binding block in
-  `applications/home/components/launcher/launcherConstants.ts` (§P6.4). They rename no P4
-  name above and are the only source the launcher renders.
+- **`/ Ask` (P6)** — the bar affordance is ENABLED: `enabled: true`, `reason: null`,
+  `aria-disabled` absent, visible label `Ask`, tooltip `Ask (k)`; activation publishes
+  `requestCompanionComposerOpen({source:'command-bar-ask', appId, focus:true})` through
+  `shared/companion/composerBridge.ts`, and the declared `app.ask` verb publishes the same
+  request (§P6.3). There is no launcher-open bridge.
+- **P6 composer names** — the instruction box's DOM hooks, copy and placement hooks are a
+  separate binding block in `shared/components/companion/CompanionComposer.tsx` (§P6.3):
+  `fredo-companion-composer` (+ `-input`, `-submit`, `-target`, `-dismiss`), accessible names
+  `Tell Fredo what to change` (group) / `Instruction for Fredo` (input) / `Send instruction`
+  (submit) / `Close instruction box` (dismiss), placeholder `Tell Fredo what to change…`, target
+  prefix `for `, no-target copy `No app in front of Fredo`, and the root hooks
+  `data-composer-placement` (`above|right|left`) / `data-composer-clearance` (integer px ≥ 14).
+  The launcher's remaining names block is the confirmation contract in
+  `applications/home/components/launcher/launcherConstants.ts`; it renames no P4 name above.
 - **Motion / bounds** — `NAV_MOTION_MS = 150` (opacity/transform only),
   `NAV_REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)'`, `NAV_RAIL_MAX_ROWS = 8`
-  (mirrors `discover.RAIL_MAX_ROWS`; the rail never pads to `RAIL_MIN_ROWS`).
+  (mirrors `discover.RAIL_MAX_ROWS`; the bar never pads to `RAIL_MIN_ROWS`),
+  `NAV_BAR_MIN_HEIGHT_PX = 44` (the bar may grow vertically when the cluster wraps),
+  `NAV_BAR_ROW_MIN_WIDTH_PX = 96` (rows never collapse below this floor) and
+  `NAV_BAR_ROW_GAP_PX = 2`. The retired `NAV_RAIL_MIN_WIDTH_PX` / `NAV_RAIL_ROW_MAX_WIDTH_PX` /
+  `NAV_RAIL_BREADCRUMB_MAX_WIDTH_PX` constants no longer exist.
+- **Composer placement bounds** — `COMPOSER_W = 320`, `COMPOSER_H = 40` (resting/minimum),
+  `COMPOSER_MAX_H = 96` (the textarea auto-grows to this height, then scrolls),
+  `COMPOSER_GAP = 8`; the facing separation is at least `REPLY_AVATAR_CLEARANCE = 14` px and
+  `computeComposerPlacement` never returns `below`.
 - **Root-export boundary** — no dev-route literal lives here. `'view'` / `'navigation-preview'`
   are inlined in `Router.tsx`'s DEV branch and `NAV_PREVIEW_GLYPH_KEYS` is module-local to the
   dev preview, so the production bundle cannot contain a dev-route marker by construction.
@@ -812,23 +821,23 @@ manual-pass artifact and the cross-surface composite is `ui/__tests__/a11y.test.
 - **Motion:** transitions/animations animate `opacity`/`transform` only, at `NAV_MOTION_MS`,
   and are disabled when `prefers-reduced-motion` is set (the `reducedMotion` prop /
   `useNavReducedMotion()`).
-- **One live region:** the P4 navigation surfaces declare no `aria-live`; the navigation announcement layer owns the single `navigation-announcer` polite region. P6 adds exactly ONE launcher region — `launcher-palette-announcer` (`role="status"`, `aria-live="polite"`, `aria-label="Launcher announcements"`) — mounted only while the launcher is open over a registered navigation host; the launcher's response line is NOT a live region, and the shipped command bar's own voice/queue regions are pre-existing and unchanged. A migrated application therefore has one navigation region plus (while the launcher is open) one launcher region — never two competing regions inside the same surface.
-- **Bounded DOM:** rail verb rows ≤ 8 (never padded) and no more than the place's bound verbs;
-  child-place rows (`placeRows`) are a separate, tree-bounded section and never count against
-  that cap; trail entries ≤ 10 (newest first); map rows = the declared tree. No polling: the
-  only timer is the host's one-shot `PENDING_TIMEOUT_MS` (250 ms) prefix clear.
+- **One live region:** the P4 navigation surfaces declare no `aria-live`; the navigation announcement layer owns the single `navigation-announcer` polite region. P6 (ST-7) deleted the launcher navigation announcer (`launcher-palette-announcer`) together with the launcher palette, so there is **no second navigation live region**; the launcher confirmation is an `alertdialog`, not a live region, and the shipped launcher voice/queue regions are pre-existing and unchanged.
+- **Bounded DOM:** bar verb rows ≤ 8 (never padded) and no more than the place's bound verbs;
+  the bar renders **no child-place rows** (the model's `placeRows` is derivation-only); trail
+  entries ≤ 10 (newest first); map rows = the declared tree. No polling: the only timer is the
+  host's one-shot `PENDING_TIMEOUT_MS` (250 ms) prefix clear.
 - **No persisted presentation state:** map open/filter/search and the pending prefix live in
   host/component state only — no storage, no settings key.
 - **No second source of truth:** no prop carries a key table or a `VerbDescriptor[]`; every
   surface renders the model built here, and the a11y invariants (role/name, risk as text,
   keycap accessible names, focus trap/restore) are owned by the surface components.
-- **Place-transition focus retention (`#3119` retry, R-9/AC9):** place rows are the current
-  place's children, so entering a place unmounts the row a keyboard user is standing on and
-  the browser falls back to `document.body` — which also silences the shell's one
-  element-scoped key adapter. `CommandRail` therefore re-homes focus it dropped (the same
-  control when it renders again, else the always-rendered `navigation-rail-place` heading,
-  `tabIndex={-1}`) and returns to the triggering row when the place is exited (`Escape`). It
-  acts only when the tracked in-rail control is disconnected AND `document.activeElement` is
+- **Place-transition focus retention (`#3119` retry, R-9/AC9; re-homed in P6):** entering a
+  place re-derives the bar's verb rows, so a keyboard user's focused row can unmount and the
+  browser fall back to `document.body` — which also silences the shell's one element-scoped key
+  adapter. `CommandRail` therefore re-homes focus it dropped (the same control when it renders
+  again, else the always-rendered last breadcrumb segment `navigation-bar-place`,
+  `tabIndex={-1}`) and returns to the triggering control when the place is exited (`Escape`).
+  It acts only when the tracked in-bar control is disconnected AND `document.activeElement` is
   `body`/null; focus the user moved elsewhere (canvas, details view, map dialog, another
   control) is never touched. No prop, no `document`/`window` listener, no timer, no state
   write — `ui/usePlaceTransitionFocus.ts`.
@@ -841,10 +850,11 @@ manual-pass artifact and the cross-surface composite is `ui/__tests__/a11y.test.
 > the affected clauses are amended in place — §6.4 (undo attribution), §8.1 (manifest
 > projection), §11.1 (consumers), §11.2 (`/ Ask` copy) and §11.5 (live-region scope).
 
-P6 takes the headless model out of the Wireframe window: the **launcher** becomes the second
-consumer of the same declaration and the same `dispatch()` funnel, so conversation, keyboard,
-palette and the agent bridge are one system. No new noun, no second dispatch path and no
-transcript are introduced.
+P6 takes the headless model out of the Wireframe window's left column and puts conversation at
+the work: the **bottom command bar** is the P4 surface re-laid out (ST-5/ST-6), the
+**teleport-attached instruction composer** grounds each turn on the app in front of Fredo through
+the same `dispatch()` funnel (ST-2), and the **launcher** is launch/search + global commands only
+(ST-7). No new noun, no second dispatch path and no transcript are introduced.
 
 ### P6.1 The host registry and the fresh context seam
 
@@ -894,115 +904,98 @@ function subscribeNavigationHosts(listener: () => void): () => void;
   `launcher`/`voice`/`agent` channels through the launcher confirmation store; a
   `keyboard`/`pointer` human intent keeps the shipped no-confirm behaviour.
 
-The launcher derives its `activeAppId` from the focused, non-minimized window, memoizes
-`navContext` on the host identity + the host snapshot `epoch` (never an effect + `setState`,
-never a poll), and re-derives on every host notification. The `epoch` advances on a host
-mutation **or an injected-context change**: the application's provider publishes its store's
-selection/dirty changes through `NavigationHost.refreshContext()`, so a store-only selection
-change (including at the root place, with no dispatch) re-derives the header and the grounding
-envelope without a remount or reload — as does a dispatch that changes the place. The host
-snapshot subscription uses `useSyncExternalStore`, so neither path remounts or reloads the
-launcher.
+The composer (and any other host consumer) reads a FRESH `ContextEnvelope` through
+`describeContext(appId)` for the resolved target; it memoizes on the host identity + the host
+snapshot `epoch` (never an effect + `setState`, never a poll) and re-derives on every host
+notification. The `epoch` advances on a host mutation **or an injected-context change**: the
+application's provider publishes its store's selection/dirty changes through
+`NavigationHost.refreshContext()`, so a store-only selection change (including at the root
+place, with no dispatch) re-derives the grounding envelope without a remount or reload — as does
+a dispatch that changes the place. The host snapshot subscription uses `useSyncExternalStore`,
+so neither path remounts or reloads the consumer.
 
-### P6.2 One box, three routes
+### P6.2 The bar / launcher boundary (reworked in the #3120 rescope)
 
-The shell's existing Enter handler is extended (no second `document` keydown listener). While
-`navContext !== null`, `resolveLauncherRoute({ query, entries, textOrigin, companionActive,
-captureLive, paletteActive })` decides in this fixed precedence:
+The **bottom command bar** is the only in-app navigation surface: the place breadcrumb (the
+current place is the last segment), 4–8 contextual verbs, `more…` (opens the map filtered to the
+current place) and `? Map` (opens the whole map). It runs every verb through the registered
+`NavigationHost`; the shell adds no second handler.
 
-1. `captureLive` → the shipped `none/listening` verdict (nothing dispatches);
-2. first non-whitespace `>` → the grouped Place → Verb palette;
-3. an undo rule → `journal.undo` with the matched args;
-4. `no-match-undo` → a clarify response (`UNDO_NO_MATCH_COPY`);
-5. `ambiguous` → a clarify response (`UNDO_AMBIGUOUS_COPY`);
-6. otherwise → the shipped `resolveEnterAction` verdict, unchanged.
+The **launcher is launch/search + global commands only**. The reworked rescope (ST-7) deleted the
+app-scoped navigation seam: the grouped Place → Verb palette, the secondary-action level, the
+navigation Enter route (`launcherRoute.ts` / `resolveLauncherRoute`), the undo-by-description
+phrase table (`launcherUndoQuery.ts`), `LauncherNavigationList.tsx`, the launcher navigation
+announcer and the launcher-open bridge (`launcherBridge.ts`) no longer exist. `>` is ordinary
+search text — it filters the same app grid as any other query, with no palette mode and no
+hidden route.
 
-The route module is consulted ONLY when a host is registered; an app with no surface takes the
-shipped Enter path verbatim, so a `>` query still renders the legacy `LauncherActionList` and
-`runHotkeyAction(id,'palette')`, and an undo-shaped phrase takes the ordinary send path.
+The launcher's Enter decision is the shipped **`resolveEnterAction`**, and nothing else: live
+capture → `none/listening`; empty → `none/empty`; a typed whole-name/whole-word app match →
+`launch`; otherwise → `send` (the ungrounded `askActiveCompanion(raw.trim())` turn). The shell's
+confirmation host (`LauncherConfirmation`) is retained as the launcher's **only await**: it
+renders whenever a destructive/external request is pending, **even with the launcher visually
+closed** (a teleport-composer instruction must not dead-end). Cancel/Esc/outside resolve `false`
+and write nothing. No `document` keydown listener is added.
 
-**The palette projection** (`launcherNavigationPalette.ts`) consumes the shipped P3
-`derivePalette` directly, so row order can never drift from the declared derivation: recents
-first (newest-first, deduped, stale ids dropped, capped at `PALETTE_MAX_RECENTS = 5`), then
-every verb grouped by place in tree order. Each row carries the full place path
-(`formatPlacePathLabel`, `' › '` join), the row place's first key + `formatKeyHint`, the risk
-and — only for a non-`safe` row — a risk label, plus `available`/`reason`
-(`NAV_UNAVAILABLE_REASON`). `filterLauncherPaletteModel` is a pure case-insensitive substring
-over `title + pathLabel + keyHint`; empty groups are dropped and `rows` is re-flattened so the
-selection index stays stable. `buildLauncherRowActions` is the ONE level-2 source: `run`, then
-`undo` only when that verb has an undoable journal entry (label names the entry; dispatch verb
-is `journal.undo`), then `map` (the `NavigationMap` dialog, never a third launcher level).
+### P6.3 `/ Ask` and the teleport-attached instruction composer
 
-The launcher is a **runner, not a second handler**: Enter on a palette row calls
-`host.runIntent({ verbId, args: {}, channel: 'launcher', actor: 'human' })`; Enter on a
-secondary action does the same with the action's dispatch verb (a row-targeted undo adds
-`{ verbId }`). An unavailable row stays selectable, announces its reason, and dispatches
-nothing. The close/stay matrix is fixed:
-
-| Result | Launcher |
-|---|---|
-| `performed` + `navigation` (not undo, not external) | stays open, announces the new place (`navPlaceEnterMessage`) |
-| `performed` + mutation / external / `journal.undo` | closes, focus restored, so the change and its trail entry are visible |
-| `rejected` + `canceled-confirmation` | stays open, silent (the user chose it) |
-| `noop` / other `rejected` / `failed` | stays open with the ONE response line |
-
-`Cmd`/`Ctrl+K` opens/toggles the focused row's secondary actions; `Esc` pops exactly one
-nested level and, at the top level, closes the launcher and restores the pre-open focus. Both
-are branches of the EXISTING shell handler.
-
-### P6.3 `/ Ask` and the launcher-open bridge
-
-`app.ask` is a real affordance: it is declared `available: always`, performs a `navigation`
-effect, and calls `requestLauncherOpen({ source: 'ask-verb', focus: true })`. The rail's
-`/ Ask` control calls the same bridge with `source: 'rail-ask'`, and the bridge also accepts
-`source: 'keyboard'`. The shell subscribes once:
+`app.ask` is a real affordance: it is declared `available: always` and publishes
+`requestCompanionComposerOpen({ source: 'command-bar-ask', appId, focus: true })` through the
+module-scoped `shared/companion/composerBridge.ts`. The bar's `/ Ask` control publishes the same
+request, and the shell's `k` stroke publishes `{ source: 'keyboard', appId, focus: true }`. The
+bridge request is BINDING:
 
 ```ts
-interface LauncherOpenRequest {
-  readonly source: 'ask-verb' | 'rail-ask' | 'keyboard';
-  readonly prefill?: string;
+interface CompanionComposerOpenRequest {
+  readonly source: 'command-bar-ask' | 'teleport' | 'keyboard';
+  readonly appId?: string;   // ABSENT key when unknown — never an explicit null
   readonly focus: true;
 }
 ```
 
-On a request the shell raises the launcher through the shipped `openOverlay()` (which captures
-the pre-open element), writes any prefill through the ONE controlled-query route, and focuses
-the command input on the next frame. Closing therefore restores focus to the element that
-asked — the rail button, or whatever had focus before `Ctrl+Space`. The P4 disabled reason
-`Ask arrives with the launcher in the next phase` is retired: `NAV_ASK_DISABLED_REASON` no
-longer exists, the affordance carries no reason node, and the tooltip is `Ask (k)`.
+The bridge retains the last request so an entity that mounts after the request (the overlay
+arriving on a not-hosted teleport) still resolves the named app. The box is the **only**
+conversation surface (`CompanionComposer`, `shared/components/companion/`):
 
-### P6.4 Launcher names, hooks and copy (binding)
+- **Open and focus.** It opens on the teleport-in settle in the window hosting Fredo (and on an
+  explicit request); its input receives focus in a layout effect — the user types without a
+  click. Escape or the dismiss control closes it and restores focus to the target app frame,
+  then any `[data-fredo-app-id]` root, then `documentElement` — **never `body`**.
+- **Submit.** Enter submits the trimmed instruction (an empty submit is a no-op that keeps
+  focus); Shift+Enter inserts a newline; an IME composing event is ignored. The turn is
+  grounded on `describeContext(targetApp)` and submitted through the existing skill-aware `ask`
+  — there is no second dispatch route, no transcript, no history and no persistence.
+- **Target resolution** (`shared/companion/composerTarget.ts`). The default is the app in front
+  of Fredo: a requested app id → the topmost in-window app frame containing Fredo's landing
+  point → the standalone window's app → the focused app → `null`. A whole-word,
+  case-insensitive app mention in the instruction (name or id, longest match, showable only)
+  overrides the default; a tie or a partial mention does not.
+- **Placement** (`computeComposerPlacement` in `replySurfaceLayout.ts`). Ranked
+  `above > right > left`, **never `below`**, holding at least the 14 px avatar clearance and
+  avoiding the visible `SpeechBubble`; `COMPOSER_W = 320`, `COMPOSER_H = 40` resting,
+  `COMPOSER_MAX_H = 96` then internal scroll. The root exposes `data-composer-placement`
+  (`above|right|left`) and `data-composer-clearance` (integer px).
+- **Scope.** The box mounts only on the hosting window's away overlay; it never renders on the
+  home seat and never opens in a non-hosting window. It adds no `aria-live` region and no
+  document-level key listener. A destructive/external turn still goes through the launcher
+  confirmation, which renders even with the launcher closed.
 
-The launcher's names block is `applications/home/components/launcher/launcherConstants.ts`;
-every launcher surface renders these constants (no invented literal). It is additive to the P4
-`ui/constants.ts` block and renames nothing there.
+### P6.4 The launcher's retained names (confirmation only)
 
-- **DOM hooks** — `launcher-context`, `launcher-context-path`, `launcher-context-selection`,
-  `launcher-context-verbs`, `launcher-context-verb`, `launcher-palette-list`,
-  `launcher-palette-group`, `launcher-palette-group-path`, `launcher-palette-row`,
-  `launcher-palette-row-key`, `launcher-palette-row-risk`, `launcher-palette-secondary`,
-  `launcher-palette-secondary-item`, `launcher-confirmation`, `launcher-confirmation-verb`,
+After ST-7 the launcher's names block (`applications/home/components/launcher/launcherConstants.ts`) is the **confirmation contract**; every retained launcher surface renders these constants (no invented literal). It is additive to the P4 `ui/constants.ts` block and renames nothing there.
+
+- **DOM hooks** — `launcher-confirmation`, `launcher-confirmation-verb`,
   `launcher-confirmation-target`, `launcher-confirmation-consequence`,
   `launcher-confirmation-undo`, `launcher-confirmation-accept`,
-  `launcher-confirmation-cancel`, `launcher-palette-announcer`, and the response line
-  `launcher-response`.
-- **Data attributes** — `data-launcher-response`
-  (`clarify`|`rejected`|`undo-nothing`|`undo-failed`), `data-launcher-code` (the
-  `DispatchResult.code` on a rejected/failed line), `data-launcher-section`
-  (`recent`|`place` on a row) and `data-launcher-action-kind` (`run`|`undo`|`map` on a
-  secondary item). Row selection/availability reuse the P4 `data-nav-*` hooks.
-- **Accessible names** — `Current context` (context group), `Selection`, `Actions`, `Recent`,
-  `Places and actions` (palette listbox), `Row actions` (secondary listbox), `Action` /
-  `Target` / `Consequence` (confirmation fields), `Launcher announcements` (the ONE polite
-  region), and the row announcement `Title — Canvas › Edit — Destructive — X`.
-- **Copy** — `No context`, `No places or actions match`,
-  `That action couldn't run. Nothing changed.`, `Run <title>?`, `Apply <title>`, `Cancel`,
-  `Undo available`, `Not undoable`, `Outside Fredo: <party>`, and the two clarify sentences
-  (below). A safe row carries NO risk word.
-- **Bounds** — the palette is one listbox with one group per place and an internal scroll bound
-  (`maxHeight: min(52vh, 420px)`); the context header shows at most 3 available verbs plus
-  `+{n-3}`; the secondary level is at most one level deep.
+  `launcher-confirmation-cancel`.
+- **Accessible names** — `Action` / `Target` / `Consequence` (confirmation fields).
+- **Copy** — `Run <title>?`, `Apply <title>`, `Cancel`, `Undo available`, `Not undoable`,
+  `Outside Fredo: <party>`.
+- **Retired with the palette (do not re-introduce):** `launcher-context*`,
+  `launcher-palette*`, `launcher-response`, `data-launcher-response`, `data-launcher-code`,
+  `data-launcher-section`, `data-launcher-action-kind`, the `Launcher announcements` live
+  region, and the row announcement copy. `>` is ordinary search text; there is no palette
+  listbox, no context header and no secondary-action level.
 
 ### P6.5 Risk policy end to end, and the confirmation contract
 
@@ -1019,8 +1012,9 @@ every launcher surface renders these constants (no invented literal). It is addi
   request.
 - **Dismissal is not an error.** A cancelled confirmation returns
   `{status:'rejected', code:'canceled-confirmation'}`, mutates nothing, writes NO journal entry
-  and shows no error line. A request made with no launcher mounted resolves `false`
-  immediately.
+  and shows no error line. The shell subscribes for its mounted lifetime, so a pending request
+  renders even when the launcher is visually closed (QA-6 / F-172); a request in a webview with
+  no launcher surface mounted at all resolves `false` immediately (R-5.3).
 - **Keyboard/pointer keeps the shipped behaviour.** Only `launcher`/`voice`/`agent` channels
   are gated; a human `keyboard`/`pointer` dispatch still applies without a prompt (the journal
   is the undo).
@@ -1041,23 +1035,22 @@ in the trail; a `system` requester keeps `system`. `host.undoEntry(seq, options?
 `{ actor?, channel? }` and defaults to `{actor:'human', channel:'pointer'}` for the trail
 button. The trail renders the entry's own actor and label — no new visual language.
 
-The launcher's undo-by-description matcher (`launcherUndoQuery.ts`) is one pure phrase table
-over case/punctuation-normalised text:
+The engine `journal.undo` accepts an optional **`verbId`** filter (ST-8), so an undo can name
+the change it reverses:
 
-| Phrase shape | Result |
+| Intent args | Result |
 |---|---|
-| companion + last | `journal.undo` `{actor:'companion', count:'1'}` |
-| companion + N | `journal.undo` `{actor:'companion', count:'N'}` |
-| last / bare undo | `journal.undo` `{count:'1'}` |
-| `undo that` / `undo it` | ambiguous → `Tell me whose change to undo — yours or the companion's. Nothing changed.` |
-| undo-shaped, no rule | `I couldn't tell which change to undo. Nothing changed.` |
-| anything else | an ordinary query (routes to the companion) |
+| `{verbId:'wireframe.element.setLabel', count:'1'}` | reverts the NEWEST journal entry authored by that verb and nothing else |
+| `{actor:'companion', count:'1'}` | reverts the newest companion-authored entry |
+| `{count:'N'}` | reverts the newest `N` undoable entries (1..100) |
+| unknown `verbId` (no matching undoable entry) | `noop` / `no-matches`; nothing is applied |
 
-Counts may be digits or number words and are bounded 1..100; a leading `revert` is the
-manifest undo alias. A clarify result renders ONE response line and dispatches nothing; the
-two miss variants are never conflated (a non-undo query is never captured). The undo intent is
-still `journal.undo` through `host.runIntent`, so the typed and spoken origins share the
-funnel.
+`parseUndoQuery` reads `verbId` and passes it into the shipped journal query, which filters
+newest-first (`seq DESC`); the reversal itself is attributed to the REQUESTER by the paragraph
+above. Counts are bounded 1..100; a leading `revert`/`undo` is the manifest alias. The retired
+launcher phrase table (`launcherUndoQuery.ts`) no longer exists — "undo the label change" is an
+ordinary instruction whose resolved `journal.undo` call carries `verbId`, so the typed, spoken
+and agent origins share the one funnel.
 
 ### P6.7 The unified companion manifest and the engine `journal.undo` row
 
@@ -1078,16 +1071,20 @@ projection, never re-derived from the source verb.
 ENGINE_COMPANION_UNDO_COMMAND = {
   id: 'journal.undo',
   label: 'Undo',
-  description: 'Undo the newest change; optionally filter by actor (human, companion or system) and count (1..100).',
+  description: 'Undo the newest change; optionally filter by verb (verbId), actor (human, companion or system) and count (1..100).',
   risk: 'mutating',
-  args: [{ name: 'actor', required: false }, { name: 'count', required: false }],
+  args: [
+    { name: 'actor', required: false },
+    { name: 'count', required: false },
+    { name: 'verbId', required: false },
+  ],
   aliases: ['undo', 'revert'],
 }
 ```
 
-For the shipped Wireframe declaration: 55 verbs, of which the 6 place-entry verbs are
-`publish:false` → 49 published verbs, plus `journal.undo` → 50 commands and 51 `actionIds`
-including `listActions`. The Rust wire type gained additive `risk: Option<String>` and
+For the shipped Wireframe declaration: **58 verbs**, of which the 6 place-entry verbs are
+`publish:false` → **52 published verbs**, plus `journal.undo` → **53 commands** and
+**54 `actionIds`** including `listActions`. The Rust wire type gained additive `risk: Option<String>` and
 `aliases: Vec<String>` with absent-key semantics: `risk` is absent for a legacy
 command-surface command and `aliases` is absent when empty — never `null`. The publisher also
 subscribes to host-registry changes, so an application that mounts after boot republishes its
@@ -1123,12 +1120,17 @@ The machine-deliverable half of the gate is the committed, non-consumed evaluati
 at [`docs/agentic-pipeline/evaluations/3120-pilot-exit-review-template.md`](agentic-pipeline/evaluations/3120-pilot-exit-review-template.md).
 It carries the per-participant and per-task columns, the six verbatim gate lines
 (`GO-1`…`GO-4`, `PRE-1`, `PRE-2`), the cohort quotas and the three research-question rows with
-empty quote slots — but **no participant data and no verdict**. The sessions, the data and the
+empty quote slots — but **no participant data and no verdict**. Its **task script is reworked**
+for the experience this spec ships (bottom command bar + breadcrumbs, a sibling-place move via
+`? Map`, teleport-and-type-without-clicking, the default vs explicitly named target, the card
+label change + attributed undo, and clearing the details-panel Label field with Backspace),
+while the protocol's method, verbatim question set, cohort quotas and six gate lines stand
+unchanged. **The pipeline does not run Gate H**: the sessions, the data and the
 `Verdict: GO|NO-GO` are human-produced (Gate H handoff:
 `spikes/3115-navigation-engine/session-kit/gate-h-input-template.md` →
 `.opencode/tmp/3115/sessions/participant-notes.md`), and
-`spikes/3115-navigation-engine/session-protocol.md` is reused verbatim and is not edited by
-this spec.
+`spikes/3115-navigation-engine/session-protocol.md` is reused verbatim for method/questions/
+quotas/gate lines and is not edited by this spec.
 
 **This document records no pilot verdict and no session result.** The P1 comparator is the
 documented qualitative baseline in `docs/UX_FLUENCY_RESEARCH.md:544,550-552,614` (P1 ran no

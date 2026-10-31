@@ -1,6 +1,8 @@
 # ADR-3: Launcher-Only Conversation Surface
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-8](0008-teleport-attached-companion-turn.md)
+  (the launcher is no longer the conversation surface; the teleport-attached instruction box is,
+  and the launcher is launch/search + global commands only)
 
 ## Context
 
