@@ -842,7 +842,7 @@ manual-pass artifact and the cross-surface composite is `ui/__tests__/a11y.test.
   control) is never touched. No prop, no `document`/`window` listener, no timer, no state
   write — `ui/usePlaceTransitionFocus.ts`.
 
-## P6 launcher + agent bridge (Spec #3120)
+## P6 command bar, composer + agent bridge (Spec #3120)
 
 > **Numbering note.** This is a phase section appended after the thirteen numbered contract
 > sections. Its subsections are `§P6.1`–`§P6.9` and never renumber §1–§13 or the appended P4
