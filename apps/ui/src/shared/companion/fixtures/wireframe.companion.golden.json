@@ -423,7 +423,7 @@
         {
           "id": "app.ask",
           "label": "Ask",
-          "description": "Open the launcher to ask the companion.",
+          "description": "Open the companion instruction box for the Wireframe application.",
           "risk": "safe",
           "args": [],
           "aliases": []
@@ -627,6 +627,60 @@
           "aliases": []
         },
         {
+          "id": "wireframe.element.setLabel",
+          "label": "Set label",
+          "description": "Set the selected button or card label (defaults to the primary selection).",
+          "risk": "mutating",
+          "args": [
+            {
+              "name": "id",
+              "required": false
+            },
+            {
+              "name": "value",
+              "required": false,
+              "allowEmpty": true
+            }
+          ],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.element.setText",
+          "label": "Set text",
+          "description": "Set the selected text element contents (defaults to the primary selection).",
+          "risk": "mutating",
+          "args": [
+            {
+              "name": "id",
+              "required": false
+            },
+            {
+              "name": "value",
+              "required": false,
+              "allowEmpty": true
+            }
+          ],
+          "aliases": []
+        },
+        {
+          "id": "wireframe.element.setPlaceholder",
+          "label": "Set placeholder",
+          "description": "Set the selected input placeholder (defaults to the primary selection).",
+          "risk": "mutating",
+          "args": [
+            {
+              "name": "id",
+              "required": false
+            },
+            {
+              "name": "value",
+              "required": false,
+              "allowEmpty": true
+            }
+          ],
+          "aliases": []
+        },
+        {
           "id": "wireframe.element.move",
           "label": "Move",
           "description": "Move the given element ids by a page-space delta.",
@@ -692,7 +746,8 @@
             },
             {
               "name": "value",
-              "required": false
+              "required": false,
+              "allowEmpty": true
             }
           ],
           "aliases": []
@@ -1010,6 +1065,9 @@
         "wireframe.element.toggleLock",
         "wireframe.element.toggleVisible",
         "wireframe.element.rename",
+        "wireframe.element.setLabel",
+        "wireframe.element.setText",
+        "wireframe.element.setPlaceholder",
         "wireframe.element.move",
         "wireframe.element.resize",
         "wireframe.element.setField",
@@ -1062,7 +1120,7 @@
             {
               "id": "app.ask",
               "label": "Ask",
-              "description": "Open the launcher to ask the companion.",
+              "description": "Open the companion instruction box for the Wireframe application.",
               "risk": "safe",
               "args": [],
               "aliases": []
@@ -1263,6 +1321,57 @@
               "description": "Focus and select the selected element name field in the details view.",
               "risk": "safe",
               "args": [],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.element.setLabel",
+              "label": "Set label",
+              "description": "Set the selected button or card label (defaults to the primary selection).",
+              "risk": "mutating",
+              "args": [
+                {
+                  "name": "id",
+                  "required": false
+                },
+                {
+                  "name": "value",
+                  "required": false
+                }
+              ],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.element.setText",
+              "label": "Set text",
+              "description": "Set the selected text element contents (defaults to the primary selection).",
+              "risk": "mutating",
+              "args": [
+                {
+                  "name": "id",
+                  "required": false
+                },
+                {
+                  "name": "value",
+                  "required": false
+                }
+              ],
+              "aliases": []
+            },
+            {
+              "id": "wireframe.element.setPlaceholder",
+              "label": "Set placeholder",
+              "description": "Set the selected input placeholder (defaults to the primary selection).",
+              "risk": "mutating",
+              "args": [
+                {
+                  "name": "id",
+                  "required": false
+                },
+                {
+                  "name": "value",
+                  "required": false
+                }
+              ],
               "aliases": []
             },
             {

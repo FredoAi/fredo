@@ -66,10 +66,10 @@ describe('buildLauncherPaletteModel — P3 order parity (R-2.1)', () => {
   it('emits every declared verb once, in the shipped derivePalette order', () => {
     const palette = model();
     const shipped = derivePalette(wireframeSurface, snapshot(), []);
-    // The shipped surface: 6 unpublished place-entry verbs + 49 published verbs.
-    expect(palette.rows).toHaveLength(55);
+    // The shipped surface: 6 unpublished place-entry verbs + 52 published verbs.
+    expect(palette.rows).toHaveLength(58);
     expect(palette.rows.map((row) => row.verbId)).toEqual(shipped.map((row) => row.verbId));
-    expect(new Set(palette.rows.map((row) => row.verbId)).size).toBe(55);
+    expect(new Set(palette.rows.map((row) => row.verbId)).size).toBe(58);
     expect(palette.appId).toBe('wireframe');
   });
 
@@ -146,7 +146,7 @@ describe('buildLauncherPaletteModel — recents (R-2.1)', () => {
       'wireframe.element.toggleLock',
       'stale.verb',
     ]);
-    expect(palette.rows).toHaveLength(55);
+    expect(palette.rows).toHaveLength(58);
     expect(palette.rows[0].verbId).toBe('wireframe.element.toggleLock');
     expect(palette.rows[0].section).toBe('recent');
     expect(palette.rows.filter((row) => row.section === 'recent')).toHaveLength(1);
@@ -169,8 +169,8 @@ describe('buildLauncherPaletteModel — recents (R-2.1)', () => {
     ];
     const palette = model(recents);
     expect(palette.recentsCount).toBe(PALETTE_MAX_RECENTS);
-    expect(palette.rows).toHaveLength(55);
-    expect(palette.groups.flatMap((group) => group.rows)).toHaveLength(55);
+    expect(palette.rows).toHaveLength(58);
+    expect(palette.groups.flatMap((group) => group.rows)).toHaveLength(58);
   });
 });
 

@@ -281,11 +281,11 @@ describe('buildCompanionManifest — navigation source (Spec #3120 ST-2)', () =>
     expect(surface.appName).toBe('Wireframe');
     expect(surface.skillName).toBe('wireframe');
 
-    // The shipped declaration has 55 verbs; the 6 place-entry verbs are publish:false.
-    expect(wireframeSurface.verbs).toHaveLength(55);
-    expect(published).toHaveLength(49);
-    expect(surface.commands).toHaveLength(50);
-    expect(companionActionIds(surface)).toHaveLength(51);
+    // The shipped declaration has 58 verbs; the 6 place-entry verbs are publish:false.
+    expect(wireframeSurface.verbs).toHaveLength(58);
+    expect(published).toHaveLength(52);
+    expect(surface.commands).toHaveLength(53);
+    expect(companionActionIds(surface)).toHaveLength(54);
 
     // Declaration order, then the engine undo, then listActions in the enum only.
     expect(surface.commands.map((command) => command.id)).toStrictEqual([
@@ -406,9 +406,9 @@ describe('buildCompanionManifest — navigation source (Spec #3120 ST-2)', () =>
     expect(fixture.navigation.manifest).toStrictEqual(
       buildCompanionManifest([wireframeFeature], [wireframeSurface]),
     );
-    expect(fixture.navigation.surface.commands).toHaveLength(50);
-    expect(fixture.navigation.surface.actionIds).toHaveLength(51);
-    expect(fixture.navigation.manifest.surfaces[0].commands).toHaveLength(50);
+    expect(fixture.navigation.surface.commands).toHaveLength(53);
+    expect(fixture.navigation.surface.actionIds).toHaveLength(54);
+    expect(fixture.navigation.manifest.surfaces[0].commands).toHaveLength(53);
   });
 });
 

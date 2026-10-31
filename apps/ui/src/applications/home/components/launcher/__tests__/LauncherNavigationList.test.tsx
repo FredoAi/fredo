@@ -102,7 +102,7 @@ describe('LauncherNavigationList — grouped listbox (R-2.1)', () => {
   it('renders every projected row with its data hooks', () => {
     renderList();
     const rows = screen.getAllByTestId(LAUNCHER_PALETTE_ROW_TESTID);
-    expect(rows).toHaveLength(55);
+    expect(rows).toHaveLength(58);
     for (const row of rows) {
       expect(row).toHaveAttribute('role', 'option');
       expect(row).toHaveAttribute('data-nav-verb-id');

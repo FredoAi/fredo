@@ -544,6 +544,9 @@ function availableInSomeContext(verbId: string): boolean {
     context({ selection: selectionOf(1, ['shape']) }),
     context({ selection: selectionOf(1, ['text']) }),
     context({ selection: selectionOf(1, ['button']) }),
+    // Spec #3120 ST-3 — the named text-edit verbs need their own kind contexts.
+    context({ selection: selectionOf(1, ['input']) }),
+    context({ selection: selectionOf(1, ['card']) }),
     context({ selection: selectionOf(2, ['shape', 'shape']) }),
     context({ selection: selectionOf(3, ['shape', 'shape', 'shape']) }),
   ];
@@ -574,7 +577,7 @@ describe('every declared verb is reachable (R-3b / AC3)', () => {
     expect(keyReachable.has('journal.undo')).toBe(true);
     expect(keyReachable.has('journal.redo')).toBe(true);
 
-    // Spec #3120 (P6) — `app.ask` is available; the launcher ships (R-7.1).
+    // Spec #3120 (rework) — `app.ask` is available and opens the companion composer.
     const rootMap = buildNavigationMapModel(wireframeSurface, context());
     const canvasBlock = rootMap.places.find((place) => place.placeId === CANVAS);
     expect(canvasBlock?.verbs.find((verb) => verb.verbId === 'app.ask')?.available).toBe(true);

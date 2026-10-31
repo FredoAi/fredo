@@ -1,7 +1,7 @@
 /**
  * Spec #3119 (P5), ST-3 — the ONE Wireframe surface declaration.
  *
- * Wireframe becomes an ordinary NavigationEngine consumer: places, keys and the 55
+ * Wireframe becomes an ordinary NavigationEngine consumer: places, keys and the 58
  * verbs are data here, not a Wireframe-specific runtime. The shell (ST-4) mounts the
  * P4 `CommandRail` / `NavigationMap` / `ActivityTrail` over this declaration, the
  * pointer gestures (ST-5) and the details view (ST-6) dispatch the SAME verb ids, and
@@ -48,7 +48,7 @@ import type {
   VerbEffect,
 } from '../../shared/navigation';
 
-import { requestLauncherOpen } from '../../shared/navigation/ui/launcherBridge';
+import { requestCompanionComposerOpen } from '../../shared/companion/composerBridge';
 import { runWireframeAction } from './actions/wireframeActions';
 import {
   DEFAULT_ICON_ID,
@@ -372,6 +372,17 @@ function optionalString(name: string, validate?: (value: string) => boolean): Ve
   return { name, type: 'string', required: false, ...(validate === undefined ? {} : { validate }) };
 }
 
+/**
+ * A free-text argument that may legitimately be cleared (Spec #3120 ST-3 / R-4).
+ *
+ * The dispatch funnel rejects a blank/whitespace-only value unless the argument
+ * opts in (ST-1's `allowEmpty`), so a label/text/placeholder edit that backspaces
+ * to `''` must declare this argument or the field can never be emptied.
+ */
+function optionalStringText(name: string): VerbArg {
+  return { name, type: 'string', required: false, allowEmpty: true };
+}
+
 function isSectionPreset(value: string): value is WireframeSectionPreset {
   return value === 'header' || value === 'navbar' || value === 'sidebar' || value === 'footer';
 }
@@ -671,6 +682,28 @@ function setElementField(intent: Intent): VerbEffect {
   return mutate('element.update', { id, patch }, `Set ${field}`, targetsForIds([id]));
 }
 
+/* ─────────────────────── named text-edit verbs (Spec #3120 ST-3) ─────────────────────── */
+
+type WireframeTextField = 'label' | 'text' | 'placeholder';
+
+/**
+ * The unambiguous card-label path (R-4): one verb per text field, defaulting the
+ * target to the PRIMARY selection so a companion instruction needs no element id.
+ * An empty `value` is a real edit (ST-1's `allowEmpty`), never an invalid-args refusal.
+ */
+function setElementText(
+  field: WireframeTextField,
+  label: string,
+): (intent: Intent) => VerbEffect {
+  return (intent) => {
+    const value = intent.args.value;
+    if (value === undefined) return noop(label);
+    const id = intent.args.id ?? primarySelectedId(getSnapshot());
+    if (id === null) return noop(label);
+    return mutate('element.update', { id, patch: { [field]: value } }, label, targetsForIds([id]));
+  };
+}
+
 function updatePage(intent: Intent): VerbEffect {
   const presetArg = intent.args.preset ?? intent.args.page;
   const page: Partial<WireframePage> = {};
@@ -943,6 +976,14 @@ const renamable = (ctx: ContextSnapshot): boolean =>
   ctx.selection.count === 1 &&
   ctx.selection.kinds[0] !== undefined &&
   ['text', 'button', 'input', 'card'].includes(ctx.selection.kinds[0]);
+/** Spec #3120 ST-3 — the text-edit verbs gate on ONE selection of the matching kind. */
+const singleKind =
+  (...kinds: readonly string[]) =>
+  (ctx: ContextSnapshot): boolean =>
+    ctx.selection.count === 1 && kinds.includes(ctx.selection.kinds[0] ?? '');
+const singleLabel = singleKind('button', 'card');
+const singleTextOnly = singleKind('text');
+const singleInput = singleKind('input');
 
 const OBJECT_PAGE = ['page'] as const;
 const OBJECT_ELEMENT = ['element'] as const;
@@ -979,7 +1020,7 @@ function deleteUndo(entry: JournalEntry): VerbEffect {
   };
 }
 
-/* ───────────────────────────── the 55 verbs ───────────────────────────── */
+/* ───────────────────────────── the 58 verbs ───────────────────────────── */
 
 const CANVAS = WIREFRAME_ROOT_PLACE_ID;
 const CREATE = WIREFRAME_CREATE_PLACE_ID;
@@ -1012,15 +1053,20 @@ const VERBS: readonly VerbDescriptor[] = [
   defineVerb({
     id: APP_ASK_VERB_ID,
     title: 'Ask',
-    description: 'Open the launcher to ask the companion.',
+    description: 'Open the companion instruction box for the Wireframe application.',
     objects: OBJECT_PAGE,
     places: [CANVAS],
     risk: 'safe',
-    // Spec #3120 (P6) — the launcher ships; `/ Ask` is a real affordance (R-7.1).
+    // Spec #3120 (rework), ST-3 — Ask is attached to Fredo's instruction composer now,
+    // never the retired launcher surface (R-3, AC4).
     available: always,
     run: () => {
-      // The navigation effect is the perform; the launcher-open bridge is what makes it visible.
-      requestLauncherOpen({ source: 'ask-verb', focus: true });
+      // The navigation effect is the perform; the composer bridge is what makes it visible.
+      requestCompanionComposerOpen({
+        source: 'command-bar-ask',
+        appId: WIREFRAME_SURFACE_APP_ID,
+        focus: true,
+      });
       return navigation('Ask');
     },
   }),
@@ -1241,6 +1287,40 @@ const VERBS: readonly VerbDescriptor[] = [
     available: renamable,
     run: renameSelection,
   }),
+  defineVerb({
+    id: 'wireframe.element.setLabel',
+    title: 'Set label',
+    description: 'Set the selected button or card label (defaults to the primary selection).',
+    objects: OBJECT_ELEMENT,
+    places: [EDIT],
+    risk: 'mutating',
+    available: singleLabel,
+    args: [optionalString('id'), optionalStringText('value')],
+    run: setElementText('label', 'Set label'),
+  }),
+  defineVerb({
+    id: 'wireframe.element.setText',
+    title: 'Set text',
+    description: 'Set the selected text element contents (defaults to the primary selection).',
+    objects: OBJECT_ELEMENT,
+    places: [EDIT],
+    risk: 'mutating',
+    available: singleTextOnly,
+    args: [optionalString('id'), optionalStringText('value')],
+    run: setElementText('text', 'Set text'),
+  }),
+  defineVerb({
+    id: 'wireframe.element.setPlaceholder',
+    title: 'Set placeholder',
+    description:
+      'Set the selected input placeholder (defaults to the primary selection).',
+    objects: OBJECT_ELEMENT,
+    places: [EDIT],
+    risk: 'mutating',
+    available: singleInput,
+    args: [optionalString('id'), optionalStringText('value')],
+    run: setElementText('placeholder', 'Set placeholder'),
+  }),
 
   /* ── geometry + fields (details view / pointer callers) ── */
   defineVerb({
@@ -1283,7 +1363,7 @@ const VERBS: readonly VerbDescriptor[] = [
     places: [EDIT],
     risk: 'mutating',
     available: hasSelection,
-    args: [optionalString('id'), optionalString('field'), optionalString('value')],
+    args: [optionalString('id'), optionalString('field'), optionalStringText('value')],
     run: setElementField,
   }),
   defineVerb({
