@@ -218,6 +218,27 @@ function retiredAppHits(): string[] {
   return hits;
 }
 
+/**
+ * AC6 / R-6.1 — the ADR-7 P8 exit predicate is a RAW `ADP-` grep over `apps/ui/src`
+ * (the AC's own grep does not strip comments). It is therefore a THIRD pass and must
+ * NOT use `stripCode`: the surviving occurrence was exactly a doc-comment mention, which
+ * comment-stripping would hide. Scope is deliberately `apps/ui/src` ONLY — the ADR
+ * deletion ledger (`docs/NAVIGATION_ENGINE.md` §12, `docs/adr/0007*`) legitimately lists
+ * the adapter ids, and `docs/**` is not part of this predicate.
+ *
+ * The guard's own source necessarily contains the token literal; the `ALLOWLIST` above
+ * self-excludes exactly this file (and the five navigation evidence docs of the other
+ * passes), so the scan below never hides a product source.
+ */
+const ADP_SCAN_ROOT = 'apps/ui/src';
+
+function adpHits(files: readonly ScannedFile[] = FILES): string[] {
+  return files
+    .filter((file) => file.path.startsWith(`${ADP_SCAN_ROOT}/`))
+    .filter((file) => file.source.includes('ADP-'))
+    .map((file) => file.path);
+}
+
 describe('legacyAbsence — the tree is non-vacuous', () => {
   it('scans the D-12 roots and thousands of real source files', () => {
     expect(FILES.length).toBeGreaterThan(500);
@@ -264,5 +285,38 @@ describe('legacyAbsence — no retired application reference survives (AC10 / R-
     expect(RETIRED_APP_PATH.test("import '@/applications/browser-preview';")).toBe(true);
     expect(RETIRED_APP_ID.test("const id = 'optimizely';")).toBe(true);
     expect(RETIRED_APP_ID.test('a sequence diagram is not an app')).toBe(false);
+  });
+});
+
+describe('legacyAbsence — no ADP- adapter id in apps/ui/src (AC6 / R-6.1, raw scan)', () => {
+  it('finds zero raw ADP- references in apps/ui/src', () => {
+    expect(adpHits()).toEqual([]);
+  });
+
+  it('scans RAW source (not stripCode), is scoped to apps/ui/src, and self-allowlists only this guard', () => {
+    expect(ADP_SCAN_ROOT).toBe('apps/ui/src');
+
+    // The guard's own token literal is the ONE self-allowlisted path in this scope.
+    expect(
+      ALLOWLIST.has('apps/ui/src/shared/navigation/__tests__/legacyAbsence.test.ts'),
+    ).toBe(true);
+
+    // Non-vacuity: the scan really walks the product source tree.
+    const uiFiles = FILES.filter((file) => file.path.startsWith('apps/ui/src/'));
+    expect(uiFiles.length).toBeGreaterThan(400);
+
+    // Why this pass must be RAW: the surviving occurrence was a COMMENT, which stripCode hides.
+    expect(stripCode('// ADP-15\nconst x = 1;').includes('ADP-')).toBe(false);
+    expect('// ADP-15'.includes('ADP-')).toBe(true);
+
+    // Negative control: a seeded hit in apps/ui/src is found.
+    expect(
+      adpHits([{ path: 'apps/ui/src/shared/navigation/synthetic.ts', source: '// ADP-15' }]),
+    ).toEqual(['apps/ui/src/shared/navigation/synthetic.ts']);
+
+    // The docs ADR ledger is out of the AC predicate and must not be scanned by this pass.
+    expect(
+      adpHits([{ path: 'docs/NAVIGATION_ENGINE.md', source: '| ADP-15 | **DELETED** |' }]),
+    ).toEqual([]);
   });
 });

@@ -6,7 +6,7 @@
  * Identical declarations therefore produce a byte-identical projection (REQ-10.3).
  *
  * This is `shared/navigation`'s OWN type (Reading #8) — it imports nothing from
- * `shared/companion`; unifying the two is ADP-15 / P6 scope.
+ * `shared/companion`; the companion manifest projects THIS projection (one source).
  *
  * PURE: no clock, no DOM, no I/O, no mutation; imports only the leaf vocabulary.
  */
