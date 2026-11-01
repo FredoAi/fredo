@@ -1201,13 +1201,12 @@ mod tests {
         let description = wireframe["function"]["description"]
             .as_str()
             .expect("the description is a string");
-        assert!(description.contains("Fredo Wireframe"));
-        for word in ["create", "draft", "sketch", "visualize"] {
-            assert!(
-                description.contains(word),
-                "the description must name the request class ({word}): {description}"
-            );
-        }
+        // The ONE manifest is the navigation declaration (Spec #3122 P8, ST-3), so
+        // the offer carries the surface's `companion.description` plus the id list.
+        assert!(
+            description.starts_with(surfaces[0].description.as_str()),
+            "the offer must carry the declaration's description: {description}"
+        );
         for command in &surfaces[0].commands {
             assert!(
                 description.contains(&command.id),

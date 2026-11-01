@@ -1346,16 +1346,16 @@ mod tests {
     /// THIS offer must be the generated registry built from the PUBLISHED
     /// surfaces: the three shipped static skills (`open_app`, `close_app`,
     /// `doom_mode`) FIRST, then the generated `wireframe` skill in registration
-    /// order — with a DIRECTIVE description naming the request class
-    /// (draft/sketch/visualize) and every published action id, so "let's create a
-    /// new wireframe for <app>" is callable.
+    /// order — with the PROJECTION's description plus every published action id
+    /// (Spec #3122 P8: the ONE manifest is the navigation declaration), so
+    /// "let's create a new wireframe for <app>" is callable.
     ///
     /// Round-2 code fails this on the first assertion: the live path offered
     /// `SkillRegistry::with_app_control_and_doom()` — three tools, no
     /// `wireframe` function at all, which is why the model could only reply in
     /// prose.
     #[test]
-    fn the_live_offer_carries_the_generated_wireframe_skill_with_its_directive_description() {
+    fn the_live_offer_carries_the_generated_wireframe_skill_with_its_projected_description() {
         use crate::infrastructure::companion::surface_registry::{
             build_companion_skill_registry, CompanionManifest,
         };
@@ -1418,18 +1418,17 @@ mod tests {
             .collect();
         assert_eq!(offered, expected, "every published id then listActions");
 
-        // The description is a DIRECTIVE: the request class + the draft action +
-        // every published id (an offer that only lists ids is a passive sentence).
+        // The description is the PROJECTION's description plus the generated id
+        // list. Since P8 the ONE manifest is the navigation declaration, so the
+        // directive text comes from the surface's `companion.description` — never
+        // a second hand-authored copy (Spec #3122 P8, ST-3).
         let description = wireframe["function"]["description"]
             .as_str()
             .expect("the description is a string");
-        assert!(description.contains("Fredo Wireframe"));
-        for word in ["create", "draft", "sketch", "visualize"] {
-            assert!(
-                description.contains(word),
-                "the description must name the request class ({word}): {description}"
-            );
-        }
+        assert!(
+            description.starts_with(surfaces[0].description.as_str()),
+            "the offer must carry the declaration's description: {description}"
+        );
         for command in &surfaces[0].commands {
             assert!(
                 description.contains(&command.id),

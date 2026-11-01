@@ -9,9 +9,10 @@
  *   - a surface without a `companion` block publishes nothing;
  *   - duplicate registration is FIRST-WINS by appId;
  *   - every projected command carries all six fields (G-418);
- *   - the committed golden navigation projection deep-equals the builder.
+ *   - the committed golden fixture (`schemaVersion: 3`) is exactly the builder output,
+ *     with exactly three top-level keys and the generated `offer` enum.
  *
- * The fixture migration to `schemaVersion: 3` and the cross-app parity test are ST-3.
+ * The cross-app parity proof lives in `manifest.parity.test.ts` (ST-3).
  */
 
 import { readFileSync } from 'fs';
@@ -19,7 +20,6 @@ import { resolve } from 'path';
 import { describe, expect, it } from 'vitest';
 
 import { wireframeSurface } from '@/applications/wireframe/wireframeSurface';
-import { buildCompanionManifest as buildNavigationManifest } from '@/shared/navigation/manifest';
 import type { Surface as NavigationSurface } from '@/shared/navigation/types';
 import {
   COMPANION_LIST_ACTIONS_ID,
@@ -36,8 +36,9 @@ const FIXTURE_PATH = resolve(
 interface GoldenFixture {
   readonly schemaVersion: number;
   readonly staticOffer: readonly unknown[];
-  /** Retained legacy surface: the cross-language Rust companion-offer contract. */
+  /** The ONE navigation projection of the shipped Wireframe surface. */
   readonly manifest: CompanionManifest;
+  /** The generated `wireframe` skill rendered from that manifest. */
   readonly offer: {
     readonly name: string;
     readonly description: string;
@@ -49,11 +50,6 @@ interface GoldenFixture {
       };
       readonly required: readonly string[];
     };
-  };
-  /** The navigation projection and its unified companion manifest. */
-  readonly navigation: {
-    readonly surface: ReturnType<typeof buildNavigationManifest>;
-    readonly manifest: CompanionManifest;
   };
 }
 
@@ -188,31 +184,43 @@ describe('buildCompanionManifest — the ONE navigation source', () => {
     expect(source).not.toMatch(/@tauri-apps\/api/);
   });
 
-  it('the golden navigation projection deep-equals the builder', () => {
+  it('the golden fixture is exactly the builder output at schemaVersion 3', () => {
     const fixture = readFixture();
-    expectAllSixKeys(fixture.navigation.surface);
 
-    expect(fixture.navigation.surface).toStrictEqual(buildNavigationManifest(wireframeSurface));
-    expect(fixture.navigation.manifest).toStrictEqual(buildCompanionManifest([wireframeSurface]));
-    expect(fixture.navigation.surface.commands).toHaveLength(53);
-    expect(fixture.navigation.surface.actionIds).toHaveLength(54);
-    expect(fixture.navigation.manifest.surfaces[0].commands).toHaveLength(53);
+    // Exactly three payload keys — the legacy second manifest/offer and the
+    // `navigation` wrapper are DELETED (AC4).
+    expect(fixture.schemaVersion).toBe(3);
+    expect(Object.keys(fixture)).toStrictEqual(['schemaVersion', 'staticOffer', 'manifest', 'offer']);
+    expect(fixture.staticOffer).toHaveLength(3);
+
+    const built = buildCompanionManifest([wireframeSurface]);
+    expect(fixture.manifest).toStrictEqual(built);
+    expect(fixture.manifest.surfaces).toHaveLength(1);
+    expect(fixture.manifest.surfaces[0].commands).toHaveLength(53);
+
+    // The generated offer enum: every id in order, then exactly one listActions.
+    const commandIds = fixture.manifest.surfaces[0].commands.map((command) => command.id);
+    expect(fixture.offer.parameters.properties.action.enum).toStrictEqual([
+      ...commandIds,
+      COMPANION_LIST_ACTIONS_ID,
+    ]);
+    expect(fixture.offer.name).toBe('wireframe');
+    expect(fixture.offer.parameters.required).toStrictEqual(['action']);
+    expect(fixture.offer.parameters.properties.arguments).toStrictEqual({ type: 'object' });
+
+    // G-418: every committed projected command carries all six fields.
+    for (const command of fixture.manifest.surfaces[0].commands) {
+      expect(Object.keys(command)).toStrictEqual([
+        'id',
+        'label',
+        'description',
+        'risk',
+        'args',
+        'aliases',
+      ]);
+    }
   });
 });
-
-/** G-418 guard: every projected navigation command carries all six fields. */
-function expectAllSixKeys(manifest: ReturnType<typeof buildNavigationManifest>): void {
-  for (const command of manifest.commands) {
-    expect(Object.keys(command)).toStrictEqual([
-      'id',
-      'label',
-      'description',
-      'risk',
-      'args',
-      'aliases',
-    ]);
-  }
-}
 
 describe('companionActionIds', () => {
   it('appends the reserved listActions id after every published command id', () => {
