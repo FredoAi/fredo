@@ -2756,7 +2756,8 @@ Verdict: **PASS** — ST-8/ST-9 release the turn-scoped status on every hold-can
 
 - [ ] F-144: Run `apps/ui/src/shared/companion/__tests__/manifest.test.ts`; read
       `buildCompanionManifest` + `collectCompanionManifest` + `companionActionIds`.
-  **Expected:** one surface per application whose `commandSurface.companion` is declared,
+  **Expected:** one surface per registered navigation declaration whose `companion` block is
+      declared (P8 deletes the legacy command-surface projection),
       **de-duplicated by `appId` FIRST-WINS** (`registerApplication` can push one feature twice; the
       builder collapses it — the host still rejects a duplicate `appId` inside ONE publish, F-161);
       `commands` = the surface's command ids **in declaration order**; `appName = feature.name`,
