@@ -4,7 +4,7 @@
  * One renderer for the declaration's key strings (`[a-z0-9]`, `Escape|Enter|Tab`) and for
  * the two display glyphs (`?` / `/`). The declaration's bindable tokens come from the
  * resolver's grammar, so the display + spoken forms reuse the shipped `displayStroke` /
- * `accessibleSequence` helpers (`shared/hotkeys/keys.ts`) rather than inventing a second
+ * `accessibleSequence` helpers (`shared/navigation/keys.ts`) rather than inventing a second
  * key parser (P4 data-flow fact 10).
  *
  * Accessibility (R-7.2 / QA Q7-02):
@@ -25,8 +25,8 @@ import React from 'react';
 import { chakra } from '@chakra-ui/react';
 
 import { tint } from '../../utils/colorTint';
-import { accessibleSequence, displayStroke, parseSequence } from '../../hotkeys/keys';
-import type { Platform } from '../../hotkeys/types';
+import { accessibleSequence, displayStroke, parseSequence } from '../keys';
+import type { Platform } from '../types';
 import {
   NAV_GLYPH_ACCESSIBLE_NAME,
   NAV_KEYCAP_GROUP_TESTID,

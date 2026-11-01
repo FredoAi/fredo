@@ -109,11 +109,22 @@ describe('appCommandListReply (R-4a/R-4b)', () => {
     const surface = fixture.manifest.surfaces[0];
 
     const reply = appCommandListReply(surface);
-    expect(reply.startsWith('Wireframe actions: wireframe.add.text — Add a text element (body or heading style); ')).toBe(true);
+    // The fixture is the ONE navigation projection (declaration order), so the
+    // first command comes from the declaration — never a hand-copied legacy id.
+    const first = surface.commands[0];
+    const last = surface.commands[surface.commands.length - 1];
+    expect(
+      reply.startsWith(`Wireframe actions: ${first.id} \u2014 ${first.description}; `),
+    ).toBe(true);
+    expect(reply.endsWith(`${last.id} \u2014 ${last.description}`)).toBe(true);
     expect(reply).not.toContain('listActions');
-    expect(reply.split('; ')).toHaveLength(surface.commands.length);
+    // Every published command appears, in declaration order.
+    let cursor = -1;
     for (const command of surface.commands) {
-      expect(reply).toContain(`${command.id} — ${command.description}`);
+      const entry = `${command.id} \u2014 ${command.description}`;
+      const at = reply.indexOf(entry, cursor + 1);
+      expect(at).toBeGreaterThan(cursor);
+      cursor = at;
     }
   });
 });

@@ -234,15 +234,34 @@ fn static_skills_are_byte_identical_to_the_pre_change_baseline() {
 /// formatter (`null.trim()`) threw, leaving the turn unanswered.
 #[test]
 fn the_published_wire_omits_absent_optionals_instead_of_emitting_null() {
-    // The shared golden fixture IS the published wire shape: re-serializing the
-    // deserialized manifest must reproduce its `manifest` object verbatim.
+    // The shared golden fixture is the PROJECTION (Spec #3122 P8: every projected
+    // command carries all six fields, so `aliases` is `[]` when a verb declares
+    // none). The WIRE contract still omits an empty `aliases` list — so the
+    // serialized manifest must equal the fixture's `manifest` with those empty
+    // lists removed, and must never emit `null`.
     let fixture = fixture();
     let raw: Value = serde_json::from_str(GOLDEN_FIXTURE).expect("the fixture parses as JSON");
+    let mut wire_expected = raw["manifest"].clone();
+    for surface in wire_expected["surfaces"]
+        .as_array_mut()
+        .expect("the fixture manifest carries surfaces")
+    {
+        for command in surface["commands"]
+            .as_array_mut()
+            .expect("each surface carries commands")
+        {
+            let object = command.as_object_mut().expect("a command is an object");
+            if object.get("aliases") == Some(&json!([])) {
+                object.remove("aliases");
+            }
+        }
+    }
     assert_eq!(
         serde_json::to_value(&fixture.manifest).expect("the manifest serializes"),
-        raw["manifest"],
-        "the serialized manifest must equal the fixture's `manifest` verbatim \
-         (an absent optional is an ABSENT key, never `null`)"
+        wire_expected,
+        "the serialized manifest must equal the fixture's `manifest` on the wire \
+         (an absent optional is an ABSENT key, never `null`; an empty aliases list \
+         is absent on the wire, present as `[]` in the projection)"
     );
 
     // `list_label: None` => no `listLabel` key at all.

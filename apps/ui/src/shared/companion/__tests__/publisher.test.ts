@@ -17,15 +17,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   getApplications,
-  registerApplication,
   resetApplicationRegistryForTests,
 } from '@/applications/applicationRegistry';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
-import type { FredoApplicationClass } from '@/shared/classes';
-import type {
-  ApplicationCommandSpec,
-  ApplicationCommandSurface,
-} from '@/shared/hotkeys/commandSurface';
 import type { NavigationHost } from '@/shared/navigation/ui/host';
 import { registerNavigationHost } from '@/shared/navigation/ui/hostRegistry';
 import type { Surface as NavigationSurface } from '@/shared/navigation/types';
@@ -36,19 +30,6 @@ import {
   publishAppCommandSurfaces,
   resetAppCommandPublisherForTests,
 } from '../publisher';
-
-function command(id: string): ApplicationCommandSpec {
-  return { id, title: id, description: `Do ${id}`, args: [], run: () => true };
-}
-
-function feature(id: string, suffix: string): FredoApplicationClass {
-  const commandSurface: ApplicationCommandSurface = {
-    modes: [],
-    commands: [command(`${id}.${suffix}`)],
-    companion: { description: `${id} directive.` },
-  };
-  return { id, name: id, commandSurface } as unknown as FredoApplicationClass;
-}
 
 /** Minimal navigation surface (one published verb + a companion block). */
 function navSurface(appId: string): NavigationSurface {
@@ -108,7 +89,7 @@ afterEach(() => {
 
 describe('publishAppCommandSurfaces', () => {
   it('sends the wire shape { manifest: { surfaces } }', async () => {
-    registerApplication(feature('alpha', 'one'));
+    registerNav('alpha');
 
     await publishAppCommandSurfaces();
 
@@ -124,7 +105,7 @@ describe('publishAppCommandSurfaces', () => {
   });
 
   it('does not re-send an identical manifest', async () => {
-    registerApplication(feature('alpha', 'one'));
+    registerNav('alpha');
 
     await publishAppCommandSurfaces();
     await publishAppCommandSurfaces();
@@ -133,7 +114,7 @@ describe('publishAppCommandSurfaces', () => {
   });
 
   it('swallows an invoke failure and retries on the next attempt', async () => {
-    registerApplication(feature('alpha', 'one'));
+    registerNav('alpha');
     invoke.mockRejectedValueOnce(new Error('host offline'));
 
     await expect(publishAppCommandSurfaces()).resolves.toBeUndefined();
@@ -149,9 +130,9 @@ describe('installAppCommandSurfacePublisher', () => {
   it('coalesces a burst of registrations into ONE invoke per task', async () => {
     installAppCommandSurfacePublisher();
 
-    registerApplication(feature('alpha', 'one'));
-    registerApplication(feature('beta', 'one'));
-    registerApplication(feature('gamma', 'one'));
+    registerNav('alpha');
+    registerNav('beta');
+    registerNav('gamma');
 
     await flush();
 
@@ -161,8 +142,8 @@ describe('installAppCommandSurfacePublisher', () => {
     });
   });
 
-  it('publishes once at install when applications are already registered', async () => {
-    registerApplication(feature('alpha', 'one'));
+  it('publishes once at install when a navigation host is already registered', async () => {
+    registerNav('alpha');
 
     installAppCommandSurfacePublisher();
     await flush();
@@ -182,7 +163,7 @@ describe('installAppCommandSurfacePublisher', () => {
     await flush();
     expect(invoke).not.toHaveBeenCalled();
 
-    registerApplication(feature('alpha', 'one'));
+    registerNav('alpha');
     await flush();
 
     expect(invoke).toHaveBeenCalledTimes(1);
@@ -190,15 +171,15 @@ describe('installAppCommandSurfacePublisher', () => {
 
   it('skips a duplicate registration that yields an identical manifest', async () => {
     installAppCommandSurfacePublisher();
-    const alpha = feature('alpha', 'one');
+    const dispose = registerNav('alpha');
 
-    registerApplication(alpha);
     await flush();
     expect(invoke).toHaveBeenCalledTimes(1);
 
-    // Bundle mocks register twice; the builder de-dupes, so the manifest is
-    // unchanged and must not be re-sent.
-    registerApplication(alpha);
+    // A remount re-registers the same surface; the projection is unchanged and
+    // must not be re-sent.
+    dispose();
+    registerNav('alpha');
     await flush();
     expect(invoke).toHaveBeenCalledTimes(1);
   });
@@ -207,19 +188,19 @@ describe('installAppCommandSurfacePublisher', () => {
     const releaseFirst = installAppCommandSurfacePublisher();
     const releaseSecond = installAppCommandSurfacePublisher();
 
-    registerApplication(feature('alpha', 'one'));
+    registerNav('alpha');
     await flush();
     expect(invoke).toHaveBeenCalledTimes(1);
 
     // One install remains: still subscribed.
     releaseFirst();
-    registerApplication(feature('beta', 'one'));
+    registerNav('beta');
     await flush();
     expect(invoke).toHaveBeenCalledTimes(2);
 
     // Last release unsubscribes: no further publishes.
     releaseSecond();
-    registerApplication(feature('gamma', 'one'));
+    registerNav('gamma');
     await flush();
     expect(invoke).toHaveBeenCalledTimes(2);
   });

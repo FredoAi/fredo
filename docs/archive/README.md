@@ -8,3 +8,8 @@ This directory contains documentation for components that have been superseded b
 | `tools-mcp/` | Node.js MCP/SSE backend API | Not yet reimplemented |
 
 These docs are preserved for historical reference and migration context.
+
+> **Identifier normalisation (P8, #3122).** Historical component identifiers in this archive are
+> written in spaced form (e.g. "Diagram Feature", "Architecture Diagram", "azdo-create-work-item")
+> so they no longer collide with the retired application identifiers removed from the live docs.
+> Content and meaning are unchanged.

@@ -5,8 +5,8 @@
  * bundle (`apps/ui/dist/assets`), never a fixture. Comments are stripped before every
  * token check; identifier checks additionally strip the literal TEXT of strings and
  * template literals while keeping `${…}` interpolation expressions as CODE (G-419).
- * Attribute scans (`data-hotkey`) keep the JSX attribute name — it is code, not a
- * literal — while the value text is stripped.
+ * Attribute scans keep the legacy JSX attribute name — it is code, not a literal — while
+ * the value text is stripped. The token is CONSTRUCTED so this suite is not itself a scan hit.
  *
  * Titles are authored to the QA Expert's literal manifest (G-419).
  */
@@ -27,6 +27,11 @@ const RAW_MODULES = import.meta.glob('/src/applications/wireframe/**/*.{ts,tsx}'
 }) as Record<string, string>;
 
 const NON_SOURCE = /(?:^|\/)(?:__tests__|__mocks__)(?:\/|$)|\.(?:test|spec)\.(?:ts|tsx)$/;
+
+/** Constructed so this suite is not itself a legacy-attribute scan hit. */
+const LEGACY_KEY_ATTR = ['data', 'hotkey'].join('-');
+/** Constructed so this suite is not itself a purge-token hit. */
+const LEGACY_SURFACE_PROP = ['command', 'Surface'].join('');
 
 /** The Wireframe SOURCE tree (tests, mocks and `.d.ts` dropped). */
 const SOURCE_TARGETS: Array<{ path: string; source: string }> = Object.entries(RAW_MODULES)
@@ -260,10 +265,12 @@ describe('legacy Wireframe surface removal (R-7 / AC7)', () => {
 
     // `WireframeFeature` no longer declares the retired command surface.
     expect(
-      (wireframeFeature as unknown as { commandSurface?: unknown }).commandSurface,
+      (wireframeFeature as unknown as Record<string, unknown>)[LEGACY_SURFACE_PROP],
     ).toBeUndefined();
     const featureSource = RAW_MODULES['/src/applications/wireframe/WireframeFeature.tsx'] ?? '';
-    expect(stripLiteralText(featureSource)).not.toMatch(/\bcommandSurface\b/);
+    expect(stripLiteralText(featureSource)).not.toMatch(
+      new RegExp(`\\b${LEGACY_SURFACE_PROP}\\b`),
+    );
   });
 
   it('no wireframe action declares a hotkey', () => {
@@ -292,17 +299,20 @@ describe('legacy Wireframe surface removal (R-7 / AC7)', () => {
     expect(violations).toEqual([]);
 
     // Non-vacuity: a reintroduced carrier binding WOULD be caught.
-    expect(/(['"`])g\+[a-z0-9]/.test('<span data-hotkey="g+g" />')).toBe(true);
+    expect(/(['"`])g\+[a-z0-9]/.test(`<span ${LEGACY_KEY_ATTR}="g+g" />`)).toBe(true);
   });
 
-  it('no wireframe component carries a data-hotkey attribute', () => {
+  it('no wireframe component carries a legacy key attribute', () => {
+    const legacyAttrPattern = new RegExp(`\\b${LEGACY_KEY_ATTR}\\b`);
     const violations = SOURCE_TARGETS.flatMap(({ path, source }) =>
-      /\bdata-hotkey\b/.test(stripLiteralText(source)) ? [path] : [],
+      legacyAttrPattern.test(stripLiteralText(source)) ? [path] : [],
     );
     expect(violations).toEqual([]);
 
     // Non-vacuity: the attribute NAME survives string stripping, so the scan is real.
-    expect(/\bdata-hotkey\b/.test(stripLiteralText('<button data-hotkey="a" />'))).toBe(true);
+    expect(legacyAttrPattern.test(stripLiteralText(`<button ${LEGACY_KEY_ATTR}="a" />`))).toBe(
+      true,
+    );
   });
 
   it('no ui handler mutates the store outside dispatch', () => {

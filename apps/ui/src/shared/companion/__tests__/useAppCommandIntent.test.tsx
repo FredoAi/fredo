@@ -1,5 +1,6 @@
 /**
- * The generic application-side intent hook (Spec #3099, ST-6).
+ * The generic application-side intent hook (Spec #3099, ST-6; navigation-only since
+ * Spec #3122 P8 ST-2).
  *
  * Pins:
  *  - listener FIRST, then the take-on-mount drain (an intent queued before the
@@ -7,10 +8,12 @@
  *  - exactly-once per `requestId` across a remount (module-scoped ledger, never
  *    a React ref);
  *  - intents addressed to another `appId` are ignored (no cross-app drain);
- *  - the executor outcome mapping (`performed`/`noop`/`rejected`/`failed` ->
+ *  - the navigation-funnel outcome mapping (`performed`/`noop`/`rejected`/`failed` ->
  *    `Performed`/`Noop`/`Invalid`/`Failed`) and the `performed` list rule;
  *  - EVERY intent is answered with `app_command_intent_result` (never a silent
- *    drop), including a thrown `run`.
+ *    drop), including a thrown `run`;
+ *  - an intent addressed to an app with NO navigation host reports `Invalid`
+ *    (the legacy `executeCommand` fallback is retired).
  */
 
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
@@ -28,11 +31,6 @@ vi.mock('../../utils/adapterBridge', () => ({
   },
 }));
 
-import {
-  registerApplication,
-  resetApplicationRegistryForTests,
-} from '@/applications/applicationRegistry';
-import type { FredoApplicationClass } from '@/shared/classes';
 import type { DispatchResult, Intent, Surface } from '@/shared/navigation';
 import {
   registerNavigationHost,
@@ -53,29 +51,66 @@ type Handler = (payload: unknown) => void;
 
 const APP_ID = 'demo';
 
+const EMPTY_SURFACE: Surface = {
+  tree: { appId: APP_ID, root: 'root', places: [], directAliases: {} },
+  verbs: [],
+  companion: null,
+};
+
+const PERFORMED = (verbId: string): DispatchResult => ({
+  status: 'performed',
+  entry: { verbId } as never,
+});
+
+/** Every registered host disposer for this test. */
+let hostDisposers: Array<() => void> = [];
+
+/**
+ * Register a stub navigation host for the demo app (the ONLY execution path now).
+ * Its `runIntent` models the declared verbs the tests drive.
+ */
 function registerDemo(overrides: {
   add?: () => void | boolean | Promise<void | boolean>;
   needs?: () => void | boolean | Promise<void | boolean>;
 } = {}): { add: ReturnType<typeof vi.fn> } {
   const add = vi.fn(overrides.add ?? (() => true));
-  registerApplication({
-    id: APP_ID,
-    name: 'Demo',
-    showable: true,
-    commandSurface: {
-      modes: [],
-      commands: [
-        { id: 'demo.add', title: 'Add', description: 'Add a widget', args: [], run: add },
-        {
-          id: 'demo.needs',
-          title: 'Needs',
-          description: 'Needs a name',
-          args: [{ name: 'name', required: true }],
-          run: vi.fn(overrides.needs ?? (() => true)),
-        },
-      ],
-    },
-  } as unknown as FredoApplicationClass);
+  const needs = vi.fn(overrides.needs ?? (() => true));
+
+  const runIntent = vi.fn(async (next: Intent): Promise<DispatchResult> => {
+    if (next.verbId === 'demo.add') {
+      try {
+        const result = await add();
+        return result === false
+          ? { status: 'noop', code: 'did-nothing', message: null }
+          : PERFORMED(next.verbId);
+      } catch {
+        return { status: 'failed', code: 'failed-run' };
+      }
+    }
+    if (next.verbId === 'demo.needs') {
+      const keys = Object.keys(next.args);
+      const name = next.args.name;
+      if (keys.some((key) => key !== 'name') || typeof name !== 'string' || name.trim() === '') {
+        return { status: 'rejected', code: 'invalid-args' };
+      }
+      try {
+        const result = await needs();
+        return result === false
+          ? { status: 'noop', code: 'did-nothing', message: null }
+          : PERFORMED(next.verbId);
+      } catch {
+        return { status: 'failed', code: 'failed-run' };
+      }
+    }
+    return { status: 'rejected', code: 'unknown-verb' };
+  });
+
+  const unregister = registerNavigationHost({
+    appId: APP_ID,
+    surface: EMPTY_SURFACE,
+    host: { runIntent } as unknown as NavigationHost,
+  });
+  hostDisposers.push(unregister);
   return { add };
 }
 
@@ -108,7 +143,7 @@ let addSpy: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   handlers = {};
   callOrder = [];
-  resetApplicationRegistryForTests();
+  hostDisposers = [];
   resetAppCommandIntentLedgerForTests();
   addSpy = registerDemo().add;
   invokeMock.mockReset();
@@ -127,7 +162,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  resetApplicationRegistryForTests();
+  for (const dispose of hostDisposers.splice(0)) dispose();
   resetAppCommandIntentLedgerForTests();
 });
 
@@ -241,7 +276,7 @@ describe('exactly once (module-scoped ledger)', () => {
   });
 });
 
-describe('outcome mapping (R-2/R-3/R-3c/R-3d)', () => {
+describe('outcome mapping (the ONE navigation funnel)', () => {
   it('performed -> Performed with the executed id', async () => {
     await handleAppCommandIntent(intent({ requestId: 'p' }));
     expect(resultCalls()[0][1]).toMatchObject({
@@ -251,7 +286,6 @@ describe('outcome mapping (R-2/R-3/R-3c/R-3d)', () => {
   });
 
   it('run returning false -> Noop with an empty performed list', async () => {
-    resetApplicationRegistryForTests();
     registerDemo({ add: () => false });
 
     await handleAppCommandIntent(intent({ requestId: 'n' }));
@@ -259,7 +293,6 @@ describe('outcome mapping (R-2/R-3/R-3c/R-3d)', () => {
   });
 
   it('a thrown run -> Failed (never a silent drop)', async () => {
-    resetApplicationRegistryForTests();
     registerDemo({
       add: () => {
         throw new Error('boom');
@@ -275,7 +308,7 @@ describe('outcome mapping (R-2/R-3/R-3c/R-3d)', () => {
     expect(resultCalls()[0][1]).toMatchObject({ outcome: 'Invalid', performed: [] });
   });
 
-  it('a contract-failing argument is rejected BEFORE run (R-3d)', async () => {
+  it('a contract-failing argument is rejected BEFORE the verb runs', async () => {
     await handleAppCommandIntent(
       intent({ requestId: 'args', action: 'demo.needs', arguments: { bogus: 'x' } }),
     );
@@ -285,6 +318,15 @@ describe('outcome mapping (R-2/R-3/R-3c/R-3d)', () => {
   it('a missing arguments value is the no-argument shape, never a prompt', async () => {
     await handleAppCommandIntent(intent({ requestId: 'bare', arguments: undefined }));
     expect(resultCalls()[0][1]).toMatchObject({ outcome: 'Performed', performed: ['demo.add'] });
+  });
+
+  it('an app with no navigation host reports Invalid (legacy fallback retired)', async () => {
+    await handleAppCommandIntent(intent({ requestId: 'no-host', appId: 'unregistered' }));
+    expect(resultCalls()[0][1]).toMatchObject({
+      outcome: 'Invalid',
+      performed: [],
+      detail: 'unknown-app',
+    });
   });
 });
 
@@ -297,12 +339,6 @@ describe('drain helper', () => {
 
 /* ───────────────────── navigation-host relay (Spec #3120, ST-4) ───────────────────── */
 
-const EMPTY_SURFACE: Surface = {
-  tree: { appId: APP_ID, root: 'root', places: [], directAliases: {} },
-  verbs: [],
-  companion: null,
-};
-
 /** Register a stub NavigationHost for this app; the disposer unregisters it. */
 function registerHost(
   runIntent: (intent: Intent) => Promise<DispatchResult>,
@@ -313,20 +349,15 @@ function registerHost(
     surface: EMPTY_SURFACE,
     host: { runIntent: spy } as unknown as NavigationHost,
   });
+  hostDisposers.push(unregister);
   return { runIntent: spy, unregister };
 }
 
 describe('navigation-host relay (R-4.1 / R-4.2)', () => {
   it('executes through host.runIntent with channel agent and actor companion', async () => {
-    const { runIntent, unregister } = registerHost(async () => ({
-      status: 'performed',
-      entry: {},
-    }) as unknown as DispatchResult);
-    try {
-      await handleAppCommandIntent(intent({ requestId: 'relay', action: 'wireframe.element.delete' }));
-    } finally {
-      unregister();
-    }
+    const { runIntent } = registerHost(async () => PERFORMED('wireframe.element.delete'));
+
+    await handleAppCommandIntent(intent({ requestId: 'relay', action: 'wireframe.element.delete' }));
 
     expect(runIntent).toHaveBeenCalledTimes(1);
     expect(runIntent).toHaveBeenCalledWith({
@@ -335,8 +366,6 @@ describe('navigation-host relay (R-4.1 / R-4.2)', () => {
       channel: 'agent',
       actor: 'companion',
     });
-    // The shipped command-surface executor is NOT consulted when a host is registered.
-    expect(addSpy).not.toHaveBeenCalled();
     expect(resultCalls()[0][1]).toEqual({
       requestId: 'relay',
       appId: APP_ID,
@@ -347,15 +376,11 @@ describe('navigation-host relay (R-4.1 / R-4.2)', () => {
   });
 
   it('passes a present non-object argument through (the funnel types the rejection)', async () => {
-    const { runIntent, unregister } = registerHost(async () => ({
-      status: 'rejected',
-      code: 'invalid-args',
-    }) as DispatchResult);
-    try {
-      await handleAppCommandIntent(intent({ requestId: 'bad-args', arguments: 'not-an-object' }));
-    } finally {
-      unregister();
-    }
+    const { runIntent } = registerHost(
+      async () => ({ status: 'rejected', code: 'invalid-args' }) as DispatchResult,
+    );
+
+    await handleAppCommandIntent(intent({ requestId: 'bad-args', arguments: 'not-an-object' }));
 
     expect(runIntent).toHaveBeenCalledWith({
       verbId: 'demo.add',
@@ -371,30 +396,19 @@ describe('navigation-host relay (R-4.1 / R-4.2)', () => {
   });
 
   it('maps noop to Noop with an empty performed list', async () => {
-    const { unregister } = registerHost(async () => ({
-      status: 'noop',
-      code: 'did-nothing',
-      message: null,
-    }) as DispatchResult);
-    try {
-      await handleAppCommandIntent(intent({ requestId: 'noop' }));
-    } finally {
-      unregister();
-    }
+    registerHost(
+      async () => ({ status: 'noop', code: 'did-nothing', message: null }) as DispatchResult,
+    );
+
+    await handleAppCommandIntent(intent({ requestId: 'noop' }));
 
     expect(resultCalls()[0][1]).toMatchObject({ outcome: 'Noop', performed: [], detail: null });
   });
 
   it('maps a typed rejection to Invalid with the code as detail (R-4.2)', async () => {
-    const { unregister } = registerHost(async () => ({
-      status: 'rejected',
-      code: 'unavailable',
-    }) as DispatchResult);
-    try {
-      await handleAppCommandIntent(intent({ requestId: 'rejected' }));
-    } finally {
-      unregister();
-    }
+    registerHost(async () => ({ status: 'rejected', code: 'unavailable' }) as DispatchResult);
+
+    await handleAppCommandIntent(intent({ requestId: 'rejected' }));
 
     expect(resultCalls()[0][1]).toMatchObject({
       outcome: 'Invalid',
@@ -404,26 +418,10 @@ describe('navigation-host relay (R-4.1 / R-4.2)', () => {
   });
 
   it('maps failed to Failed (never a silent drop)', async () => {
-    const { unregister } = registerHost(async () => ({
-      status: 'failed',
-      code: 'failed-run',
-    }) as DispatchResult);
-    try {
-      await handleAppCommandIntent(intent({ requestId: 'failed' }));
-    } finally {
-      unregister();
-    }
+    registerHost(async () => ({ status: 'failed', code: 'failed-run' }) as DispatchResult);
+
+    await handleAppCommandIntent(intent({ requestId: 'failed' }));
 
     expect(resultCalls()[0][1]).toMatchObject({ outcome: 'Failed', performed: [] });
-  });
-
-  it('keeps the shipped executeCommand path when no host is registered', async () => {
-    // No registerHost here — the application registry's command surface answers instead.
-    await handleAppCommandIntent(intent({ requestId: 'legacy' }));
-    expect(addSpy).toHaveBeenCalledTimes(1);
-    expect(resultCalls()[0][1]).toMatchObject({
-      outcome: 'Performed',
-      performed: ['demo.add'],
-    });
   });
 });

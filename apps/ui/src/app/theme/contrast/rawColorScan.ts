@@ -8,7 +8,7 @@
  * the `RAW_COLOR_BASELINE` diff) live in `rawColorEvaluate.evaluateRawColors`,
  * so there is exactly ONE source of "what is a raw-colour violation".
  *
- * Patterns (reused from `shared/hotkeys/__tests__/themeHygiene.test.ts`):
+ * Patterns (the same four checks the retired keycap hygiene suite used):
  *   - hex                 `#[0-9a-fA-F]{3,8}\b`
  *   - functional colour   `\b(?:rgba?|hsla?)\(`  (the FULL call is the literal)
  *   - var alpha-append    `var\(--[a-z0-9-]+\)[0-9]`  (invalid CSS — #2770)

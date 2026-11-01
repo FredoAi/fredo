@@ -1,8 +1,5 @@
 import React from 'react';
-import { useExtension } from '../providers/ExtensionProvider';
 import { Home } from '../../applications/home';
-import { ArchitectureDiagram } from '../../applications/diagram/components/ArchitectureDiagram';
-import { DevMode } from '../../applications/dev-mode';
 import { TerminalWindow } from '../../applications/terminal';
 import { DoomWindow } from '../../applications/doom';
 import { StandaloneAppWindow } from '../../applications/app-window';
@@ -47,15 +44,8 @@ export const Router: React.FC = () => {
     );
   }
 
-  const { currentPage, showDiagram } = useExtension();
-
-  if (currentPage === 'dev-mode') {
-    return <DevMode />;
-  }
-
-  if (showDiagram) {
-    return <ArchitectureDiagram />;
-  }
-
+  // Spec #3122 ST-4 — the retired page-router branches (`showDiagram`, the dead
+  // `currentPage === 'dev-mode'` page) are gone with the deleted hidden apps.
+  // Dev Mode stays reachable through the window kernel (Home's Konami Easter egg).
   return <Home />;
 };

@@ -86,7 +86,6 @@ export function WindowSystemNavigationProvider({
     const host = createNavigationHost({
       surface: windowSystemSurface,
       getContext: getWindowSystemContext,
-      announcementChannel: 'legacy',
     });
     return { host, surface: windowSystemSurface };
   }, []);

@@ -35,8 +35,8 @@
 
 | Tool | exposedAs | Description |
 |------|-----------|-------------|
-| `azdo_create_workitem` | mcp | Create Azure DevOps work items with AI-assisted form pre-population |
-| `azdo_start_workitem` | mcp | View and open Azure DevOps work items in browser extension modal |
+| `azdo_create_work_item` | mcp | Create Azure DevOps work items with AI-assisted form pre-population |
+| `azdo_start_work_item` | mcp | View and open Azure DevOps work items in browser extension modal |
 
 **Dependencies**: Azure DevOps REST API, Redis Streams
 

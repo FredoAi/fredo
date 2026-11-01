@@ -31,8 +31,7 @@ import {
   getNavigationHost,
   resetNavigationAnnouncer,
 } from '@/shared/navigation/ui';
-import { resetHotkeyAnnouncer } from '@/shared/hotkeys/announcer';
-import { TERMINAL_ROOT_SELECTOR } from '@/shared/hotkeys/terminalMode';
+import { TERMINAL_ROOT_SELECTOR } from '@/shared/navigation/ui/terminalPassthrough';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import {
   TerminalNavigationFooter,
@@ -97,14 +96,14 @@ function placePathIds(): string[] {
 beforeEach(() => {
   resetTerminalSurfaceForTests();
   resetNavigationAnnouncer();
-  resetHotkeyAnnouncer();
+  resetNavigationAnnouncer();
 });
 
 afterEach(() => {
   cleanup();
   resetTerminalSurfaceForTests();
   resetNavigationAnnouncer();
-  resetHotkeyAnnouncer();
+  resetNavigationAnnouncer();
 });
 
 /* ───────────────────────────── R-01 — the declaration ───────────────────────────── */

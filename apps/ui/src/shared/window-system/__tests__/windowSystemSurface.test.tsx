@@ -12,8 +12,8 @@
  *     (UI/UX §4 — no pointer behaviour change outside its own rows).
  *
  * The declaration itself is the fixture (no stand-in surface). The chords are driven through
- * the REAL engine (`handleHotkeyKeydown`) and the REAL host; nothing here reads a component
- * key table.
+ * the REAL navigation chord dispatcher (`globalKeys.ts`) and the REAL host; nothing here reads
+ * a component key table.
  */
 
 import React from 'react';
@@ -23,30 +23,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { validateSurface } from '@/shared/navigation';
 import {
+  NAVIGATION_GLOBAL_CHORDS,
   NAV_MAP_PLACE_TESTID,
   NAV_MAP_TESTID,
   NAV_RAIL_MAP_TESTID,
   describeContext,
   getNavigationHost,
+  installNavigationKeyDispatch,
   listRegisteredSurfaces,
   resetNavigationAnnouncer,
+  resetNavigationKeyDispatchForTests,
 } from '@/shared/navigation/ui';
-import {
-  FOCUS_NEXT_ACTION_ID,
-  FOCUS_PREVIOUS_ACTION_ID,
-  LAUNCHER_TOGGLE_ACTION_ID,
-  KEPT_GLOBAL_BINDINGS,
-} from '@/shared/hotkeys/defaults';
-import {
-  handleHotkeyKeydown,
-  registerDefaultFredoActions,
-  resetHotkeyEngineForTests,
-} from '@/shared/hotkeys/engine';
-import { registerHotkeyHandler, resetRegistryForTests } from '@/shared/hotkeys/registry';
 import {
   isWindowTraversalInstalled,
   resetWindowTraversalForTests,
-} from '@/shared/hotkeys/traversal';
+} from '../traversal';
 import { WindowManager } from '../WindowManager';
 import {
   WINDOW_FOCUS_NEXT_VERB_ID,
@@ -136,29 +127,33 @@ function newestEntry() {
   return entries[entries.length - 1];
 }
 
-/** Fire one modifier chord at the engine (the REAL dispatch path). */
+/** Fire one modifier chord through the ONE navigation chord dispatcher (the REAL path). */
 function press(key: string, init: { ctrlKey?: boolean; shiftKey?: boolean } = {}): void {
-  handleHotkeyKeydown(
-    new KeyboardEvent('keydown', { key, ctrlKey: true, cancelable: true, ...init }),
+  document.dispatchEvent(
+    new KeyboardEvent('keydown', {
+      key,
+      ctrlKey: true,
+      cancelable: true,
+      bubbles: true,
+      ...init,
+    }),
   );
 }
 
 beforeEach(() => {
   resetWindowStoreForTests();
-  resetRegistryForTests();
   resetNavigationAnnouncer();
-  resetHotkeyEngineForTests();
+  resetNavigationKeyDispatchForTests();
   resetWindowTraversalForTests();
   resetWindowLauncherToggleForTests();
-  registerDefaultFredoActions();
+  installNavigationKeyDispatch();
 });
 
 afterEach(() => {
   cleanup();
   resetWindowStoreForTests();
-  resetRegistryForTests();
   resetNavigationAnnouncer();
-  resetHotkeyEngineForTests();
+  resetNavigationKeyDispatchForTests();
   resetWindowTraversalForTests();
   resetWindowLauncherToggleForTests();
 });
@@ -205,15 +200,16 @@ describe('windowSystemSurface — declaration (R-01)', () => {
   });
 
   it('keeps the three kept-global chords unchanged (no key re-tuning)', () => {
-    expect(KEPT_GLOBAL_BINDINGS.map((binding) => binding.sequence)).toStrictEqual([
-      'primary+space',
-      'primary+tab',
-      'primary+shift+tab',
-    ]);
-    expect(KEPT_GLOBAL_BINDINGS.map((binding) => binding.actionId)).toStrictEqual([
-      LAUNCHER_TOGGLE_ACTION_ID,
-      FOCUS_NEXT_ACTION_ID,
-      FOCUS_PREVIOUS_ACTION_ID,
+    expect(
+      NAVIGATION_GLOBAL_CHORDS.map(
+        (chord) =>
+          `${chord.primary ? 'primary+' : ''}${chord.shift ? 'shift+' : ''}${chord.key}`,
+      ),
+    ).toStrictEqual(['primary+space', 'primary+tab', 'primary+shift+tab']);
+    expect(NAVIGATION_GLOBAL_CHORDS.map((chord) => chord.verbId)).toStrictEqual([
+      WINDOW_LAUNCHER_TOGGLE_VERB_ID,
+      WINDOW_FOCUS_NEXT_VERB_ID,
+      WINDOW_FOCUS_PREVIOUS_VERB_ID,
     ]);
   });
 });
@@ -386,10 +382,10 @@ describe('kept-global delegation — key → verb id → outcome (R-03, R-20)', 
   });
 });
 
-/* ──────────── live override chain: the REAL mounted overrides (R-20) ──────────── */
+/* ──────── live dispatch chain: the ONE navigation chord listener (R-20) ──────── */
 
-describe('live override chain — mounted overrides delegate exactly once (R-20)', () => {
-  it('Ctrl+Tab goes through the REAL traversal override → window host once, keeping focus outcome', async () => {
+describe('live dispatch chain — the navigation chord listener dispatches exactly once (R-20)', () => {
+  it('Ctrl+Tab goes through the REAL chord dispatcher → window host once, keeping focus outcome', async () => {
     openWindow({
       id: 'a',
       title: 'A',
@@ -414,7 +410,8 @@ describe('live override chain — mounted overrides delegate exactly once (R-20)
     });
 
     renderWithChakra(<WindowManager />);
-    // The REAL override is armed by the mounted WindowFrame (useWindowTraversal).
+    // The plain-Tab boundary listener is armed by the mounted WindowFrame (useWindowTraversal);
+    // chord dispatch is the ONE navigation listener installed by NavigationProvider.
     expect(isWindowTraversalInstalled()).toBe(true);
 
     const host = getNavigationHost(WINDOW_SYSTEM_APP_ID);
@@ -431,11 +428,11 @@ describe('live override chain — mounted overrides delegate exactly once (R-20)
       expect(newestEntry()?.verbId).toBe(WINDOW_FOCUS_NEXT_VERB_ID);
     });
     expect(newestEntry()?.channel).toBe('keyboard');
-    // Exactly ONE dispatch → ONE journal entry (no engine + override double dispatch).
+    // Exactly ONE dispatch → ONE journal entry (no second dispatch path).
     expect(host!.getSnapshot().entries).toHaveLength(before + 1);
   });
 
-  it('Ctrl+Shift+Tab goes through the REAL traversal override → window host once', async () => {
+  it('Ctrl+Shift+Tab goes through the REAL chord dispatcher → window host once', async () => {
     openWindow({
       id: 'a',
       title: 'A',
@@ -480,25 +477,12 @@ describe('live override chain — mounted overrides delegate exactly once (R-20)
     expect(host!.getSnapshot().entries).toHaveLength(before + 1);
   });
 
-  it('Ctrl+Space goes through the delegating launcher override → window host once', async () => {
+  it('Ctrl+Space goes through the chord dispatcher → window host → launcher seam once', async () => {
     openTestWindow('a');
     const toggle = vi.fn();
-    // The seam the REAL LauncherShell registers (its core selectCtrlSpaceAction + openOverlay).
+    // The seam the REAL LauncherShell registers (its core selectCtrlSpaceAction + openOverlay);
+    // the declared `window.launcher.toggle` verb runs it — no registry override.
     setWindowLauncherToggle(toggle);
-    // Faithful replica of LauncherShell's mounted override: delegate to the declared host.
-    registerHotkeyHandler(LAUNCHER_TOGGLE_ACTION_ID, () => {
-      const host = getNavigationHost(WINDOW_SYSTEM_APP_ID);
-      if (host === null) {
-        toggle();
-        return;
-      }
-      void host.runIntent({
-        verbId: WINDOW_LAUNCHER_TOGGLE_VERB_ID,
-        args: {},
-        channel: 'keyboard',
-        actor: 'human',
-      });
-    });
 
     renderWithChakra(<WindowManager />);
     const host = getNavigationHost(WINDOW_SYSTEM_APP_ID);

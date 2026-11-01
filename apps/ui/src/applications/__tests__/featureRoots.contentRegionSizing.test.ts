@@ -9,8 +9,6 @@
  * three such roots and sized them to the CONTENT REGION instead:
  *
  *   - `dev-mode` root           — `DevMode.tsx` (was `height="100vh"`)
- *   - `diagram` loading + error — `ArchitectureDiagram.tsx` (was `height="100vh"` ×2,
- *                                 filter-panel `maxHeight="calc(100vh - 150px)"`)
  *   - `terminal` status root    — `TerminalSessionView.tsx` (was `h="100vh"`)
  *
  * #2934 ST-3 moved the Terminal window root from `TerminalSessionView.tsx` to
@@ -78,7 +76,6 @@ function collectTsx(dir: string): string[] {
 }
 
 const DEV_MODE = `${BASE}/dev-mode/components/DevMode.tsx`;
-const DIAGRAM = `${BASE}/diagram/components/ArchitectureDiagram.tsx`;
 const TERMINAL_COMPONENTS = `${BASE}/terminal/components`;
 const TERMINAL_WINDOW = `${TERMINAL_COMPONENTS}/TerminalWindow.tsx`;
 /**
@@ -96,7 +93,7 @@ const TERMINAL_SESSION_BAR = `${TERMINAL_COMPONENTS}/SessionBar.tsx`;
 const HOST_DOCUMENT = '../tauri/index.html';
 
 describe('#2924 ST-4 — feature roots size to the content region, not the viewport', () => {
-  it.each([DEV_MODE, DIAGRAM])('%s contains no viewport unit (100vh / 100vw)', (path) => {
+  it.each([DEV_MODE])('%s contains no viewport unit (100vh / 100vw)', (path) => {
     const code = source(path);
     expect(code).not.toMatch(/100vh/);
     expect(code).not.toMatch(/100vw/);
@@ -123,13 +120,6 @@ describe('#2924 ST-4 — feature roots size to the content region, not the viewp
   it('dev-mode root is content-region sized', () => {
     const code = source(DEV_MODE);
     expect(code).toContain('<Box width="100%" height="100%" display="flex" flexDirection="column"');
-  });
-
-  it('diagram loading/error roots and filter-panel max-height are content-region sized', () => {
-    const code = source(DIAGRAM);
-    // main canvas root + loading root + error root — all fill the content region
-    expect(code.match(/height="100%"/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
-    expect(code).toContain('maxHeight="calc(100% - 90px)"');
   });
 
   it('terminal window root is content-region sized (direction-agnostic)', () => {

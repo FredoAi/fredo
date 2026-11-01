@@ -67,6 +67,13 @@ export const NAV_ANNOUNCER_TESTID = 'navigation-announcer';
 export const NAV_ANNOUNCER_LABEL = 'Navigation announcements';
 
 // ── stable data attributes (G-403 class anchors) ─────────────────────────────
+//
+// Spec #3122 (P8), ST-1 — DELIBERATELY NOT INTRODUCED: `NAV_LABEL_ATTR`, `NAV_KEY_ATTR`,
+// `NAV_ACTION_ATTR` and `NAV_MODE_ATTR`. The Names Block reserved them as possible
+// successors to the deleted legacy row hooks, but the binding UI/UX correction
+// establishes that NO retained test addresses a navigation row by label/key/action/mode —
+// a row is addressed by its verb id (`NAV_VERB_ID_ATTR`). Their absence is intentional;
+// reintroducing one would add a product attribute with no consumer.
 /** Present on EVERY navigation surface root: 'rail' | 'map' | 'trail'. */
 export const NAV_SURFACE_ATTR = 'data-nav-surface';
 /** Present on the navigation keycap root. */

@@ -23,8 +23,8 @@
  * adds no keydown listener and does not touch the keymap engine.
  */
 
-import { resolvePrimaryModifier } from '../hotkeys/keys';
-import type { Platform } from '../hotkeys/types';
+import { resolvePrimaryModifier } from '../navigation/keys';
+import type { Platform } from '../navigation/types';
 import { MIN_HEIGHT, MIN_WIDTH } from './windowGeometry';
 
 // ── Template + chord vocabulary ───────────────────────────────────────────────

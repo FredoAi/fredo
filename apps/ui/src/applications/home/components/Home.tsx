@@ -9,8 +9,6 @@ import { createAppOpener } from '../../../shared/window-system/appWindows';
 import { hydrateAppPresentation } from '../../../shared/window-system/appPresentationStore';
 import { LauncherShell } from './launcher/LauncherShell';
 import { DesktopBackdrop } from './background/DesktopBackdrop';
-import { myWorkItemsFeature } from '../../my-workitems';
-import { createWorkItemFeature } from '../../my-workitems';
 import { devModeFeature } from '../../dev-mode';
 import '../../allApplications';
 import { declareAllRegisteredApplicationData } from '../../../shared/application-data/registry';
@@ -180,23 +178,6 @@ const HomeDesktop: React.FC<HomeDesktopProps> = ({ registerOpenFeature }) => {
     feature.registerRerenderCallback(() => {
       updateWindow(id, { component: feature.render() as React.ReactNode });
     });
-
-    // Transition callback: create-workitem → my-workitems panel
-    if (id === createWorkItemFeature.id && (feature as any).registerTransitionCallback) {
-      (feature as any).registerTransitionCallback((workItemId: number) => {
-        feature.onUnmount?.();
-        openFeaturesRef.current.delete(createWorkItemFeature.id);
-        closeWindow(createWorkItemFeature.id);
-
-        myWorkItemsFeature.openAzdoItem(workItemId);
-
-        if (openFeaturesRef.current.has(myWorkItemsFeature.id)) {
-          updateWindow(myWorkItemsFeature.id, { component: myWorkItemsFeature.render() });
-        } else {
-          openFeatureWindowRef.current(myWorkItemsFeature.id, myWorkItemsFeature);
-        }
-      });
-    }
 
     // Defer onMount so AppProvider's useEffect has time to register the adapterBridge
     setTimeout(() => {

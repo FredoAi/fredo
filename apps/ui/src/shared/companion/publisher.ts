@@ -60,9 +60,9 @@ let _scheduled = false;
  */
 let _generation = 0;
 
-/** Project the currently registered applications AND navigation surfaces. */
+/** Project the currently registered navigation surfaces (the ONE declaration source). */
 export function collectCompanionManifest(): CompanionManifest {
-  return buildCompanionManifest(getApplications(), listRegisteredSurfaces());
+  return buildCompanionManifest(listRegisteredSurfaces());
 }
 
 /**

@@ -281,7 +281,7 @@ Handshake Message Received
 1. Send command: "delete pods contentblock-xyz, contenthub-abc, contentslider-def in namespace internal-comms"
 2. Verify in console:
    - ✅ 3 kubectl_delete_pod Init events received
-   - ✅ DiagramFeature processes each with 0.5s dwell time
+   - ✅ Diagram Feature processes each with 0.5s dwell time
    - ✅ Focus on contentblock → dwell 0.5s → focus on contenthub → dwell 0.5s → focus on contentslider
    - ✅ No duplicate tooltips
    - ✅ Each tooltip shows spinner → ✓ → persists 10s

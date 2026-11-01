@@ -29,11 +29,6 @@ interface AppState {
   FredoContent: string;
   currentPage: 'main' | 'steps' | 'dev-mode' | 'settings';
   steps: Step[];
-  showDiagram: boolean;
-  viewingLiveDiagram: boolean;
-  isLoadingDiagram: boolean;
-  diagramError: string;
-  parseError: string;
 }
 
 interface AppActions {
@@ -45,11 +40,6 @@ interface AppActions {
   setSteps: (steps: Step[]) => void;
   addStep: (step: Step) => void;
   updateStep: (index: number, step: Partial<Step>) => void;
-  setShowDiagram: (show: boolean) => void;
-  setViewingLiveDiagram: (viewing: boolean) => void;
-  setIsLoadingDiagram: (loading: boolean) => void;
-  setDiagramError: (error: string) => void;
-  setParseError: (error: string) => void;
 }
 
 interface AppContextType extends AppState, AppActions {}
@@ -79,11 +69,6 @@ export const AppProvider: React.FC<AppProviderProps> = ({ adapter, children }) =
   const [FredoContent, setFredoContent] = useState('');
   const [currentPage, setCurrentPage] = useState<'main' | 'steps' | 'dev-mode' | 'settings'>('main');
   const [steps, setSteps] = useState<Step[]>([]);
-  const [showDiagram, setShowDiagram] = useState(false);
-  const [viewingLiveDiagram, setViewingLiveDiagram] = useState(false);
-  const [isLoadingDiagram, setIsLoadingDiagram] = useState(false);
-  const [diagramError, setDiagramError] = useState('');
-  const [parseError, setParseError] = useState('');
 
   const currentPageRef = useRef<'main' | 'steps' | 'dev-mode' | 'settings'>('main');
   useEffect(() => {
@@ -158,11 +143,9 @@ export const AppProvider: React.FC<AppProviderProps> = ({ adapter, children }) =
     <AppContext.Provider
       value={{
         isEnabled, isOnTargetUrl, currentUrl, FredoContent, currentPage,
-        steps, showDiagram, viewingLiveDiagram, isLoadingDiagram,
-        diagramError, parseError,
+        steps,
         setIsEnabled, setIsOnTargetUrl, setCurrentUrl, setFredoContent, setCurrentPage,
-        setSteps, addStep, updateStep, setShowDiagram,
-        setViewingLiveDiagram, setIsLoadingDiagram, setDiagramError, setParseError,
+        setSteps, addStep, updateStep,
       }}
     >
       <ApplicationDataProvider>{children}</ApplicationDataProvider>

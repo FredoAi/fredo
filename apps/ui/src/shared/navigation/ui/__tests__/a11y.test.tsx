@@ -26,7 +26,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
-import { getFocusableElements } from '@/shared/hotkeys/traversal';
+import { getFocusableElements } from '@/shared/window-system/traversal';
 import { type KeyBinding, type Surface } from '@/shared/navigation';
 import {
   countActiveLiveRegions,

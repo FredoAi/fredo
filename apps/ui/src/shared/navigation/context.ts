@@ -3,7 +3,7 @@
  *
  * `buildContextEnvelope` projects the declaration + the injected snapshot + the journal
  * into a plain, JSON-serialisable v1 envelope. Every value comes from its arguments — it
- * reads no application store, no command surface, no `data-hotkey` listing and no
+ * reads no application store, no command surface, no legacy key-attribute listing and no
  * journal-global (REQ-06.8). Every string is truncated to `maxLabelChars` and every list
  * is capped before it leaves the function, so the envelope is bounded by construction.
  *

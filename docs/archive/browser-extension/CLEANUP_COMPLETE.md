@@ -14,7 +14,7 @@ The React migration is **100% complete** and all old Svelte files have been clea
 - [x] Implemented ExtensionProvider with React Context + useState
 - [x] Created Router component
 - [x] Built Dashboard feature (Dashboard.tsx, IdleGrid.tsx)
-- [x] Built Diagram feature with ReactFlow (ArchitectureDiagram.tsx, useDiagram.ts)
+- [x] Built Diagram feature with ReactFlow (Architecture Diagram.tsx, useDiagram.ts)
 - [x] Built Stepper feature (StepByStepView.tsx)
 - [x] Created shared components (Loading, ErrorDisplay)
 - [x] Created shared hooks (useExtensionState, useBrowserAPI, useMessageQueue)

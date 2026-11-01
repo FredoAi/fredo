@@ -16,7 +16,7 @@
  *   (`flexShrink:0`). There is no left rail / 266 px command column (R-8).
  *   < lg — the workspace stacks (canvas → details at ≤ 45%); the bar and the
  *   status bar stay pinned at the bottom.
- * The retired hotkey-bar band padding is gone (Wireframe renders no HotkeyBar).
+ * The retired key-bar band padding is gone (Wireframe renders no legacy bar).
  *
  * The ONE element-scoped keydown adapter is attached here (no document
  * listener). The rail/map/trail read the host snapshot; the availability models

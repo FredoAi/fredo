@@ -121,10 +121,10 @@ addToGrid('my-feature', myFeature);
 
 ### Singleton Pattern
 
-**Use when**: Feature has only one instance (e.g., DiagramFeature)
+**Use when**: Feature has only one instance (e.g., Diagram Feature)
 
 ```typescript
-export class DiagramFeature extends FredoFeatureClass {
+export class Diagram Feature extends FredoFeatureClass {
   readonly name = 'Infrastructure Diagram';
   readonly icon = LuNetwork;
   
@@ -137,15 +137,15 @@ export class DiagramFeature extends FredoFeatureClass {
   }
   
   render() {
-    return <ArchitectureDiagram />;
+    return <Architecture Diagram />;
   }
 }
 
 // Export singleton instance
-export const diagramFeature = new DiagramFeature();
+export const diagramFeature = new Diagram Feature();
 
 // Usage
-addToGrid('diagram', diagramFeature);
+addToGrid('architecture', diagramFeature);
 ```
 
 ### Factory Pattern

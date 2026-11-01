@@ -82,7 +82,7 @@ For log/metric investigation:
 2. Identify root cause — `kubectl_logs` + `logs_query` + `metrics_query`
 3. Apply fix — `kubectl_restart_deployment` / `kubectl_scale_deployment`
 4. Verify resolution — `kubectl_get_pods` + `logs_query` (check errors stopped)
-5. Document — `azdo_create_workitem`
+5. Document — `azdo_create_work_item`
 
 Use stepper to track progress visually. Use parallel calls where steps are independent.
 

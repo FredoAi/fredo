@@ -4,13 +4,12 @@
 
 ## Context
 
-The `[a-z0-9]` accelerator space is saturated. `docs/UX_FLUENCY_RESEARCH.md` §3.1 and §3.2 record
-Wireframe at **36 simultaneous bindings** — 24 mode keys plus 12 carrier bindings — against a
-single-stroke command grammar (`apps/ui/src/shared/hotkeys/commandSurface.ts:143`) and an element
-grammar of `[a-z0-9](+[a-z0-9])?` (`apps/ui/src/shared/hotkeys/hotkeyGrammar.ts:25`). A mode is an
-undiscoverable mutation of that same flat space: the bar lists only the active mode's keymap
-(`apps/ui/src/shared/hotkeys/hotkeyBarModel.ts:245-258`), while the 12 `g+*` sequences and the 3
-kept globals (`apps/ui/src/shared/hotkeys/defaults.ts:38-57`) never render as rows.
+The `[a-z0-9]` accelerator space is saturated. `docs/UX_FLUENCY_RESEARCH.md` §3.1 and §3.2 (the
+historical teardown) record Wireframe at **36 simultaneous bindings** — 24 mode keys plus 12
+carrier bindings — against a single-stroke command grammar and an element grammar of
+`[a-z0-9](+[a-z0-9])?` in the since-retired flat-key runtime. A mode was an undiscoverable
+mutation of that same flat space: the always-on bar listed only the active mode's keymap, while
+the 12 two-step carrier sequences and the 3 kept global chords never rendered as rows.
 
 ## Decision
 

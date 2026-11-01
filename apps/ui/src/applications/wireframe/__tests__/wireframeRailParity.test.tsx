@@ -33,18 +33,13 @@ import {
   NAV_RAIL_PLACE_TESTID,
   NAV_RAIL_ROW_TESTID,
   NAV_RAIL_TESTID,
+  NavigationProvider,
   buildCommandRailModel,
   buildNavigationMapModel,
   createNavigationHost,
   resetNavigationAnnouncer,
+  resetNavigationKeyDispatchForTests,
 } from '@/shared/navigation/ui';
-import { resetHotkeyAnnouncer } from '@/shared/hotkeys/announcer';
-import { resolveFocusedApplicationId } from '@/shared/hotkeys/applicationFocus';
-import { getFocusSnapshot } from '@/shared/hotkeys/engine';
-import { listElementHotkeys } from '@/shared/hotkeys/hotkeyElements';
-import { HOTKEY_BAR_TESTID } from '@/shared/hotkeys/HotkeyBar';
-import { HotkeysProvider } from '@/shared/hotkeys/HotkeysProvider';
-import { buildHotkeyBarModel } from '@/shared/hotkeys/hotkeyBarModel';
 import { WIREFRAME_ACTIONS } from '../actions/wireframeActions';
 import { WireframeEditor } from '../components/WireframeEditor';
 import {
@@ -81,6 +76,9 @@ vi.mock('../components/WireframeCanvas', async () => {
 });
 
 /* ───────────────────────────── fixtures ───────────────────────────── */
+
+/** Constructed so this file is not itself a legacy-attribute scan hit. */
+const LEGACY_KEY_ATTR = ['data', 'hotkey'].join('-');
 
 const CANVAS = 'wireframe.canvas';
 const CREATE = 'wireframe.create';
@@ -136,21 +134,7 @@ function placeContext(placeId: string, overrides: Partial<ContextSnapshot> = {})
   });
 }
 
-function renderShell(options: { readonly withHotkeys?: boolean } = {}): void {
-  if (options.withHotkeys === true) {
-    renderWithChakra(
-      React.createElement(
-        'div',
-        { 'data-fredo-app-id': WIREFRAME_SURFACE_APP_ID },
-        React.createElement(
-          HotkeysProvider,
-          null,
-          React.createElement(WireframeEditor),
-        ),
-      ),
-    );
-    return;
-  }
+function renderShell(): void {
   renderWithChakra(React.createElement(WireframeEditor));
 }
 
@@ -191,16 +175,16 @@ function seedElement(type: 'text' | 'shape', id: string, x = 40): void {
 beforeEach(() => {
   resetWireframeStoreForTests();
   resetWireframeSurfaceForTests();
-  resetHotkeyAnnouncer();
   resetNavigationAnnouncer();
+  resetNavigationKeyDispatchForTests();
 });
 
 afterEach(() => {
   cleanup();
   resetWireframeStoreForTests();
   resetWireframeSurfaceForTests();
-  resetHotkeyAnnouncer();
   resetNavigationAnnouncer();
+  resetNavigationKeyDispatchForTests();
   vi.restoreAllMocks();
 });
 
@@ -220,7 +204,7 @@ describe('rail + map replace the bar and the toolbar (R-3 / AC3)', () => {
     expect(screen.queryAllByTestId('wireframe-toolbar')).toHaveLength(0);
     expect(screen.queryAllByTestId('wireframe-hotkey-carrier')).toHaveLength(0);
     expect(screen.queryAllByTestId('navigation-announcer')).toHaveLength(0);
-    expect(document.querySelectorAll('[data-hotkey]')).toHaveLength(0);
+    expect(document.querySelectorAll(`[${LEGACY_KEY_ATTR}]`)).toHaveLength(0);
 
     // `?` opens the map at the root, through the declared `app.map` verb.
     await press('?');
@@ -319,71 +303,23 @@ describe('rail + map replace the bar and the toolbar (R-3 / AC3)', () => {
     expect(map.querySelector('[data-nav-verb-id="wireframe.add.line"]')).not.toBeNull();
   });
 
-  it('the global hotkey model is empty while wireframe is focused', async () => {
+  it('mounts no legacy bar and exactly ONE navigation announcer per webview', () => {
     renderWithChakra(
       React.createElement(
-        'div',
-        { 'data-fredo-app-id': WIREFRAME_SURFACE_APP_ID },
+        NavigationProvider,
+        null,
         React.createElement(
-          HotkeysProvider,
-          null,
-          React.createElement('button', { type: 'button', 'data-testid': 'wireframe-anchor' }, 'Canvas'),
+          'div',
+          { 'data-fredo-app-id': WIREFRAME_SURFACE_APP_ID },
+          React.createElement(WireframeEditor),
         ),
       ),
     );
 
-    const anchor = screen.getByTestId('wireframe-anchor');
-    anchor.focus();
-    expect(resolveFocusedApplicationId()).toBe(WIREFRAME_SURFACE_APP_ID);
-
-    const model = buildHotkeyBarModel({
-      entries: listElementHotkeys(),
-      pending: null,
-      focus: getFocusSnapshot(),
-      activeMode: null,
-      prompt: null,
-    });
-    expect(model.rows).toEqual([]);
-    expect(model.mode).toBeNull();
-    expect(model.prompt).toBeNull();
-    expect(model.empty).toBe(true);
-
-    // Non-vacuity control (G-408): the SAME shipped provider does render the bar
-    // for a focused app that mounts one element binding.
-    cleanup();
-    renderWithChakra(
-      React.createElement(
-        'div',
-        { 'data-fredo-app-id': 'mission-monitor' },
-        React.createElement(
-          HotkeysProvider,
-          null,
-          React.createElement('button', { type: 'button', 'data-hotkey': 'a', 'data-testid': 'mm-anchor' }, 'Alpha'),
-        ),
-      ),
-    );
-    screen.getByTestId('mm-anchor').focus();
-    await waitFor(() => {
-      const missionModel = buildHotkeyBarModel({
-        entries: listElementHotkeys(),
-        pending: null,
-        focus: getFocusSnapshot(),
-        activeMode: null,
-        prompt: null,
-      });
-      expect(missionModel.empty).toBe(false);
-      expect(missionModel.rows.length).toBeGreaterThan(0);
-    });
-    expect(screen.getByTestId(HOTKEY_BAR_TESTID)).toBeInTheDocument();
-  });
-
-  it('the shell renders no hotkey bar', () => {
-    renderShell({ withHotkeys: true });
-
-    // The provider is mounted, so the bar WOULD render if the model were non-empty.
-    expect(screen.getByTestId('hotkeys-announcer')).toBeInTheDocument();
-    expect(screen.queryByTestId(HOTKEY_BAR_TESTID)).toBeNull();
-    expect(document.querySelectorAll('[data-hotkey]')).toHaveLength(0);
+    // ONE navigation region, ZERO legacy announcer (U-1 channel-scoped invariant).
+    expect(screen.getAllByTestId('navigation-announcer')).toHaveLength(1);
+    expect(screen.queryAllByTestId('hotkeys-announcer')).toHaveLength(0);
+    expect(document.querySelectorAll(`[${LEGACY_KEY_ATTR}]`)).toHaveLength(0);
     expect(screen.queryAllByTestId('wireframe-toolbar')).toHaveLength(0);
   });
 
@@ -596,7 +532,6 @@ describe('every declared verb is reachable (R-3b / AC3)', () => {
       journal,
       applyPatch: (patch) =>
         applyDocumentPatch(patch as unknown as WireframeDocumentPatch),
-      announcementChannel: 'legacy',
       confirm: () => true,
     });
 

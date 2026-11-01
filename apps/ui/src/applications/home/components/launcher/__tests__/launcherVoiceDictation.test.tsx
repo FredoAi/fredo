@@ -31,11 +31,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
-// Spec #2946 ST-4 — the Ctrl+Space chord is owned by the shared hotkey engine
-// (`HotkeysProvider`), which is mounted in `main.tsx`. The shell no longer adds
-// its own `document` keydown listener, so these wiring tests mount the provider
+// Spec #3122 ST-2 — the Ctrl+Space chord is owned by the ONE navigation chord
+// dispatcher installed by `NavigationProvider` (mounted in `main.tsx`). The shell
+// adds no `document` keydown listener, so these wiring tests mount the provider
 // with the shell (assertions unchanged — only the listener's owner moved).
-import { HotkeysProvider } from '@/shared/hotkeys/HotkeysProvider';
+import { NavigationProvider } from '@/shared/navigation/ui';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
 import type { FredoApplicationClass } from '@/shared/classes/FredoApplicationClass';
 import { HEARING_NOTHING_COPY, HEARING_NOTHING_MS } from '../LauncherCommandBar';
@@ -288,9 +288,9 @@ describe('deriveHoldCue — the honest cue (#2887 ST-7, R-3/AC3; #2914 ST-9)', (
 describe('LauncherShell — Ctrl+Space / Escape / capture wiring', () => {
   const renderShell = (onOpenFeature = vi.fn()) => {
     renderWithChakra(
-      <HotkeysProvider>
+      <NavigationProvider>
         <LauncherShell showableFeatures={[]} onOpenFeature={onOpenFeature} />
-      </HotkeysProvider>,
+      </NavigationProvider>,
     );
     return onOpenFeature;
   };
@@ -731,9 +731,9 @@ describe('LauncherShell — the live-capture Enter guard (QA-10) + the §7 selec
     name: 'Mission Monitor',
     icon: () => null,
   } as unknown as FredoApplicationClass;
-  const BROWSER = {
-    id: 'browser-preview',
-    name: 'Browser',
+  const WIREFRAME = {
+    id: 'wireframe',
+    name: 'Wireframe',
     icon: () => null,
   } as unknown as FredoApplicationClass;
   const TERMINAL = {
@@ -742,7 +742,7 @@ describe('LauncherShell — the live-capture Enter guard (QA-10) + the §7 selec
     icon: () => null,
   } as unknown as FredoApplicationClass;
 
-  const renderShell = (features: FredoApplicationClass[] = [BROWSER, TERMINAL, SETTINGS]) => {
+  const renderShell = (features: FredoApplicationClass[] = [WIREFRAME, TERMINAL, SETTINGS]) => {
     const onOpenFeature = vi.fn();
     renderWithChakra(<LauncherShell showableFeatures={features} onOpenFeature={onOpenFeature} />);
     return onOpenFeature;
@@ -866,7 +866,7 @@ describe('LauncherShell — the live-capture Enter guard (QA-10) + the §7 selec
     const onOpenFirst = renderShell();
     pressEnter();
     expect(onOpenFirst).toHaveBeenCalledTimes(1);
-    expect(onOpenFirst.mock.calls[0][0]).toBe('browser-preview');
+    expect(onOpenFirst.mock.calls[0][0]).toBe('wireframe');
   });
 });
 

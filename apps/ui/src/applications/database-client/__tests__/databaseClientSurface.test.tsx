@@ -39,7 +39,7 @@ import {
   resetNavigationAnnouncer,
   type NavigationHost,
 } from '@/shared/navigation/ui';
-import { resetHotkeyAnnouncer } from '@/shared/hotkeys/announcer';
+import { resetNavigationAnnouncer } from '@/shared/navigation/ui';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 
 import { DatabaseClientFeatureView } from '../DatabaseClientFeature';
@@ -217,7 +217,7 @@ function ctxOf(kinds: string[], ids: string[]): ContextSnapshot {
 beforeEach(() => {
   resetDatabaseClientActionHandlersForTests();
   resetNavigationAnnouncer();
-  resetHotkeyAnnouncer();
+  resetNavigationAnnouncer();
   localStorage.clear();
 
   listMock.mockReset().mockResolvedValue([connection]);
@@ -243,7 +243,7 @@ afterEach(() => {
   cleanup();
   resetDatabaseClientActionHandlersForTests();
   resetNavigationAnnouncer();
-  resetHotkeyAnnouncer();
+  resetNavigationAnnouncer();
   vi.restoreAllMocks();
 });
 

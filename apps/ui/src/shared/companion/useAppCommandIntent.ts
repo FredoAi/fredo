@@ -10,15 +10,16 @@
  *    — it had to be opened first — or lives in another webview).
  *
  * Both paths funnel through {@link handleAppCommandIntent}, which executes the
- * named command through the ONE executor (`executeCommand`, so the declared
- * argument contract re-runs before `run` — R-3d defence in depth) and ALWAYS
- * reports a result (`app_command_intent_result`) — including a thrown error, so
- * the Home dispatcher never waits for something that will not come.
+ * named command through the application's registered navigation host
+ * (`host.runIntent({channel:'agent', actor:'companion'})` — the same ONE `dispatch`
+ * funnel the keyboard uses, so the declared argument contract runs before `run`)
+ * and ALWAYS reports a result (`app_command_intent_result`) — including a thrown
+ * error, so the Home dispatcher never waits for something that will not come.
  *
- * Spec #3120 (P6) — an application that registered a navigation host executes
- * the intent through `host.runIntent({channel:'agent', actor:'companion'})`
- * instead (the same ONE `dispatch` funnel the keyboard uses). An application with
- * no registered host keeps the shipped `executeCommand` path.
+ * Spec #3122 (P8), ST-2 — the legacy `executeCommand` fallback for an application
+ * with no navigation host is retired: an intent addressed to an app that declares no
+ * surface is reported `Invalid` (it cannot be performed), never silently executed
+ * through a second command path.
  *
  * Exactly-once is guarded by a MODULE-SCOPED handled-request ledger, never a
  * React ref: refs reset on every mount, and a remount must not re-execute an
@@ -29,8 +30,6 @@
 
 import { useEffect } from 'react';
 
-import { executeCommand } from '../hotkeys/commandSurfaceStore';
-import type { ApplicationCommandArgs } from '../hotkeys/commandSurface';
 import type { DispatchResult } from '../navigation';
 import { getNavigationHost } from '../navigation/ui/hostRegistry';
 import { adapterBridge } from '../utils/adapterBridge';
@@ -103,37 +102,6 @@ function isValidIntent(
   );
 }
 
-/**
- * The intent's `arguments` is already the command's flat string map. An absent
- * value is the "no arguments supplied" shape (`{}`), NEVER `undefined`: passing
- * `undefined` would let the executor open an inline prompt for a prompt-backed
- * command, and the companion path must present no human prompt.
- *
- * A present non-object value is passed THROUGH (not normalised away) so the
- * declared-argument rule rejects it (`not-an-object`) instead of silently
- * executing with no arguments.
- */
-function toCommandArgs(value: unknown): ApplicationCommandArgs {
-  if (value === undefined || value === null) return {};
-  return value as ApplicationCommandArgs;
-}
-
-/** Map the executor's outcome onto the relay's outcome vocabulary. */
-function mapOutcome(
-  status: 'performed' | 'noop' | 'rejected' | 'failed',
-): AppCommandOutcomeName {
-  switch (status) {
-    case 'performed':
-      return 'Performed';
-    case 'noop':
-      return 'Noop';
-    case 'rejected':
-      return 'Invalid';
-    default:
-      return 'Failed';
-  }
-}
-
 /** Map the navigation funnel's result onto the relay's outcome vocabulary. */
 function mapNavigationOutcome(status: DispatchResult['status']): AppCommandOutcomeName {
   switch (status) {
@@ -176,10 +144,14 @@ export async function handleAppCommandIntent(
   let detail: string | undefined;
 
   try {
-    // Spec #3120 (P6) — a registered navigation host is the authoritative path (the same
-    // ONE `dispatch` funnel the keyboard uses, attributed to the companion).
+    // Spec #3120 (P6) / #3122 ST-2 — the registered navigation host is the ONLY path (the
+    // same ONE `dispatch` funnel the keyboard uses, attributed to the companion). An app
+    // with no declared surface cannot perform the intent and reports `Invalid`.
     const host = getNavigationHost(intent.appId);
-    if (host !== null) {
+    if (host === null) {
+      outcome = 'Invalid';
+      detail = 'unknown-app';
+    } else {
       const result = await host.runIntent({
         verbId: action,
         args: toNavigationArgs(intent.arguments),
@@ -189,12 +161,6 @@ export async function handleAppCommandIntent(
       outcome = mapNavigationOutcome(result.status);
       if (result.status === 'performed') performed = [action];
       if (result.status === 'rejected') detail = result.code;
-    } else {
-      // The ONE executor — it re-runs `validateCommandArgs` before `run` (R-3d).
-      const result = await executeCommand(intent.appId, action, toCommandArgs(intent.arguments));
-      outcome = mapOutcome(result.status);
-      if (result.status === 'performed') performed = [action];
-      if (result.status === 'rejected') detail = result.reason;
     }
   } catch (error) {
     // A throwing `run` is already mapped to `failed` by the executor; this

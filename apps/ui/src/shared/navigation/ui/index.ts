@@ -33,3 +33,6 @@ export * from './announce';
 export * from './host';
 export * from './hostRegistry';
 export * from './confirmation';
+export * from './globalKeys';
+export * from './terminalPassthrough';
+export * from './NavigationProvider';

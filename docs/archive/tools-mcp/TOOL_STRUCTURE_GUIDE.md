@@ -121,7 +121,7 @@ pnpm dev
 ### `exposedAs: 'mcp'`
 - **Only available via MCP** (Model Context Protocol)
 - No HTTP endpoint created
-- Example: `azdo_start_workitem`, `kubectl_restart_deployment`, `kubectl_get_pods`
+- Example: `azdo_start_work_item`, `kubectl_restart_deployment`, `kubectl_get_pods`
 
 ### `exposedAs: 'api'`
 - **Only available via HTTP REST API**

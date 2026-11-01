@@ -52,7 +52,7 @@ import {
 } from '@/applications/applicationRegistry';
 import type { FredoApplicationClass } from '@/shared/classes';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
-import { resetHotkeyAnnouncer } from '@/shared/hotkeys/announcer';
+import { resetNavigationAnnouncer } from '@/shared/navigation/ui';
 import {
   WireframeNavigationProvider,
   useWireframeNavigation,
@@ -116,7 +116,7 @@ async function press(target: HTMLElement, key: string): Promise<void> {
 beforeEach(() => {
   resetWireframeStoreForTests();
   resetWireframeSurfaceForTests();
-  resetHotkeyAnnouncer();
+  resetNavigationAnnouncer();
   resetNavigationAnnouncer();
   resetCompanionComposerBridgeForTests();
 });
@@ -125,7 +125,7 @@ afterEach(() => {
   cleanup();
   resetWireframeStoreForTests();
   resetWireframeSurfaceForTests();
-  resetHotkeyAnnouncer();
+  resetNavigationAnnouncer();
   resetNavigationAnnouncer();
   resetCompanionComposerBridgeForTests();
   vi.restoreAllMocks();

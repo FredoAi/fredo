@@ -33,6 +33,7 @@ import {
   type JournalEntry,
   type JournalQuery,
   type Surface,
+  type VerbArg,
   type VerbDescriptor,
   type VerbEffect,
 } from './types';
@@ -94,27 +95,40 @@ function authoredConsequence(verbId: string): string | null {
 
 /* ───────────────────────────── argument validation (§5.2 step 3) ───────────────────────────── */
 
-function isValidArguments(
-  verb: VerbDescriptor,
+/**
+ * §5.2 step 3 — the declared-argument rule as the ONE implementation.
+ *
+ * Spec #3122 (P8), ST-1 extracts it so the dispatch funnel and the host pre-flight
+ * (`useAppCommandSkill`) share one matcher instead of duplicating it. A declared free-text
+ * argument may legitimately be `''` (`allowEmpty`); the blank rule stays strict for every
+ * argument that does not opt in.
+ */
+export function validateDeclaredArguments(
+  declaredArgs: readonly VerbArg[],
   args: Readonly<Record<string, string>>,
 ): boolean {
-  const declared = new Map(verb.args.map((arg) => [arg.name, arg]));
+  const declared = new Map(declaredArgs.map((arg) => [arg.name, arg]));
   for (const key of Object.keys(args)) {
     if (!declared.has(key)) return false; // undeclared key
   }
-  for (const arg of verb.args) {
+  for (const arg of declaredArgs) {
     const value = args[arg.name];
     if (value === undefined) {
       if (arg.required) return false; // missing required
       continue;
     }
     if (typeof value !== 'string') return false; // non-string (madcast at the boundary)
-    // Spec #3120 (P6), ST-1 — a declared free-text argument may legitimately be `''`.
-    // The blank rule stays strict for every argument that does not opt in.
     if (value.trim().length === 0 && arg.allowEmpty !== true) return false; // blank / whitespace-only
     if (arg.validate !== undefined && !arg.validate(value)) return false; // failed guard
   }
   return true;
+}
+
+function isValidArguments(
+  verb: VerbDescriptor,
+  args: Readonly<Record<string, string>>,
+): boolean {
+  return validateDeclaredArguments(verb.args, args);
 }
 
 /* ───────────────────────────── risk policy (§9) ───────────────────────────── */

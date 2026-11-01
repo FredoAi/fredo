@@ -677,7 +677,7 @@ mod tests {
                             "aliases": ["undo", "revert"]
                         },
                         {
-                            "id": "wireframe.view.fitPage",
+                            "id": "wireframe.sample.fitPage",
                             "label": "Fit page",
                             "description": "Fit the page to the screen.",
                             "risk": "safe",
@@ -729,5 +729,137 @@ mod tests {
         assert!(wire["surfaces"][0]["commands"][1].get("aliases").is_none());
         assert!(wire["surfaces"][1]["commands"][0].get("risk").is_none());
         assert!(wire["surfaces"][1]["commands"][0].get("aliases").is_none());
+    }
+
+    /// The module's OWN source, used by the transport-only divergence proof below.
+    ///
+    /// `include_str!` resolves a relative path from THIS file's directory, while
+    /// `file!()` is crate-relative — hence the manifest-dir join.
+    const MODULE_SOURCE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", file!()));
+
+    /// Spec #3122 P8 ST-3 / AC4.4 — the Rust registry is TRANSPORT-ONLY and cannot
+    /// diverge from the published manifest.
+    ///
+    /// (a) The generated offer is a pure function of the published manifest: the
+    ///     synthetic ids in, exactly those ids plus ONE `listActions` out.
+    /// (b) A source scan of the PRODUCTION section (everything before the test
+    ///     module) finds none of the eight retired app ids and none of the shipped
+    ///     Wireframe verb ids — so a second catalog cannot be reintroduced silently.
+    #[test]
+    fn surface_registry_is_transport_only_and_cannot_diverge() {
+        // (a) The offer mirrors the published command ids in order, then listActions.
+        let published = manifest(vec![surface("synthetic-app")]);
+        let registry = AppCommandSurfaceRegistry::new();
+        registry
+            .publish(published.clone())
+            .expect("a synthetic publish is valid");
+
+        let offer = build_companion_skill_registry(&registry.surfaces());
+        assert_eq!(
+            skill_names(&offer),
+            vec!["open_app", "close_app", "doom_mode", "synthetic-app"],
+            "exactly the three static skills plus the one published surface"
+        );
+        assert_eq!(
+            action_enum(&offer, "synthetic-app"),
+            vec![
+                "synthetic-app.one",
+                "synthetic-app.two",
+                COMPANION_LIST_ACTIONS_ID
+            ],
+            "the enum is exactly the published ids plus one listActions"
+        );
+        assert_eq!(
+            published.surfaces[0]
+                .commands
+                .iter()
+                .map(|command| command.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["synthetic-app.one", "synthetic-app.two"],
+            "nothing was resolved from a local catalog"
+        );
+
+        // (b) Source scan: the production section holds no catalog. Tokens are
+        // listed literally here because the scan excludes this test module.
+        const RETIRED_APP_IDS: [&str; 8] = [
+            "diagram",
+            "my-workitems",
+            "create-workitem",
+            "optimizely",
+            "docs-viewer",
+            "github-viewer",
+            "browser-preview",
+            "model-storage",
+        ];
+        const SHIPPED_VERB_IDS: [&str; 53] = [
+            "app.map",
+            "app.ask",
+            "wireframe.selection.previous",
+            "wireframe.selection.next",
+            "wireframe.create.rect",
+            "wireframe.create.ellipse",
+            "wireframe.add.text",
+            "wireframe.add.button",
+            "wireframe.add.input",
+            "wireframe.add.image",
+            "wireframe.add.icon",
+            "wireframe.add.card",
+            "wireframe.add.section",
+            "wireframe.add.shape",
+            "wireframe.add.line",
+            "wireframe.element.duplicate",
+            "wireframe.element.delete",
+            "wireframe.element.toggleLock",
+            "wireframe.element.toggleVisible",
+            "wireframe.element.rename",
+            "wireframe.element.setLabel",
+            "wireframe.element.setText",
+            "wireframe.element.setPlaceholder",
+            "wireframe.element.move",
+            "wireframe.element.resize",
+            "wireframe.element.setField",
+            "wireframe.page.update",
+            "wireframe.arrange.group",
+            "wireframe.arrange.ungroup",
+            "wireframe.arrange.toggleGroupLock",
+            "wireframe.arrange.alignLeft",
+            "wireframe.arrange.alignCenter",
+            "wireframe.arrange.alignRight",
+            "wireframe.arrange.distribute",
+            "wireframe.arrange.bringForward",
+            "wireframe.arrange.sendBackward",
+            "wireframe.arrange.toggleSnap",
+            "wireframe.style.fill",
+            "wireframe.style.border",
+            "wireframe.style.appearance",
+            "wireframe.style.radius",
+            "wireframe.style.textStyle",
+            "wireframe.zoom.in",
+            "wireframe.zoom.out",
+            "wireframe.view.fitPage",
+            "wireframe.view.resetView",
+            "wireframe.view.togglePan",
+            "wireframe.view.panBy",
+            "wireframe.document.new",
+            "place.open",
+            "place.saveAs",
+            "place.exportPng",
+            "journal.undo",
+        ];
+
+        let production = MODULE_SOURCE
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the module has a production section");
+        assert!(
+            production.contains("fn build_companion_skill_registry"),
+            "the scan must read the real production source"
+        );
+        for token in RETIRED_APP_IDS.iter().chain(SHIPPED_VERB_IDS.iter()) {
+            assert!(
+                !production.contains(token),
+                "the transport module must hold no app catalog; found '{token}' in its production source"
+            );
+        }
     }
 }

@@ -4,11 +4,10 @@
 
 ## Context
 
-One capability is declared in five vocabularies: `WIREFRAME_ACTIONS`
-(`apps/ui/src/applications/wireframe/actions/wireframeActions.ts`), the command surface
-(`apps/ui/src/applications/wireframe/wireframeCommandSurface.ts`), the hotkey registry
-(`apps/ui/src/shared/hotkeys/registry.ts`), `data-hotkey` discovery
-(`apps/ui/src/shared/hotkeys/hotkeyElements.ts`), and the companion manifest
+One capability was declared in five vocabularies: `WIREFRAME_ACTIONS`
+(`apps/ui/src/applications/wireframe/actions/wireframeActions.ts`), the per-application command
+surface (`apps/ui/src/applications/wireframe/...`), the hotkey registry, per-element key
+discovery, and the companion manifest
 (`apps/ui/src/shared/companion/manifest.ts`). Incremental extension produced exactly this: each
 addition obeyed one surface and left the others to catch up. #3099 had to publish a mirrored action
 list so the companion could run what applications already had.

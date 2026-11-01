@@ -53,7 +53,7 @@ import {
   type NavigationHost,
 } from '../../../shared/navigation/ui';
 import { requestCompanionComposerOpen } from '../../../shared/companion/composerBridge';
-import { isTextControl } from '../../../shared/hotkeys/focusContext';
+import { isTextControl } from '../../../shared/navigation/focusContext';
 import {
   MISSION_MONITOR_SESSIONS_PLACE_ID,
   MISSION_MONITOR_SURFACE_APP_ID,
@@ -129,7 +129,6 @@ export function MissionMonitorNavigationProvider({
       surface: missionMonitorSurface,
       getContext: () => missionMonitorContext(selectionRef.current),
       // §11.5 / UI/UX §7 — adopt the shipped `hotkeys-announcer`; never add a second region.
-      announcementChannel: 'legacy',
       // Mirror the P5 policy: launcher/voice/agent intents confirm; keyboard/pointer keep the
       // shipped no-prompt behaviour (the journal is the undo).
       confirm: (request, intent) =>

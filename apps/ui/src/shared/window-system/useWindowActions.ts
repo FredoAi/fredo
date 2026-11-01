@@ -8,7 +8,7 @@
  */
 
 import { useContext, useEffect } from 'react';
-import { installWindowTraversal } from '../hotkeys/traversal';
+import { installWindowTraversal } from './traversal';
 import { WindowSystemContext } from './WindowSystemProvider';
 import type { WindowActions } from './windowTypes';
 
@@ -49,4 +49,4 @@ export {
   handleWindowBoundaryTab,
   restoreTransientFocus,
   scrollIntoViewIfNeeded,
-} from '../hotkeys/traversal';
+} from './traversal';

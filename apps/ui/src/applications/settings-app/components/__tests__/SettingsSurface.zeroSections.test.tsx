@@ -86,23 +86,23 @@ describe('#2868 ST-1 — SettingsSurface zero-section affordance (AC-3 / R-3c)',
   it('renders the "Features" grouping + one nav item per settings-exposing feature (positive control)', () => {
     registryState.features = [
       {
-        id: 'diagram',
-        name: 'Infrastructure Diagram',
+        id: 'wireframe',
+        name: 'Wireframe',
         icon: LuActivity,
         hasSettings: true,
-        renderSettings: () => <div data-testid="diagram-settings" />,
+        renderSettings: () => <div data-testid="wireframe-settings" />,
       },
     ];
 
     renderWithChakra(<SettingsSurface />);
 
     expect(screen.getByText('Applications')).toBeInTheDocument();
-    const navItem = screen.getByText('Infrastructure Diagram');
+    const navItem = screen.getByText('Wireframe');
     const navButton = navItem.closest('button');
     expect(navButton).not.toBeNull();
 
     fireEvent.click(navButton!);
-    expect(screen.getByTestId('diagram-settings')).toBeInTheDocument();
+    expect(screen.getByTestId('wireframe-settings')).toBeInTheDocument();
     expect(screen.queryByTestId('companion-settings')).toBeNull();
   });
 });

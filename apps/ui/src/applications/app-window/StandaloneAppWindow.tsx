@@ -13,10 +13,10 @@
  *
  * Provider stack: the standalone window is loaded through the SAME entry
  * (`main.tsx`) as every other route, so the shared global providers (Chakra,
- * Theme, Stream, App, Companion, ReactFlow, Hotkeys) are already mounted around
+ * Theme, Stream, App, Companion, ReactFlow, Navigation) are already mounted around
  * `Router` — including for this route. Re-mounting them here would nest
  * side-effectful providers (a second `adapter.onMessage` row-delivery
- * subscription, a second hotkey engine + overlays, a second Chakra system), so
+ * subscription, a second navigation chord dispatcher, a second Chakra system), so
  * this route adds ONLY the one provider the main window's kernel supplies that
  * `main.tsx` does not: `WindowSystemProvider` (so `useWindowActions` never
  * throws outside the main window's kernel). There is deliberately NO
@@ -31,7 +31,6 @@ import { Flex, Heading, Icon, Text } from '@chakra-ui/react';
 import { LuTriangleAlert } from 'react-icons/lu';
 
 import { WindowSystemProvider } from '../../shared/window-system/WindowSystemProvider';
-import { resetApplicationMode } from '../../shared/hotkeys/commandSurfaceStore';
 import { dedupeByApplicationId, getApplications } from '../applicationRegistry';
 import type { FredoApplicationClass } from '../../shared/classes/FredoApplicationClass';
 // Side-effect import: registers every feature into the registry (the standalone
@@ -93,9 +92,6 @@ export const StandaloneAppWindow: React.FC<StandaloneAppWindowProps> = ({ appId 
       );
     }
     return () => {
-      // R-3.4 — closing the own-window route discards this application's mode
-      // stack + open prompt (keyed by the app root's identity attribute).
-      resetApplicationMode(feature.id);
       const unmounted = feature.onUnmount?.();
       if (unmounted instanceof Promise) {
         unmounted.catch((err) =>

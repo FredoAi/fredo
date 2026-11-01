@@ -1,3 +1,9 @@
+> **SUPERSEDED (P8, #3122).** This is the historical navigation-fluency research record from
+> spike #3115. The product no longer ships the flat-key model it tears down: every surface
+> declares a place tree + verbs, and ONE navigation dispatch funnel serves keyboard, pointer,
+> launcher, voice, agent and system. The citations below are retained as the record of what was
+> measured at the time; they point at code that has since been deleted or relocated.
+
 > **Status:** Desk research, clickable prototype and reusable session kit delivered. User evidence
 > and the numeric Gate H go/no-go decision are **deferred to #3120** (real-pilot evaluation); the
 > deferral is a scope decision, not a failed gate.
@@ -72,25 +78,25 @@ every number with this recipe — never from memory, and never from a number cop
 table without re-reading the cited lines.
 
 - **Binding** = one dispatchable key declaration, of exactly one of three kinds:
-  (a) a grammar-valid `data-hotkey` attribute value on a mounted element (one `a+b` value is ONE
+  (a) a grammar-valid legacy per-element key-attribute value on a mounted element (one `a+b` value is ONE
   binding) — grammar `/^[a-z0-9](?:\+[a-z0-9])?$/`
-  (`apps/ui/src/shared/hotkeys/hotkeyGrammar.ts:25`);
+  (the retired element-key grammar (removed in P8));
   (b) one `keymap` stroke→command entry of an `ApplicationCommandMode` of an opted-in application
   (a stroke counts ONCE even if `keymapOrder` repeats it) —
-  `apps/ui/src/shared/hotkeys/commandSurface.ts:104-129`;
-  (c) one `KEPT_GLOBAL_BINDINGS` entry — `apps/ui/src/shared/hotkeys/defaults.ts:38-57`.
+  the retired command-mode declaration (removed in P8);
+  (c) one `KEPT_GLOBAL_BINDINGS` entry — the retired global-binding defaults (removed in P8).
 - **Rendered bindings ≠ declaration sites** for the hidden carrier: ONE
-  `data-hotkey={binding.hotkey}` site (`WireframeHotkeyCarrier.tsx:70-78`) renders an array of 12
+  per-element key-attribute site (the retired two-step carrier (removed in P5)) renders an array of 12
   elements derived from the table (`:40-50`). Count the array length, not the attribute
   occurrence.
 - **Simultaneous bindings** = bindings dispatchable in the surface's default/root state, all
   kinds summed.
 - **Listed bindings** = rows the always-on bar actually renders for that surface
-  (`apps/ui/src/shared/hotkeys/hotkeyBarModel.ts:245-258`): element rows when no mode is active,
+  (the retired always-on-bar model (removed in P8)): element rows when no mode is active,
   else the active mode's keymap rows — the kept globals are never rows.
 - **Mode** = a declared `ApplicationCommandMode` (parent/keymap), or an **implicit** input state
   the engine derives from focus and that the user cannot select (`terminal`, `text-entry`,
-  `modal`, no-surface) — see `apps/ui/src/shared/hotkeys/sequence.ts:9-32`.
+  `modal`, no-surface) — see the retired sequence matcher (removed in P8).
 - **Toolbar control** = one `WIREFRAME_ACTIONS` row with `toolbar: true`; a split insert control
   renders one button + one chevron and counts once.
 - **Conversation exposure** = a UI path where typed natural language reaches the companion.
@@ -102,14 +108,14 @@ Counting recipe (`Grep`/`Read` only — no scripts):
 
 | Quantity | Recipe | Verified today |
 |---|---|---|
-| Wireframe root mode keys | Read `wireframeCommandSurface.ts:216-256` (deriver + `SELECT_KEYMAP_ORDER`) | **24** |
-| Wireframe two-step element bindings | Read `WireframeHotkeyCarrier.tsx:40-50` (array of `+`-containing rows) | **12** |
+| Wireframe root mode keys | Read the retired command-mode declaration (removed in P5) (deriver + `SELECT_KEYMAP_ORDER`) | **24** |
+| Wireframe two-step element bindings | Read the retired two-step carrier (removed in P5) (array of `+`-containing rows) | **12** |
 | Wireframe declared bindings, simultaneous | 24 mode keys + 12 carrier bindings | **36** |
 | Wireframe toolbar controls | Grep `toolbar: true` in `wireframeActions.ts` and cross-check `WireframeToolbar.tsx:94-201` (9+3+10+2+5+4) | **33** |
 | Wireframe modes | Grep `parent:` in `wireframeCommandSurface.ts` (1 root + 3 children) | **4** |
-| Wireframe listed rows (root / draw) | `hotkeyBarModel.ts:180-212` + `:255-258` | **24 / 4** |
-| Kept globals | `defaults.ts:38-57` | **3** |
-| Other apps' element bindings | Grep `data-hotkey` in `apps/ui/src/applications`, excluding `__tests__` and the Wireframe carrier | MM 1, diagram 1, my-workitems 4, optimizely 4, dev-mode 4, terminal 0, launcher 0 |
+| Wireframe listed rows (root / draw) | the retired always-on-bar model (removed in P8), root and draw derivations | **24 / 4** |
+| Kept globals | the retired global-binding defaults (removed in P8) | **3** |
+| Other apps' element bindings | Grep for legacy per-element key attributes in `apps/ui/src/applications`, excluding `__tests__` and the Wireframe carrier | MM 1, the three then-retired apps 1 / 4 / 4, dev-mode 4, terminal 0, launcher 0 |
 | Global first-step union | SUM the app element first steps + Wireframe's prefix-only `g` | **15 of 36** |
 
 ### 3.2 Surface Inventory
@@ -120,84 +126,84 @@ state; conditional bindings are called out in the detail bullet.
 
 | Surface | Simultaneous bindings | Modes (visible / escapable) | Discovery | Selection → actions | Conversation exposure | Duplicate declarations |
 |---|---|---|---|---|---|---|
-| Wireframe | **36** (24 mode keys + 12 carrier) | **4** declared; only the active label visible; Escape pops; Pan sticky | bar lists active mode keymap only (24 root / 4 draw); 12 `g+*` + 3 globals never listed | **partly**: toolbar disabled/pressed state is selection-derived; keymap never changes | none in-app; 39 published companion commands, no place scope or undo | toolbar hand-listed twice; 5 derived sites converge on one executor |
+| Wireframe | **36** (24 mode keys + 12 carrier) | **4** declared; only the active label visible; Escape pops; Pan sticky | bar lists active mode keymap only (24 root / 4 draw); the 12 retired two-step carrier sequences + 3 globals never listed | **partly**: toolbar disabled/pressed state is selection-derived; keymap never changes | none in-app; 39 published companion commands, no place scope or undo | toolbar hand-listed twice; 5 derived sites converge on one executor |
 | Terminal | **0** | 1 implicit passthrough (not user-selectable); exit only by focus change | bar greys out; one announcement on entry | n/a | none (PTY) | none |
-| Diagram | **1** (`d`) | 0 | one bar element row | no selection model | none | none |
+| Retired infrastructure-diagram app | **1** (`d`) | 0 | one bar element row | no selection model | none | none |
 | Mission Monitor | **1** (`s`) | 0 | bar row only while the drawer is mounted | selection changes detail content, not the action set | none | none |
-| Optimizely | **4** (`f e c q`) | 0 | 4 bar rows | expansion does not change actions | none | none |
-| My Work Items | **4** (`r a z j`) | 0 | 4 bar rows | filters change content, not actions | none | none |
+| Retired feature-flags app | **4** (`f e c q`) | 0 | 4 bar rows | expansion does not change actions | none | none |
+| Retired work-items app | **4** (`r a z j`) | 0 | 4 bar rows | filters change content, not actions | none | none |
 | Dev Mode | **4** sites; **2–4** simultaneous | 0 | bar rows, but window is not launcher-reachable (easter egg only) | no | none | none |
 | Window traversal | **3** kept globals | 0 declared; 4 implicit focus contexts (not selectable) | **none** — never rendered as rows | n/a | none | same 3 chords declared twice |
-| Launcher | **0** `data-hotkey` | 2 implicit UI states (tiles vs `>` palette) | `>` prefix advertised nowhere; palette rows carry no place path/risk | yes — Enter's meaning depends on match state | **the only** conversation surface | palette built from the hotkey registry only |
+| Launcher | **0** legacy per-element key attributes | 2 implicit UI states (tiles vs `>` palette) | `>` prefix advertised nowhere; palette rows carry no place path/risk | yes — Enter's meaning depends on match state | **the only** conversation surface | palette built from the hotkey registry only |
 
 **Wireframe** (`wireframe`; the only application that opts into a command surface —
 `apps/ui/src/applications/wireframe/WireframeFeature.tsx:29`)
-- Bindings: 24 root mode keys (`wireframeCommandSurface.ts:216-256`) + 12 two-step `g+*` element
-  bindings on a hidden, non-focusable carrier (`WireframeHotkeyCarrier.tsx:40-50`, `:70-78`) =
+- Bindings: 24 root mode keys (the retired command-mode declaration (removed in P5)) + 12 two-step carrier element
+  bindings on a hidden, non-focusable carrier (the retired two-step carrier (removed in P5), `:70-78`) =
   **36 simultaneous**; **33** toolbar controls (`wireframeActions.ts:365-645` toolbar rows;
   `WireframeToolbar.tsx:94-201`). The table holds 35 rows: 32 hotkey-bearing, 1 toolbar-only
   (`wireframe.document.new`, `wireframeActions.ts:626-634`), 2 companion-only (`:635-644`).
 - Modes: **4 declared** — root `wireframe.select`, transient `wireframe.draw.rect`,
-  `wireframe.draw.ellipse`, sticky `wireframe.pan` (`wireframeCommandSurface.ts:274-312`, `:438-444`;
-  `transient` default true / `sticky` default false at `commandSurface.ts:121-124`). Visible ONLY
-  as the leading badge carrying the ACTIVE mode's single label (`HotkeyBar.tsx:208-244`) plus the
+  `wireframe.draw.ellipse`, sticky `wireframe.pan` (the retired command-mode declaration (removed in P5), `:438-444`;
+  `transient` default true / `sticky` default false at the retired command-mode declaration (removed in P8)). Visible ONLY
+  as the leading badge carrying the ACTIVE mode's single label (the retired always-on bar (removed in P8)) plus the
   body hook `data-fredo-active-mode` (`docs/ARCHITECTURE.md:585`); the SET of modes is nowhere
   visible. Escapable: Escape pops one layer; Pan is stickily retained
-  (`wireframeCommandSurface.ts:304-312`).
+  (the retired command-mode declaration (removed in P5)).
 - Discovery: the bar lists the ACTIVE mode's keymap only; inherited keys still dispatch but are
-  NOT listed, and the 12 `g+*` bindings are never listed (`hotkeyBarModel.ts:180-212`;
-  documented at `docs/ARCHITECTURE.md:588`). Toolbar controls carry **no** `data-hotkey`
+  NOT listed, and the 12 retired two-step carrier bindings are never listed (the retired always-on-bar model (removed in P8);
+  documented at `docs/ARCHITECTURE.md:588`). Toolbar controls carry **no** legacy per-element key attribute
   (`WireframeToolbar.tsx:16-21`).
 - Selection changes available actions: **partly** — the toolbar's `disabled`/`pressed` state is
   selection-derived (`WireframeToolbar.tsx:304-366`) and the property panel switches between
   Page / element / multi / group (`WireframePropertyPanel.tsx:195-209`); the KEYMAP never changes
-  with selection (`wireframeCommandSurface.ts:216-228`).
+  with selection (the retired command-mode declaration (removed in P5)).
 - Conversation: no in-app conversation surface. The published companion surface exposes **39
   commands + `listActions`** (`shared/companion/manifest.ts:73-119`; golden fixture
   `shared/companion/fixtures/wireframe.companion.golden.json:68-328` lists the 39 ids), including
   `wireframe.element.create`, `wireframe.element.editFill`, add-element and arrange verbs
-  (`wireframeCommandSurface.ts:344-435`) — not only `draftApp`.
+  (the retired command-mode declaration (removed in P5)) — not only `draftApp`.
 - Duplicate capability declarations: the 33 toolbar controls are hand-listed a SECOND time as
   `{id,label,icon}` arrays (`WireframeToolbar.tsx:94-201`) alongside the table rows that already
   carry `id`/`title` (`wireframeActions.ts:365-645`); each capability is then reachable through
   three more derived sites (root keymap, carrier, command spec) — all converging on ONE
-  `executeCommand` (`commandSurfaceStore.ts:437-459`).
+  `executeCommand` (the retired command-mode executor (removed in P8)).
 
 **Terminal** (`terminal`)
-- Bindings: **0** `data-hotkey`; while the terminal owns focus every keystroke passes through
-  (`terminalMode.ts:1-27`, `:100-112`; `sequence.ts:192-197`), root
+- Bindings: **0** legacy per-element key attributes; while the terminal owns focus every keystroke passes through
+  (the relocated terminal passthrough, `:100-112`; the retired sequence matcher (removed in P8)), root
   `data-fredo-terminal-root="true"` (`SessionTerminal.tsx:344`).
 - Modes: **1 implicit** (passthrough) — not user-selectable, visible as greyed bar rows +
-  body hook `data-fredo-passthrough` (`HotkeyBar.tsx:176-180`; `terminalMode.ts:19-27`, `:56-66`),
-  escapable only by focus change. The old exit chord is removed (`terminalMode.ts:5-8`).
-- Discovery: none specific (the bar greys out, `HotkeyBar.tsx:176-180`). Selection: n/a.
+  body hook `data-fredo-passthrough` (the retired always-on bar (removed in P8); the relocated terminal passthrough, `:56-66`),
+  escapable only by focus change. The old exit chord is removed (the relocated terminal passthrough).
+- Discovery: none specific (the bar greys out, the retired always-on bar (removed in P8)). Selection: n/a.
   Conversation: none (PTY). Duplicates: none.
 
-**Diagram** (`diagram`)
-- Bindings: **1** (`d`, `ArchitectureDiagram.tsx:677-684`). Modes: 0. Discovery: one bar element
-  row (document order, `hotkeyElements.ts:5-15`). Selection: no selection model in the app
+**Infrastructure diagram (retired app)**
+- Bindings: **1** (`d`, the retired infrastructure-diagram app (removed in P8)). Modes: 0. Discovery: one bar element
+  row (document order, the retired element-discovery module (removed in P8)). Selection: no selection model in the app
   (grep `selectedNode` → no hits), so selection never changes actions. Conversation: none.
-  Duplicates: none. Reachability: `showable = false` (`DiagramFeature.tsx:23`), so no launcher
-  tile — the surface is registered (`diagram/index.ts:8`) but not discoverable from the launcher.
+  Duplicates: none. Reachability: `showable = false` (the retired infrastructure-diagram app (removed in P8)), so no launcher
+  tile — the surface is registered (its registration module (removed in P8)) but not discoverable from the launcher.
 
 **Mission Monitor** (`mission-monitor`)
 - Bindings: **1 declared** (`s`, `SessionHistoryDrawer.tsx:294-301`) that exists only while the
   drawer is mounted. Modes: 0. Discovery: bar row only while mounted (same observer,
-  `hotkeyElements.ts:5-15`). Selection changes the detail panel content
+  the retired element-discovery module (removed in P8)). Selection changes the detail panel content
   (`MissionMonitorPanel.tsx:1077-1119`) but not the action set. Conversation: none. Duplicates:
   none.
 
-**Optimizely / feature flags** (`optimizely`)
+**Feature flags (retired app)**
 - Bindings: **4** (`f` refresh `:461`, `e` expand `:491`, `c` collapse `:506`, `q` search `:533`
-  in `OptimizelyFlagsPanel.tsx`). Modes: 0. Discovery: 4 bar rows. Expansion does not change
+  in the retired feature-flags panel). Modes: 0. Discovery: 4 bar rows. Expansion does not change
   actions. Conversation: none. Duplicates: none. Reachability: `showable = false`
-  (`OptimizelyFeature.tsx:10`).
+  (the retired feature-flags app (removed in P8)).
 
-**My Work Items** (`my-workitems`)
-- Bindings: **4** (`r` refresh `MyWorkItemsContainer.tsx:133`; `a`/`z`/`j` source tabs
+**Work items (retired app)**
+- Bindings: **4** (`r` refresh in the retired work-items container; `a`/`z`/`j` source tabs
   `:155-157`). Modes: 0. Discovery: 4 bar rows. Filters change content, not actions.
   Conversation: none. Duplicates: none. Reachability: `showable = false`
-  (`MyWorkItemsFeature.tsx:19`), but the surface IS opened by the Home event handler
+  (the retired work-items app (removed in P8)), but the surface IS opened by the Home event handler
   (`Home.tsx:191-196`) — hidden from the launcher, not unreachable.
 
 **Dev Mode** (`dev-mode`)
@@ -208,19 +214,19 @@ state; conditional bindings are called out in the detail bullet.
   Konami easter egg (`Home.tsx:69-77`). Conversation: none. Duplicates: none.
 
 **Window traversal** (no application with this name — the capability is
-`apps/ui/src/shared/hotkeys/traversal.ts` + the kept globals)
+the relocated window traversal (now shared/window-system/traversal.ts) + the kept globals)
 - Bindings: **3 kept globals** (`primary+space`, `primary+tab`, `primary+shift+tab`;
-  `defaults.ts:38-57`), registered `engine.ts:91-120` and resolved `engine.ts:137-151`, plus a
-  non-dispatch Tab-boundary handler (`traversal.ts:268-308`).
+  the retired global-binding defaults (removed in P8)), registered and resolved by the retired key engine (removed in P8), plus a
+  non-dispatch Tab-boundary handler (the relocated window traversal (now shared/window-system/traversal.ts)).
 - Modes: **0 declared**; the focus classifier's four contexts are implicit and not user-selectable
-  (`sequence.ts:9-16`; `docs/ARCHITECTURE.md:591`).
+  (the retired sequence matcher (removed in P8); `docs/ARCHITECTURE.md:591`).
 - Discovery: **none** — kept globals are not element rows and not mode rows, so the bar can never
-  list them (`hotkeyBarModel.ts:223-258`). Selection: n/a. Conversation: none.
-- Duplicate declarations: the same three chords are declared once in `defaults.ts:38-57` and once
-  in `engine.ts:91-120` (`DEFAULT_FREDO_ACTION_DEFS`); the two lists must stay in sync manually.
+  list them (the retired always-on-bar model (removed in P8)). Selection: n/a. Conversation: none.
+- Duplicate declarations: the same three chords are declared once in the retired global-binding defaults (removed in P8) and once
+  in the retired key engine (removed in P8) (`DEFAULT_FREDO_ACTION_DEFS`); the two lists must stay in sync manually.
 
 **Launcher** (`home` / `home/components/launcher/`)
-- Bindings: **0** `data-hotkey`; internal key behaviour is Enter commit
+- Bindings: **0** legacy per-element key attributes; internal key behaviour is Enter commit
   (`LauncherShell.tsx:1425-1516`), ArrowUp/Down palette roving, Escape (`:1349-1379`),
   Shift+Enter newline, hold-Space dictation (`launcherSpaceHold.ts`), plus the global
   `primary+space` toggle.
@@ -237,8 +243,8 @@ state; conditional bindings are called out in the detail bullet.
   conversation there.
 - Duplicate capability declarations: the palette is built from `listHotkeyActions()`
   (`LauncherShell.tsx:871-885`) — the registry. Element hotkeys are explicitly NOT registry
-  declarations (`engine.ts:158-173`), and command-surface commands are a third list, so in
-  production the palette offers only the 4 engine defaults (`engine.ts:91-120`) and **none** of
+  declarations (the retired key engine (removed in P8)), and command-surface commands are a third list, so in
+  production the palette offers only the 4 engine defaults (the retired key engine (removed in P8)) and **none** of
   the 36 Wireframe bindings nor any app's element hotkeys.
 
 ### 3.3 Duplicate Capability Analysis
@@ -251,23 +257,23 @@ Where the same capability is declared more than once, and what that costs:
    one place silently diverges from the table's `title`. Both are required to compile against
    `string` ids, so a renamed id is a runtime no-op rather than a type error.
 2. **One capability, five derived sites.** A single table row fans out to: the root keymap
-   (`wireframeCommandSurface.ts:216-228`), the hidden carrier
-   (`WireframeHotkeyCarrier.tsx:40-50`), the `TABLE_COMMANDS` spec
-   (`wireframeCommandSurface.ts:328-342`), the companion manifest
+   (the retired command-mode declaration (removed in P5)), the hidden carrier
+   (the retired two-step carrier (removed in P5)), the `TABLE_COMMANDS` spec
+   (the retired command-mode declaration (removed in P5)), the companion manifest
    (`shared/companion/manifest.ts:73-119`) and the toolbar control. All five converge on ONE
-   `executeCommand` (`commandSurfaceStore.ts:437-459`) — the redundancy is in *declaration*,
+   `executeCommand` (the retired command-mode executor (removed in P8)) — the redundancy is in *declaration*,
    not in *dispatch*, which bounds the damage but still multiplies the edit surface.
-3. **Kept globals declared twice.** `KEPT_GLOBAL_BINDINGS` (`defaults.ts:38-57`) and
-   `DEFAULT_FREDO_ACTION_DEFS` (`engine.ts:91-120`) declare the same three chords. They must be
+3. **Kept globals declared twice.** `KEPT_GLOBAL_BINDINGS` (the retired global-binding defaults (removed in P8)) and
+   `DEFAULT_FREDO_ACTION_DEFS` (the retired key engine (removed in P8)) declare the same three chords. They must be
    kept in sync by hand; nothing type-checks that the sequences agree.
 4. **Three unrelated action vocabularies.** Element hotkeys (not registry declarations —
-   `engine.ts:158-173`), command-surface commands (`wireframeCommandSurface.ts:328-342`) and
-   registered hotkey actions (`engine.ts:91-120`). The launcher palette reads only the third
+   the retired key engine (removed in P8)), command-surface commands (the retired command-mode declaration (removed in P5)) and
+   registered hotkey actions (the retired key engine (removed in P8)). The launcher palette reads only the third
    (`LauncherShell.tsx:871-885`), so what the palette teaches and what the app can do are
    different sets — a user who learns the palette will not learn the 36 Wireframe bindings.
 5. **Navigation vocabulary declared in the prototype, not the product.** The proposed `place.*`
    and `ask.*`/`map.*` verbs have no declaration site in the shipped tree; the grammar
-   (`hotkeyGrammar.ts:25`) cannot express `?` or `/` at all. That is a *gap*, not a duplicate —
+   (the retired element-key grammar (removed in P8)) cannot express `?` or `/` at all. That is a *gap*, not a duplicate —
    recorded in §11.1.
 
 ### 3.4 Claimed → Verified Corrections
@@ -277,16 +283,16 @@ product code was changed to make a claim true.
 
 | Claim | Verified in the tree | Correction / consequence |
 |---|---|---|
-| "flat 24-key list" | 24 root strokes = 20 single-step table hotkeys + `r e v c` (`wireframeCommandSurface.ts:216-256`); PLUS 12 `g+*` carrier bindings (`WireframeHotkeyCarrier.tsx:40-50`) | Correct for the ROOT keymap; the surface has **36** dispatchable bindings and the bar never lists the 12 |
-| "four interactive modes appear only as a badge" | 4 declared modes (`:274-312`); badge carries the ACTIVE label only (`HotkeyBar.tsx:208-244`) | Correct in count; the badge does not reveal the mode SET, and `Select` (root) also shows as a badge |
+| "flat 24-key list" | 24 root strokes = 20 single-step table hotkeys + `r e v c` (the retired command-mode declaration (removed in P5)); PLUS 12 two-step carrier bindings (the retired two-step carrier, removed in P5) | Correct for the ROOT keymap; the surface has **36** dispatchable bindings and the bar never lists the 12 |
+| "four interactive modes appear only as a badge" | 4 declared modes (`:274-312`); badge carries the ACTIVE label only (the retired always-on bar (removed in P8)) | Correct in count; the badge does not reveal the mode SET, and `Select` (root) also shows as a badge |
 | "33-control toolbar" | 33 `toolbar: true` rows; 33 rendered controls (9+3+10+2+5+4) | Verified exactly |
-| "always-on `HotkeyBar` lists every mounted key in document order" | In an opting app with an active mode the bar lists ONLY the active mode's keymap (`hotkeyBarModel.ts:245-258`); kept globals are never rows | **False for Wireframe and for globals**: 24 rows at root, 4 in a draw mode, 12 `g+*` never listed, 3 globals never listed |
+| "always-on bar lists every mounted key in document order" | In an opting app with an active mode the bar lists ONLY the active mode's keymap (the retired always-on-bar model (removed in P8)); kept globals are never rows | **False for Wireframe and for globals**: 24 rows at root, 4 in a draw mode, the 12 retired two-step carrier bindings never listed, 3 globals never listed |
 | "the companion's only Wireframe entry point is a whole-document `draftApp`" | 39 published commands + `listActions` (fixture `:68-328`), incl. create/editFill/arrange | **False as stated**: `draftApp` is the only whole-document generator. What is genuinely missing is a place/selection-scoped conversational entry point and any attributed undo |
 | "Dev Mode" is a surface; plan adds it is "not launcher-reachable, so the bar only lists it in a dev surface the user cannot open" | Exists, `showable = false` (`DevModeFeature.tsx:11`), **but** the Konami handler opens the window (`Home.tsx:69-77`) | **Partly false**: not launcher-reachable, but user-openable via the easter egg, so its bar rows ARE reachable by a user who triggers it. Teardown scores it and states that caveat |
-| Only Dev Mode is hidden from the launcher | `showable = false` also on Diagram (`DiagramFeature.tsx:23`), Optimizely (`OptimizelyFeature.tsx:10`), My Work Items (`MyWorkItemsFeature.tsx:19`) | **New correction**: four application surfaces are non-showable. My Work Items is still opened by `Home.tsx:191-196`; Diagram and Optimizely have no launcher route in the tree |
+| Only Dev Mode is hidden from the launcher | `showable = false` also on the retired infrastructure-diagram, feature-flags and work-items apps (all removed in P8) | **New correction**: four application surfaces are non-showable. The retired work-items app is still opened by `Home.tsx:191-196`; the retired diagram and feature-flags apps have no launcher route in the tree |
 | `wireframeActions.ts:27-28` cites `infrastructure/companion/wireframe_catalog.rs` | No such file (`infrastructure/companion/` has `skills.rs`, `surface_registry.rs`, …) | Stale comment (G-299); the Rust offer is generated from the published manifest (`manifest.ts:73-119`) |
 | `spikes/README.md:3` says spikes are "one flat file" | `spikes/2968-doom-runtime/`, `spikes/2969-doom-agent/`, `spikes/2972-doom-resume/` are directories | ST-1 amends the prose so a spike MAY be a directory when it ships artifacts (this report's spike is the directory form) |
-| `?` map / `/` ask keys | Grammar is `[a-z0-9](+[a-z0-9])?` (`hotkeyGrammar.ts:25`) | `?` and `/` are **not expressible today**; the prototype may bind them directly, but P2 needs a grammar extension or alternate keys (recorded in §11.1) |
+| `?` map / `/` ask keys | Grammar is `[a-z0-9](+[a-z0-9])?` (the retired element-key grammar (removed in P8)) | `?` and `/` are **not expressible today**; the prototype may bind them directly, but P2 needs a grammar extension or alternate keys (recorded in §11.1) |
 
 ## 4. Heuristic Evaluation
 
@@ -305,7 +311,7 @@ not a finding. A surface that does not exist in the tree is described, not score
 
 Rules: (a) score the DEFAULT/root state unless a state is named; (b) mode-count and binding-count
 scores are secondary to *visibility* — a mode the user cannot see cannot score above 1 on P-01
-regardless of how well it dispatches; (c) a hidden-but-working dispatch path (e.g. a `g+*` carrier)
+regardless of how well it dispatches; (c) a hidden-but-working dispatch path (e.g. a the retired two-step carrier carrier)
 does not improve discovery scores; (d) every finding names the principle and the score it
 supports; (e) `n/a` concerns are stated, not silently omitted.
 
@@ -314,17 +320,17 @@ supports; (e) `n/a` concerns are stated, not silently omitted.
 **Wireframe**
 - **F-WF-1 (P-01, score 1)** — Four declared modes exist, but the UI reveals only the active
   mode's label badge; the mode *set* is nowhere visible, so a user cannot learn that Rectangle,
-  Ellipse and Pan states exist. Evidence: `apps/ui/src/applications/wireframe/wireframeCommandSurface.ts:274-312`,
-  `apps/ui/src/shared/hotkeys/HotkeyBar.tsx:208-244`.
+  Ellipse and Pan states exist. Evidence: the retired command-mode declaration (removed in P5),
+  the retired always-on bar (removed in P8).
 - **F-WF-2 (P-12, score 1)** — The bar lists only the active mode's 24-key keymap (4 in a draw
-  mode); the 12 `g+*` bindings and the 3 kept globals are never rendered as rows, so the visible
+  mode); the 12 retired two-step carrier bindings and the 3 kept globals are never rendered as rows, so the visible
   legend understates the dispatchable set by 15 bindings. Evidence:
-  `apps/ui/src/shared/hotkeys/hotkeyBarModel.ts:180-212`, `:245-258`,
+  the retired always-on-bar model (removed in P8), `:245-258`,
   `docs/ARCHITECTURE.md:588`.
 - **F-WF-3 (P-06, score 1)** — The keymap is static: it never changes with the selection, even
   though the toolbar's `disabled`/`pressed` state does, so the keyboard and pointer surfaces
   disagree about what is available. Evidence:
-  `apps/ui/src/applications/wireframe/wireframeCommandSurface.ts:216-228`,
+  the retired command-mode declaration (removed in P5),
   `apps/ui/src/applications/wireframe/components/WireframeToolbar.tsx:304-366`.
 - **F-WF-4 (P-04, score 2)** — The toolbar groups commands consistently (insert / element / edit /
   view / file / arrange) and the rail-equivalent geometry is stable, but the grouping is
@@ -335,7 +341,7 @@ supports; (e) `n/a` concerns are stated, not silently omitted.
   commands, but there is no place/selection-scoped entry point and no attributed undo, so a
   companion change cannot be inspected or reversed from the surface it changed. Evidence:
   `apps/ui/src/shared/companion/manifest.ts:73-119`,
-  `apps/ui/src/applications/wireframe/wireframeCommandSurface.ts:344-435`.
+  the retired command-mode declaration (removed in P5).
 - **F-WF-6 (P-03, score 1)** — The root rail does not exist yet; the comparable affordance is a
   33-control toolbar, well above the 4–9 bounded-choice target, with no progressive disclosure
   of the arrange/view/file sets beyond visual chunking. Evidence:
@@ -344,62 +350,62 @@ supports; (e) `n/a` concerns are stated, not silently omitted.
 **Terminal**
 - **F-TR-1 (P-01, score 1)** — Passthrough is an implicit mode: it is not user-selectable, has no
   visible state beyond greyed bar rows and one announcement, and is escapable only by focusing
-  something else. Evidence: `apps/ui/src/shared/hotkeys/terminalMode.ts:19-27`,
-  `:100-112`, `apps/ui/src/shared/hotkeys/HotkeyBar.tsx:176-180`.
+  something else. Evidence: the relocated terminal passthrough (now shared/navigation/ui/terminalPassthrough.ts),
+  `:100-112`, the retired always-on bar (removed in P8).
 - **F-TR-2 (P-04, score 1)** — The surface has zero declared bindings, so there is no command
   affordance to group or keep consistent; all actions belong to the shell, not to Fredo.
   Evidence: `apps/ui/src/applications/terminal/TerminalFeature.tsx:13`,
-  `apps/ui/src/shared/hotkeys/terminalMode.ts:1-13`.
+  the relocated terminal passthrough (now shared/navigation/ui/terminalPassthrough.ts).
 
-**Diagram**
+**Infrastructure diagram (retired app)**
 - **F-DG-1 (P-12, score 1)** — One binding (`d`) is discoverable only as a bar row in document
   order; there is no place or grouping, and the app is `showable = false`, so the launcher can
   never reveal the surface at all. Evidence:
-  `apps/ui/src/applications/diagram/components/ArchitectureDiagram.tsx:677-684`,
-  `apps/ui/src/applications/diagram/DiagramFeature.tsx:23`.
+  the retired infrastructure-diagram app (removed in P8),
+  the retired infrastructure-diagram app (removed in P8).
 - **F-DG-2 (P-06, score 0)** — There is no selection model in the app, so the principle's
   observable (enablement conditioned on selection) does not exist; the single search binding is
   always available and always the same. Evidence:
-  `apps/ui/src/applications/diagram/components/ArchitectureDiagram.tsx:677-684`.
+  the retired infrastructure-diagram app (removed in P8).
 
 **Mission Monitor**
 - **F-MM-1 (P-12, score 1)** — The only binding exists only while the history drawer is mounted,
   so the dispatchable set changes with UI state without a visible explanation of why the row
   appeared or disappeared. Evidence:
   `apps/ui/src/applications/mission-monitor/components/SessionHistoryDrawer.tsx:294-301`,
-  `apps/ui/src/shared/hotkeys/hotkeyElements.ts:5-15`.
+  the retired element-discovery module (removed in P8).
 - **F-MM-2 (P-06, score 1)** — Selecting a session changes the detail panel's *content* but not
   the available action set, so the selection does not teach what else became possible.
   Evidence:
   `apps/ui/src/applications/mission-monitor/components/MissionMonitorPanel.tsx:1077-1119`.
 
-**Optimizely**
+**Feature flags (retired app)**
 - **F-OP-1 (P-06, score 0)** — The four bindings are static and unconditional; expanding or
   filtering flags never changes the available actions, and the enablement of each row is not
   derived from the view state. Evidence:
-  `apps/ui/src/applications/optimizely/components/OptimizelyFlagsPanel.tsx:461`,
+  the retired feature-flags app (removed in P8),
   `:491`, `:506`, `:533`.
 - **F-OP-2 (P-04/P-12, score 1)** — `q` is bound to the search `<input>` itself; while that input
   has focus the text-entry branch suppresses all bare-key dispatch, so the shortcut cannot fire
   exactly when the user is in the control. A key bound to a text field is a collision the model
   cannot see. Evidence:
-  `apps/ui/src/applications/optimizely/components/OptimizelyFlagsPanel.tsx:530-546`,
-  `apps/ui/src/shared/hotkeys/hotkeyBarModel.ts:162-168`.
+  the retired feature-flags app (removed in P8),
+  the retired always-on-bar model (removed in P8).
 - **F-OP-3 (P-03, score 1)** — The window is `showable = false`, so none of the four bindings is
   reachable through the launcher; discovery depends entirely on the bar being visible while the
   hidden window is already open. Evidence:
-  `apps/ui/src/applications/optimizely/OptimizelyFeature.tsx:10`.
+  the retired feature-flags app (removed in P8).
 
-**My Work Items**
+**Work items (retired app)**
 - **F-MW-1 (P-06, score 0)** — The four bindings are static; changing the source filter changes
   content only and never enables or disables a verb, so there is nothing selection-derived to
-  learn. Evidence: `apps/ui/src/applications/my-workitems/components/MyWorkItemsContainer.tsx:133`,
+  learn. Evidence: the retired work-items app (removed in P8),
   `:152-157`.
 - **F-MW-2 (P-04, score 1)** — Each key is a 1:1 duplicate of a visible button (`r` = Refresh,
   `a/z/j` = source tabs), so the keyboard adds speed but no new capability or teaching; the
   surface is also hidden from the launcher (`showable = false`) and reachable only through an
   event-driven open. Evidence:
-  `apps/ui/src/applications/my-workitems/MyWorkItemsFeature.tsx:19`,
+  the retired work-items app (removed in P8),
   `apps/ui/src/applications/home/components/Home.tsx:191-196`.
 
 **Dev Mode**
@@ -420,17 +426,17 @@ supports; (e) `n/a` concerns are stated, not silently omitted.
 **Window traversal**
 - **F-WT-1 (P-12, score 0)** — The three kept globals are dispatcher-only: they are neither
   element rows nor mode rows, so the always-on bar can never teach them; there is no discovery
-  path at all. Evidence: `apps/ui/src/shared/hotkeys/hotkeyBarModel.ts:223-258`,
-  `apps/ui/src/shared/hotkeys/defaults.ts:38-57`.
-- **F-WT-2 (P-04, score 1)** — The same three chords are declared twice (`defaults.ts` and
+  path at all. Evidence: the retired always-on-bar model (removed in P8),
+  the retired global-binding defaults (removed in P8).
+- **F-WT-2 (P-04, score 1)** — The same three chords are declared twice (the retired global-binding defaults and
   `DEFAULT_FREDO_ACTION_DEFS`), so consistency depends on manual sync rather than one source.
-  Evidence: `apps/ui/src/shared/hotkeys/defaults.ts:38-57`,
-  `apps/ui/src/shared/hotkeys/engine.ts:91-120`.
+  Evidence: the retired global-binding defaults (removed in P8),
+  the retired key engine (removed in P8).
 - **F-WT-3 (P-02, score 1)** — Two different Tab behaviours coexist: the native boundary hop
-  (`traversal.ts:268-308`) and `primary+tab`/`primary+shift+tab`; neither is explained in the
+  (the relocated window traversal (now shared/window-system/traversal.ts)) and `primary+tab`/`primary+shift+tab`; neither is explained in the
   product chrome, so the layer/owner of Escape and Tab is ambiguous to a user. Evidence:
-  `apps/ui/src/shared/hotkeys/traversal.ts:268-308`,
-  `apps/ui/src/shared/hotkeys/defaults.ts:45-56`.
+  the relocated window traversal (now shared/window-system/traversal.ts),
+  the retired global-binding defaults (removed in P8).
 
 **Launcher**
 - **F-LN-1 (P-05, score 1)** — Palette rows carry title/description/tier/bindings but **no place
@@ -441,7 +447,7 @@ supports; (e) `n/a` concerns are stated, not silently omitted.
   command-surface bindings are not registry declarations, so the conversation-adjacent palette
   and the wireframe action layer are different sets. Evidence:
   `apps/ui/src/applications/home/components/launcher/LauncherShell.tsx:871-885`,
-  `apps/ui/src/shared/hotkeys/engine.ts:158-173`.
+  the retired key engine (removed in P8).
 - **F-LN-3 (P-11, score 1)** — The `>` palette mode is not advertised anywhere in the product
   chrome; a pointer-only user has no visible route into it (only the unlabelled prefix grammar).
   Evidence:
@@ -628,9 +634,9 @@ moderator per participant (protocol §4 rule 7) during #3120.
 ### 11.1 Known Limitations
 
 1. **The `?` / `/` grammar gap.** The shipped hotkey grammar is
-   `/^[a-z0-9](?:\+[a-z0-9])?$/` (`apps/ui/src/shared/hotkeys/hotkeyGrammar.ts:25`), and the
+   `/^[a-z0-9](?:\+[a-z0-9])?$/` (the retired element-key grammar (removed in P8)), and the
    mode-key grammar is a single `[a-z0-9]` stroke
-   (`apps/ui/src/shared/hotkeys/commandSurface.ts:143`). Neither can express `?` or `/`. The
+   (the retired command-mode declaration (removed in P8)). Neither can express `?` or `/`. The
    prototype binds them directly (permitted for a throwaway artifact), but this is **not** a
    shippable answer: P2 needs a grammar extension or alternate keys. The study therefore tests
    the *model* with affordances the product cannot yet bind — a real threat to external validity.

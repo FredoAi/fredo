@@ -6,10 +6,9 @@
  * dispatcher). The host is the only mutation seam: the rail, the map, the trail and the
  * keyboard all funnel through it, so the journal stays the single undo authority (R-5).
  *
- * Announcement channel: `legacy` (UI/UX §5). `HotkeysProvider` always mounts the shipped
- * `hotkeys-announcer` region, so the navigation channel ADOPTS it instead of adding a
- * second polite region. The shell never mounts `NavigationAnnouncer` and never calls
- * `host.reset()` (reset flips the channel back to `'navigation'` — test hygiene only).
+ * Announcement: the ONE navigation live region is owned by `NavigationProvider` at the
+ * webview root (Spec #3122 ST-2). This provider neither mounts an announcer nor selects a
+ * channel; every navigation message goes through `announceNavigation`.
  *
  * Placement: the provider is a plain React context + `useMemo`; it adds no DOM and no
  * keydown listener of its own. The adapter is returned to the shell, which attaches it to
@@ -40,7 +39,7 @@ import {
   useNavigationHostSnapshot,
   type NavigationHost,
 } from '../../../shared/navigation/ui';
-import { isTextControl } from '../../../shared/hotkeys/focusContext';
+import { isTextControl } from '../../../shared/navigation/focusContext';
 import {
   applyDocumentPatch,
   getNavigationJournal,
@@ -91,7 +90,6 @@ export function WireframeNavigationProvider({
       journal: getNavigationJournal(),
       applyPatch: (patch) =>
         applyDocumentPatch(patch as unknown as WireframeDocumentPatch),
-      announcementChannel: 'legacy',
       // Spec #3120 (P6) §9.1 — launcher/voice/agent intents ask the launcher to confirm;
       // keyboard/pointer keep the shipped no-prompt behaviour.
       confirm: (request, intent) =>

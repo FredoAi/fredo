@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Flex, VisuallyHidden } from '@chakra-ui/react';
-import { installTerminalPassthrough } from '../../../shared/hotkeys/terminalMode';
+import { installTerminalPassthrough } from '../../../shared/navigation/ui/terminalPassthrough';
 import { adapterBridge } from '../../../shared/utils/adapterBridge';
 import { ensureTerminalSettingsMigrated } from '../settings';
 import { TERMINAL_INTENT_AVAILABLE_EVENT } from '../presentation';

@@ -33,7 +33,7 @@ import {
   getNavigationHost,
   resetNavigationAnnouncer,
 } from '@/shared/navigation/ui';
-import { resetHotkeyAnnouncer } from '@/shared/hotkeys/announcer';
+import { resetNavigationAnnouncer } from '@/shared/navigation/ui';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { MissionMonitorPanel } from '../components/MissionMonitorPanel';
 import {
@@ -171,14 +171,14 @@ beforeEach(() => {
   ];
   resetMissionMonitorSurfaceForTests();
   resetNavigationAnnouncer();
-  resetHotkeyAnnouncer();
+  resetNavigationAnnouncer();
 });
 
 afterEach(() => {
   cleanup();
   resetMissionMonitorSurfaceForTests();
   resetNavigationAnnouncer();
-  resetHotkeyAnnouncer();
+  resetNavigationAnnouncer();
 });
 
 /* ───────────────────────────── R-01 — the declaration ───────────────────────────── */

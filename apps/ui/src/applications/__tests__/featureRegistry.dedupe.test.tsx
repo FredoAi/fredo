@@ -73,9 +73,9 @@ class FakeFeature extends FredoApplicationClass {
 function duplicateLadenList(): FakeFeature[] {
   return [
     new FakeFeature('mission-monitor', 'Mission Monitor'),
-    new FakeFeature('diagram', 'Infrastructure Diagram'),
+    new FakeFeature('wireframe', 'Wireframe'),
     new FakeFeature('terminal', 'Terminal'),
-    new FakeFeature('model-storage', 'Model Storage'),
+    new FakeFeature('database-client', 'SQL Studio'),
     new FakeFeature('mission-monitor', 'Mission Monitor'), // dup id
     new FakeFeature('mission-monitor', 'Mission Monitor'), // dup id
   ];
@@ -93,9 +93,9 @@ describe('dedupeByApplicationId (applications/applicationRegistry)', () => {
     expect(deduped).toHaveLength(4);
     expect(deduped.map((f) => f.id)).toEqual([
       'mission-monitor',
-      'diagram',
+      'wireframe',
       'terminal',
-      'model-storage',
+      'database-client',
     ]);
     // FIRST occurrence is kept BY REFERENCE (not a later duplicate object).
     expect(deduped[0]).toBe(list[0]);
@@ -105,15 +105,15 @@ describe('dedupeByApplicationId (applications/applicationRegistry)', () => {
 
   it('preserves input order (stable-order projection)', () => {
     const shuffled = [
-      new FakeFeature('model-storage', 'Model Storage'),
+      new FakeFeature('database-client', 'SQL Studio'),
       new FakeFeature('mission-monitor', 'Mission Monitor'),
-      new FakeFeature('diagram', 'Infrastructure Diagram'),
+      new FakeFeature('wireframe', 'Wireframe'),
       new FakeFeature('mission-monitor', 'Mission Monitor'), // dup
     ];
     expect(dedupeByApplicationId(shuffled).map((f) => f.id)).toEqual([
-      'model-storage',
+      'database-client',
       'mission-monitor',
-      'diagram',
+      'wireframe',
     ]);
   });
 
@@ -139,7 +139,7 @@ describe('dedupeByApplicationId (applications/applicationRegistry)', () => {
   it('no-duplicate input → output-equal, same length, same order', () => {
     const list = [
       new FakeFeature('mission-monitor', 'Mission Monitor'),
-      new FakeFeature('diagram', 'Infrastructure Diagram'),
+      new FakeFeature('wireframe', 'Wireframe'),
     ];
     const deduped = dedupeByApplicationId(list);
     expect(deduped).toHaveLength(list.length);
@@ -291,10 +291,10 @@ describe('LauncherShell — entryCount/safeSelectedIndex/activeTileId collapse i
 
     expect(selectedTile()?.querySelector('[role="button"]')?.getAttribute('aria-label')).toBe('Mission Monitor');
 
-    // ArrowRight → index 1 (Infrastructure Diagram), no gap onto a ghost tile.
+    // ArrowRight → index 1 (Wireframe), no gap onto a ghost tile.
     act(() => {
       fireEvent.keyDown(searchbox, { key: 'ArrowRight' });
     });
-    expect(selectedTile()?.querySelector('[role="button"]')?.getAttribute('aria-label')).toBe('Infrastructure Diagram');
+    expect(selectedTile()?.querySelector('[role="button"]')?.getAttribute('aria-label')).toBe('Wireframe');
   });
 });

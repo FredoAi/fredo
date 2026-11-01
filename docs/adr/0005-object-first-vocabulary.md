@@ -4,12 +4,11 @@
 
 ## Context
 
-Five vocabularies describe one capability: `WIREFRAME_ACTIONS`
-(`apps/ui/src/applications/wireframe/actions/wireframeActions.ts`), the command surface, the hotkey
-registry (`apps/ui/src/shared/hotkeys/registry.ts`), `data-hotkey` discovery
-(`apps/ui/src/shared/hotkeys/hotkeyElements.ts`), and the companion manifest
-(`apps/ui/src/shared/companion/manifest.ts`). Because each surface names things its own way, the
-companion has to translate between the names, and a UI refactor can rename a capability without
+Five vocabularies described one capability: `WIREFRAME_ACTIONS`
+(`apps/ui/src/applications/wireframe/actions/wireframeActions.ts`), the per-application command
+surface, the hotkey registry, per-element key discovery, and the companion manifest
+(`apps/ui/src/shared/companion/manifest.ts`). Because each surface named things its own way, the
+companion had to translate between the names, and a UI refactor could rename a capability without
 anyone noticing.
 
 ## Decision

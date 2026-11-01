@@ -94,8 +94,8 @@ import {
  */
 const windowFocus = vi.hoisted(() => ({ focused: 'a', nextCalls: 0, previousCalls: 0 }));
 
-vi.mock('@/shared/hotkeys/traversal', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/shared/hotkeys/traversal')>();
+vi.mock('@/shared/window-system/traversal', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/shared/window-system/traversal')>();
   return {
     ...actual,
     focusNextWindow: () => {
@@ -920,7 +920,14 @@ const PLAN_ROOTS: Readonly<Record<string, string>> = {
   'dev-mode': 'dev-mode.events',
 };
 
-const FROZEN_APP_IDS = ['diagram', 'optimizely', 'my-workitems', 'create-workitem'] as const;
+/** Spec #3122 ST-4 — the retained navigation surfaces are the only in-scope app ids. */
+const SURFACE_APP_IDS = new Set<string>([
+  TERMINAL_SURFACE_APP_ID,
+  WINDOW_SYSTEM_APP_ID,
+  MISSION_MONITOR_SURFACE_APP_ID,
+  DATABASE_CLIENT_SURFACE_APP_ID,
+  DEV_MODE_SURFACE_APP_ID,
+]);
 
 interface SurfaceEntry {
   readonly appId: string;
@@ -940,7 +947,7 @@ function scopeIsFive(surfaces: readonly SurfaceEntry[]): boolean {
   if (surfaces.length !== 5) return false;
   const ids = surfaces.map((entry) => entry.appId);
   if (new Set(ids).size !== 5) return false;
-  return ids.every((id) => !(FROZEN_APP_IDS as readonly string[]).includes(id));
+  return ids.every((id) => SURFACE_APP_IDS.has(id));
 }
 
 /** `app.map` is declared keyless in every place and alias table. */
@@ -1052,7 +1059,7 @@ describe('R-01 — the five-surface declaration gate', () => {
 
   it('negative control — a sixth (removed-app) id fails the FIVE-surface scope check', () => {
     expect(
-      scopeIsFive([...FIVE_SURFACES, { appId: 'diagram', surface: terminalSurface }]),
+      scopeIsFive([...FIVE_SURFACES, { appId: 'removed-app', surface: terminalSurface }]),
     ).toBe(false);
   });
 

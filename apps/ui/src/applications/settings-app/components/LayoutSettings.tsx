@@ -44,8 +44,8 @@ import {
 
 import { tint } from '../../../shared/utils/colorTint';
 import { selectRecipeWith } from '../../../shared/utils/selectStyles';
-import { announce } from '../../../shared/hotkeys/announcer';
-import { resolvePrimaryModifier } from '../../../shared/hotkeys/keys';
+import { announceNavigation } from '../../../shared/navigation/ui';
+import { resolvePrimaryModifier } from '../../../shared/navigation/keys';
 import {
   MAX_ZONE_GAP,
   MIN_ZONE_GAP,
@@ -125,7 +125,7 @@ export const LayoutSettings: React.FC = () => {
 
   const applyStatus = useCallback((message: string | null) => {
     setStatus(message);
-    if (message) announce(message);
+    if (message) announceNavigation(message);
   }, []);
 
   // ── Write-through handlers ──────────────────────────────────────────────────

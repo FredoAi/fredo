@@ -7,7 +7,7 @@ import {
   StreamProvider,
   ThemeProvider,
   Provider,
-  HotkeysProvider,
+  NavigationProvider,
   Toaster,
   TauriAdapter,
   CompanionProvider,
@@ -46,10 +46,10 @@ createRoot(rootElement).render(
           <AppProvider adapter={adapter}>
             <CompanionProvider>
               <ReactFlowProvider>
-                <HotkeysProvider>
+                <NavigationProvider>
                   <Router />
                   <Toaster />
-                </HotkeysProvider>
+                </NavigationProvider>
               </ReactFlowProvider>
               <FredoCompanion />
             </CompanionProvider>
