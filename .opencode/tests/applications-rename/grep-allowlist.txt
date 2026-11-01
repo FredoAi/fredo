@@ -136,7 +136,6 @@ lit:featuresRef
 # (`shared/lib/applicationStore.ts`, `shared/application-data/**`,
 # `application_store.rs`, `application_data/**`) is still flagged (ST-1 note 1).
 in:apps/ui/src/applications/** lit:featureId
-in:apps/ui/src/shared/hotkeys/** lit:featureId
 in:apps/ui/src/shared/classes/** lit:featureId
 in:apps/ui/src/shared/utils/featureResponseApi.ts lit:featureId
 in:apps/ui/src/shared/utils/responseQueue.ts lit:featureId
