@@ -3,7 +3,7 @@
 > AC7 / R-7.1. This map is the binding successor record for the **deleted**
 > `.opencode/tests/hotkeys/` durable suite and for the **26** vitest suites under the deleted
 > `apps/ui/src/shared/hotkeys/__tests__/`. Every successor below exists on the P8 tree or is a
-> named deliverable of an owning sub-task (`ST-1`…`ST-4`); no successor is invented. A deleted
+> named deliverable of an owning sub-task (`ST-1`…`ST-5`); no successor is invented. A deleted
 > assertion with no successor would be a coverage loss and a FAIL.
 >
 > **Verification policy: static** for this map (paths + test titles + suite exits).
@@ -57,7 +57,7 @@
 | 22 | `sequence.test.ts` | `apps/ui/src/shared/navigation/__tests__/resolver.test.ts` + `keyResolver.test.ts` | ST-1 |
 | 23 | `servedEntryMount.test.ts` | `apps/ui/src/shared/navigation/ui/__tests__/navigationProvider.test.tsx` + the P8 static entry rows in `navigation/functional.md` F-36 (both entries mount it once) | ST-1 |
 | 24 | `terminalMode.test.ts` | `apps/ui/src/shared/navigation/ui/__tests__/terminalPassthrough.test.ts` (relocated; `data-fredo-passthrough` KEPT) | ST-1 |
-| 25 | `themeHygiene.test.ts` | `apps/ui/src/shared/navigation/ui/__tests__/navTheme.test.ts` (token/alpha-append scan over `ui/**`) + `pnpm --filter @fredo/ui contrast:gate` | ST-2 |
+| 25 | `themeHygiene.test.ts` | `apps/ui/src/shared/navigation/ui/__tests__/keycapTokenHygiene.test.ts` (U-3: zero hex/rgb/hsl, zero `var(--x)NN`, `tint()` + semantic tokens on the keycap, `aria-live` only in `announce.tsx` over `ui/**`) + `navTheme.test.ts` (canonical `scanRawColors`) + `pnpm --filter @fredo/ui contrast:gate` | ST-5 |
 | 26 | `traversal.test.ts` | `apps/ui/src/shared/window-system/__tests__/WindowTraversal.test.tsx` (relocated DOM/tab traversal) | ST-1 |
 
 ## C. Retired tooling (no product successor)

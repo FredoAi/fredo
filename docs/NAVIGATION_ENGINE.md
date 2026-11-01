@@ -565,7 +565,7 @@ Every adapter MUST be deleted by its `deleteBy` phase; a phase is a hard deadlin
 | `ADP-02-wireframe-command-surface` | the retired command-mode declaration (`wireframeCommandSurface.ts:438-444`) | P5 | **P5** | **DELETED** |
 | `ADP-03-wireframe-toolbar-list` | hand-listed toolbar groups (`WireframeToolbar.tsx`) | P5 | **P5** | **DELETED** |
 | `ADP-04-wireframe-hotkey-carrier` | the two-step key carrier (`WireframeHotkeyCarrier.tsx:73`) | P5 | **P5** | **DELETED** |
-| `ADP-05-element-key-discovery` | the element listing (`hotkeyElements.ts:47-62`, `:399-421`) | P7 | **P7** | **DELETED** |
+| `ADP-05-element-key-discovery` | the element listing (the removed element-discovery module) | P7 | **P7** | **DELETED** |
 | `ADP-06-terminal-passthrough` | implicit terminal passthrough (`terminalMode.ts`) | P7 | **P7** | **DELETED** |
 | `ADP-07-window-traversal` | the global default bindings (`defaults.ts:38-57`) + the engine's default action defs (`engine.ts:91-120`) | P7 | **P7** | **DELETED** |
 | `ADP-08-diagram-key` | the retired diagram app's single-key binding | P7 | **P7** | **DELETED** |

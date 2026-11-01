@@ -513,14 +513,16 @@ Served commit `spec/2940 @ a4b4dfa1` (cold restart built+served the round-2 fix 
       Edge: a removed retained symbol = FAIL (the removal is view-layer-deletion-only).
 - [x] R-30 (**AC4 — the one-time announcement retained**): `rg 'PASSTHROUGH_ANNOUNCEMENT_PREFIX'
       apps/ui/src` and inspect `setPassthrough`.
-      EXPECTED: the prefix constant + the `announce(PASSTHROUGH_ANNOUNCEMENT_PREFIX)` call are
-      unchanged — the ONE remaining keyboard-mode affordance.
-      Edge: the shared `hotkeys-announcer` region still mounts (`announcer.tsx`).
+      EXPECTED: the prefix constant + the `announceNavigation(PASSTHROUGH_ANNOUNCEMENT_PREFIX)` call
+      are unchanged — the ONE remaining keyboard-mode affordance.
+      Edge: the ONE navigation announcer region still mounts (`navigation-announcer`); a second
+      legacy region would be a FAIL.
 - [x] R-31 (**AC3 — keyboard ownership / keystroke routing**): run `functional.md` F-87.
-      EXPECTED: a sentinel round-trips to the PTY; the engine's ONE keydown path is unchanged
-      (`rg 'addEventListener\(.keydown' src/shared/hotkeys/terminalMode.ts` = 0); the `HotkeyBar`
-      (`hotkeys-keybar*`) is untouched.
-      Edge: a keystroke while the HotkeyBar has focus; the retired exit chord stays retired.
+      EXPECTED: a sentinel round-trips to the PTY; the ONE keydown path is unchanged
+      (`rg 'addEventListener\(.keydown' src/shared/navigation/ui/terminalPassthrough.ts` = 0); the
+      navigation command bar is untouched.
+      Edge: a keystroke while the navigation command bar has focus; the retired exit chord stays
+      retired.
 
 ### C-5 teardown (#3051 rows)
 

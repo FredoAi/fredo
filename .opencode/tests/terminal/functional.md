@@ -1656,16 +1656,17 @@ Round-8 frame names: `ac1-default-live`, `ac1-f80-16rec-min`, `ac2-rename-prevro
       while unfocused.
 - [x] F-84 (**R-2/AC2 — the removed tests are gone; the retained suites stay green**):
       `pnpm --filter @fredo/ui test:run src/applications/terminal/components/__tests__/TerminalPassthrough.test.tsx`
-      and `pnpm --filter @fredo/ui test:run src/shared/hotkeys/__tests__/terminalMode.test.ts`.
+      and `pnpm --filter @fredo/ui test:run src/shared/navigation/ui/__tests__/terminalPassthrough.test.ts`.
       EXPECTED: `TerminalPassthrough.test.tsx` defines ONLY the `terminal root anchor` suite (the
       `TerminalPassthroughIndicator`, `TerminalWindow — persistent indicator`, and
-      `terminalMode hook contract` suites are removed) and passes; the retained `terminalMode.test.ts`
-      passes unchanged (R-3).
+      `terminalMode hook contract` suites are removed) and passes; the passthrough mechanism is
+      carried by the relocated `terminalPassthrough.test.ts` (P8 supersession — the deleted
+      passthrough module moved into `shared/navigation/ui`), which passes.
       Edge: a kept test importing a removed symbol fails = FAIL; a deleted retained-mechanism row =
       FAIL.
 - [x] F-85 (**R-4/AC4 — the supersession is recorded + the one-time announcement retained**): read
       the spec PR description; and after entering passthrough read
-      `[data-testid="hotkeys-announcer"]` in the window under test.
+      `[data-testid="navigation-announcer"]` in the window under test.
       EXPECTED: the PR/plan records the intentional, human-approved supersession of #3009's
       non-colour-only indicator criterion AND the retention of the ONE-time announcement
       (`PASSTHROUGH_ANNOUNCEMENT_PREFIX` + the `announce(…)` call retained); when the shared live
@@ -1684,9 +1685,9 @@ Round-8 frame names: `ac1-default-live`, `ac1-f80-16rec-min`, `ac2-rename-prevro
       data:"SENTINEL_CHIP_<guid8>\r"}` on the active session; read `get_pty_buffer`; for the OpenCode
       leg drive one bounded turn.
       EXPECTED: the sentinel round-trips and the session stays `running`; the ONE keydown path is
-      byte-unchanged (`rg 'addEventListener\(.keydown' src/shared/hotkeys/terminalMode.ts` = 0); the
+      byte-unchanged (`rg 'addEventListener\(.keydown' src/shared/navigation/ui/terminalPassthrough.ts` = 0); the
       OpenCode turn emits live `telemetry_spans`.
-      Edge: sentinel while passthrough active AND inactive; the `hotkeys-keybar*` HotkeyBar untouched.
+      Edge: sentinel while passthrough active AND inactive; the navigation command bar untouched.
 
 ### LIVE receipt (the `live`-policy gate)
 
