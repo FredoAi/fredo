@@ -234,8 +234,8 @@ outside the repo. **Do not drive a running app for any row in this section.**
     delegate ever returns a validation error for them.
   - EDGE: **allowlist-creep canary** — an implementation validating "any `*_path` key" or "any
     value containing a separator" FAILS here: `terminal_work_dir` is a real non-listed path key
-    (`applications/terminal/open_terminal.rs:32`). `diagram_path` (named in the backlog brief) does
-    not exist in the tree; it is substituted with a real key.
+     (`applications/terminal/open_terminal.rs:32`). The retired `graph_path` key named in the old
+     backlog brief does not exist in the tree; it is substituted with a real key.
   - DATA: settings fixture.
 
 ## R-4.a / AC4 — the webview export exposes no path argument
