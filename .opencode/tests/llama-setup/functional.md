@@ -928,3 +928,30 @@ offloaded). AC1 was not weakened; only the documented boolean-switch syntax was 
 > Verify via `regression.md` R-30 and `.opencode/tests/voice-input/` functional F-23 (REQ-2.4).
 > The model-download AC for #2877 (real 72,654,782 B transfer + a deliberately idle/slow Range
 > resume at a realistic ~35,000,000 B offset) lives in the voice-input suite's F-22, not here.
+
+---
+
+## #3141 — SUPERSESSION: the out-of-process launch surface is retired (history preserved)
+
+> Spec #3141 reverses the #2857 decision: companion inference runs **in-process** via
+> `llama-cpp-4`. There is no `llama-server` executable, no child process, no loopback HTTP.
+> **Therefore the #2855/#2857-era rows that assert an OUT-OF-PROCESS companion no longer apply
+> as written and MUST NOT be read as regressions:**
+>
+> - **F-33/F-34** (launch `.bat` argv/config) — no generated config; `generate_llama_server_config`
+>   is deleted. **F-35/F-36/F-37** (spawn a real `llama-server.exe`, `/health` 200, port probe) —
+>   the child and the socket are gone. **F-40** (no orphan `llama-server.exe` after exit) — no
+>   process is ever spawned, so the row's premise is vacuous; the #3141 equivalent is
+>   `.opencode/tests/companion-embedded-engine/` F-2 (zero spawn sites + an independent
+>   process-table/port probe). **F-41/F-42** (spawn failure / health timeout copy) — replaced by
+>   the typed `CompanionEngineErrorCode` surface (companion-embedded-engine F-15/F-16).
+> - **F-01/F-02/F-04/F-06/F-07/F-08/F-12/F-13/F-14/F-17** (the `llamaServer` prerequisite, the
+>   `Install llama.cpp` winget action, the "n of 2 prerequisites" gate) — the `llamaServer`
+>   prerequisite and the install action are REMOVED; `check_companion_readiness` reports the
+>   model-files prerequisite ONLY. Rows asserting a two-prerequisite gate are superseded; the
+>   model-download rows (F-18…F-31, the `#2856` extension) remain **in force and unchanged**.
+> - **F-43/F-44** (no `llama-cpp-2`/`LlmEngine`) remain in force in spirit; #3141 adds the
+>   inverse must-not-return guard (no `llama-cpp-2` and no `LlmEngine` may be reintroduced).
+>
+> The in-process replacement rows live in
+> `.opencode/tests/companion-embedded-engine/` (functional F-1…F-22, regression R-1…R-10).
