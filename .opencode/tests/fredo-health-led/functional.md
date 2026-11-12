@@ -94,3 +94,42 @@ All of F-1 … F-9 PASS live; F-3 and F-5 (UNVERIFIED in round 1) are now live-p
 - [ ] **F-14 (#3064 ST-4, static/unit pin — NON-AC) — the `degraded` member + aggregate raise.**
   - Data: `apps/ui/src/shared/hooks/__tests__/fredoHealth.test.ts` + `launcherHealthLed.test.tsx`.
   - Expected: `SubsystemHealth` includes `degraded`; `telemetryLine` maps each `StreamHealth` 1:1 (`healthy`→`healthy`/`Streaming`, `degraded`→`degraded`/`Telemetry stalled`, `down`→`down`/`Stream stopped`); `aggregateFredoHealth` raises the overall to `degraded` on a non-neutral `degraded` telemetry line and to `down` on telemetry `down`; `SUBSYSTEM_STATE_WORD.degraded === 'Degraded'`. (`degraded` IS live-reachable via F-10; this pin covers the pure mapping.)
+
+---
+
+## Spec #3141 — companion LED normalization after the `llamaServer` prerequisite removal
+
+> #3141 removes the `llamaServer` prerequisite from `check_companion_readiness` (companion
+> inference is in-process; model files become the ONLY prerequisite). The LED's
+> `normalizeCompanion` (`apps/ui/src/shared/hooks/useFredoHealth.ts:161-183`) returns `null` —
+> leaving BOTH companion lines stuck at `unknown` forever — unless BOTH the `llamaServer` AND
+> `modelFiles` prerequisites are present. ST-6 must rewrite that normalizer in the same change.
+> Verification policy: LIVE (webview receipt).
+
+- [ ] **F-15 (#3141 REQ / R-3) — companion lines populate in the model-files-present, engine-idle state.**
+  - Data: model files present (all three), engine NOT started; the default (no force lever) boot.
+  - Steps: hover `desktop-status-led`; read `health-line-llamaServer` + `health-line-companionModel`
+    + `desktop-status-led-overall` + the trigger's composed `aria-label`.
+  - Expected (the UI/UX §5.2 truth-table row, verbatim): `companion` present with
+    `modelFilesComplete: true` and `llamaServer: {running: false, healthy: false}` ⇒
+    `health-line-companionModel` = **`healthy`**, text **`Model files present`**;
+    `health-line-llamaServer` = **`down`**, text **`Not running`** (the summary line *label* is
+    `Companion engine`; the **subsystem id stays `llamaServer`**, so the `health-line-llamaServer`
+    hook is unchanged); aggregate `desktop-status-led` = **`Degraded`**, and the composed
+    `aria-label` reads `Fredo health: Degraded — … Companion engine: Not running; Companion model:
+    Healthy …`. **Never `unknown`, never neutral-forever, never `Down`** — a `null` normalizer
+    (both lines stuck `unknown`) or an overall still neutral on the companion lines = **FAIL**.
+  - Edge (control — the RE-KEYED `notSetUp` boundary): `FREDO_COMPANION_FORCE_NOT_INSTALLED=1`
+    (post-#3141: forces `modelFiles` `Missing` only) ⇒ an **empty model set reads `notSetUp` /
+    `Not set up` on BOTH lines** and the overall stays **`healthy`**. This is `notSetUp`, **never
+    `down`** — post-#3141 "set up" means "model files present" (there is no runtime install to
+    proxy), so a fresh offline machine must boot to Healthy / a telemetry-driven aggregate and
+    **never a spurious `Degraded`**; the `down` / `Not running` line is reserved for the
+    configured-but-not-running state in the main leg above. The neutral state must still exist
+    and must not degrade the aggregate (R-7). Cross-ref
+    `.opencode/tests/companion-embedded-engine/` regression R-3.
+
+  **Provenance:** promoted from the #3141 QA Plan (`.opencode/tests/companion-embedded-engine/`
+  regression R-3). The producer to validate is the ST-6 rewrite of `normalizeCompanion`; the
+  `both-prerequisites` gate is current on the pre-#3141 tip (`useFredoHealth.ts:181`:
+  `if (!sawLlama || !sawModels) return null;`).
