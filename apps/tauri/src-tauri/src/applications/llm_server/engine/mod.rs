@@ -15,7 +15,7 @@
 //! only by the command adapters that bridge IPC to that channel — never
 //! `tokio::spawn`, and never to host engine state.
 //!
-//! ## Module map (ST-1)
+//! ## Module map (ST-1 + ST-2)
 //!
 //! * [`device`] — the typed device enumeration, `CompanionBackendKind` mapping,
 //!   the backend-mode projection, and the TEST-ONLY force-CPU seam
@@ -24,19 +24,28 @@
 //!   [`crate::infrastructure::companion::models::file_path`]) plus the engine
 //!   log file location.
 //! * [`sampling`] — the relocated sampling defaults (values preserved byte for
-//!   byte from the retired launch config).
+//!   byte from the retired launch config) and the sampler chain built from them.
+//! * [`request`] — the request model: [`request::ChatTurn`] and the ONE media
+//!   shaping rule (audio = one `input_audio` part, image = text + image_url).
+//! * [`chat_format`] — chat templating through the GGUF's own template, the
+//!   tool-call grammar, and the `response_format` schema grammar.
+//! * [`detokenize`] — incremental UTF-8 detokenisation so no multi-byte
+//!   character is ever torn at a token boundary.
 //! * [`thread`] — the engine thread body: `LlamaBackend::init()` once, model
-//!   load, device readout.
+//!   load, device readout, the request-shaping verification, the warm-up, and
+//!   the generation loop.
 //! * [`handle`] — the bounded command channel, the bounded start, the status
 //!   snapshot, and the process-scoped engine slot.
 //!
-//! Later sub-tasks extend this module (ST-2 request/templating/sampling chain,
-//! ST-3 streaming, ST-4 MTP, ST-5 multimodal) without redefining the names
-//! published here.
+//! Later sub-tasks extend this module (ST-3 streaming, ST-4 MTP, ST-5
+//! multimodal) without redefining the names published here.
 
+pub mod chat_format;
+pub mod detokenize;
 pub mod device;
 pub mod handle;
 pub mod paths;
+pub mod request;
 pub mod sampling;
 pub mod thread;
 
