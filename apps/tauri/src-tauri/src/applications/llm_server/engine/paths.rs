@@ -200,15 +200,19 @@ mod tests {
         assert!(path.ends_with("gemma-4-e2b-it-qat/gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf"));
     }
 
+    /// The log path is compared as a `Path`, not as a string: `Path::join` on
+    /// Windows legitimately renders a base with forward slashes as
+    /// `C:/data/companion\companion-engine.log` (mixed separators, still one
+    /// valid absolute path). The product has no string consumer — the only
+    /// reader is `set_file` → `fopen`, which accepts mixed separators — so the
+    /// pin is Path equality against the product's own function.
     #[test]
     fn with_log_attaches_the_engine_log_in_the_companion_dir() {
         let manifest = default_manifest();
         let paths = EnginePaths::resolve(Path::new("C:/fredo-models"), &manifest)
             .with_log(Path::new("C:/data/companion"));
-        assert_eq!(
-            paths.log.as_deref(),
-            Some("C:/data/companion/companion-engine.log")
-        );
+        let log = paths.log.as_deref().expect("a companion dir must attach a log path");
+        assert_eq!(Path::new(log), engine_log_path(Path::new("C:/data/companion")));
     }
 
     #[test]
