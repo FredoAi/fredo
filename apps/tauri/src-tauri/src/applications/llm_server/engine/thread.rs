@@ -100,6 +100,22 @@ impl EngineState {
         }
     }
 
+    /// Create one generation context from the process-once backend.
+    ///
+    /// A turn is independent (the loop clears the KV cache), so a per-turn
+    /// context is what keeps this struct non-self-referential — the context
+    /// borrows the model, so it can never be stored beside it.
+    pub fn new_context(&self) -> Result<LlamaContext<'_>, (CompanionEngineErrorCode, String)> {
+        self.model
+            .new_context(&self._backend, context_params(&SamplingSettings::default()))
+            .map_err(|error| {
+                (
+                    CompanionEngineErrorCode::ContextCreateFailed,
+                    format!("the model context could not be created: {error}"),
+                )
+            })
+    }
+
     /// A one-line description of the loaded model, for the start log.
     fn describe(&self) -> String {
         format!(
@@ -157,6 +173,211 @@ pub fn run(receiver: Receiver<EngineCommand>, slot: Arc<Mutex<EngineSlot>>) {
                 publish(&slot, EngineStatusSnapshot::default());
                 break;
             }
+            EngineCommand::Chat(request) => {
+                let request = *request;
+                let state = ensure_started(&mut state, &slot, &request.paths, request.mode);
+                let Some(engine) = state.as_ref() else {
+                    // The start failed and published its typed status; the turn
+                    // settles as a failed stream.
+                    let _ = request.events.try_send(crate::applications::llm_server::engine::stream::EngineEvent::Failed {
+                        code: CompanionEngineErrorCode::ModelLoadFailed,
+                        detail: "the companion engine could not start; see the companion status for the typed failure."
+                            .to_string(),
+                    });
+                    continue;
+                };
+                run_chat(engine, request);
+            }
+            EngineCommand::OneShot(request) => {
+                let request = *request;
+                let state = ensure_started(&mut state, &slot, &request.paths, request.mode);
+                let Some(engine) = state.as_ref() else {
+                    let _ = request.reply.send(Err((
+                        CompanionEngineErrorCode::ModelLoadFailed,
+                        "the companion engine could not start; see the companion status for the typed failure."
+                            .to_string(),
+                    )));
+                    continue;
+                };
+                run_one_shot(engine, request);
+            }
+        }
+    }
+}
+
+/// Start the engine when it is not loaded yet, publishing the terminal status.
+///
+/// A turn carries the paths + mode, so a chat after a cold boot needs no separate
+/// start round-trip; a failed start leaves `state` untouched and the caller
+/// settles the turn as a typed failure.
+fn ensure_started<'s>(
+    state: &'s mut Option<EngineState>,
+    slot: &Arc<Mutex<EngineSlot>>,
+    paths: &paths::EnginePaths,
+    mode: CompanionBackendMode,
+) -> &'s Option<EngineState> {
+    if state.is_some() {
+        return state;
+    }
+    let (reply, _receiver) = std::sync::mpsc::sync_channel(1);
+    let request = StartRequest {
+        paths: paths.clone(),
+        mode,
+        force_cpu: device::force_cpu(),
+        reply,
+    };
+    match start_engine(request) {
+        StartOutcome::Ready(new_state) => {
+            tracing::info!(
+                target: "fredo::llm_server",
+                model = %new_state.describe(),
+                backend = ?new_state.backend_kind,
+                devices = new_state.devices.len(),
+                "companion engine ready (started by a turn)"
+            );
+            publish(slot, new_state.snapshot());
+            *state = Some(new_state);
+        }
+        StartOutcome::Failed(code, detail) => {
+            tracing::warn!(
+                target: "fredo::llm_server",
+                ?code,
+                %detail,
+                "companion engine start failed for a turn"
+            );
+            let snapshot = EngineStatusSnapshot {
+                loaded: false,
+                last_error_code: Some(code),
+                last_error: Some(detail),
+                backend: None,
+                devices: Vec::new(),
+                model_id: None,
+            };
+            publish(slot, snapshot);
+        }
+    }
+    state
+}
+
+/// Generate one streaming turn, emitting the engine's events to the caller.
+///
+/// The content gate is what keeps a tool-call body off `llm-token`: text is
+/// withheld from the control-token prefix, and at the finish the template's OWN
+/// reverse parser decides whether the withheld text was a call (emitted as
+/// [`EngineEvent::ToolCall`]) or ordinary content (released as a token).
+fn run_chat(engine: &EngineState, request: crate::applications::llm_server::engine::ChatRequest) {
+    use crate::applications::llm_server::engine::stream::{self, ContentGate, EngineEvent};
+
+    let mut context = match engine.new_context() {
+        Ok(context) => context,
+        Err((code, detail)) => {
+            let _ = request.events.try_send(EngineEvent::Failed { code, detail });
+            return;
+        }
+    };
+
+    let mut gate = if request.turn.offer_tools {
+        ContentGate::for_tool_turn()
+    } else {
+        ContentGate::for_content_turn()
+    };
+    let events = request.events.clone();
+    let outcome = generate(
+        &engine.model,
+        &mut context,
+        &engine.format,
+        &SamplingSettings::default(),
+        &request.turn,
+        request.seed,
+        |piece| {
+            let visible = gate.push(piece);
+            if !visible.is_empty() {
+                let _ = events.try_send(EngineEvent::Token(visible));
+            }
+        },
+    );
+
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err((code, detail)) => {
+            let _ = request.events.try_send(EngineEvent::Failed { code, detail });
+            return;
+        }
+    };
+
+    // Decide what the withheld text was: a decoded tool call, or content.
+    let mut called_tools = false;
+    if let Ok(parsed) = engine.format.parse(&request.turn, gate.raw(), false) {
+        // The hidden reasoning channel rides the SAME parsed body, so the Doom
+        // dataset seam keeps its flag-gated capture without a second request.
+        if let Some(reasoning) = stream::EngineEvent::reasoning_from_parsed(&parsed) {
+            let _ = request.events.try_send(stream::EngineEvent::Reasoning(reasoning));
+        }
+        if request.turn.offer_tools {
+            if let Some(calls) = stream::tool_calls_from_parsed(&parsed) {
+                called_tools = true;
+                for call in calls {
+                    let _ = request.events.try_send(call);
+                }
+            }
+        }
+    }
+    if !called_tools {
+        let tail = gate.flush();
+        if !tail.is_empty() {
+            let _ = request.events.try_send(stream::EngineEvent::Token(tail));
+        }
+    }
+
+    let finish_reason = if called_tools {
+        Some("tool_calls".to_string())
+    } else if outcome.stopped_on_eog {
+        Some("stop".to_string())
+    } else {
+        Some("length".to_string())
+    };
+    let _ = request.events.try_send(EngineEvent::Finished {
+        finish_reason,
+        stopped_on_eog: outcome.stopped_on_eog,
+    });
+}
+
+/// Generate one bounded turn and return the whole reply (the Doom path).
+///
+/// The whole content AND the reasoning are returned, so the decision trace keeps
+/// its flag-gated capture without a second request.
+fn run_one_shot(
+    engine: &EngineState,
+    request: crate::applications::llm_server::engine::OneShotRequest,
+) {
+    use crate::applications::llm_server::engine::stream::TurnReply;
+
+    let mut context = match engine.new_context() {
+        Ok(context) => context,
+        Err(error) => {
+            let _ = request.reply.send(Err(error));
+            return;
+        }
+    };
+
+    let outcome = generate(
+        &engine.model,
+        &mut context,
+        &engine.format,
+        &SamplingSettings::default(),
+        &request.turn,
+        request.seed,
+        |_piece| {},
+    );
+    match outcome {
+        Ok(outcome) => {
+            let _ = request.reply.send(Ok(TurnReply {
+                content: outcome.content,
+                reasoning: String::new(),
+            }));
+        }
+        Err(error) => {
+            let _ = request.reply.send(Err(error));
         }
     }
 }

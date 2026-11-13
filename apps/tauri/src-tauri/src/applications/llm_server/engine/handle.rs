@@ -161,6 +161,53 @@ impl CompanionEngineHandle {
             slot.snapshot.loaded = false;
         }
     }
+
+    /// Send one generation command to the engine thread.
+    ///
+    /// A full command channel means a turn is already in flight: the command is
+    /// refused as the typed [`CompanionEngineErrorCode::Busy`] rather than queued
+    /// behind an unbounded wait. A disconnected channel means the engine thread
+    /// is gone, which is a typed backend failure — never a hang.
+    fn send(&self, command: EngineCommand) -> Result<(), (CompanionEngineErrorCode, String)> {
+        let Some(commands) = self.commands.as_ref() else {
+            return Err((
+                CompanionEngineErrorCode::BackendInitFailed,
+                "the companion engine is not running. Restart Fredo and try again.".to_string(),
+            ));
+        };
+        match commands.try_send(command) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => Err((
+                CompanionEngineErrorCode::Busy,
+                CompanionEngineErrorCode::Busy.detail().to_string(),
+            )),
+            Err(TrySendError::Disconnected(_)) => Err((
+                CompanionEngineErrorCode::BackendInitFailed,
+                "the companion engine stopped. Restart Fredo and try again.".to_string(),
+            )),
+        }
+    }
+
+    /// Request one streaming turn on the engine thread.
+    ///
+    /// The engine starts itself when it is not loaded (the request carries the
+    /// model paths + mode), so a chat turn after a cold boot needs no separate
+    /// start round-trip.
+    pub fn chat(
+        &self,
+        request: super::ChatRequest,
+    ) -> Result<(), (CompanionEngineErrorCode, String)> {
+        self.send(EngineCommand::Chat(Box::new(request)))
+    }
+
+    /// Request one bounded single reply on the engine thread (the Doom decision
+    /// path).
+    pub fn one_shot(
+        &self,
+        request: super::OneShotRequest,
+    ) -> Result<(), (CompanionEngineErrorCode, String)> {
+        self.send(EngineCommand::OneShot(Box::new(request)))
+    }
 }
 
 impl Drop for CompanionEngineHandle {

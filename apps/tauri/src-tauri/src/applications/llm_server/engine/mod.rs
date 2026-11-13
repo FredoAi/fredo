@@ -47,6 +47,7 @@ pub mod handle;
 pub mod paths;
 pub mod request;
 pub mod sampling;
+pub mod stream;
 pub mod thread;
 
 /// The model-file-dependent engine integration gate (constructs the engine
@@ -244,14 +245,51 @@ impl CompanionEngineStartResult {
 
 /// A command addressed to the engine thread.
 ///
-/// ST-1 needs only lifecycle: later sub-tasks add `Chat` / `OneShot` / MTP
-/// commands. Only variants that ST-1 actually constructs are declared, so no
-/// dead code is carried.
+/// ST-1 needed only lifecycle; ST-3 adds the two generation commands the live
+/// consumers stream through (`Chat` for a token stream, `OneShot` for the Doom
+/// decision path). Every variant carries the model paths + requested mode of a
+/// lazily-started engine, so a turn can start it itself.
 pub enum EngineCommand {
     /// Load the backend + main model and report devices.
     Start(Box<StartRequest>),
     /// Release the model and stop the thread.
     Stop,
+    /// Generate one turn, streaming [`stream::EngineEvent`]s to the caller.
+    Chat(Box<ChatRequest>),
+    /// Generate one turn, returning the whole reply (the Doom decision path).
+    OneShot(Box<OneShotRequest>),
+}
+
+/// Everything one streaming turn needs. Boxed inside [`EngineCommand`] to keep
+/// the command enum small.
+pub struct ChatRequest {
+    /// The turn to generate.
+    pub turn: request::ChatTurn,
+    /// Where each [`stream::EngineEvent`] goes (bounded — a slow consumer applies
+    /// backpressure, never an unbounded queue).
+    pub events: tokio::sync::mpsc::Sender<stream::EngineEvent>,
+    /// The model files a lazily-started engine loads.
+    pub paths: paths::EnginePaths,
+    /// The backend mode a lazily-started engine uses.
+    pub mode: CompanionBackendMode,
+    /// The distribution seed for this turn.
+    pub seed: u32,
+}
+
+/// Everything one bounded one-shot turn needs. Boxed inside [`EngineCommand`].
+pub struct OneShotRequest {
+    /// The turn to generate.
+    pub turn: request::ChatTurn,
+    /// Where the terminal reply (or typed failure) goes.
+    pub reply: tokio::sync::oneshot::Sender<
+        Result<stream::TurnReply, (CompanionEngineErrorCode, String)>,
+    >,
+    /// The model files a lazily-started engine loads.
+    pub paths: paths::EnginePaths,
+    /// The backend mode a lazily-started engine uses.
+    pub mode: CompanionBackendMode,
+    /// The distribution seed for this turn.
+    pub seed: u32,
 }
 
 /// Everything one bounded start needs. Boxed inside [`EngineCommand`] to keep

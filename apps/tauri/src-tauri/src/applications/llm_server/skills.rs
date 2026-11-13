@@ -1,47 +1,46 @@
-//! Skill-aware inference path (Spec #2893, ST-5; EARS R-3.1–R-3.5).
+//! Skill-aware inference path (Spec #2893, ST-5; EARS R-3.1–R-3.5; re-pointed
+//! in-process by Spec #3141, ST-3).
 //!
-//! Offers the ST-3 companion skill registry to the managed inference path and
-//! turns a model-selected tool call into a validated `llm-skill-call` event —
-//! while ordinary chat stays token-for-token unchanged:
+//! Offers the ST-3 companion skill registry to the in-process engine and turns a
+//! model-selected tool call into a validated `llm-skill-call` event — while
+//! ordinary chat stays token-for-token unchanged:
 //!
-//! * the request renders the registry into OpenAI-style `tools` +
-//!   `tool_choice: "auto"` + `parallel_tool_calls: false` (the documented Gemma4
-//!   parallel-call loop mitigation);
-//! * the pure SSE seam (`chat::parse_sse_frame`) buffers tool-call argument
-//!   fragments VERBATIM and JSON-parses them **exactly once** at the finish
-//!   (#22722 split escapes), then validates the selection through ST-3's
-//!   [`validate`] BEFORE anything is emitted or executed (fail closed);
+//! * the request shapes the registry into the engine turn's `tools` +
+//!   `tool_choice: "auto"` (and the pinned `parallel_tool_calls: false`
+//!   mitigation, enforced by the single-call terminal plan);
+//! * the engine's decoded tool calls buffer VERBATIM and are JSON-parsed
+//!   **exactly once** at the finish (#22722 split escapes), then validated
+//!   through ST-3's [`validate`] BEFORE anything is emitted or executed (fail
+//!   closed);
 //! * a validated selection emits `llm-skill-call`; a rejected one emits a
 //!   readable `llm-error`; `llm-done` is emitted on every path (never hang).
 //!
 //! Non-goals / regression invariants:
-//! - `llm_chat` / `llm_chat_with_image` are byte-identical (joke, TicTacToe,
-//!   vision untouched); this module never touches the legacy request/response.
+//! - `llm_chat` / `llm_chat_with_image` payload shapes are byte-identical (joke,
+//!   TicTacToe, vision untouched).
 //! - Raw tool-call JSON is NEVER forwarded as `llm-token`.
 //! - No window or CLI work here (execution is bound by the caller).
-//!
-//! Mechanism contingency: the native `tools` request is the primary path. The
-//! request renderer (`render_tools` / `build_skill_request_body`) and the frame
-//! accumulation (`ToolCallAccumulator`) are the only places a documented
-//! `response_format` fallback would change — the HTTP/SSE handling lives once in
-//! `chat::run_stream`.
 
 use std::collections::BTreeMap;
 
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 
 use crate::infrastructure::companion::skills::{validate, SkillRegistry};
 
-use super::chat::{self, ChatSseFrame, ChatStreamEvent, LlmMessage};
+use super::chat::LlmMessage;
+use super::engine::request::ChatTurn;
+use super::engine::stream::{AppSink, SettledStream, StreamEvent, TurnSource};
 
 /// `tool_choice` sent with the registry offer — the model decides when to call.
 pub const TOOL_CHOICE_AUTO: &str = "auto";
 
 /// `parallel_tool_calls` sent with the registry offer. Explicitly false so the
 /// documented Gemma4 parallel-call loop hazard is mitigated at the request
-/// (spike finding b).
+/// (spike finding b). Read by the test-only wire-shape builders, because the
+/// production turn enforces single-call through the shared terminal plan.
+#[cfg(test)]
 pub const PARALLEL_TOOL_CALLS: bool = false;
 
 /// Render the registry into the OpenAI-compatible `tools` array.
@@ -66,40 +65,31 @@ pub fn render_tools(registry: &SkillRegistry) -> Value {
     Value::Array(tools)
 }
 
-/// Build the skill-aware streaming request body.
+/// Shape one engine turn that offers `registry` (and, when given, the turn's
+/// audio or image).
 ///
-/// Identical to the legacy body (`messages` / `stream` / `max_tokens`) plus the
-/// registry `tools`, `tool_choice: "auto"` and `parallel_tool_calls: false`.
-/// Reuses the pure ST-1/ST-4 builder so the rendering lives in one place.
-pub fn build_skill_request_body(messages: &[LlmMessage], registry: &SkillRegistry) -> Value {
-    chat::build_tools_request_body(
-        messages,
-        &render_tools(registry),
-        TOOL_CHOICE_AUTO,
-        PARALLEL_TOOL_CALLS,
-    )
-}
-
-/// Build the skill-aware streaming request body for a model-audio turn
-/// (Spec #2903).
-///
-/// The captured clip is attached by the ONE audio renderer
-/// ([`chat::build_audio_request_body`]) — exactly ONE `input_audio` part on the
-/// LAST user message and never a `text` part (#2897 REQ-3) — and the SAME
-/// registry offer as the typed path ([`build_skill_request_body`]) is layered on
-/// top: `tools` from [`render_tools`], `tool_choice: "auto"` and
-/// `parallel_tool_calls: false`. The two bodies are therefore identical except
-/// the last user message's `content`, and there is no second copy of any schema.
-pub fn build_audio_skill_request_body(
-    messages: &[LlmMessage],
-    audio_base64: &str,
+/// The ONE production shaping rule: the registry's `tools` go on the turn, the
+/// tool choice is [`TOOL_CHOICE_AUTO`], and the media rides the turn (so the
+/// engine's own media rule applies, never a second renderer).
+pub fn skill_turn(
+    messages: Vec<LlmMessage>,
     registry: &SkillRegistry,
-) -> Value {
-    let mut body = chat::build_audio_request_body(messages, audio_base64);
-    body["tools"] = render_tools(registry);
-    body["tool_choice"] = Value::String(TOOL_CHOICE_AUTO.to_string());
-    body["parallel_tool_calls"] = Value::Bool(PARALLEL_TOOL_CALLS);
-    body
+    audio_base64: Option<&str>,
+    image_base64: Option<&str>,
+) -> ChatTurn {
+    let mut turn = ChatTurn::text(messages).with_tools(
+        render_tools(registry)
+            .as_array()
+            .cloned()
+            .unwrap_or_default(),
+        TOOL_CHOICE_AUTO,
+    );
+    if let Some(audio) = audio_base64 {
+        turn = turn.with_audio(audio);
+    } else if let Some(image) = image_base64 {
+        turn = turn.with_image(image);
+    }
+    turn
 }
 
 /// The `llm-skill-call` payload: a VALIDATED selection, e.g.
@@ -157,10 +147,10 @@ impl ToolCallAccumulator {
     /// Returns the content delta to forward as `llm-token` (`None` for a buffered
     /// tool-call fragment or the terminator — raw tool-call text is never a
     /// token).
-    pub fn push(&mut self, event: ChatStreamEvent) -> Option<String> {
+    pub fn push(&mut self, event: StreamEvent) -> Option<String> {
         match event {
-            ChatStreamEvent::Delta(content) => Some(content),
-            ChatStreamEvent::ToolCallDelta {
+            StreamEvent::Delta(content) => Some(content),
+            StreamEvent::ToolCallDelta {
                 index,
                 name,
                 arguments_fragment,
@@ -176,7 +166,7 @@ impl ToolCallAccumulator {
                 }
                 None
             }
-            ChatStreamEvent::Done => None,
+            StreamEvent::Done => None,
         }
     }
 
@@ -307,11 +297,11 @@ pub fn plan_terminal_events(
     events
 }
 
-/// The terminal events for a failed skill-aware stream (transport / launch /
-/// non-200): a readable `llm-error` followed by `llm-done`.
+/// The terminal events for a failed skill-aware stream (engine start / model
+/// failure / a refused turn): a readable `llm-error` followed by `llm-done`.
 ///
 /// The stream died before any accumulated call could be finalized, so there is
-/// no plan to run — but a failed generation MUST still settle (R-1.4): a
+/// no plan to run — but a failed generation MUST still settle (R-26.2): a
 /// `llm-done` is always the last event. Pure so the never-hang guarantee is
 /// pinned without a live `AppHandle`.
 pub fn plan_stream_error_events(detail: &str) -> Vec<TerminalEvent> {
@@ -321,101 +311,399 @@ pub fn plan_stream_error_events(detail: &str) -> Vec<TerminalEvent> {
     ]
 }
 
-/// Kick off a skill-aware streaming chat on a background task and return
-/// immediately (never blocks the IPC call).
-pub fn spawn_chat_with_skills(app: AppHandle, messages: Vec<LlmMessage>) {
-    tauri::async_runtime::spawn(async move {
-        if let Err(detail) = run_skill_chat(&app, messages).await {
-            // The transport failed before any accumulated call existed — still
-            // settle on the SAME terminal vocabulary so the frontend's `llm-done`
-            // handler always fires (ST-9 / R-1.4: never hang, whatever the
-            // failure). HTTP / connection / launch failure all land here.
-            for event in plan_stream_error_events(&detail) {
-                emit_terminal_event(&app, event);
-            }
-        }
-    });
-}
-
 /// Emit one terminal event on its wire channel (`llm-skill-call` / `llm-error` /
 /// `llm-done`).
 ///
 /// The ONE terminal-emit site, shared by the normal plan and the stream-failure
-/// path — so no backend branch can emit a `Done`-less terminal sequence. Shared
-/// with the model-audio path (#2903) via `chat::run_audio_chat`.
-pub(crate) fn emit_terminal_event(app: &AppHandle, event: TerminalEvent) {
+/// path — so no backend branch can emit a `Done`-less terminal sequence, and the
+/// trailing `llm-done` is owned by [`SettledStream`].
+pub(crate) fn emit_terminal_event(settled: &mut SettledStream<'_>, event: TerminalEvent) {
     match event {
-        TerminalEvent::SkillCall(call) => {
-            let _ = app.emit("llm-skill-call", call);
-        }
-        TerminalEvent::Error(detail) => {
-            let _ = app.emit("llm-error", detail);
-        }
-        TerminalEvent::Done => {
-            let _ = app.emit("llm-done", ());
-        }
+        TerminalEvent::SkillCall(call) => settled.skill_call(call),
+        TerminalEvent::Error(detail) => settled.error(detail),
+        TerminalEvent::Done => settled.finish(),
     }
 }
 
-/// Drive ONE skill-aware generation body through the shared HTTP/SSE shell:
-/// content deltas → `llm-token`; tool-call fragments buffered VERBATIM; at the
-/// finish the selection is validated and routed through the terminal plan
-/// (`llm-skill-call` / readable `llm-error` / always a trailing `llm-done`).
+/// Run ONE skill-aware turn against `source`: content deltas → `llm-token`;
+/// tool calls buffered VERBATIM; at the finish the selection is validated and
+/// routed through the terminal plan (`llm-skill-call` / readable `llm-error` /
+/// always a trailing `llm-done`).
 ///
-/// The ONE accumulate/validate/emit loop, shared by the typed path
-/// ([`run_skill_chat`]) and the model-audio path (`chat::run_audio_chat`,
-/// #2903), so both routes settle on the SAME vocabulary and raw tool-call JSON
-/// is never forwarded as a token.
+/// This is the ONE accumulate/validate/emit loop. It takes a source and an
+/// ALREADY-CONSTRUCTED settle guard, so the shipped behaviour is exactly what
+/// the settle pins execute and the trailing `llm-done` stays owned by the
+/// outermost caller.
+pub(crate) async fn stream_skill_turn(
+    source: &dyn TurnSource,
+    settled: &mut SettledStream<'_>,
+    registry: &SkillRegistry,
+    turn: ChatTurn,
+) -> Result<(), String> {
+    let mut accumulator = ToolCallAccumulator::new();
+
+    let outcome = source
+        .stream(turn, &mut |frame| {
+            for event in frame.events {
+                if let Some(delta) = accumulator.push(event) {
+                    settled.token(delta);
+                }
+            }
+            if let Some(reason) = frame.finish_reason {
+                accumulator.set_finish_reason(reason);
+            }
+            // Never stop early: always reach the finalize/emit phase.
+        })
+        .await;
+
+    if let Err(detail) = outcome {
+        // The stream failed before the plan could run: settle on the SAME
+        // terminal vocabulary (never hang, whatever the failure).
+        for event in plan_stream_error_events(&detail) {
+            emit_terminal_event(settled, event);
+        }
+        return Ok(());
+    }
+
+    for event in plan_terminal_events(registry, &accumulator) {
+        emit_terminal_event(settled, event);
+    }
+    Ok(())
+}
+
+/// Stream ONE skill-aware turn through the production engine source.
+///
+/// The adapter the typed path ([`run_skill_chat`]) and the model-audio path
+/// (`run_audio_chat`) share, so both routes settle on the SAME vocabulary and
+/// raw tool-call JSON is never forwarded as a token.
 pub(crate) async fn run_skill_stream(
     app: &AppHandle,
     registry: &SkillRegistry,
-    body: &Value,
+    turn: ChatTurn,
 ) -> Result<(), String> {
-    let mut accumulator = ToolCallAccumulator::new();
-    chat::run_stream(app, body, |frame: ChatSseFrame| {
-        for event in frame.events {
-            if let Some(delta) = accumulator.push(event) {
-                let _ = app.emit("llm-token", delta);
+    let sink = AppSink::new(app);
+    let mut settled = SettledStream::new(&sink);
+    let outcome = match super::engine::stream::EngineTurnSource::for_app(app) {
+        Ok(source) => stream_skill_turn(&source, &mut settled, registry, turn).await,
+        Err((_code, detail)) => {
+            for event in plan_stream_error_events(&detail) {
+                emit_terminal_event(&mut settled, event);
             }
+            Ok(())
         }
-        if let Some(reason) = frame.finish_reason {
-            accumulator.set_finish_reason(reason);
-        }
-        // Never stop early: always reach the finalize/emit phase.
-        false
-    })
-    .await?;
+    };
+    // Explicit settle so the intent reads at the call site; the guard's `Drop`
+    // would do the same, and both are idempotent.
+    settled.finish();
+    outcome
+}
 
-    for event in plan_terminal_events(registry, &accumulator) {
-        emit_terminal_event(app, event);
+/// Stream ONE content-only turn (NO tools offered): each content delta is
+/// forwarded on the SHIPPED `llm-token` channel and the turn settles with
+/// exactly one `llm-done`.
+///
+/// The content-turn entry shared by the status path's bounded plain retry
+/// (Spec #2918, R-5/R-6). A content turn and a tool-call turn remain disjoint.
+pub(crate) async fn stream_plain_turn(
+    source: &dyn TurnSource,
+    settled: &mut SettledStream<'_>,
+    turn: ChatTurn,
+) -> Result<(), String> {
+    let outcome = source
+        .stream(turn, &mut |frame| {
+            for event in frame.events {
+                if let StreamEvent::Delta(delta) = event {
+                    settled.token(delta);
+                }
+            }
+        })
+        .await;
+    if let Err(detail) = outcome {
+        settled.error(detail);
     }
     Ok(())
 }
 
-/// Stream a content-only generation body (NO tools offered): each content delta
-/// is forwarded on the SHIPPED `llm-token` channel and the turn settles with
-/// exactly one `llm-done`.
-///
-/// The content-turn entry shared by the status path's bounded plain retry
-/// (Spec #2918, R-5/R-6). [`run_skill_stream`] is unchanged — a content turn and
-/// a tool-call turn remain disjoint.
-pub(crate) async fn run_plain_stream(app: &AppHandle, body: &Value) -> Result<(), String> {
-    chat::run_stream(app, body, |frame: ChatSseFrame| {
-        for event in frame.events {
-            if let ChatStreamEvent::Delta(delta) = event {
-                let _ = app.emit("llm-token", delta);
-            }
+// ── The skill path's terminal-settle pins (R-26.2) ────────────────────────────
+//
+// Each pin drives the REAL `stream_skill_turn` against a scripted source and a
+// recording sink, so "exactly one `llm-done`, always last" is a property of the
+// shipped code — not of a re-implementation. Every path is covered: a validated
+// skill call, an ordinary content turn, a fail-closed parse error, a rejected
+// selection, a tool-call turn with no call, an engine failure, and an empty
+// stream.
+
+#[cfg(test)]
+mod settle_tests {
+    use super::*;
+    use crate::applications::llm_server::engine::stream::testing::{
+        assert_settles_once, finished, RecordingSink, ScriptedResponse, ScriptedTurnSource,
+    };
+    use crate::applications::llm_server::engine::stream::{StreamEvent, StreamFrame};
+    use crate::infrastructure::companion::skills::SkillRegistry;
+
+    fn message(role: &str, content: &str) -> LlmMessage {
+        LlmMessage {
+            role: role.to_string(),
+            content: content.to_string(),
         }
-        // The turn always settles after the stream, never mid-frame.
-        false
-    })
-    .await?;
-    let _ = app.emit("llm-done", ());
-    Ok(())
+    }
+
+    fn tool_call_frame(name: &str, arguments: &str) -> StreamFrame {
+        StreamFrame {
+            events: vec![StreamEvent::ToolCallDelta {
+                index: 0,
+                name: Some(name.to_string()),
+                arguments_fragment: Some(arguments.to_string()),
+            }],
+            finish_reason: None,
+            reasoning: None,
+        }
+    }
+
+    async fn run(
+        registry: &SkillRegistry,
+        responses: Vec<ScriptedResponse>,
+        sink: &RecordingSink,
+    ) {
+        let source = ScriptedTurnSource::new(responses);
+        let mut settled = SettledStream::new(sink);
+        stream_skill_turn(&source, &mut settled, registry, ChatTurn::text(vec![]))
+            .await
+            .expect("the skill path never returns an error (it settles instead)");
+        settled.finish();
+    }
+
+    /// A VALIDATED `open_app` selection settles with `[llm-skill-call, llm-done]`
+    /// — the skill call BEFORE the terminator, exactly once each.
+    #[tokio::test]
+    async fn a_validated_skill_call_settles_once_with_the_call_before_done() {
+        let registry = SkillRegistry::with_open_app();
+        let sink = RecordingSink::new();
+        run(
+            &registry,
+            vec![ScriptedResponse::ok(vec![
+                tool_call_frame("open_app", r#"{"app":"Mission Monitor"}"#),
+                finished("tool_calls"),
+            ])],
+            &sink,
+        )
+        .await;
+
+        assert_settles_once(&sink, "validated skill call");
+        assert_eq!(
+            sink.names(),
+            vec!["llm-skill-call", "llm-done"],
+            "the skill call precedes the single terminator"
+        );
+        assert_eq!(sink.count("llm-skill-call"), 1);
+        assert_eq!(
+            sink.payloads("llm-skill-call"),
+            vec![r#"{"skill":"open_app","arguments":{"app":"Mission Monitor"}}"#]
+        );
+    }
+
+    /// An ordinary content turn streams its deltas and settles with exactly the
+    /// single trailing `llm-done` — and NO skill call.
+    #[tokio::test]
+    async fn an_ordinary_content_turn_settles_once_with_no_skill_call() {
+        let registry = SkillRegistry::with_open_app();
+        let sink = RecordingSink::new();
+        run(&registry, vec![ScriptedResponse::content("hello there")], &sink).await;
+
+        assert_settles_once(&sink, "ordinary content");
+        assert_eq!(sink.count("llm-skill-call"), 0);
+        assert_eq!(sink.payloads("llm-token"), vec!["hello there"]);
+    }
+
+    /// A malformed argument JSON fails closed: a readable `llm-error`, ZERO skill
+    /// calls, and the trailing `llm-done`.
+    #[tokio::test]
+    async fn a_malformed_arguments_turn_settles_once_with_error_before_done() {
+        let registry = SkillRegistry::with_open_app();
+        let sink = RecordingSink::new();
+        run(
+            &registry,
+            vec![ScriptedResponse::ok(vec![
+                tool_call_frame("open_app", r#"{"app": "#),
+                finished("tool_calls"),
+            ])],
+            &sink,
+        )
+        .await;
+
+        assert_settles_once(&sink, "malformed arguments");
+        assert_eq!(sink.count("llm-skill-call"), 0, "nothing may be executed");
+        assert_eq!(sink.count("llm-error"), 1);
+        assert_eq!(sink.names(), vec!["llm-error", "llm-done"]);
+    }
+
+    /// A rejected (unknown) selection fails closed the same way.
+    #[tokio::test]
+    async fn a_rejected_selection_settles_once_with_error_before_done() {
+        let registry = SkillRegistry::with_open_app();
+        let sink = RecordingSink::new();
+        run(
+            &registry,
+            vec![ScriptedResponse::ok(vec![
+                tool_call_frame("open_the_pod_bay", r#"{"app":"x"}"#),
+                finished("tool_calls"),
+            ])],
+            &sink,
+        )
+        .await;
+
+        assert_settles_once(&sink, "rejected selection");
+        assert_eq!(sink.count("llm-skill-call"), 0);
+        assert_eq!(sink.count("llm-error"), 1);
+    }
+
+    /// A `tool_calls` finish with NO call still settles with a reason then done.
+    #[tokio::test]
+    async fn a_tool_call_turn_without_a_call_settles_once() {
+        let registry = SkillRegistry::with_open_app();
+        let sink = RecordingSink::new();
+        run(&registry, vec![ScriptedResponse::finish_only("tool_calls")], &sink).await;
+
+        assert_settles_once(&sink, "tool-call turn without a call");
+        assert_eq!(sink.count("llm-error"), 1);
+        assert_eq!(sink.count("llm-skill-call"), 0);
+    }
+
+    /// An ENGINE FAILURE (`Err` from the source) still settles: a readable
+    /// `llm-error` then exactly one trailing `llm-done` — never a hang.
+    #[tokio::test]
+    async fn an_engine_failure_settles_once_with_error_before_done() {
+        let registry = SkillRegistry::with_open_app();
+        let sink = RecordingSink::new();
+        run(
+            &registry,
+            vec![ScriptedResponse::failed("the companion engine stopped")],
+            &sink,
+        )
+        .await;
+
+        assert_settles_once(&sink, "engine failure");
+        assert_eq!(sink.count("llm-error"), 1);
+        assert_eq!(sink.count("llm-skill-call"), 0);
+        assert_eq!(sink.names(), vec!["llm-error", "llm-done"]);
+    }
+
+    /// An EMPTY stream (a source that yields no frames at all) settles with just
+    /// the single `llm-done`.
+    #[tokio::test]
+    async fn an_empty_stream_settles_once() {
+        let registry = SkillRegistry::with_open_app();
+        let sink = RecordingSink::new();
+        run(&registry, vec![ScriptedResponse::ok(vec![])], &sink).await;
+
+        assert_settles_once(&sink, "empty stream");
+        assert_eq!(sink.names(), vec!["llm-done"]);
+    }
+
+    /// An EARLY STOP (`length`) with partial content settles once: the partial
+    /// text streams, then the single terminator — no "streaming forever".
+    #[tokio::test]
+    async fn an_early_stop_settles_once_with_its_partial_content() {
+        let registry = SkillRegistry::with_open_app();
+        let sink = RecordingSink::new();
+        run(
+            &registry,
+            vec![ScriptedResponse::ok(vec![
+                StreamFrame {
+                    events: vec![StreamEvent::Delta("half a rep".to_string())],
+                    finish_reason: None,
+                    reasoning: None,
+                },
+                finished("length"),
+            ])],
+            &sink,
+        )
+        .await;
+
+        assert_settles_once(&sink, "early stop");
+        assert_eq!(sink.payloads("llm-token"), vec!["half a rep"]);
+        assert_eq!(sink.count("llm-skill-call"), 0);
+    }
+
+    /// A MULTI-CHUNK content turn still forwards each delta exactly once and
+    /// settles once — the single-frame pins cannot see a duplicate/emission bug.
+    #[tokio::test]
+    async fn a_multi_chunk_content_turn_settles_once_with_every_delta() {
+        let registry = SkillRegistry::with_open_app();
+        let sink = RecordingSink::new();
+        run(
+            &registry,
+            vec![ScriptedResponse::content_chunks(&["a", "b", "c"])],
+            &sink,
+        )
+        .await;
+
+        assert_settles_once(&sink, "multi-chunk content");
+        assert_eq!(sink.payloads("llm-token"), vec!["a", "b", "c"]);
+    }
+
+    /// The content-only entry also settles exactly once — the plain path the
+    /// status retry uses.
+    #[tokio::test]
+    async fn the_plain_stream_settles_once_on_success_and_failure() {
+        for (label, response) in [
+            ("plain success", ScriptedResponse::content("hi")),
+            ("plain failure", ScriptedResponse::failed("engine stopped")),
+        ] {
+            let sink = RecordingSink::new();
+            let source = ScriptedTurnSource::new(vec![response]);
+            let mut settled = SettledStream::new(&sink);
+            stream_plain_turn(&source, &mut settled, ChatTurn::text(vec![]))
+                .await
+                .expect("the plain path settles instead of erroring");
+            settled.finish();
+            assert_settles_once(&sink, label);
+            assert_eq!(sink.count("llm-skill-call"), 0, "{label}");
+        }
+    }
+
+    /// The typed path's turn really offers the registry (a non-vacuity control
+    /// for the settle pins above, which drive `stream_skill_turn` directly).
+    #[test]
+    fn the_production_skill_turn_offers_the_registry() {
+        let registry = SkillRegistry::with_app_control();
+        let turn = skill_turn(
+            vec![message("user", "open Settings")],
+            &registry,
+            None,
+            None,
+        );
+        assert!(turn.offer_tools);
+        assert_eq!(turn.tools.len(), registry.list().count());
+        assert_eq!(turn.tool_choice.as_deref(), Some(TOOL_CHOICE_AUTO));
+        assert!(turn.audio.is_none());
+        assert!(turn.json_schema.is_none());
+    }
+
+    /// The audio turn carries the clip and offers the SAME registry.
+    #[test]
+    fn the_audio_skill_turn_carries_the_clip_and_the_offer() {
+        let registry = SkillRegistry::with_app_control();
+        let turn = skill_turn(vec![message("user", "")], &registry, Some("UklGRg=="), None);
+        assert!(turn.offer_tools);
+        assert_eq!(turn.audio.as_deref(), Some("UklGRg=="));
+        assert!(turn.image.is_none());
+    }
+
+    /// The image turn carries the image (never audio) on the same offer.
+    #[test]
+    fn the_image_skill_turn_carries_the_image_and_the_offer() {
+        let registry = SkillRegistry::with_app_control();
+        let turn = skill_turn(vec![message("user", "look")], &registry, None, Some("QUJD"));
+        assert!(turn.offer_tools);
+        assert_eq!(turn.image.as_deref(), Some("QUJD"));
+        assert!(turn.audio.is_none());
+    }
 }
 
-/// Stream one skill-aware generation: content deltas → `llm-token`; tool-call
-/// fragments buffered; at the finish the selection is validated and routed.
+/// Stream one skill-aware generation: content deltas → `llm-token`; tool calls
+/// buffered; at the finish the selection is validated and routed.
 async fn run_skill_chat(app: &AppHandle, messages: Vec<LlmMessage>) -> Result<(), String> {
     // Spec #3070 ST-7: the Wireframe skill is offered additively — the three
     // static skills, then one generated skill per published surface (Spec #3099
@@ -425,14 +713,27 @@ async fn run_skill_chat(app: &AppHandle, messages: Vec<LlmMessage>) -> Result<()
     // this second same-content construction site can never drift from the live
     // companion offer. The content/order is unchanged.
     let registry = super::status::companion_skill_registry(app);
-    let body = build_skill_request_body(&messages, &registry);
-    run_skill_stream(app, &registry, &body).await
+    let turn = skill_turn(messages, &registry, None, None);
+    run_skill_stream(app, &registry, turn).await
+}
+
+/// Kick off a skill-aware streaming chat on a background task and return
+/// immediately (never blocks the IPC call).
+///
+/// `run_skill_chat` owns the settle, so nothing here can double-settle: it
+/// either emits through the shared terminal plan or through its own failure
+/// branch, and its `SettledStream` guarantees exactly one trailing `llm-done`.
+pub fn spawn_chat_with_skills(app: AppHandle, messages: Vec<LlmMessage>) {
+    tauri::async_runtime::spawn(async move {
+        let _ = run_skill_chat(&app, messages).await;
+    });
 }
 
 /// Stream a companion chat with the companion skill registry offered to the
 /// model (Spec #2893, ST-5).
 ///
-/// Additive to `llm_chat` / `llm_chat_with_image`, which stay byte-identical.
+/// Additive to `llm_chat` / `llm_chat_with_image`, whose payload shapes stay
+/// byte-identical.
 #[tauri::command]
 pub fn llm_chat_with_skills(messages: Vec<LlmMessage>, app: AppHandle) -> Result<(), String> {
     spawn_chat_with_skills(app, messages);
@@ -458,12 +759,47 @@ mod tests {
         ]
     }
 
-    fn fragment(index: usize, name: Option<&str>, arguments: Option<&str>) -> ChatStreamEvent {
-        ChatStreamEvent::ToolCallDelta {
+    fn fragment(index: usize, name: Option<&str>, arguments: Option<&str>) -> StreamEvent {
+        StreamEvent::ToolCallDelta {
             index,
             name: name.map(str::to_string),
             arguments_fragment: arguments.map(str::to_string),
         }
+    }
+
+    /// The pure wire-shape view of the offer the production turn renders
+    /// ([`skill_turn`]), retained so the payload pins can assert the shipped shape
+    /// byte-for-byte. Test-only: production shapes a `ChatTurn` directly.
+    fn build_skill_request_body(messages: &[LlmMessage], registry: &SkillRegistry) -> Value {
+        crate::applications::llm_server::chat::build_tools_request_body(
+            messages,
+            &render_tools(registry),
+            TOOL_CHOICE_AUTO,
+            PARALLEL_TOOL_CALLS,
+        )
+    }
+
+    /// The pure wire-shape view of a model-audio skill turn (Spec #2903): the clip
+    /// rides as exactly one `input_audio` part on the LAST user message and never a
+    /// `text` part (#2897 REQ-3), with the SAME registry offer as the typed path.
+    fn build_audio_skill_request_body(
+        messages: &[LlmMessage],
+        audio_base64: &str,
+        registry: &SkillRegistry,
+    ) -> Value {
+        let mut body = serde_json::json!({
+            "messages": crate::applications::llm_server::chat::render_messages(
+                messages,
+                None,
+                Some(audio_base64),
+            ),
+            "stream": true,
+            "max_tokens": crate::applications::llm_server::chat::MAX_TOKENS,
+        });
+        body["tools"] = render_tools(registry);
+        body["tool_choice"] = Value::String(TOOL_CHOICE_AUTO.to_string());
+        body["parallel_tool_calls"] = Value::Bool(PARALLEL_TOOL_CALLS);
+        body
     }
 
     // ── R-3.1/R-3.2: the registry is offered to the inference path ────────────
@@ -579,12 +915,12 @@ mod tests {
     fn a_content_delta_is_the_only_event_forwarded_as_a_token() {
         let mut accumulator = ToolCallAccumulator::new();
         assert_eq!(
-            accumulator.push(ChatStreamEvent::Delta("Hello".to_string())),
+            accumulator.push(StreamEvent::Delta("Hello".to_string())),
             Some("Hello".to_string())
         );
         // Raw tool-call fragments and the terminator are never tokens.
         assert_eq!(accumulator.push(fragment(0, Some("open_app"), Some("{}"))), None);
-        assert_eq!(accumulator.push(ChatStreamEvent::Done), None);
+        assert_eq!(accumulator.push(StreamEvent::Done), None);
     }
 
     #[test]
@@ -725,11 +1061,11 @@ mod tests {
         let registry = SkillRegistry::with_open_app();
         let mut accumulator = ToolCallAccumulator::new();
         assert_eq!(
-            accumulator.push(ChatStreamEvent::Delta("Hello ".to_string())),
+            accumulator.push(StreamEvent::Delta("Hello ".to_string())),
             Some("Hello ".to_string())
         );
         assert_eq!(
-            accumulator.push(ChatStreamEvent::Delta("there".to_string())),
+            accumulator.push(StreamEvent::Delta("there".to_string())),
             Some("there".to_string())
         );
         accumulator.set_finish_reason("stop");
@@ -776,8 +1112,8 @@ mod tests {
         let registry = SkillRegistry::with_open_app();
         for message in ["tell me a joke", "hi", "Missing all the time", "MM"] {
             let mut accumulator = ToolCallAccumulator::new();
-            accumulator.push(ChatStreamEvent::Delta(format!("reply about {message}: ")));
-            accumulator.push(ChatStreamEvent::Delta("the normal chat reply".to_string()));
+            accumulator.push(StreamEvent::Delta(format!("reply about {message}: ")));
+            accumulator.push(StreamEvent::Delta("the normal chat reply".to_string()));
             accumulator.set_finish_reason("stop");
 
             let events = plan_terminal_events(&registry, &accumulator);
@@ -862,7 +1198,7 @@ mod tests {
         valid.set_finish_reason("tool_calls");
 
         let mut content = ToolCallAccumulator::new();
-        content.push(ChatStreamEvent::Delta("hello".to_string()));
+        content.push(StreamEvent::Delta("hello".to_string()));
         content.set_finish_reason("stop");
 
         let mut parse_failure = ToolCallAccumulator::new();
@@ -960,7 +1296,9 @@ mod tests {
 
         let mut expected = skill_body.clone();
         expected["messages"][1]["content"] =
-            serde_json::json!([chat::audio_content_part("UklGRg==")]);
+            serde_json::json!([crate::applications::llm_server::chat::audio_content_part(
+                "UklGRg=="
+            )]);
         assert_eq!(
             audio_body, expected,
             "the audio skill body differs from the typed body only in the last user content"
@@ -1217,8 +1555,8 @@ mod tests {
             "what does close_app do?",
         ] {
             let mut accumulator = ToolCallAccumulator::new();
-            accumulator.push(ChatStreamEvent::Delta(format!("reply about {message}: ")));
-            accumulator.push(ChatStreamEvent::Delta("the normal chat reply".to_string()));
+            accumulator.push(StreamEvent::Delta(format!("reply about {message}: ")));
+            accumulator.push(StreamEvent::Delta("the normal chat reply".to_string()));
             accumulator.set_finish_reason("stop");
 
             let events = plan_terminal_events(&registry, &accumulator);

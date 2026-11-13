@@ -544,63 +544,55 @@ fn model_audio_delivery_target_is_the_managed_loopback_host() {
         "the `llama-server` launch config must default to the loopback host (REQ-8)"
     );
 
-    // The ONE chat-completions / properties URL shell: the resolved host is
-    // templated, so the audio delivery can only address the managed server.
-    // `format!` strings are blanked by `mask()`, hence the raw text.
+    // In-process (Spec #3141 ST-3) there is NO loopback endpoint at all: the
+    // audio turn runs on the engine thread. The addressable shell is gone, and
+    // `chat.rs` keeps only the pure wire-shape renderers. The redirect-only
+    // property (the turn cannot address a remote endpoint) is therefore stronger,
+    // not weaker: the delivery commands carry no URL and no host at all.
     let chat = production_text("applications/llm_server/chat.rs");
     assert!(
-        chat.contains("format!(\"http://{host}:{port}{CHAT_COMPLETIONS_PATH}\")"),
-        "the chat-completions URL must template the resolved host (REQ-8)"
-    );
-    assert!(
-        chat.contains("format!(\"http://{host}:{port}{PROPS_PATH}\")"),
-        "the /props URL must template the resolved host (REQ-8)"
+        !chat.contains("llm_chat_with_audio"),
+        "the delivery command must not live in the wire-shape module: {chat}"
     );
 
-    // The turn target reads the persisted host and resolves it through the
-    // loopback-defaulting helper — the request cannot bypass the managed host.
-    // `chat.rs` carries a `#[cfg(test)]` helper before those items, so span them
-    // over the WHOLE masked file (offsets preserved) rather than the early slice.
-    let code = source_code("applications/llm_server/chat.rs");
-    let resolve = item_span(&code, "fn resolve_host(");
-    assert!(
-        resolve.contains("DEFAULT_LLAMA_SERVER_HOST"),
-        "resolve_host must fall back to the managed loopback default (REQ-8): {resolve}"
-    );
-    let server_host = item_span(&code, "fn server_host(");
-    assert!(
-        server_host.contains("resolve_host(") && server_host.contains("LLAMA_SERVER_HOST_KEY"),
-        "the turn target must resolve the persisted host via resolve_host (REQ-8): {server_host}"
-    );
-
-    // The shared HTTP/SSE shell every chat request flows through resolves the
-    // host through `server_host`; the audio delivery reuses this ONE shell.
-    let run_stream = item_span(&code, "pub async fn run_stream(");
-    assert!(
-        run_stream.contains("server_host(app)"),
-        "run_stream must resolve the managed host via server_host (REQ-8): {run_stream}"
-    );
-
-    // The health probe shares the same loopback-templated host.
+    // The health probe (the retired out-of-process readiness surface) still
+    // templates its host; ST-6 retires it with the launch path.
     let health = production_text("applications/llm_server/health.rs");
     assert!(
         health.contains("format!(\"http://{host}:{port}{HEALTH_PATH}\")"),
         "the health URL must template the resolved host (REQ-8)"
     );
 
-    // The audio delivery command must route through the managed chat module —
-    // never its own transport/URL. ST-1 split `commands.rs` by concern, so the
-    // delivery commands now live in `commands/chat.rs`.
+    // The audio delivery command must route the turn through the ONE in-process
+    // engine path — never its own transport/URL. ST-1 split `commands.rs` by
+    // concern, so the delivery commands now live in `commands/chat.rs`; ST-3
+    // re-points them from the loopback shell onto the engine stream.
     let commands = production_code("applications/llm_server/commands/chat.rs");
     if commands.contains("fn llm_chat_with_audio(") {
         let audio_command = item_span(&commands, "fn llm_chat_with_audio(");
         assert!(
-            audio_command.contains("chat::")
-                || audio_command.contains("run_stream")
-                || audio_command.contains("server_host"),
-            "llm_chat_with_audio must deliver through the managed chat module (REQ-8): {audio_command}"
+            audio_command.contains("spawn_audio_chat")
+                || audio_command.contains("skills::")
+                || audio_command.contains("run_skill"),
+            "llm_chat_with_audio must deliver through the ONE engine path (REQ-8): {audio_command}"
+        );
+        assert!(
+            !audio_command.contains("http://"),
+            "the in-process audio command must carry no loopback URL (REQ-8): {audio_command}"
         );
     }
+
+    // The engine turn the audio path shapes offers the SAME registry and rides the
+    // same source as the typed path — the property the retired shell guaranteed.
+    let spawn = item_span(&commands, "fn spawn_audio_chat(");
+    assert!(
+        spawn.contains("companion_skill_registry("),
+        "spawn_audio_chat must obtain its offer from the ONE shared accessor (REQ-8): {spawn}"
+    );
+    assert!(
+        spawn.contains("run_skill_stream("),
+        "spawn_audio_chat must settle through the ONE shared skill stream (REQ-8): {spawn}"
+    );
 }
 
 /// REQ-8 (F-108 leg 1) — the captured clip crosses the IPC boundary only. The
@@ -662,26 +654,28 @@ fn model_audio_surfaces_stay_on_their_ipc_side_of_the_boundary() {
 /// the ONE shared accessor, and no other production site builds a companion
 /// offer registry.
 ///
-/// The audio defect was `run_audio_chat` constructing its own
+/// The audio defect was the audio entry constructing its own
 /// `SkillRegistry::with_app_control_and_doom()` (three skills, no surface skill).
-/// This scan pins the audio path's registry SOURCE to
-/// `companion_skill_registry(app)`, pins that ONE accessor to the pure
-/// `build_companion_skill_registry` builder (Spec #3099 ST-4), and asserts the
-/// deleted hand-written four-skill constructor/catalog are gone. Positive-
-/// controlled: the scan must SEE the builder definition, so a scan matching
-/// nothing can never pass.
+/// Spec #3141 ST-3 moved the audio entry from `chat.rs` onto the in-process engine
+/// stream, so this pin follows it to `commands/chat.rs` (`spawn_audio_chat`) and
+/// keeps the SAME predicate: its registry SOURCE is `companion_skill_registry(app)`,
+/// that ONE accessor delegates to the pure `build_companion_skill_registry` builder
+/// (Spec #3099 ST-4), and the deleted hand-written four-skill constructor/catalog
+/// stay gone. Positive-controlled: the scan must SEE the builder definition, so a
+/// scan matching nothing can never pass.
 #[test]
 fn the_model_audio_path_obtains_its_offer_from_the_one_shared_registry() {
-    // (1) The audio path's registry source is the ONE shared accessor.
-    let chat = source_code("applications/llm_server/chat.rs");
-    let audio = item_span(&chat, "async fn run_audio_chat(");
+    // (1) The audio path's registry source is the ONE shared accessor. The entry
+    //     lives in `commands/chat.rs` since the in-process re-point.
+    let chat = source_code("applications/llm_server/commands/chat.rs");
+    let audio = item_span(&chat, "fn spawn_audio_chat(");
     assert!(
-        audio.contains("companion_skill_registry(app)"),
-        "run_audio_chat must obtain its offer from the ONE shared accessor (R-2): {audio}"
+        audio.contains("companion_skill_registry("),
+        "spawn_audio_chat must obtain its offer from the ONE shared accessor (R-2): {audio}"
     );
     assert!(
         !audio.contains("SkillRegistry::with_"),
-        "run_audio_chat must not build its own companion offer (R-2): {audio}"
+        "spawn_audio_chat must not build its own companion offer (R-2): {audio}"
     );
 
     // (2) The shared accessor reads the managed registry and delegates to the
