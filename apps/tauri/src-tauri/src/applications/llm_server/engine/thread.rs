@@ -44,14 +44,18 @@ use super::{
 /// Everything the engine thread owns once started. Dropped on `Stop` / thread
 /// exit, which releases the model (and therefore the ggml device set).
 pub struct EngineState {
-    /// Proof the backend was initialised. Retained (never read) ONLY so the
-    /// model is dropped BEFORE the backend — `llama_backend_free` requires every
-    /// model to be released first. The leading underscore documents that this
-    /// field exists for ownership/drop order, not for reads.
-    _backend: LlamaBackend,
-    /// The loaded main model. Read for the start log line; ST-2 owns the
-    /// generation loop that keeps using it.
+    /// The loaded main model. Declared BEFORE the backend so Rust drops it FIRST
+    /// — struct fields drop in declaration order, and `llama_backend_free`
+    /// requires every model to be released before the backend. Read for the start
+    /// log line; ST-2 owns the generation loop that keeps using it.
     pub model: llama_cpp_4::model::LlamaModel,
+    /// Proof the backend was initialised.
+    ///
+    /// Retained (never read) ONLY for two reasons: it must outlive the model
+    /// (drop order, see [`Self::model`]), and ST-2's generation loop creates its
+    /// retained context from the same process-once backend. The leading
+    /// underscore documents that this field exists for ownership, not reads.
+    _backend: LlamaBackend,
     /// The device set ggml reports for the loaded model (post-coercion).
     pub devices: Vec<super::CompanionDeviceInfo>,
     /// The reported backend (`None` only when the enumeration is empty).
@@ -302,8 +306,8 @@ fn try_start(request: &StartRequest) -> Result<EngineState, (CompanionEngineErro
 
     let model_id = paths::model_id_for(&request.paths.model);
     Ok(EngineState {
-        _backend: backend,
         model,
+        _backend: backend,
         devices,
         backend_kind,
         model_id,

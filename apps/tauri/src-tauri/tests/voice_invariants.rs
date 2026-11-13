@@ -589,8 +589,9 @@ fn model_audio_delivery_target_is_the_managed_loopback_host() {
     );
 
     // The audio delivery command must route through the managed chat module —
-    // never its own transport/URL.
-    let commands = production_code("applications/llm_server/commands.rs");
+    // never its own transport/URL. ST-1 split `commands.rs` by concern, so the
+    // delivery commands now live in `commands/chat.rs`.
+    let commands = production_code("applications/llm_server/commands/chat.rs");
     if commands.contains("fn llm_chat_with_audio(") {
         let audio_command = item_span(&commands, "fn llm_chat_with_audio(");
         assert!(
@@ -630,8 +631,10 @@ fn model_audio_surfaces_stay_on_their_ipc_side_of_the_boundary() {
 
     // Positive control: the already-shipped multimodal delivery command proves the
     // scan sees the surface (its name is an identifier, not a blanked literal).
+    // ST-1 split `commands.rs` by concern — the delivery commands live in
+    // `applications/llm_server/commands/chat.rs`.
     assert!(
-        delivery_files.contains(&"applications/llm_server/commands.rs".to_string()),
+        delivery_files.contains(&"applications/llm_server/commands/chat.rs".to_string()),
         "the delivery-surface scan must see the shipped llm_chat_with_image: {delivery_files:?}"
     );
 
