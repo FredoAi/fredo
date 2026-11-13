@@ -119,6 +119,28 @@ fn engine_constructs_twice_full_offload_then_zero_offload() {
         !full.devices.is_empty(),
         "a loaded engine must report ggml devices"
     );
+    // Empirical obligation — buft-name ↔ device-name correspondence. The
+    // reported backend now comes from ggml's per-buffer WEIGHT bytes, matched
+    // against the enumerated device names. On a host whose enumeration contains
+    // a usable non-CPU device, a SUCCESSFUL full-offload load is only reachable
+    // when that correspondence holds on THIS host's actual backend: if the
+    // weight buffer type had not matched the device name, the report would have
+    // been `Cpu` and the "full offload but reported CPU" guard would have
+    // refused the start. So this assertion is the executed proof that the
+    // weight bufts are non-empty AND their names match the enumeration here.
+    if let Some(expected) = full
+        .devices
+        .iter()
+        .find(|device| device.device_type != CompanionBackendKind::Cpu)
+        .map(|device| device.device_type)
+    {
+        assert_eq!(
+            full.backend,
+            Some(expected),
+            "a successful full-offload load on a host enumerating a usable GPU must report that \
+             GPU — otherwise the weight-buffer names did not correspond to the device names"
+        );
+    }
 
     // Leg 2: zero offload (`cpu` ⇒ 0 layers requested). The backend is released
     // when the first handle is dropped, so this second `init` is legitimate.

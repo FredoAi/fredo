@@ -3,11 +3,14 @@
 //!
 //! Two responsibilities, both PURE where it matters:
 //!
-//! 1. **Report what ggml loaded.** [`device_infos`] reads ggml's typed device
-//!    enumeration for a loaded model and maps it onto
-//!    [`CompanionDeviceInfo`]. The reported backend ([`report_backend`]) is
-//!    derived from that enumeration — NEVER from a log line and NEVER by echoing
-//!    the requested setting (`AC-22.2`).
+//! 1. **Report what ggml loaded.** [`enumerate`] reads ggml's typed device
+//!    enumeration for a loaded model and maps it onto [`CompanionDeviceInfo`] —
+//!    that is the set ggml selected for the model's SPLIT, which is not the same
+//!    as the devices carrying weights. The reported backend
+//!    ([`report_backend_for_weights`]) therefore takes the device CLASS from
+//!    that enumeration and the SELECTION from the loaded model's own per-buffer
+//!    weight allocations — NEVER from a log line and NEVER by echoing the
+//!    requested setting (`AC-22.2`).
 //!
 //! 2. **Project a requested mode onto real devices.** [`project`] turns
 //!    ([`CompanionBackendMode`], device set) into a typed outcome: `gpu` with no
@@ -86,11 +89,18 @@ fn backend_kind(device_type: LlamaBackendDeviceType) -> CompanionBackendKind {
     }
 }
 
-/// Enumerate the devices a loaded model's tensors are spread across.
+/// Enumerate the device set ggml selected for splitting this loaded model.
 ///
-/// `model.devices()` is ggml's typed enumeration (AC-22.2). A device whose name
-/// or description cannot be read is skipped rather than failing the whole
-/// readout — a partial truth is better than a fabricated device.
+/// `model.devices()` is ggml's typed enumeration (AC-22.2). It is built BEFORE
+/// any layer assignment and is independent of the requested GPU-layer count, so
+/// every GPU / iGPU in the process appears here even when the model was loaded
+/// with zero offloaded layers. It answers "which devices COULD carry layers",
+/// not "which devices DO carry layers" — for the latter use
+/// [`report_backend_for_weights`] with the loaded context's weight-buffer names.
+///
+/// A device whose name or description cannot be read is skipped rather than
+/// failing the whole readout — a partial truth is better than a fabricated
+/// device.
 pub fn enumerate(model: &LlamaModel) -> Vec<CompanionDeviceInfo> {
     model
         .devices()
@@ -123,12 +133,15 @@ pub fn apply_force_cpu(devices: Vec<CompanionDeviceInfo>, force_cpu: bool) -> Ve
     }
 }
 
-/// The backend to report for a device set: the first genuinely
-/// non-CPU device if one exists, else CPU.
+/// The backend CLASS of a device set: the first genuinely non-CPU device if one
+/// exists, else CPU (`None` only for an empty set).
 ///
-/// This reads the ENUMERATION, so on a loaded CPU-only model it reports
-/// [`CompanionBackendKind::Cpu`] — the reported backend can never over-claim a
-/// GPU (AC-23.2).
+/// This reads the ENUMERATION, so it answers "what class of device is in this
+/// set" — it is the class half of [`report_backend_for_weights`], and it is
+/// deliberately NOT the answer to "which devices carry the weights". ggml's
+/// model enumeration is the pre-assignment split set, so on a CUDA host this
+/// function returns `Gpu` even for a zero-offload load. Pass the weight-carrying
+/// subset when the question is weight placement.
 pub fn report_backend(devices: &[CompanionDeviceInfo]) -> Option<CompanionBackendKind> {
     if devices.is_empty() {
         return None;
@@ -141,6 +154,43 @@ pub fn report_backend(devices: &[CompanionDeviceInfo]) -> Option<CompanionBacken
             .map(|device| device.device_type)
             .unwrap_or(CompanionBackendKind::Cpu),
     )
+}
+
+/// The backend to report for a LOADED model, given the device enumeration and
+/// the ggml buffer types that actually hold its weights.
+///
+/// `weight_bufts` are the buffer-type names whose `model` byte count is
+/// non-zero in [`llama_cpp_4::context::LlamaContext::memory_breakdown`] — ggml's
+/// own record of where the weights were allocated (never the requested setting,
+/// never a log line). The CLASS still comes from the enumeration
+/// ([`CompanionBackendKind`] mirrors `ggml_backend_dev_type`); only the
+/// SELECTION comes from the allocation state, so this cannot over-claim a GPU
+/// (AC-23.2) and `cpu` mode reports `Cpu` on any host (AC-24.3).
+///
+/// Returns [`CompanionBackendKind::Cpu`] when the set is empty or nothing
+/// matches: a loaded model always has its weights SOMEWHERE, and every host has
+/// a CPU, so an unmatched set can only mean host-resident weights — which is
+/// also what a GPU-less host reports, where ggml's default split selection is
+/// empty (AC-23.1 no longer depends on the test-only force seam).
+pub fn report_backend_for_weights(
+    devices: &[CompanionDeviceInfo],
+    weight_bufts: &[String],
+) -> Option<CompanionBackendKind> {
+    // Buffer-type names correspond to device names by construction in ggml
+    // (CUDA: both are `GGML_CUDA_NAME + i`; Vulkan: both are `GGML_VK_NAME + i`),
+    // while the host buffer types (`CPU`, `CPU_Mapped`, `CUDA0_Host`,
+    // `Vulkan0_Host`) match no GPU device name — so a host-resident tensor can
+    // never select a GPU.
+    let carrying: Vec<CompanionDeviceInfo> = devices
+        .iter()
+        .filter(|device| {
+            weight_bufts
+                .iter()
+                .any(|buft| buft.as_str() == device.name)
+        })
+        .cloned()
+        .collect();
+    Some(report_backend(&carrying).unwrap_or(CompanionBackendKind::Cpu))
 }
 
 /// Whether the device set contains at least one usable non-CPU device.
@@ -347,10 +397,91 @@ mod tests {
             memory_free_bytes: 1,
             memory_total_bytes: 2,
         };
-        assert!(has_usable_gpu(&[integrated.clone()]));
+        assert!(has_usable_gpu(std::slice::from_ref(&integrated)));
         assert_eq!(
-            project(CompanionBackendMode::Gpu, &[integrated]),
+            project(CompanionBackendMode::Gpu, std::slice::from_ref(&integrated)),
             ModeProjection::FullOffload
+        );
+    }
+
+    // ── The reported backend follows WEIGHT PLACEMENT, not availability ──────
+
+    /// THE ST-1 REGRESSION PIN (AC-23.2 / AC-24.3): a CUDA host enumerates
+    /// `[CUDA0, CPU]` even when the model was loaded with zero offloaded layers,
+    /// because the enumeration is the pre-assignment split set. Weights on the
+    /// host buffer type only must therefore report `Cpu` — a GPU in the process
+    /// is availability, never placement. No hardware needed.
+    ///
+    /// `CPU_Mapped` is the host buffer type ACTUALLY observed on this host (the
+    /// mmap loader's CPU buffer type, `ggml-backend.cpp:2870`); `CUDA0_Host` is
+    /// the CUDA host buffer type that appears for pinned/non-mmap host stores.
+    /// Neither matches a GPU device name.
+    #[test]
+    fn weights_on_the_host_only_report_cpu_even_with_a_gpu_enumerated() {
+        let devices = vec![gpu_device(), cpu_device()];
+        assert_eq!(
+            report_backend(&devices),
+            Some(CompanionBackendKind::Gpu),
+            "the raw enumeration still contains the GPU (availability)"
+        );
+        for weight_bufts in [
+            vec!["CPU_Mapped".to_string()],
+            vec!["Host".to_string()],
+            vec!["CUDA0_Host".to_string()],
+            vec!["CPU_Mapped".to_string(), "CUDA0_Host".to_string()],
+        ] {
+            assert_eq!(
+                report_backend_for_weights(&devices, &weight_bufts),
+                Some(CompanionBackendKind::Cpu),
+                "host-resident weights must report Cpu for bufts {weight_bufts:?}"
+            );
+        }
+    }
+
+    /// The converse: weights allocated on the enumerated GPU's buffer type
+    /// report that GPU class. A non-zero host entry alongside it cannot flip the
+    /// answer (this is EXACTLY what this host's full-offload leg reported:
+    /// `["CUDA0", "CPU_Mapped"]` with `CUDA0` enumerated ⇒ `Gpu`).
+    #[test]
+    fn weights_on_the_enumerated_gpu_report_that_gpu() {
+        let devices = vec![gpu_device(), cpu_device()];
+        for weight_bufts in [
+            vec!["CUDA0".to_string()],
+            vec!["CUDA0".to_string(), "CPU_Mapped".to_string()],
+            vec!["CUDA0".to_string(), "CUDA0_Host".to_string()],
+        ] {
+            assert_eq!(
+                report_backend_for_weights(&devices, &weight_bufts),
+                Some(CompanionBackendKind::Gpu),
+                "gpu-resident weights must report Gpu for bufts {weight_bufts:?}"
+            );
+        }
+    }
+
+    /// AC-23.1 without the seam: on a real GPU-less host ggml's default split
+    /// selection is EMPTY, so a loaded CPU engine must still report `Cpu` (never
+    /// `None`) — the report is `Some` for every loaded model.
+    #[test]
+    fn a_loaded_model_reports_cpu_when_nothing_is_enumerated() {
+        assert_eq!(
+            report_backend_for_weights(&[], &["Host".to_string()]),
+            Some(CompanionBackendKind::Cpu)
+        );
+        // Defensive: no enumerated device matches any buft name either.
+        assert_eq!(
+            report_backend_for_weights(&[cpu_device()], &[]),
+            Some(CompanionBackendKind::Cpu)
+        );
+    }
+
+    /// The force seam coerces the ENUMERATION; a forced run's weights are on the
+    /// host, so its report is `Cpu` through the same rule (no special case).
+    #[test]
+    fn a_forced_enumeration_reports_cpu_from_host_weights() {
+        let forced = apply_force_cpu(vec![gpu_device()], true);
+        assert_eq!(
+            report_backend_for_weights(&forced, &["CPU".to_string()]),
+            Some(CompanionBackendKind::Cpu)
         );
     }
 }

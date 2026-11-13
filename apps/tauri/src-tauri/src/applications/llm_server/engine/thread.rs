@@ -6,7 +6,8 @@
 //! 2. on `Start`: point the engine log at the companion dir, initialise the
 //!    backend ONCE (a process-once gate), load the main model with the offload
 //!    the requested mode asks for, read ggml's typed device set, project the
-//!    mode onto it, and verify a context can be created,
+//!    mode onto it, create a context to prove the load, and report the backend
+//!    from where the model's weights actually landed,
 //! 3. on `Stop`: drop the model and exit.
 //!
 //! It publishes the terminal status of each command into the shared
@@ -58,7 +59,8 @@ pub struct EngineState {
     _backend: LlamaBackend,
     /// The device set ggml reports for the loaded model (post-coercion).
     pub devices: Vec<super::CompanionDeviceInfo>,
-    /// The reported backend (`None` only when the enumeration is empty).
+    /// The reported backend — resolved from the loaded model's weight placement
+    /// (`Some(Cpu)` whenever the engine loaded, `None` only on a failed start).
     pub backend_kind: Option<CompanionBackendKind>,
     /// The canonical model id (manifest `model` file stem).
     pub model_id: Option<String>,
@@ -221,13 +223,18 @@ fn context_params(settings: &SamplingSettings) -> LlamaContextParams {
 static START_LOCK: Mutex<()> = Mutex::new(());
 
 /// The fallible core of a start: log wiring, backend init, load, device readout,
-/// projection, and a context-creation proof.
+/// projection, a context-creation proof, and the weight-placement backend report.
 ///
 /// Ordering is deliberate: ggml reports `0` devices until a model is loaded, so
 /// the device set cannot be used to decide the offload request. We therefore
-/// request the offload the MODE implies, load, read the resolved set, and only
-/// then apply the mode projection — which is what makes `gpu` on a GPU-less
-/// host a typed refusal instead of a silent CPU degradation (AC-25).
+/// request the offload the MODE implies, load, read the resolved set, and apply
+/// the mode projection — which is what makes `gpu` on a GPU-less host a typed
+/// refusal instead of a silent CPU degradation (AC-25).
+///
+/// The reported backend is resolved LAST, from the loaded model's own weight
+/// buffers: the enumeration is the pre-assignment split set (it contains every
+/// GPU in the process regardless of the layer count), so availability and weight
+/// placement are two different questions and only the second may be reported.
 fn try_start(request: &StartRequest) -> Result<EngineState, (CompanionEngineErrorCode, String)> {
     // Serialise with any other start in the process (NFR-2, process-once backend).
     let _guard = START_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -263,21 +270,19 @@ fn try_start(request: &StartRequest) -> Result<EngineState, (CompanionEngineErro
 
     // 3. Read ggml's typed device set, then apply the TEST-ONLY seam. The
     //    coercion happens HERE so the forced set is what every reader sees.
+    //
+    //    This set is the SPLIT enumeration (every GPU/iGPU in the process), NOT
+    //    the set carrying weights — ggml builds it before any layer assignment
+    //    and it is independent of the requested layer count. It answers
+    //    availability, which is exactly what the mode projection and the AC-25
+    //    refusal need; the reported backend is resolved later from the loaded
+    //    model's own weight allocations.
     let devices = device::apply_force_cpu(device::enumerate(&model), request.force_cpu);
-    let backend_kind = device::report_backend(&devices);
 
-    // 4. Project the mode onto the REPORTED (post-coercion) device set.
+    // 4. Project the mode onto the (post-coercion) device set.
     let projection = device::project(request.mode, &devices);
     if let Some(code) = device::projection_error(projection) {
         return Err((code, code.detail().to_string()));
-    }
-    // A `gpu` request that resolved to a CPU-only set silently degraded — refuse
-    // it rather than claim a GPU backend (AC-25).
-    if projection == ModeProjection::FullOffload && backend_kind == Some(CompanionBackendKind::Cpu) {
-        return Err((
-            CompanionEngineErrorCode::GpuUnavailable,
-            CompanionEngineErrorCode::GpuUnavailable.detail().to_string(),
-        ));
     }
 
     // 5. Prove the loaded model can be initialised: create (and drop) one
@@ -285,8 +290,12 @@ fn try_start(request: &StartRequest) -> Result<EngineState, (CompanionEngineErro
     //    gate's real "it loads" evidence; ST-2 owns the retained generation
     //    context (a `LlamaContext` borrows the model, so keeping both is a
     //    self-referential struct this sub-task does not need).
+    //
+    //    The context is ALSO where ggml's per-buffer weight accounting is
+    //    readable, so the backend report is resolved here, inside the context
+    //    scope, from where the weights actually landed (never the setting).
     let settings = SamplingSettings::default();
-    let n_ctx = {
+    let (n_ctx, weight_bufts) = {
         let context = model
             .new_context(&backend, context_params(&settings))
             .map_err(|error| {
@@ -295,14 +304,40 @@ fn try_start(request: &StartRequest) -> Result<EngineState, (CompanionEngineErro
                     format!("the model context could not be created: {error}"),
                 )
             })?;
+        // `model` = weight bytes on this buffer type (NOT the KV cache and NOT
+        // the compute scratch), so a non-zero entry means this buffer type holds
+        // part of the model.
+        let weight_bufts: Vec<String> = context
+            .memory_breakdown()
+            .into_iter()
+            .filter(|entry| entry.model > 0)
+            .map(|entry| entry.buft_name)
+            .collect();
         // Read back the resolved context size so the proof is real, not nominal.
-        context.n_ctx()
+        (context.n_ctx(), weight_bufts)
     };
     tracing::debug!(
         target: "fredo::llm_server",
         n_ctx,
+        weight_bufts = ?weight_bufts,
         "companion context created"
     );
+
+    // 6. Report the backend from the device CLASS (the enumeration) and the
+    //    device SELECTION (ggml's own weight allocations). This is what makes
+    //    `cpu` report `Cpu` on a CUDA host (AC-24.3) and a GPU-less host report
+    //    `Cpu` rather than `None` (AC-23.1).
+    let backend_kind = device::report_backend_for_weights(&devices, &weight_bufts);
+
+    // 7. A `gpu`/`auto` request that resolved to full offload but whose weights
+    //    landed on the host silently degraded — refuse it rather than claim a
+    //    GPU backend (AC-25).
+    if projection == ModeProjection::FullOffload && backend_kind == Some(CompanionBackendKind::Cpu) {
+        return Err((
+            CompanionEngineErrorCode::GpuUnavailable,
+            CompanionEngineErrorCode::GpuUnavailable.detail().to_string(),
+        ));
+    }
 
     let model_id = paths::model_id_for(&request.paths.model);
     Ok(EngineState {
