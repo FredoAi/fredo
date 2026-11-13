@@ -100,11 +100,24 @@ jobs:
       - run: pnpm --filter @fredo/tauri build:webview
 
   # rust-validate — thorough Rust gate (warm-cache + nextest); NOT a required check.
+  #
+  # Spec #3141 ST-1: the crate now links the in-process companion engine
+  # (`llama-cpp-4`), which builds llama.cpp + ggml + ggml-cuda + ggml-vulkan FROM
+  # SOURCE — the crate publishes no CUDA prebuilt. The rust gate therefore needs
+  # the native toolchain the engine compiles against:
+  #   * a CUDA Toolkit (CMake's FindCUDAToolkit; the action also exports
+  #     CUDA_PATH, which `apps/tauri/src-tauri/build.rs` reads to add the
+  #     cudart/cublas/cublasLt import libraries, and puts nvcc on PATH);
+  #   * the LunarG Vulkan SDK (ggml-vulkan's Windows CMake lookup hard-fails
+  #     without it, and glslc compiles the shaders).
+  # The CUDA/Vulkan source build is slow (tens of minutes on a cold cache), so
+  # the job budget is raised — the checks themselves are unchanged and are never
+  # weakened.
   rust-validate:
     needs: paths
     if: needs.paths.outputs.rust == 'true'
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
@@ -113,6 +126,15 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: apps/tauri/src-tauri
+      # CUDA Toolkit (SHA-pinned). `CUDA_PATH` is exported to GITHUB_ENV.
+      - uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d # v0.2.36
+        id: cuda-toolkit
+        with:
+          cuda: '13.2.0'
+      # LunarG Vulkan SDK (SHA-pinned). Exports `VULKAN_SDK` and puts glslc on PATH.
+      - uses: jakoch/install-vulkan-sdk-action@7fe84289ddbf750f7eff9f8e4588e600e1dd06c8 # v1.8.1
+        with:
+          cache: true
       - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
         with:
           tool: cargo-nextest
