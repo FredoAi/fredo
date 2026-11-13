@@ -383,15 +383,77 @@ export function deriveModelAudioReadinessRow(
 // prerequisite is COMPOSED in the frontend from `get_llama_server_status`, and
 // the overall gate is the backend readiness AND a healthy server.
 
+// ── In-process engine status surface (Spec #3141, ST-1) ──────────────────────
+//
+// The backend moves companion inference in-process (`llama-cpp-4`). The status
+// command keeps its IPC name and its EXISTING fields (wire stability) and gains
+// the ADDITIVE fields below. Every optional additive field is an ABSENT KEY when
+// unset — the Rust side uses `skip_serializing_if` — so a consumer must treat
+// `undefined` (not `null`) as "not loaded".
+
+/**
+ * The backend class ggml reports for a loaded device (camelCase, 1:1 with the
+ * Rust `CompanionBackendKind`).
+ */
+export type CompanionBackendKind =
+  | 'cpu'
+  | 'gpu'
+  | 'integratedGpu'
+  | 'accel'
+  | 'meta';
+
+/** The persisted backend selection (`llama_server_backend`). */
+export type CompanionBackendMode = 'auto' | 'gpu' | 'cpu';
+
+/**
+ * One backend device the loaded model's tensors are spread across (camelCase,
+ * 1:1 with the Rust `CompanionDeviceInfo`; sourced from ggml's typed
+ * enumeration, never a log line).
+ */
+export interface CompanionDeviceInfo {
+  /** ggml device name, e.g. `CUDA0`, `Vulkan0`, `CPU`. */
+  name: string;
+  /** ggml device description (usually the hardware name). */
+  description: string;
+  deviceType: CompanionBackendKind;
+  memoryFreeBytes: number;
+  memoryTotalBytes: number;
+}
+
+/** The typed engine failure vocabulary (camelCase, 1:1 with the Rust enum). */
+export type CompanionEngineErrorCode =
+  | 'gpuUnavailable'
+  | 'backendInitFailed'
+  | 'modelMissing'
+  | 'modelLoadFailed'
+  | 'mtpInitFailed'
+  | 'mmprojInitFailed'
+  | 'contextCreateFailed'
+  | 'busy'
+  | 'startTimeout';
+
 /** `get_llama_server_status` snapshot (camelCase, IPC). */
 export interface LlamaServerStatus {
   running: boolean;
   healthy: boolean;
+  /** Always `null` post-migration (in-process: there is no port). */
   port: number | null;
+  /** Always `null` post-migration (in-process: no child process). */
   pid: number | null;
   configPath: string;
   logPath: string;
   lastError: string | null;
+  // ── additive (Spec #3141 ST-1) — ABSENT KEY when unset, never null ──
+  /** Typed failure of the most recent engine start; absent when none. */
+  lastErrorCode?: CompanionEngineErrorCode;
+  /** The backend ggml reports; absent until an engine is loaded. */
+  backend?: CompanionBackendKind;
+  /** The persisted backend selection, echoed back. */
+  backendMode: CompanionBackendMode;
+  /** The device set ggml reports (empty before a load). */
+  devices: CompanionDeviceInfo[];
+  /** The canonical model id (manifest `model` file stem); absent until loaded. */
+  modelId?: string;
 }
 
 /** Why a launch could not reach a healthy server (`launch_llama_server`). */
