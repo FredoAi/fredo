@@ -29,7 +29,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::infrastructure::storage::SettingsStore;
 
-use super::commands::launch_llama_server;
+use super::commands::engine::launch_llama_server;
 use super::{DEFAULT_LLAMA_SERVER_HOST, LLAMA_SERVER_HOST_KEY};
 
 /// Maximum completion tokens per request (mirrors the legacy in-process cap).

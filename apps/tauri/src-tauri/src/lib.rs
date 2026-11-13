@@ -351,6 +351,13 @@ pub fn run() {
             // readiness is the server's own `/health`, gated by the wizard.
             app.manage(applications::llm_server::state::LlamaServerState::default());
 
+            // -- In-process companion engine state (Spec #3141 ST-1) -----------
+            // The engine lives on ONE owned OS thread (LlamaContext/MtpSession
+            // are `!Send`); commands talk to it through the bounded handle. This
+            // state is additive — the pre-migration child-process path above is
+            // still live until ST-6 re-points every consumer.
+            app.manage(applications::llm_server::commands::CompanionEngineState::default());
+
             // -- Startup orphan sweep (Spec #2857 ST-7) ------------------------
             // A hard-kill (Task Manager) never runs the `RunEvent::Exit` hook, so
             // reclaim a persisted `llama-server` PID on the next launch. The sweep
@@ -976,22 +983,25 @@ pub fn run() {
             // Companion llama-server (Spec #2857 ST-4): rerouted chat/vision +
             // the lifecycle commands. SAME `llm_chat` / `llm_chat_with_image`
             // IPC names and argument shapes as the deleted in-process path.
-            applications::llm_server::commands::llm_chat,
-            applications::llm_server::commands::llm_chat_with_image,
+            applications::llm_server::commands::chat::llm_chat,
+            applications::llm_server::commands::chat::llm_chat_with_image,
             // #2897 ST-3 — model-audio turn: the captured clip is attached to the
             // last user message and delivered over the managed loopback server.
-            applications::llm_server::commands::llm_chat_with_audio,
-            applications::llm_server::commands::generate_llama_server_config,
-            applications::llm_server::commands::launch_llama_server,
-            applications::llm_server::commands::stop_llama_server,
-            applications::llm_server::commands::get_llama_server_status,
+            applications::llm_server::commands::chat::llm_chat_with_audio,
+            // Spec #3141 ST-1 — the in-process engine lifecycle + the ADDITIVE
+            // backend/device readout on the existing status command.
+            applications::llm_server::commands::engine::start_companion_engine,
+            applications::llm_server::commands::engine::generate_llama_server_config,
+            applications::llm_server::commands::engine::launch_llama_server,
+            applications::llm_server::commands::engine::stop_llama_server,
+            applications::llm_server::commands::engine::get_llama_server_status,
             // Phase-0 live capability diagnostic (Spec #2893, ST-1): read-only
             // `/props` + `tools`/`response_format` probe; no window, no state write.
             applications::llm_server::probe::probe_companion_skills,
             // #2897 ST-6 — backend-owned model-audio capability for the Companion
             // readiness row + the pre-start gate. Reads the managed loopback
             // server and records the verdict on `VoiceState` (REQ-7).
-            applications::llm_server::commands::stt_audio_capability,
+            applications::llm_server::commands::capability::stt_audio_capability,
             // Skill-aware inference path (Spec #2893, ST-5): offers the ST-3
             // registry, validates a selection, emits `llm-skill-call` then
             // `llm-done`. ADDITIVE — `llm_chat`/`llm_chat_with_image` unchanged.
@@ -1134,7 +1144,7 @@ pub fn run() {
             // `llama-server` tree so no orphan survives Fredo (R-3.3). The
             // startup PID sweep + the kill-on-exit test are ST-7's.
             if let tauri::RunEvent::Exit = event {
-                applications::llm_server::commands::stop_llama_server_on_exit(app);
+                applications::llm_server::commands::engine::stop_llama_server_on_exit(app);
                 // Spec #2974 ST-3: bounded embedded-PostgreSQL teardown. The
                 // graceful stop is wall-clock capped by PG_EXIT_HOOK_BOUND (5 s)
                 // with a `taskkill /T /F` hard-kill fallback, then a marker sweep

@@ -21,6 +21,17 @@ pub const SENSITIVE_PATH_SETTING_KEYS: [&str; 4] = [
 /// ``invalid setting value for `<key>`: <rule>``.
 pub const SETTING_VALUE_ERROR_PREFIX: &str = "invalid setting value for";
 
+/// The companion backend switch key. Declared LOCAL by design: engineering
+/// rules forbid cross-application imports, so this module must not import the
+/// `llm_server` constant that declares the same key.
+pub const LLAMA_SERVER_BACKEND_KEY: &str = "llama_server_backend";
+
+/// The CLOSED value set for [`LLAMA_SERVER_BACKEND_KEY`] (lowercase). A value
+/// outside it is rejected at BOTH write planes, so a free-form value can never
+/// be persisted — and therefore never reaches engine configuration
+/// (Spec #3141, AC-24.1).
+pub const COMPANION_BACKEND_MODES: [&str; 3] = ["auto", "gpu", "cpu"];
+
 /// The ONE shared rule for the four sensitive path keys, used by BOTH write
 /// planes (data plane and control plane — the control plane is not a bypass).
 ///
@@ -34,6 +45,21 @@ pub const SETTING_VALUE_ERROR_PREFIX: &str = "invalid setting value for";
 /// 2. not an absolute path;
 /// 3. a `..` path component.
 pub fn validate_setting_value(key: &str, value: &str) -> Result<(), String> {
+    // The backend switch is a CLOSED enum: only `auto` | `gpu` | `cpu`
+    // (lowercase) are accepted. A blank value is allowed (it clears the setting,
+    // and an absent value coerces to `auto` on read).
+    if key == LLAMA_SERVER_BACKEND_KEY {
+        if value.trim().is_empty() {
+            return Ok(());
+        }
+        if COMPANION_BACKEND_MODES.contains(&value) {
+            return Ok(());
+        }
+        return Err(format!(
+            "{SETTING_VALUE_ERROR_PREFIX} `{key}`: must be one of {}",
+            COMPANION_BACKEND_MODES.join(", ")
+        ));
+    }
     if !SENSITIVE_PATH_SETTING_KEYS.contains(&key) {
         return Ok(());
     }
@@ -454,7 +480,6 @@ mod tests {
     }
 
     // ── Windows path semantics pinned by the QA plan ────────────────────────
-
     #[cfg(windows)]
     #[test]
     fn windows_qa_literal_is_accepted_byte_identical() {
@@ -481,5 +506,59 @@ mod tests {
         // `Path::is_absolute()` on Windows requires a drive/UNC prefix, so a
         // POSIX-style root-relative path is NOT absolute here.
         expect_reject("terminal_pwsh_path", "/usr/bin/x", RULE_ABSOLUTE);
+    }
+
+    // ── Spec #3141 ST-1: the backend switch is a CLOSED enum ────────────────
+
+    /// Only `auto` | `gpu` | `cpu` are accepted; a free-form value is rejected on
+    /// BOTH planes, so it can never be persisted and never reach the engine.
+    #[test]
+    fn backend_switch_accepts_only_the_three_closed_modes() {
+        for value in COMPANION_BACKEND_MODES {
+            assert_eq!(
+                validate_setting_value(LLAMA_SERVER_BACKEND_KEY, value),
+                Ok(()),
+                "{value} must be accepted"
+            );
+        }
+
+        // A blank value clears the setting (an absent value coerces to `auto`).
+        assert_eq!(validate_setting_value(LLAMA_SERVER_BACKEND_KEY, ""), Ok(()));
+        assert_eq!(validate_setting_value(LLAMA_SERVER_BACKEND_KEY, "   "), Ok(()));
+
+        // Anything outside the set is rejected with the closed-set message.
+        for value in ["tensorrt", "GPU", "auto ", "cuda", "1", "auto,gpu"] {
+            let error = validate_setting_value(LLAMA_SERVER_BACKEND_KEY, value)
+                .expect_err(&format!("{value:?} must be rejected"));
+            assert!(
+                error.contains("must be one of auto, gpu, cpu"),
+                "unexpected message for {value:?}: {error}"
+            );
+        }
+    }
+
+    /// The closed-enum rejection holds on BOTH write planes, and nothing is
+    /// written when it rejects.
+    #[test]
+    fn backend_switch_rejects_a_free_form_value_on_both_planes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = open_store(dir.path());
+
+        let error = persist_control_setting(&store, LLAMA_SERVER_BACKEND_KEY, "tensorrt")
+            .expect_err("the control plane must reject a free-form backend");
+        assert!(error.contains("must be one of auto, gpu, cpu"), "{error}");
+        assert_eq!(
+            store.cached_get(LLAMA_SERVER_BACKEND_KEY).expect("cached_get"),
+            None,
+            "a rejected backend write must never reach the store"
+        );
+
+        // A closed-enum value is accepted and stored.
+        persist_control_setting(&store, LLAMA_SERVER_BACKEND_KEY, "cpu")
+            .expect("cpu is a valid backend");
+        assert_eq!(
+            store.cached_get(LLAMA_SERVER_BACKEND_KEY).expect("cached_get"),
+            Some("cpu".to_string())
+        );
     }
 }

@@ -1,22 +1,32 @@
-//! Out-of-process companion inference via a managed `llama-server` (Spec #2857).
+//! Companion inference (Spec #2857, re-based in-process by Spec #3141).
 //!
-//! ST-2 owns the PURE launch-configuration model ([`config`]) and the SettingsStore
-//! key constants every other sub-task consumes. ST-3 adds the process lifecycle
-//! ([`state`], [`process`], [`health`], [`commands`]); ST-4 adds chat routing
-//! ([`chat`]) and registers the commands in `lib.rs`. The exit hook mechanism
-//! lives in `lib.rs` / [`commands::stop_llama_server_on_exit`]; ST-7 owns the
-//! startup PID sweep and the kill-on-exit test.
+//! Companion inference moves IN-PROCESS onto the `llama-cpp-4` Rust bindings:
+//! no `llama-server` child process, no generated `.bat`, no loopback HTTP hop
+//! (`#3141` decision A, reversed). The new runtime lives under [`engine`]; the
+//! pre-migration out-of-process surface ([`process`], [`health`], [`config`],
+//! [`state`], and the launch commands in [`commands`]) is still present because
+//! its live consumers (chat streaming, the Doom agent, the readiness surface)
+//! are re-pointed by later sub-tasks — ST-1 adds the engine WITHOUT deleting the
+//! old transport it will replace.
+//!
+//! ST-1 owns the engine skeleton ([`engine`]), the backend switch + typed device
+//! readout, and the additive status fields. [`status_keys`] owns the persisted
+//! key NAMES the migration keeps and adds.
 
 pub mod chat;
 pub mod commands;
 pub mod config;
 pub mod doom_agent;
+pub mod engine;
 pub mod health;
 pub mod process;
 pub mod probe;
 pub mod skills;
 pub mod state;
 pub mod status;
+pub mod status_keys;
+
+pub use status_keys::{LLAMA_SERVER_BACKEND_KEY, LLAMA_SERVER_COMPANION_DIR_KEY};
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -62,13 +72,16 @@ pub const LLAMA_SERVER_PID_KEY: &str = "llama_server_pid";
 pub const LLAMA_SERVER_STARTED_AT_KEY: &str = "llama_server_started_at";
 /// Absolute path to the server's stdout/stderr log file.
 pub const LLAMA_SERVER_LOG_PATH_KEY: &str = "llama_server_log_path";
-/// Absolute path to the companion artifact directory (holds the generated
-/// launch `.bat` and the server log).
-///
-/// The value is an absolute directory path. A blank or absent value falls back
-/// to the product default `{app_data_dir}/companion`
-/// (`%APPDATA%\com.fredo.app\companion`).
-pub const LLAMA_SERVER_COMPANION_DIR_KEY: &str = "llama_server_companion_dir";
+// `LLAMA_SERVER_COMPANION_DIR_KEY` (the per-environment companion directory) is
+// UNCHANGED by the migration and now lives in [`status_keys`], which re-exports
+// it above. Its behaviour is byte-identical (AC-27).
+//
+// NOTE (Spec #3141 ST-1): the engine NEVER reads any of the `llama_server_*`
+// keys above for engine configuration — model paths resolve through the shared
+// #2856 manifest (AC-18). These constants stay declared ONLY because the
+// pre-migration launch path they still serve is not deleted in ST-1; ST-6
+// retires that path and these keys together. A stale persisted value for any of
+// them is inert: never deleted, never crashing.
 
 // ── Launch defaults ────────────────────────────────────────────────────────────
 
