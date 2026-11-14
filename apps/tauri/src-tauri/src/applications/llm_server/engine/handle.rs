@@ -62,6 +62,10 @@ pub struct EngineStatusSnapshot {
     /// The cumulative MTP counters across every turn this engine has served
     /// (ST-4 / R-19.1). `None` before the first load.
     pub mtp_stats: Option<super::mtp::MtpStats>,
+    /// What the loaded projector reports about the model pair's input modalities
+    /// (ST-5 / #2897 REQ-7). `None` before a projector is loaded — the capability
+    /// answer is then the truthful "not running", never a guess.
+    pub mtmd_capability: Option<super::multimodal::MtmdCapability>,
 }
 
 /// The shared engine slot: the published snapshot + the requested mode.

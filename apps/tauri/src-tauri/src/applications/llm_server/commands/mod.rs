@@ -826,6 +826,11 @@ mod tests {
                 drafts_accepted: 7,
                 draft_calls: 10,
             }),
+            mtmd_capability: Some(super::super::engine::multimodal::MtmdCapability {
+                vision: true,
+                audio: true,
+                audio_sample_rate: 16_000,
+            }),
         };
         let slot = EngineSlot {
             snapshot,

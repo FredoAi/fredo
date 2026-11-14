@@ -45,6 +45,7 @@ pub mod detokenize;
 pub mod device;
 pub mod handle;
 pub mod mtp;
+pub mod multimodal;
 pub mod paths;
 pub mod request;
 pub mod sampling;
@@ -61,6 +62,12 @@ mod integration;
 /// counter, forced-rejection and typed-failure legs (ST-4).
 #[cfg(test)]
 mod mtp_tests;
+
+/// The multimodal gates: the LIVE image turn (a real screen region through the
+/// shipped producer), the LIVE audio turn (the committed fixture), the typed
+/// `MmprojInitFailed` leg, and the placement pins (ST-5).
+#[cfg(test)]
+mod multimodal_tests;
 
 use serde::{Deserialize, Serialize};
 

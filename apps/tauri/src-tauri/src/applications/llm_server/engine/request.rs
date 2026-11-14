@@ -217,16 +217,64 @@ impl ChatTurn {
         rendered
     }
 
+    /// Whether this turn carries any media attachment (image or audio).
+    ///
+    /// ST-5's media path is entered on this predicate, so a turn that carries an
+    /// attachment can never take the text-only branch silently.
+    pub fn has_media(&self) -> bool {
+        self.image.is_some() || self.audio.is_some()
+    }
+
     /// The TEXT-ONLY template projection of the conversation.
     ///
     /// The chat template consumes text; a media turn's part array contributes only
-    /// its text parts here. ST-5 replaces this with `mtmd` part tokenisation, so a
-    /// template is never handed raw media bytes as text.
+    /// its text parts here. [`Self::template_messages_json_with_media`] is the
+    /// media-aware projection ST-5's `mtmd` path uses, so a template is never
+    /// handed raw media bytes as text.
     pub fn template_messages_json(&self) -> String {
+        self.template_messages_json_with_media("")
+    }
+
+    /// The template projection with each media part rendered as `marker`.
+    ///
+    /// `mtmd` splices a bitmap wherever the projector's own marker appears in the
+    /// prompt, so the marker must land exactly where the media part sits in the
+    /// message. The joining rule mirrors llama.cpp's own (`chat.cpp`
+    /// `to_json_oaicompat`): text parts are newline-separated, and no newline is
+    /// added before or after a media marker.
+    ///
+    /// An empty `marker` reproduces the text-only projection
+    /// ([`Self::template_messages_json`]), which is what every non-media consumer
+    /// sees.
+    pub fn template_messages_json_with_media(&self, marker: &str) -> String {
         let rendered: Vec<Value> = self
             .render()
             .iter()
-            .map(|message| json!({ "role": message.role, "content": message.content.text_only() }))
+            .map(|message| {
+                let content = match &message.content {
+                    RenderedContent::Text(text) => text.clone(),
+                    RenderedContent::Parts(parts) => parts
+                        .iter()
+                        .fold(
+                            (String::new(), false),
+                            |(mut content, last_was_media), part| match part {
+                                ContentPart::Text { text } => {
+                                    if !last_was_media && !content.is_empty() {
+                                        content.push('\n');
+                                    }
+                                    content.push_str(text);
+                                    (content, false)
+                                }
+                                ContentPart::ImageUrl { .. } | ContentPart::InputAudio { .. } => {
+                                    content.push_str(marker);
+                                    (content, true)
+                                }
+                            },
+                        )
+                        .0,
+                };
+                json!({ "role": message.role, "content": content })
+            })
             .collect();
         Value::Array(rendered).to_string()
     }
@@ -432,6 +480,64 @@ mod tests {
         assert_eq!(parsed.as_array().map(Vec::len), Some(4));
         assert_eq!(parsed[0]["role"], "system");
         assert_eq!(parsed[3]["content"], "look at this");
+    }
+
+    /// ST-5's media projection places the projector marker EXACTLY where the media
+    /// part sits: the image turn is `text + marker` on the last user message, and
+    /// the empty marker reproduces the text-only projection byte for byte.
+    #[test]
+    fn the_media_projection_places_the_marker_where_the_part_sits() {
+        let marker = "<__media__>";
+        let turn = ChatTurn::text(conversation()).with_image("QUJD");
+        let json = turn.template_messages_json_with_media(marker);
+        let parsed: Value = serde_json::from_str(&json).expect("valid messages JSON");
+
+        // The image turn is `[text, image_url]` ⇒ `text\nmarker`.
+        assert_eq!(parsed[3]["content"], "look at this<__media__>");
+        // The markers appear in the PROMPT, never the media bytes.
+        assert!(!json.contains("QUJD"));
+        assert_eq!(json.matches(marker).count(), 1);
+        // Every earlier message keeps plain content.
+        assert_eq!(parsed[0]["content"], "be terse");
+        assert_eq!(parsed[1]["content"], "first");
+        assert_eq!(parsed[2]["content"], "ok");
+
+        // The text-only projection is the empty-marker form, byte for byte.
+        assert_eq!(
+            turn.template_messages_json_with_media(""),
+            turn.template_messages_json()
+        );
+    }
+
+    /// An AUDIO turn's media projection is exactly ONE marker and no transcript
+    /// text — the shipped one-`input_audio`-part rule carried into the prompt.
+    #[test]
+    fn the_audio_media_projection_is_one_marker_and_no_text() {
+        let marker = "<__media__>";
+        let messages = vec![
+            message("system", "be terse"),
+            message("user", "this text must be discarded"),
+        ];
+        let turn = ChatTurn::text(messages).with_audio("UklGRg==");
+        let json = turn.template_messages_json_with_media(marker);
+        let parsed: Value = serde_json::from_str(&json).expect("valid messages JSON");
+
+        assert_eq!(parsed[1]["content"], marker);
+        assert_eq!(json.matches(marker).count(), 1);
+        assert!(
+            !json.contains("this text must be discarded"),
+            "the audio turn never carries transcript text: {json}"
+        );
+        assert!(!json.contains("UklGRg=="));
+    }
+
+    /// `has_media` is the gate ST-5's media path is entered on.
+    #[test]
+    fn has_media_is_true_only_for_an_attachment() {
+        let messages = conversation();
+        assert!(!ChatTurn::text(messages.clone()).has_media());
+        assert!(ChatTurn::text(messages.clone()).with_image("QUJD").has_media());
+        assert!(ChatTurn::text(messages).with_audio("UklGRg==").has_media());
     }
 
     /// The default budget mirrors the retired `max_tokens`.

@@ -415,6 +415,7 @@ fn a_live_turn_proposes_and_accepts_draft_tokens() {
                 turn: &turn,
                 seed: crate::applications::llm_server::engine::sampling::DEFAULT_SEED,
                 policy: VerifyPolicy::LongestMatchingPrefix,
+                projector: None,
             },
             |_piece| {},
         )
@@ -496,6 +497,7 @@ fn a_fully_rejected_step_rolls_both_contexts_back_and_generation_continues() {
             turn: &turn,
             seed: crate::applications::llm_server::engine::sampling::DEFAULT_SEED,
             policy: VerifyPolicy::RejectAllDrafts,
+            projector: None,
         },
         |_piece| {},
     )

@@ -73,6 +73,7 @@ use llama_cpp_4::llama_backend::LlamaBackend;
 use llama_cpp_4::llama_batch::LlamaBatch;
 use llama_cpp_4::model::params::LlamaModelParams;
 use llama_cpp_4::model::{AddBos, LlamaModel};
+use llama_cpp_4::mtmd::MtmdContext;
 use llama_cpp_4::mtp::{MtpSession, MtpSessionConfig};
 use llama_cpp_4::sampling::LlamaSampler;
 use llama_cpp_4::token::LlamaToken;
@@ -456,6 +457,10 @@ pub struct SpeculativeTurn<'a, 'model> {
     pub seed: u32,
     /// How the verifier judges drafts.
     pub policy: VerifyPolicy,
+    /// The loaded multimodal projector, when the turn carries an image or audio
+    /// attachment (ST-5). `None` for a text-only turn — and a media turn with
+    /// `None` is a typed refusal, never a text-only answer.
+    pub projector: Option<&'a mut MtmdContext>,
 }
 
 /// Run one speculative turn: prefill, then draft → verify → accept → rollback.
@@ -470,6 +475,13 @@ pub struct SpeculativeTurn<'a, 'model> {
 /// 4. the verifier accepts the longest matching prefix;
 /// 5. a partial acceptance clears the rejected suffix on BOTH contexts;
 /// 6. `accept(seq, n_accepted)` syncs the draft carry-over (0 = full rollback).
+///
+/// A MEDIA turn (ST-5) takes the same loop after a different prefill: the prompt
+/// is rendered with the projector's own media marker and tokenised by `mtmd`, so
+/// the attachment is spliced in at exactly the message position that carried it
+/// (`super::multimodal::plan_turn` / `prefill_plan`). Everything from the first
+/// sample onward is shared, which is why a vision/audio reply emits the SAME
+/// `llm-*` events as a text reply.
 ///
 /// `policy` is [`VerifyPolicy::LongestMatchingPrefix`] in production; the
 /// forced-rejection test passes [`VerifyPolicy::RejectAllDrafts`].
@@ -488,9 +500,18 @@ pub fn generate_speculative<'model>(
         turn,
         seed,
         policy,
+        projector,
     } = turn;
+    let mut projector = projector;
 
-    let shaped = format.apply(turn, settings)?;
+    // A media turn renders the projector's marker where its attachment sits; a
+    // text turn renders the text-only projection (the empty marker).
+    let shaped = match projector.as_deref_mut() {
+        Some(projector) => {
+            format.apply_with_media_marker(turn, settings, projector.marker())?
+        }
+        None => format.apply(turn, settings)?,
+    };
 
     // Grammar triggers must outlive the sampler borrow, so keep the strings here.
     let trigger_patterns: Vec<String> = shaped
@@ -511,28 +532,59 @@ pub fn generate_speculative<'model>(
     });
 
     // Tokenise the rendered prompt. A model template always prefixes its own
-    // beginning-of-sequence marker, so the tokeniser must not add a second.
-    let mut prompt_tokens = model
-        .str_to_token(&shaped.prompt, AddBos::Never)
-        .map_err(|error| {
-            (
-                CompanionEngineErrorCode::ContextCreateFailed,
-                format!("the companion prompt could not be tokenised: {error}"),
-            )
-        })?;
-
-    // Defensive context sizing: keep room for the completion and drop the OLDEST
-    // turns when the conversation does not fit. A prompt that cannot fit at all
-    // is a typed refusal, never a silently empty generation.
+    // beginning-of-sequence marker, so the tokeniser must not add a second. A
+    // MEDIA prompt is tokenised by the projector instead (the marker is a media
+    // splice point, not text).
     let budget = shaped.max_tokens;
-    let prompt_truncated = truncate_prompt(&mut prompt_tokens, settings.ctx_size, budget);
-    if prompt_tokens.is_empty() {
-        return Err((
-            CompanionEngineErrorCode::ContextCreateFailed,
-            "the companion prompt does not fit the engine's context window.".to_string(),
-        ));
-    }
-    let prompt_len = prompt_tokens.len() as u32;
+    let mut media_plan: Option<super::multimodal::MediaPlan> = match projector.as_deref_mut() {
+        Some(projector) if turn.has_media() => {
+            Some(super::multimodal::plan_turn(projector, turn, &shaped.prompt)?)
+        }
+        _ => {
+            // A MEDIA turn with no projector is the typed refusal — never a silent
+            // text-only answer (R-20.1's negative clause). A text turn needs none.
+            super::multimodal::require_projector(!turn.has_media())?;
+            None
+        }
+    };
+
+    // Defensive context sizing for the TEXT path: keep room for the completion
+    // and drop the OLDEST turns when the conversation does not fit. A prompt that
+    // cannot fit at all is a typed refusal, never a silently empty generation.
+    // A multimodal prompt is NOT truncated (dropping its head would drop template
+    // structure or the attachment itself): it is refused when it does not fit.
+    let mut prompt_truncated = false;
+    let prompt_tokens = match &media_plan {
+        Some(plan) => {
+            let needed = plan.n_tokens() as u64 + u64::from(budget);
+            if needed > u64::from(settings.ctx_size) {
+                return Err((
+                    CompanionEngineErrorCode::ContextCreateFailed,
+                    "the multimodal prompt and its reply do not fit the engine's context window."
+                        .to_string(),
+                ));
+            }
+            Vec::new()
+        }
+        None => {
+            let mut tokens = model
+                .str_to_token(&shaped.prompt, AddBos::Never)
+                .map_err(|error| {
+                    (
+                        CompanionEngineErrorCode::ContextCreateFailed,
+                        format!("the companion prompt could not be tokenised: {error}"),
+                    )
+                })?;
+            prompt_truncated = truncate_prompt(&mut tokens, settings.ctx_size, budget);
+            if tokens.is_empty() {
+                return Err((
+                    CompanionEngineErrorCode::ContextCreateFailed,
+                    "the companion prompt does not fit the engine's context window.".to_string(),
+                ));
+            }
+            tokens
+        }
+    };
 
     // The paired contexts, then the session over them. Every failure here is the
     // R-19.5 typed refusal — there is no fallback branch.
@@ -555,12 +607,43 @@ pub fn generate_speculative<'model>(
     session.target_context_mut().clear_kv_cache();
     session.draft_context_mut().clear_kv_cache();
 
-    prefill(&mut session, &prompt_tokens)?;
+    // The prefill: one text path, one multimodal path, both feeding the session's
+    // `process()` hook so the draft side sees every prompt position. Each reports
+    // the KV position after the prompt — for a media turn that is the projector's
+    // position count (M-RoPE media positions are not 1:1 with tokens).
+    let (tracked_tokens, prompt_positions) = match media_plan.take() {
+        Some(plan) => {
+            let unavailable = || {
+                (
+                    CompanionEngineErrorCode::MmprojInitFailed,
+                    "the multimodal projector disappeared between planning and prefill"
+                        .to_string(),
+                )
+            };
+            let Some(projector) = projector.as_mut() else {
+                return Err(unavailable());
+            };
+            let evaluated = super::multimodal::prefill_plan(&mut session, projector, &plan)?;
+            tracing::debug!(
+                target: "fredo::llm_server",
+                image_parts = plan.image_parts,
+                audio_parts = plan.audio_parts,
+                prompt_tokens = plan.n_tokens(),
+                prompt_positions = evaluated.n_pos,
+                "companion multimodal prompt evaluated"
+            );
+            (plan.text_tokens, evaluated.n_pos)
+        }
+        None => {
+            prefill(&mut session, &prompt_tokens)?;
+            (prompt_tokens.clone(), prompt_tokens.len() as i32)
+        }
+    };
 
     // Tell the session which prompt was prefilled (upstream prompt tracking; it
     // also resets the draft sampler so two identical turns cannot drift).
     session
-        .begin(MTP_SEQ_ID, &prompt_tokens)
+        .begin(MTP_SEQ_ID, &tracked_tokens)
         .map_err(|error| mtp_failure("track the prompt", error))?;
 
     let mut sampler: LlamaSampler =
@@ -574,7 +657,7 @@ pub fn generate_speculative<'model>(
     // The first token comes straight from the prefill's last output row.
     let mut last_token = sampler.sample(session.target_context(), -1);
     sampler.accept(last_token);
-    let mut n_past = prompt_len as i32;
+    let mut n_past = prompt_positions;
 
     if model.is_eog_token(last_token) {
         stopped_on_eog = true;
@@ -708,7 +791,7 @@ pub fn generate_speculative<'model>(
     Ok(SpeculativeOutcome {
         content,
         tokens_generated,
-        prompt_tokens: prompt_len,
+        prompt_tokens: prompt_positions as u32,
         stopped_on_eog,
         prompt_truncated,
         stats,

@@ -216,12 +216,30 @@ impl ChatFormat {
         turn: &ChatTurn,
         settings: &SamplingSettings,
     ) -> Result<AppliedChatFormat, (CompanionEngineErrorCode, String)> {
-        let applied = self.templates.apply(&self.params_for(turn)?).map_err(|error| {
-            (
-                CompanionEngineErrorCode::ContextCreateFailed,
-                format!("the companion request could not be shaped: {error}"),
-            )
-        })?;
+        self.apply_with_media_marker(turn, settings, "")
+    }
+
+    /// Apply the format, rendering each media part as `media_marker`.
+    ///
+    /// The marker is the projector's own (`MtmdContext::marker`), so `mtmd` can
+    /// splice the bitmap back in at exactly that position (ST-5). An empty marker
+    /// is the text-only render every non-media consumer uses, so the media-aware
+    /// and media-free paths share ONE implementation (NFR-6).
+    pub fn apply_with_media_marker(
+        &self,
+        turn: &ChatTurn,
+        settings: &SamplingSettings,
+        media_marker: &str,
+    ) -> Result<AppliedChatFormat, (CompanionEngineErrorCode, String)> {
+        let applied = self
+            .templates
+            .apply(&self.params_for(turn, media_marker)?)
+            .map_err(|error| {
+                (
+                    CompanionEngineErrorCode::ContextCreateFailed,
+                    format!("the companion request could not be shaped: {error}"),
+                )
+            })?;
 
         // A `response_format` schema WINS over the template's tool grammar: the
         // two constrain the same decoder, and the shipped status path never sends
@@ -260,12 +278,15 @@ impl ChatFormat {
         text: &str,
         partial: bool,
     ) -> Result<String, (CompanionEngineErrorCode, String)> {
-        let applied = self.templates.apply(&self.params_for(turn)?).map_err(|error| {
-            (
-                CompanionEngineErrorCode::ContextCreateFailed,
-                format!("the companion request could not be shaped: {error}"),
-            )
-        })?;
+        let applied = self
+            .templates
+            .apply(&self.params_for(turn, "")?)
+            .map_err(|error| {
+                (
+                    CompanionEngineErrorCode::ContextCreateFailed,
+                    format!("the companion request could not be shaped: {error}"),
+                )
+            })?;
         applied.parse(text, partial).map_err(|error| {
             (
                 CompanionEngineErrorCode::ContextCreateFailed,
@@ -281,8 +302,10 @@ impl ChatFormat {
     fn params_for(
         &self,
         turn: &ChatTurn,
+        media_marker: &str,
     ) -> Result<ChatApplyParams, (CompanionEngineErrorCode, String)> {
-        let mut params = ChatApplyParams::new(turn.template_messages_json());
+        let mut params =
+            ChatApplyParams::new(turn.template_messages_json_with_media(media_marker));
 
         // The skill offer: the registry rendered as OpenAI-style functions plus
         // the shipped tool choice. `parallel_tool_calls:false` has no template

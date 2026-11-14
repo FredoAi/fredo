@@ -47,12 +47,14 @@ use std::sync::{Arc, Mutex};
 
 use llama_cpp_4::context::params::LlamaContextParams;
 use llama_cpp_4::llama_backend::LlamaBackend;
+use llama_cpp_4::mtmd::MtmdContext;
 use llama_cpp_4::token::LlamaToken;
 
 use super::chat_format::ChatFormat;
 use super::device::{self, ModeProjection};
 use super::handle::{EngineSlot, EngineStatusSnapshot};
 use super::mtp::MtpStats;
+use super::multimodal::MtmdCapability;
 use super::paths;
 use super::request::ChatTurn;
 use super::sampling::{self, SamplingSettings};
@@ -64,6 +66,15 @@ use super::{
 /// Everything the engine thread owns once started. Dropped on `Stop` / thread
 /// exit, which releases the models (and therefore the ggml device set).
 pub struct EngineState {
+    /// The loaded multimodal projector (ST-5). It holds a pointer INTO
+    /// [`Self::model`], so it is declared FIRST — struct fields drop in
+    /// declaration order, and the projector must be released before the model it
+    /// projects for. `None` only before a projector load could ever be skipped,
+    /// which production never does.
+    pub projector: Option<MtmdContext>,
+    /// What the loaded projector reports about the model pair's input modalities
+    /// (the backend-owned `SttAudioCapability` source, #2897 REQ-7).
+    pub mtmd_capability: MtmdCapability,
     /// The loaded main model. Declared BEFORE the backend so Rust drops it FIRST
     /// — struct fields drop in declaration order, and `llama_backend_free`
     /// requires every model to be released before the backend. Read for the start
@@ -110,6 +121,7 @@ impl EngineState {
             devices: self.devices.clone(),
             model_id: self.model_id.clone(),
             mtp_stats: Some(self.mtp_stats),
+            mtmd_capability: Some(self.mtmd_capability),
         }
     }
 
@@ -161,6 +173,7 @@ pub fn run(receiver: Receiver<EngineCommand>, slot: Arc<Mutex<EngineSlot>>) {
                         devices: state.as_ref().map(|s| s.devices.clone()).unwrap_or_default(),
                         model_id: state.as_ref().and_then(|s| s.model_id.clone()),
                         mtp_stats: state.as_ref().map(|s| s.mtp_stats),
+                        mtmd_capability: state.as_ref().map(|s| s.mtmd_capability),
                     };
                     publish(&slot, snapshot);
                 }
@@ -254,6 +267,7 @@ fn ensure_started<'s>(
                 devices: Vec::new(),
                 model_id: None,
                 mtp_stats: None,
+                mtmd_capability: None,
             };
             publish(slot, snapshot);
         }
@@ -279,6 +293,10 @@ fn run_chat(
         ContentGate::for_content_turn()
     };
     let events = request.events.clone();
+    // Disjoint field borrows: the projector is `&mut` for this turn while the
+    // models/template are shared. A media turn needs the projector; a text turn
+    // passes `None` (and never touches it).
+    let projectors = engine.projector.as_mut();
     let outcome = super::mtp::generate_speculative(
         super::mtp::SpeculativeTurn {
             backend: &engine._backend,
@@ -289,6 +307,7 @@ fn run_chat(
             turn: &request.turn,
             seed: request.seed,
             policy: super::mtp::VerifyPolicy::LongestMatchingPrefix,
+            projector: projectors,
         },
         |piece| {
             let visible = gate.push(piece);
@@ -354,6 +373,7 @@ fn run_one_shot(
 ) {
     use crate::applications::llm_server::engine::stream::TurnReply;
 
+    let projectors = engine.projector.as_mut();
     let outcome = super::mtp::generate_speculative(
         super::mtp::SpeculativeTurn {
             backend: &engine._backend,
@@ -364,6 +384,7 @@ fn run_one_shot(
             turn: &request.turn,
             seed: request.seed,
             policy: super::mtp::VerifyPolicy::LongestMatchingPrefix,
+            projector: projectors,
         },
         |_piece| {},
     );
@@ -596,8 +617,26 @@ fn try_start(request: &StartRequest) -> Result<EngineState, (CompanionEngineErro
     )?;
     prove_mtp_session(&backend, &model, &draft, &settings)?;
 
+    // 8c. Load the MULTIMODAL projector (ST-5) from the manifest's `vision` path
+    //     and read what it reports. This is the AC-20/AC-21 load: the projector
+    //     is what turns an image or an audio clip into embeddings, so a failure
+    //     here is a typed `MmprojInitFailed` START failure — the engine never
+    //     comes up able to answer a media turn as if it were text only.
+    let projector = super::multimodal::load_projector(&model, &request.paths.mmproj)?;
+    let mtmd_capability = MtmdCapability::of(&projector);
+    tracing::info!(
+        target: "fredo::llm_server",
+        vision = mtmd_capability.vision,
+        audio = mtmd_capability.audio,
+        audio_sample_rate = mtmd_capability.audio_sample_rate,
+        marker = projector.marker(),
+        "companion multimodal projector loaded"
+    );
+
     let model_id = paths::model_id_for(&request.paths.model);
     let state = EngineState {
+        projector: Some(projector),
+        mtmd_capability,
         model,
         draft,
         format,
@@ -692,6 +731,12 @@ fn warm_up(
             turn: &turn,
             seed: sampling::DEFAULT_SEED,
             policy: super::mtp::VerifyPolicy::LongestMatchingPrefix,
+            // The warm-up is a TEXT turn, so it never touches the projector. The
+            // projector's own load above is the start-time proof that it works;
+            // warming a media encode here would cost seconds of start budget for
+            // no additional signal (and the media prefill shares the decode loop
+            // this warm-up already proves).
+            projector: None,
         },
         |_piece| {},
     )?;
