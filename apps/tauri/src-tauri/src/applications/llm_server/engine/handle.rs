@@ -185,6 +185,10 @@ impl CompanionEngineHandle {
     }
 
     /// Request a stop (best-effort; lifecycle commands are rare).
+    ///
+    /// `Stop` releases the loaded engine state; the engine thread stays alive and
+    /// parks, so a later [`Self::start`] re-initialises on the SAME thread
+    /// (Spec #3141 fix D1).
     pub fn stop(&self) {
         if let Some(commands) = self.commands.as_ref() {
             let _ = commands.try_send(EngineCommand::Stop);

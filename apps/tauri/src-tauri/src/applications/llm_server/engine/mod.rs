@@ -265,7 +265,9 @@ impl CompanionEngineStartResult {
 pub enum EngineCommand {
     /// Load the backend + main model and report devices.
     Start(Box<StartRequest>),
-    /// Release the model and stop the thread.
+    /// Release the loaded model/backend (releasing their memory) and keep the
+    /// engine thread serving, so a later `Start` re-initialises on the SAME
+    /// thread (Spec #3141 fix D1 — `stop` is not a one-way door).
     Stop,
     /// Generate one turn, streaming [`stream::EngineEvent`]s to the caller.
     Chat(Box<ChatRequest>),

@@ -9,10 +9,28 @@
 //!    mode onto it, create a context to prove the load, report the backend
 //!    from where the model's weights actually landed, then verify the
 //!    request-shaping surface and warm the generation path up,
-//! 3. on `Stop`: drop the model and exit.
+//! 3. on `Stop`: release the engine state (models, projector, backend) and KEEP
+//!    SERVING — the thread parks on its next `recv()` so the very next `Start`
+//!    re-initialises the engine on the SAME thread (Spec #3141 fix D1).
 //!
 //! It publishes the terminal status of each command into the shared
 //! [`EngineSlot`] the handle exposes.
+//!
+//! ## `Stop` is not a one-way door (Spec #3141 fix D1)
+//!
+//! The engine thread owns exactly ONE spawn site and ONE join handle
+//! ([`super::handle::CompanionEngineHandle`]). Ending the thread on `Stop` left
+//! every later `Start` queued to a dead receiver (`startTimeout`) or refused
+//! (`backendInitFailed`), so the companion was dead for the rest of the Fredo
+//! session after a single `stop_llama_server`. `Stop` therefore only RELEASES
+//! the engine state — that is where the memory is released — and the loop keeps
+//! reading commands. The thread itself ends only when the sender drops (the
+//! handle is dropped), which still joins cleanly.
+//!
+//! Re-initialising after a full stop is legal: `LlamaBackend`'s `Drop` resets
+//! llama.cpp's process-once initialisation gate, and [`EngineState`] declares
+//! both models before the backend, so Rust's declaration-order drop releases
+//! them before `llama_backend_free`.
 //!
 //! ## The generation half (ST-2 + ST-4)
 //!
@@ -150,8 +168,11 @@ pub fn resumed_mtp_stats(process_total: MtpStats) -> MtpStats {
     process_total
 }
 
-/// The engine thread's entry point. Runs until a `Stop` (or the sender drops),
-/// publishing each command's terminal status into `slot`.
+/// The engine thread's entry point. **Runs for the life of the handle**:
+/// `Stop` releases the engine state and the loop keeps serving (a later `Start`
+/// re-initialises on this same thread); the loop ends only when the command
+/// sender drops, i.e. when the handle is dropped. Publishes each command's
+/// terminal status into `slot`.
 ///
 /// ## A panicking turn never kills the engine (Spec #3141 fix F1)
 ///
@@ -220,10 +241,15 @@ pub fn run(receiver: Receiver<EngineCommand>, slot: Arc<Mutex<EngineSlot>>) {
                 }
             },
             EngineCommand::Stop => {
-                // Dropping the state releases the models (and their device set).
+                // Dropping the state releases the models, the projector and the
+                // backend (and therefore the ggml device set). That IS the memory
+                // release `stop` is for.
                 drop(state.take());
                 publish(&slot, EngineStatusSnapshot::default());
-                break;
+                // Deliberately NO `break`: the thread must stay alive and park on
+                // the next `recv()` so a later `Start` re-initialises the engine
+                // on this SAME thread (Spec #3141 fix D1). The thread ends only
+                // when the sender drops, i.e. when the handle is dropped.
             }
             EngineCommand::Chat(request) => {
                 let request = *request;

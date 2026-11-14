@@ -31,6 +31,7 @@
 
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use crate::applications::llm_server::engine::handle::{CompanionEngineHandle, DEFAULT_START_BUDGET};
 use crate::applications::llm_server::engine::paths;
@@ -361,3 +362,142 @@ async fn three_consecutive_turns_on_one_engine_all_settle_and_it_survives() {
 
     handle.stop();
 }
+
+// ── REQUIRED ARTIFACT — `stop` then `start` on the SAME engine (fix D1) ───────
+
+/// THE D1 pin: `stop_llama_server` is NOT a one-way door.
+///
+/// The Tester reproduced this live: launch → stop → launch failed with
+/// `startTimeout` (or `backendInitFailed`), and only an app restart recovered.
+/// The cause was `EngineCommand::Stop` ending `run()` with `break`, so the ONE
+/// engine thread died and every later `Start` was queued to a dead receiver.
+///
+/// This gate drives a REPEAT cycle over the REAL handle — start, stop, start,
+/// stop, start — and asserts the engine is reusable:
+///
+/// * every `start` succeeds and reports a backend,
+/// * `stop` publishes the default (not-loaded, no devices) snapshot — i.e. the
+///   engine state really was released, not just marked idle, and
+/// * a TURN after the second start settles with exactly one `Finished`.
+///
+/// Skipped by name when the pinned GGUF trio is absent (G-172 / G-314).
+#[tokio::test]
+async fn stop_then_start_is_reusable_on_the_same_process() {
+    let Some(model_paths) = models_or_skip() else {
+        return;
+    };
+    let handle = CompanionEngineHandle::spawn_with_budget(DEFAULT_START_BUDGET);
+
+    // Repeat cycle: the engine must survive TWO stops and start again each time.
+    for cycle in 1..=2u32 {
+        let started = handle.start(model_paths.clone(), CompanionBackendMode::Cpu);
+        assert!(
+            started.success,
+            "cycle {cycle}: start must succeed: {:?} — {}",
+            started.code, started.detail
+        );
+        assert!(
+            started.backend.is_some(),
+            "cycle {cycle}: a loaded engine must report a backend"
+        );
+
+        handle.stop();
+        // The stop must actually RELEASE the engine state (the memory release),
+        // observable as the default snapshot — not merely a cleared `loaded` flag.
+        // `stop()` only enqueues the command, so wait (bounded) for the thread to
+        // publish the released state.
+        let slot = handle.slot();
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            {
+                let guard = slot.lock().expect("slot lock");
+                if !guard.snapshot.loaded
+                    && guard.snapshot.devices.is_empty()
+                    && guard.snapshot.backend.is_none()
+                {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "cycle {cycle}: stop must release the engine state (devices=({:?}) backend={:?})",
+                    guard.snapshot.devices.len(),
+                    guard.snapshot.backend
+                );
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        eprintln!("D1 REPEAT CYCLE {cycle}: start OK -> stop released state");
+    }
+
+    // After the second start the engine must serve a real turn — the one-way door
+    // used to fail here with `startTimeout` and then a dead engine.
+    let started = handle.start(model_paths.clone(), CompanionBackendMode::Cpu);
+    assert!(
+        started.success,
+        "post-cycle start must succeed: {:?} — {}",
+        started.code,
+        started.detail
+    );
+
+    let (events_tx, mut events_rx) = tokio::sync::mpsc::channel(256);
+    let request = crate::applications::llm_server::engine::ChatRequest {
+        turn: crate::applications::llm_server::engine::request::ChatTurn::text(vec![
+            crate::applications::llm_server::chat::LlmMessage {
+                role: "user".to_string(),
+                content: "Say one short sentence.".to_string(),
+            },
+        ])
+        .with_max_tokens(64),
+        events: events_tx,
+        paths: model_paths,
+        mode: CompanionBackendMode::Cpu,
+        seed: 11,
+    };
+    handle
+        .chat(request)
+        .expect("the restarted engine must accept the turn");
+
+    let mut finished = 0usize;
+    let mut failure: Option<String> = None;
+    let mut tokens = 0usize;
+    let mut reasoning = 0usize;
+    while let Some(event) = events_rx.recv().await {
+        match event {
+            crate::applications::llm_server::engine::stream::EngineEvent::Token(_) => {
+                tokens += 1
+            }
+            crate::applications::llm_server::engine::stream::EngineEvent::Reasoning(_) => {
+                reasoning += 1
+            }
+            crate::applications::llm_server::engine::stream::EngineEvent::Finished { .. } => {
+                finished += 1
+            }
+            crate::applications::llm_server::engine::stream::EngineEvent::Failed {
+                code,
+                detail,
+            } => failure = Some(format!("{code:?}: {detail}")),
+            _ => {}
+        }
+    }
+    handle.stop();
+
+    assert!(
+        failure.is_none(),
+        "the turn after a restart must not fail (the one-way door is gone): {failure:?}"
+    );
+    assert_eq!(
+        finished, 1,
+        "the turn after a restart must settle with exactly one Finished"
+    );
+    // The turn really generated: either visible content or a reasoning span. A
+    // turn that produced NEITHER would mean the engine accepted the command but
+    // did no work.
+    assert!(
+        tokens >= 1 || reasoning >= 1,
+        "the turn after a restart must generate (tokens={tokens}, reasoning={reasoning})"
+    );
+    eprintln!(
+        "D1 POST-RESTART TURN: tokens={tokens} reasoning={reasoning} finished={finished}"
+    );
+}
+

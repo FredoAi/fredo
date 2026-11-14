@@ -11,7 +11,8 @@
 //!   engine's bounded start and returns the typed
 //!   [`CompanionEngineStartResult`] (the migrated replacement for the retired
 //!   `LlamaServerLaunchResult`).
-//! * `stop_llama_server` — the engine stop (release the model + thread).
+//! * `stop_llama_server` — the engine stop (release the model; the engine thread
+//!   stays alive and parks, so a later start re-initialises on the SAME thread).
 //! * `get_llama_server_status` — the status snapshot; port/pid stay `null` (no
 //!   process exists), `configPath` stays empty (no `.bat`).
 
@@ -69,7 +70,9 @@ pub async fn start_companion_engine(app: AppHandle) -> CompanionEngineStartResul
     start(&app).await
 }
 
-/// Stop the in-process engine (release the model and end the engine thread).
+/// Stop the in-process engine: release the model/backend memory. The engine
+/// thread stays alive and parks, so a later start re-initialises on the SAME
+/// thread (Spec #3141 fix D1 — stop is not a one-way door).
 #[tauri::command]
 pub fn stop_llama_server(app: AppHandle) -> Result<(), String> {
     if let Some(engine) = app.try_state::<CompanionEngineState>() {
@@ -87,7 +90,9 @@ pub async fn get_llama_server_status(app: AppHandle) -> Result<LlamaServerStatus
     Ok(current_status(&app))
 }
 
-/// App-exit hook: stop the engine thread so no model/context outlives Fredo.
+/// App-exit hook: release the engine's model/backend memory. The thread itself
+/// ends when the handle is dropped (the command sender drops first, so the
+/// engine loop's `recv()` returns and the thread joins).
 pub fn stop_llama_server_on_exit(app: &AppHandle) {
     if let Some(engine) = app.try_state::<CompanionEngineState>() {
         engine.0.stop();
