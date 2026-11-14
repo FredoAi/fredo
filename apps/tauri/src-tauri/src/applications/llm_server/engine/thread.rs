@@ -280,14 +280,16 @@ fn run_chat(
     };
     let events = request.events.clone();
     let outcome = super::mtp::generate_speculative(
-        &engine._backend,
-        &engine.model,
-        &engine.draft,
-        &engine.format,
-        &SamplingSettings::default(),
-        &request.turn,
-        request.seed,
-        super::mtp::VerifyPolicy::LongestMatchingPrefix,
+        super::mtp::SpeculativeTurn {
+            backend: &engine._backend,
+            model: &engine.model,
+            draft_model: &engine.draft,
+            format: &engine.format,
+            settings: &SamplingSettings::default(),
+            turn: &request.turn,
+            seed: request.seed,
+            policy: super::mtp::VerifyPolicy::LongestMatchingPrefix,
+        },
         |piece| {
             let visible = gate.push(piece);
             if !visible.is_empty() {
@@ -353,14 +355,16 @@ fn run_one_shot(
     use crate::applications::llm_server::engine::stream::TurnReply;
 
     let outcome = super::mtp::generate_speculative(
-        &engine._backend,
-        &engine.model,
-        &engine.draft,
-        &engine.format,
-        &SamplingSettings::default(),
-        &request.turn,
-        request.seed,
-        super::mtp::VerifyPolicy::LongestMatchingPrefix,
+        super::mtp::SpeculativeTurn {
+            backend: &engine._backend,
+            model: &engine.model,
+            draft_model: &engine.draft,
+            format: &engine.format,
+            settings: &SamplingSettings::default(),
+            turn: &request.turn,
+            seed: request.seed,
+            policy: super::mtp::VerifyPolicy::LongestMatchingPrefix,
+        },
         |_piece| {},
     );
     match outcome {
@@ -679,14 +683,16 @@ fn warm_up(
     .with_max_tokens(WARMUP_MAX_TOKENS);
 
     let outcome = super::mtp::generate_speculative(
-        &state._backend,
-        &state.model,
-        &state.draft,
-        &state.format,
-        settings,
-        &turn,
-        sampling::DEFAULT_SEED,
-        super::mtp::VerifyPolicy::LongestMatchingPrefix,
+        super::mtp::SpeculativeTurn {
+            backend: &state._backend,
+            model: &state.model,
+            draft_model: &state.draft,
+            format: &state.format,
+            settings,
+            turn: &turn,
+            seed: sampling::DEFAULT_SEED,
+            policy: super::mtp::VerifyPolicy::LongestMatchingPrefix,
+        },
         |_piece| {},
     )?;
 

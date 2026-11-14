@@ -406,14 +406,16 @@ fn a_live_turn_proposes_and_accepts_draft_tokens() {
     for (attempt, (user, budget)) in attempts.iter().enumerate() {
         let turn = text_turn("You are a helpful assistant.", user, *budget);
         let outcome = generate_speculative(
-            &backend,
-            &model,
-            &draft_model,
-            &format,
-            &settings,
-            &turn,
-            crate::applications::llm_server::engine::sampling::DEFAULT_SEED,
-            VerifyPolicy::LongestMatchingPrefix,
+            SpeculativeTurn {
+                backend: &backend,
+                model: &model,
+                draft_model: &draft_model,
+                format: &format,
+                settings: &settings,
+                turn: &turn,
+                seed: crate::applications::llm_server::engine::sampling::DEFAULT_SEED,
+                policy: VerifyPolicy::LongestMatchingPrefix,
+            },
             |_piece| {},
         )
         .expect("the speculative turn must run");
@@ -485,14 +487,16 @@ fn a_fully_rejected_step_rolls_both_contexts_back_and_generation_continues() {
     );
 
     let outcome = generate_speculative(
-        &backend,
-        &model,
-        &draft_model,
-        &format,
-        &settings,
-        &turn,
-        crate::applications::llm_server::engine::sampling::DEFAULT_SEED,
-        VerifyPolicy::RejectAllDrafts,
+        SpeculativeTurn {
+            backend: &backend,
+            model: &model,
+            draft_model: &draft_model,
+            format: &format,
+            settings: &settings,
+            turn: &turn,
+            seed: crate::applications::llm_server::engine::sampling::DEFAULT_SEED,
+            policy: VerifyPolicy::RejectAllDrafts,
+        },
         |_piece| {},
     )
     .expect("a fully rejected draft step must not abort the turn");

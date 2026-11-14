@@ -434,6 +434,30 @@ fn release_token(
     Ok(())
 }
 
+/// The fixed inputs of one speculative turn.
+///
+/// These travel together on every call — the engine's backend, the two models,
+/// the template, the decoding settings, the turn, its seed, and the verification
+/// policy — so grouping them keeps [`generate_speculative`]'s signature cohesive.
+pub struct SpeculativeTurn<'a, 'model> {
+    /// The process-once backend every context is created on.
+    pub backend: &'a LlamaBackend,
+    /// The target (verifier) model.
+    pub model: &'model LlamaModel,
+    /// The draft model loaded from the manifest's `mtp` spec.
+    pub draft_model: &'model LlamaModel,
+    /// The target model's chat template / grammars.
+    pub format: &'a ChatFormat,
+    /// The decoding settings (window, threads, sampling chain inputs).
+    pub settings: &'a SamplingSettings,
+    /// The turn to generate.
+    pub turn: &'a ChatTurn,
+    /// The sampler seed.
+    pub seed: u32,
+    /// How the verifier judges drafts.
+    pub policy: VerifyPolicy,
+}
+
 /// Run one speculative turn: prefill, then draft → verify → accept → rollback.
 ///
 /// The loop is the crate's own `run_speculative` shape, driven by Fredo's
@@ -449,18 +473,23 @@ fn release_token(
 ///
 /// `policy` is [`VerifyPolicy::LongestMatchingPrefix`] in production; the
 /// forced-rejection test passes [`VerifyPolicy::RejectAllDrafts`].
-#[allow(clippy::too_many_arguments)]
 pub fn generate_speculative<'model>(
-    backend: &LlamaBackend,
-    model: &'model LlamaModel,
-    draft_model: &'model LlamaModel,
-    format: &ChatFormat,
-    settings: &SamplingSettings,
-    turn: &ChatTurn,
-    seed: u32,
-    policy: VerifyPolicy,
+    turn: SpeculativeTurn<'_, 'model>,
     mut on_text: impl FnMut(&str),
 ) -> Result<SpeculativeOutcome, (CompanionEngineErrorCode, String)> {
+    // The turn's fixed inputs are grouped in [`SpeculativeTurn`] so the loop has
+    // one cohesive parameter set rather than a long positional list.
+    let SpeculativeTurn {
+        backend,
+        model,
+        draft_model,
+        format,
+        settings,
+        turn,
+        seed,
+        policy,
+    } = turn;
+
     let shaped = format.apply(turn, settings)?;
 
     // Grammar triggers must outlive the sampler borrow, so keep the strings here.
