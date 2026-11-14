@@ -77,7 +77,7 @@ describe('#2897 ST-6 — model-audio readiness row', () => {
     );
     expect(row).toEqual({
       state: 'server-unavailable',
-      sentence: "The local model server isn't running, so Fredo can't interpret audio.",
+      sentence: "The companion engine isn't running, so Fredo can't interpret audio.",
       offerChangeModel: false,
       offerRetry: true,
     });
@@ -123,7 +123,7 @@ describe('#2897 ST-6 — curated model-audio fallback copy', () => {
       "The companion model can't interpret audio — your recording wasn't sent. Install a model with audio support from Companion setup, or choose Change model.",
     );
     expect(MODEL_AUDIO_FAILURE_COPY.modelAudioUnavailable).toBe(
-      "The local model server isn't running, so Fredo couldn't interpret that. Start the companion server, then try again.",
+      "The companion engine isn't running, so Fredo couldn't interpret that. Start the companion engine in Companion setup, then try again.",
     );
     expect(MODEL_AUDIO_FAILURE_COPY.modelAudioFailed).toBe(
       "Fredo couldn't interpret that recording. Try again.",

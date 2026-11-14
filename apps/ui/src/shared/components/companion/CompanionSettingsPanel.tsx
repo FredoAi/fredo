@@ -1,19 +1,28 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Box, HStack, Heading, Icon, Text, VStack, Switch, NumberInput, chakra,
+  Box, HStack, Heading, Icon, SegmentGroup, Skeleton, Text, VStack, Switch, NumberInput, chakra,
 } from '@chakra-ui/react';
-import { LuBot } from 'react-icons/lu';
+import { LuBot, LuTriangleAlert } from 'react-icons/lu';
 import {
   useCompanion, MIN_IDLE_TIMEOUT_S, MAX_IDLE_TIMEOUT_S, clampIdleTimeout,
   clampReplyLeaveGraceMs, MIN_REPLY_LEAVE_GRACE_MS, MAX_REPLY_LEAVE_GRACE_MS,
   REPLY_LEAVE_GRACE_STEP_MS,
 } from '../../contexts/CompanionContext';
 import type { CompanionSendDisposition } from '../../contexts/CompanionContext';
+import { adapterBridge } from '../../utils/adapterBridge';
+import { tint } from '../../utils/colorTint';
 import { CompanionSetupWizard } from './CompanionSetupWizard';
 import type { CompanionSetupWizardPrerequisite } from './CompanionSetupWizard';
 import { COMPANION_SETUP_STEPS } from './companionSetupSteps';
 import { useCompanionReadiness } from './useCompanionReadiness';
-import type { PrerequisiteUiState } from './companionReadiness';
+import {
+  coerceCompanionBackendMode,
+  COMPANION_BACKEND_SETTING_KEY,
+  type CompanionBackendKind,
+  type CompanionBackendMode,
+  type CompanionDeviceInfo,
+  type PrerequisiteUiState,
+} from './companionReadiness';
 import { VoiceInputSettings } from './VoiceInputSettings';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -33,6 +42,267 @@ const sectionLabel = (text: string) => (
     {text}
   </Text>
 );
+
+// ── AC-24 — the companion engine group (Spec #3141 ST-6) ─────────────────────
+//
+// GATED COMPONENT CLASS (G-403): `companion-backend-mode`, its help id, the
+// per-segment testids, the group announcer and `companion-backend-readout` are
+// owned by THIS module and rendered by exactly ONE local component. The two
+// panel branches (ready body / not-ready with model files installed) render the
+// SAME component — one render site, never a second renderer.
+
+/** Frozen accessibility ids + testids (C-1 ACCEPTED — do not rename). */
+const BACKEND_MODE_HELP_ID = 'companion-backend-mode-help';
+const BACKEND_MODE_ERROR_ID = 'companion-backend-mode-error';
+const BACKEND_MODE_TESTID = 'companion-backend-mode';
+const BACKEND_READOUT_TESTID = 'companion-backend-readout';
+const BACKEND_ANNOUNCER_TESTID = 'companion-backend-announcer';
+
+/** Exact copy (UI/UX §2.1 — verbatim, no paraphrasing at implementation time). */
+export const COMPANION_BACKEND_LABEL = 'Companion backend';
+export const COMPANION_BACKEND_HELP =
+  "Choose how the companion uses this machine's GPU. Automatic uses the GPU when one is available and falls back to the CPU; GPU requires one; CPU never uses it. Changes apply the next time the companion engine starts.";
+export const COMPANION_BACKEND_SEGMENTS: ReadonlyArray<{
+  value: CompanionBackendMode;
+  label: string;
+}> = [
+  { value: 'auto', label: 'Automatic' },
+  { value: 'gpu', label: 'GPU' },
+  { value: 'cpu', label: 'CPU' },
+];
+/** The save-rejection error line (the control's SECOND `aria-describedby` target). */
+export const COMPANION_BACKEND_SAVE_ERROR_COPY =
+  "Couldn't save the companion backend. Your previous choice is still in use — choose the backend again to retry.";
+/** The pending note when the engine is already running under the old mode. */
+export const COMPANION_BACKEND_APPLIES_NEXT_START_COPY =
+  'The running engine keeps its current backend until it restarts — restart Fredo to apply this now.';
+/** The readout's label + the fail-closed lines. */
+export const COMPANION_BACKEND_READOUT_LABEL = 'Running on';
+export const COMPANION_BACKEND_STOPPED_LABEL = 'Not running';
+export const COMPANION_BACKEND_UNAVAILABLE_LABEL = "Can't check";
+export const COMPANION_BACKEND_UNAVAILABLE_COPY = 'The Fredo backend is unavailable.';
+
+const backendSegmentLabel = (mode: CompanionBackendMode): string =>
+  COMPANION_BACKEND_SEGMENTS.find((segment) => segment.value === mode)?.label ?? 'Automatic';
+
+/** The readout's word for a reported backend kind (text is the only channel). */
+export function companionBackendWord(kind: CompanionBackendKind): string {
+  switch (kind) {
+    case 'cpu':
+      return 'CPU';
+    case 'gpu':
+      return 'GPU';
+    case 'integratedGpu':
+      return 'Integrated GPU';
+    case 'accel':
+      return 'Accelerator';
+    case 'meta':
+      return 'Meta device';
+  }
+}
+
+/**
+ * The readout's value string (UI/UX §2.6 composition rules): the kind word, then
+ * ` — <description>` when non-empty, then the ggml device names in parentheses
+ * (omitting any name identical to the word). Never invents a device.
+ */
+export function companionBackendReadoutValue(
+  backend: CompanionBackendKind,
+  devices: readonly CompanionDeviceInfo[],
+): string {
+  const word = companionBackendWord(backend);
+  const description = devices.find(
+    (device) => device.description.trim().length > 0,
+  )?.description.trim();
+  const names = devices
+    .map((device) => device.name.trim())
+    .filter((name) => name.length > 0 && name !== word);
+  let value = word;
+  if (description) value += ` — ${description}`;
+  if (names.length > 0) value += ` (${names.join(', ')})`;
+  return value;
+}
+
+type BackendSaveState = 'persisted' | 'pending' | 'unsaved';
+
+export interface CompanionEngineGroupProps {
+  /** The selected mode; `null` only while hydrating (never a fabricated value). */
+  mode: CompanionBackendMode | null;
+  onSelectMode: (mode: CompanionBackendMode) => void;
+  saveState: BackendSaveState;
+  /** The reported backend; `null` when the status probe is unavailable. */
+  backend: CompanionBackendKind | null;
+  /** `true` when the status probe answered (false = fail closed). */
+  statusAvailable: boolean;
+  devices: readonly CompanionDeviceInfo[];
+  /** The engine is currently running under its old backend. */
+  engineRunning: boolean;
+  announcement: string;
+}
+
+/**
+ * The AC-24 engine group: a segmented backend radiogroup + the reported-backend
+ * readout. Rendered in BOTH panel branches by this ONE component (G-403).
+ */
+const CompanionEngineGroup: React.FC<CompanionEngineGroupProps> = ({
+  mode,
+  onSelectMode,
+  saveState,
+  backend,
+  statusAvailable,
+  devices,
+  engineRunning,
+  announcement,
+}) => {
+  const hydrating = mode === null;
+  const savedFailure = saveState === 'unsaved';
+
+  return (
+    <Box>
+      {sectionLabel('Companion engine')}
+      <VStack align="stretch" gap={2} p={3} borderRadius="md" background="var(--hover-bg)" border="1px solid" borderColor="var(--border-color)">
+        <VStack align="stretch" gap={1} maxW="420px">
+          <Text fontSize="sm" fontWeight="600" color="var(--text-primary)">
+            {COMPANION_BACKEND_LABEL}
+          </Text>
+          <Text
+            id={BACKEND_MODE_HELP_ID}
+            fontSize="xs"
+            color="var(--text-subtle)"
+          >
+            {COMPANION_BACKEND_HELP}
+          </Text>
+        </VStack>
+
+        {/* A segmented radiogroup (Ark `SegmentGroup`), never a `<select>`: AC-25's
+            recovery needs the other modes visible WITHOUT opening a menu. */}
+        <SegmentGroup.Root
+          data-testid={BACKEND_MODE_TESTID}
+          aria-label={COMPANION_BACKEND_LABEL}
+          aria-describedby={
+            savedFailure
+              ? `${BACKEND_MODE_HELP_ID} ${BACKEND_MODE_ERROR_ID}`
+              : BACKEND_MODE_HELP_ID
+          }
+          aria-busy={hydrating || undefined}
+          disabled={hydrating}
+          width="full"
+          maxWidth="420px"
+          size="sm"
+          value={mode ?? undefined}
+          bg="bg.surface"
+          onValueChange={(details) => {
+            if (details.value !== null) onSelectMode(details.value as CompanionBackendMode);
+          }}
+        >
+          <SegmentGroup.Indicator bg="accent.tint" />
+          {COMPANION_BACKEND_SEGMENTS.map((segment) => (
+            <SegmentGroup.Item
+              key={segment.value}
+              value={segment.value}
+              data-testid={`${BACKEND_MODE_TESTID}-${segment.value}`}
+              color="fg.default"
+            >
+              <SegmentGroup.ItemText>{segment.label}</SegmentGroup.ItemText>
+              <SegmentGroup.ItemHiddenInput />
+            </SegmentGroup.Item>
+          ))}
+        </SegmentGroup.Root>
+
+        {saveState === 'pending' && engineRunning && (
+          <Text fontSize="xs" color="var(--text-subtle)">
+            {COMPANION_BACKEND_APPLIES_NEXT_START_COPY}
+          </Text>
+        )}
+
+        {savedFailure && (
+          <HStack
+            gap={2}
+            align="flex-start"
+            p={2}
+            borderRadius="md"
+            bg={tint('var(--status-error)', 12)}
+            border="1px solid"
+            borderColor={tint('var(--status-error)', 30)}
+          >
+            {/* The save-error line is a description, not a widget. Its id is the
+                control's SECOND aria-describedby target. */}
+            <Icon
+              as={LuTriangleAlert}
+              boxSize="14px"
+              color="status.error"
+              aria-hidden
+              mt="1px"
+              flexShrink={0}
+            />
+            <Text id={BACKEND_MODE_ERROR_ID} fontSize="xs" color="var(--text-primary)">
+              {COMPANION_BACKEND_SAVE_ERROR_COPY}
+            </Text>
+          </HStack>
+        )}
+
+        {/* The reported-backend readout — NEVER repeats the selected mode (the
+            control above shows it); `data-backend` / `data-mode` let QA assert
+            reported-matches-selected structurally. */}
+        {hydrating ? (
+          <Skeleton
+            data-testid={BACKEND_READOUT_TESTID}
+            height="4"
+            width="60%"
+            borderRadius="sm"
+          />
+        ) : !statusAvailable ? (
+          <HStack gap={2} align="baseline" flexWrap="wrap">
+            <Text fontSize="xs" fontWeight="600" color="var(--text-primary)">
+              {COMPANION_BACKEND_UNAVAILABLE_LABEL}
+            </Text>
+            <Text fontSize="xs" color="var(--text-subtle)">
+              {COMPANION_BACKEND_UNAVAILABLE_COPY}
+            </Text>
+          </HStack>
+        ) : (
+          <HStack
+            data-testid={BACKEND_READOUT_TESTID}
+            data-backend={backend ?? 'none'}
+            data-mode={mode ?? undefined}
+            gap={2}
+            align="baseline"
+            flexWrap="wrap"
+          >
+            <Text fontSize="xs" fontWeight="600" color="var(--text-primary)">
+              {backend ? COMPANION_BACKEND_READOUT_LABEL : COMPANION_BACKEND_STOPPED_LABEL}
+            </Text>
+            {backend && (
+              <Text fontSize="xs" color="var(--text-subtle)">
+                {companionBackendReadoutValue(backend, devices)}
+              </Text>
+            )}
+          </HStack>
+        )}
+
+        {/* The group's OWN polite region: in the not-ready branch the panel's
+            commit announcer is not mounted, and exactly one of the two is live. */}
+        <Box
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          data-testid={BACKEND_ANNOUNCER_TESTID}
+          position="absolute"
+          width="1px"
+          height="1px"
+          padding="0"
+          margin="-1px"
+          overflow="hidden"
+          clipPath="inset(50%)"
+          whiteSpace="nowrap"
+          borderWidth="0"
+        >
+          {announcement}
+        </Box>
+      </VStack>
+    </Box>
+  );
+};
 
 // ── Idle auto-return control (#2853 ST-5) ────────────────────────────────────
 
@@ -87,11 +357,95 @@ export const CompanionSettingsPanel: React.FC = () => {
   const { isVisible } = state;
 
   // Readiness gate (#2855): the backend is authoritative. While not ready — and
-  // while the first probe is still in flight — the wizard is the ONLY content.
+  // while the first probe is still in flight — the wizard is the primary content.
   const {
     readiness, checking, refresh, runAction, runningActionId, actionError, modelFiles,
     serverLaunch, sttDevices, refreshSttDevices,
   } = useCompanionReadiness();
+
+  // ── AC-24 — the backend-mode control state (Spec #3141 ST-6) ───────────────
+  // `mode` is `null` ONLY while the persisted value is being read (never a
+  // fabricated selection). The write is a DIRECT `save_setting` IPC — not
+  // `settingsService.set`, which swallows write errors and would leave the
+  // control claiming a value that was never stored.
+  const [mode, setMode] = useState<CompanionBackendMode | null>(null);
+  const persistedModeRef = useRef<CompanionBackendMode>('auto');
+  const [saveState, setSaveState] = useState<BackendSaveState>('persisted');
+  const [backendAnnouncement, setBackendAnnouncement] = useState('');
+  const backendMountedRef = useRef(true);
+
+  useEffect(() => {
+    backendMountedRef.current = true;
+    return () => {
+      backendMountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      let raw: string | null | undefined;
+      try {
+        raw = await adapterBridge.invoke<string | null>('get_setting', {
+          key: COMPANION_BACKEND_SETTING_KEY,
+        });
+      } catch {
+        raw = undefined;
+      }
+      if (cancelled) return;
+      if (raw === undefined) {
+        // No Tauri host (dev server / jsdom) — consult the localStorage shadow,
+        // matching every other settings read.
+        try {
+          raw = localStorage.getItem(COMPANION_BACKEND_SETTING_KEY);
+        } catch {
+          raw = null;
+        }
+      }
+      const resolved = coerceCompanionBackendMode(raw);
+      if (!backendMountedRef.current) return;
+      persistedModeRef.current = resolved;
+      setMode(resolved);
+      setSaveState('persisted');
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const selectBackendMode = useCallback((next: CompanionBackendMode) => {
+    if (next === persistedModeRef.current && saveState === 'persisted') {
+      setMode(next);
+      return;
+    }
+    const previous = persistedModeRef.current;
+    // The selection paints synchronously (feedback before the round-trip); a
+    // rejected write reverts it (§2.3 `unsaved`).
+    setMode(next);
+    setSaveState('pending');
+    setBackendAnnouncement(
+      `Companion backend set to ${backendSegmentLabel(next)}. Applies the next time the companion engine starts.`,
+    );
+    void (async () => {
+      try {
+        await adapterBridge.invoke('save_setting', {
+          key: COMPANION_BACKEND_SETTING_KEY,
+          value: next,
+        });
+        // Mirror to the localStorage shadow (dev fidelity, same as
+        // `settingsService.set`).
+        try { localStorage.setItem(COMPANION_BACKEND_SETTING_KEY, next); } catch { /* quota */ }
+        persistedModeRef.current = next;
+        if (!backendMountedRef.current) return;
+        setSaveState('persisted');
+      } catch {
+        if (!backendMountedRef.current) return;
+        setMode(previous);
+        setSaveState('unsaved');
+        setBackendAnnouncement(COMPANION_BACKEND_SAVE_ERROR_COPY);
+      }
+    })();
+  }, [saveState]);
 
   // ── Idle auto-return duration (#2853 ST-5) ─────────────────────────────────
   // A local draft mirrors the persisted value while the user edits; the value is
@@ -207,37 +561,60 @@ export const CompanionSettingsPanel: React.FC = () => {
   const idleBorderColor = isIdleDraftInvalid ? 'var(--status-error)' : 'var(--border-color)';
   const idleHighlightColor = isIdleDraftInvalid ? 'var(--status-error)' : 'var(--accent-primary)';
 
+  // The persisted prerequisite set (a `checking` probe derives the registry rows).
+  const prerequisiteRows: CompanionSetupWizardPrerequisite[] = checking
+    ? COMPANION_SETUP_STEPS.map((step) => ({
+        id: step.id,
+        uiState: 'checking' as PrerequisiteUiState,
+      }))
+    : (readiness?.prerequisites ?? []).map((p) => ({
+        id: p.id,
+        uiState: p.state as PrerequisiteUiState,
+        detail: p.detail,
+        resolvedPath: p.resolvedPath,
+      }));
+
+  // AC-25 recovery path: the backend control must be reachable in the not-ready
+  // state whenever the model files ARE installed (the engine start may have
+  // failed under `gpu`). It is absent only when the model files are missing.
+  const modelFilesInstalled =
+    !checking && prerequisiteRows.some((p) => p.id === 'modelFiles' && p.uiState === 'installed');
+
+  const engineGroup = (
+    <CompanionEngineGroup
+      mode={mode}
+      onSelectMode={selectBackendMode}
+      saveState={saveState}
+      backend={serverLaunch?.backend ?? null}
+      statusAvailable={serverLaunch !== null}
+      devices={serverLaunch?.devices ?? []}
+      engineRunning={serverLaunch?.state === 'healthy' || serverLaunch?.state === 'starting'}
+      announcement={backendAnnouncement}
+    />
+  );
+
   // ── Voice input (#2876 ST-5 → #2877 ST-4 → #2914 ST-3) ─────────────────────
   // The voice group is informational: it NEVER gates this panel (the readiness
   // gate above is fed by the backend + serverLaunch only). Spec #2914 ST-3
   // removed the STT model row, so the panel no longer passes model/download
   // props — only the input-device probe remains.
   if (!isReady) {
-    // While checking (or not ready), render ONLY the wizard — never the toggle
-    // or the Teleport tip (AC-1 / REQ-6). During the first probe, derive the
-    // steps from the registry so each row shows its `checking` state.
-    const prerequisites: CompanionSetupWizardPrerequisite[] = checking
-      ? COMPANION_SETUP_STEPS.map((step) => ({
-          id: step.id,
-          uiState: 'checking' as PrerequisiteUiState,
-        }))
-      : (readiness?.prerequisites ?? []).map((p) => ({
-          id: p.id,
-          uiState: p.state as PrerequisiteUiState,
-          detail: p.detail,
-          resolvedPath: p.resolvedPath,
-        }));
-
+    // While checking (or not ready), render the wizard — never the toggle or the
+    // Teleport tip (AC-1 / REQ-6). AC-25's ONLY recovery path is the engine
+    // group, so it renders BELOW the wizard once the model files are installed.
     return (
-      <CompanionSetupWizard
-        prerequisites={prerequisites}
-        runningActionId={runningActionId}
-        actionError={actionError}
-        modelFiles={modelFiles}
-        serverLaunch={serverLaunch}
-        onRunAction={(id) => { void runAction(id); }}
-        onRecheck={() => { void refresh(); }}
-      />
+      <VStack align="stretch" gap={6}>
+        <CompanionSetupWizard
+          prerequisites={prerequisiteRows}
+          runningActionId={runningActionId}
+          actionError={actionError}
+          modelFiles={modelFiles}
+          serverLaunch={serverLaunch}
+          onRunAction={(id) => { void runAction(id); }}
+          onRecheck={() => { void refresh(); }}
+        />
+        {modelFilesInstalled && engineGroup}
+      </VStack>
     );
   }
 
@@ -268,6 +645,10 @@ export const CompanionSettingsPanel: React.FC = () => {
           Show or hide the desktop buddy and set how it behaves.
         </Text>
       </VStack>
+
+      {/* AC-24 engine group — FIRST in the ready branch: the engine is the
+          foundation the behaviour settings sit on (reading order = causality). */}
+      {engineGroup}
 
       {/* Behavior group — toggle + auto-return. */}
       <Box>

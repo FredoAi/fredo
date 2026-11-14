@@ -22,14 +22,15 @@
  * State-source → state mapping (frozen by the plan's Binding Names Block):
  *   - telemetry     : `StreamHealth` 1:1 → `healthy`/`degraded`/`down` (event-driven; never polled).
  *   - postgres      : `ready`/`attached` → healthy; `starting` → unknown; `failed`/`disabled` → down.
- *   - llamaServer   : `healthy` → healthy; otherwise (installed but stopped/unhealthy) → down;
- *                     companion not installed/configured → notSetUp.
- *   - companionModel: model files complete → healthy; companion installed but files missing → down;
- *                     companion not installed/configured → notSetUp.
+ *   - llamaServer   : `healthy` → healthy; running-but-not-ready → degraded; otherwise
+ *                     (configured but not running) → down; companion not configured
+ *                     (no model files) → notSetUp.
+ *   - companionModel: model files complete → healthy; companion configured but files
+ *                     missing → down; companion not configured → notSetUp.
  *
- * "Companion configured" is the llama-server (llama.cpp) prerequisite being
- * installed — the SAME signal the companion setup wizard gates on. It is an
- * explicit input (not inferred here) so the derivation stays pure and testable.
+ * "Companion configured" means **the model files are present** (Spec #3141 ST-6) —
+ * the runtime ships inside Fredo, so there is no separate runtime-install signal.
+ * It is an explicit input (not inferred here) so the derivation stays pure.
  */
 
 // ── Aggregate (worst-wins over enabled subsystems) ───────────────────────────
@@ -73,7 +74,11 @@ const MANDATORY_SUBSYSTEMS: readonly FredoSubsystemId[] = ['telemetry', 'postgre
 /** Fixed labels, in the frozen order. */
 const SUBSYSTEM_LABELS: Record<FredoSubsystemId, string> = {
   telemetry: 'Agent telemetry',
-  llamaServer: 'Llama server',
+  // The subsystem ID stays `llamaServer` (the frozen tooltip/array order key and
+  // the `health-line-llamaServer` QA hook); only the LABEL changes. A line
+  // reading "Llama server" for an in-process engine is exactly the false claim
+  // Spec #3141 retires.
+  llamaServer: 'Companion engine',
   companionModel: 'Companion model',
   postgres: 'Postgres',
 };
@@ -103,12 +108,13 @@ export type FredoPgState = 'disabled' | 'starting' | 'ready' | 'attached' | 'fai
 
 /**
  * The companion setup signal, derived from the SAME `check_companion_readiness`
- * probe the wizard uses: `llamaServerInstalled` is the llama.cpp prerequisite
- * (`installed`), and `modelFilesComplete` is the model-files prerequisite
- * (`installed`, equivalent to `check_model_files.complete`).
+ * probe the wizard uses.
+ *
+ * Spec #3141 ST-6: the companion runtime ships INSIDE Fredo, so there is no
+ * separate install signal any more. "Set up" now means **the model files are
+ * present** — the model-files prerequisite is the backend's only one (AC-17).
  */
 export interface FredoCompanionSnapshot {
-  llamaServerInstalled: boolean;
   modelFilesComplete: boolean;
 }
 
@@ -153,38 +159,41 @@ function telemetryLine(health: StreamHealth): FredoHealthLine {
 
 function llamaServerLine(snapshots: FredoHealthSnapshots): FredoHealthLine {
   const { companion, llamaServer } = snapshots;
+  const line = (state: SubsystemHealth, detail: string): FredoHealthLine => ({
+    id: 'llamaServer',
+    label: SUBSYSTEM_LABELS.llamaServer,
+    state,
+    detail,
+  });
   // Unresolved companion probe → neutral `unknown`.
-  if (!companion) {
-    return { id: 'llamaServer', label: SUBSYSTEM_LABELS.llamaServer, state: 'unknown', detail: 'Checking' };
-  }
-  // Never-installed companion → neutral `notSetUp` (never degrades — AC4).
-  if (!companion.llamaServerInstalled) {
-    return { id: 'llamaServer', label: SUBSYSTEM_LABELS.llamaServer, state: 'notSetUp', detail: 'Not set up' };
-  }
-  // Installed companion: the managed server must be healthy to read healthy.
-  if (!llamaServer) {
-    return { id: 'llamaServer', label: SUBSYSTEM_LABELS.llamaServer, state: 'unknown', detail: 'Checking' };
-  }
-  if (llamaServer.healthy) {
-    return { id: 'llamaServer', label: SUBSYSTEM_LABELS.llamaServer, state: 'healthy', detail: 'Running' };
-  }
-  // running && !healthy, or exited/failed (not running) → down (optional ⇒ degraded).
-  return { id: 'llamaServer', label: SUBSYSTEM_LABELS.llamaServer, state: 'down', detail: 'Stopped or unhealthy' };
+  if (!companion) return line('unknown', 'Checking');
+  // Not configured (no model files) → neutral `notSetUp` (never degrades — AC4).
+  // Spec #3141 ST-6: this gate used to read the retired runtime-install flag;
+  // "configured" now means the model files are present.
+  if (!companion.modelFilesComplete) return line('notSetUp', 'Not set up');
+  // Configured: the engine must be running AND ready to read healthy.
+  if (!llamaServer) return line('unknown', 'Checking');
+  if (llamaServer.healthy) return line('healthy', 'Running');
+  // Loaded but not yet accepting a turn — a transition, not a failure.
+  if (llamaServer.running) return line('degraded', 'Starting');
+  // Configured but idle: the shot the LED must never hide behind `unknown`.
+  return line('down', 'Not running');
 }
 
 function companionModelLine(snapshots: FredoHealthSnapshots): FredoHealthLine {
   const { companion } = snapshots;
-  if (!companion) {
-    return { id: 'companionModel', label: SUBSYSTEM_LABELS.companionModel, state: 'unknown', detail: 'Checking' };
-  }
-  if (companion.modelFilesComplete) {
-    return { id: 'companionModel', label: SUBSYSTEM_LABELS.companionModel, state: 'healthy', detail: 'Model files present' };
-  }
-  if (!companion.llamaServerInstalled) {
-    return { id: 'companionModel', label: SUBSYSTEM_LABELS.companionModel, state: 'notSetUp', detail: 'Not set up' };
-  }
-  // Installed companion with a missing/incomplete model set → down (optional ⇒ degraded).
-  return { id: 'companionModel', label: SUBSYSTEM_LABELS.companionModel, state: 'down', detail: 'Model files missing' };
+  const line = (state: SubsystemHealth, detail: string): FredoHealthLine => ({
+    id: 'companionModel',
+    label: SUBSYSTEM_LABELS.companionModel,
+    state,
+    detail,
+  });
+  if (!companion) return line('unknown', 'Checking');
+  if (companion.modelFilesComplete) return line('healthy', 'Model files present');
+  // No model files = not set up. Neutral, so a fresh offline machine boots the
+  // LED healthy-ish instead of a spurious `degraded` before the user does anything
+  // (Spec #3141 ST-6 — "set up" means the model files are present).
+  return line('notSetUp', 'Not set up');
 }
 
 function postgresLine(snapshots: FredoHealthSnapshots): FredoHealthLine {

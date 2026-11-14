@@ -22,7 +22,7 @@ import {
 function snapshots(overrides: Partial<FredoHealthSnapshots> = {}): FredoHealthSnapshots {
   return {
     telemetry: 'healthy',
-    companion: { llamaServerInstalled: true, modelFilesComplete: true },
+    companion: { modelFilesComplete: true },
     llamaServer: { running: true, healthy: true },
     postgres: { state: 'ready' },
     ...overrides,
@@ -55,7 +55,7 @@ describe('deriveSubsystemLines — order, ids, labels', () => {
     ]);
     expect(lines.map((l) => l.label)).toEqual([
       'Agent telemetry',
-      'Llama server',
+      'Companion engine',
       'Companion model',
       'Postgres',
     ]);
@@ -99,46 +99,77 @@ describe('deriveSubsystemLines — frozen source → state mapping', () => {
     );
   });
 
-  it('llamaServer: healthy → healthy; running-but-unhealthy / stopped → down', () => {
+  it('llamaServer: healthy → healthy; running-but-not-ready → degraded; stopped → down', () => {
     expect(
       lineOf(deriveSubsystemLines(snapshots({ llamaServer: { running: true, healthy: true } })), 'llamaServer'),
     ).toMatchObject({ state: 'healthy', detail: 'Running' });
     expect(
       lineOf(deriveSubsystemLines(snapshots({ llamaServer: { running: true, healthy: false } })), 'llamaServer'),
-    ).toMatchObject({ state: 'down', detail: 'Stopped or unhealthy' });
+    ).toMatchObject({ state: 'degraded', detail: 'Starting' });
     expect(
       lineOf(deriveSubsystemLines(snapshots({ llamaServer: { running: false, healthy: false } })), 'llamaServer'),
-    ).toMatchObject({ state: 'down', detail: 'Stopped or unhealthy' });
+    ).toMatchObject({ state: 'down', detail: 'Not running' });
   });
 
-  it('companionModel: complete → healthy; installed-but-incomplete → down', () => {
+  it('companionModel: complete → healthy; missing model files → notSetUp (neutral)', () => {
     expect(
       lineOf(
-        deriveSubsystemLines(
-          snapshots({ companion: { llamaServerInstalled: true, modelFilesComplete: true } }),
-        ),
+        deriveSubsystemLines(snapshots({ companion: { modelFilesComplete: true } })),
         'companionModel',
       ),
     ).toMatchObject({ state: 'healthy', detail: 'Model files present' });
+    // Spec #3141 ST-6 — "set up" means the model files are present, so an empty
+    // model set is NEUTRAL, never a `down` that would degrade a fresh machine.
     expect(
       lineOf(
-        deriveSubsystemLines(
-          snapshots({ companion: { llamaServerInstalled: true, modelFilesComplete: false } }),
-        ),
+        deriveSubsystemLines(snapshots({ companion: { modelFilesComplete: false } })),
         'companionModel',
       ),
-    ).toMatchObject({ state: 'down', detail: 'Model files missing' });
+    ).toMatchObject({ state: 'notSetUp', detail: 'Not set up' });
   });
 
-  it('never-installed companion → BOTH companion lines are neutral notSetUp', () => {
+  it('not-configured companion (no model files) → BOTH companion lines are neutral notSetUp', () => {
     const lines = deriveSubsystemLines(
       snapshots({
-        companion: { llamaServerInstalled: false, modelFilesComplete: false },
+        companion: { modelFilesComplete: false },
         llamaServer: { running: false, healthy: false },
       }),
     );
     expect(lineOf(lines, 'llamaServer')).toMatchObject({ state: 'notSetUp', detail: 'Not set up' });
     expect(lineOf(lines, 'companionModel')).toMatchObject({ state: 'notSetUp', detail: 'Not set up' });
+  });
+
+  // ── Spec #3141 ST-6 / QA R-3 — the UI/UX §5.2 truth table ─────────────────
+
+  it('files present + engine idle ⇒ Companion model healthy + Companion engine down + aggregate Degraded', () => {
+    const lines = deriveSubsystemLines(
+      snapshots({
+        companion: { modelFilesComplete: true },
+        llamaServer: { running: false, healthy: false },
+      }),
+    );
+    expect(lineOf(lines, 'companionModel')).toMatchObject({
+      state: 'healthy',
+      detail: 'Model files present',
+    });
+    expect(lineOf(lines, 'llamaServer')).toMatchObject({
+      state: 'down',
+      detail: 'Not running',
+    });
+    // Never `unknown`, never neutral-forever, never `Down` (llamaServer is optional).
+    expect(aggregateFredoHealth(lines)).toBe('degraded');
+  });
+
+  it('files missing (empty model set) ⇒ notSetUp on BOTH lines and a sustained-healthy aggregate', () => {
+    const lines = deriveSubsystemLines(
+      snapshots({
+        companion: { modelFilesComplete: false },
+        llamaServer: { running: false, healthy: false },
+      }),
+    );
+    expect(lineOf(lines, 'llamaServer').state).toBe('notSetUp');
+    expect(lineOf(lines, 'companionModel').state).toBe('notSetUp');
+    expect(aggregateFredoHealth(lines)).toBe('healthy');
   });
 
   it('unresolved probes → neutral unknown (R-7 settle)', () => {
@@ -184,7 +215,7 @@ describe('aggregateFredoHealth — worst-wins with neutral handling', () => {
     expect(aggregateFredoHealth(llamaDown)).toBe('degraded');
 
     const modelDown = deriveSubsystemLines(
-      snapshots({ companion: { llamaServerInstalled: true, modelFilesComplete: false } }),
+      snapshots({ llamaServer: { running: true, healthy: false } }),
     );
     expect(aggregateFredoHealth(modelDown)).toBe('degraded');
   });
@@ -199,7 +230,7 @@ describe('aggregateFredoHealth — worst-wins with neutral handling', () => {
 
     const notSetUp = deriveSubsystemLines(
       snapshots({
-        companion: { llamaServerInstalled: false, modelFilesComplete: false },
+        companion: { modelFilesComplete: false },
         llamaServer: { running: false, healthy: false },
       }),
     );

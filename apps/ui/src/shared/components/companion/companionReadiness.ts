@@ -1,13 +1,15 @@
 /**
  * Companion setup readiness — wire types for the backend
- * `check_companion_readiness` / `install_llama_cpp` commands (Spec #2855).
+ * `check_companion_readiness` command (Spec #2855; in-process since #3141).
  *
  * The backend owns the prerequisite SET; these ids are the stable join key
  * between the backend reports and the ordered `COMPANION_SETUP_STEPS` registry.
- * #2857 appends `'serverLaunch'` here and to the registry.
+ * #2857 appended `'serverLaunch'` (a frontend-composed lifecycle row). #3141
+ * ST-6 removed `'llamaServer'` with the out-of-process runtime — the model files
+ * are the backend's ONLY prerequisite.
  */
 
-export type PrerequisiteId = 'llamaServer' | 'modelFiles' | 'serverLaunch';
+export type PrerequisiteId = 'modelFiles' | 'serverLaunch';
 
 /** Determined states returned by the backend. */
 export type PrerequisiteState = 'missing' | 'installed' | 'error';
@@ -29,18 +31,6 @@ export interface CompanionReadiness {
   /** true iff EVERY prerequisite is `installed`. */
   ready: boolean;
   prerequisites: PrerequisiteReport[];
-}
-
-export type LlamaCppInstallCode =
-  | 'wingetUnavailable'
-  | 'installFailed'
-  | 'spawnFailed';
-
-export interface LlamaCppInstallResult {
-  success: boolean;
-  output: string;
-  error: string | null;
-  code: LlamaCppInstallCode | null;
 }
 
 // ── Model file acquisition (#2856) — wire types ──────────────────────────────
@@ -267,14 +257,15 @@ export type ModelAudioFailureCode =
  * The curated fallback sentences (UI/UX §7). NEVER the raw IPC string; each names
  * the cause and the next step. Spec #2914 ST-3 (R-3): the local fallback is gone
  * (there is exactly ONE voice path), so every sentence names a REACHABLE
- * remediation — install an audio-capable model / start the companion server /
- * try again — and none offers or names the removed local transcription.
+ * remediation. Spec #3141 ST-6 re-pointed the two former "model server" strings
+ * onto the IN-PROCESS companion engine (the out-of-process runtime is retired) —
+ * there is no server to start, and no string may tell a user to.
  */
 export const MODEL_AUDIO_FAILURE_COPY: Record<ModelAudioFailureCode, string> = {
   modelAudioUnsupported:
     "The companion model can't interpret audio — your recording wasn't sent. Install a model with audio support from Companion setup, or choose Change model.",
   modelAudioUnavailable:
-    "The local model server isn't running, so Fredo couldn't interpret that. Start the companion server, then try again.",
+    "The companion engine isn't running, so Fredo couldn't interpret that. Start the companion engine in Companion setup, then try again.",
   modelAudioFailed:
     "Fredo couldn't interpret that recording. Try again.",
 };
@@ -362,7 +353,7 @@ export function deriveModelAudioReadinessRow(
       return {
         state: 'server-unavailable',
         sentence:
-          "The local model server isn't running, so Fredo can't interpret audio.",
+          "The companion engine isn't running, so Fredo can't interpret audio.",
         offerChangeModel: false,
         offerRetry: true,
       };
@@ -376,12 +367,12 @@ export function deriveModelAudioReadinessRow(
   }
 }
 
-// ── Companion server launch (#2857) — wire + derived types ───────────────────
+// ── Companion engine launch (#2857; in-process since #3141) ──────────────────
 //
-// `check_companion_readiness` stays a 2-prerequisite backend command (Spec #2857
-// binding resolution — no cross-feature import). The third `serverLaunch`
-// prerequisite is COMPOSED in the frontend from `get_llama_server_status`, and
-// the overall gate is the backend readiness AND a healthy server.
+// `check_companion_readiness` reports the model files as the backend's ONLY
+// prerequisite (Spec #3141 — the runtime ships inside Fredo). The `serverLaunch`
+// lifecycle row is COMPOSED in the frontend from `get_llama_server_status`, and
+// the overall gate is the backend readiness AND a healthy engine.
 
 // ── In-process engine status surface (Spec #3141, ST-1) ──────────────────────
 //
@@ -404,6 +395,26 @@ export type CompanionBackendKind =
 
 /** The persisted backend selection (`llama_server_backend`). */
 export type CompanionBackendMode = 'auto' | 'gpu' | 'cpu';
+
+/**
+ * The ONE settings key the backend-mode control writes (Spec #3141 AC-24).
+ * Declared here so no string literal is duplicated in the panel; the backend
+ * owns the closed-enum validation (`auto` | `gpu` | `cpu`).
+ */
+export const COMPANION_BACKEND_SETTING_KEY = 'llama_server_backend';
+
+/**
+ * Coerce a persisted raw value onto the closed mode set. Mirrors the backend's
+ * `CompanionBackendMode::from_persisted` so an invalid persisted value can never
+ * render as a selection: anything outside `gpu`/`cpu` (case-insensitive,
+ * trimmed) is `auto`.
+ */
+export function coerceCompanionBackendMode(
+  raw: string | null | undefined,
+): CompanionBackendMode {
+  const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  return value === 'gpu' ? 'gpu' : value === 'cpu' ? 'cpu' : 'auto';
+}
 
 /**
  * One backend device the loaded model's tensors are spread across (camelCase,
@@ -456,50 +467,53 @@ export interface LlamaServerStatus {
   modelId?: string;
 }
 
-/** Why a launch could not reach a healthy server (`launch_llama_server`). */
-export type LlamaServerLaunchCode =
-  | 'spawnFailed'
-  | 'portInUse'
-  | 'healthTimeout'
-  | 'notConfigured';
-
-/** `launch_llama_server` result — always returned, never a hang. */
-export interface LlamaServerLaunchResult {
+/**
+ * `launch_llama_server` result (camelCase, IPC) — 1:1 with the Rust
+ * `CompanionEngineStartResult`. Always returned (never a hang); `code` is the
+ * typed failure when `success` is false.
+ */
+export interface CompanionEngineStartResult {
   success: boolean;
-  state: PrerequisiteState;
+  code: CompanionEngineErrorCode | null;
+  /** Curated, actionable detail — never a raw library/IPC string. */
   detail: string;
-  port: number | null;
-  configPath: string;
-  error: string | null;
-  code: LlamaServerLaunchCode | null;
-}
-
-/** Non-row payload of the backend `llama-server-status` exit event. */
-export interface LlamaServerStatusEvent {
-  running: boolean;
-  healthy: boolean;
-  port: number | null;
-  code: LlamaServerLaunchCode | null;
+  /** The backend ggml reports for the loaded device set. */
+  backend: CompanionBackendKind | null;
+  devices: CompanionDeviceInfo[];
 }
 
 /**
- * The frontend-composed `serverLaunch` step snapshot (#2857). `check_companion_
- * readiness` stays a 2-prerequisite command; this is derived from
+ * Payload of the engine status push channel (`llama-server-status`). The
+ * in-process engine emits no process-exit event, so the channel is retained as
+ * a re-probe hook; the shape stays the two engine flags plus the typed code.
+ */
+export interface LlamaServerStatusEvent {
+  running: boolean;
+  healthy: boolean;
+  code: CompanionEngineErrorCode | null;
+}
+
+/**
+ * The frontend-composed `serverLaunch` step snapshot (UI/UX §4.4). Derived from
  * `get_llama_server_status` by `useCompanionReadiness` (no cross-feature import).
  */
 export interface CompanionServerLaunchInfo {
   state: ServerLaunchState;
-  port: number | null;
-  configPath: string | null;
-  /** Backend failure verdict (`spawnFailed`/`portInUse`/`healthTimeout`/…). */
-  code: LlamaServerLaunchCode | null;
-  /** Raw backend detail (fallback for the card's copy). */
+  /** The reported backend; `null` until an engine is loaded (never invented). */
+  backend: CompanionBackendKind | null;
+  /** The device set ggml reports (empty before a load). */
+  devices: CompanionDeviceInfo[];
+  /** The canonical model id — the healthy card's detail. */
+  modelId: string | null;
+  /** The typed engine failure. */
+  code: CompanionEngineErrorCode | null;
+  /** Curated engine detail (fallback for the card's copy). */
   detail: string | null;
 }
 
 /**
- * Process-specific presentation state for the `serverLaunch` step. Distinct from
- * `PrerequisiteState` (which has no notion of a running-but-loading process).
+ * Engine-start presentation state for the `serverLaunch` step. Distinct from
+ * `PrerequisiteState` (which has no notion of a running-but-loading engine).
  */
 export type ServerLaunchState =
   | 'notRunning'
@@ -508,18 +522,10 @@ export type ServerLaunchState =
   | 'exited'
   | 'failed';
 
-/** Fallback host/port for the phase caption before the backend reports one. */
-export const DEFAULT_LLAMA_SERVER_PORT = 8080;
-export const DEFAULT_LLAMA_SERVER_HOST = '127.0.0.1';
-
-export function llamaServerEndpoint(port: number | null | undefined): string {
-  return `http://${DEFAULT_LLAMA_SERVER_HOST}:${port ?? DEFAULT_LLAMA_SERVER_PORT}`;
-}
-
 /**
- * Derive the `serverLaunch` step state from the backend status + local action
+ * Derive the `serverLaunch` step state from the engine status + local action
  * outcome. Pure — unit-testable without a Tauri host. `status.lastError` is the
- * backend-persisted failure marker, so a failed launch is never silently retried
+ * backend-persisted failure marker, so a failed start is never silently retried
  * as `notRunning`.
  */
 export function deriveServerLaunchState(input: {
@@ -528,7 +534,7 @@ export function deriveServerLaunchState(input: {
   /** The last launch attempt failed (invoke rejection or `success:false`). */
   error: boolean;
   status: LlamaServerStatus | null;
-  /** A previously-healthy server was observed to have exited. */
+  /** A previously-healthy engine was observed to have stopped. */
   exited: boolean;
 }): ServerLaunchState {
   if (input.launching) return 'starting';
@@ -539,29 +545,97 @@ export function deriveServerLaunchState(input: {
   return 'notRunning';
 }
 
-/**
- * AC4 actionable start-failure copy. Names the concrete fix; the endpoint is the
- * active/config port. A `healthTimeout` is a distinct (non-spawn) condition.
- */
-export function serverLaunchFailureCopy(
-  code: LlamaServerLaunchCode | null | undefined,
-  endpoint: string,
-): string {
-  if (code === 'healthTimeout') {
-    return "The companion server started but didn't answer its health check in time. It may still be loading the model — choose Retry to try again.";
-  }
-  // spawnFailed / portInUse / notConfigured / a raw invoke rejection all share the
-  // actionable start-failure copy (never a raw stack/IPC string).
-  return `Couldn't start the companion server. Check that ${endpoint} is free and llama-server is installed, then choose Retry.`;
+/** The curated engine-failure copy: a distinct title + an actionable sentence. */
+export interface EngineFailureCopy {
+  /** A distinct title per typed code (never a bare shared "Failed to start"). */
+  title: string;
+  /** Cause AND next step; never a raw library/IPC string. */
+  sentence: string;
 }
 
-/** Lifecycle copy shown when a previously-healthy server has exited (UI §6). */
-export const SERVER_EXITED_COPY =
-  'The companion server stopped unexpectedly. Choose Restart to connect Fredo again.';
+/**
+ * `engineFailureCopy` — the UI/UX §3.2 typed-copy table (Spec #3141 AC-25).
+ *
+ * One distinct TITLE per `CompanionEngineErrorCode`, so the failure is
+ * recognisable at a glance, plus a sentence naming the cause and the next step.
+ * No sentence names `llama-server`, a port, an endpoint, a `.bat`, or anything to
+ * install (AC-17/AC-28), and no sentence is a raw library/IPC string (NFR-5).
+ * The `gpuUnavailable` sentence names the mode control by its visible label —
+ * which is why that control must be on the same screen (UI/UX §2.5).
+ */
+export function engineFailureCopy(
+  code: CompanionEngineErrorCode | null | undefined,
+): EngineFailureCopy {
+  switch (code) {
+    case 'gpuUnavailable':
+      return {
+        title: 'No usable GPU',
+        sentence:
+          'The companion is set to use the GPU, but this machine has no usable GPU. Switch the companion backend to Automatic or CPU, then choose Start companion engine.',
+      };
+    case 'backendInitFailed':
+      return {
+        title: "The engine couldn't start",
+        sentence:
+          "Fredo's built-in engine couldn't initialise on this machine. Choose Retry; if it keeps failing, restart Fredo.",
+      };
+    case 'modelMissing':
+      return {
+        title: 'Model files are missing',
+        sentence:
+          "One or more model files the engine needs aren't on disk. Download the model files in Companion setup, then start the engine again.",
+      };
+    case 'modelLoadFailed':
+      return {
+        title: "The model couldn't load",
+        sentence:
+          'The model file is present but couldn\'t be loaded. Close other apps to free memory, then choose Retry; if it still fails, download the model files again.',
+      };
+    case 'mtpInitFailed':
+      return {
+        title: 'Speculative decoding unavailable',
+        sentence:
+          "The engine couldn't set up speculative decoding with the draft model. Download the model files again, then choose Retry.",
+      };
+    case 'mmprojInitFailed':
+      return {
+        title: "The vision projector couldn't load",
+        sentence:
+          "The engine couldn't load the vision projector file. Download the model files again, then choose Retry.",
+      };
+    case 'contextCreateFailed':
+      return {
+        title: 'Not enough memory',
+        sentence:
+          "The engine couldn't allocate the memory it needs. Close other apps, then choose Retry.",
+      };
+    case 'busy':
+      return {
+        title: 'The companion is busy',
+        sentence: 'Another reply is still running. Wait for it to finish, then choose Retry.',
+      };
+    case 'startTimeout':
+      return {
+        title: 'The engine is taking too long',
+        sentence:
+          "The engine didn't finish starting in time. It may still be loading the model — keep waiting, or choose Retry.",
+      };
+    default:
+      return {
+        title: "Couldn't start the engine",
+        sentence:
+          "Fredo's companion engine didn't start. Choose Retry; if it keeps failing, restart Fredo.",
+      };
+  }
+}
 
-/** Wait affordance copy — shown after the client watchdog; NEVER an AC4 failure. */
+/** Lifecycle copy shown when a previously-healthy engine has stopped (UI §3.3). */
+export const SERVER_EXITED_COPY =
+  'The companion engine stopped unexpectedly. Choose Start companion engine to reconnect Fredo.';
+
+/** Wait affordance copy — shown after the client watchdog; NEVER a failure. */
 export const SERVER_WATCHDOG_COPY =
-  'The server is taking longer than expected. You can keep waiting, or choose Retry.';
+  'The engine is taking longer than expected. You can keep waiting, or choose Retry.';
 
 // ── Curated failure copy (#2865 ST-2/H3) ─────────────────────────────────────
 //
@@ -580,19 +654,8 @@ export interface ErrorCopy {
 
 /** Human name for each step, used by the generic fallback sentence. */
 const STEP_ERROR_LABEL: Record<PrerequisiteId, string> = {
-  llamaServer: 'the llama.cpp install',
   modelFiles: 'the model download',
-  serverLaunch: 'the server launch',
-};
-
-/** Curated install-failure copy keyed by the backend's typed install code. */
-const INSTALL_ERROR_COPY: Record<LlamaCppInstallCode, string> = {
-  wingetUnavailable:
-    "Couldn't install llama.cpp — winget isn't available. Install llama.cpp manually, then choose Re-check.",
-  installFailed:
-    "The llama.cpp installation didn't finish. Check your network connection, then choose Retry.",
-  spawnFailed:
-    "The llama.cpp installer couldn't start. Close other installers, then choose Retry.",
+  serverLaunch: 'the engine start',
 };
 
 /**
@@ -638,12 +701,11 @@ export function errorCopyFor(
 
   let message: string;
   if (id === 'serverLaunch') {
-    message = serverLaunchFailureCopy(
-      (code as LlamaServerLaunchCode | null | undefined) ?? null,
-      llamaServerEndpoint(null),
-    );
-  } else if (id === 'llamaServer' && code && code in INSTALL_ERROR_COPY) {
-    message = INSTALL_ERROR_COPY[code as LlamaCppInstallCode];
+    // The typed engine code carries a distinct curated title + sentence; a raw
+    // invoke rejection with no code falls through to the null-code row.
+    message = engineFailureCopy(
+      (code as CompanionEngineErrorCode | null | undefined) ?? null,
+    ).sentence;
   } else if (id === 'modelFiles' && raw) {
     const cause = DOWNLOAD_CAUSE_COPY.find((entry) => entry.re.test(raw));
     message = cause?.message ?? genericErrorCopy(id);

@@ -39,19 +39,18 @@ The gRPC (`:4317`) and HTTP (`:4318`) receivers bind to **`127.0.0.1` only** —
 
 ---
 
-## Companion `llama-server`
+## Companion engine (in-process)
 
-The companion's inference runtime is a managed `llama-server` **child process**, launched by the app from a launch config generated from local settings. It binds to **loopback (`127.0.0.1`) only** on the configured port (default `8080`) — it is not reachable from other machines on the network.
+The companion's inference runtime is **linked into the Fredo binary** (`llama-cpp-4` bindings) and runs **in-process** on one dedicated engine thread. There is **no** `llama-server` child process, **no** listening socket, and **no** loopback HTTP transport — the former child-process surface was retired in Spec #3141, so there is no port for another process to reach and no process to leak.
 
 **Protections:**
-- Loopback-only binding prevents external access
-- Spawned and stopped only through the `applications/llm_server` commands; the process is never started ad-hoc from other application code
-- Terminated on app exit (kill-on-exit hook); a PID-reuse-guarded startup sweep reclaims an orphan after a hard-kill, so no stale server survives
-- The generated launch config and model paths come from the local settings DB — no network fetch at launch
+- No new listening surface: the engine opens no socket, which removes rather than adds an attack surface
+- The engine never consults `PATH`, winget, or a configured executable path — model files come from the pinned manifest under the local models directory, and nothing is fetched at load time
+- Commands reach the engine only through its owned-thread channel from `applications/llm_server`; nothing spawns an inference process ad hoc
+- Model paths come from the local settings DB + the pinned manifest — no network fetch at load
 
 **Limitations:**
-- Any process on the same machine can reach the loopback port
-- The server has no authentication — the same local-user threat model as the IPC socket and OTLP receivers
+- There is **no process-level fault containment**: a `ggml` abort, out-of-memory, or driver fault takes the whole Fredo process down. Mitigation is typed errors on recoverable paths plus defensive context sizing — not process isolation. (This is a disclosed, accepted trade-off of running the engine in-process.)
 
 ## Embedded PostgreSQL (`applications/pg_supervisor`)
 
@@ -116,9 +115,9 @@ The built-in SQL Studio client connects to **external** PostgreSQL databases (se
 
 ## Voice Input
 
-Voice input is **local-only by hard requirement**. Microphone capture is native (`cpal`/WASAPI in Fredo's Rust — no `getUserMedia`), and the captured utterance is understood by the locally-managed companion model itself as that turn's input. There is exactly **one speech path** (model audio) and **no separate on-device recognizer or transcription mode**. Audio never traverses the network: the **only** way the clip leaves the capture path is the `input_audio` content part of a turn sent over **loopback** to the managed `llama-server` (the same `127.0.0.1` process documented above).
+Voice input is **local-only by hard requirement**. Microphone capture is native (`cpal`/WASAPI in Fredo's Rust — no `getUserMedia`), and the captured utterance is understood by the companion model itself as that turn's input. There is exactly **one speech path** (model audio) and **no separate on-device recognizer or transcription mode**. Audio never traverses the network: the clip is encoded **in-process** by the companion engine (through `mtmd`) and never leaves the machine — there is no network client on the path at all.
 
-**Model audio.** A captured clip is handed to the locally-managed companion model as that turn's input and **no transcript is shown**. It is delivered over **loopback only**, is never uploaded, and adds no outbound route. It is used only when the installed model reports audio support — capability is probed, never inferred from a model name — and when the model does not support audio (or the local server is unavailable) nothing is transmitted and Fredo says so.
+**Model audio.** A captured clip is handed to the companion model as that turn's input and **no transcript is shown**. It is encoded in-process, is never uploaded, and adds no outbound route. It is used only when the installed model reports audio support — capability is probed, never inferred from a model name — and when the model does not support audio (or the companion engine is not running) nothing is sent and Fredo says so.
 
 **Protections:**
 - No audio or audio-derived payload is transmitted; the capture path contains no network client (pinned by the `voice_decode_path_has_no_network_or_process_symbols` invariant test)
@@ -127,7 +126,7 @@ Voice input is **local-only by hard requirement**. Microphone capture is native 
 - Capture must be **visibly indicated for its whole duration** by the **launcher bar cue** (the `Listening` chip and placeholder, announced as text), and the cue appears only while capture is genuinely live, so audio is never captured without a visible active indicator; Spec #2882 retired the companion listening bubble, leaving the bar cue as the only capture indicator
 - **No capture before the gesture:** no microphone stream exists and no audio is captured until the Space hold; with voice disabled nothing is captured
 - The microphone is released the moment Space is released, the utterance is cancelled, the bar or window loses focus, or voice is disabled
-- **Model audio adds no new egress:** a model-audio clip is carried by the existing loopback chat transport to the managed `llama-server`; the layer-confinement invariant over `infrastructure/voice/**` (no network/process symbols) is unchanged, and there is no cloud-fallback branch
+- **Model audio adds no new egress:** a model-audio clip is encoded in-process by the companion engine — there is no transport hop at all — so the layer-confinement invariant over `infrastructure/voice/**` (no network/process symbols) is unchanged, and there is no cloud-fallback branch
 - **No transcript exists:** the single speech path produces no transcript, so no audio-derived word reaches any surface
 - **The clip is bounded and non-lossy:** capture auto-stops at the pinned limit (`MAX_AUDIO_CLIP_MS`, ~30 s) with a visible notice, and the entire clip is kept and delivered — never a silent truncation or a dropped tail
 - **The capture is visibly indicated for its whole duration** by the launcher bar cue (including its processing state); there is no silent capture
@@ -218,7 +217,7 @@ The React UI renders all agent-provided content via React's JSX (no `dangerously
 Three Rust/IPC seams reachable from the webview are additionally hardened so a compromised webview cannot name an executable or a write target:
 
 - **The terminal test seam is release-absent.** `spawn_terminal_session`'s TEST-ONLY `test_override` argument (wire type `SpawnTestOverride`) is gated on `#[cfg(debug_assertions)]`, so a release build (`debug_assertions = false`) declares no such argument: no IPC payload can select the executable a PTY is pointed at, and the binary comes only from the stored `terminal_copilot_path` (Copilot) or PATH resolution. Debug/test builds keep the seam so the committed terminal recipes remain reachable (`SPAWN_TEST_SEAM_COMPILED_IN` is the compile-time marker).
-- **Sensitive settings path values are validated on BOTH write planes.** `save_setting` (data plane) and `save_control_setting` (control-plane cache) apply the same rule to exactly four keys — `llama_server_path`, `llama_server_companion_dir`, `terminal_copilot_path`, `terminal_pwsh_path`. A non-empty value must be absolute, free of control characters and free of `..` components (the checks run control characters → absolute → `..`, and the first match is rejected with a message naming the key and the rule); an empty/whitespace-only value clears the setting; every key outside the four is stored unchanged (no allowlist). An accepted value is persisted byte-identically — never trimmed or normalised.
+- **Sensitive settings path values are validated on BOTH write planes.** `save_setting` (data plane) and `save_control_setting` (control-plane cache) apply the same rule to exactly three keys — `llama_server_companion_dir`, `terminal_copilot_path`, `terminal_pwsh_path`. (`llama_server_path` was removed from the set with the out-of-process runtime in Spec #3141; a persisted value is inert — never read for runtime resolution — and is never deleted.) A non-empty value must be absolute, free of control characters and free of `..` components (the checks run control characters → absolute → `..`, and the first match is rejected with a message naming the key and the rule); an empty/whitespace-only value clears the setting; every key outside the three is stored unchanged (no allowlist). An accepted value is persisted byte-identically — never trimmed or normalised.
 - **The dataset export cannot name an arbitrary file.** The webview `export_doom_dataset` command takes **no path argument** — it opens a native save dialog and writes only to the path the user picks (`Ok(None)` on cancel, nothing written). The headless CLI/IPC `--out` (a separate, non-webview entry) is confined to `<dataset_dir>/exports/`: absolute paths, drive/UNC prefixes and `..` components are rejected with a typed error, and a blank/absent `--out` writes the default `<dataset_dir>/exports/doom-dataset-<ts>.<ext>`.
 
 The command names and the debug wire keys (`testOverride`, `binary`, `pwshMajor`) are unchanged, and no new dependency, plugin, capability or CSP change is introduced. This hardens reachability only — it does not alter the trust model above (any process running as the same OS user can still call the local IPC socket).

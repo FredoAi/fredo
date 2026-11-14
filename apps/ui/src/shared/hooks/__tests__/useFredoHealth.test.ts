@@ -26,7 +26,6 @@ vi.mock('@/shared/contexts/StreamContext', () => ({
 const COMPANION_READY = {
   ready: true,
   prerequisites: [
-    { id: 'llamaServer', state: 'installed', detail: 'ok', resolvedPath: 'x' },
     { id: 'modelFiles', state: 'installed', detail: 'ok', resolvedPath: 'y' },
   ],
 };
@@ -34,12 +33,11 @@ const COMPANION_READY = {
 const COMPANION_STALE = {
   ready: false,
   prerequisites: [
-    { id: 'llamaServer', state: 'missing', detail: 'no', resolvedPath: null },
     { id: 'modelFiles', state: 'missing', detail: 'no', resolvedPath: null },
   ],
 };
 
-const LLAMA_OK = { running: true, healthy: true, port: 8080, pid: 1, configPath: '', logPath: '', lastError: null };
+const LLAMA_OK = { running: true, healthy: true, port: null, pid: null, configPath: '', logPath: '', lastError: null, backendMode: 'auto', devices: [], backend: 'cpu' };
 
 function stateOf(health: FredoHealth, id: FredoSubsystemId): SubsystemHealth {
   const line = health.subsystems.find((l) => l.id === id);
@@ -232,6 +230,85 @@ describe('useFredoHealth — seq guard', () => {
   });
 });
 
+describe('useFredoHealth — normalizeCompanion survives the one-prerequisite world (#3141 ST-6)', () => {
+  it('reads the LED companion lines from a modelFiles-only prerequisite set', async () => {
+    adapterBridge.setInvoke(
+      makeInvoke({
+        check_companion_readiness: () => ({
+          ready: true,
+          prerequisites: [
+            { id: 'modelFiles', state: 'installed', detail: 'ok', resolvedPath: 'y' },
+          ],
+        }),
+        // The engine is loaded but idle — the shipped "configured, not running" state.
+        get_llama_server_status: () => ({
+          running: false,
+          healthy: false,
+          port: null,
+          pid: null,
+          configPath: '',
+          logPath: '',
+          lastError: null,
+          backendMode: 'auto',
+          devices: [],
+        }),
+      }),
+    );
+    adapterBridge.setListen(async () => () => {});
+
+    const { result } = renderHook(() => useFredoHealth());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    // NEVER permanently `unknown` — the retired both-prerequisite gate is gone.
+    expect(stateOf(result.current, 'companionModel')).toBe('healthy');
+    expect(stateOf(result.current, 'llamaServer')).toBe('down');
+    expect(result.current.overall).toBe('degraded');
+
+    const modelLine = result.current.subsystems.find((l) => l.id === 'companionModel');
+    expect(modelLine?.detail).toBe('Model files present');
+    const engineLine = result.current.subsystems.find((l) => l.id === 'llamaServer');
+    expect(engineLine?.detail).toBe('Not running');
+    expect(engineLine?.label).toBe('Companion engine');
+  });
+
+  it('reads notSetUp on BOTH companion lines for an empty model set (fresh machine)', async () => {
+    adapterBridge.setInvoke(
+      makeInvoke({
+        check_companion_readiness: () => ({
+          ready: false,
+          prerequisites: [
+            { id: 'modelFiles', state: 'missing', detail: 'none', resolvedPath: null },
+          ],
+        }),
+        get_llama_server_status: () => ({
+          running: false,
+          healthy: false,
+          port: null,
+          pid: null,
+          configPath: '',
+          logPath: '',
+          lastError: null,
+          backendMode: 'auto',
+          devices: [],
+        }),
+      }),
+    );
+    adapterBridge.setListen(async () => () => {});
+
+    const { result } = renderHook(() => useFredoHealth());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(stateOf(result.current, 'companionModel')).toBe('notSetUp');
+    expect(stateOf(result.current, 'llamaServer')).toBe('notSetUp');
+    // Neutral: a fresh offline machine must never boot the LED to Degraded.
+    expect(result.current.overall).toBe('healthy');
+  });
+});
+
 describe('useFredoHealth — llama-server-status push event', () => {
   it('applies the pushed payload immediately with no IPC', async () => {
     let handler: ((payload: unknown) => void) | null = null;
@@ -252,7 +329,7 @@ describe('useFredoHealth — llama-server-status push event', () => {
     const callsBefore = invoke.mock.calls.length;
 
     act(() => {
-      handler?.({ running: false, healthy: false, port: null, code: null });
+      handler?.({ running: false, healthy: false, code: null });
     });
 
     expect(stateOf(result.current, 'llamaServer')).toBe('down');

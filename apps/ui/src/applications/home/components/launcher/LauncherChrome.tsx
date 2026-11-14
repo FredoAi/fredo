@@ -41,7 +41,7 @@ import type { FredoHealth, FredoHealthState, SubsystemHealth } from '../../../..
  * focusable trigger that carries the accessible state (`role="status"` /
  * composed `aria-label`) and reveals a Chakra v3 tooltip on hover/focus. The
  * tooltip enumerates the overall state plus each of the four subsystems (Agent
- * telemetry, Llama server, Companion model, Postgres) in a FIXED order, each
+ * telemetry, Companion engine, Companion model, Postgres) in a FIXED order, each
  * with its own state word + detail. State is conveyed by TEXT, never colour
  * alone. The former bottom-center `StreamStatus` LED pair is removed, so this is
  * the only status LED on the desktop.
@@ -54,7 +54,7 @@ export interface LauncherChromeProps {
    * Aggregate whole-system health from the host (Spec #3052) — the LED dot
    * colour + tooltip + composed `aria-label` all derive from this. Replaces the
    * former stream-only `isOnline` flag: `overall` is the worst-wins fold over all
-   * enabled subsystems (Agent telemetry, Llama server, Companion model, Postgres).
+   * enabled subsystems (Agent telemetry, Companion engine, Companion model, Postgres).
    */
   health: FredoHealth;
   /** Host-owned engaged state (#2819) — grid + hints revealed; drives the hint row + the dot-grid accent thumb. */

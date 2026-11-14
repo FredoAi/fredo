@@ -1,17 +1,18 @@
 /**
- * useCompanionReadiness — #2857 `serverLaunch` composition.
+ * useCompanionReadiness — the `serverLaunch` lifecycle composition (#2857;
+ * in-process engine since #3141 ST-6).
  *
  * Proves, without a Tauri host:
- *   1. `serverLaunch` is composed from `get_llama_server_status` (the backend
- *      readiness command stays 2-prereq) and auto-launches exactly ONCE when the
- *      two provisioning steps are installed, flipping to `healthy` with NO reload;
- *   2. after a launch FAILURE the card stays `failed` and a Re-check never
- *      re-triggers the auto-launch (no restart loop — manual Retry only);
- *   3. no auto-launch while the provisioning steps are not installed;
+ *   1. `serverLaunch` is composed from `get_llama_server_status` while the backend
+ *      readiness command reports the model files as its ONLY prerequisite, and it
+ *      auto-starts exactly ONCE, flipping to `healthy` with NO reload;
+ *   2. after a start FAILURE the card stays `failed` and a Re-check never
+ *      re-triggers the auto-start (the module-scoped one-shot guard — no restart
+ *      loop, which with `gpu` on a GPU-less machine would spin);
+ *   3. no auto-start while the model files are not installed;
  *   4. a status command that is unavailable degrades to the backend's own
  *      prerequisite set (no fabricated health);
- *   5. the backend `llama-server-status` exit event re-probes and flips the step
- *      to `exited`, dropping the overall gate.
+ *   5. the engine status push event re-probes and drops the overall gate.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -23,20 +24,14 @@ import {
   resetCompanionAutoLaunchGuard,
 } from '@/shared/components/companion/useCompanionReadiness';
 import type {
+  CompanionEngineStartResult,
   CompanionReadiness,
-  LlamaServerLaunchResult,
   LlamaServerStatus,
 } from '@/shared/components/companion/companionReadiness';
 
-const bothInstalled: CompanionReadiness = {
+const modelFilesInstalled: CompanionReadiness = {
   ready: true,
   prerequisites: [
-    {
-      id: 'llamaServer',
-      state: 'installed',
-      detail: 'llama-server found.',
-      resolvedPath: 'C:\\llama\\llama-server.exe',
-    },
     {
       id: 'modelFiles',
       state: 'installed',
@@ -49,7 +44,6 @@ const bothInstalled: CompanionReadiness = {
 const notReady: CompanionReadiness = {
   ready: false,
   prerequisites: [
-    { id: 'llamaServer', state: 'missing', detail: 'not found', resolvedPath: null },
     { id: 'modelFiles', state: 'missing', detail: '0 of 3 present', resolvedPath: null },
   ],
 };
@@ -60,9 +54,22 @@ function status(overrides: Partial<LlamaServerStatus> = {}): LlamaServerStatus {
     healthy: false,
     port: null,
     pid: null,
-    configPath: 'C:\\data\\companion\\llama-server-launch.bat',
-    logPath: 'C:\\data\\companion\\llama-server.log',
+    configPath: '',
+    logPath: '',
     lastError: null,
+    backendMode: 'auto',
+    devices: [],
+    ...overrides,
+  };
+}
+
+function started(overrides: Partial<CompanionEngineStartResult> = {}): CompanionEngineStartResult {
+  return {
+    success: true,
+    code: null,
+    detail: 'engine ready',
+    backend: 'cpu',
+    devices: [],
     ...overrides,
   };
 }
@@ -81,26 +88,17 @@ afterEach(() => {
   adapterBridge.setListen(undefined as never);
 });
 
-describe('useCompanionReadiness serverLaunch composition (#2857)', () => {
-  it('composes the third prerequisite and auto-launches once to healthy with no reload', async () => {
+describe('useCompanionReadiness serverLaunch composition (#2857 / #3141)', () => {
+  it('composes the lifecycle row and auto-starts once to healthy with no reload', async () => {
     let currentStatus = status();
     let launchCalls = 0;
     adapterBridge.setInvoke(async (command: string) => {
-      if (command === 'check_companion_readiness') return bothInstalled;
+      if (command === 'check_companion_readiness') return modelFilesInstalled;
       if (command === 'get_llama_server_status') return currentStatus;
       if (command === 'launch_llama_server') {
         launchCalls += 1;
-        currentStatus = status({ running: true, healthy: true, port: 8080, pid: 4242 });
-        const result: LlamaServerLaunchResult = {
-          success: true,
-          state: 'installed',
-          detail: 'llama-server running on http://127.0.0.1:8080 (pid 4242).',
-          port: 8080,
-          configPath: currentStatus.configPath,
-          error: null,
-          code: null,
-        };
-        return result;
+        currentStatus = status({ running: true, healthy: true, backend: 'cpu', modelId: 'gemma-4' });
+        return started();
       }
       return undefined;
     });
@@ -108,11 +106,10 @@ describe('useCompanionReadiness serverLaunch composition (#2857)', () => {
 
     const { result } = renderHook(() => useCompanionReadiness());
 
-    // The backend readiness command stays 2-prereq; the wizard's third row is
-    // composed in the frontend.
+    // The backend readiness command reports the model files ONLY; the lifecycle
+    // row is composed in the frontend.
     await waitFor(() => expect(result.current.serverLaunch).not.toBeNull());
     expect(result.current.readiness?.prerequisites.map((p) => p.id)).toEqual([
-      'llamaServer',
       'modelFiles',
       'serverLaunch',
     ]);
@@ -120,31 +117,31 @@ describe('useCompanionReadiness serverLaunch composition (#2857)', () => {
     await waitFor(() => expect(result.current.serverLaunch?.state).toBe('healthy'));
     expect(launchCalls).toBe(1);
     expect(result.current.readiness?.ready).toBe(true);
-    expect(result.current.serverLaunch?.port).toBe(8080);
+    expect(result.current.serverLaunch?.backend).toBe('cpu');
+    expect(result.current.serverLaunch?.modelId).toBe('gemma-4');
     const prereqs = result.current.readiness?.prerequisites ?? [];
     expect(prereqs[prereqs.length - 1]?.id).toBe('serverLaunch');
     expect(prereqs[prereqs.length - 1]?.state).toBe('installed');
   });
 
-  it('auto-launches exactly once; a failure stays failed and Re-check never restarts it', async () => {
+  it('auto-starts exactly once; a failure stays failed and Re-check never restarts it', async () => {
     let currentStatus = status();
     let launchCalls = 0;
     adapterBridge.setInvoke(async (command: string) => {
-      if (command === 'check_companion_readiness') return bothInstalled;
+      if (command === 'check_companion_readiness') return modelFilesInstalled;
       if (command === 'get_llama_server_status') return currentStatus;
       if (command === 'launch_llama_server') {
         launchCalls += 1;
-        currentStatus = status({ lastError: 'failed to start llama-server' });
-        const result: LlamaServerLaunchResult = {
+        currentStatus = status({
+          lastError: 'no usable GPU',
+          lastErrorCode: 'gpuUnavailable',
+        });
+        return started({
           success: false,
-          state: 'error',
-          detail: 'failed to start llama-server',
-          port: 8080,
-          configPath: currentStatus.configPath,
-          error: 'failed to start llama-server',
-          code: 'spawnFailed',
-        };
-        return result;
+          code: 'gpuUnavailable',
+          detail: 'no usable GPU',
+          backend: null,
+        });
       }
       return undefined;
     });
@@ -155,11 +152,11 @@ describe('useCompanionReadiness serverLaunch composition (#2857)', () => {
     await waitFor(() => expect(result.current.serverLaunch?.state).toBe('failed'));
     expect(launchCalls).toBe(1);
     expect(result.current.readiness?.ready).toBe(false);
-    expect(result.current.actionError.serverLaunch).toMatch(
-      /Couldn't start the companion server/,
-    );
+    // The typed code drives the curated copy — never a raw string.
+    expect(result.current.serverLaunch?.code).toBe('gpuUnavailable');
+    expect(result.current.actionError.serverLaunch).toContain('no usable GPU');
 
-    // Manual Re-check must NOT re-trigger the auto-launch (module-scoped one-shot).
+    // Manual Re-check must NOT re-trigger the auto-start (module-scoped one-shot).
     await act(async () => {
       await result.current.refresh();
     });
@@ -168,7 +165,7 @@ describe('useCompanionReadiness serverLaunch composition (#2857)', () => {
     expect(result.current.serverLaunch?.state).toBe('failed');
   });
 
-  it('does not auto-launch while the provisioning steps are not installed', async () => {
+  it('does not auto-start while the model files are not installed', async () => {
     let launchCalls = 0;
     adapterBridge.setInvoke(async (command: string) => {
       if (command === 'check_companion_readiness') return notReady;
@@ -192,7 +189,7 @@ describe('useCompanionReadiness serverLaunch composition (#2857)', () => {
 
   it('degrades to the backend prerequisite set when the status command is unavailable', async () => {
     adapterBridge.setInvoke(async (command: string) => {
-      if (command === 'check_companion_readiness') return bothInstalled;
+      if (command === 'check_companion_readiness') return modelFilesInstalled;
       return undefined;
     });
     adapterBridge.setListen(async () => () => {});
@@ -202,14 +199,14 @@ describe('useCompanionReadiness serverLaunch composition (#2857)', () => {
 
     expect(result.current.serverLaunch).toBeNull();
     expect(result.current.readiness?.ready).toBe(true);
-    expect(result.current.readiness?.prerequisites).toHaveLength(2);
+    expect(result.current.readiness?.prerequisites).toHaveLength(1);
   });
 
-  it('flips to exited when the llama-server-status exit event fires', async () => {
-    let currentStatus = status({ running: true, healthy: true, port: 8080, pid: 1 });
+  it('flips to exited when the engine status push reports the engine stopped', async () => {
+    let currentStatus = status({ running: true, healthy: true, backend: 'cpu' });
     let handler: ((payload: unknown) => void) | null = null;
     adapterBridge.setInvoke(async (command: string) => {
-      if (command === 'check_companion_readiness') return bothInstalled;
+      if (command === 'check_companion_readiness') return modelFilesInstalled;
       if (command === 'get_llama_server_status') return currentStatus;
       return undefined;
     });
@@ -226,23 +223,23 @@ describe('useCompanionReadiness serverLaunch composition (#2857)', () => {
 
     currentStatus = status();
     act(() => {
-      handler?.({ running: false, healthy: false, port: null, code: null });
+      handler?.({ running: false, healthy: false, code: null });
     });
 
     await waitFor(() => expect(result.current.serverLaunch?.state).toBe('exited'));
     expect(result.current.readiness?.ready).toBe(false);
   });
 
-  // ── ST-8: never ready while a launch/health attempt is in flight ───────────
+  // ── ST-8: never ready while a start attempt is in flight ──────────────────
 
-  it('reports `starting` and keeps the ready gate false while a launch is in flight', async () => {
+  it('reports `starting` and keeps the ready gate false while a start is in flight', async () => {
     let currentStatus = status();
-    let resolveLaunch: ((value: LlamaServerLaunchResult) => void) | null = null;
+    let resolveLaunch: ((value: CompanionEngineStartResult) => void) | null = null;
     adapterBridge.setInvoke(async (command: string) => {
-      if (command === 'check_companion_readiness') return bothInstalled;
+      if (command === 'check_companion_readiness') return modelFilesInstalled;
       if (command === 'get_llama_server_status') return currentStatus;
       if (command === 'launch_llama_server') {
-        return new Promise<LlamaServerLaunchResult>((resolve) => {
+        return new Promise<CompanionEngineStartResult>((resolve) => {
           resolveLaunch = resolve;
         });
       }
@@ -252,7 +249,7 @@ describe('useCompanionReadiness serverLaunch composition (#2857)', () => {
 
     const { result } = renderHook(() => useCompanionReadiness());
 
-    // The auto-launch invoke is held open — the step MUST read `starting`, never
+    // The auto-start invoke is held open — the step MUST read `starting`, never
     // `installed`, and the overall gate MUST be false for the whole attempt.
     await waitFor(() => expect(result.current.serverLaunch?.state).toBe('starting'));
     expect(result.current.readiness?.ready).toBe(false);
@@ -261,36 +258,24 @@ describe('useCompanionReadiness serverLaunch composition (#2857)', () => {
         ?.state,
     ).not.toBe('installed');
 
-    // A still-loading health check never becomes prematurely healthy.
+    // A still-loading engine never becomes prematurely healthy.
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 25));
     });
     expect(result.current.serverLaunch?.state).toBe('starting');
     expect(result.current.readiness?.ready).toBe(false);
-    expect(
-      result.current.readiness?.prerequisites.find((p) => p.id === 'serverLaunch')
-        ?.state,
-    ).not.toBe('installed');
 
     // The backend verdict flips it healthy → gate true with no reload.
-    currentStatus = status({ running: true, healthy: true, port: 8080, pid: 1 });
+    currentStatus = status({ running: true, healthy: true, backend: 'cpu' });
     await act(async () => {
-      resolveLaunch?.({
-        success: true,
-        state: 'installed',
-        detail: 'llama-server running on http://127.0.0.1:8080 (pid 1).',
-        port: 8080,
-        configPath: currentStatus.configPath,
-        error: null,
-        code: null,
-      });
+      resolveLaunch?.(started());
     });
     await waitFor(() => expect(result.current.serverLaunch?.state).toBe('healthy'));
     expect(result.current.readiness?.ready).toBe(true);
   });
 
   it('drops the ready gate while a readiness re-check is in flight', async () => {
-    let currentStatus = status({ running: true, healthy: true, port: 8080, pid: 1 });
+    let currentStatus = status({ running: true, healthy: true, backend: 'cpu' });
     let holdReadiness = false;
     let pendingReadiness: ((value: CompanionReadiness) => void) | null = null;
     adapterBridge.setInvoke(async (command: string) => {
@@ -300,7 +285,7 @@ describe('useCompanionReadiness serverLaunch composition (#2857)', () => {
             pendingReadiness = resolve;
           });
         }
-        return bothInstalled;
+        return modelFilesInstalled;
       }
       if (command === 'get_llama_server_status') return currentStatus;
       return undefined;
@@ -322,10 +307,44 @@ describe('useCompanionReadiness serverLaunch composition (#2857)', () => {
 
     // Settle the in-flight probe → the gate recovers with no reload.
     await act(async () => {
-      pendingReadiness?.(bothInstalled);
+      pendingReadiness?.(modelFilesInstalled);
       await recheck;
     });
     await waitFor(() => expect(result.current.checking).toBe(false));
     expect(result.current.readiness?.ready).toBe(true);
+  });
+
+  // ── The MODULE-SCOPED one-shot guard must survive a remount (AGENTS.md) ───
+
+  it('preserves the module-scoped auto-start guard across a wizard remount', async () => {
+    let launchCalls = 0;
+    let currentStatus = status();
+    adapterBridge.setInvoke(async (command: string) => {
+      if (command === 'check_companion_readiness') return modelFilesInstalled;
+      if (command === 'get_llama_server_status') return currentStatus;
+      if (command === 'launch_llama_server') {
+        launchCalls += 1;
+        currentStatus = status({
+          lastError: 'no usable GPU',
+          lastErrorCode: 'gpuUnavailable',
+        });
+        return started({ success: false, code: 'gpuUnavailable', detail: 'no usable GPU' });
+      }
+      return undefined;
+    });
+    adapterBridge.setListen(async () => () => {});
+
+    const first = renderHook(() => useCompanionReadiness());
+    await waitFor(() => expect(first.result.current.serverLaunch?.state).toBe('failed'));
+    expect(launchCalls).toBe(1);
+
+    // Close and reopen the settings pane: a fresh hook mount MUST NOT re-attempt
+    // the failed start (a `useRef` replacement would, and would spin with `gpu`
+    // on a GPU-less machine).
+    first.unmount();
+    const second = renderHook(() => useCompanionReadiness());
+    await waitFor(() => expect(second.result.current.checking).toBe(false));
+    await waitFor(() => expect(second.result.current.serverLaunch).not.toBeNull());
+    expect(launchCalls).toBe(1);
   });
 });

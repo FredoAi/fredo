@@ -36,12 +36,6 @@ const bothInstalled: CompanionReadiness = {
   ready: true,
   prerequisites: [
     {
-      id: 'llamaServer',
-      state: 'installed',
-      detail: 'llama-server found.',
-      resolvedPath: 'C:\\llama-server.exe',
-    },
-    {
       id: 'modelFiles',
       state: 'installed',
       detail: 'All required model files present.',
@@ -53,6 +47,20 @@ const bothInstalled: CompanionReadiness = {
 function renderReady() {
   adapterBridge.setInvoke(async (command: string) => {
     if (command === 'check_companion_readiness') return bothInstalled;
+    if (command === 'get_llama_server_status') {
+      return {
+        running: true,
+        healthy: true,
+        port: null,
+        pid: null,
+        configPath: '',
+        logPath: '',
+        lastError: null,
+        backendMode: 'auto',
+        devices: [],
+        backend: 'cpu',
+      };
+    }
     return undefined;
   });
   return renderWithChakra(
