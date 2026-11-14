@@ -98,9 +98,10 @@
 
 .PARAMETER EnvSlot
   Port-block slot (Spec #2944). 0 = legacy defaults (Vite 5174 / MCP 9223 /
-  OTLP gRPC 4317 + HTTP 4318 / llama 8080). Slot n >= 1 = base
-  P = 16000 + 10*(n-1), with Vite=P, MCP=P+1, OTLP/gRPC=P+2, OTLP/HTTP=P+3,
-  llama=P+4. Default: 0.
+  OTLP gRPC 4317 + HTTP 4318). Slot n >= 1 = base
+  P = 16000 + 10*(n-1), with Vite=P, MCP=P+1, OTLP/gRPC=P+2, OTLP/HTTP=P+3.
+  Default: 0. The companion `llama` port was retired (Spec #3141): inference
+  runs in-process, so there is no fifth endpoint to isolate.
 
 .PARAMETER ServingCheckout
   Serving checkout for the environment (Spec #2944). Default: the repo root
@@ -562,7 +563,7 @@ function Read-EnvManifest {
 function Write-EnvManifest {
   param(
     [string]$ManifestPath, [string]$EnvId, [uint64]$Spec, [string]$ServingCheckout, [string]$ServedCommit,
-    [int]$VitePort, [int]$McpPort, [int]$OtlpGrpcPort, [int]$OtlpHttpPort, [int]$LlamaPort,
+    [int]$VitePort, [int]$McpPort, [int]$OtlpGrpcPort, [int]$OtlpHttpPort,
     [string]$DataDir, [string]$DbPath, [string]$CliPipe, [string]$WebviewDir, [string]$AppIdentity,
     [object[]]$Processes
   )
@@ -580,7 +581,6 @@ function Write-EnvManifest {
       mcp      = $McpPort
       otlpGrpc = $OtlpGrpcPort
       otlpHttp = $OtlpHttpPort
-      llama    = $LlamaPort
       pg       = 0
     }
     dataDir         = $DataDir
@@ -603,7 +603,7 @@ function Write-EnvManifest {
 function Write-EnvEvidence {
   param(
     [string]$EvidenceFile, [string]$EnvId, [string]$ServingCheckout, [string]$ServedCommit,
-    [string]$DbPath, [int]$VitePort, [int]$McpPort, [int]$OtlpGrpcPort, [int]$OtlpHttpPort, [int]$LlamaPort,
+    [string]$DbPath, [int]$VitePort, [int]$McpPort, [int]$OtlpGrpcPort, [int]$OtlpHttpPort,
     [string]$CliPipe, [string]$ManifestPath, [string]$AppIdentity
   )
   try {
@@ -621,7 +621,6 @@ function Write-EnvEvidence {
         mcp      = $McpPort
         otlpGrpc = $OtlpGrpcPort
         otlpHttp = $OtlpHttpPort
-        llama    = $LlamaPort
         pipe     = $CliPipe
       }
       manifestPath    = $ManifestPath
@@ -676,7 +675,7 @@ function Invoke-EnvUp {
   # Fail-closed collision gate (R-4.3): any bound recorded port means a foreign
   # owner. Never scan to / bind a different port; never kill a sibling env.
   $conflicts = @()
-  foreach ($p in @($VitePort, $McpPort, $OtlpGrpcPort, $OtlpHttpPort, $LlamaPort)) {
+  foreach ($p in @($VitePort, $McpPort, $OtlpGrpcPort, $OtlpHttpPort)) {
     if (Test-Port $p) { $conflicts += $p }
   }
   if ($conflicts.Count -gt 0) {
@@ -738,7 +737,6 @@ function Invoke-EnvUp {
   $env:FREDO_MCP_BASE_PORT              = "$McpPort"
   $env:FREDO_VITE_PORT                  = "$VitePort"
   $env:FREDO_WEBVIEW_PROFILE_DIR        = $WebviewDir
-  $env:FREDO_LLAMA_SERVER_PORT          = "$LlamaPort"
   $env:FREDO_LLAMA_SERVER_COMPANION_DIR = $CompanionDir
   $env:FREDO_INGEST_GRPC_PORT           = "$OtlpGrpcPort"
   $env:FREDO_INGEST_HTTP_PORT           = "$OtlpHttpPort"
@@ -790,7 +788,7 @@ function Invoke-EnvUp {
   $startedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
   Write-EnvManifest -ManifestPath $ManifestPath -EnvId $EnvId -Spec $Spec -ServingCheckout $ServingDir `
     -ServedCommit $servedCommit -VitePort $VitePort -McpPort $McpPort -OtlpGrpcPort $OtlpGrpcPort `
-    -OtlpHttpPort $OtlpHttpPort -LlamaPort $LlamaPort -DataDir $DataDir -DbPath $DbPath `
+    -OtlpHttpPort $OtlpHttpPort -DataDir $DataDir -DbPath $DbPath `
     -CliPipe $CliPipe -WebviewDir $WebviewDir -AppIdentity $AppIdentity `
     -Processes @(@{ pid = $proc.Id; role = "launcher"; startedAt = $startedAt })
 
@@ -826,7 +824,7 @@ function Invoke-EnvUp {
       if ($vitePid) { $procs += @{ pid = $vitePid; role = "vite"; startedAt = $startedAt } }
       Write-EnvManifest -ManifestPath $ManifestPath -EnvId $EnvId -Spec $Spec -ServingCheckout $ServingDir `
         -ServedCommit $servedCommit -VitePort $VitePort -McpPort $McpPort -OtlpGrpcPort $OtlpGrpcPort `
-        -OtlpHttpPort $OtlpHttpPort -LlamaPort $LlamaPort -DataDir $DataDir -DbPath $DbPath `
+        -OtlpHttpPort $OtlpHttpPort -DataDir $DataDir -DbPath $DbPath `
         -CliPipe $CliPipe -WebviewDir $WebviewDir -AppIdentity $AppIdentity -Processes $procs
       # The app process is the live lease holder (a crash frees the lease for a
       # bounded stale reclaim, R-3.4).
@@ -836,7 +834,7 @@ function Invoke-EnvUp {
       # Environment-tagged evidence (R-5.1). Best-effort: never fails Up.
       Write-EnvEvidence -EvidenceFile $EvidencePath -EnvId $EnvId -ServingCheckout $ServingDir `
         -ServedCommit $servedCommit -DbPath $DbPath -VitePort $VitePort -McpPort $McpPort `
-        -OtlpGrpcPort $OtlpGrpcPort -OtlpHttpPort $OtlpHttpPort -LlamaPort $LlamaPort `
+        -OtlpGrpcPort $OtlpGrpcPort -OtlpHttpPort $OtlpHttpPort `
         -CliPipe $CliPipe -ManifestPath $ManifestPath -AppIdentity $AppIdentity
       Write-Log "env '$EnvId' ready (manifest: $ManifestPath)"
       exit 0
@@ -864,15 +862,15 @@ function Invoke-EnvUp {
 # -- Env-scoped teardown (Spec #2944 ST-5 / CU-C) ------------------------------
 
 # Role -> accepted live image name(s). A recorded manifest PID is killed ONLY
-# when its live image matches the role (the stale-PID guard, mirroring
-# features/llm_server/process.rs). An unknown role, a gone process, or a
-# mismatched image is NEVER killed -- so a stale/wrong manifest can never take
-# out an unrelated process (R-3.1/R-3.3). The three named roles (app/postgres/
-# llama) are exact; the dev-helper roles accept their launcher images.
+# when its live image matches the role (the stale-PID guard). An unknown role, a
+# gone process, or a mismatched image is NEVER killed -- so a stale/wrong
+# manifest can never take out an unrelated process (R-3.1/R-3.3). The two named
+# roles (app/postgres) are exact; the dev-helper roles accept their launcher
+# images. There is no `llama` role any more: the companion engine is in-process
+# (Spec #3141), so no companion child process can be recorded in the manifest.
 $script:RoleImage = @{
   app      = @("fredo.exe")
   postgres = @("postgres.exe")
-  llama    = @("llama-server.exe")
   vite     = @("node.exe", "bun.exe")
   launcher = @("cmd.exe", "powershell.exe", "pwsh.exe")
 }
@@ -1201,7 +1199,7 @@ function Invoke-EnvStatus {
 
   # The manifest is the recorded source of truth for an env's ports/paths; fall
   # back to the resolved script-scope values when it is absent.
-  $vVite = $VitePort; $vMcp = $McpPort; $vGrpc = $OtlpGrpcPort; $vHttp = $OtlpHttpPort; $vLlama = $LlamaPort
+  $vVite = $VitePort; $vMcp = $McpPort; $vGrpc = $OtlpGrpcPort; $vHttp = $OtlpHttpPort
   $vPipe = $CliPipe; $vServing = $ServingDir; $vDb = $DbPath
   $displayIssue = $Spec
   if ($manifest) {
@@ -1210,7 +1208,6 @@ function Invoke-EnvStatus {
       if ($manifest.ports.mcp)      { $vMcp = [int]$manifest.ports.mcp }
       if ($manifest.ports.otlpGrpc) { $vGrpc = [int]$manifest.ports.otlpGrpc }
       if ($manifest.ports.otlpHttp) { $vHttp = [int]$manifest.ports.otlpHttp }
-      if ($manifest.ports.llama)    { $vLlama = [int]$manifest.ports.llama }
     }
     if ($manifest.pipe) { $vPipe = [string]$manifest.pipe }
     if ($manifest.servingCheckout) { $vServing = [string]$manifest.servingCheckout }
@@ -1224,7 +1221,7 @@ function Invoke-EnvStatus {
   elseif ($ports.Vite -or $ports.Mcp) { $state = "starting" }
 
   Write-Host "env $EnvId (issue $displayIssue) -- $state"
-  Write-Host "  ports            : Vite $vVite  MCP $vMcp  OTLP/gRPC $vGrpc  OTLP/HTTP $vHttp  llama $vLlama"
+  Write-Host "  ports            : Vite $vVite  MCP $vMcp  OTLP/gRPC $vGrpc  OTLP/HTTP $vHttp"
   Write-Host "  pipe             : $vPipe"
   Write-Host "  serving checkout : $vServing"
   Write-Host "  db               : $vDb"
@@ -1510,19 +1507,18 @@ if ($IsEnvMode) {
 
   if ($EnvSlot -ge 1) {
     $basePort = 16000 + 10 * ($EnvSlot - 1)
-    if ($basePort + 4 -gt 65535) {
-      Write-Log "ERROR: -EnvSlot $EnvSlot yields port $($basePort + 4) > 65535." -Level ERROR
+    if ($basePort + 3 -gt 65535) {
+      Write-Log "ERROR: -EnvSlot $EnvSlot yields port $($basePort + 3) > 65535." -Level ERROR
       exit 1
     }
-    $defVite = $basePort; $defMcp = $basePort + 1; $defGrpc = $basePort + 2; $defHttp = $basePort + 3; $defLlama = $basePort + 4
+    $defVite = $basePort; $defMcp = $basePort + 1; $defGrpc = $basePort + 2; $defHttp = $basePort + 3
   } else {
-    $defVite = 5174; $defMcp = 9223; $defGrpc = 4317; $defHttp = 4318; $defLlama = 8080
+    $defVite = 5174; $defMcp = 9223; $defGrpc = 4317; $defHttp = 4318
   }
   $VitePort     = Resolve-PortValue -Override $VitePort -EnvName "FREDO_VITE_PORT" -Default $defVite
   $McpPort      = Resolve-PortValue -Override $McpPort  -EnvName "FREDO_MCP_BASE_PORT" -Default $defMcp
   $OtlpGrpcPort = Resolve-PortValue -Override 0 -EnvName "FREDO_INGEST_GRPC_PORT" -Default $defGrpc
   $OtlpHttpPort = Resolve-PortValue -Override 0 -EnvName "FREDO_INGEST_HTTP_PORT" -Default $defHttp
-  $LlamaPort    = Resolve-PortValue -Override 0 -EnvName "FREDO_LLAMA_SERVER_PORT" -Default $defLlama
 
   if ($env:FREDO_ENV_ROOT) {
     $EnvRoot = $env:FREDO_ENV_ROOT
@@ -1579,7 +1575,6 @@ if ($IsEnvMode) {
   if ($McpPort -le 0)  { $McpPort = 9223 }
   $OtlpGrpcPort = 4317
   $OtlpHttpPort = 4318
-  $LlamaPort    = 8080
   $CliPipe      = "\\.\pipe\fredo-ipc"
   $ServingDir   = $script:RepoRoot
   $LogDir       = Join-Path $PSScriptRoot "..\logs"

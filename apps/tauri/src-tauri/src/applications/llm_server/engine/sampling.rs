@@ -73,6 +73,13 @@ pub const SAMPLER_CHAIN_ORDER: [&str; 4] = ["temp", "top_k", "top_p", "dist"];
 /// reproducible.
 pub const DEFAULT_SEED: u32 = 0;
 
+/// The reference `--reasoning` mode (the retired launch-config default).
+///
+/// Kept here with the other relocated generation defaults so the Doom decision
+/// trace can stamp the served flag without reading a settings override or the
+/// retired config. The engine always runs reasoning on for this model family.
+pub const DEFAULT_REASONING_MODE: &str = "on";
+
 /// The grammar a turn is decoded under, with the laziness the template declared.
 #[derive(Debug, Clone, Copy)]
 pub enum GrammarSpec<'a> {
@@ -186,6 +193,12 @@ mod tests {
     #[test]
     fn the_sampler_chain_order_matches_the_retired_server() {
         assert_eq!(SAMPLER_CHAIN_ORDER, ["temp", "top_k", "top_p", "dist"]);
+    }
+
+    /// The relocated reasoning default is the retired launch-config value.
+    #[test]
+    fn the_reasoning_default_matches_the_retired_launch_config() {
+        assert_eq!(DEFAULT_REASONING_MODE, "on");
     }
 
     /// `top_k` is widened into the crate's `i32` without a lossy narrowing for

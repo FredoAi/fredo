@@ -1,94 +1,49 @@
-//! Companion command surface, split by CONCERN (Spec #3141, ST-1).
+//! Companion command surface, split by CONCERN (Spec #3141, ST-1; teardown ST-6).
 //!
-//! `commands.rs` was a single 1273-line file; ST-1 performs the ONE-TIME
-//! file→directory split so later sub-tasks edit DISJOINT modules and never
-//! collide on the same file:
-//!
-//! * [`engine`] — engine lifecycle + the status surface (ST-1), plus the
-//!   pre-migration `llama-server` launch/stop/generate commands it supersedes.
-//! * [`chat`] — the chat/vision/audio turns (ST-3 re-points these onto the
-//!   engine; in ST-1 they still delegate to the OLD transport).
-//! * [`capability`] — the model-audio capability probe (ST-5 re-points it; in
-//!   ST-1 it still delegates to the OLD probe).
+//! * [`engine`] — the in-process engine lifecycle + the status surface.
+//! * [`chat`] — the chat/vision/audio turns (in-process since ST-3).
+//! * [`capability`] — the model-audio capability read (in-process since ST-5).
 //!
 //! The wire models and helpers the sub-modules share live here in the module
-//! root, so ST-1 re-homes them without rewriting behaviour. No behaviour changes
-//! in this split.
+//! root.
 //!
 //! ## Status surface (AC-22.3 / AC-24 / AC-25)
 //!
 //! [`LlamaServerStatus`] keeps its EXISTING fields (byte-for-byte wire
-//! stability — AC-26) and gains the ADDITIVE fields `lastErrorCode`, `backend`,
-//! `backendMode`, `devices`, `modelId`. Every NEW optional field is carried as
-//! an ABSENT KEY when unset (never an explicit `null`, NFR-9); the PRE-EXISTING
-//! optional fields keep their current explicit-`null` form.
+//! stability — AC-26) and carries the ADDITIVE fields `lastErrorCode`,
+//! `backend`, `backendMode`, `devices`, `modelId`, `mtpStats`. Every NEW
+//! optional field is carried as an ABSENT KEY when unset (never an explicit
+//! `null`, NFR-9); the PRE-EXISTING optional fields keep their current
+//! explicit-`null` form.
+//!
+//! ## What ST-6 removed
+//!
+//! The pre-migration launch path is GONE: `LlamaServerConfigPreview`,
+//! `LlamaServerLaunchResult` / `LlamaServerLaunchCode`, the args-override model
+//! (`LlamaServerArgsOverride` / `apply_args_override`), `build_launch_config`,
+//! `executable_or_code`, `companion_paths`, `materialize_config`, the
+//! managed-process slot helpers (`lock_state` / `running_snapshot` /
+//! `stop_managed` / `persist_managed_pid`), `health_probe_once`,
+//! `missing_model_files_detail`, `resolve_model_path`, and the launch-wait
+//! helpers. No live consumer remained after ST-3 re-pointed the chat path and
+//! the Doom agent (G-430).
 
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
-use crate::infrastructure::companion::models::{
-    file_path, is_step_complete, missing_files, resolve_manifest, resolve_models_dir,
-    ModelManifest,
-};
 use crate::infrastructure::storage::SettingsStore;
 
-use super::config::LlamaServerConfig;
 use super::engine::handle::{CompanionEngineHandle, EngineSlot};
 use super::engine::{CompanionBackendKind, CompanionBackendMode, CompanionDeviceInfo};
-use super::health;
-use super::process;
-use super::state::LlamaServerState;
 use super::LLAMA_SERVER_BACKEND_KEY;
 
 pub mod capability;
 pub mod chat;
 pub mod engine;
 
-/// SettingsStore key for the last launch error, surfaced by `get_llama_server_status`.
-///
-/// Internal to this application — not part of the persisted-settings contract.
-pub(crate) const LLAMA_SERVER_LAST_ERROR_KEY: &str = "llama_server_last_error";
-
 // ── Wire models (camelCase, IPC) ──────────────────────────────────────────────
-
-/// Why a launch could not reach a healthy server.
-#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
-#[serde(rename_all = "camelCase")]
-pub enum LlamaServerLaunchCode {
-    SpawnFailed,
-    PortInUse,
-    HealthTimeout,
-    NotConfigured,
-}
-
-/// The launch state vocabulary, wire-identical to `applications::setup`'s
-/// `PrerequisiteState` (`installed` / `missing` / `error`). Declared locally
-/// because a cross-FEATURE import is forbidden (`AGENTS.md`); the JSON shape is
-/// deliberately the same so the wizard can consume either.
-#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
-#[serde(rename_all = "camelCase")]
-pub enum PrerequisiteState {
-    Installed,
-    Missing,
-    Error,
-}
-
-/// Result of `launch_llama_server` — always returned, never a hang.
-#[derive(Serialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct LlamaServerLaunchResult {
-    pub success: bool,
-    pub state: PrerequisiteState,
-    pub detail: String,
-    pub port: Option<u16>,
-    pub config_path: String,
-    pub error: Option<String>,
-    pub code: Option<LlamaServerLaunchCode>,
-}
 
 /// Status snapshot for the UI/QA poll target.
 ///
@@ -173,15 +128,6 @@ impl LlamaServerStatus {
     }
 }
 
-/// The generated launch config plus its materialized path and contents.
-#[derive(Serialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct LlamaServerConfigPreview {
-    pub config: LlamaServerConfig,
-    pub path: String,
-    pub contents: String,
-}
-
 // ── Settings access (SettingsStore is the single source of truth) ──────────────────
 
 pub(crate) fn get_setting(app: &AppHandle, key: &str) -> Option<String> {
@@ -193,179 +139,9 @@ pub(crate) fn get_setting(app: &AppHandle, key: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-pub(crate) fn set_setting(app: &AppHandle, key: &str, value: &str) {
-    let _ = app.state::<Arc<SettingsStore>>().cached_set(key, value);
-}
-
-pub(crate) fn get_u16(app: &AppHandle, key: &str, default: u16) -> u16 {
-    get_setting(app, key)
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default)
-}
-
-pub(crate) fn get_u64(app: &AppHandle, key: &str, default: u64) -> u64 {
-    get_setting(app, key)
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default)
-}
-
 /// The persisted backend mode (coerced to `auto` for an unknown value).
 pub(crate) fn backend_mode(app: &AppHandle) -> CompanionBackendMode {
     CompanionBackendMode::from_persisted(get_setting(app, LLAMA_SERVER_BACKEND_KEY).as_deref())
-}
-
-/// A persisted override when set, else the absolute path derived from the SHARED
-/// #2856 manifest (`<models_dir>/<subdir>/<spec.path>` — NFR-6, one path rule).
-/// `file_id` is the manifest id (`model` | `vision` | `mtp`).
-pub(crate) fn resolve_model_path(
-    app: &AppHandle,
-    override_key: &str,
-    models_dir: &Path,
-    manifest: &ModelManifest,
-    file_id: &str,
-) -> String {
-    if let Some(override_path) = get_setting(app, override_key) {
-        return override_path;
-    }
-    manifest
-        .files
-        .iter()
-        .find(|spec| spec.id == file_id)
-        .map(|spec| {
-            file_path(models_dir, manifest, spec)
-                .to_string_lossy()
-                .into_owned()
-        })
-        .unwrap_or_default()
-}
-
-/// R-1c: a config is never valid/launchable while a required model file is
-/// absent. Uses the SHARED #2856 manifest as the single rule source and NAMES
-/// the missing file(s). `None` means every required file is present.
-pub(crate) fn missing_model_files_detail(
-    models_dir: &Path,
-    manifest: &ModelManifest,
-) -> Option<String> {
-    if is_step_complete(models_dir, manifest) {
-        return None;
-    }
-    let missing: Vec<String> = missing_files(models_dir, manifest)
-        .into_iter()
-        .map(|status| status.relative_path)
-        .collect();
-    if missing.is_empty() {
-        Some("missing model file(s): model manifest declares no required files".to_string())
-    } else {
-        Some(format!("missing model file(s): {}", missing.join(", ")))
-    }
-}
-
-/// The optional persisted parameter subset (`llama_server_args`). Every field is
-/// optional; unset fields keep the ST-2 [`LlamaServerConfig::default`] value.
-#[derive(Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub(crate) struct LlamaServerArgsOverride {
-    pub(crate) host: Option<String>,
-    pub(crate) port: Option<u16>,
-    pub(crate) spec_type: Option<String>,
-    pub(crate) spec_draft_n_max: Option<u32>,
-    pub(crate) fit: Option<String>,
-    pub(crate) load_mode: Option<String>,
-    pub(crate) gpu_layers: Option<String>,
-    pub(crate) threads: Option<u32>,
-    pub(crate) threads_batch: Option<u32>,
-    pub(crate) reasoning: Option<String>,
-    pub(crate) ctx_size: Option<u32>,
-    pub(crate) temp: Option<f32>,
-    pub(crate) top_p: Option<f32>,
-    pub(crate) top_k: Option<u32>,
-    pub(crate) parallel: Option<u32>,
-    pub(crate) jinja: Option<bool>,
-    pub(crate) chat_template: Option<String>,
-    pub(crate) chat_template_file: Option<String>,
-    pub(crate) kv_unified: Option<bool>,
-    pub(crate) log_verbosity: Option<u32>,
-    pub(crate) alias: Option<String>,
-}
-
-/// Overlay the persisted `llama_server_args` JSON onto `base`. A blank/absent
-/// value is a no-op; malformed JSON is a hard error (never a silently-ignored
-/// config). Pure — unit-tested without a Tauri app.
-pub(crate) fn apply_args_override(
-    base: &mut LlamaServerConfig,
-    json: Option<&str>,
-) -> Result<(), String> {
-    let raw = match json {
-        Some(raw) if !raw.trim().is_empty() => raw,
-        _ => return Ok(()),
-    };
-    let over: LlamaServerArgsOverride = serde_json::from_str(raw)
-        .map_err(|e| format!("invalid llama_server_args JSON: {e}"))?;
-
-    if let Some(value) = over.host {
-        base.host = value;
-    }
-    if let Some(value) = over.port {
-        base.port = value;
-    }
-    if let Some(value) = over.spec_type {
-        base.spec_type = value;
-    }
-    if let Some(value) = over.spec_draft_n_max {
-        base.spec_draft_n_max = value;
-    }
-    if let Some(value) = over.fit {
-        base.fit = value;
-    }
-    if let Some(value) = over.load_mode {
-        base.load_mode = value;
-    }
-    if let Some(value) = over.gpu_layers {
-        base.gpu_layers = value;
-    }
-    if let Some(value) = over.threads {
-        base.threads = value;
-    }
-    if let Some(value) = over.threads_batch {
-        base.threads_batch = value;
-    }
-    if let Some(value) = over.reasoning {
-        base.reasoning = value;
-    }
-    if let Some(value) = over.ctx_size {
-        base.ctx_size = value;
-    }
-    if let Some(value) = over.temp {
-        base.temp = value;
-    }
-    if let Some(value) = over.top_p {
-        base.top_p = value;
-    }
-    if let Some(value) = over.top_k {
-        base.top_k = value;
-    }
-    if let Some(value) = over.parallel {
-        base.parallel = value;
-    }
-    if let Some(value) = over.jinja {
-        base.jinja = value;
-    }
-    if let Some(value) = over.chat_template {
-        base.chat_template = Some(value);
-    }
-    if let Some(value) = over.chat_template_file {
-        base.chat_template_file = Some(value);
-    }
-    if let Some(value) = over.kv_unified {
-        base.kv_unified = value;
-    }
-    if let Some(value) = over.log_verbosity {
-        base.log_verbosity = value;
-    }
-    if let Some(value) = over.alias {
-        base.alias = value;
-    }
-    Ok(())
 }
 
 /// The process-scoped engine handle, managed by Tauri.
@@ -394,372 +170,35 @@ pub(crate) fn current_status(app: &AppHandle) -> LlamaServerStatus {
     }
 }
 
-// ── Shared pre-migration helpers (still used by the engine commands) ─────────
-//
-// These are the launch-config / managed-process helpers the pre-migration
-// `llama-server` path still needs until ST-6 re-points its consumers. They are
-// re-homed from the old `commands.rs` unchanged (NFR-6: one implementation).
-
-/// The generated launch config, built from persisted settings and a resolved
-/// executable.
-pub(crate) fn build_launch_config(
-    app: &AppHandle,
-    executable: &Path,
-) -> Result<LlamaServerConfig, String> {
-    let models_dir = resolve_models_dir(app);
-    let manifest = resolve_manifest(app);
-    let mut config = LlamaServerConfig {
-        executable: executable.to_string_lossy().into_owned(),
-        host: get_setting(app, crate::applications::llm_server::LLAMA_SERVER_HOST_KEY)
-            .unwrap_or_else(|| {
-                crate::applications::llm_server::DEFAULT_LLAMA_SERVER_HOST.to_string()
-            }),
-        port: get_u16(
-            app,
-            crate::applications::llm_server::LLAMA_SERVER_PORT_KEY,
-            crate::applications::llm_server::DEFAULT_LLAMA_SERVER_PORT,
-        ),
-        model: resolve_model_path(
-            app,
-            crate::applications::llm_server::LLAMA_SERVER_MODEL_PATH_KEY,
-            &models_dir,
-            &manifest,
-            "model",
-        ),
-        mmproj: resolve_model_path(
-            app,
-            crate::applications::llm_server::LLAMA_SERVER_MMPROJ_PATH_KEY,
-            &models_dir,
-            &manifest,
-            "vision",
-        ),
-        model_draft: resolve_model_path(
-            app,
-            crate::applications::llm_server::LLAMA_SERVER_MTP_PATH_KEY,
-            &models_dir,
-            &manifest,
-            "mtp",
-        ),
-        ..LlamaServerConfig::default()
-    };
-
-    if let Some(json) = get_setting(app, crate::applications::llm_server::LLAMA_SERVER_ARGS_KEY) {
-        apply_args_override(&mut config, Some(&json))?;
-    }
-    Ok(config)
-}
-
-/// Map a resolver outcome to an executable path or the launch code explaining
-/// the failure. Pure — the `NotConfigured` seam unit test hooks here.
-pub(crate) fn executable_or_code(
-    resolved: Result<Option<PathBuf>, String>,
-) -> Result<PathBuf, (LlamaServerLaunchCode, String)> {
-    match resolved {
-        Ok(Some(path)) => Ok(path),
-        Ok(None) => Err((
-            LlamaServerLaunchCode::NotConfigured,
-            "llama-server executable not found — install llama.cpp or set llama_server_path."
-                .to_string(),
-        )),
-        Err(error) => Err((
-            LlamaServerLaunchCode::NotConfigured,
-            format!("could not resolve the llama-server executable: {error}"),
-        )),
-    }
-}
-
-/// Resolve the launch-config and server-log paths under the CONFIGURED
-/// companion dir (default `{app_data_dir}/companion`; override via
-/// `llama_server_companion_dir`).
-pub(crate) fn companion_paths(app: &AppHandle) -> Result<(PathBuf, PathBuf), String> {
-    let dir = process::resolve_companion_dir(app)?;
-    Ok((process::config_path(&dir), process::log_path(&dir)))
-}
-
-/// Write `config.to_bat()` to `path` and return the preview. Pure seam — no Tauri.
-pub(crate) fn materialize_config(
-    config: &LlamaServerConfig,
-    path: &Path,
-) -> Result<LlamaServerConfigPreview, String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
-    }
-    let contents = config.to_bat();
-    std::fs::write(path, &contents)
-        .map_err(|e| format!("could not write {}: {e}", path.display()))?;
-    Ok(LlamaServerConfigPreview {
-        config: config.clone(),
-        path: path.to_string_lossy().into_owned(),
-        contents,
-    })
-}
-
-/// A poisoned lock must never take down the app — recover the guard.
-pub(crate) fn lock_state(
-    state: &LlamaServerState,
-) -> std::sync::MutexGuard<'_, Option<super::state::ManagedServer>> {
-    state
-        .0
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-/// `Some((port, pid, log_path))` iff a live managed child exists. A child that
-/// has exited is reaped out of the state.
-pub(crate) fn running_snapshot(state: &LlamaServerState) -> Option<(u16, u32, PathBuf)> {
-    let mut guard = lock_state(state);
-    let alive = match guard.as_mut() {
-        Some(server) => matches!(server.child.try_wait(), Ok(None)),
-        None => false,
-    };
-    if !alive {
-        if guard.is_some() {
-            *guard = None;
-        }
-        return None;
-    }
-    guard
-        .as_ref()
-        .map(|server| (server.port, server.pid, server.log_path.clone()))
-}
-
-/// Kill and forget the managed server (used to reclaim an unhealthy slot).
-pub(crate) fn stop_managed(app: &AppHandle) {
-    let state = app.state::<LlamaServerState>();
-    let mut guard = lock_state(state.inner());
-    if let Some(mut server) = guard.take() {
-        process::kill_process_tree(&mut server);
-    }
-}
-
-/// Persist (or clear) the `llama_server_pid` marker through the SINGLE
-/// implementation in [`process::persist_pid`], so the launch WRITE and the stop
-/// CLEAR cannot drift (NFR-6, one implementation per rule).
-pub(crate) fn persist_managed_pid(app: &AppHandle, pid: Option<u32>) {
-    let store = app.state::<Arc<SettingsStore>>();
-    process::persist_pid(store.inner(), pid);
-}
-
-/// A single bounded health probe (used for idempotency + status).
-pub(crate) async fn health_probe_once(app: &AppHandle, port: u16) -> bool {
-    let host = get_setting(app, crate::applications::llm_server::LLAMA_SERVER_HOST_KEY)
-        .unwrap_or_else(|| {
-            crate::applications::llm_server::DEFAULT_LLAMA_SERVER_HOST.to_string()
-        });
-    match health::ReqwestHealthClient::new() {
-        Ok(client) => {
-            use crate::applications::llm_server::health::HealthProbeSource;
-            client
-                .probe(&health::health_url(&host, port))
-                .await
-                .is_ready()
-        }
-        Err(_) => false,
-    }
-}
-
-pub(crate) fn failure(
-    code: LlamaServerLaunchCode,
-    state: PrerequisiteState,
-    detail: String,
-    config_path: String,
-    port: Option<u16>,
-) -> LlamaServerLaunchResult {
-    LlamaServerLaunchResult {
-        success: false,
-        state,
-        error: Some(detail.clone()),
-        detail,
-        port,
-        config_path,
-        code: Some(code),
-    }
-}
-
-/// Bounded `/health` wait for a freshly spawned server (never hangs).
-pub(crate) async fn wait_for_health<S: health::HealthProbeSource + ?Sized>(
-    source: &S,
-    url: &str,
-    timeout: Duration,
-    interval: Duration,
-    config_path: &str,
-    port: u16,
-    log_path: &Path,
-) -> Result<(), LlamaServerLaunchResult> {
-    match health::wait_until_healthy(source, url, timeout, interval).await {
-        Ok(()) => Ok(()),
-        Err(last) => {
-            let log_tail = process::read_log_tail(log_path, 400);
-            let detail = if log_tail.is_empty() {
-                format!("llama-server started but {last}")
-            } else {
-                format!("llama-server started but {last}. Server log tail: {log_tail}")
-            };
-            Err(failure(
-                LlamaServerLaunchCode::HealthTimeout,
-                PrerequisiteState::Error,
-                detail,
-                config_path.to_string(),
-                Some(port),
-            ))
-        }
-    }
+/// The three absolute model paths the engine loads, resolved through the SHARED
+/// #2856 manifest rule. `None` when the manifest declares no file for `id`.
+///
+/// This is the ONE path rule the status surface would need if it reported
+/// per-file paths; the engine resolves its own paths in
+/// [`super::engine::paths`], so this helper exists only for the settings tests
+/// that pin the manifest join.
+#[cfg(test)]
+pub(crate) fn manifest_path_for(
+    models_dir: &std::path::Path,
+    manifest: &crate::infrastructure::companion::models::ModelManifest,
+    file_id: &str,
+) -> Option<String> {
+    manifest
+        .files
+        .iter()
+        .find(|spec| spec.id == file_id)
+        .map(|spec| {
+            crate::infrastructure::companion::models::file_path(models_dir, manifest, spec)
+                .to_string_lossy()
+                .into_owned()
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure::companion::models::ModelFileSpec;
-    use std::path::PathBuf;
-
     use crate::applications::llm_server::engine::handle::EngineSlot;
     use crate::applications::llm_server::engine::CompanionBackendMode;
-
-    /// A small KB-scale manifest so tests never touch the 3.67 GB default.
-    fn test_manifest(specs: &[(&str, &str, u64)]) -> ModelManifest {
-        ModelManifest {
-            revision: "test-rev".to_string(),
-            subdir: "gemma-4-e2b-it-qat".to_string(),
-            files: specs
-                .iter()
-                .map(|(id, path, expected)| ModelFileSpec {
-                    id: (*id).to_string(),
-                    path: (*path).to_string(),
-                    url: format!("https://example.invalid/{path}"),
-                    expected_bytes: *expected,
-                    sha256: None,
-                })
-                .collect(),
-        }
-    }
-
-    fn write_sized(path: &Path, len: u64) {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).expect("create parent dir");
-        }
-        let file = std::fs::File::create(path).expect("create file");
-        file.set_len(len).expect("set file length");
-    }
-
-    // ── R-1c: config refusal names missing model files ───────────────────────
-
-    #[test]
-    fn missing_model_files_detail_names_every_absent_file() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let manifest = test_manifest(&[
-            ("model", "model.gguf", 4),
-            ("vision", "mmproj.gguf", 5),
-            ("mtp", "MTP/mtp.gguf", 6),
-        ]);
-
-        let detail = missing_model_files_detail(dir.path(), &manifest).expect("refusal");
-        assert!(detail.starts_with("missing model file(s): "), "detail: {detail}");
-        assert!(detail.contains("gemma-4-e2b-it-qat/model.gguf"), "detail: {detail}");
-        assert!(detail.contains("gemma-4-e2b-it-qat/mmproj.gguf"), "detail: {detail}");
-        assert!(
-            detail.contains("gemma-4-e2b-it-qat/MTP/mtp.gguf"),
-            "detail: {detail}"
-        );
-
-        let base = dir.path().join("gemma-4-e2b-it-qat");
-        write_sized(&base.join("model.gguf"), 4);
-        write_sized(&base.join("mmproj.gguf"), 5);
-        write_sized(&base.join("MTP").join("mtp.gguf"), 6);
-        assert!(missing_model_files_detail(dir.path(), &manifest).is_none());
-    }
-
-    #[test]
-    fn missing_model_files_detail_refuses_an_empty_manifest() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let manifest = test_manifest(&[]);
-        let detail = missing_model_files_detail(dir.path(), &manifest).expect("refusal");
-        assert!(detail.contains("missing model file(s)"), "detail: {detail}");
-    }
-
-    // ── Args override (preserved behaviour) ──────────────────────────────────
-
-    #[test]
-    fn args_override_replaces_only_the_named_fields() {
-        let mut config = LlamaServerConfig::default();
-        apply_args_override(
-            &mut config,
-            Some(r#"{"ctxSize":4096,"threads":3,"alias":"Local"}"#),
-        )
-        .expect("valid override");
-
-        assert_eq!(config.ctx_size, 4096);
-        assert_eq!(config.threads, 3);
-        assert_eq!(config.alias, "Local");
-        assert_eq!(config.top_p, 0.95);
-        assert_eq!(config.spec_type, "draft-mtp");
-        assert!(config.kv_unified);
-    }
-
-    #[test]
-    fn args_override_is_absent_and_blank_safe() {
-        let mut config = LlamaServerConfig::default();
-        apply_args_override(&mut config, None).expect("absent is a no-op");
-        apply_args_override(&mut config, Some("   ")).expect("blank is a no-op");
-        assert_eq!(config, LlamaServerConfig::default());
-    }
-
-    #[test]
-    fn args_override_rejects_invalid_json() {
-        let mut config = LlamaServerConfig::default();
-        assert!(apply_args_override(&mut config, Some("{ not json")).is_err());
-    }
-
-    #[test]
-    fn executable_or_code_reports_not_configured_when_absent() {
-        let (code, _detail) = executable_or_code(Ok(None)).expect_err("no executable resolved");
-        assert_eq!(code, LlamaServerLaunchCode::NotConfigured);
-
-        let (code, _detail) =
-            executable_or_code(Err("settings read failed".to_string())).expect_err("resolver error");
-        assert_eq!(code, LlamaServerLaunchCode::NotConfigured);
-
-        let path = executable_or_code(Ok(Some(PathBuf::from("llama-server.exe"))))
-            .expect("resolved executable");
-        assert_eq!(path, PathBuf::from("llama-server.exe"));
-    }
-
-    #[test]
-    fn launch_codes_serialize_camel_case() {
-        let cases = [
-            (LlamaServerLaunchCode::SpawnFailed, "\"spawnFailed\""),
-            (LlamaServerLaunchCode::PortInUse, "\"portInUse\""),
-            (LlamaServerLaunchCode::HealthTimeout, "\"healthTimeout\""),
-            (LlamaServerLaunchCode::NotConfigured, "\"notConfigured\""),
-        ];
-        for (code, expected) in cases {
-            assert_eq!(serde_json::to_string(&code).expect("serialize"), expected);
-        }
-    }
-
-    #[test]
-    fn prerequisite_state_serializes_with_the_setup_wire_vocabulary() {
-        assert_eq!(
-            serde_json::to_string(&PrerequisiteState::Installed).expect("serialize"),
-            "\"installed\""
-        );
-        assert_eq!(
-            serde_json::to_string(&PrerequisiteState::Missing).expect("serialize"),
-            "\"missing\""
-        );
-        assert_eq!(
-            serde_json::to_string(&PrerequisiteState::Error).expect("serialize"),
-            "\"error\""
-        );
-    }
-
-    /// Map a resolver outcome to an executable path or the launch code.
-    #[test]
-    fn executable_or_code_passes_a_resolved_path_through() {
-        let path = executable_or_code(Ok(Some(PathBuf::from("C:/llama/llama-server.exe"))))
-            .expect("resolved");
-        assert_eq!(path, PathBuf::from("C:/llama/llama-server.exe"));
-    }
 
     // ── Spec #3141 ST-1: the serialized status payload (G-413) ──────────────
     //
@@ -856,5 +295,24 @@ mod tests {
         // In-process: port and pid are ALWAYS null, never a number.
         assert!(value["port"].is_null());
         assert!(value["pid"].is_null());
+    }
+
+    /// The status surface resolves no model path from a persisted per-file
+    /// override: the manifest is the ONE path rule (AC-18). The helper joins the
+    /// manifest exactly, and the retired override keys are never consulted.
+    #[test]
+    fn the_manifest_join_is_the_one_path_rule() {
+        let manifest = crate::infrastructure::companion::models::default_manifest();
+        let models_dir = std::path::Path::new("C:/fredo-models");
+        let model = manifest_path_for(models_dir, &manifest, "model").expect("model spec");
+        // Path equality, not string equality: `Path::join` legitimately renders a
+        // mixed-separator path on Windows, and the product has no string consumer.
+        let expected = crate::infrastructure::companion::models::file_path(
+            models_dir,
+            &manifest,
+            manifest.files.iter().find(|spec| spec.id == "model").expect("model"),
+        );
+        assert_eq!(std::path::Path::new(&model), expected);
+        assert!(manifest_path_for(models_dir, &manifest, "unknown").is_none());
     }
 }

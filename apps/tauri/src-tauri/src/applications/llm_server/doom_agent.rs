@@ -10,8 +10,8 @@
 //! * [`build_doom_agent_request_body`] renders a schema-constrained
 //!   (`response_format: json_schema`, name
 //!   [`DOOM_PLAN_SCHEMA_NAME`](crate::infrastructure::companion::doom_decision::DOOM_PLAN_SCHEMA_NAME))
-//!   request via `chat::render_messages(..., None, None)`, so **no
-//!   `image_url`/`input_audio` part can appear** (the F-25 audit surface);
+//!   request body, so **no `image_url`/`input_audio` part can appear** (the F-25
+//!   audit surface);
 //! * [`ModelDoomDecisionSource`] implements the shared
 //!   [`DoomDecisionSource`](crate::infrastructure::companion::doom_decision::DoomDecisionSource)
 //!   trait over the in-process engine's ONE-SHOT request
@@ -54,11 +54,24 @@ use crate::infrastructure::companion::doom_decision::{
 };
 use crate::infrastructure::storage::SettingsStore;
 
-use super::chat::LlmMessage;
+use super::chat::{LlmMessage, MAX_TOKENS};
 use super::engine::request::ChatTurn;
+use super::engine::sampling::DEFAULT_REASONING_MODE;
 use super::engine::stream::{EngineOneShotSource, OneShotSource};
-use super::config::LlamaServerConfig;
-use super::{LLAMA_SERVER_ARGS_KEY, LLAMA_SERVER_MODEL_PATH_KEY};
+
+/// Persisted key carrying the main model path.
+///
+/// Read ONLY as best-effort DATASET-TRACE metadata (the `modelRaw` receipt's
+/// model identity); it is never an engine path source — the engine resolves
+/// every model file through the shared #2856 manifest (AC-18). Declared locally
+/// because the migration removed the shared launch-path constants.
+const LLAMA_SERVER_MODEL_PATH_KEY: &str = "llama_server_model_path";
+
+/// Persisted key carrying the optional launch-argv override JSON.
+///
+/// Read ONLY for the decision trace's served alias / `--reasoning` flag, never
+/// for engine configuration. Declared locally for the same reason.
+const LLAMA_SERVER_ARGS_KEY: &str = "llama_server_args";
 
 /// The Doom-playing persona.
 ///
@@ -78,15 +91,14 @@ pub const DOOM_AUTOPLAY_DECISION_TIMEOUT_S: u64 = 30;
 
 /// Maximum `max_tokens` for a single Doom decision reply (lever D, #3026 ST-5).
 ///
-/// Collapsed to the shared [`super::chat::MAX_TOKENS`] default. The earlier
+/// Collapsed to the shared [`MAX_TOKENS`] default. The earlier
 /// "256 is ample for a tiny `{tics, actions}` object" premise was falsified by the
-/// shipped managed config: the server runs reasoning **on** (`--reasoning on`) and
-/// its reasoning prefix is not surfaced to this path yet still consumes the token
-/// budget, so a 256-token cap could starve the reply to empty. The Doom request is
-/// therefore bounded to the SAME value as the shared builder — the override remains
-/// Doom-path-only, and [`super::chat::build_response_format_request_body`]'s own
-/// default and every other caller are untouched.
-pub const DOOM_AGENT_MAX_TOKENS: u32 = super::chat::MAX_TOKENS;
+/// shipped managed config: the engine runs reasoning **on** and its reasoning
+/// prefix is not surfaced to this path yet still consumes the token budget, so a
+/// 256-token cap could starve the reply to empty. The Doom request is therefore
+/// bounded to the SAME value as the shared turn default — the override remains
+/// Doom-path-only, and every other caller is untouched.
+pub const DOOM_AGENT_MAX_TOKENS: u32 = MAX_TOKENS;
 
 /// Persona/prompt version stamped into the decision trace (Spec #3032 ST-4).
 ///
@@ -146,16 +158,17 @@ pub fn doom_plan_schema() -> Value {
 
 /// Build the schema-constrained Doom plan request body.
 ///
-/// Pure. The system message is [`DOOM_AGENT_SYSTEM_PROMPT`]; the user message is a
+/// Pure, and TEST-ONLY: production shapes the same conversation as a
+/// [`ChatTurn`] through [`doom_turn`]. This is the frozen wire-shape view the
+/// payload pins compare against, retained until the pins no longer need it.
+///
+/// The system message is [`DOOM_AGENT_SYSTEM_PROMPT`]; the user message is a
 /// plain STRING carrying `{"observation": <state JSON>, "allowedActions":
-/// [<vocabulary>]}`. Rendered through
-/// [`super::chat::build_response_format_request_body`] (which uses
-/// `render_messages(..., None, None)`), so no `image_url`/`input_audio` part and
-/// no image/audio field can appear (R-2). Retained as the pure wire-shape view
-/// that the wire pins compare against; production shapes the same turn through
-/// [`doom_turn`].
+/// [<vocabulary>]}`. It renders through the test-only retired renderer, so no
+/// `image_url`/`input_audio` part and no image/audio field can appear (R-2).
 ///
 /// `vocabulary` is a PARAMETER — this module never imports `applications/doom`.
+#[cfg(test)]
 pub fn build_doom_agent_request_body(observation: &Value, vocabulary: &Value) -> Value {
     let messages = doom_messages(observation, vocabulary);
     let mut body = super::chat::build_response_format_request_body(
@@ -164,9 +177,9 @@ pub fn build_doom_agent_request_body(observation: &Value, vocabulary: &Value) ->
         &doom_plan_schema(),
     );
     // Lever D (#3026 ST-5): bound generation on the Doom path ONLY, at the
-    // shared `super::chat::MAX_TOKENS` default (the reasoning-enabled engine's
-    // invisible reasoning prefix consumes the budget, so a smaller cap can starve
-    // the reply). The shared builder's own default is deliberately NOT changed.
+    // shared token default (the reasoning-enabled engine's invisible reasoning
+    // prefix consumes the budget, so a smaller cap can starve the reply). The
+    // shared renderer's own default is deliberately NOT changed.
     body["max_tokens"] = json!(DOOM_AGENT_MAX_TOKENS);
     body
 }
@@ -230,7 +243,7 @@ pub fn model_id_from(model_path: Option<&str>, args_json: Option<&str>) -> Optio
 }
 
 /// The best-effort server flags for the decision trace: the persisted
-/// `--reasoning` mode (else the launch-config default), rendered as
+/// `--reasoning` mode (else the reference default), rendered as
 /// `reasoning=<mode>`. Pure.
 pub fn server_flags_from(args_json: Option<&str>) -> String {
     let reasoning = args_json
@@ -238,7 +251,7 @@ pub fn server_flags_from(args_json: Option<&str>) -> String {
         .and_then(|value| value.get("reasoning").and_then(Value::as_str).map(str::to_string))
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| LlamaServerConfig::default().reasoning);
+        .unwrap_or_else(|| DEFAULT_REASONING_MODE.to_string());
     format!("reasoning={reasoning}")
 }
 
@@ -652,37 +665,19 @@ mod tests {
         assert!(DOOM_AGENT_SYSTEM_PROMPT.contains("pixels"));
         assert!(DOOM_AGENT_SYSTEM_PROMPT.contains("audio"));
         // ST-5 rework: the Doom bound is collapsed to the shared default.
-        assert_eq!(
-            DOOM_AGENT_MAX_TOKENS,
-            crate::applications::llm_server::chat::MAX_TOKENS
-        );
+        assert_eq!(DOOM_AGENT_MAX_TOKENS, crate::applications::llm_server::chat::MAX_TOKENS);
         assert_eq!(DOOM_AGENT_MAX_TOKENS, 1024);
     }
 
     /// **ST-5 (lever D, R-1; rework round 2).** The Doom body is bounded to
-    /// [`DOOM_AGENT_MAX_TOKENS`], which is now the shared
-    /// `crate::applications::llm_server::chat::MAX_TOKENS` default, while
-    /// `build_response_format_request_body`'s OWN default is left byte-for-byte
-    /// unchanged (the override stays Doom-path-only).
+    /// [`DOOM_AGENT_MAX_TOKENS`], which is the shared
+    /// [`crate::applications::llm_server::chat::MAX_TOKENS`] default.
     #[test]
-    fn st5_doom_body_uses_the_shared_token_budget_and_leaves_the_shared_builder_untouched() {
-        use crate::applications::llm_server::chat;
+    fn st5_doom_body_uses_the_shared_token_budget() {
         let body = build_doom_agent_request_body(&json!({ "tic": 1 }), &json!([]));
-        assert_eq!(body["max_tokens"], chat::MAX_TOKENS);
+        assert_eq!(body["max_tokens"], MAX_TOKENS);
         assert_eq!(body["max_tokens"], DOOM_AGENT_MAX_TOKENS);
         assert_eq!(body["max_tokens"], 1024);
-
-        // The shared builder still renders its own (unchanged) default.
-        let shared = chat::build_response_format_request_body(
-            &[LlmMessage {
-                role: "user".to_string(),
-                content: "hello".to_string(),
-            }],
-            "fredo_reply",
-            &doom_plan_schema(),
-        );
-        assert_eq!(shared["max_tokens"], chat::MAX_TOKENS);
-        assert_eq!(shared["max_tokens"], DOOM_AGENT_MAX_TOKENS);
     }
 
     /// **ST-2 rework (R-4/AC4).** An EMPTY/whitespace accumulated reply is a

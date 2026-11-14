@@ -1,55 +1,32 @@
-//! The companion **wire-shape** model and its pure renderers (Spec #2857 ST-4;
-//! Spec #3141 ST-3).
+//! The companion **IPC message DTO** (Spec #2857 ST-4; reduced by Spec #3141
+//! ST-3, retired to its DTO by ST-6).
 //!
 //! The transport is GONE: companion inference runs in-process on the engine
 //! thread (`engine/`), so there is no loopback POST, no SSE frame, no health
-//! wait, and no `llama-server` launch to reuse. What remains here is the frozen
-//! WIRE SHAPE the IPC + capability-probe surfaces still consume:
+//! wait, and no `llama-server` launch. ST-6 retired the frozen OpenAI wire-shape
+//! renderers (`render_messages`, `audio_content_part`, the `build_*` body
+//! builders) from production together with the HTTP capability probe that was
+//! their last consumer.
 //!
-//! * [`LlmMessage`] — the byte-identical `llm_chat` argument shape (AC-26);
-//! * [`render_messages`] / [`audio_content_part`] and the four `build_*` body
-//!   builders — the ONE media-shaping rule in OpenAI-JSON form, still read by
-//!   the HTTP capability probe (ST-5/ST-6 retire that probe);
-//! * [`MAX_TOKENS`], the per-request completion budget every body carries.
+//! What remains is the ONE thing that crosses IPC: [`LlmMessage`] — the
+//! byte-identical `llm_chat` argument shape (AC-26) — plus [`MAX_TOKENS`], the
+//! per-request completion budget the engine's request model carries.
 //!
 //! The engine's own request model ([`super::engine::request::ChatTurn`]) is the
-//! production path; its parity pin proves it is byte-equal to these renderers, so
-//! re-pointing cannot reshape a turn. The SSE vocabulary the retired consumers
-//! used moved to [`super::engine::stream`] as `StreamEvent` / `StreamFrame`.
+//! production path; its media rule (audio = one `input_audio` part, image =
+//! `text` + `image_url`) lives there and nowhere else (NFR-6).
+//!
+//! ## The frozen wire shape (TEST ONLY)
+//!
+//! The payload pins still assert the SHIPPED OpenAI-JSON shape byte-for-byte, so
+//! the renderers that describe it are kept under `#[cfg(test)]` — a reference the
+//! production code must stay equal to, and not dead production code. They are
+//! gated to test builds exactly like `mod.rs`'s retired-key constant.
 
 use serde::{Deserialize, Serialize};
 
-use super::DEFAULT_LLAMA_SERVER_HOST;
-
 /// Maximum completion tokens per request (mirrors the legacy in-process cap).
 pub const MAX_TOKENS: u32 = 1024;
-
-/// Path of the OpenAI-compatible chat-completions endpoint (probe-only).
-pub const CHAT_COMPLETIONS_PATH: &str = "/v1/chat/completions";
-
-/// Path of the llama.cpp server properties endpoint (`GET /props`, probe-only).
-pub const PROPS_PATH: &str = "/props";
-
-// ── Pure URL / host helpers (unit-tested seam) ────────────────────────────────
-
-/// The OpenAI-compatible chat-completions URL for a bound host/port.
-pub fn chat_completions_url(host: &str, port: u16) -> String {
-    format!("http://{host}:{port}{CHAT_COMPLETIONS_PATH}")
-}
-
-/// The llama.cpp `/props` URL for a bound host/port.
-pub fn props_url(host: &str, port: u16) -> String {
-    format!("http://{host}:{port}{PROPS_PATH}")
-}
-
-/// Pure host resolution: a non-blank, trimmed configured value wins; otherwise
-/// the product default. Shared by the capability probe's request paths.
-pub fn resolve_host(configured: Option<&str>) -> String {
-    configured
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| DEFAULT_LLAMA_SERVER_HOST.to_string())
-}
 
 /// A single message in an LLM conversation.
 ///
@@ -61,38 +38,34 @@ pub struct LlmMessage {
     pub content: String,
 }
 
-// ── Request body (pure) ────────────────────────────────────────────────────────
+// ── Frozen wire-shape reference (TEST ONLY) ──────────────────────────────────
+//
+// The production turn is `ChatTurn` (`engine/request.rs`). These renderers are
+// the retired HTTP body's shape, kept so the payload pins and the engine's media
+// parity pin can assert the engine still produces it. No production code calls
+// them; they are compiled only for tests.
 
 /// The ONE production `input_audio` content part (#2897 ST-3; REQ-5).
 ///
 /// Shape is exact and carries NO transcript text (REQ-3):
 /// `{ "type": "input_audio", "input_audio": { "data": "<base64 wav>", "format": "wav" } }`
-///
-/// `wav` is the only format the capture path produces (`stt_take_audio_clip`
-/// always returns a 16 kHz mono 16-bit PCM WAV), so the renderer pins it.
-pub const AUDIO_FORMAT: &str = "wav";
-
-/// The single `input_audio` content part carried on a model-audio user turn.
+#[cfg(test)]
 pub fn audio_content_part(audio_base64: &str) -> serde_json::Value {
     serde_json::json!({
         "type": "input_audio",
-        "input_audio": { "data": audio_base64, "format": AUDIO_FORMAT },
+        "input_audio": { "data": audio_base64, "format": "wav" },
     })
 }
 
-/// Render `LlmMessage`s into the OpenAI wire shape WITHOUT any request options.
+/// Render `LlmMessage`s into the retired OpenAI wire shape.
 ///
 /// Exactly one of `audio_base64` / `image_base64` may be present:
 ///
-/// * **audio** (#2897 ST-3, REQ-5) — the LAST user message's `content` becomes
-///   `[{ "type": "input_audio", "input_audio": { data, format } }]`. Model audio
-///   IS the turn's input, so NO transcript text part is ever emitted (REQ-3);
-///   the message's string content is deliberately discarded, never rendered.
-/// * **image** (R-3.2) — the LAST user message's `content` becomes
+/// * **audio** — the LAST user message's `content` becomes
+///   `[{ "type": "input_audio", … }]`; no transcript text part is ever emitted.
+/// * **image** — the LAST user message's `content` becomes
 ///   `[{"type":"text",…},{"type":"image_url",…}]`.
-///
-/// Every other message keeps its plain string content. Pure and shared by every
-/// request builder, so the probe bodies render identically.
+#[cfg(test)]
 pub fn render_messages(
     messages: &[LlmMessage],
     image_base64: Option<&str>,
@@ -100,9 +73,7 @@ pub fn render_messages(
 ) -> Vec<serde_json::Value> {
     let mut rendered: Vec<serde_json::Value> = messages
         .iter()
-        .map(|message| {
-            serde_json::json!({ "role": message.role, "content": message.content })
-        })
+        .map(|message| serde_json::json!({ "role": message.role, "content": message.content }))
         .collect();
 
     if let Some(audio) = audio_base64 {
@@ -133,13 +104,8 @@ pub fn render_messages(
     rendered
 }
 
-/// Build a streaming body that OFFERS JSON-Schema `tools` to the model
-/// (native OpenAI-style tool calling). Pure — the capability probe uses this to
-/// test the tool path.
-///
-/// `tool_choice` is forwarded verbatim; `parallel_tool_calls` is explicit so the
-/// documented Gemma4 parallel-call loop hazard is mitigated at the request
-/// (spike finding b).
+/// The retired streaming body that offers JSON-Schema `tools` (test reference).
+#[cfg(test)]
 pub fn build_tools_request_body(
     messages: &[LlmMessage],
     tools: &serde_json::Value,
@@ -156,10 +122,9 @@ pub fn build_tools_request_body(
     })
 }
 
-/// Build a streaming body constrained to a JSON Schema via `response_format`
-/// (the documented fallback mechanism). Pure — the probe uses it with the
-/// `fredo_probe` name, and the structured reply contract (#2918) passes
-/// `fredo_reply`.
+/// The retired streaming body constrained to a JSON Schema via `response_format`
+/// (test reference).
+#[cfg(test)]
 pub fn build_response_format_request_body(
     messages: &[LlmMessage],
     schema_name: &str,
@@ -180,23 +145,15 @@ pub fn build_response_format_request_body(
 mod tests {
     use super::*;
 
-    /// Head of a string by character count (UTF-8 safe), with an ellipsis marker.
-    ///
-    /// The pure equality the URL/help pins assert; test-only because the capability
-    /// probe carries its own bounded-error helper at the probe boundary.
-    fn truncate(text: &str, max_chars: usize) -> String {
-        if text.chars().count() <= max_chars {
-            return text.to_string();
+    fn text_message(role: &str, content: &str) -> LlmMessage {
+        LlmMessage {
+            role: role.to_string(),
+            content: content.to_string(),
         }
-        let mut head: String = text.chars().take(max_chars).collect();
-        head.push('…');
-        head
     }
 
     /// The pure wire-shape view of a text-or-image turn, retained so the payload
-    /// pins can assert the shipped shape byte-for-byte. Production shapes the
-    /// engine's [`super::super::engine::request::ChatTurn`], whose parity pin
-    /// proves it is byte-equal to this renderer.
+    /// pins can assert the shipped shape byte-for-byte.
     fn build_request_body(
         messages: &[LlmMessage],
         image_base64: Option<&str>,
@@ -208,9 +165,9 @@ mod tests {
         })
     }
 
-    /// The pure wire-shape view of a model-audio turn (#2897 ST-3; REQ-5): the clip
-    /// rides the LAST user message as the SINGLE `input_audio` part and no
-    /// transcript text is fabricated (REQ-3).
+    /// The pure wire-shape view of a model-audio turn: the clip rides the LAST
+    /// user message as the SINGLE `input_audio` part and no transcript text is
+    /// fabricated.
     fn build_audio_request_body(
         messages: &[LlmMessage],
         audio_base64: &str,
@@ -222,11 +179,18 @@ mod tests {
         })
     }
 
-    fn text_message(role: &str, content: &str) -> LlmMessage {
-        LlmMessage {
-            role: role.to_string(),
-            content: content.to_string(),
-        }
+    #[test]
+    fn the_message_dto_round_trips_its_wire_shape() {
+        let message = text_message("user", "hi");
+        let json = serde_json::to_value(&message).expect("serialize");
+        assert_eq!(json, serde_json::json!({ "role": "user", "content": "hi" }));
+        let restored: LlmMessage = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(restored, message);
+    }
+
+    #[test]
+    fn the_token_budget_matches_the_retired_contract() {
+        assert_eq!(MAX_TOKENS, 1024);
     }
 
     #[test]
@@ -260,10 +224,7 @@ mod tests {
         assert_eq!(last[0]["type"], "text");
         assert_eq!(last[0]["text"], "look at this");
         assert_eq!(last[1]["type"], "image_url");
-        assert_eq!(
-            last[1]["image_url"]["url"],
-            "data:image/png;base64,QUJD"
-        );
+        assert_eq!(last[1]["image_url"]["url"], "data:image/png;base64,QUJD");
 
         // Earlier user/system messages keep their plain string content.
         assert_eq!(body["messages"][0]["content"], "be terse");
@@ -277,9 +238,9 @@ mod tests {
         assert_eq!(body["messages"][0]["content"], "hello");
     }
 
-    /// #2918 ST-1 — the schema name is a parameter: the probe's `fredo_probe`
-    /// name is forwarded verbatim and the schema-constrained body still offers
-    /// NO tools (it is the fallback mechanism).
+    /// The schema name is a parameter: it is forwarded verbatim and the
+    /// schema-constrained body still offers NO tools (it is the fallback
+    /// mechanism).
     #[test]
     fn build_response_format_request_body_forwards_the_schema_name() {
         let messages = vec![text_message("user", "hi")];
@@ -300,7 +261,7 @@ mod tests {
 
     // ── #2897 ST-3: model-audio delivery (REQ-5; no-transcript REQ-3) ─────────
 
-    /// Validation-style pin for the REQ-3 no-transcript invariant and the exact
+    /// Validation-style pin for the no-transcript invariant and the exact
     /// `input_audio` shape: the last user message carries EXACTLY one
     /// `input_audio` part (non-empty `data` + `format`) and never a `text` part.
     fn validate_audio_body(body: &serde_json::Value) -> Result<(), String> {
@@ -382,7 +343,6 @@ mod tests {
         assert_eq!(last.as_array().map(Vec::len), Some(1), "exactly the audio part");
         assert_eq!(last[0]["type"], "input_audio");
         assert_eq!(last[0]["input_audio"]["data"], "UklGRg==");
-        assert_eq!(last[0]["input_audio"]["format"], AUDIO_FORMAT);
         assert_eq!(last[0]["input_audio"]["format"], "wav");
         assert_eq!(
             last[0].as_object().map(|part| part.len()),
@@ -431,7 +391,7 @@ mod tests {
 
     #[test]
     fn validate_audio_body_rejects_text_bearing_and_malformed_turns() {
-        // A text part beside the audio part violates REQ-3.
+        // A text part beside the audio part violates the no-transcript rule.
         let text_body = serde_json::json!({
             "messages": [{
                 "role": "user",
@@ -499,28 +459,5 @@ mod tests {
                 "max_tokens": MAX_TOKENS,
             })
         );
-    }
-
-    #[test]
-    fn truncate_is_utf8_safe() {
-        assert_eq!(truncate("hello", 10), "hello");
-        assert_eq!(truncate("héllo world", 5), "héllo…");
-    }
-
-    #[test]
-    fn resolve_host_prefers_a_non_blank_trimmed_value() {
-        assert_eq!(resolve_host(Some("192.168.0.9")), "192.168.0.9");
-        assert_eq!(resolve_host(Some("  127.0.0.1  ")), "127.0.0.1");
-        assert_eq!(resolve_host(Some("   ")), DEFAULT_LLAMA_SERVER_HOST);
-        assert_eq!(resolve_host(None), DEFAULT_LLAMA_SERVER_HOST);
-    }
-
-    #[test]
-    fn endpoint_urls_target_the_managed_server() {
-        assert_eq!(
-            chat_completions_url("127.0.0.1", 8080),
-            "http://127.0.0.1:8080/v1/chat/completions"
-        );
-        assert_eq!(props_url("127.0.0.1", 8080), "http://127.0.0.1:8080/props");
     }
 }

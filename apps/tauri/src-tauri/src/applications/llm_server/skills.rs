@@ -36,10 +36,11 @@ use super::engine::stream::{AppSink, SettledStream, StreamEvent, TurnSource};
 /// `tool_choice` sent with the registry offer — the model decides when to call.
 pub const TOOL_CHOICE_AUTO: &str = "auto";
 
-/// `parallel_tool_calls` sent with the registry offer. Explicitly false so the
-/// documented Gemma4 parallel-call loop hazard is mitigated at the request
-/// (spike finding b). Read by the test-only wire-shape builders, because the
-/// production turn enforces single-call through the shared terminal plan.
+/// `parallel_tool_calls` semantics of the registry offer. Explicitly false so
+/// the documented Gemma4 parallel-call loop hazard is mitigated (spike finding
+/// b). In-process the production turn enforces single-call through the shared
+/// terminal plan; this constant is the wire-shape value the test-only builders
+/// render, so it is gated to test builds.
 #[cfg(test)]
 pub const PARALLEL_TOOL_CALLS: bool = false;
 

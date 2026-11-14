@@ -14,20 +14,71 @@
 //! [`crate::infrastructure::companion::models`] (`resolve_manifest`,
 //! `resolve_models_dir`) — this module only JOINS them, so the layout rule
 //! lives in exactly one place.
+//!
+//! ## The companion directory
+//!
+//! The per-environment companion artifact directory (AC-27) lives here too: the
+//! resolver was moved out of the retired `process.rs` (Spec #3141 ST-6) and is
+//! byte-identical, including the blank/whitespace override rule.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use llama_cpp_4::model::params::LlamaModelParams;
 use llama_cpp_4::model::LlamaModel;
+use tauri::{AppHandle, Manager};
 
 use crate::infrastructure::companion::models::{
     file_path, missing_files, resolve_manifest, resolve_models_dir, ModelManifest,
 };
+use crate::infrastructure::storage::SettingsStore;
 
+use super::super::status_keys::LLAMA_SERVER_COMPANION_DIR_KEY;
 use super::CompanionEngineErrorCode;
 
 /// The engine log filename inside the companion directory.
 pub const ENGINE_LOG_FILENAME: &str = "companion-engine.log";
+
+/// The companion artifact subdirectory under the app data dir when no override
+/// is configured (`{app_data_dir}/companion`).
+pub const COMPANION_DIR: &str = "companion";
+
+/// The DEFAULT companion artifact directory under the app data dir.
+pub fn default_companion_dir(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join(COMPANION_DIR)
+}
+
+/// Pure companion-dir resolution: a non-blank, trimmed override wins; anything
+/// else (absent, empty, whitespace-only) yields `default`.
+pub fn resolve_companion_dir_from(configured: Option<&str>, default: PathBuf) -> PathBuf {
+    match configured {
+        Some(value) if !value.trim().is_empty() => PathBuf::from(value.trim()),
+        _ => default,
+    }
+}
+
+/// Resolve the companion artifact directory from the persisted setting
+/// ([`LLAMA_SERVER_COMPANION_DIR_KEY`]), falling back to the product default
+/// `{app_data_dir}/companion` when the setting is blank/absent.
+///
+/// The per-environment override keeps working unchanged (AC-27). A resolution
+/// failure is reported as a string so the caller can degrade (the log path is
+/// never load-bearing).
+pub fn resolve_companion_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let default = default_companion_dir(
+        &app.path()
+            .app_data_dir()
+            .map_err(|e| format!("could not resolve the app data dir: {e}"))?,
+    );
+    let store = app.state::<Arc<SettingsStore>>();
+    let configured = store
+        .cached_get(LLAMA_SERVER_COMPANION_DIR_KEY)
+        .ok()
+        .flatten()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    Ok(resolve_companion_dir_from(configured.as_deref(), default))
+}
 
 /// The three absolute model paths the engine loads, plus the engine log file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,14 +152,14 @@ pub fn resolve_for_app(
 /// path under the configured companion dir, then delegate to
 /// [`resolve_for_app`].
 ///
-/// The companion dir comes from the SHARED `process::resolve_companion_dir`, so
-/// the per-environment `llama_server_companion_dir` override keeps working
+/// The companion dir comes from [`resolve_companion_dir`], so the
+/// per-environment `llama_server_companion_dir` override keeps working
 /// unchanged (AC-27).
 pub fn resolve_for_handle(
     app: &tauri::AppHandle,
 ) -> Result<EnginePaths, (CompanionEngineErrorCode, String)> {
     let paths = resolve_for_app(&resolve_models_dir(app), &resolve_manifest(app))?;
-    match crate::applications::llm_server::process::resolve_companion_dir(app) {
+    match resolve_companion_dir(app) {
         Ok(dir) => {
             // Best-effort: create the dir so llama.cpp can open the log file.
             let _ = std::fs::create_dir_all(&dir);
@@ -263,5 +314,53 @@ mod tests {
         // The crate clamps to i32::MAX = every layer.
         assert_eq!(full.n_gpu_layers(), i32::MAX);
         assert!(full.load_mtp());
+    }
+
+    // ── The companion directory (moved from the retired process.rs) ──────────
+
+    #[test]
+    fn default_companion_dir_appends_the_companion_subdir() {
+        let app_data = PathBuf::from(r"C:\data\fredo");
+        assert_eq!(
+            default_companion_dir(&app_data),
+            app_data.join("companion")
+        );
+    }
+
+    #[test]
+    fn resolve_companion_dir_from_prefers_a_non_blank_trimmed_override() {
+        let default = PathBuf::from(r"C:\data\fredo\companion");
+
+        assert_eq!(
+            resolve_companion_dir_from(
+                Some(r"C:\Code\fredo\.runtime\companion\"),
+                default.clone()
+            ),
+            PathBuf::from(r"C:\Code\fredo\.runtime\companion\")
+        );
+        // Surrounding whitespace is trimmed off the override.
+        assert_eq!(
+            resolve_companion_dir_from(Some("  C:\\runtime\\companion  "), default.clone()),
+            PathBuf::from(r"C:\runtime\companion")
+        );
+    }
+
+    #[test]
+    fn resolve_companion_dir_from_falls_back_when_blank_or_absent() {
+        let default = PathBuf::from(r"C:\data\fredo\companion");
+
+        assert_eq!(resolve_companion_dir_from(None, default.clone()), default);
+        assert_eq!(
+            resolve_companion_dir_from(Some(""), default.clone()),
+            default
+        );
+        assert_eq!(
+            resolve_companion_dir_from(Some("   "), default.clone()),
+            default
+        );
+        assert_eq!(
+            resolve_companion_dir_from(Some("\t\n"), default.clone()),
+            default
+        );
     }
 }

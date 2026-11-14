@@ -184,10 +184,11 @@ function Test-PathEqualOrUnder {
 
 # Role -> acceptable live image base names (without .exe), mirroring dev-env.ps1's
 # stale-PID guard. Used to make the liveness probe PID-reuse resistant.
+# There is no `llama` role any more: the companion engine is in-process
+# (Spec #3141), so no companion child process exists to guard.
 $script:RoleImages = @{
   app      = @("fredo")
   postgres = @("postgres")
-  llama    = @("llama-server")
   vite     = @("node", "bun")
   launcher = @("cmd", "powershell", "pwsh")
 }
@@ -223,12 +224,13 @@ function Test-RecordedProcessLive {
 function Get-EnvPortEntries {
   param($Ports)
   $list = New-Object System.Collections.ArrayList
+  # The FOUR recorded endpoints. The companion `llama` port was retired
+  # (Spec #3141): inference is in-process, so there is no listener to record.
   $map = @(
     @{ Name = "vite";     Role = "vite";  Optional = $false },
     @{ Name = "mcp";      Role = "app";   Optional = $false },
     @{ Name = "otlpGrpc"; Role = "app";   Optional = $false },
-    @{ Name = "otlpHttp"; Role = "app";   Optional = $false },
-    @{ Name = "llama";    Role = "llama"; Optional = $true }
+    @{ Name = "otlpHttp"; Role = "app";   Optional = $false }
   )
   if (-not $Ports) { return $list }
   foreach ($m in $map) {
@@ -419,10 +421,9 @@ foreach ($e in @($envs | Where-Object { $_.Live })) {
     }
 
     # Same-environment: the owner must be the manifest's recorded PID for the
-    # endpoint's role (app/vite), else at minimum one of its recorded PIDs. The
-    # companion llama-server PID is not tracked in the manifest today, so an
-    # untracked owner of the optional llama port is a warning, never a violation
-    # (the cross-env check above still catches a sibling owning it).
+    # endpoint's role (app/vite), else at minimum one of its recorded PIDs.
+    # (The companion `llama` port was retired with the out-of-process server --
+    # Spec #3141 -- so every recorded endpoint now has a tracked role owner.)
     $roleProc = @($e.Processes | Where-Object { $_.Role -eq $pe.Role }) | Select-Object -First 1
     if ($roleProc) {
       if ([int]$roleProc.Pid -ne $ownerPid) {
@@ -430,7 +431,7 @@ foreach ($e in @($envs | Where-Object { $_.Live })) {
       }
     } elseif (@($e.Pids) -notcontains $ownerPid) {
       if ($pe.Optional) {
-        Add-Warning "env '$($e.EnvId)': optional endpoint $($pe.Name) :$($pe.Port) is bound by PID $ownerPid, which is not recorded in its manifest (companion pid untracked)"
+        Add-Warning "env '$($e.EnvId)': optional endpoint $($pe.Name) :$($pe.Port) is bound by PID $ownerPid, which is not recorded in its manifest"
       } else {
         Add-Violation "env '$($e.EnvId)' endpoint $($pe.Name) :$($pe.Port) owned by PID $ownerPid, which is not recorded in its manifest (foreign owner, R-1.3)"
       }

@@ -20,12 +20,11 @@
 //!   manifest pin, no local-transcription branch and no speech-handling key
 //!   survive; every session accumulates the bounded model-audio clip and carries
 //!   the model-audio phase + ceiling.
-//! - **REQ-8 MODEL-AUDIO LOOPBACK-ONLY** — a `WHILE` invariant: the captured
-//!   clip crosses the IPC boundary only (captured and taken inside
-//!   `infrastructure/voice/`; the model transport names never appear there), and
-//!   the managed delivery target is the loopback host
-//!   (`DEFAULT_LLAMA_SERVER_HOST` = `127.0.0.1`, the launch-config default, and
-//!   the ONE chat URL shell that templates the resolved host).
+//! - **REQ-8 MODEL-AUDIO CONFINEMENT** — a `WHILE` invariant: the captured clip
+//!   crosses the IPC boundary only (captured and taken inside
+//!   `infrastructure/voice/`; the model delivery names never appear there), and
+//!   the in-process delivery path carries no network endpoint at all (Spec #3141
+//!   ST-6 retired the managed loopback client).
 //!
 //! These are STATIC/STRUCTURAL pins only. The measured idle-CPU / no-egress
 //! live observations belong to the tester (QA REQ-NF1 / REQ-3.2); when a live
@@ -523,63 +522,49 @@ fn source_code(relative: &str) -> String {
     mask(&source_text(relative))
 }
 
-/// REQ-8 (F-108 leg 2) — the model-audio delivery target is the managed
-/// `llama-server` on the loopback host. The managed-host default, the launch
-/// configuration default and the ONE chat URL shell all resolve to `127.0.0.1`,
-/// and every chat request resolves its host through that shell — never a
-/// hardcoded remote endpoint.
+/// REQ-8 (F-108 leg 2) — the model-audio delivery path is IN-PROCESS (Spec #3141
+/// ST-6 retired the managed loopback client), so the strongest form of "the turn
+/// cannot address a remote endpoint" holds: the delivery surface carries no URL,
+/// no host and no network client at all.
+///
+/// The retired pin asserted the loopback host (`DEFAULT_LLAMA_SERVER_HOST`, the
+/// launch-config default and the `/health` URL shell). All three targets were
+/// deleted with the out-of-process server, so the pin is re-keyed to the
+/// SURVIVING property — the whole `applications/llm_server` tree performs no
+/// network delivery — with a positive control proving the scan still sees the
+/// shipped delivery commands.
 #[test]
-fn model_audio_delivery_target_is_the_managed_loopback_host() {
-    // The managed host default `resolve_host` falls back to.
-    let module = source_text("applications/llm_server/mod.rs");
-    assert!(
-        module.contains("pub const DEFAULT_LLAMA_SERVER_HOST: &str = \"127.0.0.1\";"),
-        "the managed-server default host must stay loopback (REQ-8)"
-    );
-
-    // The launch configuration default (the `--host` the managed server binds).
-    let config = production_text("applications/llm_server/config.rs");
-    assert!(
-        config.contains("host: \"127.0.0.1\".to_string(),"),
-        "the `llama-server` launch config must default to the loopback host (REQ-8)"
-    );
-
-    // In-process (Spec #3141 ST-3) there is NO loopback endpoint at all: the
-    // audio turn runs on the engine thread. The addressable shell is gone, and
-    // `chat.rs` keeps only the pure wire-shape renderers. The redirect-only
-    // property (the turn cannot address a remote endpoint) is therefore stronger,
-    // not weaker: the delivery commands carry no URL and no host at all.
-    let chat = production_text("applications/llm_server/chat.rs");
-    assert!(
-        !chat.contains("llm_chat_with_audio"),
-        "the delivery command must not live in the wire-shape module: {chat}"
-    );
-
-    // The health probe (the retired out-of-process readiness surface) still
-    // templates its host; ST-6 retires it with the launch path.
-    let health = production_text("applications/llm_server/health.rs");
-    assert!(
-        health.contains("format!(\"http://{host}:{port}{HEALTH_PATH}\")"),
-        "the health URL must template the resolved host (REQ-8)"
-    );
-
-    // The audio delivery command must route the turn through the ONE in-process
-    // engine path — never its own transport/URL. ST-1 split `commands.rs` by
-    // concern, so the delivery commands now live in `commands/chat.rs`; ST-3
-    // re-points them from the loopback shell onto the engine stream.
+fn model_audio_delivery_path_carries_no_network_endpoint() {
+    // The delivery commands still exist and still route through the ONE engine
+    // path (positive control: the scan is not vacuous).
     let commands = production_code("applications/llm_server/commands/chat.rs");
-    if commands.contains("fn llm_chat_with_audio(") {
-        let audio_command = item_span(&commands, "fn llm_chat_with_audio(");
-        assert!(
-            audio_command.contains("spawn_audio_chat")
-                || audio_command.contains("skills::")
-                || audio_command.contains("run_skill"),
-            "llm_chat_with_audio must deliver through the ONE engine path (REQ-8): {audio_command}"
-        );
-        assert!(
-            !audio_command.contains("http://"),
-            "the in-process audio command must carry no loopback URL (REQ-8): {audio_command}"
-        );
+    assert!(
+        commands.contains("fn llm_chat_with_audio("),
+        "the shipped audio delivery command must exist (REQ-8)"
+    );
+    let audio_command = item_span(&commands, "fn llm_chat_with_audio(");
+    assert!(
+        audio_command.contains("spawn_audio_chat"),
+        "llm_chat_with_audio must deliver through the ONE engine path (REQ-8): {audio_command}"
+    );
+    assert!(
+        !audio_command.contains("http://"),
+        "the in-process audio command must carry no loopback URL (REQ-8): {audio_command}"
+    );
+
+    // NO delivered turn may shape a network endpoint: the whole llm_server tree
+    // is scanned for a URL shell, a socket, or an HTTP client.
+    for (file, production) in crate_production_sources() {
+        if !file.starts_with("applications/llm_server/") {
+            continue;
+        }
+        let code = mask(&production);
+        for symbol in ["http://", "https://", "TcpStream", "reqwest", "hyper::"] {
+            assert!(
+                !code.contains(symbol),
+                "{file} must carry no network endpoint — the delivery path is in-process (REQ-8)"
+            );
+        }
     }
 
     // The engine turn the audio path shapes offers the SAME registry and rides the

@@ -3,15 +3,19 @@ use std::sync::Arc;
 
 use crate::infrastructure::storage::SettingsStore;
 
-/// The four settings keys whose values select an executable (or a directory a
+/// The three settings keys whose values select an executable (or a directory a
 /// later trusted spawn reads binaries from). A compromised webview must not be
 /// able to poison one of them into pointing at an arbitrary target.
+///
+/// `llama_server_path` was RETIRED from this set by Spec #3141: companion
+/// inference runs in-process, so the key no longer selects an executable and
+/// there is nothing to poison. A stale persisted value is INERT — it is never
+/// read for resolution, never validated here, and never deleted (AC-9/R-17.4).
 ///
 /// The literals are LOCAL by design: engineering rules forbid cross-application
 /// imports, so this module must not import the `llm_server` / `terminal`
 /// constants that declare the same keys.
-pub const SENSITIVE_PATH_SETTING_KEYS: [&str; 4] = [
-    "llama_server_path",
+pub const SENSITIVE_PATH_SETTING_KEYS: [&str; 3] = [
     "llama_server_companion_dir",
     "terminal_copilot_path",
     "terminal_pwsh_path",
@@ -202,7 +206,7 @@ mod tests {
         );
     }
 
-    /// The 4 x 3 (key, rule) matrix, used by both-plane tests.
+    /// The 3 x 3 (key, rule) matrix, used by both-plane tests.
     fn matrix_cells() -> Vec<(&'static str, String, &'static str)> {
         let mut cells = Vec::new();
         for key in SENSITIVE_PATH_SETTING_KEYS {
@@ -214,21 +218,6 @@ mod tests {
     }
 
     // ── R-3.a: the shared rule, one test per (key, rule) cell ───────────────
-
-    #[test]
-    fn matrix_llama_server_path_non_absolute() {
-        expect_reject("llama_server_path", &non_absolute_value(), RULE_ABSOLUTE);
-    }
-
-    #[test]
-    fn matrix_llama_server_path_control_character() {
-        expect_reject("llama_server_path", &control_value(), RULE_CONTROL);
-    }
-
-    #[test]
-    fn matrix_llama_server_path_parent_dir() {
-        expect_reject("llama_server_path", &parent_value(), RULE_PARENT);
-    }
 
     #[test]
     fn matrix_llama_server_companion_dir_non_absolute() {
@@ -434,12 +423,51 @@ mod tests {
             .join("copilot.exe")
             .to_string_lossy()
             .into_owned();
-        let error = persist_setting(&store, "llama_server_path", &value)
+        let error = persist_setting(&store, "terminal_pwsh_path", &value)
             .await
             .expect_err("the pending engine cannot complete a data-plane write");
         assert!(
             !error.contains(SETTING_VALUE_ERROR_PREFIX),
             "an accepted absolute path must reach the store, not the validator: {error}"
+        );
+    }
+
+    // ── Spec #3141 R-17.4 / AC-9: the retired llama_server_path is INERT ──────
+
+    /// The retired key is no longer one of the sensitive path keys (4 → 3), and a
+    /// stale persisted value round-trips UNCHANGED: it is never validated, never
+    /// rewritten and never deleted.
+    #[test]
+    fn the_retired_llama_server_path_is_inert_and_never_deleted() {
+        assert_eq!(
+            SENSITIVE_PATH_SETTING_KEYS.len(),
+            3,
+            "the retired executable key must be off the list (4 → 3)"
+        );
+        assert!(
+            !SENSITIVE_PATH_SETTING_KEYS.contains(&"llama_server_path"),
+            "`llama_server_path` must not be a sensitive path key any more"
+        );
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = open_store(dir.path());
+        // A stale value that would FAIL every sensitive-path rule (relative, a
+        // control character, and a `..` component) is still accepted verbatim —
+        // nothing validates it any more, and nothing deletes it.
+        let stale = "a\u{7f}b..relative\\llama-server.exe";
+        persist_control_setting(&store, "llama_server_path", stale)
+            .expect("the retired key is not validated and must be stored as given");
+        assert_eq!(
+            store.cached_get("llama_server_path").expect("cached_get"),
+            Some(stale.to_string()),
+            "a stale persisted llama_server_path must round-trip byte-identical (never deleted)"
+        );
+        // A second write (the engine never rewrites it) leaves the value intact.
+        persist_control_setting(&store, "llama_server_path", stale)
+            .expect("idempotent write");
+        assert_eq!(
+            store.cached_get("llama_server_path").expect("cached_get"),
+            Some(stale.to_string())
         );
     }
 
@@ -460,7 +488,7 @@ mod tests {
             assert_eq!(
                 validate_setting_value(key, value),
                 Ok(()),
-                "{key} is not one of the four and must not be validated"
+                "{key} is not one of the three and must not be validated"
             );
             persist_control_setting(&store, key, value)
                 .unwrap_or_else(|e| panic!("the control plane must accept {key}: {e}"));

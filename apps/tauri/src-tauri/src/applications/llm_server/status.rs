@@ -484,34 +484,18 @@ struct StatusTurnContext {
 
 impl StatusTurnContext {
     /// The application context for `app`.
+    ///
+    /// `structured_status_supported` is ALWAYS `true` in-process: the schema
+    /// grammar is built from the turn itself (`engine/chat_format.rs`), so there
+    /// is no `/props` capability probe and nothing to gate on. The bounded plain
+    /// retry still degrades a non-conforming structured attempt.
     fn for_app(app: &AppHandle) -> Self {
         Self {
             registry: companion_skill_registry(app),
-            structured_status_supported: should_use_structured_status(app),
+            structured_status_supported: true,
             audio_suppressed: is_performance_suppressed(app),
         }
     }
-}
-
-/// Whether the structured-status path should be used for this turn.
-///
-/// ST-2 wires the CACHED `response_format` capability verdict into this ONE
-/// decision point. The cache is keyed by the resolved managed `(host, port)`
-/// (`probe::resolved_status_capability`), populated by
-/// `companion_status_capability`; the probe therefore never runs per turn. When
-/// the cached verdict says unsupported / unreachable / erroring, the turn
-/// delegates to the shipped plain path (R-7): plain-text reply, no `llm-status`,
-/// no user-visible error. An unprobed `(host, port)` attempts the structured path,
-/// which already degrades through the bounded plain retry (R-5/R-6).
-fn should_use_structured_status(app: &AppHandle) -> bool {
-    should_use_structured_status_for(super::probe::resolved_status_capability(app).as_ref())
-}
-
-/// Pure: the gate decision for a cached capability (`None` = not probed yet).
-fn should_use_structured_status_for(
-    capability: Option<&super::probe::StatusCapability>,
-) -> bool {
-    capability.map(|capability| capability.supported).unwrap_or(true)
 }
 
 /// Emit the parsed status on the ADDITIVE `llm-status` channel (before the
@@ -1608,34 +1592,6 @@ mod tests {
             body_names, names,
             "the request body offers the same generated tools in offer order"
         );
-    }
-
-    // ── #2918 ST-2: the capability gate (R-7) ─────────────────────────────────
-
-    /// The gate only takes the plain path when the cached capability is KNOWN
-    /// unsupported; an unprobed `(host, port)` or a supported verdict uses the
-    /// structured path (which degrades through the bounded plain retry).
-    #[test]
-    fn the_capability_gate_takes_the_plain_path_only_when_known_unsupported() {
-        // Not probed for this (host, port) → attempt the structured path.
-        assert!(should_use_structured_status_for(None));
-
-        // A cached supported verdict → the structured path.
-        assert!(should_use_structured_status_for(Some(
-            &super::super::probe::StatusCapability {
-                supported: true,
-                detail: "schema-constrained content".to_string(),
-            }
-        )));
-
-        // Unsupported / unreachable / erroring → the shipped plain path (R-7).
-        assert!(!should_use_structured_status_for(Some(
-            &super::super::probe::StatusCapability {
-                supported: false,
-                detail: "the response_format capability probe failed: connection refused"
-                    .to_string(),
-            }
-        )));
     }
 
     // ── Spec #2970 ST-4: the Doom Mode audio-leg suppression gate (R-4.a) ──────
