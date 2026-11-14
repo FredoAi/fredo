@@ -644,40 +644,98 @@ fn fresh_seed() -> u32 {
 
 // ── The live-stream content gate (pure) ──────────────────────────────────────
 
-/// Separates a turn's user-visible content from its tool-call body while the
-/// model streams.
+/// Where the gate's scanner is in the marker grammar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GateState {
+    /// Ordinary text is being released.
+    Streaming,
+    /// Inside the template's declared hidden-reasoning span: nothing is released.
+    Skipping,
+    /// A rendered tool-call body is withheld (the finish path decides).
+    ToolBody,
+}
+
+/// Separates a turn's user-visible content from its tool-call body AND from the
+/// template's hidden reasoning channel, while the model streams.
 ///
-/// A tool-offering turn can end in a call, whose body must never reach
-/// `llm-token` (R-26.3). The gate therefore withholds everything from the first
-/// [`CONTROL_TOKEN_PREFIX`] occurrence onward and releases only the text before
-/// it; [`Self::flush`] decides at the finish — once the template's OWN reverse
-/// parser has classified the reply — whether the withheld text was a call body
-/// (dropped) or ordinary content (released).
+/// Two things must never reach `llm-token` (R-26.1 / R-26.3):
 ///
-/// A turn that offers no tools has no gate: every character is content.
+/// * a **tool-call body**, whose control marker ([`CONTROL_TOKEN_PREFIX`]) opens
+///   the call the template's reverse parser decodes at the finish; and
+/// * the **hidden reasoning channel**, which the template declares as an opening
+///   reasoning marker followed by one of its declared closing markers (Spec
+///   #3141 fix D2). The gate receives those markers as DATA — it never spells
+///   them.
+///
+/// ## Why the old gate collapsed streaming
+///
+/// The previous gate withheld everything from the FIRST `<|` occurrence, so a
+/// reply that OPENED with the reasoning marker withheld the whole generation and
+/// released it as ONE token at the finish — leaked chain-of-thought included.
+///
+/// ## The span-aware state machine
+///
+/// The gate is driven by the template's OWN declared markers (carried on
+/// [`super::chat_format::AppliedChatFormat`]) — never a hand-written literal:
+///
+/// * **Streaming** — release text, holding back at most the trailing partial
+///   marker bytes while the buffer is still a proper prefix of a known marker
+///   (so a marker split across two pieces never leaks its prefix);
+/// * **Skipping** — the declared reasoning start marker matched: release nothing
+///   until one of the declared end markers matches, then return to Streaming, so
+///   every piece AFTER the span is emitted immediately (deltas genuinely stream);
+/// * **ToolBody** — a non-reasoning control marker opened a tool-call body:
+///   withhold it; [`Self::flush`] releases it unless the finish path classified
+///   it as a call (then it is never released).
+///
+/// A withheld reasoning span is NEVER released by [`Self::flush`]: it is a hidden
+/// channel, forwarded once as [`EngineEvent::Reasoning`] by the finish path.
 #[derive(Debug, Clone)]
 pub struct ContentGate {
+    /// Every byte the model produced (what the reverse parser decodes).
     raw: String,
-    emitted: usize,
+    /// The not-yet-classified suffix of `raw`.
+    pending: String,
+    /// Visible text produced since the last drain (`push`/`flush` takes it).
+    visible: String,
+    /// The tool-call control prefix to withhold from, when the turn offers tools.
     hold: Option<&'static str>,
+    /// The template's declared reasoning start marker (empty when none).
+    start_tag: String,
+    /// The template's declared reasoning end markers.
+    end_tags: Vec<String>,
+    /// The scanner's position.
+    state: GateState,
+    /// Whether a declared reasoning span was ever entered.
+    skipped: bool,
 }
 
 impl ContentGate {
     /// A gate for a turn that offers tools.
-    pub fn for_tool_turn() -> Self {
-        Self {
-            raw: String::new(),
-            emitted: 0,
-            hold: Some(CONTROL_TOKEN_PREFIX),
-        }
+    ///
+    /// `start_tag` / `end_tags` are the template's DECLARED reasoning markers
+    /// ([`super::chat_format::AppliedChatFormat::thinking_start_tag`] /
+    /// [`thinking_end_tags`](super::chat_format::AppliedChatFormat::thinking_end_tags)).
+    pub fn for_tool_turn(start_tag: &str, end_tags: &[String]) -> Self {
+        Self::new(Some(CONTROL_TOKEN_PREFIX), start_tag, end_tags)
     }
 
-    /// A gate for a turn that offers no tools (everything is content).
-    pub fn for_content_turn() -> Self {
+    /// A gate for a turn that offers no tools (no tool body to withhold, but the
+    /// reasoning span is still hidden from the reply).
+    pub fn for_content_turn(start_tag: &str, end_tags: &[String]) -> Self {
+        Self::new(None, start_tag, end_tags)
+    }
+
+    fn new(hold: Option<&'static str>, start_tag: &str, end_tags: &[String]) -> Self {
         Self {
             raw: String::new(),
-            emitted: 0,
-            hold: None,
+            pending: String::new(),
+            visible: String::new(),
+            hold,
+            start_tag: start_tag.to_string(),
+            end_tags: end_tags.to_vec(),
+            state: GateState::Streaming,
+            skipped: false,
         }
     }
 
@@ -687,13 +745,9 @@ impl ContentGate {
     /// means "hold", not "nothing arrived").
     pub fn push(&mut self, piece: &str) -> String {
         self.raw.push_str(piece);
-        let visible_end = self.visible_end();
-        if visible_end <= self.emitted {
-            return String::new();
-        }
-        let delta = self.raw[self.emitted..visible_end].to_string();
-        self.emitted = visible_end;
-        delta
+        self.pending.push_str(piece);
+        self.advance();
+        std::mem::take(&mut self.visible)
     }
 
     /// The whole raw text the model produced (what the reverse parser decodes).
@@ -701,38 +755,153 @@ impl ContentGate {
         &self.raw
     }
 
-    /// Release every withheld character (the turn was content, not a call).
+    /// Release every withheld PROSE / TOOL BODY character (the turn was content,
+    /// not a call).
     ///
-    /// Returns an empty string when nothing was withheld.
+    /// A withheld reasoning span is never released: it is the hidden channel, and
+    /// the finish path forwards it as [`EngineEvent::Reasoning`] instead.
+    ///
+    /// Returns an empty string when nothing releasable was withheld.
     pub fn flush(&mut self) -> String {
-        if self.emitted >= self.raw.len() {
+        if self.state == GateState::Skipping {
+            // An unclosed reasoning span is still the hidden channel: releasing it
+            // would leak the chain-of-thought as the reply.
             return String::new();
         }
-        let tail = self.raw[self.emitted..].to_string();
-        self.emitted = self.raw.len();
-        tail
+        if !self.pending.is_empty() {
+            self.release_prefix(self.pending.len());
+        }
+        std::mem::take(&mut self.visible)
     }
 
-    /// The byte offset up to which the raw text is safe to forward.
-    fn visible_end(&self) -> usize {
-        let Some(marker) = self.hold else {
-            return self.raw.len();
-        };
-        if let Some(index) = self.raw.find(marker) {
-            return index;
+    /// Whether the gate suppressed a declared reasoning span.
+    pub fn skipped_reasoning(&self) -> bool {
+        self.skipped
+    }
+
+    /// Move the first `len` bytes of `pending` into the visible buffer.
+    fn release_prefix(&mut self, len: usize) {
+        if len == 0 {
+            return;
         }
-        // A marker SPLIT across two pieces must not leak its prefix: hold back a
-        // trailing proper prefix of the marker. Every marker byte is ASCII, so
-        // trimming it keeps the offset on a character boundary.
-        let bytes = self.raw.as_bytes();
-        let marker_bytes = marker.as_bytes();
-        for length in (1..marker_bytes.len()).rev() {
-            if bytes.ends_with(&marker_bytes[..length]) {
-                return self.raw.len() - length;
+        let released: String = self.pending.drain(..len).collect();
+        self.visible.push_str(&released);
+    }
+
+    /// Drop the first `len` bytes of `pending` WITHOUT releasing them (a skipped
+    /// reasoning span, or a marker the gate consumed).
+    fn drop_prefix(&mut self, len: usize) {
+        if len == 0 {
+            return;
+        }
+        self.pending.drain(..len);
+    }
+
+    /// Classify `pending` and move what is visible into the output buffer.
+    fn advance(&mut self) {
+        loop {
+            match self.state {
+                GateState::ToolBody => return,
+                GateState::Skipping => {
+                    let Some((at, len)) = find_first(&self.pending, &self.end_tags) else {
+                        // The span has not closed yet: withhold everything. The
+                        // pending buffer keeps the partial end marker so it can
+                        // still be matched once the rest arrives.
+                        return;
+                    };
+                    self.drop_prefix(at + len);
+                    self.state = GateState::Streaming;
+                }
+                GateState::Streaming => {
+                    // The DECLARED reasoning start marker, exactly — it wins over
+                    // the generic control prefix because it BEGINS with one.
+                    if !self.start_tag.is_empty() && self.pending.starts_with(&self.start_tag) {
+                        self.drop_prefix(self.start_tag.len());
+                        self.state = GateState::Skipping;
+                        self.skipped = true;
+                        continue;
+                    }
+                    // A SPLIT start marker: the pending buffer is a proper prefix
+                    // of the declared start tag, so it could still become the span
+                    // opener. Hold it — bounded by the marker length — instead of
+                    // mistaking its `<|` for a tool body.
+                    if !self.start_tag.is_empty()
+                        && !self.pending.is_empty()
+                        && self.start_tag.starts_with(&self.pending)
+                    {
+                        return;
+                    }
+
+                    let start_at = (!self.start_tag.is_empty())
+                        .then(|| self.pending.find(&self.start_tag))
+                        .flatten();
+                    let control_at = self.pending.find(CONTROL_TOKEN_PREFIX);
+
+                    // The earliest of the two markers decides; ties go to the
+                    // start tag (it BEGINS with the generic control prefix).
+                    let earliest = match (start_at, control_at) {
+                        (Some(start), Some(control)) if start <= control => Some((start, true)),
+                        (Some(start), None) => Some((start, true)),
+                        (_, Some(control)) => Some((control, false)),
+                        (None, None) => None,
+                    };
+                    let Some((at, is_reasoning_start)) = earliest else {
+                        // Plain text: release it, holding back only a trailing
+                        // proper prefix of a known marker (a split marker).
+                        let hold = trailing_partial(&self.pending, &self.start_tag)
+                            .max(trailing_partial(&self.pending, CONTROL_TOKEN_PREFIX));
+                        let release = self.pending.len() - hold;
+                        self.release_prefix(release);
+                        return;
+                    };
+                    self.release_prefix(at);
+                    if is_reasoning_start {
+                        self.drop_prefix(self.start_tag.len());
+                        self.state = GateState::Skipping;
+                        self.skipped = true;
+                        continue;
+                    }
+                    if self.hold.is_some() {
+                        // A tool-call body: withhold it; the finish path decides
+                        // whether it was a call or ordinary content.
+                        self.state = GateState::ToolBody;
+                        return;
+                    }
+                    // No tool body on this turn: the prefix is ordinary text, so
+                    // release it and keep scanning for a reasoning span.
+                    self.release_prefix(CONTROL_TOKEN_PREFIX.len());
+                }
             }
         }
-        self.raw.len()
     }
+}
+
+/// The earliest occurrence of any of `markers` in `text`, as `(offset, length)`.
+fn find_first(text: &str, markers: &[String]) -> Option<(usize, usize)> {
+    markers
+        .iter()
+        .filter(|marker| !marker.is_empty())
+        .filter_map(|marker| text.find(marker.as_str()).map(|at| (at, marker.len())))
+        .min_by_key(|(at, _)| *at)
+}
+
+/// The length of the longest trailing proper prefix of `marker` that `text` ends
+/// with — the bytes that could still become a marker once more text arrives.
+///
+/// Every marker byte is ASCII, so trimming it keeps the offset on a character
+/// boundary.
+fn trailing_partial(text: &str, marker: &str) -> usize {
+    if marker.is_empty() {
+        return 0;
+    }
+    let bytes = text.as_bytes();
+    let marker_bytes = marker.as_bytes();
+    for length in (1..marker_bytes.len()).rev() {
+        if bytes.ends_with(&marker_bytes[..length]) {
+            return length;
+        }
+    }
+    0
 }
 
 /// Decode the template's parsed assistant message into tool calls.
@@ -1009,7 +1178,7 @@ mod tests {
 
     #[test]
     fn a_content_turn_forwards_every_character_exactly_once() {
-        let mut gate = ContentGate::for_content_turn();
+        let mut gate = ContentGate::for_content_turn("", &[]);
         assert_eq!(gate.push("hello"), "hello");
         assert_eq!(gate.push(" there"), " there");
         assert_eq!(gate.raw(), "hello there");
@@ -1018,7 +1187,7 @@ mod tests {
 
     #[test]
     fn a_tool_turn_holds_from_the_control_marker_and_keeps_the_prose() {
-        let mut gate = ContentGate::for_tool_turn();
+        let mut gate = ContentGate::for_tool_turn("", &[]);
         assert_eq!(gate.push("Opening it now. "), "Opening it now. ");
         // The call body starts with the control marker and is never forwarded.
         assert_eq!(gate.push("<|tool_call>call:open_app{"), "");
@@ -1031,7 +1200,7 @@ mod tests {
 
     #[test]
     fn a_marker_split_across_two_pieces_never_leaks_its_prefix() {
-        let mut gate = ContentGate::for_tool_turn();
+        let mut gate = ContentGate::for_tool_turn("", &[]);
         // The trailing `<` could start a marker, so it is withheld.
         assert_eq!(gate.push("done <"), "done ");
         // The completion of the marker forwards nothing more.
@@ -1041,10 +1210,170 @@ mod tests {
 
     #[test]
     fn a_content_turn_with_no_marker_never_holds_anything_back() {
-        let mut gate = ContentGate::for_tool_turn();
+        let mut gate = ContentGate::for_tool_turn("", &[]);
         let text = "a plain reply with no control tokens at all";
         assert_eq!(gate.push(text), text);
         assert_eq!(gate.flush(), "");
+    }
+
+    // ── D2: the template's DECLARED reasoning span is skipped, and the answer
+    //        after it still STREAMS ──────────────────────────────────────────
+
+    /// The declared markers the pinned template family emits. The PRODUCTION gate
+    /// never spells these: they arrive on `AppliedChatFormat` from the GGUF's own
+    /// template (asserted by `chat_format`'s template pins). These gate pins feed
+    /// them as data so the state machine is exercised with no model load.
+    const START: &str = "<|channel>thought";
+    const END: &str = "<channel|>";
+
+    fn end_tags() -> Vec<String> {
+        vec![END.to_string()]
+    }
+
+    /// THE D2 pin: a reasoning-FIRST reply must stream its answer as ≥2 deltas,
+    /// and NO delta may carry the reasoning markers (or the thought itself).
+    ///
+    /// Before the fix the blanket `<|` hold withheld the whole generation and the
+    /// finish path released it as ONE token beginning `<|channel>thought`.
+    #[test]
+    fn a_reasoning_first_reply_streams_the_answer_and_never_leaks_the_span() {
+        let mut gate = ContentGate::for_tool_turn(START, &end_tags());
+        let thought = "<|channel>thought\nThe user wants one word.\n<channel|>";
+        // The reasoning span streams in pieces, exactly as the model emits them.
+        assert_eq!(gate.push(&thought[..10]), "", "the span is withheld");
+        assert_eq!(gate.push(&thought[10..]), "", "still inside the span");
+        // The ANSWER, released as it arrives — this is what used to collapse.
+        let first = gate.push("Yes");
+        let second = gate.push(".");
+        assert_eq!(first, "Yes", "the answer must stream from the first piece");
+        assert_eq!(second, ".", "each delta must carry only its own text");
+        assert_eq!(gate.flush(), "", "nothing withheld remains");
+        assert!(gate.skipped_reasoning(), "the span was recognised and skipped");
+
+        // The receipt: the concatenated visible text is the ANSWER ONLY.
+        let visible = format!("{first}{second}");
+        assert_eq!(visible, "Yes.");
+        assert!(
+            !visible.contains("<|channel>") && !visible.contains(END),
+            "no marker may reach the reply: {visible:?}"
+        );
+        assert!(
+            !visible.contains("The user wants one word"),
+            "the chain-of-thought must never reach the reply: {visible:?}"
+        );
+        // Non-vacuity: the RAW text still carries the span (so the skip is real).
+        assert!(gate.raw().contains(START) && gate.raw().contains(END));
+    }
+
+    /// A marker SPLIT across pieces is matched once complete — the bounded hold is
+    /// at most the marker length, never the whole generation.
+    #[test]
+    fn a_reasoning_marker_split_across_pieces_is_still_matched() {
+        let mut gate = ContentGate::for_tool_turn(START, &end_tags());
+        // Split the START marker across two pieces, mid-token.
+        assert_eq!(gate.push("<|channel>"), "");
+        assert_eq!(gate.push("thought why"), "");
+        assert_eq!(gate.push("<channel|>"), "");
+        // The answer streams immediately after the closing marker.
+        assert_eq!(gate.push("Hi"), "Hi");
+        assert_eq!(gate.flush(), "");
+        // The partial START was held, never leaked.
+        assert!(!gate.push("").contains("<|channel>"));
+    }
+
+    /// A span may be followed by ANOTHER span (the template allows empty/recurring
+    /// channels); each pair flips back to streaming between them.
+    #[test]
+    fn recurring_reasoning_spans_are_each_skipped() {
+        let mut gate = ContentGate::for_content_turn(START, &end_tags());
+        assert_eq!(gate.push(START), "");
+        assert_eq!(gate.push("one"), "");
+        assert_eq!(gate.push(END), "");
+        assert_eq!(gate.push("A"), "A");
+        assert_eq!(gate.push(START), "");
+        assert_eq!(gate.push("two"), "");
+        assert_eq!(gate.push(END), "");
+        assert_eq!(gate.push("B"), "B");
+        assert_eq!(gate.flush(), "");
+    }
+
+    /// A turn with NO declared reasoning span streams exactly as before: prose is
+    /// released from byte one and only a trailing partial control marker is held.
+    #[test]
+    fn a_turn_without_a_declared_span_streams_every_character() {
+        let mut gate = ContentGate::for_tool_turn("", &[]);
+        let text = "a plain reply with no reasoning span at all";
+        assert_eq!(gate.push(text), text);
+        assert_eq!(gate.flush(), "");
+        assert!(!gate.skipped_reasoning());
+    }
+
+    /// A prose reply keeps the tool-body contract: the prose streams, the call
+    /// body is withheld until the finish path classifies it.
+    #[test]
+    fn prose_before_a_tool_body_streams_and_the_body_is_withheld() {
+        let mut gate = ContentGate::for_tool_turn(START, &end_tags());
+        assert_eq!(gate.push("Opening Mission Monitor. "), "Opening Mission Monitor. ");
+        assert_eq!(gate.push("<|tool_call>call:open_app{"), "");
+        assert_eq!(gate.flush(), "<|tool_call>call:open_app{");
+    }
+
+    /// An UNCLOSED reasoning span is never released by `flush` — releasing it
+    /// would leak the chain-of-thought as the reply.
+    #[test]
+    fn an_unclosed_reasoning_span_is_never_released_at_the_finish() {
+        let mut gate = ContentGate::for_tool_turn(START, &end_tags());
+        assert_eq!(gate.push(START), "");
+        assert_eq!(gate.push("a thought that never closes"), "");
+        assert_eq!(gate.flush(), "", "the hidden span must never be flushed");
+        assert!(gate.skipped_reasoning());
+    }
+
+    /// NFR-6 / the F1 lesson: the reasoning markers must come from the GGUF's own
+    /// template, never a hand-written literal in PRODUCTION code.
+    ///
+    /// The gate above is driven with the markers as DATA; this guard proves that
+    /// no production source spells them. A future edit that hardcodes the marker
+    /// (the F1 regex-vs-literal failure mode) fails here.
+    ///
+    /// The scan is RAW over the production modules (comments included), which is
+    /// the G-430 discipline: the predicate is exactly "the literal does not appear
+    /// in production code". This test module is the ONLY place allowed to spell it.
+    #[test]
+    fn production_code_never_spells_the_reasoning_markers() {
+        // Constructed at runtime so this very file can be scanned without the
+        // guard tripping on its own assertion text.
+        let start = ["<|", "channel>", "thought"].concat();
+        let end = ["<", "channel|>"].concat();
+        let sources: [(&str, &str); 3] = [
+            ("stream.rs", include_str!("stream.rs")),
+            ("chat_format.rs", include_str!("chat_format.rs")),
+            ("thread.rs", include_str!("thread.rs")),
+        ];
+        for (name, source) in sources {
+            // The TEST modules are allowed to name the marker (this file's own
+            // pins do); scan only the production code above the first top-level
+            // `#[cfg(test)]` module.
+            let production = source.split("\n#[cfg(test)]").next().unwrap_or(source);
+            // Non-vacuity: every scanned file DOES have a test module, so the
+            // production slice must be strictly shorter than the whole file. A
+            // scan that covered nothing would make the two assertions below pass
+            // for the wrong reason.
+            assert!(
+                production.len() < source.len(),
+                "{name}: the production scan must exclude the file's test module"
+            );
+            assert!(
+                !production.contains(&start),
+                "{name}: production code must not spell the reasoning START marker \
+                 — it must come from the template's declaration"
+            );
+            assert!(
+                !production.contains(&end),
+                "{name}: production code must not spell a reasoning END marker \
+                 — it must come from the template's declaration"
+            );
+        }
     }
 
     // ── The wire vocabulary (R-26.1: frozen names) ───────────────────────────

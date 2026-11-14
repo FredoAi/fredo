@@ -258,14 +258,61 @@ impl ChatFormat {
             None => None,
         };
 
+        // The template's DECLARED hidden-reasoning channel. The crate surfaces the
+        // marker strings it read from the GGUF's own template, so the streaming
+        // gate can classify the span without a single hand-written marker literal
+        // (Spec #3141 fix D2, NFR-6).
+        let thinking_start_tag = applied.thinking_start_tag.clone();
+        let thinking_end_tags = reasoning_end_tags(&applied.thinking_end_tags_json)?;
+        // The control markers the decoder must not forward. Any marker that
+        // participates in the declared reasoning span is EXCLUDED: the gate must
+        // SEE the span's opening marker to classify it, and the template lists its
+        // LEADING control token separately (e.g. the channel opener is reserved on
+        // its own while the declared start tag is that opener followed by the
+        // channel name). Dropping the opener at the decoder left the gate looking
+        // at the channel name alone, so the span could not be recognised and its
+        // body streamed as the reply.
+        let reserved_tokens = reserved_markers_from(&applied.preserved_tokens_json)?
+            .into_iter()
+            .filter(|marker| {
+                !thinking_start_tag.contains(marker.as_str())
+                    && !thinking_end_tags.iter().any(|end| end.contains(marker.as_str()))
+            })
+            .collect();
+
         Ok(AppliedChatFormat {
             prompt: applied.prompt,
             tool_grammar,
             schema_grammar: compiled_schema,
             additional_stops_json: applied.additional_stops_json.clone(),
-            reserved_tokens: reserved_tokens_from(&applied.preserved_tokens_json),
+            reserved_tokens,
+            thinking_start_tag,
+            thinking_end_tags,
             max_tokens: turn.max_tokens.min(settings.max_tokens),
         })
+    }
+
+    /// The template's DECLARED hidden-reasoning span, for the streaming gate.
+    ///
+    /// The markers are a property of the GGUF's own chat template — not of the
+    /// turn — so this reads them from the SAME [`Self::apply`] result the turn's
+    /// own shaping produces (one extra Jinja render; pure string work, no decode
+    /// cost). A template that declares no reasoning span yields an empty start
+    /// marker and no end tags, and the gate then classifies only the tool-call
+    /// prefix.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the turn's own shaping would return: a template whose declared
+    /// markers cannot be read is a typed
+    /// [`CompanionEngineErrorCode::ContextCreateFailed`], never a silent "no
+    /// reasoning span" (which would re-open the D2 leak).
+    pub fn reasoning_markers(
+        &self,
+        turn: &ChatTurn,
+    ) -> Result<(String, Vec<String>), (CompanionEngineErrorCode, String)> {
+        let applied = self.apply(turn, &SamplingSettings::default())?;
+        Ok((applied.thinking_start_tag, applied.thinking_end_tags))
     }
 
     /// Run the template's own reverse parser over a rendered assistant body.
@@ -390,9 +437,24 @@ pub struct AppliedChatFormat {
     pub schema_grammar: Option<String>,
     /// Additional stop sequences the template declared, as a JSON array string.
     pub additional_stops_json: String,
-    /// Special/control tokens the template reserved, which the decoder must not
-    /// forward as user-visible text.
-    pub reserved_tokens: Vec<i32>,
+    /// The control-token MARKERS the template reserved, which the decoder must
+    /// not forward as user-visible text (`<|"|>`, `<|turn>`, …).
+    ///
+    /// These are the marker STRINGS the chat shim emits (its real shape), not
+    /// token ids: the ids are resolved where the vocabulary is owned
+    /// ([`super::detokenize::TokenStreamDecoder`]). The reasoning markers are
+    /// deliberately EXCLUDED so the streaming gate can classify the span.
+    pub reserved_tokens: Vec<String>,
+    /// The template's DECLARED opening marker for its hidden reasoning channel
+    /// (the template's own `thinking_start_tag`). Empty when the template
+    /// declares no reasoning span.
+    ///
+    /// Read from the template, never a literal: the streaming gate
+    /// ([`super::stream::ContentGate`]) uses it to recognise the span and skip it
+    /// instead of leaking the chain-of-thought as `llm-token` (fix D2).
+    pub thinking_start_tag: String,
+    /// The template's DECLARED closing markers for the reasoning channel.
+    pub thinking_end_tags: Vec<String>,
     /// The effective completion budget for this turn.
     pub max_tokens: u32,
 }
@@ -448,12 +510,102 @@ pub fn schema_grammar(
     })
 }
 
-/// Read the template's reserved-token list into plain token ids.
+/// Read the template's reserved control-token MARKERS.
 ///
-/// The template declares the control tokens it wraps (`<|"|>`, `<|turn>`, …) as
-/// JSON; the decoder must not forward them as user-visible text.
-fn reserved_tokens_from(json: &str) -> Vec<i32> {
-    serde_json::from_str::<Vec<i32>>(json).unwrap_or_default()
+/// The shim emits `preserved_tokens_json` as an array of **strings** (the marker
+/// text, e.g. `"<|\"|>"`), which is the crate's real shape — a `Vec<i32>` parse
+/// silently yielded an empty list, so reserved-token dropping was dead code
+/// (Spec #3141 fix D2). A marker that is not a string is skipped (the text gate
+/// covers it); a value that is not JSON at all is a typed error, never a
+/// `unwrap_or_default()` that hides a broken template.
+///
+/// # Errors
+///
+/// A `preserved_tokens_json` value that is not a JSON array of strings is a
+/// [`CompanionEngineErrorCode::ContextCreateFailed`] — the same code the turn's
+/// own shaping uses. A malformed declaration must not silently disable the
+/// control-token drop.
+fn reserved_markers_from(
+    json: &str,
+) -> Result<Vec<String>, (CompanionEngineErrorCode, String)> {
+    let value: serde_json::Value = serde_json::from_str(json).map_err(|error| {
+        (
+            CompanionEngineErrorCode::ContextCreateFailed,
+            format!("the template's reserved-token declaration could not be read: {error}"),
+        )
+    })?;
+    let markers = value.as_array().ok_or_else(|| {
+        (
+            CompanionEngineErrorCode::ContextCreateFailed,
+            "the template's reserved-token declaration is not an array.".to_string(),
+        )
+    })?;
+    Ok(markers
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::to_string)
+        .collect())
+}
+
+/// Read the template's declared reasoning end-tags.
+///
+/// The shim emits them as a JSON array of strings (like the reserved markers).
+/// An empty string means "no declared span" and yields no markers, so the gate
+/// falls back to the tool-call prefix alone.
+///
+/// # Errors
+///
+/// A malformed declaration is a [`CompanionEngineErrorCode::ContextCreateFailed`],
+/// never a silent "no reasoning span".
+fn reasoning_end_tags(
+    json: &str,
+) -> Result<Vec<String>, (CompanionEngineErrorCode, String)> {
+    if json.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    reserved_markers_from(json)
+}
+
+/// Resolve the template's reserved control-token MARKERS to token ids.
+///
+/// The marker strings come from the template; only the loaded model's vocabulary
+/// can say which id (if any) they decode from — so the resolution happens at the
+/// ONE site that owns the model ([`super::detokenize::TokenStreamDecoder::new`]).
+/// A marker that matches more than one token, or none, resolves to NO id: the
+/// text gate then covers it, which is why this is a best-effort accelerator and
+/// never the sole defence.
+///
+/// # Errors
+///
+/// A tokenisation failure is a typed
+/// [`CompanionEngineErrorCode::ContextCreateFailed`] — never a panic.
+pub fn resolve_reserved_tokens(
+    model: &LlamaModel,
+    markers: &[String],
+) -> Result<Vec<i32>, (CompanionEngineErrorCode, String)> {
+    use llama_cpp_4::model::AddBos;
+
+    let mut ids = Vec::with_capacity(markers.len());
+    for marker in markers {
+        if marker.is_empty() {
+            continue;
+        }
+        let tokens = model
+            .str_to_token(marker, AddBos::Never)
+            .map_err(|error| {
+                (
+                    CompanionEngineErrorCode::ContextCreateFailed,
+                    format!("a template control marker could not be tokenised: {error}"),
+                )
+            })?;
+        // Exactly ONE token means the vocabulary really owns this marker; a
+        // multi-token rendering is ordinary text that merely spells it, so
+        // dropping those ids would delete user-visible text.
+        if let [token] = tokens.as_slice() {
+            ids.push(token.0);
+        }
+    }
+    Ok(ids)
 }
 
 #[cfg(test)]
@@ -892,13 +1044,124 @@ mod tests {
         assert!(error.1.contains("unsupported tool choice"), "{}", error.1);
     }
 
-    /// Reserved control tokens are read from the template's declaration; a
-    /// malformed value degrades to an empty list (never a panic).
+    /// Reserved control-token MARKERS are read from the template's declaration
+    /// in the shim's REAL shape (an array of strings, not ids) — Spec #3141 fix
+    /// D2. A `Vec<i32>` parse is what made the drop dead code.
     #[test]
-    fn reserved_tokens_parse_and_degrade_safely() {
-        assert_eq!(reserved_tokens_from("[1,2,3]"), vec![1, 2, 3]);
-        assert!(reserved_tokens_from("[]").is_empty());
-        assert!(reserved_tokens_from("not json").is_empty());
-        assert!(reserved_tokens_from("").is_empty());
+    fn reserved_markers_parse_the_shims_real_string_shape() {
+        assert_eq!(
+            reserved_markers_from(r#"["<|\"|>","<|turn>","<turn|>"]"#).expect("the shim's array"),
+            vec!["<|\"|>".to_string(), "<|turn>".to_string(), "<turn|>".to_string()],
+            "the shim emits marker STRINGS; an id parse silently yields nothing"
+        );
+        assert!(reserved_markers_from("[]").expect("empty array").is_empty());
+        // A non-string member is skipped, not fatal — the text gate covers it.
+        assert_eq!(
+            reserved_markers_from(r#"["<|x|>",7]"#).expect("mixed array"),
+            vec!["<|x|>".to_string()]
+        );
+        // A malformed declaration is TYPED, never a silent empty list: a swallowed
+        // parse error is exactly what disabled the drop before.
+        let error = reserved_markers_from("not json").expect_err("malformed must be typed");
+        assert_eq!(error.0, CompanionEngineErrorCode::ContextCreateFailed);
+        assert!(
+            error.1.contains("reserved-token declaration"),
+            "detail: {}",
+            error.1
+        );
+        let error = reserved_markers_from(r#"{"a":1}"#).expect_err("an object is not an array");
+        assert_eq!(error.0, CompanionEngineErrorCode::ContextCreateFailed);
+    }
+
+    /// The reasoning end-tags read the SAME string shape; an empty declaration is
+    /// "no declared span" (not an error), and a malformed one is typed.
+    #[test]
+    fn reasoning_end_tags_read_the_templates_declaration() {
+        assert_eq!(
+            reasoning_end_tags(r#"["<channel|>"]"#).expect("declared"),
+            vec!["<channel|>".to_string()]
+        );
+        assert!(reasoning_end_tags("[]").expect("none declared").is_empty());
+        assert!(reasoning_end_tags("").expect("absent declaration").is_empty());
+        assert!(reasoning_end_tags("   ").expect("blank declaration").is_empty());
+        assert!(reasoning_end_tags("not json").is_err());
+    }
+
+    /// The pinned model's template declares its reasoning span, and the resolved
+    /// markers are the TEMPLATE's (never a hand-written literal) — the D2 premise.
+    #[test]
+    fn the_pinned_template_declares_a_reasoning_span() {
+        let Some((_backend, model)) = load_model_or_skip() else {
+            return;
+        };
+        let format = ChatFormat::from_model(&model).expect("templates");
+        let turn = ChatTurn::text(vec![message("user", "hi")]);
+        let (start, ends) = format.reasoning_markers(&turn).expect("the template's markers");
+        assert!(
+            !start.is_empty(),
+            "the pinned template must declare a reasoning start marker"
+        );
+        assert!(
+            !ends.is_empty(),
+            "the pinned template must declare a reasoning end marker"
+        );
+        // The reasoning markers must NOT be resolved into the reserved-id set —
+        // dropping them at the decoder would let the chain-of-thought between
+        // them stream as visible text instead of being skippable as one span.
+        let applied = format
+            .apply(&turn, &SamplingSettings::default())
+            .expect("apply");
+        assert!(
+            !applied.reserved_tokens.contains(&start),
+            "the reasoning start marker must reach the gate, not be dropped: {:?}",
+            applied.reserved_tokens
+        );
+        for end in &ends {
+            assert!(
+                !applied.reserved_tokens.contains(end),
+                "a reasoning end marker must reach the gate, not be dropped: {:?}",
+                applied.reserved_tokens
+            );
+        }
+        eprintln!(
+            "D2 TEMPLATE MARKERS: start={start:?} ends={ends:?} reserved={:?}",
+            applied.reserved_tokens
+        );
+    }
+
+    /// The reserved markers RESOLVE to ids against the loaded vocabulary — the
+    /// half that was dead code. A marker the vocab renders as one token yields
+    /// exactly that id; ordinary prose yields none (it must never be dropped).
+    #[test]
+    fn reserved_markers_resolve_against_the_loaded_vocabulary() {
+        let Some((_backend, model)) = load_model_or_skip() else {
+            return;
+        };
+        let format = ChatFormat::from_model(&model).expect("templates");
+        let applied = format
+            .apply(
+                &ChatTurn::text(vec![message("user", "hi")]),
+                &SamplingSettings::default(),
+            )
+            .expect("apply");
+        let ids = resolve_reserved_tokens(&model, &applied.reserved_tokens)
+            .expect("the template's markers tokenise");
+        eprintln!(
+            "D2 RESERVED RESOLVED: markers={} ids={ids:?}",
+            applied.reserved_tokens.len()
+        );
+        // CONTROL: ordinary prose is never a reserved id.
+        let prose = resolve_reserved_tokens(&model, &["an ordinary sentence".to_string()])
+            .expect("prose tokenises");
+        assert!(
+            prose.is_empty(),
+            "prose must never resolve to a reserved id: {prose:?}"
+        );
+        // Non-vacuity: the pinned template DOES declare control markers, so a
+        // resolved set that matched nothing would mean the resolution is broken.
+        assert!(
+            !applied.reserved_tokens.is_empty(),
+            "the pinned template declares reserved control markers"
+        );
     }
 }

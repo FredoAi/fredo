@@ -418,20 +418,33 @@ fn ensure_started<'s>(
 
 /// Generate one streaming turn, emitting the engine's events to the caller.
 ///
-/// The content gate is what keeps a tool-call body off `llm-token`: text is
-/// withheld from the control-token prefix, and at the finish the template's OWN
-/// reverse parser decides whether the withheld text was a call (emitted as
-/// [`EngineEvent::ToolCall`]) or ordinary content (released as a token).
+/// The content gate is what keeps a tool-call body AND the template's hidden
+/// reasoning channel off `llm-token`: the gate is driven by the template's own
+/// declared markers, so a reasoning-first reply STREAMS its answer instead of
+/// collapsing into one withheld blob (Spec #3141 fix D2). At the finish the
+/// template's OWN reverse parser decides whether withheld text was a call
+/// (emitted as [`EngineEvent::ToolCall`]) and recovers the reasoning span as
+/// [`EngineEvent::Reasoning`], which is never forwarded to the webview.
 fn run_chat(
     engine: &mut EngineState,
     request: crate::applications::llm_server::engine::ChatRequest,
 ) {
     use crate::applications::llm_server::engine::stream::{self, ContentGate, EngineEvent};
 
+    // The template's DECLARED reasoning markers. A template whose declaration
+    // cannot be read is a typed failure for this turn — never a silent "there is
+    // no reasoning channel", which would re-open the D2 leak.
+    let (start_tag, end_tags) = match engine.format.reasoning_markers(&request.turn) {
+        Ok(markers) => markers,
+        Err((code, detail)) => {
+            let _ = request.events.try_send(EngineEvent::Failed { code, detail });
+            return;
+        }
+    };
     let mut gate = if request.turn.offer_tools {
-        ContentGate::for_tool_turn()
+        ContentGate::for_tool_turn(&start_tag, &end_tags)
     } else {
-        ContentGate::for_content_turn()
+        ContentGate::for_content_turn(&start_tag, &end_tags)
     };
     let events = request.events.clone();
     // Disjoint field borrows: the projector is `&mut` for this turn while the
@@ -489,6 +502,15 @@ fn run_chat(
         if !tail.is_empty() {
             let _ = request.events.try_send(stream::EngineEvent::Token(tail));
         }
+    }
+    if gate.skipped_reasoning() {
+        // The gate recognised the template's declared reasoning span and skipped
+        // it while still streaming the answer (Spec #3141 fix D2). Log it so the
+        // suppression is visible in the engine log rather than silent.
+        tracing::debug!(
+            target: "fredo::llm_server",
+            "companion hidden reasoning span suppressed from llm-token"
+        );
     }
 
     let finish_reason = if called_tools {

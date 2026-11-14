@@ -501,3 +501,192 @@ async fn stop_then_start_is_reusable_on_the_same_process() {
     );
 }
 
+// ── REQUIRED ARTIFACT — D2: a reasoning-first generation streams and does not
+
+
+/// THE D2 end-to-end pin: a live, TOOL-OFFERING generation (the shipped shape
+/// every chat turn takes — `commands/chat.rs` always calls `skill_turn`) whose
+/// template opens its hidden reasoning channel must:
+///
+/// * never leak the template's reasoning markers or the chain-of-thought into a
+///   `Token` (the pre-fix behaviour was ONE 716-char `llm-token` beginning
+///   `<|channel>thought`);
+/// * STREAM the visible answer as **≥2** deltas (the pre-fix gate withheld the
+///   entire generation and flushed it as one blob);
+/// * route the hidden span to [`EngineEvent::Reasoning`] — the channel that is
+///   never forwarded to the webview — and that route must be OBSERVED at least
+///   once, so the pin is about the reasoning channel rather than a vacuous
+///   short answer.
+///
+/// Whether a specific prompt elicits a reasoning block is model sampling, not a
+/// product invariant, so the pin drives SEVERAL reasoning-eliciting prompts and
+/// requires the span to be observed at least once. Every trial must satisfy the
+/// two universal clauses (no marker leak, ≥2 deltas).
+#[tokio::test]
+async fn a_reasoning_first_generation_streams_and_never_leaks_the_span() {
+    let Some(model_paths) = models_or_skip() else {
+        return;
+    };
+    let handle = CompanionEngineHandle::spawn_with_budget(DEFAULT_START_BUDGET);
+    let started = handle.start(model_paths.clone(), CompanionBackendMode::Cpu);
+    assert!(
+        started.success,
+        "the engine must start for the D2 gate: {:?} — {}",
+        started.code,
+        started.detail
+    );
+
+    // The markers the pinned template DECLARES (verified live by the gate's own
+    // log line and by `chat_format`'s template pin). They are spelled here as the
+    // NEGATIVE assertion only — production code must never contain them, which
+    // `production_code_never_spells_the_reasoning_markers` enforces.
+    let start_tag = "<|channel>thought";
+    let end_tags = ["<channel|>"];
+    // The shipped tool offer (the production shape every chat turn takes).
+    let tools = vec![serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "open_app",
+            "description": "Open an application.",
+            "parameters": {
+                "type": "object",
+                "properties": { "app": { "type": "string" } },
+                "required": ["app"],
+            },
+        }
+    })];
+
+    // Prompts that make the model reason first and then answer over several
+    // tokens. Genuine sampling variance means not every one produces a span, so
+    // the gate requires at least ONE trial to exercise the whole mechanism
+    // (reasoning observed AND the answer streamed in ≥2 deltas). The budget is
+    // generous because the hidden span is generated INSIDE the completion
+    // budget — too small a budget leaves no room for a multi-token answer after
+    // the reasoning.
+    let prompts = [
+        "Think briefly, then explain in one sentence why the sky appears blue.",
+        "Reason in one short sentence, then explain what a compiler does in one sentence.",
+        "Compute 17 times 23. Reason briefly, then give the answer in a sentence.",
+    ];
+
+    let mut reasoning_events = 0usize;
+    let mut trial_deltas: Vec<usize> = Vec::new();
+    let mut trial_reasoning: Vec<usize> = Vec::new();
+    let mut failure: Option<String> = None;
+
+    for (trial, prompt) in prompts.iter().enumerate() {
+        let turn = {
+            use crate::applications::llm_server::chat::LlmMessage;
+            crate::applications::llm_server::engine::request::ChatTurn::text(vec![
+                LlmMessage {
+                    role: "system".to_string(),
+                    content: "You are a concise assistant.".to_string(),
+                },
+                LlmMessage {
+                    role: "user".to_string(),
+                    content: (*prompt).to_string(),
+                },
+            ])
+            .with_tools(tools.clone(), "auto")
+            .with_max_tokens(400)
+        };
+
+        let (events_tx, mut events_rx) = tokio::sync::mpsc::channel(256);
+        let request = crate::applications::llm_server::engine::ChatRequest {
+            turn,
+            events: events_tx,
+            paths: model_paths.clone(),
+            mode: CompanionBackendMode::Cpu,
+            seed: 23 + trial as u32,
+        };
+        handle
+            .chat(request)
+            .expect("the engine must accept the turn");
+
+        let mut tokens: Vec<String> = Vec::new();
+        let mut turn_reasoning = 0usize;
+        let mut finished = 0usize;
+        while let Some(event) = events_rx.recv().await {
+            match event {
+                crate::applications::llm_server::engine::stream::EngineEvent::Token(text) => {
+                    tokens.push(text)
+                }
+                crate::applications::llm_server::engine::stream::EngineEvent::Reasoning(text) => {
+                    assert!(
+                        !text.is_empty(),
+                        "a reasoning event must carry the span, not be empty"
+                    );
+                    turn_reasoning += 1;
+                    reasoning_events += 1;
+                }
+                crate::applications::llm_server::engine::stream::EngineEvent::Finished { .. } => {
+                    finished += 1
+                }
+                crate::applications::llm_server::engine::stream::EngineEvent::Failed {
+                    code,
+                    detail,
+                } => failure = Some(format!("{code:?}: {detail}")),
+                _ => {}
+            }
+        }
+
+        let visible: String = tokens.concat();
+        eprintln!(
+            "D2 TRIAL {trial}: start={start_tag:?} ends={end_tags:?} prompt={prompt:?} \
+             deltas={} reasoning_events={turn_reasoning} lens={:?} visible={visible:?}",
+            tokens.len(),
+            tokens.iter().map(|token| token.len()).collect::<Vec<_>>(),
+        );
+        assert!(
+            failure.is_none(),
+            "trial {trial}: the turn must not fail: {failure:?}"
+        );
+        assert_eq!(
+            finished, 1,
+            "trial {trial}: the turn must settle with exactly one Finished"
+        );
+        trial_deltas.push(tokens.len());
+        trial_reasoning.push(turn_reasoning);
+
+        // UNIVERSAL: no marker, no channel name, no chain-of-thought in the
+        // visible text — on EVERY trial.
+        for (index, payload) in tokens.iter().enumerate() {
+            assert!(
+                !payload.contains(start_tag),
+                "trial {trial} delta {index} leaked the reasoning START marker \
+                 {start_tag:?}: {payload:?}"
+            );
+            for end in &end_tags {
+                assert!(
+                    !payload.contains(*end),
+                    "trial {trial} delta {index} leaked a reasoning END marker \
+                     {end:?}: {payload:?}"
+                );
+            }
+            assert!(
+                !payload.contains("thought"),
+                "trial {trial} delta {index} leaked the reasoning channel name: {payload:?}"
+            );
+        }
+    }
+    handle.stop();
+
+    // THE MECHANISM CLAUSE: at least one trial must have produced a hidden span
+    // AND streamed a multi-delta answer. That is exactly the shape the pre-fix
+    // gate destroyed (one withheld blob containing the span), so this is what
+    // keeps the pin from passing on prompts that never reason.
+    let exercised = trial_reasoning
+        .iter()
+        .zip(trial_deltas.iter())
+        .any(|(reasoning, deltas)| *reasoning >= 1 && *deltas >= 2);
+    assert!(
+        exercised,
+        "no trial produced a reasoning span AND a multi-delta answer, so the D2 fix \
+         was never exercised; reasoning per trial: {trial_reasoning:?}, deltas per \
+         trial: {trial_deltas:?}"
+    );
+    eprintln!(
+        "D2 REASONING RECEIPT: reasoning_events={reasoning_events} \
+         reasoning_per_trial={trial_reasoning:?} deltas_per_trial={trial_deltas:?}"
+    );
+}
