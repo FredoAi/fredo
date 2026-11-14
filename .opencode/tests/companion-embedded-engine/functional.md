@@ -345,6 +345,38 @@
     notice naming a redistributable that is not in the bundle, or a bundled redistributable
     missing from the notices, ⇒ FAIL.
 
+## Repeat-turn survival + settings write parity (added round 2 of #3141 — the two defects the round-1 suite could not see)
+
+- [ ] **F-23 (repeat-turn engine survival, LIVE).** On one loaded engine, send **three**
+      consecutive chat turns in the same session (no restart, no `stop_llama_server` between
+      them), then read `get_llama_server_status` once.
+  - **Expected:** each of the three turns settles with exactly one `llm-done` and at least one
+    `llm-token`; there is **no** `llm-error` on any of them; after turn 3 the status payload still
+    reports `running:true` / `healthy:true` with `lastErrorCode` absent (the engine thread
+    survived), and it is the SAME engine instance (no lazy restart between turns).
+  - **Why it exists:** round 1 of #3141 passed the first-turn legs and FAILED here — the engine
+    thread panicked on turn ~3 (`Unexpected empty grammar stack after accepting piece: <turn|>`)
+    and every later turn returned "the companion engine stopped". A single-turn row cannot detect
+    that class; this row is the survival receipt.
+  - **Edge:** a vision turn (`llm_chat_with_image`) followed by two text turns is the same class —
+    the vision path panicked on its FIRST turn in round 1; it must also leave a surviving engine.
+
+- [ ] **F-24 (`save_setting` ⇄ `get_control_setting` parity, LIVE).** With a stale cache value
+      present for `llama_server_backend`, write a different value through the shipped
+      **`save_setting`** path (the one the Settings → Companion control calls), then read the
+      same key through **both** readers.
+  - **Expected:** `save_setting('llama_server_backend', 'cpu')` → `get_setting` returns `cpu`
+    **AND** `get_control_setting` returns `cpu` (the cache plane the engine's `backend_mode()`
+    reads), and `get_llama_server_status.backendMode` reflects the same value. The reverse
+    direction (`gpu` over a `cpu` cache) holds too.
+  - **Why it exists:** round 1 of #3141 FAILED a data-plane/cache-plane split — `save_setting`
+    wrote PostgreSQL only while `get_control_setting` and the engine read the cache, so the
+    shipped control never reached the engine and the AC-25 recovery drill looped on
+    `gpuUnavailable`. Same-plane parity is the discriminator.
+  - **Edge:** a free-form value (`bogus`) is still rejected by the closed enum and writes
+    **nothing** on either plane; `""`/whitespace clears **both** planes; a non-enumerated key
+    round-trips unchanged on both planes.
+
 ## Non-functional
 
 - [ ] **F-22 (NF, STATIC/build).** Gates: `cargo check --locked` and
