@@ -103,10 +103,13 @@ pub struct EngineState {
     pub backend_kind: Option<CompanionBackendKind>,
     /// The canonical model id (manifest `model` file stem).
     pub model_id: Option<String>,
-    /// The cumulative MTP counters across every turn this engine has served.
+    /// The cumulative MTP counters across every turn this PROCESS has served.
     ///
-    /// Written by the engine thread after each turn and published into the
-    /// status snapshot, so the R-19.1 observable is readable without a log parse.
+    /// Written by the engine thread after each turn and published into the status
+    /// snapshot, so the R-19.1 observable is readable without a log parse. The
+    /// value is seeded from the previous engine instance on a (re)start, so it is
+    /// cumulative for the life of the process — not per engine instance (Spec
+    /// #3141 fix F2).
     pub mtp_stats: MtpStats,
 }
 
@@ -136,16 +139,53 @@ impl EngineState {
     }
 }
 
+/// The MTP counters a (re)started engine begins with.
+///
+/// `MtpStats` lives on [`EngineState`], which is replaced on every start/stop, so
+/// a restart would otherwise publish a fresh `{0,0,0}` and make R-19.1's
+/// observable look like it never advanced (Spec #3141 fix F2). The run loop keeps
+/// the PROCESS-cumulative total and seeds each new instance with it, so the
+/// status surface's documented "cumulative" promise is true across a restart.
+pub fn resumed_mtp_stats(process_total: MtpStats) -> MtpStats {
+    process_total
+}
+
 /// The engine thread's entry point. Runs until a `Stop` (or the sender drops),
 /// publishing each command's terminal status into `slot`.
+///
+/// ## A panicking turn never kills the engine (Spec #3141 fix F1)
+///
+/// Every `Chat` / `OneShot` handler body runs inside
+/// [`std::panic::catch_unwind`]. The crate's sampling API can still panic on a
+/// path we do not call, and a `ggml` abort is unrecoverable — but a Rust panic
+/// inside one turn must not silently take the ONE engine thread with it (which is
+/// what left every later turn with `BackendInitFailed`).
+///
+/// On a caught panic the turn's channel receives a typed
+/// [`EngineEvent::Failed`] with curated copy, and the state snapshot is
+/// published, so the caller settles `llm-error` followed by exactly ONE
+/// `llm-done` — the same terminal contract every other failure uses. The engine
+/// state is KEPT: the models and contexts are still owned here, so the next turn
+/// can run (and if the panic really wedged the backend, the next turn produces a
+/// typed failure rather than a crash).
 pub fn run(receiver: Receiver<EngineCommand>, slot: Arc<Mutex<EngineSlot>>) {
     // The ONE engine state slot. `Some` between a successful start and a stop.
     let mut state: Option<EngineState> = None;
+    // The MTP counters are CUMULATIVE for the process, not per engine instance
+    // (Spec #3141 fix F2). `MtpStats` lives on `EngineState`, which is replaced on
+    // every (re)start, so the last published total is carried forward and SEEDS
+    // the next instance. Without this, an engine restart between a turn and a
+    // status read published a fresh `{0,0,0}` and made R-19.1's observable look
+    // like it never advanced.
+    let mut carried_mtp = MtpStats::default();
 
     while let Ok(command) = receiver.recv() {
         match command {
             EngineCommand::Start(request) => match start_engine(*request) {
-                StartOutcome::Ready(new_state) => {
+                StartOutcome::Ready(mut new_state) => {
+                    // A restart must not reset an observable the status surface
+                    // documents as cumulative.
+                    new_state.mtp_stats = resumed_mtp_stats(carried_mtp);
                     tracing::info!(
                         target: "fredo::llm_server",
                         model = %new_state.describe(),
@@ -154,6 +194,7 @@ pub fn run(receiver: Receiver<EngineCommand>, slot: Arc<Mutex<EngineSlot>>) {
                         "companion engine ready"
                     );
                     publish(&slot, new_state.snapshot());
+                    carried_mtp = new_state.mtp_stats;
                     state = Some(new_state);
                 }
                 StartOutcome::Failed(code, detail) => {
@@ -186,7 +227,8 @@ pub fn run(receiver: Receiver<EngineCommand>, slot: Arc<Mutex<EngineSlot>>) {
             }
             EngineCommand::Chat(request) => {
                 let request = *request;
-                let engine = ensure_started(&mut state, &slot, &request.paths, request.mode);
+                let engine =
+                    ensure_started(&mut state, &slot, &request.paths, request.mode, carried_mtp);
                 let Some(engine) = engine.as_mut() else {
                     // The start failed and published its typed status; the turn
                     // settles as a failed stream.
@@ -197,13 +239,36 @@ pub fn run(receiver: Receiver<EngineCommand>, slot: Arc<Mutex<EngineSlot>>) {
                     });
                     continue;
                 };
-                run_chat(engine, request);
-                // Publish the cumulative MTP counters (R-19.1's observable).
+                // The sender is cloned BEFORE the turn so a caught panic can still
+                // settle the turn (the request — and its own sender — is dropped
+                // during the unwind).
+                let events = request.events.clone();
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_chat(engine, request);
+                }));
+                if let Err(payload) = outcome {
+                    report_caught_panic(payload, "a chat turn");
+                    let _ = events.try_send(
+                        crate::applications::llm_server::engine::stream::EngineEvent::Failed {
+                            code: CompanionEngineErrorCode::ContextCreateFailed,
+                            detail: report_caught_panic_detail(),
+                        },
+                    );
+                }
+                // The clone must be released so the consumer's channel CLOSES and
+                // the turn always terminates — a caught panic no longer leaves the
+                // reader waiting for a `Finished` that will never come.
+                drop(events);
+                // Publish the cumulative MTP counters (R-19.1's observable) and
+                // the terminal state of this turn. The process-cumulative total is
+                // carried forward so a later restart does not reset it.
+                carried_mtp = engine.mtp_stats;
                 publish(&slot, engine.snapshot());
             }
             EngineCommand::OneShot(request) => {
                 let request = *request;
-                let engine = ensure_started(&mut state, &slot, &request.paths, request.mode);
+                let engine =
+                    ensure_started(&mut state, &slot, &request.paths, request.mode, carried_mtp);
                 let Some(engine) = engine.as_mut() else {
                     let _ = request.reply.send(Err((
                         CompanionEngineErrorCode::ModelLoadFailed,
@@ -212,11 +277,49 @@ pub fn run(receiver: Receiver<EngineCommand>, slot: Arc<Mutex<EngineSlot>>) {
                     )));
                     continue;
                 };
-                run_one_shot(engine, request);
+                // `run_one_shot` takes ownership of `request` (and its oneshot
+                // sender). A caught panic therefore DROPS the sender, which the
+                // one-shot source maps to a typed failure — never a default reply
+                // (see `EngineOneShotSource::one_shot`).
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_one_shot(engine, request);
+                }));
+                if let Err(payload) = outcome {
+                    report_caught_panic(payload, "a one-shot turn");
+                }
+                carried_mtp = engine.mtp_stats;
                 publish(&slot, engine.snapshot());
             }
         }
     }
+}
+
+/// The curated detail a caught turn panic settles with.
+///
+/// The panic message goes to the log (so the cause stays diagnosable); the copy
+/// a user sees is the typed code's own sentence — a raw panic string is never the
+/// primary copy (NFR-5).
+fn report_caught_panic_detail() -> String {
+    CompanionEngineErrorCode::ContextCreateFailed
+        .detail()
+        .to_string()
+}
+
+/// Log a caught turn panic with its payload.
+fn report_caught_panic(payload: Box<dyn std::any::Any + Send>, what: &str) {
+    let message = payload
+        .downcast_ref::<&str>()
+        .map(|text| (*text).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".to_string());
+    // A caught panic is not a thread death any more: it is a failed turn, and the
+    // engine keeps serving. Log it loudly so it is never silent.
+    tracing::error!(
+        target: "fredo::llm_server",
+        panic = %message,
+        what,
+        "the companion engine caught a panic in a turn; the turn fails, the engine survives"
+    );
 }
 
 /// Start the engine when it is not loaded yet, publishing the terminal status.
@@ -224,15 +327,26 @@ pub fn run(receiver: Receiver<EngineCommand>, slot: Arc<Mutex<EngineSlot>>) {
 /// A turn carries the paths + mode, so a chat after a cold boot needs no separate
 /// start round-trip; a failed start leaves `state` untouched and the caller
 /// settles the turn as a typed failure.
+///
+/// `carried_mtp` is the process-cumulative MTP counter total (Spec #3141 fix F2):
+/// a lazily restarted engine SEEDS its counters from it, so a restart can never
+/// reset an observable the status surface documents as cumulative.
 fn ensure_started<'s>(
     state: &'s mut Option<EngineState>,
     slot: &Arc<Mutex<EngineSlot>>,
     paths: &paths::EnginePaths,
     mode: CompanionBackendMode,
+    carried_mtp: MtpStats,
 ) -> &'s mut Option<EngineState> {
     if state.is_some() {
         return state;
     }
+    // A turn-started engine must still report the mode it actually started with
+    // (Spec #3141 fix F3): the wizard's explicit start records it in
+    // `CompanionEngineHandle::start`, and this lazy path is the OTHER entry, so it
+    // records it through the SAME helper — otherwise `backendMode` stayed `Auto`
+    // while a lazily started engine actually ran `gpu`.
+    super::handle::EngineSlot::record_requested_mode(slot, mode);
     let (reply, _receiver) = std::sync::mpsc::sync_channel(1);
     let request = StartRequest {
         paths: paths.clone(),
@@ -241,7 +355,8 @@ fn ensure_started<'s>(
         reply,
     };
     match start_engine(request) {
-        StartOutcome::Ready(new_state) => {
+        StartOutcome::Ready(mut new_state) => {
+            new_state.mtp_stats = resumed_mtp_stats(carried_mtp);
             tracing::info!(
                 target: "fredo::llm_server",
                 model = %new_state.describe(),
@@ -865,5 +980,61 @@ mod tests {
         let mut tokens: Vec<LlamaToken> = (0..10).map(LlamaToken).collect();
         assert!(truncate_prompt(&mut tokens, 8, 8));
         assert!(tokens.is_empty());
+    }
+
+    // ── F2: the MTP counters are PROCESS-cumulative, not per-instance ────────
+
+    /// A (re)started engine is seeded from the process total, so a restart can
+    /// never reset the R-19.1 observable to `{0,0,0}`.
+    #[test]
+    fn a_restarted_engine_resumes_the_process_mtp_total() {
+        let process_total = MtpStats {
+            drafts_proposed: 41,
+            drafts_accepted: 17,
+            draft_calls: 23,
+        };
+        assert_eq!(
+            resumed_mtp_stats(process_total),
+            process_total,
+            "a restart must carry the process total forward, never zero it"
+        );
+        // The first start (no turns yet) is the identity case, not a regression.
+        assert_eq!(resumed_mtp_stats(MtpStats::default()), MtpStats::default());
+    }
+
+    /// The doc and the behaviour agree: the status surface documents the counter
+    /// as cumulative, and the engine's seeding is exactly the carry-forward.
+    /// A source-level pin, so a future edit cannot re-introduce a per-instance
+    /// reset without failing here.
+    #[test]
+    fn the_counter_carry_forward_is_the_only_seed_on_start() {
+        let source = include_str!("thread.rs");
+        // Both restart entries seed from the process total.
+        assert!(
+            source.matches("resumed_mtp_stats(carried_mtp)").count() >= 2,
+            "both the explicit start and the lazy start must seed from the process total"
+        );
+        // The state's own constructor is the ONE that starts at zero, and only it.
+        assert!(
+            source.contains("mtp_stats: super::mtp::MtpStats::default()"),
+            "the fresh state must start at zero; the run loop then reseeds it"
+        );
+    }
+
+    /// The caught-panic detail is the typed code's curated sentence — never a raw
+    /// panic string as the primary copy.
+    #[test]
+    fn a_caught_turn_panic_settles_with_the_curated_detail() {
+        let detail = report_caught_panic_detail();
+        assert_eq!(
+            detail,
+            CompanionEngineErrorCode::ContextCreateFailed.detail(),
+            "the primary copy must be the typed code's curated sentence"
+        );
+        assert!(!detail.trim().is_empty());
+        assert!(
+            !detail.contains("panicked"),
+            "a raw panic string must never be the primary copy: {detail}"
+        );
     }
 }

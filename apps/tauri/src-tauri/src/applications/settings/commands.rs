@@ -95,13 +95,28 @@ pub fn validate_setting_value(key: &str, value: &str) -> Result<(), String> {
 /// the store UNMODIFIED — no `trim()`, no separator rewrite, no normalisation:
 /// trimming an accepted absolute binary path would change the executable a later
 /// spawn runs.
+///
+/// ## ONE write rule: the cache is the source of truth (Spec #3141 fix F3)
+///
+/// This writes through [`SettingsStore::cached_set`], which updates the
+/// synchronous cache AND durably upserts into PostgreSQL. It used to call
+/// [`SettingsStore::set`] (PG only), which left the cache stale — and the cache
+/// is what every synchronous backend reader uses (`get_control_setting`, and the
+/// engine's `backend_mode`). The result was a split brain: `save_setting` wrote
+/// `cpu` while the engine still read the cached `gpu`, so the AC-25 recovery
+/// drill looped on `gpuUnavailable` forever.
+///
+/// There is deliberately ONE rule for both IPC names
+/// ([`persist_setting`] / [`persist_control_setting`]): the async data plane, the
+/// synchronous cache and the engine can never disagree. Both names are kept
+/// because both are shipped IPC seams.
 pub async fn persist_setting(
     store: &SettingsStore,
     key: &str,
     value: &str,
 ) -> Result<(), String> {
     validate_setting_value(key, value)?;
-    store.set(key, value).await.map_err(|e| e.to_string())
+    store.cached_set(key, value).map_err(|e| e.to_string())
 }
 
 /// Control-plane (synchronous cache) write with the SAME shared validation. On
@@ -353,9 +368,7 @@ mod tests {
                 "no rejected write may reach the store for {key}"
             );
         }
-    }
-
-    // ── R-3.b: empty and whitespace-only clear on both planes ───────────────
+    }    // ── R-3.b: empty and whitespace-only clear on both planes ───────────────
 
     #[tokio::test]
     async fn empty_and_whitespace_clear_on_both_planes() {
@@ -377,15 +390,17 @@ mod tests {
                     "the control plane clears {key} (value: {blank:?})"
                 );
 
-                // The headless store has no engine, so the data plane cannot
-                // succeed here; the observable is that a blank value is never
-                // classified as invalid.
-                let error = persist_setting(&store, key, blank)
+                // F3: BOTH planes converge on the cache write-through, so a blank
+                // value clears on the data plane too (it used to reach PG only and
+                // leave the cache stale).
+                persist_setting(&store, key, blank)
                     .await
-                    .expect_err("the pending engine cannot complete a data-plane write");
-                assert!(
-                    !error.contains(SETTING_VALUE_ERROR_PREFIX),
-                    "a blank value must not be a validation error for {key}: {error}"
+                    .unwrap_or_else(|e| panic!("data plane must clear {key}: {e}"));
+                let stored = store.cached_get(key).expect("cached_get");
+                assert_eq!(
+                    stored.as_deref().map(str::trim),
+                    Some(""),
+                    "the data plane clears {key} (value: {blank:?})"
                 );
             }
         }
@@ -414,7 +429,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn valid_absolute_path_is_not_a_validation_error_on_the_data_plane() {
+    async fn valid_absolute_path_is_stored_byte_identical_on_the_data_plane() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = open_store(dir.path());
         let value = std::env::temp_dir()
@@ -423,12 +438,15 @@ mod tests {
             .join("copilot.exe")
             .to_string_lossy()
             .into_owned();
-        let error = persist_setting(&store, "terminal_pwsh_path", &value)
+        // F3: the data plane is the SAME cache write-through now, so an accepted
+        // value lands where the synchronous readers look.
+        persist_setting(&store, "terminal_pwsh_path", &value)
             .await
-            .expect_err("the pending engine cannot complete a data-plane write");
-        assert!(
-            !error.contains(SETTING_VALUE_ERROR_PREFIX),
-            "an accepted absolute path must reach the store, not the validator: {error}"
+            .expect("an accepted absolute path must be stored");
+        assert_eq!(
+            store.cached_get("terminal_pwsh_path").expect("cached_get"),
+            Some(value.clone()),
+            "the data plane must store the accepted value byte-identical"
         );
     }
 
@@ -497,12 +515,15 @@ mod tests {
                 Some(value.to_string()),
                 "{key} must round-trip unchanged"
             );
-            let error = persist_setting(&store, key, value)
+            // F3: the data plane is the SAME write-through, so it round-trips too
+            // (and is never validated: {key} is not one of the three).
+            persist_setting(&store, key, value)
                 .await
-                .expect_err("the pending engine cannot complete a data-plane write");
-            assert!(
-                !error.contains(SETTING_VALUE_ERROR_PREFIX),
-                "{key} must never be validated on the data plane: {error}"
+                .unwrap_or_else(|e| panic!("the data plane must accept {key}: {e}"));
+            assert_eq!(
+                store.cached_get(key).expect("cached_get"),
+                Some(value.to_string()),
+                "{key} must round-trip unchanged on the data plane too"
             );
         }
     }
@@ -587,6 +608,102 @@ mod tests {
         assert_eq!(
             store.cached_get(LLAMA_SERVER_BACKEND_KEY).expect("cached_get"),
             Some("cpu".to_string())
+        );
+    }
+
+    // ── Spec #3141 fix F3: save_setting ⇄ get_control_setting parity ────────
+
+    /// THE parity pin for the settings split-brain: a value written through the
+    /// SHIPPED control's path (`save_setting` ⇒ [`persist_setting`]) must be
+    /// visible to the SHIPPED synchronous read (`get_control_setting` ⇒
+    /// [`SettingsStore::cached_get`]) — and `save_control_setting` must stay just
+    /// as visible.
+    ///
+    /// Before the fix `persist_setting` wrote PostgreSQL only, so
+    /// `get_control_setting` (the engine's `backend_mode` read) kept returning the
+    /// PREVIOUS value: the AC-25 recovery drill looped on `gpuUnavailable` because
+    /// the engine never saw the new `cpu` selection.
+    ///
+    /// The headless harness has no PostgreSQL engine, so `cached_set` takes its
+    /// documented pre-hydration path (cache update + buffered durable write). The
+    /// CACHE is exactly the observable that was missing — it is the seam every
+    /// synchronous backend reader uses — so parity is asserted there in both
+    /// directions.
+    #[tokio::test]
+    async fn save_setting_and_get_control_setting_agree_on_the_backend_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = open_store(dir.path());
+
+        // Seed the stale value the split-brain left behind.
+        persist_control_setting(&store, LLAMA_SERVER_BACKEND_KEY, "gpu")
+            .expect("seed the cached backend");
+        assert_eq!(
+            store.cached_get(LLAMA_SERVER_BACKEND_KEY).expect("cached_get"),
+            Some("gpu".to_string())
+        );
+
+        // The SHIPPED control's write: `save_setting` ⇒ `persist_setting`.
+        persist_setting(&store, LLAMA_SERVER_BACKEND_KEY, "cpu")
+            .await
+            .expect("save_setting must persist cpu");
+
+        // PARITY: the synchronous read (the engine's `backend_mode` seam) sees it.
+        assert_eq!(
+            store.cached_get(LLAMA_SERVER_BACKEND_KEY).expect("cached_get"),
+            Some("cpu".to_string()),
+            "`get_control_setting` must see the value `save_setting` wrote — this is the \
+             split-brain the AC-25 recovery drill died on"
+        );
+
+        // The other direction: `save_control_setting` stays visible too (the two
+        // IPC names converge on ONE write rule).
+        persist_control_setting(&store, LLAMA_SERVER_BACKEND_KEY, "auto")
+            .expect("save_control_setting must persist auto");
+        assert_eq!(
+            store.cached_get(LLAMA_SERVER_BACKEND_KEY).expect("cached_get"),
+            Some("auto".to_string())
+        );
+        persist_setting(&store, LLAMA_SERVER_BACKEND_KEY, "gpu")
+            .await
+            .expect("save_setting must persist gpu");
+        assert_eq!(
+            store.cached_get(LLAMA_SERVER_BACKEND_KEY).expect("cached_get"),
+            Some("gpu".to_string())
+        );
+    }
+
+    /// Every closed-enum mode round-trips through the `save_setting` write path to
+    /// the synchronous read — not just the one the drill exercises.
+    #[tokio::test]
+    async fn every_backend_mode_written_by_save_setting_is_cached() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = open_store(dir.path());
+        for mode in COMPANION_BACKEND_MODES {
+            persist_setting(&store, LLAMA_SERVER_BACKEND_KEY, mode)
+                .await
+                .unwrap_or_else(|e| panic!("save_setting must persist {mode}: {e}"));
+            assert_eq!(
+                store.cached_get(LLAMA_SERVER_BACKEND_KEY).expect("cached_get"),
+                Some(mode.to_string()),
+                "{mode} must be visible to the synchronous reader"
+            );
+        }
+    }
+
+    /// The closed-enum rejection holds on the `persist_setting` path too: a
+    /// free-form value never reaches EITHER plane.
+    #[tokio::test]
+    async fn save_setting_rejects_a_free_form_backend_and_writes_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = open_store(dir.path());
+        let error = persist_setting(&store, LLAMA_SERVER_BACKEND_KEY, "tensorrt")
+            .await
+            .expect_err("save_setting must reject a free-form backend");
+        assert!(error.contains("must be one of auto, gpu, cpu"), "{error}");
+        assert_eq!(
+            store.cached_get(LLAMA_SERVER_BACKEND_KEY).expect("cached_get"),
+            None,
+            "a rejected backend write must never reach the cache"
         );
     }
 }

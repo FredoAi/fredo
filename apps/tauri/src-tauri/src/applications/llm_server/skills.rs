@@ -590,6 +590,59 @@ mod settle_tests {
         assert_eq!(sink.names(), vec!["llm-error", "llm-done"]);
     }
 
+    /// THE pin for the failed-turn settle contract (Spec #3141 fix F1).
+    ///
+    /// An engine whose channel closes WITHOUT `Finished` — the exact state a
+    /// panicked engine thread leaves behind — now fails the turn through the REAL
+    /// [`crate::applications::llm_server::engine::stream`] drain, and the shipped
+    /// skill path settles it as `llm-error` followed by **exactly one**
+    /// `llm-done`, last. Before the fix the closed channel was mapped to `Ok(())`,
+    /// so the turn settled with a bare `llm-done` and NO `llm-error` — the failure
+    /// was invisible.
+    #[tokio::test]
+    async fn an_engine_that_dies_mid_turn_settles_error_then_exactly_one_done() {
+        use crate::applications::llm_server::engine::stream::testing::ChannelTurnSource;
+
+        let registry = SkillRegistry::with_open_app();
+        let sink = RecordingSink::new();
+        let source = ChannelTurnSource::new();
+        {
+            let mut settled = SettledStream::new(&sink);
+            stream_skill_turn(&source, &mut settled, &registry, ChatTurn::text(vec![]))
+                .await
+                .expect("the skill path never returns an error (it settles instead)");
+            settled.finish();
+        }
+
+        let names = sink.names();
+        assert_eq!(
+            names.iter().filter(|name| *name == "llm-done").count(),
+            1,
+            "exactly ONE llm-done on a dead-engine turn: {names:?}"
+        );
+        assert_eq!(
+            names.last().map(String::as_str),
+            Some("llm-done"),
+            "llm-done must be LAST: {names:?}"
+        );
+        assert_eq!(
+            sink.count("llm-error"),
+            1,
+            "a dead engine MUST emit a readable llm-error (never a silent bare llm-done): {names:?}"
+        );
+        assert_eq!(
+            names,
+            vec!["llm-error", "llm-done"],
+            "the settle is exactly [llm-error, llm-done]"
+        );
+        // The error copy is the production one, and it names the cause.
+        let detail = &sink.payloads("llm-error")[0];
+        assert!(
+            detail.contains("stopped before the turn finished"),
+            "the failure must name the cause: {detail}"
+        );
+    }
+
     /// An EMPTY stream (a source that yields no frames at all) settles with just
     /// the single `llm-done`.
     #[tokio::test]

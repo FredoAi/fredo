@@ -84,9 +84,7 @@ use super::paths;
 use super::request::ChatTurn;
 use super::sampling::{GrammarSpec, SamplingSettings};
 use super::thread::{decode_error, truncate_prompt};
-use super::CompanionEngineErrorCode;
-
-// ── The pinned configuration ─────────────────────────────────────────────────
+use super::CompanionEngineErrorCode;// ── The pinned configuration ─────────────────────────────────────────────────
 
 /// Maximum tokens drafted per step.
 ///
@@ -330,19 +328,33 @@ pub enum VerifyPolicy {
 ///
 /// `n_verify` is the verify batch's token count, which bounds the logits row
 /// index (`i + 1`) that may be sampled.
+///
+/// ## No double accept, and a recoverable failure is TYPED
+///
+/// `try_sample` already accepts the token it sampled (llama.cpp's
+/// `llama_sampler_sample` ends with `llama_sampler_accept`), so the loop must
+/// NOT accept it again: a second accept advances the grammar twice per token and
+/// desynchronises it even when the trigger was translated correctly.
+///
+/// A grammar that can no longer accept anything is recoverable — the crate
+/// documents it as "a property of the model/grammar pair, not a bug" — so every
+/// call goes through the fallible API and a failure becomes a typed turn
+/// failure, never a panic that kills the engine thread.
 pub fn verify_drafts(
     target: &LlamaContext<'_>,
     sampler: &mut LlamaSampler,
     drafts: &[LlamaToken],
     n_verify: usize,
     policy: VerifyPolicy,
-) -> (usize, LlamaToken) {
+) -> Result<(usize, LlamaToken), (CompanionEngineErrorCode, String)> {
     // The token that follows `last_token` sits in the verify batch's row 0.
-    let mut next_token = sampler.sample(target, 0);
-    sampler.accept(next_token);
+    // `try_sample` accepts it (see the doc above) — no second accept here.
+    let mut next_token = sampler
+        .try_sample(target, 0)
+        .map_err(|error| sampling_failure("sample the companion reply", error))?;
 
     if policy == VerifyPolicy::RejectAllDrafts {
-        return (0, next_token);
+        return Ok((0, next_token));
     }
 
     let mut n_accepted: usize = 0;
@@ -352,11 +364,31 @@ pub fn verify_drafts(
         }
         n_accepted = index + 1;
         if index + 1 < n_verify {
-            next_token = sampler.sample(target, (index + 1) as i32);
-            sampler.accept(next_token);
+            next_token = sampler
+                .try_sample(target, (index + 1) as i32)
+                .map_err(|error| sampling_failure("verify a draft token", error))?;
         }
     }
-    (n_accepted, next_token)
+    Ok((n_accepted, next_token))
+}
+
+/// A curated detail for a sampling failure.
+///
+/// The typed code is [`CompanionEngineErrorCode::ContextCreateFailed`] — the
+/// engine's "generation could not run" code — while `what` names the step, so
+/// the primary copy is curated and the library string is the tail (NFR-5).
+///
+/// This is the recovery the plan requires: a grammar rejection must fail the
+/// TURN, not the engine thread. The caller settles it as `llm-error` + one
+/// `llm-done`, and the engine keeps serving the next turn.
+fn sampling_failure(
+    what: &str,
+    error: impl std::fmt::Display,
+) -> (CompanionEngineErrorCode, String) {
+    (
+        CompanionEngineErrorCode::ContextCreateFailed,
+        format!("the companion could not {what}: {error}. Start the engine again and retry."),
+    )
 }
 
 // ── The speculative generation loop ─────────────────────────────────────────
@@ -513,19 +545,15 @@ pub fn generate_speculative<'model>(
         None => format.apply(turn, settings)?,
     };
 
-    // Grammar triggers must outlive the sampler borrow, so keep the strings here.
-    let trigger_patterns: Vec<String> = shaped
-        .grammar_triggers()
-        .iter()
-        .map(|trigger| trigger.value.clone())
-        .collect();
-    let trigger_refs: Vec<&str> = trigger_patterns.iter().map(String::as_str).collect();
+    // Grammar triggers must outlive the sampler borrow, and the translation is
+    // the ONE rule ([`super::sampling::translate_triggers`]). The templates'
+    // TYPED triggers are handed to `GrammarSpec::Lazy` — never a raw `value`
+    // string, which was the engine-thread panic (a raw `<|tool_call>` is a regex
+    // meaning `<` OR `tool_call>`).
+    let triggers = shaped.grammar_triggers();
     let grammar_spec = shaped.active_grammar().map(|grammar| {
-        if shaped.grammar_is_lazy() && !trigger_refs.is_empty() {
-            GrammarSpec::Lazy {
-                grammar,
-                triggers: &trigger_refs,
-            }
+        if shaped.grammar_is_lazy() && !triggers.is_empty() {
+            GrammarSpec::Lazy { grammar, triggers }
         } else {
             GrammarSpec::Strict(grammar)
         }
@@ -647,7 +675,7 @@ pub fn generate_speculative<'model>(
         .map_err(|error| mtp_failure("track the prompt", error))?;
 
     let mut sampler: LlamaSampler =
-        super::sampling::build_sampler(model, settings, grammar_spec, seed);
+        super::sampling::build_sampler(model, settings, grammar_spec, seed)?;
     let mut decoder = TokenStreamDecoder::new(model, &shaped.reserved_tokens);
     let mut content = String::new();
     let mut stats = MtpStats::default();
@@ -655,8 +683,11 @@ pub fn generate_speculative<'model>(
     let mut stopped_on_eog = false;
 
     // The first token comes straight from the prefill's last output row.
-    let mut last_token = sampler.sample(session.target_context(), -1);
-    sampler.accept(last_token);
+    // `try_sample` already ACCEPTS the token it sampled — an extra `accept` here
+    // would advance the grammar twice per token and desynchronise it.
+    let mut last_token = sampler
+        .try_sample(session.target_context(), -1)
+        .map_err(|error| sampling_failure("sample the companion reply", error))?;
     let mut n_past = prompt_positions;
 
     if model.is_eog_token(last_token) {
@@ -704,7 +735,7 @@ pub fn generate_speculative<'model>(
             &drafts,
             n_verify,
             policy,
-        );
+        )?;
         stats.record(drafts.len(), n_accepted);
 
         let new_n_past = n_past + 1 + n_accepted as i32;

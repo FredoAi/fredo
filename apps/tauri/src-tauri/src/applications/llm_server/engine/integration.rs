@@ -223,3 +223,141 @@ fn auto_mode_starts_on_a_forced_cpu_enumeration() {
     );
     assert_eq!(result.devices.len(), 1, "the forced set is exactly one device");
 }
+
+// ── REQUIRED ARTIFACT — repeat-turn engine survival (the suite's real gap) ────
+
+/// The engine handle type the survival gate drives.
+type SurvivalHandle = CompanionEngineHandle;
+
+/// THE repeat-turn survival pin (Spec #3141 fix F1).
+///
+/// The Tester's suite gap: no case ran TWO consecutive turns on ONE engine, which
+/// is exactly the shape that caught the real bug. The old code's lazy tool grammar
+/// fired on the wrong token, emptied its stack, and the crate's panicking
+/// `sample`/`accept` killed the ONE engine thread on turn 3 — so every later turn
+/// got "the engine stopped".
+///
+/// This gate drives THREE real turns on ONE handle, through the real
+/// `EngineCommand::Chat` path, and asserts:
+///
+/// * every turn settles with exactly one `Finished` (never a bare channel close),
+/// * NO turn fails (no typed `Failed`),
+/// * the engine is still loaded after turn 3 (the survival receipt), and
+/// * the MTP counters ADVANCED and were published (the F2 observable).
+#[tokio::test]
+async fn three_consecutive_turns_on_one_engine_all_settle_and_it_survives() {
+    let Some(model_paths) = models_or_skip() else {
+        return;
+    };
+    let handle = SurvivalHandle::spawn_with_budget(DEFAULT_START_BUDGET);
+    let started = handle.start(model_paths.clone(), CompanionBackendMode::Auto);
+    assert!(
+        started.success,
+        "the engine must start for the survival gate: {:?} — {}",
+        started.code,
+        started.detail
+    );
+
+    let mut per_turn_events: Vec<Vec<String>> = Vec::new();
+    for turn in 0..3u32 {
+        let (events_tx, mut events_rx) = tokio::sync::mpsc::channel(256);
+        let request = crate::applications::llm_server::engine::ChatRequest {
+            turn: crate::applications::llm_server::engine::request::ChatTurn::text(vec![
+                crate::applications::llm_server::chat::LlmMessage {
+                    role: "system".to_string(),
+                    content: "You are a concise assistant.".to_string(),
+                },
+                crate::applications::llm_server::chat::LlmMessage {
+                    role: "user".to_string(),
+                    content: format!("Say one short sentence about turn {}.", turn + 1),
+                },
+            ])
+            .with_max_tokens(24),
+            events: events_tx,
+            paths: model_paths.clone(),
+            mode: CompanionBackendMode::Auto,
+            seed: 7 + turn,
+        };
+        handle
+            .chat(request)
+            .expect("the engine must accept the turn");
+
+        let mut names: Vec<String> = Vec::new();
+        let mut failure: Option<String> = None;
+        while let Some(event) = events_rx.recv().await {
+            match event {
+                crate::applications::llm_server::engine::stream::EngineEvent::Token(_) => {
+                    names.push("llm-token".to_string())
+                }
+                crate::applications::llm_server::engine::stream::EngineEvent::Finished { .. } => {
+                    names.push("finished".to_string())
+                }
+                crate::applications::llm_server::engine::stream::EngineEvent::Failed {
+                    code,
+                    detail,
+                } => {
+                    failure = Some(format!("{code:?}: {detail}"));
+                    names.push("llm-error".to_string());
+                }
+                _ => {}
+            }
+        }
+        eprintln!("ST-1 repeat turn {}: {names:?}", turn + 1);
+        assert!(
+            failure.is_none(),
+            "turn {} must not fail (the engine must survive): {failure:?}",
+            turn + 1
+        );
+        assert_eq!(
+            names.iter().filter(|name| *name == "finished").count(),
+            1,
+            "turn {} must settle with exactly one Finished: {names:?}",
+            turn + 1
+        );
+        assert!(
+            names.last().map(String::as_str) == Some("finished"),
+            "turn {} must settle LAST: {names:?}",
+            turn + 1
+        );
+        per_turn_events.push(names);
+    }
+
+    // SURVIVAL: the engine is still loaded after three turns on one instance.
+    {
+        let slot = handle.slot();
+        let guard = slot.lock().expect("slot lock");
+        assert!(
+            guard.snapshot.loaded,
+            "the engine must STILL be loaded after three turns — a dead thread is the bug"
+        );
+        assert!(
+            guard.snapshot.last_error_code.is_none(),
+            "no turn may have left a typed failure behind: {:?}",
+            guard.snapshot.last_error_code
+        );
+
+        // F2: the counters ADVANCED and were PUBLISHED on the surviving engine.
+        let stats = guard
+            .snapshot
+            .mtp_stats
+            .expect("a surviving engine must publish its MTP counters");
+        assert!(
+            stats.draft_calls > 0,
+            "the draft loop must have run on the surviving engine: {stats:?}"
+        );
+        assert!(
+            stats.drafts_proposed > 0,
+            "turns on a surviving engine must propose drafts (R-19.1): {stats:?}"
+        );
+        assert!(
+            stats.drafts_accepted > 0,
+            "turns on a surviving engine must accept drafts (R-19.1): {stats:?}"
+        );
+        eprintln!(
+            "ST-1 REPEAT-TURN SURVIVAL: drafts_proposed={} drafts_accepted={} draft_calls={}",
+            stats.drafts_proposed, stats.drafts_accepted, stats.draft_calls
+        );
+    }
+
+    handle.stop();
+}

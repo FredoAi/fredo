@@ -543,6 +543,127 @@ fn a_fully_rejected_step_rolls_both_contexts_back_and_generation_continues() {
     );
 }
 
+// ── LIVE: the trigger-translation panic (F1's root cause, reproduced) ────────
+
+/// THE F1 reproduction, turned into a permanent regression pin.
+///
+/// Builds the REAL Gemma4 lazy tool grammar twice — once with the RAW
+/// `GrammarTrigger::value` as the pattern (what the engine did before the fix)
+/// and once with the crate's translated pattern — and feeds the model's OWN
+/// tokens for the two control markers Gemma4 emits (`<|channel>` and `<|turn|>`)
+/// through each.
+///
+/// * the RAW pattern is a regex meaning `<` **or** `tool_call>`, so it arms on
+///   `<|channel>` and the grammar stack empties: `try_accept` returns an error
+///   (the old `accept` panicked, which killed the engine thread);
+/// * the TRANSLATED pattern can only match the literal `<|tool_call>`, so the
+///   grammar stays dormant and every marker is accepted.
+///
+/// This is what proves the fix is the TRANSLATION and not a lucky sampling path.
+#[test]
+fn the_raw_trigger_empties_the_grammar_stack_and_the_translated_one_does_not() {
+    use llama_cpp_4::model::AddBos;
+    use llama_cpp_4::sampling::LlamaSampler;
+
+    let Some((_backend, model, _draft)) = load_models_or_skip() else {
+        return;
+    };
+    let format = ChatFormat::from_model(&model).expect("the pinned model publishes a template");
+
+    // The REAL template's tool grammar and its typed trigger (the pinned Gemma4
+    // template declares exactly one: `word` = `<|tool_call>`).
+    let offered = text_turn("You are Fredo.", "open Mission Monitor", 8).with_tools(
+        vec![serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "open_app",
+                "description": "Open an application.",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "app": { "type": "string" } },
+                    "required": ["app"],
+                },
+            }
+        })],
+        "auto",
+    );
+    let applied = format
+        .apply(&offered, &SamplingSettings::default())
+        .expect("the tool offer renders");
+    let grammar = applied
+        .active_grammar()
+        .expect("a tool offer yields the template's grammar")
+        .to_string();
+    let triggers = applied.grammar_triggers();
+    assert_eq!(triggers.len(), 1, "the pinned template declares one trigger");
+    assert_eq!(triggers[0].kind, "word");
+    assert_eq!(
+        triggers[0].value, "<|tool_call>",
+        "the pinned trigger is the LITERAL marker"
+    );
+
+    // The two control markers Gemma4 emits immediately (the panic's tokens).
+    let markers: [&str; 2] = ["<|channel>", "<|turn|>"];
+    let mut marker_tokens: Vec<llama_cpp_4::token::LlamaToken> = Vec::new();
+    for marker in markers {
+        let tokens = model
+            .str_to_token(marker, AddBos::Never)
+            .unwrap_or_else(|error| panic!("{marker} must tokenise: {error}"));
+        assert!(!tokens.is_empty(), "{marker} must produce tokens");
+        marker_tokens.extend(tokens);
+    }
+
+    // ── (a) The RAW pattern: the pre-fix behaviour. It ARMS on `<|channel>`
+    //        and the grammar can no longer accept the marker's next token.
+    let raw_pattern = triggers[0].value.clone();
+    let mut raw = LlamaSampler::grammar_lazy_patterns(
+        &model,
+        &grammar,
+        "root",
+        &[raw_pattern.as_str()],
+        &[],
+    );
+    let mut raw_failure = None;
+    for token in &marker_tokens {
+        if let Err(error) = raw.try_accept(*token) {
+            raw_failure = Some(error.to_string());
+            break;
+        }
+    }
+    let raw_failure = raw_failure.expect(
+        "the RAW `<|tool_call>` pattern is a regex that arms on `<|channel>` and empties the \
+         grammar stack — if this now succeeds the reproduction is invalid",
+    );
+    assert!(
+        raw_failure.contains("grammar") || raw_failure.contains("Unexpected empty"),
+        "the raw-pattern failure must be the grammar rejection: {raw_failure}"
+    );
+    eprintln!("ST-4 F1 REPRO (raw pattern): {raw_failure}");
+
+    // ── (b) The TRANSLATED pattern (the fix): dormant, so every marker is
+    //        accepted and the engine survives.
+    let (patterns, trigger_tokens) =
+        crate::applications::llm_server::engine::sampling::translate_triggers(triggers);
+    let pattern_refs: Vec<&str> = patterns.iter().map(String::as_str).collect();
+    let mut translated = LlamaSampler::grammar_lazy_patterns(
+        &model,
+        &grammar,
+        "root",
+        &pattern_refs,
+        &trigger_tokens,
+    );
+    for token in &marker_tokens {
+        translated.try_accept(*token).unwrap_or_else(|error| {
+            panic!("the TRANSLATED trigger must stay dormant on a control marker: {error}")
+        });
+    }
+    eprintln!(
+        "ST-4 F1 FIXED (translated pattern {:?}): {} control-marker tokens accepted, no failure",
+        patterns,
+        marker_tokens.len()
+    );
+}
+
 // ── LIVE: R-19.5 typed failure ──────────────────────────────────────────────
 
 /// R-19.5 REQUIRED ARTIFACT: a session-construction failure surfaces the TYPED

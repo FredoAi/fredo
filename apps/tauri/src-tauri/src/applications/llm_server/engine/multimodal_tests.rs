@@ -303,8 +303,7 @@ fn a_live_image_turn_names_image_content() {
 }
 
 /// Run one live turn (media or text) and return the streamed reply.
-fn run_live_turn(
-    backend: &LlamaBackend,
+fn run_live_turn(    backend: &LlamaBackend,
     model: &LlamaModel,
     draft: &LlamaModel,
     format: &ChatFormat,
@@ -339,6 +338,124 @@ fn run_live_turn(
         }
         Err((code, detail)) => panic!("the live turn must run, got {code:?}: {detail}"),
     }
+}
+
+// ── REQUIRED ARTIFACT 1b: the VISION turn settles ONCE (F1's exact panic) ────
+
+/// THE vision-turn settle pin (Spec #3141 fix F1 — the reported panic path).
+///
+/// Before the fix the FIRST vision turn panicked the engine thread: the raw
+/// `<|tool_call>` trigger fired the lazy tool grammar on Gemma4's `<|channel>`
+/// marker and emptied the stack. The Tester observed two `llm-done` and zero
+/// `llm-token`.
+///
+/// This drives a real media turn through the real `mtp` generator with the tool
+/// registry offered (the exact shipped shape `spawn_chat` produces for an image
+/// turn) and asserts the settle contract end to end:
+///
+/// * the turn RETURNS (no panic kills the thread),
+/// * there are `llm-token`s and exactly ONE `llm-done`, last, and
+/// * the reply reflects the image.
+#[test]
+fn a_vision_turn_over_the_real_generator_settles_once_with_tokens() {
+    let Some(loaded) = load_or_skip() else {
+        return;
+    };
+    let image_base64 =
+        match crate::applications::screenshot::commands::capture_screen_region(0.0, 0.0, 960.0, 640.0)
+        {
+            Ok(image) => image,
+            Err(detail) => {
+                eprintln!(
+                    "ST-5 VISION SETTLE GATE SKIPPED (named blocker: screen capture) — {detail}."
+                );
+                return;
+            }
+        };
+
+    // The SHIPPED image-turn shape: a real tool offer (the registry) PLUS the
+    // image. That is what `spawn_chat` produces, and it is exactly the turn whose
+    // lazy tool grammar used to arm on `<|channel>`.
+    let turn = ChatTurn::text(vec![
+        message("system", "You are Fredo, a desktop companion."),
+        message(
+            "user",
+            "In one short sentence, describe what is visible in this image.",
+        ),
+    ])
+    .with_tools(
+        vec![serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "open_app",
+                "description": "Open an application.",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "app": { "type": "string" } },
+                    "required": ["app"],
+                },
+            }
+        })],
+        "auto",
+    )
+    .with_image(image_base64)
+    .with_max_tokens(64);
+
+    let mut projector = loaded.projector;
+    let sink = RecordingSink::new();
+    let outcome = {
+        let mut settled = SettledStream::new(&sink);
+        let result = super::mtp::generate_speculative(
+            super::mtp::SpeculativeTurn {
+                backend: &loaded.backend,
+                model: &loaded.model,
+                draft_model: &loaded.draft,
+                format: &loaded.format,
+                settings: &test_settings(),
+                turn: &turn,
+                seed: 5,
+                policy: super::mtp::VerifyPolicy::LongestMatchingPrefix,
+                projector: Some(&mut projector),
+            },
+            |piece| settled.token(piece.to_string()),
+        );
+        settled.finish();
+        result
+    };
+
+    let outcome = outcome.unwrap_or_else(|(code, detail)| {
+        panic!("the vision turn must NOT fail (the panic path): {code:?} — {detail}")
+    });
+    let names = sink.names();
+    eprintln!(
+        "ST-5 VISION SETTLE: events={names:?} tokens_generated={} reply={:?}",
+        outcome.tokens_generated, outcome.content
+    );
+
+    assert!(
+        !outcome.content.trim().is_empty(),
+        "the vision turn must produce a reply"
+    );
+    assert!(
+        names.iter().any(|name| name == "llm-token"),
+        "the vision turn must stream at least one llm-token: {names:?}"
+    );
+    assert_eq!(
+        names.iter().filter(|name| *name == "llm-done").count(),
+        1,
+        "EXACTLY one llm-done on the vision path (the Tester saw TWO): {names:?}"
+    );
+    assert_eq!(
+        names.last().map(String::as_str),
+        Some("llm-done"),
+        "llm-done must be LAST: {names:?}"
+    );
+    assert_eq!(
+        sink.count("llm-error"),
+        0,
+        "a successful vision turn must not emit llm-error: {:?}",
+        sink.records()
+    );
 }
 
 // ── REQUIRED ARTIFACT 2: the live AUDIO turn ─────────────────────────────────
@@ -515,7 +632,6 @@ fn a_live_audio_turn_carries_one_wav_part_and_settles_once() {
 }
 
 // ── REQUIRED ARTIFACT 3: the typed `MmprojInitFailed` leg ────────────────────
-
 /// R-20.1's negative clause — a missing or unusable projector is the TYPED
 /// failure, never a silent text-only fallback.
 #[test]

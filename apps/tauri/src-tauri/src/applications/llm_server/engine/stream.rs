@@ -502,15 +502,50 @@ impl TurnSource for EngineTurnSource {
             .chat(request)
             .map_err(|(code, detail)| failed(code, &detail, "refused a turn"))?;
 
-        while let Some(event) = received.recv().await {
-            match event {
-                EngineEvent::Failed { code, detail } => {
-                    return Err(failed(code, &detail, "failed a turn"));
+        drain_turn(&mut received, on_frame).await
+    }
+}
+
+/// Drain one turn's engine events into frames, requiring a terminal `Finished`.
+///
+/// A turn is complete only when the engine sent [`EngineEvent::Finished`]. The
+/// channel closing WITHOUT one is never success (Spec #3141 fix F1): a dead or
+/// panicked engine used to look like a normal completion, so the stream settled
+/// with a bare `llm-done` and NO `llm-error`. Extracted from
+/// [`EngineTurnSource::stream`] so the settle contract is pinned directly against
+/// a real channel, with no model and no `AppHandle`.
+///
+/// # Errors
+///
+/// The typed [`EngineEvent::Failed`] detail, or a curated "stopped before the turn
+/// finished" sentence when the channel closed with no `Finished` and no failure.
+async fn drain_turn(
+    received: &mut tokio::sync::mpsc::Receiver<EngineEvent>,
+    on_frame: &mut (dyn FnMut(StreamFrame) + Send),
+) -> Result<(), String> {
+    let mut finished = false;
+    while let Some(event) = received.recv().await {
+        match event {
+            EngineEvent::Failed { code, detail } => {
+                return Err(failed(code, &detail, "failed a turn"));
+            }
+            event => {
+                if matches!(event, EngineEvent::Finished { .. }) {
+                    finished = true;
                 }
-                other => on_frame(StreamFrame::from_engine(other)),
+                on_frame(StreamFrame::from_engine(event));
             }
         }
+    }
+    if finished {
         Ok(())
+    } else {
+        Err(failed(
+            CompanionEngineErrorCode::BackendInitFailed,
+            "the companion engine stopped before the turn finished. \
+             Start the engine again and retry.",
+            "ended a turn early",
+        ))
     }
 }
 
@@ -573,7 +608,16 @@ impl OneShotSource for EngineOneShotSource {
         match received.await {
             Ok(Ok(reply)) => Ok(reply),
             Ok(Err((code, detail))) => Err(failed(code, &detail, "failed a one-shot turn")),
-            Err(_) => Ok(TurnReply::default()),
+            // A DROPPED reply channel means the engine thread went away mid-turn
+            // (a caught panic, or the thread ending). That is never a default
+            // empty reply — it is a typed failure (Spec #3141 fix F1: a dead
+            // engine must not look like an empty success).
+            Err(_) => Err(failed(
+                CompanionEngineErrorCode::BackendInitFailed,
+                "the companion engine stopped before the turn finished. \
+                 Start the engine again and retry.",
+                "ended a one-shot turn early",
+            )),
         }
     }
 }
@@ -923,6 +967,37 @@ pub(crate) mod testing {
             }
         }
     }
+
+    /// A source that drives the REAL [`drain_turn`] over a live channel.
+    ///
+    /// This is what makes "a channel that closes without `Finished` is a failure"
+    /// a property of the SHIPPED drain, not of a scripted oracle: the settle pins
+    /// run the production error text and the production success rule.
+    #[derive(Debug, Default)]
+    pub struct ChannelTurnSource;
+
+    impl ChannelTurnSource {
+        /// A source that feeds `events` into [`drain_turn`] exactly once.
+        pub fn new() -> Self {
+            Self
+        }
+    }
+
+    #[async_trait]
+    impl TurnSource for ChannelTurnSource {
+        async fn stream(
+            &self,
+            _turn: ChatTurn,
+            on_frame: &mut (dyn FnMut(StreamFrame) + Send),
+        ) -> Result<(), String> {
+            // An EMPTY channel: the sender is already dropped, exactly what a
+            // panicked engine thread leaves behind (no `Finished`, no failure
+            // event).
+            let (sender, mut receiver) = tokio::sync::mpsc::channel::<EngineEvent>(1);
+            drop(sender);
+            drain_turn(&mut receiver, on_frame).await
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1154,7 +1229,6 @@ mod tests {
     }
 
     // ── The scripted source (the pins' own oracle) ──────────────────────────
-
     #[tokio::test]
     async fn the_scripted_source_delivers_its_frames_in_order_then_its_outcome() {
         let source = ScriptedTurnSource::new(vec![
@@ -1178,5 +1252,125 @@ mod tests {
             .stream(ChatTurn::text(Vec::new()), &mut |_frame| {})
             .await;
         assert!(third.is_err());
+    }
+
+    // ── F1: a channel that closes without `Finished` is a FAILURE ───────────
+
+    /// THE pin for the invisible-engine-death half of the panic. Before the fix
+    /// `EngineTurnSource::stream` mapped a closed event channel to `Ok(())`, so an
+    /// engine that died mid-turn looked like a NORMAL completion: the settle guard
+    /// emitted a bare `llm-done` and NO `llm-error`.
+    ///
+    /// A turn is complete only when the engine sent `Finished`.
+    #[tokio::test]
+    async fn a_channel_that_closes_without_finished_is_a_typed_failure() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<EngineEvent>(8);
+        // A token, then the sender drops — exactly what a panicked engine thread
+        // leaves behind (its channel closes with no `Finished`).
+        tx.send(EngineEvent::Token("partial".to_string()))
+            .await
+            .expect("send a token");
+        drop(tx);
+
+        let mut frames = Vec::new();
+        let outcome = drain_turn(&mut rx, &mut |frame| frames.push(frame)).await;
+
+        let detail = outcome.expect_err("a channel close with no Finished is NOT success");
+        assert!(
+            detail.contains("stopped before the turn finished"),
+            "the failure must name the cause: {detail}"
+        );
+        // The partial content was still delivered to the consumer.
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].events, vec![StreamEvent::Delta("partial".to_string())]);
+    }
+
+    /// A turn that DID send `Finished` is a normal completion — the control that
+    /// keeps the pin above from passing vacuously.
+    #[tokio::test]
+    async fn a_channel_that_sends_finished_is_success() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<EngineEvent>(8);
+        tx.send(EngineEvent::Token("ok".to_string()))
+            .await
+            .expect("send a token");
+        tx.send(EngineEvent::Finished {
+            finish_reason: Some("stop".to_string()),
+            stopped_on_eog: true,
+        })
+        .await
+        .expect("send the terminator");
+        drop(tx);
+
+        let mut frames = Vec::new();
+        let outcome = drain_turn(&mut rx, &mut |frame| frames.push(frame)).await;
+        assert!(outcome.is_ok(), "a Finished turn must settle Ok: {outcome:?}");
+        assert_eq!(frames.len(), 2, "the token frame and the terminal frame");
+        assert!(frames.iter().any(|frame| frame.events == vec![StreamEvent::Done]));
+    }
+
+    /// A typed `Failed` event is returned as the error detail — the engine's own
+    /// curated copy, never a generic sentence.
+    #[tokio::test]
+    async fn a_failed_event_becomes_the_turn_error_detail() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<EngineEvent>(8);
+        tx.send(EngineEvent::Failed {
+            code: CompanionEngineErrorCode::ContextCreateFailed,
+            detail: "the companion could not sample the reply".to_string(),
+        })
+        .await
+        .expect("send the failure");
+        drop(tx);
+
+        let outcome = drain_turn(&mut rx, &mut |_frame| {}).await;
+        assert_eq!(
+            outcome.err().as_deref(),
+            Some("the companion could not sample the reply")
+        );
+    }
+
+    /// The DOUBLE-`llm-done` investigation (Spec #3141 fix F1).
+    ///
+    /// The Tester observed `["done","done"]` on ONE `llm_chat_with_image` turn.
+    /// The media path's settle ownership is:
+    ///
+    /// * `commands::chat::spawn_chat` → `skills::run_skill_stream`, which builds
+    ///   ONE `SettledStream` and owns the ONLY terminator;
+    /// * the vision/audio fallback in `adapterBridge`'s `llmChatWithImage` is a
+    ///   FRONTEND-side listener pair, not a second backend settle.
+    ///
+    /// So a second `llm-done` from the backend is structurally impossible once the
+    /// receive path can only produce one: `SettledStream` drops every post-`Done`
+    /// emission. This pin asserts that invariant across the exact sequence a dead
+    /// engine produces (a partial token, the caught-panic `Failed`, then a
+    /// `finish`), which is the shape that used to surface twice.
+    ///
+    /// **Finding:** the pre-fix double `llm-done` came from TWO invocations of the
+    /// vision path, not one turn double-settling: the engine thread's panic closed
+    /// the event channel, `EngineTurnSource::stream` mapped that close to `Ok(())`,
+    /// and the outer settle emitted its `llm-done` — while the frontend's own
+    /// fallback listener (registered because the adapter's `finish()` had already
+    /// run on the zero-token stream) emitted a SECOND one for the same user action.
+    /// With the close now a typed failure the turn takes exactly one settle path.
+    #[test]
+    fn a_dead_engine_turn_cannot_double_settle_the_vision_path() {
+        let sink = RecordingSink::new();
+        {
+            let mut settled = SettledStream::new(&sink);
+            // A partial token, the typed failure the caught panic emits, then the
+            // explicit settle — the exact pre-fix dead-engine shape.
+            settled.token("partial");
+            settled.error("the companion engine stopped before the turn finished.");
+            settled.finish();
+            // A stray late settle (the second path the defect produced) is dropped.
+            settled.finish();
+            settled.token("late");
+        }
+        assert_settles_once(&sink, "dead-engine vision turn");
+        assert_eq!(sink.count("llm-error"), 1);
+        assert_eq!(
+            sink.names(),
+            vec!["llm-token", "llm-error", "llm-done"],
+            "one settle sequence: the token, the error, the single terminator"
+        );
     }
 }

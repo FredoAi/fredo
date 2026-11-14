@@ -59,8 +59,13 @@ pub struct EngineStatusSnapshot {
     pub devices: Vec<CompanionDeviceInfo>,
     /// The canonical model id (manifest `model` file stem).
     pub model_id: Option<String>,
-    /// The cumulative MTP counters across every turn this engine has served
+    /// The cumulative MTP counters across every turn this PROCESS has served
     /// (ST-4 / R-19.1). `None` before the first load.
+    ///
+    /// "Cumulative" is for the life of the PROCESS: the engine thread carries the
+    /// total forward across a restart, so a status read after a restart still
+    /// reports what every turn proposed (Spec #3141 fix F2). It is never reset to
+    /// `{0,0,0}` by a restart.
     pub mtp_stats: Option<super::mtp::MtpStats>,
     /// What the loaded projector reports about the model pair's input modalities
     /// (ST-5 / #2897 REQ-7). `None` before a projector is loaded — the capability
@@ -75,6 +80,26 @@ pub struct EngineSlot {
     pub snapshot: EngineStatusSnapshot,
     /// The most recently REQUESTED mode (never overwritten by a failure — AC-25.2).
     pub mode: CompanionBackendMode,
+}
+
+impl EngineSlot {
+    /// Record the mode an engine start is about to use.
+    ///
+    /// This is the ONE place the requested mode is written, so an EXPLICIT start
+    /// (the wizard's `launch_llama_server`) and a TURN-started (lazy) engine
+    /// report the same truthful `backendMode` (AC-25.2's echo). It is never
+    /// written on a failure, so a refused `gpu` start cannot overwrite the
+    /// persisted/requested mode.
+    ///
+    /// A poisoned lock is recovered rather than propagated: the mode is a display
+    /// echo, never a value the engine's correctness depends on.
+    pub fn record_requested_mode(slot: &Arc<Mutex<Self>>, mode: CompanionBackendMode) {
+        let mut guard = match slot.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard.mode = mode;
+    }
 }
 
 /// The process-scoped engine handle. Owns the engine thread + the shared slot.
@@ -137,10 +162,9 @@ impl CompanionEngineHandle {
             reply: reply_tx,
         });
         // Record the requested mode up front so AC-25.2 holds: a failed start
-        // never overwrites the persisted/requested mode.
-        if let Ok(mut slot) = self.slot.lock() {
-            slot.mode = mode;
-        }
+        // never overwrites the persisted/requested mode. The write is shared with
+        // the lazy (turn-started) path so both report a truthful `backendMode`.
+        EngineSlot::record_requested_mode(&self.slot, mode);
         let Some(commands) = self.commands.as_ref() else {
             return CompanionEngineStartResult::failure(CompanionEngineErrorCode::BackendInitFailed);
         };
