@@ -124,6 +124,10 @@ pub struct LlamaServerStatus {
     /// engine is loaded (NFR-9).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
+    /// The cumulative MTP speculative-decoding counters (ST-4 / R-19.1).
+    /// ABSENT KEY when no turn has run yet (NFR-9).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mtp_stats: Option<super::engine::mtp::MtpStats>,
 }
 
 impl LlamaServerStatus {
@@ -145,6 +149,7 @@ impl LlamaServerStatus {
             backend_mode: slot.mode,
             devices: snapshot.devices.clone(),
             model_id: snapshot.model_id.clone(),
+            mtp_stats: snapshot.mtp_stats,
         }
     }
 
@@ -163,6 +168,7 @@ impl LlamaServerStatus {
             backend_mode: mode,
             devices: Vec::new(),
             model_id: None,
+            mtp_stats: None,
         }
     }
 }
@@ -781,6 +787,10 @@ mod tests {
             value.get("modelId").is_none(),
             "no engine loaded ⇒ NO `modelId` key: {value}"
         );
+        assert!(
+            value.get("mtpStats").is_none(),
+            "no turn has run ⇒ NO `mtpStats` key: {value}"
+        );
 
         // The always-present additive fields are present.
         assert_eq!(value["backendMode"], "auto");
@@ -811,6 +821,11 @@ mod tests {
                 memory_total_bytes: 2_000,
             }],
             model_id: Some("gemma-4-E2B-it-qat-UD-Q4_K_XL".to_string()),
+            mtp_stats: Some(super::super::engine::mtp::MtpStats {
+                drafts_proposed: 12,
+                drafts_accepted: 7,
+                draft_calls: 10,
+            }),
         };
         let slot = EngineSlot {
             snapshot,
@@ -827,6 +842,11 @@ mod tests {
         assert_eq!(value["devices"][0]["deviceType"], "gpu");
         assert_eq!(value["devices"][0]["memoryFreeBytes"], 1_000);
         assert_eq!(value["devices"][0]["memoryTotalBytes"], 2_000);
+
+        // The MTP counters ride the SAME status surface, camelCase (R-19.1).
+        assert_eq!(value["mtpStats"]["draftsProposed"], 12);
+        assert_eq!(value["mtpStats"]["draftsAccepted"], 7);
+        assert_eq!(value["mtpStats"]["draftCalls"], 10);
 
         // In-process: port and pid are ALWAYS null, never a number.
         assert!(value["port"].is_null());

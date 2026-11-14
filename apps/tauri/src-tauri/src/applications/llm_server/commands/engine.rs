@@ -351,6 +351,7 @@ pub async fn get_llama_server_status(
         backend_mode: backend_mode(&app),
         devices: Vec::new(),
         model_id: None,
+        mtp_stats: None,
     })
 }
 

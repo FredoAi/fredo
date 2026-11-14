@@ -44,6 +44,7 @@ pub mod chat_format;
 pub mod detokenize;
 pub mod device;
 pub mod handle;
+pub mod mtp;
 pub mod paths;
 pub mod request;
 pub mod sampling;
@@ -55,6 +56,11 @@ pub mod thread;
 /// readable.
 #[cfg(test)]
 mod integration;
+
+/// The MTP (speculative-decoding) gates: pure pins plus the LIVE pairing,
+/// counter, forced-rejection and typed-failure legs (ST-4).
+#[cfg(test)]
+mod mtp_tests;
 
 use serde::{Deserialize, Serialize};
 

@@ -43,7 +43,8 @@ pub const DEFAULT_START_BUDGET: Duration = Duration::from_secs(120);
 /// small bound is enough (one in-flight start plus lifecycle).
 pub const ENGINE_COMMAND_CAPACITY: usize = 8;
 
-/// The terminal status the engine thread publishes after each start/stop.
+/// The terminal status the engine thread publishes after each start/stop and
+/// after each turn (which is where the cumulative MTP counters move).
 #[derive(Debug, Clone, Default)]
 pub struct EngineStatusSnapshot {
     /// The engine is loaded and able to serve.
@@ -58,6 +59,9 @@ pub struct EngineStatusSnapshot {
     pub devices: Vec<CompanionDeviceInfo>,
     /// The canonical model id (manifest `model` file stem).
     pub model_id: Option<String>,
+    /// The cumulative MTP counters across every turn this engine has served
+    /// (ST-4 / R-19.1). `None` before the first load.
+    pub mtp_stats: Option<super::mtp::MtpStats>,
 }
 
 /// The shared engine slot: the published snapshot + the requested mode.

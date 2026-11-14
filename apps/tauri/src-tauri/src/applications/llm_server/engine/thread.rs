@@ -14,20 +14,24 @@
 //! It publishes the terminal status of each command into the shared
 //! [`EngineSlot`] the handle exposes.
 //!
-//! ## The generation half (ST-2)
+//! ## The generation half (ST-2 + ST-4)
 //!
-//! [`generate`] is the decode loop: shape the turn through the model's own chat
-//! template ([`super::chat_format`]), build the sampler chain from the reference
-//! sampling values ([`super::sampling`]), evaluate the prompt, then sample →
-//! decode → incrementally detokenise ([`super::detokenize`]) until the model emits
-//! an end-of-generation token or the budget is spent.
+//! Every turn is generated SPECULATIVELY ([`super::mtp::generate_speculative`]):
+//! the draft model proposes tokens, the target verifies them, and the accepted
+//! prefix is committed — with both contexts rolled back when a draft is
+//! rejected. There is no non-speculative branch (R-19.5): a session that cannot
+//! be built is a typed start failure, so a turn can never silently run without
+//! speculative decoding.
+//!
+//! The draft model is loaded at start and its session is PROVEN constructible
+//! (and exercised by the warm-up) before the engine reports ready, so a broken
+//! pairing is an engine-start failure rather than a mid-conversation surprise.
 //!
 //! It emits NOTHING itself: the caller receives each completed text piece through
 //! a callback, so the event vocabulary stays owned by the streaming sub-task
 //! (ST-3) and this task cannot invent a wire channel.
 //!
-//! ST-4 adds the MTP (speculative-decoding) half around this loop; ST-5 adds the
-//! `mtmd` media parts. Neither is built here.
+//! ST-5 adds the `mtmd` media parts around this loop.
 //!
 //! ## Why nothing here is `async`
 //!
@@ -42,40 +46,43 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 
 use llama_cpp_4::context::params::LlamaContextParams;
-use llama_cpp_4::context::LlamaContext;
 use llama_cpp_4::llama_backend::LlamaBackend;
-use llama_cpp_4::llama_batch::LlamaBatch;
-use llama_cpp_4::model::{AddBos, LlamaModel};
-use llama_cpp_4::sampling::LlamaSampler;
 use llama_cpp_4::token::LlamaToken;
 
 use super::chat_format::ChatFormat;
-use super::detokenize::TokenStreamDecoder;
 use super::device::{self, ModeProjection};
 use super::handle::{EngineSlot, EngineStatusSnapshot};
+use super::mtp::MtpStats;
 use super::paths;
 use super::request::ChatTurn;
-use super::sampling::{self, GrammarSpec, SamplingSettings};
+use super::sampling::{self, SamplingSettings};
 use super::{
     CompanionBackendKind, CompanionBackendMode, CompanionEngineErrorCode,
     CompanionEngineStartResult, EngineCommand, StartRequest,
 };
 
 /// Everything the engine thread owns once started. Dropped on `Stop` / thread
-/// exit, which releases the model (and therefore the ggml device set).
+/// exit, which releases the models (and therefore the ggml device set).
 pub struct EngineState {
     /// The loaded main model. Declared BEFORE the backend so Rust drops it FIRST
     /// — struct fields drop in declaration order, and `llama_backend_free`
     /// requires every model to be released before the backend. Read for the start
     /// log line and borrowed by the generation loop.
     pub model: llama_cpp_4::model::LlamaModel,
+    /// The loaded MTP draft model (ST-4). It is a SEPARATE checkpoint
+    /// (`MTP/mtp-gemma-4-E2B-it-Q4_0.gguf`), resolved through the shared
+    /// manifest and paired with the main model by every speculative turn.
+    ///
+    /// Declared after [`Self::model`] and before the backend: both models must be
+    /// released before `llama_backend_free`.
+    pub draft: llama_cpp_4::model::LlamaModel,
     /// The backend's chat format for the loaded model (ST-2).
     pub format: ChatFormat,
     /// Proof the backend was initialised.
     ///
     /// Retained (never read outside the engine thread) ONLY for two reasons: it
-    /// must outlive the model (drop order, see [`Self::model`]), and the
-    /// generation loop creates its context from the same process-once backend.
+    /// must outlive both models (drop order, see [`Self::model`]), and every turn
+    /// creates its contexts from the same process-once backend.
     /// The leading underscore documents that this field exists for ownership.
     _backend: LlamaBackend,
     /// The device set ggml reports for the loaded model (post-coercion).
@@ -85,6 +92,11 @@ pub struct EngineState {
     pub backend_kind: Option<CompanionBackendKind>,
     /// The canonical model id (manifest `model` file stem).
     pub model_id: Option<String>,
+    /// The cumulative MTP counters across every turn this engine has served.
+    ///
+    /// Written by the engine thread after each turn and published into the
+    /// status snapshot, so the R-19.1 observable is readable without a log parse.
+    pub mtp_stats: MtpStats,
 }
 
 impl EngineState {
@@ -97,23 +109,8 @@ impl EngineState {
             backend: self.backend_kind,
             devices: self.devices.clone(),
             model_id: self.model_id.clone(),
+            mtp_stats: Some(self.mtp_stats),
         }
-    }
-
-    /// Create one generation context from the process-once backend.
-    ///
-    /// A turn is independent (the loop clears the KV cache), so a per-turn
-    /// context is what keeps this struct non-self-referential — the context
-    /// borrows the model, so it can never be stored beside it.
-    pub fn new_context(&self) -> Result<LlamaContext<'_>, (CompanionEngineErrorCode, String)> {
-        self.model
-            .new_context(&self._backend, context_params(&SamplingSettings::default()))
-            .map_err(|error| {
-                (
-                    CompanionEngineErrorCode::ContextCreateFailed,
-                    format!("the model context could not be created: {error}"),
-                )
-            })
     }
 
     /// A one-line description of the loaded model, for the start log.
@@ -163,20 +160,21 @@ pub fn run(receiver: Receiver<EngineCommand>, slot: Arc<Mutex<EngineSlot>>) {
                         backend: state.as_ref().and_then(|s| s.backend_kind),
                         devices: state.as_ref().map(|s| s.devices.clone()).unwrap_or_default(),
                         model_id: state.as_ref().and_then(|s| s.model_id.clone()),
+                        mtp_stats: state.as_ref().map(|s| s.mtp_stats),
                     };
                     publish(&slot, snapshot);
                 }
             },
             EngineCommand::Stop => {
-                // Dropping the state releases the model (and its device set).
+                // Dropping the state releases the models (and their device set).
                 drop(state.take());
                 publish(&slot, EngineStatusSnapshot::default());
                 break;
             }
             EngineCommand::Chat(request) => {
                 let request = *request;
-                let state = ensure_started(&mut state, &slot, &request.paths, request.mode);
-                let Some(engine) = state.as_ref() else {
+                let engine = ensure_started(&mut state, &slot, &request.paths, request.mode);
+                let Some(engine) = engine.as_mut() else {
                     // The start failed and published its typed status; the turn
                     // settles as a failed stream.
                     let _ = request.events.try_send(crate::applications::llm_server::engine::stream::EngineEvent::Failed {
@@ -187,11 +185,13 @@ pub fn run(receiver: Receiver<EngineCommand>, slot: Arc<Mutex<EngineSlot>>) {
                     continue;
                 };
                 run_chat(engine, request);
+                // Publish the cumulative MTP counters (R-19.1's observable).
+                publish(&slot, engine.snapshot());
             }
             EngineCommand::OneShot(request) => {
                 let request = *request;
-                let state = ensure_started(&mut state, &slot, &request.paths, request.mode);
-                let Some(engine) = state.as_ref() else {
+                let engine = ensure_started(&mut state, &slot, &request.paths, request.mode);
+                let Some(engine) = engine.as_mut() else {
                     let _ = request.reply.send(Err((
                         CompanionEngineErrorCode::ModelLoadFailed,
                         "the companion engine could not start; see the companion status for the typed failure."
@@ -200,6 +200,7 @@ pub fn run(receiver: Receiver<EngineCommand>, slot: Arc<Mutex<EngineSlot>>) {
                     continue;
                 };
                 run_one_shot(engine, request);
+                publish(&slot, engine.snapshot());
             }
         }
     }
@@ -215,7 +216,7 @@ fn ensure_started<'s>(
     slot: &Arc<Mutex<EngineSlot>>,
     paths: &paths::EnginePaths,
     mode: CompanionBackendMode,
-) -> &'s Option<EngineState> {
+) -> &'s mut Option<EngineState> {
     if state.is_some() {
         return state;
     }
@@ -252,6 +253,7 @@ fn ensure_started<'s>(
                 backend: None,
                 devices: Vec::new(),
                 model_id: None,
+                mtp_stats: None,
             };
             publish(slot, snapshot);
         }
@@ -265,16 +267,11 @@ fn ensure_started<'s>(
 /// withheld from the control-token prefix, and at the finish the template's OWN
 /// reverse parser decides whether the withheld text was a call (emitted as
 /// [`EngineEvent::ToolCall`]) or ordinary content (released as a token).
-fn run_chat(engine: &EngineState, request: crate::applications::llm_server::engine::ChatRequest) {
+fn run_chat(
+    engine: &mut EngineState,
+    request: crate::applications::llm_server::engine::ChatRequest,
+) {
     use crate::applications::llm_server::engine::stream::{self, ContentGate, EngineEvent};
-
-    let mut context = match engine.new_context() {
-        Ok(context) => context,
-        Err((code, detail)) => {
-            let _ = request.events.try_send(EngineEvent::Failed { code, detail });
-            return;
-        }
-    };
 
     let mut gate = if request.turn.offer_tools {
         ContentGate::for_tool_turn()
@@ -282,13 +279,15 @@ fn run_chat(engine: &EngineState, request: crate::applications::llm_server::engi
         ContentGate::for_content_turn()
     };
     let events = request.events.clone();
-    let outcome = generate(
+    let outcome = super::mtp::generate_speculative(
+        &engine._backend,
         &engine.model,
-        &mut context,
+        &engine.draft,
         &engine.format,
         &SamplingSettings::default(),
         &request.turn,
         request.seed,
+        super::mtp::VerifyPolicy::LongestMatchingPrefix,
         |piece| {
             let visible = gate.push(piece);
             if !visible.is_empty() {
@@ -304,6 +303,7 @@ fn run_chat(engine: &EngineState, request: crate::applications::llm_server::engi
             return;
         }
     };
+    engine.mtp_stats.accumulate(outcome.stats);
 
     // Decide what the withheld text was: a decoded tool call, or content.
     let mut called_tools = false;
@@ -347,30 +347,25 @@ fn run_chat(engine: &EngineState, request: crate::applications::llm_server::engi
 /// The whole content AND the reasoning are returned, so the decision trace keeps
 /// its flag-gated capture without a second request.
 fn run_one_shot(
-    engine: &EngineState,
+    engine: &mut EngineState,
     request: crate::applications::llm_server::engine::OneShotRequest,
 ) {
     use crate::applications::llm_server::engine::stream::TurnReply;
 
-    let mut context = match engine.new_context() {
-        Ok(context) => context,
-        Err(error) => {
-            let _ = request.reply.send(Err(error));
-            return;
-        }
-    };
-
-    let outcome = generate(
+    let outcome = super::mtp::generate_speculative(
+        &engine._backend,
         &engine.model,
-        &mut context,
+        &engine.draft,
         &engine.format,
         &SamplingSettings::default(),
         &request.turn,
         request.seed,
+        super::mtp::VerifyPolicy::LongestMatchingPrefix,
         |_piece| {},
     );
     match outcome {
         Ok(outcome) => {
+            engine.mtp_stats.accumulate(outcome.stats);
             let _ = request.reply.send(Ok(TurnReply {
                 content: outcome.content,
                 reasoning: String::new(),
@@ -585,14 +580,28 @@ fn try_start(request: &StartRequest) -> Result<EngineState, (CompanionEngineErro
     //    as a typed start failure instead of a mid-turn surprise.
     let format = ChatFormat::from_model(&model)?;
 
+    // 8b. Load the MTP DRAFT model (ST-4) from its manifest path and prove the
+    //     speculative session can be built over it — the R-19.5 gate. A draft
+    //     that cannot be loaded, or a pairing the checkpoint refuses, is a typed
+    //     `MtpInitFailed` START failure: the engine never comes up in a
+    //     non-speculative mode.
+    let draft = super::mtp::load_draft_model(
+        &backend,
+        super::mtp::draft_path(&request.paths),
+        layers,
+    )?;
+    prove_mtp_session(&backend, &model, &draft, &settings)?;
+
     let model_id = paths::model_id_for(&request.paths.model);
     let state = EngineState {
         model,
+        draft,
         format,
         _backend: backend,
         devices,
         backend_kind,
         model_id,
+        mtp_stats: super::mtp::MtpStats::default(),
     };
 
     // 9. Verify the request-shaping surface and warm up the generation half
@@ -649,22 +658,14 @@ const WARMUP_USER: &str = "Hi";
 ///
 /// This is the start-time proof that the engine can produce a turn: the model's
 /// template renders, the sampler chain builds, the prompt evaluates, a token
-/// samples, and the incremental detokeniser releases text. A failure is a TYPED
-/// start failure — never a silent "it loaded but cannot generate".
+/// samples, and the incremental detokeniser releases text. It goes through the
+/// SAME speculative path every user turn uses (ST-4), so a broken MTP pairing is
+/// caught here rather than on a user's first message. A failure is a TYPED start
+/// failure — never a silent "it loaded but cannot generate".
 fn warm_up(
     state: &EngineState,
     settings: &SamplingSettings,
 ) -> Result<(), (CompanionEngineErrorCode, String)> {
-    let mut context = state
-        .model
-        .new_context(&state._backend, context_params(settings))
-        .map_err(|error| {
-            (
-                CompanionEngineErrorCode::ContextCreateFailed,
-                format!("the model context could not be created: {error}"),
-            )
-        })?;
-
     let turn = ChatTurn::text(vec![
         crate::applications::llm_server::chat::LlmMessage {
             role: "system".to_string(),
@@ -677,13 +678,15 @@ fn warm_up(
     ])
     .with_max_tokens(WARMUP_MAX_TOKENS);
 
-    let outcome = generate(
+    let outcome = super::mtp::generate_speculative(
+        &state._backend,
         &state.model,
-        &mut context,
+        &state.draft,
         &state.format,
         settings,
         &turn,
         sampling::DEFAULT_SEED,
+        super::mtp::VerifyPolicy::LongestMatchingPrefix,
         |_piece| {},
     )?;
 
@@ -692,180 +695,40 @@ fn warm_up(
         prompt_tokens = outcome.prompt_tokens,
         tokens_generated = outcome.tokens_generated,
         truncated = outcome.prompt_truncated,
+        drafts_proposed = outcome.stats.drafts_proposed,
+        drafts_accepted = outcome.stats.drafts_accepted,
         "companion engine warmed up"
     );
     Ok(())
 }
 
-// ── Generation (ST-2) ────────────────────────────────────────────────────────
-
-/// The terminal outcome of one generation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GenerationOutcome {
-    /// The full assistant text as it was released by the incremental decoder.
-    pub content: String,
-    /// How many tokens the model emitted (including the end-of-generation token
-    /// when one was sampled).
-    pub tokens_generated: u32,
-    /// How many prompt tokens the generation evaluated after truncation.
-    pub prompt_tokens: u32,
-    /// Whether the model itself ended the turn (an end-of-generation token)
-    /// rather than the token budget running out — the difference between a
-    /// finished reply and a truncated one.
-    pub stopped_on_eog: bool,
-    /// Whether the prompt had to be truncated to fit the context window.
-    pub prompt_truncated: bool,
-}
-
-/// Generate one turn on `context`, delivering each completed text piece to
-/// `on_text`.
+/// Prove an MTP session can be built over the loaded pair of models (R-19.5).
 ///
-/// The pieces are UTF-8-complete ([`TokenStreamDecoder`] holds an incomplete
-/// multibyte sequence until it completes), so a caller that concatenates them gets
-/// exactly [`GenerationOutcome::content`] and no character is ever torn.
-///
-/// `seed` seeds the distribution sampler; a caller passes a fresh value per turn
-/// (tests pass a fixed one for reproducibility).
-///
-/// Emits no event and touches no global state beyond the context it is handed, so
-/// the streaming sub-task owns the wire vocabulary.
-pub fn generate<'m>(
-    model: &'m LlamaModel,
-    context: &mut LlamaContext<'m>,
-    format: &ChatFormat,
+/// This runs at engine START, so a draft model that cannot be paired with the
+/// target (the wrong checkpoint, a mismatched width, a missing MTP head) is a
+/// typed [`CompanionEngineErrorCode::MtpInitFailed`] failure of the start rather
+/// than a mid-conversation error — and, critically, the engine never reports
+/// ready in a non-speculative mode.
+fn prove_mtp_session(
+    backend: &LlamaBackend,
+    model: &llama_cpp_4::model::LlamaModel,
+    draft: &llama_cpp_4::model::LlamaModel,
     settings: &SamplingSettings,
-    turn: &ChatTurn,
-    seed: u32,
-    mut on_text: impl FnMut(&str),
-) -> Result<GenerationOutcome, (CompanionEngineErrorCode, String)> {
-    let shaped = format.apply(turn, settings)?;
-
-    // Grammar triggers must outlive the sampler borrow, so keep the strings here.
-    let trigger_patterns: Vec<String> = shaped
-        .grammar_triggers()
-        .iter()
-        .map(|trigger| trigger.value.clone())
-        .collect();
-    let trigger_refs: Vec<&str> = trigger_patterns.iter().map(String::as_str).collect();
-    let grammar_spec = shaped.active_grammar().map(|grammar| {
-        if shaped.grammar_is_lazy() && !trigger_refs.is_empty() {
-            GrammarSpec::Lazy {
-                grammar,
-                triggers: &trigger_refs,
-            }
-        } else {
-            GrammarSpec::Strict(grammar)
-        }
-    });
-
-    // Tokenise the rendered prompt. A model template always prefixes its own
-    // beginning-of-sequence marker, so the tokeniser must not add a second.
-    let mut prompt_tokens = model
-        .str_to_token(&shaped.prompt, AddBos::Never)
-        .map_err(|error| {
-            (
-                CompanionEngineErrorCode::ContextCreateFailed,
-                format!("the companion prompt could not be tokenised: {error}"),
-            )
-        })?;
-
-    // Defensive context sizing (the plan's accepted-loss mitigation): keep room
-    // for the completion, and drop the OLDEST turns when the conversation does
-    // not fit. A prompt that cannot fit at all is a typed refusal, never a
-    // silently empty generation.
-    let n_ctx = context.n_ctx();
-    let budget = shaped.max_tokens;
-    let prompt_truncated = truncate_prompt(&mut prompt_tokens, n_ctx, budget);
-    if prompt_tokens.is_empty() {
-        return Err((
-            CompanionEngineErrorCode::ContextCreateFailed,
-            "the companion prompt does not fit the engine's context window.".to_string(),
-        ));
-    }
-    let prompt_len = prompt_tokens.len() as u32;
-
-    // A turn is independent: start from an empty cache.
-    context.clear_kv_cache();
-
-    // Prompt evaluation, in batch-sized chunks with EXPLICIT positions (a batch's
-    // implicit positions restart at zero after `clear`, which would break a
-    // multi-chunk prompt).
-    let n_batch = (context.n_batch().max(1) as usize).max(1);
-    let mut position: i32 = 0;
-    for chunk in prompt_tokens.chunks(n_batch) {
-        let mut batch = LlamaBatch::new(n_batch, 1);
-        let last = chunk.len() - 1;
-        for (offset, token) in chunk.iter().enumerate() {
-            batch
-                .add(*token, position, &[0], offset == last)
-                .map_err(|error| decode_error(error.to_string()))?;
-            position += 1;
-        }
-        context
-            .decode(&mut batch)
-            .map_err(|error| decode_error(error.to_string()))?;
-    }
-
-    let mut sampler: LlamaSampler = sampling::build_sampler(model, settings, grammar_spec, seed);
-    let mut decoder = TokenStreamDecoder::new(model, &shaped.reserved_tokens);
-    let mut content = String::new();
-    let mut tokens_generated: u32 = 0;
-    let mut stopped_on_eog = false;
-
-    while tokens_generated < budget {
-        let token: LlamaToken = sampler.sample(context, -1);
-        sampler.accept(token);
-        tokens_generated += 1;
-
-        // The model ended the turn itself.
-        if model.is_eog_token(token) {
-            stopped_on_eog = true;
-            break;
-        }
-
-        // Decode this token so the next one conditions on it.
-        let mut batch = LlamaBatch::new(1, 1);
-        batch
-            .add(token, position, &[0], true)
-            .map_err(|error| decode_error(error.to_string()))?;
-        position += 1;
-        context
-            .decode(&mut batch)
-            .map_err(|error| decode_error(error.to_string()))?;
-
-        // Release any now-complete text. An empty piece means "held", not "none".
-        let piece = decoder.push(token).map_err(|error| {
-            (
-                CompanionEngineErrorCode::ContextCreateFailed,
-                format!("the companion reply could not be decoded: {error}"),
-            )
-        })?;
-        if !piece.is_empty() {
-            content.push_str(&piece);
-            on_text(&piece);
-        }
-    }
-
-    // Flush whatever the decoder still holds (a truncated reply stays visible).
-    let tail = decoder.finish().map_err(|error| {
-        (
-            CompanionEngineErrorCode::ContextCreateFailed,
-            format!("the companion reply could not be decoded: {error}"),
-        )
-    })?;
-    if !tail.is_empty() {
-        content.push_str(&tail);
-        on_text(&tail);
-    }
-
-    Ok(GenerationOutcome {
-        content,
-        tokens_generated,
-        prompt_tokens: prompt_len,
-        stopped_on_eog,
-        prompt_truncated,
-    })
+) -> Result<(), (CompanionEngineErrorCode, String)> {
+    let mut target = super::mtp::create_target_context(backend, model, settings)?;
+    let mut draft_context = super::mtp::create_draft_context(backend, draft, &target, settings)?;
+    let session = super::mtp::open_session(&mut target, &mut draft_context)?;
+    tracing::info!(
+        target: "fredo::llm_server",
+        n_draft_max = session.n_draft_max(),
+        n_rs_seq = session.draft_context().n_rs_seq(),
+        shared_target_kv = super::mtp::MTP_PAIRING_SHARED_TARGET_KV,
+        "companion speculative (MTP) session verified"
+    );
+    Ok(())
 }
+
+// ── Shared decode helpers (ST-2, reused by ST-4) ─────────────────────────────
 
 /// Keep at most `n_ctx - budget` prompt tokens, dropping the OLDEST ones.
 ///
@@ -873,7 +736,7 @@ pub fn generate<'m>(
 /// turns (and the model's own trailing generation prompt) survive; a budget that
 /// consumes the whole window leaves no room, yields an empty vector, and the
 /// caller refuses the turn rather than overrunning the context.
-fn truncate_prompt(tokens: &mut Vec<LlamaToken>, n_ctx: u32, budget: u32) -> bool {
+pub fn truncate_prompt(tokens: &mut Vec<LlamaToken>, n_ctx: u32, budget: u32) -> bool {
     let limit = n_ctx.saturating_sub(budget) as usize;
     if tokens.len() <= limit {
         return false;
@@ -884,12 +747,20 @@ fn truncate_prompt(tokens: &mut Vec<LlamaToken>, n_ctx: u32, budget: u32) -> boo
 }
 
 /// A decode failure with the curated detail shape every engine failure uses.
-fn decode_error(detail: String) -> (CompanionEngineErrorCode, String) {
+pub fn decode_error(detail: String) -> (CompanionEngineErrorCode, String) {
     (
         CompanionEngineErrorCode::ContextCreateFailed,
         format!("the companion generation could not run: {detail}"),
     )
 }
+
+// ── Generation (ST-2 → ST-4) ─────────────────────────────────────────────────
+//
+// The non-speculative decode loop is GONE. Every turn — including the start-time
+// warm-up — runs through [`super::mtp::generate_speculative`], which is the only
+// generation path in the engine. That is deliberate (R-19.5): a migration that
+// could silently fall back to non-speculative decoding would look identical to a
+// working one, so no fallback exists to be taken.
 
 #[cfg(test)]
 mod tests {
