@@ -377,6 +377,100 @@
     **nothing** on either plane; `""`/whitespace clears **both** planes; a non-enumerated key
     round-trips unchanged on both planes.
 
+## Engine restart + hidden-reasoning containment (added round 3 of #3141 — the two defects round-2 live testing exposed)
+
+> Round-3 serving tip: **`63f16e4`** on `spec/3141`. Record the tested SHA with this round's
+> evidence; a suite commit landed after the live capture invalidates the served-commit env
+> evidence (G-357), so these two rows are committed **before** the drive.
+>
+> Both rows are LIVE on the **LIVE WEBVIEW / status-command receipt**: a
+> `tauri_webview_execute_js` / `tauri_webview_dom_snapshot` result plus a live
+> `get_llama_server_status` result — never a `telemetry_spans` query (this feature emits no OTLP
+> producer of its own). Neither is evidence that the fix passed; they are the cases that must be
+> driven.
+
+- [ ] **F-25 (engine restart after stop, LIVE).** On one running Fredo process, in this order:
+      `launch_llama_server` (wait for `success:true`), `stop_llama_server`, poll
+      `get_llama_server_status` until it converges to released, then `launch_llama_server`
+      **again**, then send one `llm_chat` turn, then read `get_llama_server_status` once more.
+      Do **not** restart the app between the stop and the second launch — the whole point is the
+      SAME process and the SAME engine thread.
+  - **Expected:** both launches return `success:true` (each with a `backend`); after
+    `stop_llama_server` the status converges to **released** — `running:false`, `healthy:false`,
+    `devices:[]` and the optional `backend`/`modelId` keys **absent** (not `null` — NFR-9), with
+    `port`/`pid` still `null`; the second launch converges to **healthy** — `running:true`,
+    `healthy:true`, `devices` non-empty, `backend` present, `lastErrorCode` absent; and the turn
+    after the restart streams at least one `llm-token`, emits **no** `llm-error`, and settles with
+    **exactly one** `llm-done`, last.
+  - **Negative control (the pre-fix behaviour).** The defect this row exists to catch: the engine
+    thread ENDED on the first `stop_llama_server`, so the second `launch_llama_server` failed with
+    the typed `startTimeout` (or `backendInitFailed`) and only an app restart recovered. A second
+    launch that returns `success:false` with `code` `startTimeout` / `backendInitFailed`, or a
+    post-restart turn that settles `llm-error`, is a **FAIL** — not an environmental blocker.
+  - **Edge:** a second and third launch cycle must also succeed (repeat start → stop → start at
+    least twice, then serve the turn); `stop_llama_server` twice in a row, and `stop_llama_server`
+    before any launch, are idempotent no-ops (no crash, status still released). Allow a **bounded**
+    poll for the released snapshot (a deadline, e.g. 30 s, re-reading
+    `get_llama_server_status`) — `stop_llama_server` only enqueues the stop, so a single immediate
+    read is not a FAIL; a run that never converges within the deadline is.
+  - **Why it exists:** round-2 live testing found `stop_llama_server` was a **one-way door**
+    (fix D1) — `Stop` used to end the engine loop with `break`, killing the ONE thread. Round 1's
+    first-turn rows could not see it because none of them stopped and restarted in-process.
+
+- [ ] **F-26 (the hidden reasoning channel never reaches `llm-token`, LIVE).** Drive a small set of
+      **reasoning-eliciting, multi-token** prompts through the shipped chat path (`llm_chat`, the
+      same command `TauriAdapter` invokes) and record the ordered event stream with a listener
+      attached to the five shipped channels **before** each invoke. Use prompts that both make the
+      model open its hidden reasoning channel and then answer over several tokens — e.g. "Think
+      briefly, then explain in one sentence why the sky appears blue." / "Reason in one short
+      sentence, then explain what a compiler does in one sentence." / "Compute 17 times 23. Reason
+      briefly, then give the answer in a sentence." Run each with a distinct turn; then run the
+      paired plain-prompt control. *(A single-word target such as "Reply with the single word:
+      yes." does elicit the span, but cannot satisfy the ≥2-delta clause below — so use it only as
+      an extra span-eliciting trial alongside the multi-token prompts, never as the sole trial.)*
+  - **Expected (per reasoning-eliciting trial):**
+    (a) the visible reply streams as **≥2** `llm-token` deltas (a single withheld blob is the
+    pre-fix bug — the whole reply collapsed into ONE token event);
+    (b) **no** `llm-token` payload contains `<|channel>` or `<channel|>`, and no payload contains a
+    control token (`<|`) at all — `llm-token` carries user-visible prose only;
+    (c) the hidden span is **not** surfaced on any `llm-*` channel — the wire vocabulary stays the
+    five shipped names (`llm-token`, `llm-status`, `llm-skill-call`, `llm-error`, `llm-done`), and
+    a listener for a reasoning channel receives nothing because **no such channel is shipped** (see
+    the disclosure below);
+    (d) **exactly one** `llm-done` per trial, and it is **last**; no `llm-error`.
+    Paired **plain-prompt control:** a prompt with no reasoning elicitation (e.g. "Name three
+    primary colours in one short sentence.") still streams **≥2** `llm-token` deltas, contains no
+    `<|channel>` / `<channel|>`, and settles with exactly one trailing `llm-done` — so the fix
+    did not simply suppress streaming everywhere.
+  - **Disclosure — where the reasoning span IS observable, and where it is not (do not FAIL leg
+    (c) for a missing webview channel).** In the served tree the span is recovered on the engine's
+    typed event stream as `EngineEvent::Reasoning` and is deliberately **never forwarded to the
+    webview** (`WireEvent`/`AppSink` has no reasoning variant; `stream_skill_turn` consumes only
+    `frame.events` and `frame.finish_reason`). There is **no `llm-reasoning` channel** — a grep of
+    the tree for `llm-reasoning` returns nothing. The "surfaced separately, not as a token" clause
+    is therefore satisfied and recorded **on the engine side**, by the committed integration pin
+    `a_reasoning_first_generation_streams_and_never_leaks_the_span`
+    (`apps/tauri/src-tauri/src/applications/llm_server/engine/integration.rs`), whose record is the
+    green CI `rust-validate` run on the tested head SHA. Leg (c) at the webview is an **absence**
+    assertion — the span appears on no channel and no fifth channel exists — and it is proven by an
+    instrument independent of the absent channel: `tauri_webview_execute_js` attaching listeners to
+    the five shipped names plus a probe name, then grepping the committed Rust/TS trees. Writing
+    this row as "expect an `llm-reasoning` event" would be a false FAIL against a channel nobody
+    ships; a NEW fifth channel appearing in the stream is a FAIL (R-26.1 byte-compatibility).
+  - **Edge:** whether a *specific* prompt elicits a reasoning span is model sampling, not a product
+    invariant — so require the ≥2-delta and no-marker clauses on **every** trial, and record the
+    span observation (engine-side pin / CI run) separately; a run where no trial produced a span
+    does **not** pass leg (c) by default — re-run with another reason-eliciting prompt and say so in
+    the evidence. A pre-fix reply shows ONE 716-char `llm-token` beginning `<|channel>thought` ⇒
+    **FAIL** on (a) and (b) together. Do **not** assert the bare word `thought` is absent from a
+    `llm-token` payload on the live row (it is legitimate English in a reply; the engine-side pin
+    makes the stricter assertion) — assert the markers themselves. A turn that ends with no
+    `llm-token` at all, or two `llm-done`, is a FAIL.
+  - **Why it exists:** round-2 live testing found the content gate withheld everything from the
+    first `<|` occurrence, so a reasoning-FIRST reply leaked `<|channel>thought … <channel|>` into
+    `llm-token` as one blob (fix D2). A first-turn happy-path row could not see it; this row drives
+    the reasoning-first shape explicitly.
+
 ## Non-functional
 
 - [ ] **F-22 (NF, STATIC/build).** Gates: `cargo check --locked` and
