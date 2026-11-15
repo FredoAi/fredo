@@ -153,6 +153,16 @@ jobs:
       # (which applies to every LATER step of this job only) and FAIL if no
       # `ggml*.dll` is found — a missing payload must be a named failure, never a
       # silent skip that let the build look green.
+      #
+      # The CUDA runtime is the second half of the same payload: `ggml-cuda.dll`
+      # imports `cublas64_*.dll`, and every test binary imports
+      # `cudart`/`cublas`/`cublasLt` (`build.rs:77-79` emits
+      # `rustc-link-lib=dylib=` for all three). Its DIRECTORY MOVES BETWEEN
+      # TOOLKIT MAJORS — CUDA <= 12 keeps the DLLs in `%CUDA_PATH%\bin`, CUDA 13.x
+      # moved them to `%CUDA_PATH%\bin\x64` — so the directory is DISCOVERED from
+      # the DLLs that are actually there (depth-1 search under `bin`), never named.
+      # Hardcoding either layout breaks the other one (round 4 hardcoded `bin` and
+      # published an empty directory on CUDA 13.2 while reporting success).
       - name: Put the companion engine DLLs on PATH (dynamic-link payload)
         shell: pwsh
         run: |
@@ -166,28 +176,104 @@ jobs:
               $out = Join-Path $_.FullName "out"
               if (Test-Path -LiteralPath $out) { $dirs += (Resolve-Path -LiteralPath $out).Path }
             }
-          # cudart / cublas / cublasLt are imported by ggml-cuda.dll at load time.
+          # cudart / cublas / cublasLt are imported by ggml-cuda.dll (and by the test
+          # binaries) at load time. Discover the directory that actually holds them.
+          $cudaSearchPaths = @()
+          $cudaRuntimeDirs = @()
           if ($env:CUDA_PATH) {
             $cudaBin = Join-Path $env:CUDA_PATH "bin"
-            if (Test-Path -LiteralPath $cudaBin) { $dirs += (Resolve-Path -LiteralPath $cudaBin).Path }
+            $cudaSearchPaths += $cudaBin
+            if (Test-Path -LiteralPath $cudaBin -PathType Container) {
+              $dirs += (Resolve-Path -LiteralPath $cudaBin).Path
+              # `bin` itself plus each immediate child: this covers CUDA <= 12
+              # (`bin`) and CUDA 13.x (`bin\x64`) without naming either layout, and
+              # keeps working if a later major moves it again.
+              $candidates = @($cudaBin) + @(Get-ChildItem -LiteralPath $cudaBin -Directory -ErrorAction SilentlyContinue |
+                ForEach-Object { $_.FullName })
+              $cudaRuntimeDirs = @($candidates |
+                Where-Object {
+                  (Test-Path -LiteralPath $_ -PathType Container) -and
+                  [bool](Get-ChildItem -LiteralPath $_ -Filter "cublasLt64_*.dll" -File -ErrorAction SilentlyContinue)
+                } |
+                ForEach-Object { (Resolve-Path -LiteralPath $_).Path } |
+                Select-Object -Unique)
+              $dirs += $cudaRuntimeDirs
+            }
+            if ($cudaRuntimeDirs.Count -gt 0) {
+              foreach ($dir in $cudaRuntimeDirs) {
+                $dllCount = @(Get-ChildItem -LiteralPath $dir -Filter "*.dll" -File -ErrorAction SilentlyContinue).Count
+                $cudart = @(Get-ChildItem -LiteralPath $dir -Filter "cudart64_*.dll" -File -ErrorAction SilentlyContinue).Count
+                $cublas = @(Get-ChildItem -LiteralPath $dir -Filter "cublas64_*.dll" -File -ErrorAction SilentlyContinue).Count
+                $cublasLt = @(Get-ChildItem -LiteralPath $dir -Filter "cublasLt64_*.dll" -File -ErrorAction SilentlyContinue).Count
+                Write-Host "CUDA runtime dir: $dir -> $dllCount dll(s) (cudart64_*: $cudart, cublas64_*: $cublas, cublasLt64_*: $cublasLt)"
+              }
+            } else {
+              Write-Host "CUDA runtime dir: none discovered under $cudaBin"
+            }
           }
+          $dirs = @($dirs | Select-Object -Unique)
           $ggml = @()
           foreach ($dir in $dirs) {
-            $found = Get-ChildItem -Path $dir -Filter "ggml*.dll" -File -ErrorAction SilentlyContinue
-            if ($found) {
+            $found = @(Get-ChildItem -LiteralPath $dir -Filter "ggml*.dll" -File -ErrorAction SilentlyContinue)
+            if ($found.Count -gt 0) {
               $names = ($found | ForEach-Object { $_.Name }) -join ", "
               Write-Host "DLL dir: $dir -> $names"
               $ggml += $found
             } else {
               Write-Host "DLL dir: $dir -> (no ggml*.dll)"
             }
-            Write-Host "$dir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            # Publish to the NEXT step's PATH. `Write-Host ... | Out-File` does NOT
+            # work here — Write-Host writes the information stream, so the pipe
+            # receives nothing and GITHUB_PATH would stay empty (the step then
+            # prints a confident summary while adding no directory at all).
+            # Append the literal line instead, inserting a separator only when the
+            # file does not already end with a newline.
+            $ghPath = $env:GITHUB_PATH
+            if ($null -eq $ghPath -or $ghPath -eq "" -or -not (Test-Path -LiteralPath $ghPath)) {
+              Write-Host "::error::GITHUB_PATH is not set; this step must run inside a GitHub Actions job."
+              exit 1
+            }
+            $existing = [System.IO.File]::ReadAllBytes($ghPath)
+            $separator = if (($existing.Length -gt 0) -and ($existing[-1] -ne 10)) { [Environment]::NewLine } else { "" }
+            [System.IO.File]::AppendAllText($ghPath, "$separator$dir$([Environment]::NewLine)")
           }
           if ($ggml.Count -eq 0) {
             Write-Host "::error::No ggml*.dll found. Searched: $($dirs -join '; '). A dynamic-link test binary cannot be enumerated without it."
             exit 1
           }
-          Write-Host "Companion engine DLL payload: $($ggml.Count) ggml DLL(s) on PATH."
+          # Prove the publish actually landed: a silently empty GITHUB_PATH is the
+          # failure mode that made the round-4 step report success while adding
+          # nothing. Read the file back and fail loud on any unpublished dir.
+          $published = @(Get-Content -LiteralPath $env:GITHUB_PATH | Where-Object { $_ })
+          $unpublished = @($dirs | Where-Object { $published -notcontains $_ })
+          if ($unpublished.Count -gt 0) {
+            Write-Host "::error::Failed to publish DLL dir(s) to GITHUB_PATH: $($unpublished -join '; '). Published: $($published -join '; ')."
+            exit 1
+          }
+          # Fail LOUD on the CUDA runtime too: all three DLL families `build.rs:77-79`
+          # links must be resolvable from the PATH this step just published. A miss is a
+          # named failure — never a warning — so a green enumeration always means the
+          # payload is genuinely loadable (a false green is what shipped the round-4 red).
+          $guardDirs = @(@($dirs) + @($cudaSearchPaths) | Where-Object { $_ } | Select-Object -Unique)
+          $missing = @()
+          foreach ($pattern in @("cudart64_*.dll", "cublas64_*.dll", "cublasLt64_*.dll")) {
+            $hits = @()
+            foreach ($dir in $guardDirs) {
+              $hits += @(Get-ChildItem -LiteralPath $dir -Filter $pattern -File -ErrorAction SilentlyContinue)
+            }
+            if ($hits.Count -eq 0) {
+              $missing += $pattern
+              Write-Host "CUDA runtime: $pattern -> 0 match(es)"
+            } else {
+              $names = ($hits | ForEach-Object { $_.Name }) -join ", "
+              Write-Host "CUDA runtime: $pattern -> $($hits.Count) match(es): $names"
+            }
+          }
+          if ($missing.Count -gt 0) {
+            Write-Host "::error::CUDA runtime ($($missing -join ', ')) not found under CUDA_PATH '$env:CUDA_PATH' (searched: $($guardDirs -join '; ')); the dynamic-link test binaries import it and cannot be enumerated."
+            exit 1
+          }
+          Write-Host "Companion engine DLL payload: $($ggml.Count) ggml DLL(s) + CUDA runtime ($($cudaRuntimeDirs.Count) dir(s)); $($published.Count) dir(s) published to GITHUB_PATH."
       - run: cargo nextest run --manifest-path apps/tauri/src-tauri/Cargo.toml --locked
       - run: cargo clippy --manifest-path apps/tauri/src-tauri/Cargo.toml --locked -- -D warnings
 
