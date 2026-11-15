@@ -194,9 +194,16 @@
 - [ ] **F-12 (R-23.1/R-23.2, LIVE via seam).** With `FREDO_COMPANION_FORCE_CPU=1` and the mode
       left at `auto` (default), start the engine and serve a full chat turn; read the readout.
   - **Expected:** the launch does **not** fail; the engine initialises, a chat turn streams and
-    settles once; `backend:"cpu"`; the UI **never claims a GPU backend** (no `gpu`/`CUDA`/
-    `Vulkan` text in the readout or the tooltip). Paired unset control: the lever removed
-    restores the host's natural backend.
+    settles once; `backend:"cpu"`; the UI **never claims a GPU backend** — the readout's backend
+    *kind* is `CPU` (`data-backend="cpu"` and the kind word `CPU`), and no GPU-**claim** is
+    rendered (no `GPU`/`CUDA` as a backend kind, nothing in the tooltip asserting a GPU backend).
+    **ggml's real enumerated device NAME / description MAY appear** (`Vulkan0`, `NVIDIA GeForce
+    RTX 3060`, …): the plan's UI/UX §2.6 composition rule requires surfacing the device the engine
+    actually loaded, so the device identity is truthful hardware reporting, not a backend claim.
+    *(Reconciled round 6 of #3141 — the previous wording banned the literal token `Vulkan`, which
+    contradicted §2.6 and would fail a truthful readout. The assertion is narrowed to the AC's
+    actual observable: "the UI SHALL NOT claim a GPU backend" while `backend:"cpu"`.)* Paired
+    unset control: the lever removed restores the host's natural backend.
   - **Edge:** the *physical GPU-less host* leg is a **NAMED ENVIRONMENTAL BLOCKER** if the test
     host has a GPU — the seam proves the mapping/render, disclose that it is seam-proven.
     A readout that says "GPU" while `backend:"cpu"` ⇒ FAIL.
@@ -236,6 +243,19 @@
     control one `Shift+Tab` from the focused error group. Switching the group to `cpu` (or
     `auto`) and pressing `Start companion engine` succeeds (`success:true`) — F-15's R-25.3
     recovery leg is then driven end-to-end through the UI.
+  - **Typed-code fallback when the force-CPU seam is UNSET (documented, not a weakened
+    assertion).** This row's *reachability* observable — the mode control is present, enabled,
+    and co-located with a typed engine-failure row, and recovery through it succeeds — is
+    independent of WHICH typed failure produced that state. When `FREDO_COMPANION_FORCE_CPU` is
+    **unset** in the served env the `gpuUnavailable` code is structurally unproducible (no
+    CPU-only forced enumeration exists to refuse), so the reachability leg is driven with any
+    OTHER real, typed start failure the env can produce (e.g. `mtpInitFailed` via the
+    `model_manifest_path` override, or `modelMissing`), and the row records:
+    (a) the typed code actually rendered in `data-engine-code`, (b) the seam's state read from
+    the live process environment, and (c) the `gpuUnavailable`-specific leg as covered by the
+    committed CI pins (`gpu_mode_refuses_when_the_forced_enumeration_is_cpu_only`,
+    `gpu_mode_refuses_a_forced_cpu_enumeration`) — never claimed as driven live. The
+    `gpuUnavailable` code specifically is only required when the seam is ACTIVE.
   - **Edge:** control present but disabled ⇒ FAIL (recovery unreachable); control reachable only
     after the engine becomes healthy ⇒ **FAIL — circular** (the dead end this row exists to
     prevent). Seam-proven, not physically GPU-less: disclose.
@@ -305,18 +325,38 @@
 
 ## R-27 — per-environment isolation still holds
 
-- [ ] **F-19 (R-27.1/R-27.2, LIVE).** Start two isolated envs (`dev-env.ps1 -Action Up -EnvId A`
-      and `-EnvId B`, each with its own `FREDO_LLAMA_SERVER_COMPANION_DIR` and its own
-      `llama_server_backend` — e.g. A `cpu`, B `auto`); start each env's engine; read each env's
-      own `get_llama_server_status`.
+- [ ] **F-19 (R-27.1/R-27.2, LIVE).** Start two isolated envs, each with its own
+      `FREDO_LLAMA_SERVER_COMPANION_DIR` and its own `llama_server_backend` — e.g. A `cpu`,
+      B `auto`; start each env's engine; read each env's own `get_llama_server_status`.
+  - **Recipe (drivable form — reconciled round 6 of #3141).** `dev-env.ps1` enforces ONE
+    environment per issue (R-3.4: a live same-issue lease fails a second `Up` closed), so the
+    original "two `-EnvId`s against one `-Spec`" form is structurally unDrivable from a tester
+    dispatch. Use **two DISTINCT spec ids**, each with its own serving checkout — the drivable
+    equivalent:
+    ```
+    # env A (the round's primary env, spec 3141) — repo root checkout
+    powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec 3141 -EnvId <A> -EnvSlot <nA> -RequireIsolation -TimeoutSecs 3600
+    # env B — its own spec id AND its own checkout (a worktree at the same tip)
+    powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec <distinct> -EnvId <B> -EnvSlot <nB> -ServingCheckout .serve/<B> -RequireIsolation -TimeoutSecs 3600
+    ```
+    **Known machine constraint — the shared Cargo target dir.** All worktrees of this repo share
+    ONE `target-dir` (the repo-root untracked `.cargo/config.toml`, deliberate: it keeps
+    `llama-cpp-sys-4`'s expensive CMake cache hash stable). While env A's `fredo.exe` is running,
+    env B's `cargo run` cannot relink it (`error: failed to remove file …\target\debug\fredo.exe
+    / Access is denied (os error 5)`), so **two app processes may not both be freshly built in
+    the same target dir**. A SEQUENCED proof (bring B up, capture its state, `Down` B, bring A
+    up, capture its state) is therefore an acceptable substitute for concurrency — disclose the
+    sequencing explicitly. A genuinely concurrent run needs a distinct `CARGO_TARGET_DIR` (or a
+    prebuilt binary per env); use it if available and say how.
   - **Expected:** each env runs its **own** engine instance with its own companion directory and
-    its own model/backend selection concurrently; neither env observes the other's engine state
-    or reported backend (each status names only its own `backend`/`devices`/`modelId`).
+    its own model/backend selection; neither env observes the other's engine state
+    or reported backend (each status names only its own `backend`/`devices`/`modelId`, and each
+    env's `llama_server_companion_dir` resolves inside its OWN env root).
   - **Edge:** reversed start order; restart one env mid-run — its engine returns on its own
     companion dir/backend, the other untouched; the removed `FREDO_LLAMA_SERVER_PORT` leaves no
     dangling consumer (`env.rs` parse, `companion_env_overrides`, the startup log line, tests);
-    `verify-env-isolation.ps1` exits 0 with two live envs and no `ports.llama` entry; no global
-    image kill. Cross-ref `.opencode/tests/multi-env-isolation/` F-1/F-2, `env-isolation/`.
+    `verify-env-isolation.ps1` exits 0 over both envs and no `ports.llama` entry exists; no
+    global image kill. Cross-ref `.opencode/tests/multi-env-isolation/` F-1/F-2, `env-isolation/`.
 
 ## R-28 — the engineering rule is amended in the same spec
 
