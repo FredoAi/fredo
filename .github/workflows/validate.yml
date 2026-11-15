@@ -100,24 +100,245 @@ jobs:
       - run: pnpm --filter @fredo/tauri build:webview
 
   # rust-validate — thorough Rust gate (warm-cache + nextest); NOT a required check.
+  #
+  # Spec #3141 ST-1: the crate now links the in-process companion engine
+  # (`llama-cpp-4`), which builds llama.cpp + ggml + ggml-vulkan FROM SOURCE
+  # (the crate publishes no matching prebuilt). The rust gate therefore needs
+  # the native toolchain the engine compiles against:
+  #   * the LunarG Vulkan SDK (ggml-vulkan's Windows CMake lookup hard-fails
+  #     without it, and glslc compiles the shaders).
+  # Vulkan is the ONLY GPU backend (see the `llama-cpp-4` feature list in
+  # `apps/tauri/src-tauri/Cargo.toml`) — `ggml-cuda` is not compiled, so there
+  # is no CUDA Toolkit step. The source build is still slow on a cold cache, so
+  # the job budget stays raised and the CMake tree is cached; the checks
+  # themselves are unchanged and are never weakened.
   rust-validate:
     needs: paths
     if: needs.paths.outputs.rust == 'true'
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           toolchain: stable
+      # Spec #3141 - resolve `llama-cpp-sys-4`'s CMake build cache dir.
+      #
+      # Its build.rs keys the expensive CMake/CUDA build tree on a hash of
+      # OUT_DIR and places it OUTSIDE the cargo target dir, at
+      # `%LOCALAPPDATA%\llcb\<hash>`. `Swatinem/rust-cache` only caches
+      # `./target` and `~/.cargo`, so without this the C++/CUDA compile was
+      # redone on EVERY run (measured: `cargo check` took 94m 32s on a cold
+      # run). The hash is stable for a given OUT_DIR string, so the directory
+      # is reusable across runs on the same runner image.
+      #
+      # Computed in a step because the action input needs a literal path and
+      # `cache-directories` entries are not shell-expanded.
+      - name: Resolve the llama.cpp CMake cache dir
+        id: llcb
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:LOCALAPPDATA "llcb"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Write-Host "llama.cpp CMake cache dir: $dir"
+          "dir=$dir" >> $env:GITHUB_OUTPUT
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: apps/tauri/src-tauri
+          # Cache the out-of-target-dir CMake/CUDA build tree (see above).
+          # ~1.2 GB per build configuration, well inside the 10 GB repo limit.
+          cache-directories: ${{ steps.llcb.outputs.dir }}
+          # The CMake tree is large and expensive; never throw it away because
+          # the job failed - a red run should still warm the next one.
+          cache-on-failure: true
+      # LunarG Vulkan SDK (SHA-pinned). Exports `VULKAN_SDK` and puts glslc on PATH.
+      # Spec #3141: Vulkan is the ONLY GPU backend now (ggml-cuda is not
+      # compiled), so there is no CUDA Toolkit step any more — the CUDA
+      # source build (71 `.cu` files through nvcc/cicc/ptxas) was the dominant
+      # cost of this leg and of every local build.
+      - uses: jakoch/install-vulkan-sdk-action@7fe84289ddbf750f7eff9f8e4588e600e1dd06c8 # v1.8.1
+        with:
+          cache: true
       - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
         with:
           tool: cargo-nextest
       - run: cargo check --manifest-path apps/tauri/src-tauri/Cargo.toml --locked
-      - run: cargo nextest run --manifest-path apps/tauri/src-tauri/Cargo.toml --locked
+      # Spec #3141 fix D4 — nextest must be able to LOAD what it enumerates.
+      #
+      # `llama-cpp-4` is linked with `dynamic-link`, so EVERY test binary statically
+      # imports `ggml*.dll` / `llama*.dll` / `mtmd.dll`. Those land in
+      # `target/debug/` (cargo's profile dir), while nextest's binaries live in
+      # `target/debug/deps/`. Windows resolves an import from the EXE's own
+      # directory, the system dirs, the CWD and PATH — never the PARENT profile dir —
+      # so enumeration died with `0xc0000135: The specified module could not be
+      # found` before a single test ran.
+      #
+      # ONE additive, job-scoped step: append the payload dirs to `GITHUB_PATH`
+      # (which applies to every LATER step of this job only) and FAIL if no
+      # `ggml*.dll` is found — a missing payload must be a named failure, never a
+      # silent skip that let the build look green.
+      #
+      # The GPU runtime is the second half of the payload. With the Vulkan-only
+      # backend (Spec #3141 re-scope) the import surface is `vulkan-1.dll` from
+      # the installed SDK - there is no CUDA runtime (`cudart`/`cublas`/
+      # `cublasLt`) to discover any more, so the old toolkit-major-dependent
+      # directory search is gone with it.
+      #
+      # The loader directory is DISCOVERED across an arch-correct candidate set,
+      # never named: the SDK does not keep the loader in `Bin`, so the previous
+      # single hardcoded candidate (`$VULKAN_SDK\Bin`) could never match.
+      - name: Put the companion engine DLLs on PATH (dynamic-link payload)
+        shell: pwsh
+        run: |
+          $root = "apps/tauri/src-tauri/target/debug"
+          $dirs = @()
+          if (Test-Path -LiteralPath $root) { $dirs += (Resolve-Path -LiteralPath $root).Path }
+          # The CMake output dir of the sys crate (where ggml*/llama*/mtmd DLLs are
+          # copied on a dynamic-link build).
+          Get-ChildItem -Path "apps/tauri/src-tauri/target/debug/build" -Directory -Filter "llama-cpp-sys-4-*" -ErrorAction SilentlyContinue |
+            ForEach-Object {
+              $out = Join-Path $_.FullName "out"
+              if (Test-Path -LiteralPath $out) { $dirs += (Resolve-Path -LiteralPath $out).Path }
+            }
+          # `vulkan-1.dll` is a LOAD-TIME import of `ggml-vulkan.dll` -- verified
+          # by reading its PE import table, where `vulkan-1.dll` appears in the
+          # STATIC import list (not the delay-load table). `ggml-vulkan.dll` is
+          # itself a static import of `ggml.dll`, which every engine-linking test
+          # binary imports, so Windows must be able to resolve the loader when
+          # the binary is loaded. A miss therefore genuinely blocks enumeration
+          # and must FAIL LOUD -- it is not a warning.
+          #
+          # The loader's directory is DISCOVERED, never named. Two independent
+          # reasons the previous single candidate (`$VULKAN_SDK\Bin`) could never
+          # match:
+          #   1. `Bin` holds `glslc`, `vulkaninfoSDK.exe` and the layers -- the
+          #      loader is not there.
+          #   2. `install-vulkan-sdk-action`'s `install_runtime` input defaults to
+          #      FALSE (action.yml leaves it `required: false` and inputs.ts
+          #      evaluates `/true/i.test(inputInstallRuntime)`), so the copy-back
+          #      into `$VULKAN_SDK\runtime\{x64,x86}` never runs on this job.
+          # The loader that IS present is written by the SDK installer itself,
+          # which runs `Helpers\VulkanRT.exe` and drops it into the system
+          # directories. So the candidate set spans the SDK layout AND the system
+          # directories, and every candidate's outcome is printed.
+          # Arch-correct candidate order: the SDK's runtime copy-back layout is
+          # `runtime\{x64,x86}` (installer_vulkan.ts installVulkanRuntimeFromSdk),
+          # so probe the runner's own bitness first and the other second.
+          # PROCESSOR_ARCHITECTURE is `AMD64` / `ARM64` / `x86`; a 64-bit runner
+          # (this job) takes the x64 arm.
+          $procArch = "$env:PROCESSOR_ARCHITECTURE"
+          if ($procArch -eq "x86") { $archPrimary = "x86"; $archSecondary = "x64" }
+          else { $archPrimary = "x64"; $archSecondary = "x86" }
+          $vulkanCandidates = @()
+          if ($env:VULKAN_SDK) {
+            $runtimeRoot = Join-Path $env:VULKAN_SDK "runtime"
+            $vulkanCandidates += (Join-Path $runtimeRoot $archPrimary)
+            $vulkanCandidates += (Join-Path $runtimeRoot $archSecondary)
+            $vulkanCandidates += $runtimeRoot
+            # Any other arch/layout directory the installer chose (arm64, a
+            # future subdir name) -- discovery must not depend on our guess.
+            if (Test-Path -LiteralPath $runtimeRoot -PathType Container) {
+              $vulkanCandidates += @(Get-ChildItem -LiteralPath $runtimeRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+            }
+            $vulkanCandidates += (Join-Path $env:VULKAN_SDK "Bin")
+            $vulkanCandidates += $env:VULKAN_SDK
+          }
+          $systemRoot = if ($env:SystemRoot) { $env:SystemRoot } else { "C:\Windows" }
+          $vulkanCandidates += (Join-Path $systemRoot "System32")
+          $vulkanCandidates = @($vulkanCandidates | Where-Object { $_ } | Select-Object -Unique)
+          $loaderDirs = @()
+          $searched = @()
+          foreach ($cand in $vulkanCandidates) {
+            if (-not (Test-Path -LiteralPath $cand -PathType Container)) {
+              Write-Host "Vulkan loader candidate: $cand -> (directory does not exist)"
+              $searched += "$cand [missing]"
+              continue
+            }
+            $resolved = (Resolve-Path -LiteralPath $cand).Path
+            $loaderHit = @(Get-ChildItem -LiteralPath $resolved -Filter "vulkan-1.dll" -File -ErrorAction SilentlyContinue)
+            if ($loaderHit.Count -gt 0) {
+              Write-Host "Vulkan loader candidate: $resolved -> vulkan-1.dll FOUND"
+              $loaderDirs += $resolved
+              $searched += "$resolved [hit]"
+            } else {
+              Write-Host "Vulkan loader candidate: $resolved -> (no vulkan-1.dll)"
+              $searched += "$resolved [no loader]"
+            }
+          }
+          if ($loaderDirs.Count -eq 0) {
+            Write-Host "::error::vulkan-1.dll not found in any candidate directory. ggml-vulkan.dll imports it at LOAD time, so a dynamic-link test binary cannot be enumerated. Searched: $($searched -join '; ')."
+            exit 1
+          }
+          # A discovered loader directory joins the payload set, so it is
+          # published to PATH and covered by the read-back assertion below.
+          foreach ($loaderDir in $loaderDirs) { $dirs += $loaderDir }
+          $dirs = @($dirs | Select-Object -Unique)
+          $ggml = @()
+          foreach ($dir in $dirs) {
+            $found = @(Get-ChildItem -LiteralPath $dir -Filter "ggml*.dll" -File -ErrorAction SilentlyContinue)
+            if ($found.Count -gt 0) {
+              $names = ($found | ForEach-Object { $_.Name }) -join ", "
+              Write-Host "DLL dir: $dir -> $names"
+              $ggml += $found
+            } else {
+              Write-Host "DLL dir: $dir -> (no ggml*.dll)"
+            }
+            # Publish to the NEXT step's PATH. `Write-Host ... | Out-File` does NOT
+            # work here — Write-Host writes the information stream, so the pipe
+            # receives nothing and GITHUB_PATH would stay empty (the step then
+            # prints a confident summary while adding no directory at all).
+            # Append the literal line instead, inserting a separator only when the
+            # file does not already end with a newline.
+            $ghPath = $env:GITHUB_PATH
+            if ($null -eq $ghPath -or $ghPath -eq "" -or -not (Test-Path -LiteralPath $ghPath)) {
+              Write-Host "::error::GITHUB_PATH is not set; this step must run inside a GitHub Actions job."
+              exit 1
+            }
+            $existing = [System.IO.File]::ReadAllBytes($ghPath)
+            $separator = if (($existing.Length -gt 0) -and ($existing[-1] -ne 10)) { [Environment]::NewLine } else { "" }
+            [System.IO.File]::AppendAllText($ghPath, "$separator$dir$([Environment]::NewLine)")
+          }
+          if ($ggml.Count -eq 0) {
+            Write-Host "::error::No ggml*.dll found. Searched: $($dirs -join '; '). A dynamic-link test binary cannot be enumerated without it."
+            exit 1
+          }
+          # Prove the publish actually landed: a silently empty GITHUB_PATH is the
+          # failure mode that made the round-4 step report success while adding
+          # nothing. Read the file back and fail loud on any unpublished dir.
+          $published = @(Get-Content -LiteralPath $env:GITHUB_PATH | Where-Object { $_ })
+          $unpublished = @($dirs | Where-Object { $published -notcontains $_ })
+          if ($unpublished.Count -gt 0) {
+            Write-Host "::error::Failed to publish DLL dir(s) to GITHUB_PATH: $($unpublished -join '; '). Published: $($published -join '; ')."
+            exit 1
+          }
+          # Fail LOUD on the Vulkan loader too: a miss is a named failure, never a
+          # warning, so a green enumeration always means the payload is genuinely
+          # loadable (a false green is what shipped the round-4 red). The loader
+          # dir(s) discovered above were folded into `$dirs` BEFORE this point, so
+          # this is the same publish + read-back guarantee the ggml DLLs get.
+          $vulkanHits = @()
+          foreach ($dir in $dirs) {
+            $vulkanHits += @(Get-ChildItem -LiteralPath $dir -Filter "vulkan-1.dll" -File -ErrorAction SilentlyContinue)
+          }
+          if ($vulkanHits.Count -eq 0) {
+            Write-Host "::error::vulkan-1.dll not found (searched: $($dirs -join '; ')); ggml-vulkan.dll imports it at LOAD time and the test binaries cannot be enumerated."
+            exit 1
+          }
+          $vulkanNames = ($vulkanHits | ForEach-Object { $_.Name }) -join ", "
+          Write-Host "Vulkan loader: vulkan-1.dll -> $($vulkanHits.Count) match(es): $vulkanNames"
+          Write-Host "Vulkan loader dir(s) on PATH: $($loaderDirs -join '; ')"
+          Write-Host "Companion engine DLL payload: $($ggml.Count) ggml DLL(s) + Vulkan loader; $($published.Count) dir(s) published to GITHUB_PATH."
+      # Spec #3141 - run the `live` nextest profile, not the fast default.
+      #
+      # The default profile SKIPS the model-loading modules
+      # (`llm_server::engine::mtp_tests` + `llm_server::engine::integration`)
+      # for fast local iteration - those tests load the real 2.44 GB GGUF trio
+      # and take 183-1141 s EACH. A CI runner has no models, so on CI those
+      # tests take the named-skip path anyway; `live` keeps the gate's intent
+      # (the full suite is enumerated and any genuine model-independent
+      # regression in those modules still fails) while remaining honest about
+      # what did and did not execute. See `apps/tauri/src-tauri/.config/nextest.toml`.
+      - run: cargo nextest run --manifest-path apps/tauri/src-tauri/Cargo.toml --locked --profile live
       - run: cargo clippy --manifest-path apps/tauri/src-tauri/Cargo.toml --locked -- -D warnings
 
   # validate — THE required check; always runs so it never goes "Expected" (AC2/AC3).

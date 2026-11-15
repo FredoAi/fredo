@@ -35,12 +35,6 @@ const bothInstalled: CompanionReadiness = {
   ready: true,
   prerequisites: [
     {
-      id: 'llamaServer',
-      state: 'installed',
-      detail: 'llama-server found.',
-      resolvedPath: 'C:\\llama\\llama-server.exe',
-    },
-    {
       id: 'modelFiles',
       state: 'installed',
       detail: 'All required model files present.',
@@ -53,11 +47,14 @@ function healthyServer(): LlamaServerStatus {
   return {
     running: true,
     healthy: true,
-    port: 8080,
-    pid: 1,
-    configPath: 'C:\\data\\companion\\llama-server-launch.bat',
-    logPath: 'C:\\data\\companion\\llama-server.log',
+    port: null,
+    pid: null,
+    configPath: '',
+    logPath: '',
     lastError: null,
+    backendMode: 'auto',
+    devices: [],
+    backend: 'cpu',
   };
 }
 
@@ -78,8 +75,8 @@ afterEach(() => {
 
 // ── #2914 ST-4 — the `sttModel` prerequisite/step is ABSENT ──────────────────
 
-describe('useCompanionReadiness — no sttModel prerequisite (#2914 ST-4)', () => {
-  it('composes only the GGUF + server prerequisites and never probes the removed STT model', async () => {
+describe('useCompanionReadiness — no sttModel prerequisite (#2914 ST-4 / #3141)', () => {
+  it('composes only the model-files + engine rows and never probes the removed STT model', async () => {
     const invoke = vi.fn(async (command: string) => {
       if (command === 'check_companion_readiness') return bothInstalled;
       if (command === 'get_llama_server_status') return healthyServer();
@@ -91,10 +88,10 @@ describe('useCompanionReadiness — no sttModel prerequisite (#2914 ST-4)', () =
     const { result } = renderHook(() => useCompanionReadiness());
     await waitFor(() => expect(result.current.readiness?.ready).toBe(true));
 
-    // The gate is unchanged: the GGUF + server inputs only.
+    // The gate is unchanged: the model files + the composed engine row only
+    // (the retired `llamaServer` prerequisite is gone — #3141).
     expect(result.current.readiness?.ready).toBe(true);
     expect(result.current.readiness?.prerequisites.map((p) => p.id)).toEqual([
-      'llamaServer',
       'modelFiles',
       'serverLaunch',
     ]);

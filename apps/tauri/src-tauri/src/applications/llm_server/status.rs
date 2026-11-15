@@ -37,7 +37,7 @@
 use std::time::Duration;
 
 use serde_json::Value;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 use crate::infrastructure::companion::skills::SkillRegistry;
 use crate::infrastructure::companion::surface_registry::{
@@ -45,10 +45,13 @@ use crate::infrastructure::companion::surface_registry::{
 };
 use crate::infrastructure::companion::PerformanceModeState;
 
-use super::chat::{self, ChatSseFrame, ChatStreamEvent, LlmMessage};
+use super::chat::LlmMessage;
+use super::engine::request::ChatTurn;
+use super::engine::stream::{
+    AppSink, EventSink, SettledStream, StreamEvent, TurnSource,
+};
 use super::skills::{
-    self, build_audio_skill_request_body, build_skill_request_body, emit_terminal_event,
-    plan_stream_error_events, plan_terminal_events, TerminalEvent, ToolCallAccumulator,
+    self, plan_stream_error_events, plan_terminal_events, TerminalEvent, ToolCallAccumulator,
 };
 
 // ── Contract constants (converged; plan API contract §1/§2/§4/§8) ─────────────
@@ -80,8 +83,9 @@ pub const STATUS_EMPTY_RETRY_MAX: usize = 1;
 /// safe default).
 pub const STATUS_PASS_TIMEOUT_S: u64 = 10;
 
-/// The ADDITIVE wire event carrying the parsed status (payload `string`).
-pub const LLM_STATUS_EVENT: &str = "llm-status";
+// The ADDITIVE `llm-status` channel literal is owned ONCE by the wire-vocabulary
+// module ([`super::engine::stream::LLM_STATUS_EVENT`]); `emit_status` below emits
+// through the shared settle guard, so no second copy is declared here.
 
 /// The structured-output prompt fragment. Contains the literal word `json` and a
 /// concrete example, and never instructs free-text JSON (binding in-repo
@@ -168,19 +172,6 @@ pub fn fredo_status_only_schema() -> Value {
     })
 }
 
-/// The `response_format` wrapper for the reply schema — the ONE block inserted
-/// into the structured audio body; the text body reaches it through
-/// [`chat::build_response_format_request_body`].
-fn status_response_format() -> Value {
-    serde_json::json!({
-        "type": "json_schema",
-        "json_schema": {
-            "name": FREDO_STATUS_SCHEMA_NAME,
-            "schema": fredo_status_schema(),
-        },
-    })
-}
-
 // ── The prompt fragment (pure) ────────────────────────────────────────────────
 
 /// Append [`STATUS_INSTRUCTION`] to the FIRST `system` message (inserting a
@@ -206,64 +197,6 @@ pub fn with_status_instruction(messages: &mut Vec<LlmMessage>) {
 }
 
 // ── Request body (pure) ───────────────────────────────────────────────────────
-
-/// Build the STRUCTURED, tools-free request body for one companion turn.
-///
-/// This is the single-object `{ reply, status }` contract, used ONLY for a
-/// tools-free turn (`offer_skills = false`, e.g. the avatar joke). A
-/// skill-capable turn runs the SHIPPED tools body with NO `response_format`
-/// ([`run_tools_attempt`]) — the tool offer and the structured status never
-/// coexist in one request (ST-6).
-///
-/// The probe-proven no-tools [`chat::build_response_format_request_body`] with
-/// the `fredo_reply` schema name; audio, when present, rides the shipped audio
-/// body plus the same block.
-///
-/// The [`with_status_instruction`] fragment is appended to the FIRST `system`
-/// message of the supplied conversation.
-pub fn build_structured_status_request_body(
-    messages: &mut Vec<LlmMessage>,
-    audio_base64: Option<&str>,
-) -> Value {
-    with_status_instruction(messages);
-
-    match audio_base64 {
-        Some(audio) => {
-            let mut body = chat::build_audio_request_body(messages, audio);
-            body["response_format"] = status_response_format();
-            body
-        }
-        None => chat::build_response_format_request_body(
-            messages,
-            FREDO_STATUS_SCHEMA_NAME,
-            &fredo_status_schema(),
-        ),
-    }
-}
-
-/// Build the ST-6 status-only request body: the turn's original conversation,
-/// the just-streamed reply as an `assistant` turn, and
-/// [`STATUS_ONLY_INSTRUCTION`] as the next `user` turn — constrained to the
-/// [`fredo_status_only_schema`] `{status}` object.
-///
-/// It never offers `tools` (the status pass is a second, tools-free request over
-/// the tools-path reply), and its own content is never forwarded as a token.
-pub fn build_status_only_request_body(messages: &[LlmMessage], streamed_reply: &str) -> Value {
-    let mut conversation: Vec<LlmMessage> = messages.to_vec();
-    conversation.push(LlmMessage {
-        role: "assistant".to_string(),
-        content: streamed_reply.to_string(),
-    });
-    conversation.push(LlmMessage {
-        role: "user".to_string(),
-        content: STATUS_ONLY_INSTRUCTION.to_string(),
-    });
-    chat::build_response_format_request_body(
-        &conversation,
-        FREDO_STATUS_ONLY_SCHEMA_NAME,
-        &fredo_status_only_schema(),
-    )
-}
 
 // ── Incremental reply-only extraction (pure; R-3/R-4) ─────────────────────────
 
@@ -531,78 +464,132 @@ enum StructuredAttempt {
     Retry,
 }
 
-/// Whether the structured-status path should be used for this turn.
+/// Everything ONE status turn needs from the application layer.
 ///
-/// ST-2 wires the CACHED `response_format` capability verdict into this ONE
-/// decision point. The cache is keyed by the resolved managed `(host, port)`
-/// (`probe::resolved_status_capability`), populated by
-/// `companion_status_capability`; the probe therefore never runs per turn. When
-/// the cached verdict says unsupported / unreachable / erroring, the turn
-/// delegates to the shipped plain path (R-7): plain-text reply, no `llm-status`,
-/// no user-visible error. An unprobed `(host, port)` attempts the structured path,
-/// which already degrades through the bounded plain retry (R-5/R-6).
-fn should_use_structured_status(app: &AppHandle) -> bool {
-    should_use_structured_status_for(super::probe::resolved_status_capability(app).as_ref())
+/// Extracting the app-derived inputs (the skill registry, the cached
+/// `response_format` verdict, and the Doom-Mode suppression gate) is what makes
+/// the shipped orchestrator executable with no `AppHandle`: the settle pins drive
+/// the REAL [`run_status_chat`] against a scripted source and a recording sink,
+/// so "exactly one `llm-done`, last" is asserted on the production code path
+/// rather than on a re-implementation.
+#[derive(Clone)]
+struct StatusTurnContext {
+    /// The skill offer for this turn (built from the published surfaces).
+    registry: SkillRegistry,
+    /// Whether the cached capability verdict allows the structured attempt.
+    structured_status_supported: bool,
+    /// Whether Doom Mode currently suppresses model-audio turns.
+    audio_suppressed: bool,
 }
 
-/// Pure: the gate decision for a cached capability (`None` = not probed yet).
-fn should_use_structured_status_for(
-    capability: Option<&super::probe::StatusCapability>,
-) -> bool {
-    capability.map(|capability| capability.supported).unwrap_or(true)
+impl StatusTurnContext {
+    /// The application context for `app`.
+    ///
+    /// `structured_status_supported` is ALWAYS `true` in-process: the schema
+    /// grammar is built from the turn itself (`engine/chat_format.rs`), so there
+    /// is no `/props` capability probe and nothing to gate on. The bounded plain
+    /// retry still degrades a non-conforming structured attempt.
+    fn for_app(app: &AppHandle) -> Self {
+        Self {
+            registry: companion_skill_registry(app),
+            structured_status_supported: true,
+            audio_suppressed: is_performance_suppressed(app),
+        }
+    }
 }
 
 /// Emit the parsed status on the ADDITIVE `llm-status` channel (before the
 /// shipped `llm-done`), healing a blank value to the default.
-fn emit_status(app: &AppHandle, status: &str) {
+fn emit_status(settled: &mut SettledStream<'_>, status: &str) {
     let status = if status.trim().is_empty() {
         DEFAULT_FREDO_STATUS
     } else {
         status
     };
-    let _ = app.emit(LLM_STATUS_EVENT, status.to_string());
+    settled.status(status.to_string());
 }
 
-/// Run ONE structured stream: reply-only tokens, the shipped terminal plan for a
-/// tool-call turn, and `llm-status` + `llm-done` for a content turn.
+/// Shape the tools-free `{ reply, status }` turn (ST-6).
 ///
-/// The body is the TOOLS-FREE `{ reply, status }` contract (ST-6) — a
-/// skill-capable turn never reaches here. `Err` is a transport/launch failure
-/// (the caller retries the plain path).
+/// The structured-status prompt fragment is appended to the first `system` turn
+/// and the reply schema constrains decoding. It never offers `tools`: the tool
+/// offer and the structured status never coexist in one request.
+fn structured_status_turn(
+    messages: &[LlmMessage],
+    audio_base64: Option<&str>,
+) -> ChatTurn {
+    let mut structured_messages = messages.to_vec();
+    with_status_instruction(&mut structured_messages);
+    let mut turn = ChatTurn::text(structured_messages)
+        .with_json_schema(FREDO_STATUS_SCHEMA_NAME, fredo_status_schema());
+    if let Some(audio) = audio_base64 {
+        turn = turn.with_audio(audio);
+    }
+    turn
+}
+
+/// Shape the tools-free status-only turn (ST-6): the turn's conversation, the
+/// just-streamed reply as an `assistant` turn, and [`STATUS_ONLY_INSTRUCTION`] as
+/// the next `user` turn, constrained to the status-only schema.
+fn status_only_turn(messages: &[LlmMessage], streamed_reply: &str) -> ChatTurn {
+    let mut conversation: Vec<LlmMessage> = messages.to_vec();
+    conversation.push(LlmMessage {
+        role: "assistant".to_string(),
+        content: streamed_reply.to_string(),
+    });
+    conversation.push(LlmMessage {
+        role: "user".to_string(),
+        content: STATUS_ONLY_INSTRUCTION.to_string(),
+    });
+    ChatTurn::text(conversation).with_json_schema(
+        FREDO_STATUS_ONLY_SCHEMA_NAME,
+        fredo_status_only_schema(),
+    )
+}
+
+/// Run ONE structured stream against `source`: reply-only tokens, the shipped
+/// terminal plan for a tool-call turn, and `llm-status` + `llm-done` for a
+/// content turn.
+///
+/// The turn is the TOOLS-FREE `{ reply, status }` contract (ST-6) — a
+/// skill-capable turn never reaches here. `Err` is an engine failure (the caller
+/// retries the plain path). The caller owns the settle guard, so a retry never
+/// emits a terminal event from this attempt.
 async fn run_structured_attempt(
-    app: &AppHandle,
+    source: &dyn TurnSource,
+    settled: &mut SettledStream<'_>,
     messages: &[LlmMessage],
     audio_base64: Option<&str>,
 ) -> Result<StructuredAttempt, String> {
-    let mut structured_messages = messages.to_vec();
-    let body = build_structured_status_request_body(&mut structured_messages, audio_base64);
+    let turn = structured_status_turn(messages, audio_base64);
 
     let registry = SkillRegistry::with_app_control();
     let mut accumulator = ToolCallAccumulator::new();
     let mut extractor = ReplyEnvelopeExtractor::new();
 
-    chat::run_stream(app, &body, |frame: ChatSseFrame| {
-        for event in frame.events {
-            match event {
-                ChatStreamEvent::Delta(delta) => {
-                    let reply = extractor.push(&delta);
-                    if !reply.is_empty() {
-                        let _ = app.emit("llm-token", reply);
+    source
+        .stream(turn, &mut |frame| {
+            for event in frame.events {
+                match event {
+                    StreamEvent::Delta(delta) => {
+                        let reply = extractor.push(&delta);
+                        if !reply.is_empty() {
+                            settled.token(reply);
+                        }
+                    }
+                    // Tool-call fragments buffer VERBATIM in the shipped
+                    // accumulator.
+                    other => {
+                        let _ = accumulator.push(other);
                     }
                 }
-                // Tool-call fragments buffer VERBATIM in the shipped accumulator.
-                other => {
-                    let _ = accumulator.push(other);
-                }
             }
-        }
-        if let Some(reason) = frame.finish_reason {
-            accumulator.set_finish_reason(reason);
-        }
-        // The turn always settles after the stream, never mid-frame.
-        false
-    })
-    .await?;
+            if let Some(reason) = frame.finish_reason {
+                accumulator.set_finish_reason(reason);
+            }
+            // The turn always settles after the stream, never mid-frame.
+        })
+        .await?;
 
     // A tool-call turn is disjoint from a content turn: it settles through the
     // SHIPPED terminal plan (`llm-skill-call` / readable `llm-error` / one
@@ -613,7 +600,7 @@ async fn run_structured_attempt(
         .any(|event| !matches!(event, TerminalEvent::Done))
     {
         for event in planned {
-            emit_terminal_event(app, event);
+            skills::emit_terminal_event(settled, event);
         }
         return Ok(StructuredAttempt::Settled);
     }
@@ -625,10 +612,10 @@ async fn run_structured_attempt(
             // guarantees the full text even if the scanner could not.
             let tail = reply_tail(&reply, &forwarded);
             if !tail.is_empty() {
-                let _ = app.emit("llm-token", tail);
+                settled.token(tail);
             }
-            emit_status(app, &status);
-            emit_terminal_event(app, TerminalEvent::Done);
+            emit_status(settled, &status);
+            settled.finish();
             Ok(StructuredAttempt::Settled)
         }
         ReplyEnvelope::Plain { reply } => {
@@ -637,9 +624,9 @@ async fn run_structured_attempt(
             // safe default applies).
             let tail = reply_tail(&reply, &forwarded);
             if !tail.is_empty() {
-                let _ = app.emit("llm-token", tail);
+                settled.token(tail);
             }
-            emit_terminal_event(app, TerminalEvent::Done);
+            settled.finish();
             Ok(StructuredAttempt::Settled)
         }
         ReplyEnvelope::Empty | ReplyEnvelope::NonConforming => Ok(StructuredAttempt::Retry),
@@ -661,30 +648,33 @@ fn reply_tail(reply: &str, forwarded: &str) -> String {
 /// Run ONE bounded status-only pass over the just-streamed prose reply (ST-6).
 ///
 /// Returns the declared status when the pass produced a non-empty `status`
-/// string, or `None` — the safe default — on a transport failure, malformed
-/// output, an empty value, or the [`STATUS_PASS_TIMEOUT_S`] budget. The pass's
-/// own content is accumulated for parsing only and is NEVER forwarded as
+/// string, or `None` — the safe default — on an engine failure, malformed output,
+/// an empty value, or the [`STATUS_PASS_TIMEOUT_S`] budget. The pass's own
+/// content is accumulated for parsing only and is NEVER forwarded as
 /// `llm-token`.
 async fn run_status_pass(
-    app: &AppHandle,
+    source: &dyn TurnSource,
     messages: &[LlmMessage],
     streamed_reply: &str,
 ) -> Option<String> {
-    let body = build_status_only_request_body(messages, streamed_reply);
+    let turn = status_only_turn(messages, streamed_reply);
 
     let mut content = String::new();
-    let stream = chat::run_stream(app, &body, |frame: ChatSseFrame| {
-        for event in frame.events {
-            if let ChatStreamEvent::Delta(delta) = event {
-                content.push_str(&delta);
-            }
-        }
-        // The turn always settles after the stream, never mid-frame.
-        false
-    });
+    let pass = async {
+        source
+            .stream(turn, &mut |frame| {
+                for event in frame.events {
+                    if let StreamEvent::Delta(delta) = event {
+                        content.push_str(&delta);
+                    }
+                }
+                // The turn always settles after the stream, never mid-frame.
+            })
+            .await
+    };
 
     // One attempt, bounded so it can never outlive the turn envelope.
-    let Ok(Ok(())) = tokio::time::timeout(Duration::from_secs(STATUS_PASS_TIMEOUT_S), stream).await
+    let Ok(Ok(())) = tokio::time::timeout(Duration::from_secs(STATUS_PASS_TIMEOUT_S), pass).await
     else {
         return None;
     };
@@ -705,8 +695,8 @@ async fn run_status_pass(
 /// [`run_plain_retry`] — obtains its registry from here, so the offer SET is
 /// chosen in exactly ONE place. Round 2's defect (F-47) was two divergent
 /// copies that both registered `open_app`/`close_app`/`doom_mode` only, so the
-/// `wireframe` skill was never in any request body the model saw and a
-/// Wireframe request could only be answered with prose.
+/// `wireframe` skill was never in a request the model saw and a Wireframe
+/// request could only be answered with prose.
 ///
 /// The shipped static skills (`open_app`, `close_app`, `doom_mode`) stay
 /// byte-identical and FIRST; one generated skill follows per published surface,
@@ -722,72 +712,78 @@ pub(crate) fn companion_skill_registry(app: &AppHandle) -> SkillRegistry {
 
 /// Run ONE skill-capable turn through the SHIPPED tools path (ST-6).
 ///
-/// The body is the SHIPPED [`build_skill_request_body`] /
-/// [`build_audio_skill_request_body`] output with NO `response_format`, so the
-/// native tool call is never displaced by the schema grammar. Content deltas are
-/// forwarded VERBATIM as `llm-token` while tool-call fragments buffer in the
-/// SHIPPED [`ToolCallAccumulator`]. A tool-call or failed turn settles through
-/// the SHIPPED [`plan_terminal_events`] and NEVER emits `llm-status`; only a
+/// The turn offers the registry and carries NO `response_format`, so a native
+/// tool call is never displaced by the schema grammar. Content deltas are
+/// forwarded as `llm-token` while the tool calls buffer in the SHIPPED
+/// [`ToolCallAccumulator`]. A tool-call or failed turn settles through the
+/// SHIPPED [`plan_terminal_events`] and NEVER emits `llm-status`; only a
 /// content-only prose turn obtains its status from ONE bounded status-only pass.
 async fn run_tools_attempt(
-    app: &AppHandle,
+    source: &dyn TurnSource,
+    settled: &mut SettledStream<'_>,
+    context: &StatusTurnContext,
     messages: &[LlmMessage],
     audio_base64: Option<&str>,
 ) -> Result<(), String> {
-    let registry = companion_skill_registry(app);
-    let body = match audio_base64 {
-        Some(audio) => build_audio_skill_request_body(messages, audio, &registry),
-        None => build_skill_request_body(messages, &registry),
-    };
+    let registry = &context.registry;
+    let turn = skills::skill_turn(messages.to_vec(), registry, audio_base64, None);
 
     let mut accumulator = ToolCallAccumulator::new();
     let mut prose = String::new();
 
-    chat::run_stream(app, &body, |frame: ChatSseFrame| {
-        for event in frame.events {
-            match event {
-                // The prose streams exactly as the shipped tools path does.
-                ChatStreamEvent::Delta(delta) => {
-                    prose.push_str(&delta);
-                    let _ = app.emit("llm-token", delta);
-                }
-                // Tool-call fragments buffer VERBATIM in the shipped accumulator.
-                other => {
-                    let _ = accumulator.push(other);
+    let outcome = source
+        .stream(turn, &mut |frame| {
+            for event in frame.events {
+                match event {
+                    // The prose streams exactly as the shipped tools path does.
+                    StreamEvent::Delta(delta) => {
+                        prose.push_str(&delta);
+                        settled.token(delta);
+                    }
+                    // Tool-call fragments buffer VERBATIM in the accumulator.
+                    other => {
+                        let _ = accumulator.push(other);
+                    }
                 }
             }
+            if let Some(reason) = frame.finish_reason {
+                accumulator.set_finish_reason(reason);
+            }
+            // The turn always settles after the stream, never mid-frame.
+        })
+        .await;
+    if let Err(detail) = outcome {
+        // The stream failed before the plan could run: settle on the SAME
+        // terminal vocabulary (`llm-error` then the single trailing `llm-done`).
+        for event in plan_stream_error_events(&detail) {
+            skills::emit_terminal_event(settled, event);
         }
-        if let Some(reason) = frame.finish_reason {
-            accumulator.set_finish_reason(reason);
-        }
-        // The turn always settles after the stream, never mid-frame.
-        false
-    })
-    .await?;
+        return Ok(());
+    }
 
     // A tool-call (or failed) turn is disjoint from a content turn: it settles
     // through the SHIPPED terminal plan (`llm-skill-call` / readable `llm-error`
     // / one `llm-done`) and NEVER emits `llm-status`.
-    let planned = plan_terminal_events(&registry, &accumulator);
+    let planned = plan_terminal_events(registry, &accumulator);
     if planned
         .iter()
         .any(|event| !matches!(event, TerminalEvent::Done))
     {
         for event in planned {
-            emit_terminal_event(app, event);
+            skills::emit_terminal_event(settled, event);
         }
         return Ok(());
     }
 
     // Content-only prose turn: the status comes from ONE bounded status-only
-    // pass (never from the tools body). An empty prose, a false gate, a failed
+    // pass (never from the tools turn). An empty prose, a false gate, a failed
     // pass, or a timeout emits NO `llm-status` — the frontend's default applies.
-    if should_use_structured_status(app) && !prose.trim().is_empty() {
-        if let Some(status) = run_status_pass(app, messages, &prose).await {
-            emit_status(app, &status);
+    if context.structured_status_supported && !prose.trim().is_empty() {
+        if let Some(status) = run_status_pass(source, messages, &prose).await {
+            emit_status(settled, &status);
         }
     }
-    emit_terminal_event(app, TerminalEvent::Done);
+    settled.finish();
     Ok(())
 }
 
@@ -797,24 +793,27 @@ async fn run_tools_attempt(
 /// `response_format`); the tools-free turn streams content-only. Every path
 /// settles with exactly one `llm-done`.
 async fn run_plain_retry(
-    app: &AppHandle,
+    source: &dyn TurnSource,
+    settled: &mut SettledStream<'_>,
+    context: &StatusTurnContext,
     messages: &[LlmMessage],
     offer_skills: bool,
     audio_base64: Option<&str>,
 ) -> Result<(), String> {
     if offer_skills {
-        let registry = companion_skill_registry(app);
-        let body = match audio_base64 {
-            Some(audio) => build_audio_skill_request_body(messages, audio, &registry),
-            None => build_skill_request_body(messages, &registry),
-        };
-        skills::run_skill_stream(app, &registry, &body).await
+        let registry = &context.registry;
+        let turn = skills::skill_turn(messages.to_vec(), registry, audio_base64, None);
+        skills::stream_skill_turn(source, settled, registry, turn).await?;
+        settled.finish();
+        Ok(())
     } else {
-        let body = match audio_base64 {
-            Some(audio) => chat::build_audio_request_body(messages, audio),
-            None => chat::build_request_body(messages, None),
-        };
-        skills::run_plain_stream(app, &body).await
+        let mut turn = ChatTurn::text(messages.to_vec());
+        if let Some(audio) = audio_base64 {
+            turn = turn.with_audio(audio);
+        }
+        skills::stream_plain_turn(source, settled, turn).await?;
+        settled.finish();
+        Ok(())
     }
 }
 
@@ -826,38 +825,63 @@ async fn run_plain_retry(
 /// * `offer_skills = false` — the tools-free structured attempt (when the
 ///   capability gate allows it), then the bounded plain retry for the same turn.
 async fn run_status_chat(
-    app: &AppHandle,
+    source: &dyn TurnSource,
+    sink: &dyn EventSink,
+    context: &StatusTurnContext,
     messages: Vec<LlmMessage>,
     offer_skills: bool,
     audio_base64: Option<String>,
 ) -> Result<(), String> {
+    // One guard owns the turn's SINGLE terminator across every attempt: an
+    // abandoned attempt hands the turn over instead of settling it, so the
+    // bounded retry can never double-settle.
+    let mut settled = SettledStream::new(sink);
+
     // Spec #2970 ST-4 (R-4.a) — the audio leg of `llm_chat_with_status` is
-    // refused BEFORE any request is issued while Doom Mode is active: no
-    // `input_audio` request, and the turn settles through the shipped terminal
+    // refused BEFORE any request is issued while Doom Mode is active: no audio
+    // turn is shaped, and the turn settles through the shipped terminal
     // vocabulary (`llm-error` then exactly one `llm-done`), so the caller never
     // hangs. A text-only turn is untouched (only the audio leg is suppressed).
-    if audio_turn_suppressed(audio_base64.is_some(), is_performance_suppressed(app)) {
+    if audio_turn_suppressed(audio_base64.is_some(), context.audio_suppressed) {
         for event in plan_stream_error_events(AUDIO_SUPPRESSED_DETAIL) {
-            emit_terminal_event(app, event);
+            skills::emit_terminal_event(&mut settled, event);
         }
         return Ok(());
     }
 
     if offer_skills {
-        return run_tools_attempt(app, &messages, audio_base64.as_deref()).await;
+        return run_tools_attempt(
+            source,
+            &mut settled,
+            context,
+            &messages,
+            audio_base64.as_deref(),
+        )
+        .await;
     }
 
     let mut attempt = 0usize;
     loop {
-        if attempt == 0 && should_use_structured_status(app) {
-            match run_structured_attempt(app, &messages, audio_base64.as_deref()).await {
+        if attempt == 0 && context.structured_status_supported {
+            match run_structured_attempt(
+                source,
+                &mut settled,
+                &messages,
+                audio_base64.as_deref(),
+            )
+            .await
+            {
                 Ok(StructuredAttempt::Settled) => return Ok(()),
                 Ok(StructuredAttempt::Retry) | Err(_) => {}
             }
+            // The attempt did not settle the turn: hand it to the retry. The
+            // guard stays armed for emission but its `Drop` will not settle, so
+            // the replacing attempt owns the single terminator.
+            settled.hand_over();
             attempt += 1;
             if attempt > STATUS_EMPTY_RETRY_MAX {
                 for event in plan_stream_error_events(NO_STATUS_RETRY_DETAIL) {
-                    emit_terminal_event(app, event);
+                    skills::emit_terminal_event(&mut settled, event);
                 }
                 return Ok(());
             }
@@ -865,12 +889,23 @@ async fn run_status_chat(
         }
         // R-5/R-6 — the bounded retry re-runs the shipped plain path for the SAME
         // turn; it always settles with exactly one `llm-done`.
-        return run_plain_retry(app, &messages, offer_skills, audio_base64.as_deref()).await;
+        return run_plain_retry(
+            source,
+            &mut settled,
+            context,
+            &messages,
+            offer_skills,
+            audio_base64.as_deref(),
+        )
+        .await;
     }
 }
 
 /// Kick off a structured-status streaming turn on a background task and return
 /// immediately (never blocks the IPC call).
+///
+/// `run_status_chat` owns the settle on every branch, so nothing here can
+/// double-settle.
 pub fn spawn_chat_with_status(
     app: AppHandle,
     messages: Vec<LlmMessage>,
@@ -878,13 +913,26 @@ pub fn spawn_chat_with_status(
     audio_base64: Option<String>,
 ) {
     tauri::async_runtime::spawn(async move {
-        if let Err(detail) = run_status_chat(&app, messages, offer_skills, audio_base64).await {
-            // Never hang: the shipped terminal vocabulary (`llm-error` then one
-            // `llm-done`) for any failure that escaped the attempt logic.
-            for event in plan_stream_error_events(&detail) {
-                emit_terminal_event(&app, event);
+        let sink = AppSink::new(&app);
+        let source = match super::engine::stream::EngineTurnSource::for_app(&app) {
+            Ok(source) => source,
+            Err((_code, detail)) => {
+                let mut settled = SettledStream::new(&sink);
+                for event in plan_stream_error_events(&detail) {
+                    skills::emit_terminal_event(&mut settled, event);
+                }
+                return;
             }
-        }
+        };
+        let _ = run_status_chat(
+            &source,
+            &sink,
+            &StatusTurnContext::for_app(&app),
+            messages,
+            offer_skills,
+            audio_base64,
+        )
+        .await;
     });
 }
 
@@ -913,6 +961,83 @@ pub async fn llm_chat_with_status(
 mod tests {
     use super::*;
     use serde_json::json;
+    use crate::applications::llm_server::engine::stream::testing::{
+        assert_settles_once, RecordingSink, ScriptedResponse, ScriptedTurnSource,
+    };
+    use crate::applications::llm_server::engine::stream::{StreamEvent, StreamFrame};
+    use crate::infrastructure::companion::skills::SkillRegistry;
+
+    /// The pure wire-shape view of the skill offer the production tools turn
+    /// renders (test-only: production shapes a `ChatTurn`).
+    fn skill_body(messages: &[LlmMessage], registry: &SkillRegistry) -> Value {
+        crate::applications::llm_server::chat::build_tools_request_body(
+            messages,
+            &skills::render_tools(registry),
+            "auto",
+            false,
+        )
+    }
+
+    /// The pure wire-shape view of a model-audio skill turn (Spec #2903).
+    fn audio_skill_body(
+        messages: &[LlmMessage],
+        audio_base64: &str,
+        registry: &SkillRegistry,
+    ) -> Value {
+        let mut body = serde_json::json!({
+            "messages": crate::applications::llm_server::chat::render_messages(
+                messages,
+                None,
+                Some(audio_base64),
+            ),
+            "stream": true,
+            "max_tokens": crate::applications::llm_server::chat::MAX_TOKENS,
+        });
+        body["tools"] = skills::render_tools(registry);
+        body["tool_choice"] = serde_json::json!("auto");
+        body["parallel_tool_calls"] = serde_json::json!(false);
+        body
+    }
+
+    /// The pure wire-shape view of the tools-free `{ reply, status }` contract,
+    /// used ONLY for a tools-free turn (`offer_skills = false`, e.g. the avatar
+    /// joke). Test-only: production shapes a `ChatTurn` through
+    /// [`structured_status_turn`], whose parity is the same rule.
+    fn build_structured_status_request_body(
+        messages: &mut Vec<LlmMessage>,
+        audio_base64: Option<&str>,
+    ) -> Value {
+        with_status_instruction(messages);
+        let mut body = super::super::chat::build_response_format_request_body(
+            messages,
+            FREDO_STATUS_SCHEMA_NAME,
+            &fredo_status_schema(),
+        );
+        if let Some(audio) = audio_base64 {
+            body["messages"] =
+                Value::Array(super::super::chat::render_messages(messages, None, Some(audio)));
+        }
+        body
+    }
+
+    /// The pure wire-shape view of the ST-6 status-only body. Test-only for the
+    /// same reason as [`build_structured_status_request_body`].
+    fn build_status_only_request_body(messages: &[LlmMessage], streamed_reply: &str) -> Value {
+        let mut conversation: Vec<LlmMessage> = messages.to_vec();
+        conversation.push(LlmMessage {
+            role: "assistant".to_string(),
+            content: streamed_reply.to_string(),
+        });
+        conversation.push(LlmMessage {
+            role: "user".to_string(),
+            content: STATUS_ONLY_INSTRUCTION.to_string(),
+        });
+        super::super::chat::build_response_format_request_body(
+            &conversation,
+            FREDO_STATUS_ONLY_SCHEMA_NAME,
+            &fredo_status_only_schema(),
+        )
+    }
 
     fn message(role: &str, content: &str) -> LlmMessage {
         LlmMessage {
@@ -1152,9 +1277,9 @@ mod tests {
             message("user", "open Mission Monitor"),
         ];
 
-        let skill = build_skill_request_body(&messages, &registry);
-        let audio_skill = build_audio_skill_request_body(&messages, "UklGRg==", &registry);
-        let tools = chat::build_tools_request_body(
+        let skill = skill_body(&messages, &registry);
+        let audio_skill = audio_skill_body(&messages, "UklGRg==", &registry);
+        let tools = crate::applications::llm_server::chat::build_tools_request_body(
             &messages,
             &skills::render_tools(&registry),
             "auto",
@@ -1303,11 +1428,11 @@ mod tests {
         let mut accumulator = ToolCallAccumulator::new();
 
         assert_eq!(
-            accumulator.push(ChatStreamEvent::Delta("Opening…".to_string())),
+            accumulator.push(StreamEvent::Delta("Opening…".to_string())),
             Some("Opening…".to_string())
         );
         assert_eq!(
-            accumulator.push(ChatStreamEvent::ToolCallDelta {
+            accumulator.push(StreamEvent::ToolCallDelta {
                 index: 0,
                 name: Some("open_app".to_string()),
                 arguments_fragment: Some("{\"app\":\"Miss".to_string()),
@@ -1315,7 +1440,7 @@ mod tests {
             None
         );
         assert_eq!(
-            accumulator.push(ChatStreamEvent::ToolCallDelta {
+            accumulator.push(StreamEvent::ToolCallDelta {
                 index: 0,
                 name: None,
                 arguments_fragment: Some("ion Monitor\"}".to_string()),
@@ -1444,7 +1569,7 @@ mod tests {
         // The body keeps the shipped tools contract: the model decides (`auto`),
         // parallel calls stay off, and NO `response_format` — the schema grammar
         // must never displace the native tool path (ST-6).
-        let body = build_skill_request_body(
+        let body = skill_body(
             &[message(
                 "user",
                 "let's create a new wireframe for our new Reporter app",
@@ -1467,34 +1592,6 @@ mod tests {
             body_names, names,
             "the request body offers the same generated tools in offer order"
         );
-    }
-
-    // ── #2918 ST-2: the capability gate (R-7) ─────────────────────────────────
-
-    /// The gate only takes the plain path when the cached capability is KNOWN
-    /// unsupported; an unprobed `(host, port)` or a supported verdict uses the
-    /// structured path (which degrades through the bounded plain retry).
-    #[test]
-    fn the_capability_gate_takes_the_plain_path_only_when_known_unsupported() {
-        // Not probed for this (host, port) → attempt the structured path.
-        assert!(should_use_structured_status_for(None));
-
-        // A cached supported verdict → the structured path.
-        assert!(should_use_structured_status_for(Some(
-            &super::super::probe::StatusCapability {
-                supported: true,
-                detail: "schema-constrained content".to_string(),
-            }
-        )));
-
-        // Unsupported / unreachable / erroring → the shipped plain path (R-7).
-        assert!(!should_use_structured_status_for(Some(
-            &super::super::probe::StatusCapability {
-                supported: false,
-                detail: "the response_format capability probe failed: connection refused"
-                    .to_string(),
-            }
-        )));
     }
 
     // ── Spec #2970 ST-4: the Doom Mode audio-leg suppression gate (R-4.a) ──────
@@ -1535,6 +1632,271 @@ mod tests {
         assert!(
             AUDIO_SUPPRESSED_DETAIL.contains("suppressed"),
             "the refusal detail names the suppression: {AUDIO_SUPPRESSED_DETAIL}"
+        );
+    }
+
+    // ── The status orchestrator's terminal-settle pins (R-26.2) ───────────────
+    //
+    // These drive the REAL `run_status_chat` (the shipped orchestrator) against a
+    // scripted source and a recording sink, so "exactly one `llm-done`, always
+    // last" is a property of the production code — including every refusal the
+    // orchestrator owns (the Doom-Mode audio refusal and the mode-of-operation
+    // paths). No `AppHandle`, no model load.
+
+    /// The application context a settle pin uses: one fixed registry, the gate
+    /// on or off, and the suppression flag as the pin needs it.
+    fn settle_context(suppressed: bool, structured: bool) -> StatusTurnContext {
+        StatusTurnContext {
+            registry: SkillRegistry::with_app_control(),
+            structured_status_supported: structured,
+            audio_suppressed: suppressed,
+        }
+    }
+
+    /// A `{ reply, status }` structured reply, streamed as one delta + a stop.
+    fn structured_response(reply: &str, status: &str) -> ScriptedResponse {
+        ScriptedResponse::content(&format!(
+            "{{\"reply\":{},\"status\":\"{status}\"}}",
+            serde_json::to_string(reply).expect("a reply string serializes")
+        ))
+    }
+
+    /// Run the shipped orchestrator against a scripted source and report the
+    /// sink, so each path is one `assert_settles_once`.
+    async fn run_status_path(
+        responses: Vec<ScriptedResponse>,
+        context: StatusTurnContext,
+        offer_skills: bool,
+        audio: Option<String>,
+    ) -> RecordingSink {
+        let source = ScriptedTurnSource::new(responses);
+        let sink = RecordingSink::new();
+        run_status_chat(
+            &source,
+            &sink,
+            &context,
+            vec![message("user", "hello")],
+            offer_skills,
+            audio,
+        )
+        .await
+        .expect("the status orchestrator settles instead of erroring");
+        sink
+    }
+
+    /// PATH 1 — Doom-Mode AUDIO REFUSAL: refused before any request, settled with
+    /// `llm-error` then exactly one `llm-done`, and the source is never touched
+    /// (the scripted source is left with all of its responses).
+    #[tokio::test]
+    async fn the_doom_mode_audio_refusal_settles_once_before_any_request() {
+        let source = ScriptedTurnSource::new(vec![ScriptedResponse::content("should not run")]);
+        let sink = RecordingSink::new();
+        run_status_chat(
+            &source,
+            &sink,
+            &settle_context(true, true),
+            vec![message("user", "")],
+            true,
+            Some("UklGRg==".to_string()),
+        )
+        .await
+        .expect("the refusal settles without erroring");
+
+        assert_settles_once(&sink, "doom-mode audio refusal");
+        assert_eq!(sink.names(), vec!["llm-error", "llm-done"]);
+        assert_eq!(source.remaining(), 1, "no request may be issued");
+        assert_eq!(
+            sink.payloads("llm-error"),
+            vec![AUDIO_SUPPRESSED_DETAIL]
+        );
+    }
+
+    /// PATH 2 — a skill-offered TOOL CALL: `llm-skill-call` then one `llm-done`,
+    /// and NO `llm-status` (a tool turn never emits status).
+    #[tokio::test]
+    async fn a_skill_offered_tool_call_settles_once_without_status() {
+        let sink = run_status_path(
+            vec![ScriptedResponse::ok(vec![
+                StreamFrame {
+                    events: vec![StreamEvent::ToolCallDelta {
+                        index: 0,
+                        name: Some("open_app".to_string()),
+                        arguments_fragment: Some(r#"{"app":"Settings"}"#.to_string()),
+                    }],
+                    finish_reason: None,
+                    reasoning: None,
+                },
+                crate::applications::llm_server::engine::stream::testing::finished("tool_calls"),
+            ])],
+            settle_context(false, true),
+            true,
+            None,
+        )
+        .await;
+
+        assert_settles_once(&sink, "skill tool call");
+        assert_eq!(sink.names(), vec!["llm-skill-call", "llm-done"]);
+        assert_eq!(sink.count("llm-status"), 0, "no status on a skill turn");
+    }
+
+    /// PATH 3 — a skill-offered CONTENT turn: tokens, then `llm-status`, then the
+    /// single `llm-done` (the additive status is always before the terminator).
+    #[tokio::test]
+    async fn a_content_turn_emits_its_status_before_the_single_done() {
+        let sink = run_status_path(
+            vec![
+                ScriptedResponse::content("hello there"),
+                structured_response("ignored", "playful"),
+            ],
+            settle_context(false, true),
+            true,
+            None,
+        )
+        .await;
+
+        assert_settles_once(&sink, "skill content turn");
+        let names = sink.names();
+        let status_at = names
+            .iter()
+            .position(|name| name == "llm-status")
+            .expect("a content turn emits its status");
+        let done_at = names
+            .iter()
+            .position(|name| name == "llm-done")
+            .expect("a content turn settles");
+        assert!(status_at < done_at, "llm-status precedes llm-done: {names:?}");
+        assert_eq!(names.iter().filter(|name| *name == "llm-status").count(), 1);
+    }
+
+    /// PATH 4 — the structured attempt's tool-call branch (tools-free): no status,
+    /// one skill call, one trailing done.
+    #[tokio::test]
+    async fn a_structured_attempt_settles_once_on_a_tool_call() {
+        let sink = run_status_path(
+            vec![ScriptedResponse::ok(vec![
+                StreamFrame {
+                    events: vec![StreamEvent::ToolCallDelta {
+                        index: 0,
+                        name: Some("close_app".to_string()),
+                        arguments_fragment: Some(r#"{"app":"Settings"}"#.to_string()),
+                    }],
+                    finish_reason: None,
+                    reasoning: None,
+                },
+                crate::applications::llm_server::engine::stream::testing::finished("tool_calls"),
+            ])],
+            settle_context(false, true),
+            false,
+            None,
+        )
+        .await;
+
+        assert_settles_once(&sink, "structured tool call");
+        assert_eq!(sink.count("llm-status"), 0);
+        assert_eq!(sink.count("llm-skill-call"), 1);
+    }
+
+    /// PATH 5 — the structured attempt is EMPTY, so the orchestrator takes the
+    /// bounded plain retry: the retry streams and settles exactly once (never a
+    /// terminal event from the abandoned attempt).
+    #[tokio::test]
+    async fn an_empty_structured_attempt_retries_the_plain_path_and_settles_once() {
+        let sink = run_status_path(
+            vec![
+                ScriptedResponse::ok(vec![]),
+                ScriptedResponse::content("the retried plain reply"),
+            ],
+            settle_context(false, true),
+            false,
+            None,
+        )
+        .await;
+
+        assert_settles_once(&sink, "structured retry");
+        assert_eq!(
+            sink.payloads("llm-token"),
+            vec!["the retried plain reply"],
+            "the retry's content streams on the shipped channel"
+        );
+        assert_eq!(
+            sink.count("llm-status"),
+            0,
+            "the plain retry declares no status"
+        );
+    }
+
+    /// PATH 6 — the structured attempt FAILS (engine error), so the retry runs and
+    /// settles exactly once — the failure itself must not settle.
+    #[tokio::test]
+    async fn a_failed_structured_attempt_retries_and_settles_once() {
+        let sink = run_status_path(
+            vec![
+                ScriptedResponse::failed("the companion engine stopped"),
+                ScriptedResponse::content("the retry reply"),
+            ],
+            settle_context(false, true),
+            false,
+            None,
+        )
+        .await;
+
+        assert_settles_once(&sink, "structured failure retry");
+        assert_eq!(sink.payloads("llm-token"), vec!["the retry reply"]);
+    }
+
+    /// PATH 7 — the gate is OFF (a cached unsupported verdict), so the plain path
+    /// runs directly and settles exactly once with no status.
+    #[tokio::test]
+    async fn the_gated_plain_path_settles_once() {
+        let sink = run_status_path(
+            vec![ScriptedResponse::content("plain reply")],
+            settle_context(false, false),
+            false,
+            None,
+        )
+        .await;
+
+        assert_settles_once(&sink, "gated plain path");
+        assert_eq!(sink.count("llm-status"), 0);
+        assert_eq!(sink.payloads("llm-token"), vec!["plain reply"]);
+    }
+
+    /// PATH 8 — a BOTH-attempts failure (the structured attempt and the plain
+    /// retry both fail): the retry settles through its own error-bearing guard,
+    /// exactly once, never twice.
+    #[tokio::test]
+    async fn both_attempts_failing_still_settles_exactly_once() {
+        let sink = run_status_path(
+            vec![
+                ScriptedResponse::failed("first failure"),
+                ScriptedResponse::failed("second failure"),
+            ],
+            settle_context(false, true),
+            false,
+            None,
+        )
+        .await;
+
+        assert_settles_once(&sink, "double failure");
+        assert_eq!(sink.count("llm-error"), 1, "the retry reports its failure");
+    }
+
+    /// A non-vacuity control: the registry the pins drive is the REAL shipped
+    /// offer (the static `open_app` / `close_app` declarations, at minimum), so the
+    /// settle pins above are not asserting against an empty registry.
+    #[test]
+    fn the_settle_context_registry_is_the_real_offer() {
+        let context = settle_context(false, true);
+        let names: Vec<String> = context
+            .registry
+            .list()
+            .map(|skill| skill.name.clone())
+            .collect();
+        assert!(names.iter().any(|name| name == "open_app"), "got {names:?}");
+        assert!(names.iter().any(|name| name == "close_app"), "got {names:?}");
+        assert!(
+            names.len() >= 2,
+            "the offer must carry the static skills, got {names:?}"
         );
     }
 }

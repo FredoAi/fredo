@@ -51,7 +51,7 @@ function healthFrom(snapshots: FredoHealthSnapshots): FredoHealth {
 
 const ALL_HEALTHY: FredoHealthSnapshots = {
   telemetry: 'healthy',
-  companion: { llamaServerInstalled: true, modelFilesComplete: true },
+  companion: { modelFilesComplete: true },
   llamaServer: { running: true, healthy: true },
   postgres: { state: 'ready' },
 };
@@ -145,7 +145,7 @@ describe('Spec #3052 ST-3 — consolidated LED reads the aggregate health', () =
 
     expect(trigger).toHaveAttribute(
       'aria-label',
-      'Fredo health: Healthy — Agent telemetry: Healthy; Llama server: Healthy; Companion model: Healthy; Postgres: Healthy',
+      'Fredo health: Healthy — Agent telemetry: Healthy; Companion engine: Healthy; Companion model: Healthy; Postgres: Healthy',
     );
   });
 
@@ -153,7 +153,7 @@ describe('Spec #3052 ST-3 — consolidated LED reads the aggregate health', () =
     renderLed(
       healthFrom({
         ...ALL_HEALTHY,
-        companion: { llamaServerInstalled: false, modelFilesComplete: false },
+        companion: { modelFilesComplete: false },
       }),
     );
     const trigger = await triggerLed();
@@ -197,7 +197,7 @@ describe('Spec #3052 ST-3 — consolidated LED reads the aggregate health', () =
 
     expect(trigger).toHaveAttribute(
       'aria-label',
-      'Fredo health: Down — Agent telemetry: Healthy; Llama server: Healthy; Companion model: Healthy; Postgres: Down',
+      'Fredo health: Down — Agent telemetry: Healthy; Companion engine: Healthy; Companion model: Healthy; Postgres: Down',
     );
   });
 
@@ -220,7 +220,7 @@ describe('Spec #3052 ST-3 — consolidated LED reads the aggregate health', () =
 
     expect(trigger).toHaveAttribute(
       'aria-label',
-      'Fredo health: Degraded — Agent telemetry: Healthy; Llama server: Down; Companion model: Healthy; Postgres: Healthy',
+      'Fredo health: Degraded — Agent telemetry: Healthy; Companion engine: Down; Companion model: Healthy; Postgres: Healthy',
     );
   });
 
@@ -253,7 +253,7 @@ describe('Spec #3064 ST-4 — the telemetry line gains the `degraded` state (tex
     );
     expect(trigger).toHaveAttribute(
       'aria-label',
-      'Fredo health: Degraded — Agent telemetry: Degraded; Llama server: Healthy; Companion model: Healthy; Postgres: Healthy',
+      'Fredo health: Degraded — Agent telemetry: Degraded; Companion engine: Healthy; Companion model: Healthy; Postgres: Healthy',
     );
   });
 
@@ -273,7 +273,7 @@ describe('Spec #3064 ST-4 — the telemetry line gains the `degraded` state (tex
     );
     expect(trigger).toHaveAttribute(
       'aria-label',
-      'Fredo health: Down — Agent telemetry: Down; Llama server: Healthy; Companion model: Healthy; Postgres: Healthy',
+      'Fredo health: Down — Agent telemetry: Down; Companion engine: Healthy; Companion model: Healthy; Postgres: Healthy',
     );
   });
 

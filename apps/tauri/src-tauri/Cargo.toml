@@ -32,6 +32,20 @@ bundled = ["postgresql_embedded/bundled"]
 tauri-build = { version = "2", features = [] }
 tonic-build = "0.12"
 serde_json = "1"
+# Spec #3141 ST-1 — pin `syn` 2 for the HOST (build) graph.
+#
+# `llama-cpp-sys-4` (the FFI layer behind the in-process engine) runs `bindgen
+# 0.73.2` as a build-dependency. `bindgen` declares `syn = ">=2, <4"` for its own
+# codegen but its default `prettyplease` formatter links `syn` 2, so when a
+# `syn` 3 is already present in the host graph (`async-trait 0.1.92` is a
+# proc-macro dependency and requires `syn = "^3"`) cargo hands `bindgen` the
+# `syn` 3 build and its `prettyplease::unparse(&syn::parse_quote!(..))` fails to
+# compile with `the trait bound syn::file::File: ParseQuote is not satisfied`.
+# A `^2` requirement here intersects `bindgen`'s `>=2, <4` and unifies its
+# `syn` back to the 2.x `prettyplease` actually expects, so no phantom version
+# is introduced — it pins an existing crate in the graph and touches neither
+# runtime behaviour nor the target graph.
+syn = { version = "2", default-features = false }
 
 [dependencies]
 tauri = { version = "2", features = [] }
@@ -106,6 +120,30 @@ keyring = { version = "3", features = ["windows-native", "apple-native", "sync-s
 # destructive/unknown before any server contact; no other backend dialect is
 # compiled in. `std` is on by default.
 sqlparser = "0.63"
+# Spec #3141 ST-1 — in-process companion inference (llama-cpp-4 Rust bindings).
+# `mtmd` is REQUIRED for vision/audio (ST-4/ST-5); `native` is deliberately
+# absent (not portable); `rpc` is dropped. CPU is always available.
+#
+# VULKAN IS THE ONLY GPU BACKEND (decided post-#3141 audit). Vulkan covers
+# NVIDIA, AMD and Intel from ONE code path, and its build cost is an order of
+# magnitude smaller than CUDA's: ggml-vulkan is 3 C++ sources + 162 shader
+# compiles, while ggml-cuda is 71 `.cu` files pushed through
+# nvcc -> cicc -> ptxas (the step that saturated every core for ~40 min per
+# cold build and made every pipeline round pay for a native rebuild). CUDA's
+# only advantage was 10-30% faster inference on NVIDIA, which did not justify
+# a per-round build tax in CI and locally. Dropping `cuda` also removes the
+# `CUDA_PATH` import-library wiring, the CUDA Toolkit from both workflows, and
+# the CUDA runtime redistributables from the installer and third-party notices.
+#
+# `dynamic-link` is ENABLED on the strength of the EXECUTED ST-1 build gate
+# (NFR-7 delegates this decision to the gate; static was PREFERRED). A static
+# link archives `llama-common` (links `cpp-httplib` PRIVATE) into one archive,
+# and a static archive does not propagate private deps — the final binary link
+# then fails with ~28 unresolved external symbols from llama.cpp's
+# download/hf-cache helpers. `dynamic-link` builds each module as a DLL with
+# its private deps linked in, which resolves the link cleanly, at the cost of
+# shipping the ggml/llama DLLs beside `fredo.exe`.
+llama-cpp-4 = { version = "0.11.0", default-features = false, features = ["vulkan", "mtmd", "openmp", "ggml", "dynamic-link"] }
 
 [dev-dependencies]
 tempfile = "3"

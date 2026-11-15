@@ -40,6 +40,19 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: apps/tauri/src-tauri
+      # Spec #3141 ST-1 — the release build compiles llama.cpp/ggml from source
+      # with the SAME feature set as CI (`vulkan`, `mtmd`, `openmp`, `ggml`,
+      # `dynamic-link`). That requires the identical native prerequisite the
+      # `rust-validate` leg provisions, so a release build can never silently
+      # differ from the validated one:
+      #   * LunarG Vulkan SDK — ggml-vulkan's Windows CMake lookup hard-fails
+      #     without it and `glslc` compiles the shaders.
+      # Vulkan is the ONLY GPU backend: `ggml-cuda` is not compiled, so no CUDA
+      # Toolkit is provisioned and no CUDA runtime is redistributed.
+      # SHA-pinned (NFR-2).
+      - uses: jakoch/install-vulkan-sdk-action@7fe84289ddbf750f7eff9f8e4588e600e1dd06c8 # v1.8.1
+        with:
+          cache: true
       - run: pnpm install --frozen-lockfile                  # full workspace (release.yml must build the CSS/plugin too)
       - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1 (resolved SHA)
         env:

@@ -368,7 +368,7 @@ describe('VoiceInputSettings — R-4 model audio status (#2914 ST-3)', () => {
       expect(capabilityRow()).toHaveAttribute('data-state', 'server-unavailable'),
     );
     expect(capabilityStatus()).toHaveTextContent(
-      "The local model server isn't running, so Fredo can't interpret audio.",
+      "The companion engine isn't running, so Fredo can't interpret audio.",
     );
     expect(screen.queryByTestId('companion-voice-model-audio-use-local')).toBeNull();
 

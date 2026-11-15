@@ -42,12 +42,6 @@ const bothInstalled: CompanionReadiness = {
   ready: true,
   prerequisites: [
     {
-      id: 'llamaServer',
-      state: 'installed',
-      detail: 'llama-server found.',
-      resolvedPath: 'C:\\llama\\llama-server.exe',
-    },
-    {
       id: 'modelFiles',
       state: 'installed',
       detail: 'All required model files present.',
@@ -56,16 +50,10 @@ const bothInstalled: CompanionReadiness = {
   ],
 };
 
-/** One required step installed, one missing — the wizard stays. */
-const partiallyReady: CompanionReadiness = {
+/** Model files missing — the wizard stays and the engine group is absent. */
+const modelFilesMissing: CompanionReadiness = {
   ready: false,
   prerequisites: [
-    {
-      id: 'llamaServer',
-      state: 'installed',
-      detail: 'llama-server found.',
-      resolvedPath: 'C:\\llama\\llama-server.exe',
-    },
     {
       id: 'modelFiles',
       state: 'missing',
@@ -79,15 +67,18 @@ function healthyServer(): LlamaServerStatus {
   return {
     running: true,
     healthy: true,
-    port: 8080,
-    pid: 1,
-    configPath: 'C:\\data\\companion\\llama-server-launch.bat',
-    logPath: 'C:\\data\\companion\\llama-server.log',
+    port: null,
+    pid: null,
+    configPath: '',
+    logPath: '',
     lastError: null,
+    backendMode: 'auto',
+    devices: [],
+    backend: 'cpu',
   };
 }
 
-/** Server present but not started — composes the third REQUIRED step. */
+/** The engine is not started — composes the `serverLaunch` lifecycle row. */
 function notRunningServer(): LlamaServerStatus {
   return {
     running: false,
@@ -97,6 +88,8 @@ function notRunningServer(): LlamaServerStatus {
     configPath: '',
     logPath: '',
     lastError: null,
+    backendMode: 'auto',
+    devices: [],
   };
 }
 
@@ -217,9 +210,9 @@ describe('CompanionSettingsPanel voice input group (#2914 ST-3)', () => {
     expectNoLocalAffordances();
   });
 
-  it('drops the sttModel wizard step and keeps the required-step summary unchanged', async () => {
+  it('drops the sttModel wizard step and reports the ONE-prerequisite banner', async () => {
     const invoke = vi.fn(async (command: string) => {
-      if (command === 'check_companion_readiness') return partiallyReady;
+      if (command === 'check_companion_readiness') return modelFilesMissing;
       if (command === 'get_llama_server_status') return notRunningServer();
       return undefined;
     });
@@ -236,14 +229,15 @@ describe('CompanionSettingsPanel voice input group (#2914 ST-3)', () => {
       expect(screen.getByTestId('companion-setup-wizard')).toBeInTheDocument();
     });
 
-    // The summary counts the THREE required steps only (llamaServer installed,
-    // modelFiles missing, serverLaunch not started) — the removed STT model step
-    // never inflates the total.
+    // #3141 ST-6 — the `n of m` fraction is gone: the model files are the ONLY
+    // prerequisite, so the banner names the one thing left to do.
     await waitFor(() => {
       expect(screen.getByTestId('companion-setup-summary')).toHaveTextContent(
-        '1 of 3 prerequisites ready',
+        'Model files needed before the companion can run',
       );
     });
+    // The retired count strings can never come back.
+    expect(screen.getByTestId('companion-setup-summary')).not.toHaveTextContent('prerequisites ready');
     expect(screen.getByTestId('companion-setup-summary')).not.toHaveTextContent('1 of 4');
 
     // #2914 ST-4 — the STT model step and its optional group are GONE.
@@ -256,8 +250,10 @@ describe('CompanionSettingsPanel voice input group (#2914 ST-3)', () => {
     expect(commands).not.toContain('stt_check_model');
     expect(commands).not.toContain('download_stt_model');
 
-    // The not-ready gate keeps rendering the wizard ONLY (no controls).
+    // The not-ready gate keeps rendering the wizard (no controls); the backend
+    // control is absent here because the model files are missing.
     expect(screen.queryByTestId('companion-controls')).toBeNull();
+    expect(screen.queryByTestId('companion-backend-mode')).toBeNull();
   });
 });
 

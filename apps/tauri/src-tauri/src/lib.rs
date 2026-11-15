@@ -332,31 +332,22 @@ pub fn run() {
                     mcp_port = env_config.mcp_base_port,
                     otlp_grpc = env_config.ingest_grpc_port,
                     otlp_http = env_config.ingest_http_port,
-                    llama_port = env_config.llama_server_port,
                     pipe = %env_config.cli_pipe,
                     "isolated test environment resolved"
                 );
             }
 
-            // The companion `llama-server` port + artifact dir are persisted
-            // settings; an isolated env injects its own values so each
-            // environment's server is reachable independently (R-1.2). Inert on
-            // the legacy path (see `companion_env_overrides`).
+            // The companion artifact dir is a persisted setting; an isolated env
+            // injects its own value so each environment's engine log lands in
+            // its own dir (R-1.2 / AC-27). Inert on the legacy path (see
+            // `companion_env_overrides`). There is no port any more: the engine
+            // is in-process, so no listener is isolated.
             applications::llm_server::apply_companion_env_overrides(app.handle(), &env_config);
 
-            // -- Companion llama-server state (Spec #2857 ST-4) ----------------
-            // Out-of-process inference: the managed child process lives in this
-            // state and is spawned/killed via the `applications::llm_server`
-            // commands registered below. There is NO in-process engine load —
-            // readiness is the server's own `/health`, gated by the wizard.
-            app.manage(applications::llm_server::state::LlamaServerState::default());
-
-            // -- Startup orphan sweep (Spec #2857 ST-7) ------------------------
-            // A hard-kill (Task Manager) never runs the `RunEvent::Exit` hook, so
-            // reclaim a persisted `llama-server` PID on the next launch. The sweep
-            // is PID-reuse guarded (image name) and can never kill an unrelated
-            // process (R-3.3).
-            applications::llm_server::process::sweep_orphan(app.handle());
+            // -- In-process companion engine state (Spec #3141 ST-1) -----------
+            // The engine lives on ONE owned OS thread (LlamaContext/MtpSession
+            // are `!Send`); commands talk to it through the bounded handle.
+            app.manage(applications::llm_server::commands::CompanionEngineState::default());
 
             // -- Doom native engine state (Spec #3023 ST-2) --------------------
             // The native in-process Doom engine session (exactly-one) lives in
@@ -972,26 +963,21 @@ pub fn run() {
             applications::setup::commands::check_model_files,
             applications::setup::commands::download_model,
             applications::setup::commands::check_companion_readiness,
-            applications::setup::commands::install_llama_cpp,
-            // Companion llama-server (Spec #2857 ST-4): rerouted chat/vision +
-            // the lifecycle commands. SAME `llm_chat` / `llm_chat_with_image`
-            // IPC names and argument shapes as the deleted in-process path.
-            applications::llm_server::commands::llm_chat,
-            applications::llm_server::commands::llm_chat_with_image,
-            // #2897 ST-3 — model-audio turn: the captured clip is attached to the
-            // last user message and delivered over the managed loopback server.
-            applications::llm_server::commands::llm_chat_with_audio,
-            applications::llm_server::commands::generate_llama_server_config,
-            applications::llm_server::commands::launch_llama_server,
-            applications::llm_server::commands::stop_llama_server,
-            applications::llm_server::commands::get_llama_server_status,
-            // Phase-0 live capability diagnostic (Spec #2893, ST-1): read-only
-            // `/props` + `tools`/`response_format` probe; no window, no state write.
-            applications::llm_server::probe::probe_companion_skills,
+            // In-process companion engine (Spec #3141): the chat/vision/audio
+            // IPC names and argument shapes are unchanged; the turns run on the
+            // engine thread. `launch_llama_server` now performs the engine's
+            // bounded start and returns the typed engine result.
+            applications::llm_server::commands::chat::llm_chat,
+            applications::llm_server::commands::chat::llm_chat_with_image,
+            applications::llm_server::commands::chat::llm_chat_with_audio,
+            applications::llm_server::commands::engine::start_companion_engine,
+            applications::llm_server::commands::engine::launch_llama_server,
+            applications::llm_server::commands::engine::stop_llama_server,
+            applications::llm_server::commands::engine::get_llama_server_status,
             // #2897 ST-6 — backend-owned model-audio capability for the Companion
-            // readiness row + the pre-start gate. Reads the managed loopback
-            // server and records the verdict on `VoiceState` (REQ-7).
-            applications::llm_server::commands::stt_audio_capability,
+            // readiness row + the pre-start gate. Reads the loaded projector off
+            // the in-process engine (REQ-7).
+            applications::llm_server::commands::capability::stt_audio_capability,
             // Skill-aware inference path (Spec #2893, ST-5): offers the ST-3
             // registry, validates a selection, emits `llm-skill-call` then
             // `llm-done`. ADDITIVE — `llm_chat`/`llm_chat_with_image` unchanged.
@@ -1003,11 +989,6 @@ pub fn run() {
             // before the shipped `llm-done`. ADDITIVE — `llm_chat` /
             // `llm_chat_with_skills` unchanged.
             applications::llm_server::status::llm_chat_with_status,
-            // #2918 ST-2 — the cached read-only `response_format` capability gate.
-            // REUSES the existing `probe_companion_skills` mechanism (no new
-            // detector); the chat gate reads this cache, so the capability is
-            // never probed per turn.
-            applications::llm_server::probe::companion_status_capability,
             applications::screenshot::commands::capture_screen_region,
             // Embedded-PostgreSQL supervisor (Spec #2974 ST-3): the single
             // read-only observability hook (no state mutation).
@@ -1130,11 +1111,11 @@ pub fn run() {
                     let _ = window.set_title(&window_title);
                 }
             }
-            // Spec #2857 ST-4: the app-exit hook. Terminate the managed
-            // `llama-server` tree so no orphan survives Fredo (R-3.3). The
-            // startup PID sweep + the kill-on-exit test are ST-7's.
+            // Spec #3141: the app-exit hook. Stop the in-process companion
+            // engine thread so no model/context outlives Fredo. There is no
+            // child process and no orphan to sweep any more.
             if let tauri::RunEvent::Exit = event {
-                applications::llm_server::commands::stop_llama_server_on_exit(app);
+                applications::llm_server::commands::engine::stop_llama_server_on_exit(app);
                 // Spec #2974 ST-3: bounded embedded-PostgreSQL teardown. The
                 // graceful stop is wall-clock capped by PG_EXIT_HOOK_BOUND (5 s)
                 // with a `taskkill /T /F` hard-kill fallback, then a marker sweep

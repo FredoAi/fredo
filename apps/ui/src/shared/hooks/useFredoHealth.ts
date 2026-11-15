@@ -155,31 +155,31 @@ const PG_STATES: readonly FredoPgState[] = [
 
 /**
  * Normalize `check_companion_readiness` into the minimal companion snapshot.
- * The backend owns the prerequisite set; a missing/unknown shape fails closed
- * (returns `null` → the companion lines stay neutral `unknown`).
+ *
+ * Spec #3141 ST-6 (G-220/G-397): the backend reports the model files as the ONLY
+ * prerequisite, so requiring the retired `llamaServer` entry would pin both
+ * companion lines at `unknown` forever (a silent, permanent-neutral lie). The
+ * normalizer therefore requires the `modelFiles` entry ONLY and derives
+ * "configured" from the model-file evidence. An absent/malformed probe fails
+ * closed (returns `null` → the companion lines stay neutral `unknown`).
  */
 function normalizeCompanion(raw: unknown): FredoCompanionSnapshot | null {
   if (!raw || typeof raw !== 'object') return null;
   const prerequisites = (raw as { prerequisites?: unknown }).prerequisites;
   if (!Array.isArray(prerequisites)) return null;
 
-  let sawLlama = false;
   let sawModels = false;
-  let llamaServerInstalled = false;
   let modelFilesComplete = false;
   for (const entry of prerequisites) {
     if (!entry || typeof entry !== 'object') continue;
     const { id, state } = entry as { id?: unknown; state?: unknown };
-    if (id === 'llamaServer') {
-      sawLlama = true;
-      llamaServerInstalled = state === 'installed';
-    } else if (id === 'modelFiles') {
+    if (id === 'modelFiles') {
       sawModels = true;
       modelFilesComplete = state === 'installed';
     }
   }
-  if (!sawLlama || !sawModels) return null;
-  return { llamaServerInstalled, modelFilesComplete };
+  if (!sawModels) return null;
+  return { modelFilesComplete };
 }
 
 /** Normalize `get_llama_server_status` (also the `llama-server-status` event payload). */

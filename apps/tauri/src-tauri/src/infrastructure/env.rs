@@ -1,13 +1,18 @@
-//! infrastructure/env — the ONE authoritative resolver for this process's
+//! Infrastructure/env — the ONE authoritative resolver for this process's
 //! local test-environment configuration (Spec #2944 ST-1; Names Block G-255).
 //!
 //! Every dimension of an isolated environment — id, roots, port block, IPC
 //! pipe, WebView2 profile dir, app identity and window title — is resolved here
 //! from the `FREDO_*` variables, so no consumer re-derives a dimension. When
 //! **no** `FREDO_*` variable is set, every value equals the pre-#2944 literal
-//! (Vite 5174 / MCP 9223 / OTLP 4317+4318 / llama 8080 /
-//! `\\.\pipe\fredo-ipc` / title `Fredo`), so the legacy single-environment path
-//! is byte-identical (R-1.1, R-2.2, R-4.1).
+//! (Vite 5174 / MCP 9223 / OTLP 4317+4318 / `\\.\pipe\fredo-ipc` / title
+//! `Fredo`), so the legacy single-environment path is byte-identical (R-1.1,
+//! R-2.2, R-4.1).
+//!
+//! The companion `llama-server` PORT dimension is RETIRED (`#3141`): inference
+//! runs in-process, so there is no listener to isolate. The companion DIR
+//! (`FREDO_LLAMA_SERVER_COMPANION_DIR`) is unchanged and remains the per-env
+//! artifact dimension (AC-27).
 //!
 //! The resolver is pure: values are read through an injected lookup
 //! ([`EnvConfig::resolve_with`]) so tests are deterministic and never mutate
@@ -38,8 +43,6 @@ pub const MCP_BASE_PORT_ENV: &str = "FREDO_MCP_BASE_PORT";
 pub const VITE_PORT_ENV: &str = "FREDO_VITE_PORT";
 /// WebView2 user-data folder for the environment.
 pub const WEBVIEW_PROFILE_DIR_ENV: &str = "FREDO_WEBVIEW_PROFILE_DIR";
-/// The environment's companion `llama-server` port.
-pub const LLAMA_SERVER_PORT_ENV: &str = "FREDO_LLAMA_SERVER_PORT";
 /// The environment's companion artifact dir.
 pub const LLAMA_SERVER_COMPANION_DIR_ENV: &str = "FREDO_LLAMA_SERVER_COMPANION_DIR";
 /// The environment's OTLP/gRPC ingest port (GUI + headless share this name).
@@ -57,8 +60,6 @@ pub const DEFAULT_MCP_PORT: u16 = 9223;
 pub const DEFAULT_INGEST_GRPC_PORT: u16 = 4317;
 /// Default OTLP/HTTP ingest port.
 pub const DEFAULT_INGEST_HTTP_PORT: u16 = 4318;
-/// Default companion `llama-server` port.
-pub const DEFAULT_LLAMA_SERVER_PORT: u16 = 8080;
 
 /// Default CLI pipe name (Windows named pipe).
 #[cfg(windows)]
@@ -73,12 +74,15 @@ pub const BUNDLE_ID: &str = "com.fredo.app";
 /// Legacy window title (no environment suffix).
 pub const DEFAULT_WINDOW_TITLE: &str = "Fredo";
 
-/// The five endpoints that make up an environment's port block.
+/// The four endpoints that make up an environment's port block.
 ///
 /// Resolved from the `FREDO_*` variables, defaulting to the legacy slot-0
 /// values when unset. The slot→block formula (`16000 + 10*(n-1)`) is the
 /// dev-env allocator's contract (CU-C); the app only consumes the injected
 /// ports, so no dimension is re-derived here.
+///
+/// The companion `llama-server` port was RETIRED (`#3141`): in-process there is
+/// no listener, so the block is four endpoints, not five.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PortBlock {
     /// Vite dev-server port.
@@ -89,8 +93,6 @@ pub struct PortBlock {
     pub otlp_grpc: u16,
     /// OTLP/HTTP ingest port.
     pub otlp_http: u16,
-    /// Companion `llama-server` port.
-    pub llama: u16,
 }
 
 impl PortBlock {
@@ -100,7 +102,6 @@ impl PortBlock {
         mcp: DEFAULT_MCP_PORT,
         otlp_grpc: DEFAULT_INGEST_GRPC_PORT,
         otlp_http: DEFAULT_INGEST_HTTP_PORT,
-        llama: DEFAULT_LLAMA_SERVER_PORT,
     };
 }
 
@@ -132,8 +133,6 @@ pub struct EnvConfig {
     pub vite_port: u16,
     /// WebView2 user-data folder (`FREDO_WEBVIEW_PROFILE_DIR`).
     pub webview_profile_dir: Option<PathBuf>,
-    /// Companion `llama-server` port — legacy default when unset.
-    pub llama_server_port: u16,
     /// Companion artifact dir (`FREDO_LLAMA_SERVER_COMPANION_DIR`).
     pub llama_server_companion_dir: Option<PathBuf>,
     /// OTLP/gRPC ingest port — legacy default when unset.
@@ -175,7 +174,6 @@ impl EnvConfig {
             mcp_base_port: port(MCP_BASE_PORT_ENV, DEFAULT_MCP_PORT),
             vite_port: port(VITE_PORT_ENV, DEFAULT_VITE_PORT),
             webview_profile_dir: path(WEBVIEW_PROFILE_DIR_ENV),
-            llama_server_port: port(LLAMA_SERVER_PORT_ENV, DEFAULT_LLAMA_SERVER_PORT),
             llama_server_companion_dir: path(LLAMA_SERVER_COMPANION_DIR_ENV),
             ingest_grpc_port: port(INGEST_GRPC_PORT_ENV, DEFAULT_INGEST_GRPC_PORT),
             ingest_http_port: port(INGEST_HTTP_PORT_ENV, DEFAULT_INGEST_HTTP_PORT),
@@ -206,14 +204,13 @@ impl EnvConfig {
         }
     }
 
-    /// The environment's resolved port block (five endpoints).
+    /// The environment's resolved port block (four endpoints).
     pub fn port_block(&self) -> PortBlock {
         PortBlock {
             vite: self.vite_port,
             mcp: self.mcp_base_port,
             otlp_grpc: self.ingest_grpc_port,
             otlp_http: self.ingest_http_port,
-            llama: self.llama_server_port,
         }
     }
 }
@@ -240,7 +237,6 @@ mod tests {
         assert_eq!(env.vite_port, 5174);
         assert_eq!(env.ingest_grpc_port, 4317);
         assert_eq!(env.ingest_http_port, 4318);
-        assert_eq!(env.llama_server_port, 8080);
         assert_eq!(env.window_title(), "Fredo");
         assert_eq!(env.app_identity(), "com.fredo.app");
         assert_eq!(env.port_block(), PortBlock::LEGACY);
@@ -267,7 +263,6 @@ mod tests {
             (MCP_BASE_PORT_ENV, "16001"),
             (VITE_PORT_ENV, "16000"),
             (WEBVIEW_PROFILE_DIR_ENV, "C:/env/webview"),
-            (LLAMA_SERVER_PORT_ENV, "16004"),
             (LLAMA_SERVER_COMPANION_DIR_ENV, "C:/env/companion"),
             (INGEST_GRPC_PORT_ENV, "16002"),
             (INGEST_HTTP_PORT_ENV, "16003"),
@@ -301,7 +296,6 @@ mod tests {
                 mcp: 16001,
                 otlp_grpc: 16002,
                 otlp_http: 16003,
-                llama: 16004,
             }
         );
     }
@@ -330,12 +324,32 @@ mod tests {
             (MCP_BASE_PORT_ENV, "not-a-port"),
             (INGEST_GRPC_PORT_ENV, "70000"),
             (INGEST_HTTP_PORT_ENV, "-1"),
-            (LLAMA_SERVER_PORT_ENV, "999999"),
         ]);
         assert_eq!(env.mcp_base_port, DEFAULT_MCP_PORT);
         assert_eq!(env.ingest_grpc_port, DEFAULT_INGEST_GRPC_PORT);
         assert_eq!(env.ingest_http_port, DEFAULT_INGEST_HTTP_PORT);
-        assert_eq!(env.llama_server_port, DEFAULT_LLAMA_SERVER_PORT);
+    }
+
+    /// #3141: the retired companion port dimension is gone — an injected
+    /// `FREDO_LLAMA_SERVER_PORT` and the old port block key are simply ignored.
+    #[test]
+    fn the_retired_companion_port_is_not_resolved() {
+        let env = resolve(&[(ENV_ID_ENV, "spec3141"), ("FREDO_LLAMA_SERVER_PORT", "16004")]);
+        // The block carries four endpoints and no llama field at all.
+        let block = env.port_block();
+        assert_eq!(block.vite, DEFAULT_VITE_PORT);
+        assert_eq!(block.mcp, DEFAULT_MCP_PORT);
+        assert_eq!(block.otlp_grpc, DEFAULT_INGEST_GRPC_PORT);
+        assert_eq!(block.otlp_http, DEFAULT_INGEST_HTTP_PORT);
+        // The companion DIR still resolves (AC-27).
+        let with_dir = resolve(&[
+            (ENV_ID_ENV, "spec3141"),
+            (LLAMA_SERVER_COMPANION_DIR_ENV, "C:/env/companion"),
+        ]);
+        assert_eq!(
+            with_dir.llama_server_companion_dir,
+            Some(PathBuf::from("C:/env/companion"))
+        );
     }
 
     /// ST-1: the production entry point reads the process environment without

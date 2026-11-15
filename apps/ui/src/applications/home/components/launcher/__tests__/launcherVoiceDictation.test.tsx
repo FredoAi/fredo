@@ -1697,7 +1697,7 @@ describe('LauncherShell — model-audio delivery glue (#2897 ST-6)', () => {
     expect(screen.queryByTestId('launcher-command-listening-status-action')).toBeNull();
   });
 
-  it('the typed `modelAudioUnavailable` wire code carries the server-not-running copy', () => {
+  it('the typed `modelAudioUnavailable` wire code carries the engine-not-running copy', () => {
     renderShell();
 
     emitState({
@@ -1707,7 +1707,7 @@ describe('LauncherShell — model-audio delivery glue (#2897 ST-6)', () => {
     });
 
     const alert = screen.getByTestId('launcher-command-listening-status');
-    expect(alert).toHaveTextContent("local model server isn't running");
+    expect(alert).toHaveTextContent("companion engine isn't running");
     expect(alert).not.toHaveTextContent('connection refused');
   });
 });

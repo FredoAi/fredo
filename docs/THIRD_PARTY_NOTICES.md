@@ -5,13 +5,66 @@ with their licenses and required attributions. Fredo itself is dual-licensed und
 Apache-2.0 licenses — see the repository-root [`LICENSE`](../LICENSE),
 [`LICENSE-MIT`](../LICENSE-MIT), and [`LICENSE-APACHE-2.0`](../LICENSE-APACHE-2.0).
 
-> **Scope.** The only third-party component with a distribution obligation that Fredo ships today
-> is the Doom Mode game data (`DOOM1.WAD`). The Doom Mode engine is an ordinary cargo dependency
-> (`neurodoom`, BSD-3-Clause) — pure Rust, in-process, and **not** vendored or bundled as source.
+> **Scope.** Fredo ships three classes of third-party component with a distribution obligation:
+>
+> 1. **The companion inference runtime** — `llama.cpp` (linked into the Fredo binary through the
+>    `llama-cpp-4` / `llama-cpp-sys-4` Rust bindings) plus the native GPU runtime redistributable
+>    that build links against (Vulkan). See §1 and §2.
+> 2. **Doom Mode** — the game data (`DOOM1.WAD`) and the engine (`neurodoom`). See §3 and §4.
+> 3. Nothing else is bundled with a source-distribution obligation.
+>
+> Since Spec #3141 the companion runtime is **in-process** (no `llama-server` executable is shipped
+> and no separate binary is distributed); the `llama.cpp` source is built into Fredo's own binary.
 
 ---
 
-## 1. Doom Mode engine — `neurodoom` 0.6.7
+## 1. Companion inference runtime — `llama.cpp` (via `llama-cpp-4` / `llama-cpp-sys-4`)
+
+| Field | Value |
+|-------|-------|
+| Component | `llama.cpp` (upstream engine) |
+| Linked through | `llama-cpp-4` 0.11.0 + `llama-cpp-sys-4` 0.11.0 (Rust bindings; pinned in `apps/tauri/src-tauri/Cargo.toml` / `Cargo.lock`) |
+| Pinned upstream revision | `785322d17f` (`b12032+1`), from `https://github.com/ggml-org/llama.cpp` |
+| License | **MIT OR Apache-2.0** (`llama-cpp-4`/`llama-cpp-sys-4` are dual-licensed; upstream `llama.cpp` is MIT) |
+| Upstream | https://github.com/ggml-org/llama.cpp |
+| Bindings upstream | https://github.com/eugenehp/llama-cpp-rs |
+| Distribution form | **Compiled into the Fredo binary** — no separate executable, no vendored source tree shipped as a resource, no runtime download of the engine |
+| Use in Fredo | The companion's in-process inference engine (`applications/llm_server/engine/`): model loading, chat templating, sampling, MTP speculative decoding, and multimodal (`mtmd`) vision/audio encoding. |
+
+**Why it is recorded here.** `llama.cpp` is the engine that actually runs the companion model. It is
+built from the crate's pinned upstream revision and linked into the Fredo binary, so Fredo
+distributes a compiled copy of it. Both the MIT and Apache-2.0 licenses permit this provided the
+copyright and license notices are retained — the upstream `LICENSE` (MIT) and the crate's chosen
+dual license cover the shipped artifact.
+
+---
+
+## 2. Native GPU runtime redistributables (Vulkan)
+
+The release build enables the `vulkan` backend (with CPU always available) so ggml can select a
+device at runtime. The backend links against a vendor redistributable that the installer therefore
+ships or depends on:
+
+| Component | Role | License / terms | Upstream |
+|-----------|------|-----------------|----------|
+| **Vulkan** (loader + headers; the GPU driver's Vulkan ICD is supplied by the machine's graphics driver) | The GPU backend for the `vulkan` build feature | **Apache-2.0** (Vulkan-Headers / Vulkan-Loader, Khronos Group) | https://www.vulkan.org/ · https://github.com/KhronosGroup/Vulkan-Loader |
+| **ggml** (in-tree in `llama.cpp`) | The tensor/graph backend both the GPU path and the CPU path run on | **MIT** (same upstream `llama.cpp` repository) | https://github.com/ggml-org/ggml |
+
+**Notes.**
+- The Vulkan ICD (driver) is **not** bundled — it comes from the user's installed graphics driver;
+  Fredo bundles only the loader/headers it links, under Apache-2.0.
+- **There is no CUDA redistributable.** The `cuda` backend is not compiled: Vulkan covers NVIDIA,
+  AMD and Intel from a single code path, and the CUDA build (71 `.cu` translation units through
+  `nvcc`/`cicc`/`ptxas`) dominated the native build cost for a 10-30% inference gain on one vendor.
+  Re-introducing it would mean re-adding the `cuda` feature, the `CUDA_PATH` import-library wiring
+  in `apps/tauri/src-tauri/build.rs`, the toolkit step in both workflows, and the NVIDIA EULA entry
+  in the table above.
+- If a release build enables only the CPU backend, no GPU redistributable is included; the entry
+  above applies to the shipped Vulkan build described in `docs/ARCHITECTURE.md`.
+
+---
+
+## 3. Doom Mode engine — `neurodoom` 0.6.7
 
 | Field | Value |
 |-------|-------|
@@ -27,7 +80,7 @@ Apache-2.0 licenses — see the repository-root [`LICENSE`](../LICENSE),
 **Why it was chosen (license).** `neurodoom` is pure Rust (`#![no_std]` + `alloc`, `std` feature on
 by default) and permissively licensed under **BSD-3-Clause**, so it carries **no GPL obligation and
 no corresponding-source obligation**. It replaces the previous GPL-2.0 RESTful-DOOM engine (see
-§3). Because it is a **cargo dependency** (not vendored source), Fredo distributes no engine source
+§5). Because it is a **cargo dependency** (not vendored source), Fredo distributes no engine source
 and builds no engine at runtime.
 
 ### BSD 3-Clause License
@@ -62,7 +115,7 @@ POSSIBILITY OF SUCH DAMAGE.
 
 ---
 
-## 2. Doom Mode game data — `DOOM1.WAD` (id Software shareware)
+## 4. Doom Mode game data — `DOOM1.WAD` (id Software shareware)
 
 | Field | Value |
 |-------|-------|
@@ -94,7 +147,7 @@ identify the bundled shareware game data.
 
 ---
 
-## 3. Removed GPL corresponding-source obligation (RESTful-DOOM)
+## 5. Removed GPL corresponding-source obligation (RESTful-DOOM)
 
 The previous Doom Mode engine was **RESTful-DOOM**, a fork of Chocolate Doom distributed under the
 **GNU GPL, version 2**. Fredo discharged that obligation by vendoring the exact pinned GPL-2.0
@@ -112,9 +165,19 @@ the resources it required:
   — the GPL corresponding-source bundle resources. **Removed.**
 - `docs/doom-mode-acquisition.md` — the superseded GPL/provisioning decision record. **Removed.**
 
-The bundle now ships **no engine source, no engine binary, and no toolchain**; the only Doom Mode
-artifact with a distribution obligation is the shareware `DOOM1.WAD` recorded in §2.
+The Doom Mode side ships **no engine source, no engine binary, and no toolchain**; its only artifact
+with a distribution obligation is the shareware `DOOM1.WAD` recorded in §4.
 
 ---
 
-*Authored by Developer — Spec #3023 (ST-8).*
+## 6. Removed out-of-process companion runtime (open question)
+
+Spec #3141 replaced the previously-bundled **`llama-server` executable** with the in-process
+`llama-cpp-4` runtime documented in §1. No separate inference binary is built, bundled, or
+distributed any more, so the previous notices entry for a bundled server executable no longer
+applies. The `llama.cpp` engine itself is still distributed — now compiled into the Fredo binary
+(§1) — and the GPU runtime redistributables it links are recorded in §2.
+
+---
+
+*Authored by Developer — Spec #3023 (ST-8); amended by Spec #3141 (ST-6).*

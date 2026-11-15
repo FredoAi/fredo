@@ -76,18 +76,16 @@ const unavailableDevices: SttDeviceProbe = {
 const notReadyReadiness: CompanionReadiness = {
   ready: false,
   prerequisites: [
-    { id: 'llamaServer', state: 'missing', detail: 'llama-server not found.', resolvedPath: null },
     { id: 'modelFiles', state: 'missing', detail: '0 of 3 model files present.', resolvedPath: null },
-    { id: 'serverLaunch', state: 'missing', detail: 'Server not started.', resolvedPath: null },
+    { id: 'serverLaunch', state: 'missing', detail: 'Engine not started.', resolvedPath: null },
   ],
 };
 
 const readyReadiness: CompanionReadiness = {
   ready: true,
   prerequisites: [
-    { id: 'llamaServer', state: 'installed', detail: 'llama-server found.', resolvedPath: 'C:\\llama-server.exe' },
     { id: 'modelFiles', state: 'installed', detail: 'All required model files present.', resolvedPath: 'C:\\models' },
-    { id: 'serverLaunch', state: 'installed', detail: 'Companion server healthy.', resolvedPath: null },
+    { id: 'serverLaunch', state: 'installed', detail: 'Companion engine ready.', resolvedPath: null },
   ],
 };
 
@@ -149,7 +147,6 @@ describe('#2868 ST-5 — companion readiness gate through SettingsSurface (R-4a 
     expect(screen.queryByText('Show Fredo Companion')).toBeNull();
 
     // Every step is honestly in its checking state (no fabricated readiness).
-    expect(screen.getByTestId('companion-step-llama-server')).toHaveAttribute('data-state', 'checking');
     expect(screen.getByTestId('companion-step-model-files')).toHaveAttribute('data-state', 'checking');
     expect(screen.getByTestId('companion-step-server-launch')).toHaveAttribute('data-state', 'checking');
   });
@@ -165,10 +162,11 @@ describe('#2868 ST-5 — companion readiness gate through SettingsSurface (R-4a 
     expect(screen.queryByTestId('companion-controls')).toBeNull();
     expect(screen.queryByText('Show Fredo Companion')).toBeNull();
 
-    expect(screen.getByTestId('companion-step-llama-server')).toHaveAttribute('data-state', 'missing');
     expect(screen.getByTestId('companion-step-model-files')).toHaveAttribute('data-state', 'missing');
     expect(screen.getByTestId('companion-step-server-launch')).toHaveAttribute('data-state', 'missing');
-    expect(screen.getByTestId('companion-setup-summary')).not.toHaveTextContent('complete');
+    expect(screen.getByTestId('companion-setup-summary')).not.toHaveTextContent('All prerequisites');
+    // The backend control is absent while the model files are missing.
+    expect(screen.queryByTestId('companion-backend-mode')).toBeNull();
   });
 
   it('R-4b: when the companion is ready, renders the normal controls and no wizard', () => {
@@ -180,7 +178,7 @@ describe('#2868 ST-5 — companion readiness gate through SettingsSurface (R-4a 
 
     expect(screen.getByTestId('companion-controls')).toBeInTheDocument();
     expect(screen.queryByTestId('companion-setup-wizard')).toBeNull();
-    expect(screen.queryByTestId('companion-step-llama-server')).toBeNull();
+    expect(screen.queryByTestId('companion-step-model-files')).toBeNull();
     expect(screen.getByText('Show Fredo Companion')).toBeInTheDocument();
   });
 });

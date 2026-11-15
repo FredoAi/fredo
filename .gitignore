@@ -128,6 +128,14 @@ dist/
 # Rust build artifacts
 apps/tauri/src-tauri/target/
 
+# Machine-local Cargo config: pins every git worktree onto the ONE shared
+# `apps/tauri/src-tauri/target` dir so the costly `llama-cpp-sys-4` CMake/CUDA
+# build cache (%LOCALAPPDATA%\llcb, keyed on OUT_DIR) is reused across specs
+# instead of rebuilt per worktree. DELIBERATELY untracked - a committed copy
+# would be duplicated into each worktree and resolve relative to ITS root,
+# defeating the sharing. See .cargo/config.toml for the full rationale.
+/.cargo/
+
 # IDE files
 #.vscode/
 .idea/

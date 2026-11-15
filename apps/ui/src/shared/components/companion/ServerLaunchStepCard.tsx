@@ -1,9 +1,14 @@
 /**
  * ServerLaunchStepCard — the Companion setup wizard's `serverLaunch` step body
- * (Spec #2857). It renders in place of the generic `SetupStepCard` body for this
- * one step: the managed `llama-server` process lifecycle (not running → starting
- * → healthy, plus failed/exited) with a persistent inline error, an indeterminate
- * phase indicator, and Start/Retry/Restart + Re-check affordances.
+ * (Spec #2857; engine-start card since #3141 ST-6).
+ *
+ * It renders in place of the generic `SetupStepCard` body for this one step: the
+ * IN-PROCESS companion engine's start lifecycle (not running → starting →
+ * healthy, plus failed/exited) with a persistent typed inline error, an
+ * indeterminate phase indicator, and Start/Retry + Re-check affordances.
+ *
+ * The retired runtime's process supervision is gone: no `.bat`, no port, no
+ * loopback endpoint, and no health-check poll are described anywhere here.
  *
  * Status is always icon + text (never color-only). ONLY semantic theme tokens +
  * `tint()` are used — no hardcoded colors, no alpha-append onto a `var()`.
@@ -11,10 +16,13 @@
  * Frozen QA hooks:
  *   step  `companion-step-server-launch` + `data-state` + `data-server-state`
  *         descendants `-status` / `-phase` / `-start` / `-retry` / `-recheck` / `-detail`
+ *   #3141 AC-25: the typed failure row `companion-engine-error` carrying the
+ *         additive `data-engine-code` attribute (camelCase
+ *         `CompanionEngineErrorCode`; ABSENT when the failure carries no typed
+ *         code — never the string "null").
  *
- * No-hang (AC4): the client watchdog is a WAIT affordance ONLY — it never moves
- * the card to `failed`/AC4 failure copy. Only the backend verdict (a real invoke
- * rejection or `spawnFailed`/`portInUse`/`healthTimeout`) reaches `failed`.
+ * No-hang (NFR-3): the client watchdog is a WAIT affordance ONLY — it never
+ * moves the card to `failed`. Only the backend's typed verdict reaches `failed`.
  */
 
 import React, { useEffect, useRef, useState } from 'react';
@@ -40,11 +48,11 @@ import {
 
 import { tint } from '../../utils/colorTint';
 import {
-  llamaServerEndpoint,
-  serverLaunchFailureCopy,
+  engineFailureCopy,
   SERVER_EXITED_COPY,
   SERVER_WATCHDOG_COPY,
-  type LlamaServerLaunchCode,
+  type CompanionBackendKind,
+  type CompanionEngineErrorCode,
   type PrerequisiteId,
   type ServerLaunchState,
 } from './companionReadiness';
@@ -55,20 +63,24 @@ export interface ServerLaunchStepCardProps {
   step: CompanionSetupStepMeta;
   uiState: SetupStepUiState;
   detail?: string;
-  resolvedPath?: string | null;
+  /** Raw backend detail, demoted to the labelled mono line (never the primary). */
   errorText?: string;
   serverState: ServerLaunchState;
-  serverPort?: number | null;
-  serverCode?: LlamaServerLaunchCode | null;
+  /** The typed engine failure (AC-25). */
+  serverCode?: CompanionEngineErrorCode | null;
+  /** The engine's reported backend (the healthy detail's optional qualifier). */
+  backend?: CompanionBackendKind | null;
+  /** The canonical model id — the healthy card's detail. */
+  modelId?: string | null;
   onRunAction: (id: PrerequisiteId) => void;
   onRecheck: () => void;
 }
 
-/** Client watchdog — a WAIT affordance only; never an AC4 failure transition. */
+/** Client watchdog — a WAIT affordance only; never a failure transition. */
 export const LAUNCH_WATCHDOG_MS = 45_000;
 /** Starting-phase narration thresholds (progressive disclosure). */
-export const LAUNCH_PHASE_SPAWN_MS = 800;
-export const LAUNCH_PHASE_HEALTH_MS = 1_600;
+export const LAUNCH_PHASE_PREPARE_MS = 800;
+export const LAUNCH_PHASE_LOAD_MS = 1_600;
 
 function effectiveUiState(
   serverState: ServerLaunchState,
@@ -85,8 +97,26 @@ function effectiveUiState(
       return 'running';
     default:
       // `notRunning` stays honest even when the backend probe itself failed
-      // (fail-closed) — a launch failure is only ever `serverState: 'failed'`.
+      // (fail-closed) — a start failure is only ever `serverState: 'failed'`.
       return 'missing';
+  }
+}
+
+/** The reported-backend word for the healthy detail (text is the only channel). */
+function backendWord(backend: CompanionBackendKind | null | undefined): string | null {
+  switch (backend) {
+    case 'cpu':
+      return 'CPU';
+    case 'gpu':
+      return 'GPU';
+    case 'integratedGpu':
+      return 'Integrated GPU';
+    case 'accel':
+      return 'Accelerator';
+    case 'meta':
+      return 'Meta device';
+    default:
+      return null;
   }
 }
 
@@ -94,13 +124,18 @@ export const ServerLaunchStepCard: React.FC<ServerLaunchStepCardProps> = ({
   step,
   uiState,
   detail,
-  resolvedPath,
+  errorText,
   serverState,
-  serverPort,
   serverCode,
+  backend,
+  modelId,
   onRunAction,
   onRecheck,
 }) => {
+  const rawDetail =
+    typeof errorText === 'string' && errorText.trim().length > 0
+      ? errorText.trim()
+      : null;
   const rowRef = useRef<HTMLDivElement | null>(null);
   const [phaseIndex, setPhaseIndex] = useState(0);
   const [watchdogFired, setWatchdogFired] = useState(false);
@@ -123,12 +158,12 @@ export const ServerLaunchStepCard: React.FC<ServerLaunchStepCardProps> = ({
     }
     setPhaseIndex(0);
     setWatchdogFired(false);
-    const toSpawn = setTimeout(() => setPhaseIndex(1), LAUNCH_PHASE_SPAWN_MS);
-    const toHealth = setTimeout(() => setPhaseIndex(2), LAUNCH_PHASE_HEALTH_MS);
+    const toLoad = setTimeout(() => setPhaseIndex(1), LAUNCH_PHASE_PREPARE_MS);
+    const toWarm = setTimeout(() => setPhaseIndex(2), LAUNCH_PHASE_LOAD_MS);
     const watchdog = setTimeout(() => setWatchdogFired(true), LAUNCH_WATCHDOG_MS);
     return () => {
-      clearTimeout(toSpawn);
-      clearTimeout(toHealth);
+      clearTimeout(toLoad);
+      clearTimeout(toWarm);
       clearTimeout(watchdog);
     };
   }, [isStarting]);
@@ -138,26 +173,42 @@ export const ServerLaunchStepCard: React.FC<ServerLaunchStepCardProps> = ({
     if (isError) rowRef.current?.focus();
   }, [isError]);
 
-  const endpoint = llamaServerEndpoint(serverPort ?? null);
   const colors = cardColors(effective);
 
   const phaseCaption =
     phaseIndex === 0
-      ? 'Generating launch config…'
+      ? 'Preparing the engine…'
       : phaseIndex === 1
-        ? 'Starting llama-server…'
-        : `Waiting for health check on ${endpoint}…`;
+        ? 'Loading the model into memory…'
+        : 'Warming up the engine…';
   // Detail on an error/healthy (tinted) surface needs full-contrast text; the
   // notRunning/checking detail sits on a neutral surface.
   const detailColor =
     isError || isHealthy ? 'var(--text-primary)' : 'var(--text-subtle)';
 
+  const backendLabel = backendWord(backend);
+  const healthyDetail = (() => {
+    if (!isHealthy) return null;
+    const subject = modelId ?? 'the companion model';
+    return backendLabel
+      ? `Engine ready · ${subject} · ${backendLabel}`
+      : `Engine ready · ${subject}`;
+  })();
+
+  const failure = isFailed ? engineFailureCopy(serverCode) : null;
+
+  // The demoted technical line: the engine's raw detail, shown ONLY when it says
+  // something the curated sentence does not (a curated detail that repeats the
+  // copy is not printed twice).
+  const technicalDetail =
+    rawDetail && failure && rawDetail !== failure.sentence ? rawDetail : null;
+
   const detailText: string | null = (() => {
-    if (isFailed) return serverLaunchFailureCopy(serverCode, endpoint);
+    if (isFailed) return technicalDetail;
     if (isExited) return SERVER_EXITED_COPY;
-    if (isHealthy) return resolvedPath ? `${endpoint} · ${resolvedPath}` : endpoint;
+    if (isHealthy) return healthyDetail;
     if (!isStarting && !isChecking) {
-      return detail ?? 'The companion server is not running yet.';
+      return detail ?? "The companion engine isn't running yet.";
     }
     return null;
   })();
@@ -196,7 +247,7 @@ export const ServerLaunchStepCard: React.FC<ServerLaunchStepCardProps> = ({
           <>
             <Icon as={LuCircleX} boxSize="16px" color="status.error" aria-hidden />
             <Text fontSize="xs" fontWeight="600" color="var(--text-primary)">
-              {isExited ? 'Server stopped' : 'Failed to start'}
+              {isExited ? 'Engine stopped' : 'Failed to start'}
             </Text>
           </>
         );
@@ -215,15 +266,11 @@ export const ServerLaunchStepCard: React.FC<ServerLaunchStepCardProps> = ({
   const primaryLabel = isFailed
     ? 'Retry'
     : isExited
-      ? 'Restart companion server'
+      ? 'Start companion engine'
       : isStarting
-        ? (step.action?.runningLabel ?? 'Starting server…')
-        : (step.action?.label ?? 'Start companion server');
-  const primaryIcon = isFailed
-    ? LuRotateCw
-    : isExited
-      ? LuRotateCw
-      : LuPlay;
+        ? (step.action?.runningLabel ?? 'Starting engine…')
+        : (step.action?.label ?? 'Start companion engine');
+  const primaryIcon = isFailed ? LuRotateCw : isExited ? LuRotateCw : LuPlay;
   const showPrimary = !isChecking && !isHealthy;
 
   return (
@@ -238,7 +285,7 @@ export const ServerLaunchStepCard: React.FC<ServerLaunchStepCardProps> = ({
         ref={rowRef}
         tabIndex={isError ? -1 : undefined}
         role={isError ? 'group' : undefined}
-        aria-label={isError ? 'Companion server error' : undefined}
+        aria-label={isError ? 'Companion engine error' : undefined}
         aria-busy={isStarting || undefined}
         borderRadius="lg"
         border="1px solid"
@@ -273,13 +320,48 @@ export const ServerLaunchStepCard: React.FC<ServerLaunchStepCardProps> = ({
               {step.description}
             </Text>
 
+            {failure && (
+              // AC-25 — the typed failure row. `role="alert"` fires ONCE on the
+              // transition into `failed` (keyed on the code so a different failure
+              // re-announces); the persistent group above carries the a11y name.
+              <VStack
+                key={serverCode ?? 'no-code'}
+                data-testid="companion-engine-error"
+                data-engine-code={serverCode ?? undefined}
+                role="alert"
+                align="stretch"
+                gap={1}
+                p={2}
+                borderRadius="md"
+                bg={tint('var(--status-error)', 12)}
+                border="1px solid"
+                borderColor={tint('var(--status-error)', 30)}
+              >
+                <HStack gap={1} align="center">
+                  <Icon
+                    as={LuTriangleAlert}
+                    boxSize="14px"
+                    color="status.error"
+                    aria-hidden
+                    flexShrink={0}
+                  />
+                  <Text fontSize="xs" fontWeight="600" color="var(--text-primary)">
+                    {failure.title}
+                  </Text>
+                </HStack>
+                <Text fontSize="xs" color="var(--text-primary)">
+                  {failure.sentence}
+                </Text>
+              </VStack>
+            )}
+
             {isStarting && (
               <VStack align="stretch" gap={1}>
                 <Box data-testid={`companion-step-${step.testId}-phase`}>
                   <Progress.Root
                     value={null}
                     size="xs"
-                    aria-label="Companion server startup progress"
+                    aria-label="Companion engine startup progress"
                   >
                     <Progress.Track>
                       <Progress.Range />
@@ -356,7 +438,7 @@ export const ServerLaunchStepCard: React.FC<ServerLaunchStepCardProps> = ({
               )}
 
               {/* Wait affordance — the watchdog only ever ENABLES Retry; it never
-                  produces AC4 failure copy or a `failed` transition. */}
+                  produces failure copy or a `failed` transition. */}
               {isStarting && watchdogFired && (
                 <Button
                   size="sm"

@@ -3969,6 +3969,70 @@ Test-Script "error-path-levers.ps1: refusal legs arm the guard (Spec #3066 F-6)"
   return "AssertIsolation guard invocation arms -RequireIsolation; SharedDirRefusal/SentinelRefusal/NoGlobalImageKill present"
 }
 
+# --- Spec #3141 ST-6: the retired companion `llama` port ---
+# The out-of-process companion server is gone (inference is in-process), so no
+# dev environment records or checks a `llama` port any more; the companion
+# DIRECTORY remains the per-env artifact dimension. These pins implement the AC's
+# literal predicate on RAW script text (a comment mentioning the retired token is
+# not an emitted port), with a non-vacuity control proving each pattern matches a
+# seeded hit.
+Write-Host "Retired companion llama port (Spec #3141):" -ForegroundColor Cyan
+
+Test-Script "dev-env.ps1: emits no companion llama port in the manifest/evidence/status" {
+  # The manifest / evidence `ports`/`endpoints` literals and the status line must
+  # carry no `llama` entry, and no `$LlamaPort` variable may survive.
+  foreach ($pattern in @(
+    'llama\s*=\s*\$LlamaPort',
+    'LlamaPort',
+    'llama \$vLlama',
+    'FREDO_LLAMA_SERVER_PORT'
+  )) {
+    if ($devEnvSrc -match $pattern) {
+      throw "dev-env.ps1 still emits the retired companion port: $($Matches[0])"
+    }
+  }
+  # NON-VACUITY CONTROL: the same patterns DO match a seeded hit.
+  $seeded = 'llama    = $LlamaPort' + "`n" + 'FREDO_LLAMA_SERVER_PORT = "16004"'
+  $caught = @()
+  foreach ($pattern in @('llama\s*=\s*\$LlamaPort', 'LlamaPort', 'FREDO_LLAMA_SERVER_PORT')) {
+    if ($seeded -match $pattern) { $caught += $pattern }
+  }
+  if ($caught.Count -lt 3) {
+    throw "non-vacuity control failed: the pin patterns do not all catch a seeded hit ($($caught -join ', '))"
+  }
+  # The companion DIR dimension SURVIVES (AC-27): the pin is scoped to the port.
+  if ($devEnvSrc -notmatch 'FREDO_LLAMA_SERVER_COMPANION_DIR') {
+    throw "the per-env companion dir override must survive the port retirement (AC-27)"
+  }
+  return "no llama port in manifest/evidence/status; companion-dir override present; seeded control caught"
+}
+
+Test-Script "verify-env-isolation.ps1: no llama port entry and no llama role" {
+  $isoSrc = Get-Content ".opencode/scripts/verify-env-isolation.ps1" -Raw
+  foreach ($pattern in @(
+    'Name = "llama"',
+    'llama\s*=\s*@\("llama-server"\)',
+    'Role = "llama"'
+  )) {
+    if ($isoSrc -match $pattern) {
+      throw "verify-env-isolation.ps1 still maps the retired companion port: $($Matches[0])"
+    }
+  }
+  # NON-VACUITY CONTROL: a seeded entry is caught.
+  $seeded = '@{ Name = "llama";    Role = "llama"; Optional = $true }' + "`n" + 'llama    = @("llama-server")'
+  $caught = 0
+  if ($seeded -match 'Name = "llama"') { $caught++ }
+  if ($seeded -match 'llama\s*=\s*@\("llama-server"\)') { $caught++ }
+  if ($caught -lt 2) {
+    throw "non-vacuity control failed: the isolation pin patterns do not catch a seeded hit"
+  }
+  # The four required endpoints survive.
+  foreach ($name in @('vite', 'mcp', 'otlpGrpc', 'otlpHttp')) {
+    if ($isoSrc -notmatch ("Name = `"$name`"")) { throw "required endpoint dropped: $name" }
+  }
+  return "no llama port/role; four required endpoints present; seeded control caught"
+}
+
 # --- set-permission --decision remove (per-pattern + pattern-less flat) ---
 Write-Host "set-permission remove:" -ForegroundColor Cyan
 

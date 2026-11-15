@@ -5,11 +5,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::infrastructure::companion::models::{
     models_subdir, resolve_manifest, resolve_models_dir,
 };
-use crate::infrastructure::companion::resolve_llama_server;
 #[cfg(test)]
 use crate::infrastructure::companion::models::default_manifest;
-#[cfg(test)]
-use crate::infrastructure::companion::resolve_llama_server_order;
 use super::model_download::{
     download_missing_files, DownloadProgress, ModelDownloadOutcome, ProgressReporter,
     ReqwestTransport, SystemClock,
@@ -1041,26 +1038,23 @@ pub async fn download_model(app: AppHandle) -> ModelDownloadResult {
     download_missing_files(&transport, &manifest, &models_dir, &reporter, &SystemClock).await
 }
 
-// ── Companion readiness + llama.cpp install (Spec #2855) ───────────────────────
+// ── Companion readiness (Spec #2855; in-process runtime since #3141) ──────────
 //
 // ONE canonical prerequisite set for the Companion setup wizard. The backend
 // owns the set; the frontend renders exactly what `check_companion_readiness`
-// returns through its ordered `COMPANION_SETUP_STEPS` registry. #2856 appends a
-// model-download action; #2857 appends a `serverLaunch` prerequisite.
+// returns through its ordered `COMPANION_SETUP_STEPS` registry. Since #3141 the
+// runtime ships inside Fredo, so the MODEL FILES are the ONLY prerequisite: the
+// `llamaServer` prerequisite and the one-click winget install retired with the
+// out-of-process `llama-server`.
 
-const WINGET_BIN: &str = "winget";
-#[cfg(target_os = "windows")]
-const WINGET_APP_ID: &str = "ggml.llamacpp";
-
-/// **FS-2** test-only induction seam (Spec #3052 round 2): when set to a
-/// non-blank value other than `0`/`false`, [`check_companion_readiness`] reports
-/// BOTH companion prerequisites (`llamaServer`, `modelFiles`) as `Missing`, so
-/// the never-installed companion state becomes live-drivable in-repo without
-/// touching the machine-global install paths the probe resolves (G-275; mirrors
-/// the sanctioned [`crate::applications::pg_supervisor::PG_FORCE_START_FAIL_ENV`]
-/// precedent). The flag is scoped to the READINESS PROBE ONLY — it never affects
-/// `resolve_llama_server` or the managed-server launch path. Inert when unset —
-/// the default probe is byte-identical.
+/// **FS-2** test-only induction seam (Spec #3052 round 2; narrowed by #3141):
+/// when set to a non-blank value other than `0`/`false`,
+/// [`check_companion_readiness`] reports the `modelFiles` prerequisite as
+/// `Missing`, so the never-installed companion state becomes live-drivable
+/// in-repo without touching the machine-global install paths (G-275; mirrors the
+/// sanctioned [`crate::applications::pg_supervisor::PG_FORCE_START_FAIL_ENV`]
+/// precedent). It never affects the engine launch path. Inert when unset — the
+/// default probe is byte-identical.
 pub const COMPANION_FORCE_NOT_INSTALLED_ENV: &str = "FREDO_COMPANION_FORCE_NOT_INSTALLED";
 
 /// Per-prerequisite state. `Error` = could not determine; `Missing` = determined absent.
@@ -1075,7 +1069,7 @@ pub enum PrerequisiteState {
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct PrerequisiteReport {
-    /// Stable id: "llamaServer" | "modelFiles" (#2857 adds "serverLaunch").
+    /// Stable id: `"modelFiles"` is the ONLY id since #3141.
     pub id: String,
     pub state: PrerequisiteState,
     pub detail: String,
@@ -1090,26 +1084,14 @@ pub struct CompanionReadiness {
     pub prerequisites: Vec<PrerequisiteReport>,
 }
 
-#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
-#[serde(rename_all = "camelCase")]
-pub enum LlamaCppInstallCode {
-    WingetUnavailable,
-    InstallFailed,
-    SpawnFailed,
-}
-
-#[derive(Serialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct LlamaCppInstallResult {
-    pub success: bool,
-    pub output: String,
-    pub error: Option<String>,
-    pub code: Option<LlamaCppInstallCode>,
-}
-
 /// Aggregate the manifest probe into the `modelFiles` prerequisite. Pure — the
 /// resolved manifest is the single source of required files, so a partial set
 /// (or an empty manifest) can never read `Installed`.
+///
+/// A file that exists at the WRONG size is `FileState::Error`: the probe could
+/// not determine a usable file, so the prerequisite reports `Error` (a
+/// determination failure) rather than `Missing` (determined absent). The
+/// frontend renders both as not-ready; the distinction keeps the detail honest.
 fn model_files_prerequisite(
     files: &[ModelFileStatus],
     resolved_path: String,
@@ -1119,11 +1101,19 @@ fn model_files_prerequisite(
         .iter()
         .filter(|status| status.state == FileState::Present)
         .count();
+    let errored = files
+        .iter()
+        .any(|status| status.state == FileState::Error);
     let complete = total > 0 && present == total;
     let (state, detail) = if complete {
         (
             PrerequisiteState::Installed,
             "All required model files present.".to_string(),
+        )
+    } else if errored {
+        (
+            PrerequisiteState::Error,
+            format!("{present} of {total} model files usable — re-download the model files."),
         )
     } else {
         (
@@ -1153,197 +1143,51 @@ fn force_not_installed_with(value: Option<&str>) -> bool {
     }
 }
 
-/// The **FS-2** forced `Missing` readiness report. Both prerequisites report
-/// `Missing` with the seam named in `detail`, so the tester can confirm the seam
-/// is active and the frontend derives both companion lines `notSetUp`. Pure so
-/// the report shape is unit-pinned without an `AppHandle` (G-222).
+/// The **FS-2** forced `Missing` readiness report. The ONE `modelFiles`
+/// prerequisite reports `Missing` with the seam named in `detail`, so the tester
+/// can confirm the seam is active and the frontend derives both companion lines
+/// `notSetUp`. Pure so the report shape is unit-pinned without an `AppHandle`
+/// (G-222).
 fn forced_not_installed_readiness() -> CompanionReadiness {
     let detail = format!("{COMPANION_FORCE_NOT_INSTALLED_ENV} is set: forced Missing (test seam)");
-    let prerequisite = |id: &str| PrerequisiteReport {
-        id: id.to_string(),
-        state: PrerequisiteState::Missing,
-        detail: detail.clone(),
-        resolved_path: None,
-    };
     CompanionReadiness {
         ready: false,
-        prerequisites: vec![prerequisite("llamaServer"), prerequisite("modelFiles")],
+        prerequisites: vec![PrerequisiteReport {
+            id: "modelFiles".to_string(),
+            state: PrerequisiteState::Missing,
+            detail,
+            resolved_path: None,
+        }],
     }
 }
 
-/// The two prerequisites the companion needs before it can run. Read-only.
+/// The companion's ONLY prerequisite: the pinned model files. Read-only.
+///
+/// The in-process runtime ships with Fredo (#3141), so there is no executable to
+/// resolve, no PATH/winget lookup, and no second installer — a fresh machine
+/// needs the model files and nothing else (R-17.1).
 #[tauri::command]
 pub fn check_companion_readiness(app: AppHandle) -> CompanionReadiness {
-    // **FS-2** test-only seam (round 2), scoped to this READINESS PROBE ONLY:
-    // force both prerequisites `Missing` so the never-installed companion state
+    // **FS-2** test-only seam, scoped to this READINESS PROBE ONLY: force the
+    // model-files prerequisite `Missing` so the never-installed companion state
     // is live-drivable (G-275). Inert when unset.
     if force_not_installed_with(std::env::var(COMPANION_FORCE_NOT_INSTALLED_ENV).ok().as_deref()) {
         return forced_not_installed_readiness();
     }
 
-    let mut prerequisites = Vec::with_capacity(2);
-
-    // Prerequisite 1 — a usable llama-server executable.
-    let (llama_state, llama_detail, llama_path) = match resolve_llama_server(&app) {
-        Ok(Some(path)) => (
-            PrerequisiteState::Installed,
-            format!("llama-server found at {}", path.display()),
-            Some(path.to_string_lossy().into_owned()),
-        ),
-        Ok(None) => (
-            PrerequisiteState::Missing,
-            "llama-server not found. Install llama.cpp to continue.".to_string(),
-            None,
-        ),
-        Err(e) => (
-            PrerequisiteState::Error,
-            format!("Could not determine llama-server availability: {e}"),
-            None,
-        ),
-    };
-    prerequisites.push(PrerequisiteReport {
-        id: "llamaServer".to_string(),
-        state: llama_state,
-        detail: llama_detail,
-        resolved_path: llama_path,
-    });
-
-    // Prerequisite 2 — the required model files, derived from the manifest.
     let manifest = resolve_manifest(&app);
     let models_dir = resolve_models_dir(&app);
     let model_files = probe_files(&models_dir, &manifest);
-    prerequisites.push(model_files_prerequisite(
+    let prerequisite = model_files_prerequisite(
         &model_files,
         models_subdir(&models_dir, &manifest)
             .to_string_lossy()
             .into_owned(),
-    ));
-
-    let ready = prerequisites
-        .iter()
-        .all(|p| p.state == PrerequisiteState::Installed);
-    CompanionReadiness { ready, prerequisites }
-}
-
-/// Tail of a (possibly long) install output for an actionable error.
-fn tail_of(text: &str, max_chars: usize) -> String {
-    let trimmed = text.trim();
-    let count = trimmed.chars().count();
-    if count <= max_chars {
-        return trimmed.to_string();
-    }
-    trimmed.chars().skip(count - max_chars).collect()
-}
-
-fn combine_output(stdout: &[u8], stderr: &[u8]) -> String {
-    let out = String::from_utf8_lossy(stdout).trim().to_string();
-    let err = String::from_utf8_lossy(stderr).trim().to_string();
-    match (out.is_empty(), err.is_empty()) {
-        (false, false) => format!("{out}\n{err}"),
-        (false, true) => out,
-        (true, false) => err,
-        (true, true) => String::new(),
-    }
-}
-
-/// Shape a successful/failed exit into the structured wire result. Pure.
-fn classify_install_outcome(success: bool, combined_output: String) -> LlamaCppInstallResult {
-    if success {
-        LlamaCppInstallResult {
-            success: true,
-            output: combined_output,
-            error: None,
-            code: None,
-        }
-    } else {
-        LlamaCppInstallResult {
-            success: false,
-            error: Some(format!(
-                "Setup failed: {}. Choose Retry or Re-check.",
-                tail_of(&combined_output, 400)
-            )),
-            output: combined_output,
-            code: Some(LlamaCppInstallCode::InstallFailed),
-        }
-    }
-}
-
-/// Decide the install result from winget availability + the executed command.
-/// The `execute` closure is injected so the failure branches are unit-testable
-/// WITHOUT running a real `winget install`. Pure.
-fn run_install_with(
-    winget_available: bool,
-    execute: impl FnOnce() -> std::io::Result<(bool, String)>,
-) -> LlamaCppInstallResult {
-    if !winget_available {
-        return LlamaCppInstallResult {
-            success: false,
-            output: String::new(),
-            error: Some(
-                "Couldn't install llama.cpp — winget isn't available on this machine. \
-                 Install llama.cpp manually, then choose Re-check."
-                    .to_string(),
-            ),
-            code: Some(LlamaCppInstallCode::WingetUnavailable),
-        };
-    }
-    match execute() {
-        Ok((success, combined)) => classify_install_outcome(success, combined),
-        Err(e) => LlamaCppInstallResult {
-            success: false,
-            output: String::new(),
-            error: Some(format!(
-                "Couldn't run winget: {e}. Install llama.cpp manually, then choose Re-check."
-            )),
-            code: Some(LlamaCppInstallCode::SpawnFailed),
-        },
-    }
-}
-
-/// One-click `winget install --id ggml.llamacpp -e`. Runs OFF the UI thread; does
-/// NOT launch the server and does NOT re-check readiness — the frontend re-probes.
-#[tauri::command]
-pub async fn install_llama_cpp() -> LlamaCppInstallResult {
-    let winget_available = is_binary_available(WINGET_BIN);
-    let joined = tauri::async_runtime::spawn_blocking(move || {
-        run_install_with(winget_available, || {
-            #[cfg(target_os = "windows")]
-            {
-                let output = std::process::Command::new(WINGET_BIN)
-                    .args([
-                        "install",
-                        "--id",
-                        WINGET_APP_ID,
-                        "-e",
-                        "--accept-package-agreements",
-                        "--accept-source-agreements",
-                        "--disable-interactivity",
-                    ])
-                    .output()?;
-                Ok((
-                    output.status.success(),
-                    combine_output(&output.stdout, &output.stderr),
-                ))
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::Unsupported,
-                    "llama.cpp install is Windows-only",
-                ))
-            }
-        })
-    })
-    .await;
-
-    match joined {
-        Ok(result) => result,
-        Err(e) => LlamaCppInstallResult {
-            success: false,
-            output: String::new(),
-            error: Some(format!("Install task failed: {e}. Choose Retry.")),
-            code: Some(LlamaCppInstallCode::SpawnFailed),
-        },
+    );
+    let ready = prerequisite.state == PrerequisiteState::Installed;
+    CompanionReadiness {
+        ready,
+        prerequisites: vec![prerequisite],
     }
 }
 
@@ -1488,126 +1332,28 @@ mod tests {
         assert_eq!(deserialized.otel.status, "missing");
     }
 
-    // ── Spec #2855: companion readiness + llama.cpp install ──────────────
+    // ── Spec #2855: companion readiness (in-process runtime since #3141) ──
 
+    /// #3141: the runtime ships inside Fredo, so the model-files prerequisite is
+    /// the ONLY one — there is no `llamaServer` id and no install affordance.
     #[test]
-    fn resolve_llama_server_prefers_configured_then_path_then_shim() {
-        let existing = std::env::current_exe().expect("current exe");
-        let existing_str = existing.to_string_lossy().into_owned();
-        let on_path = PathBuf::from(r"C:\fake\llama-server.exe");
-
-        // 1. A configured path that exists wins over PATH + shim.
-        assert_eq!(
-            resolve_llama_server_order(Some(&existing_str), Some(on_path.clone()), Some(existing.clone())),
-            Some(existing.clone())
-        );
-        // 2. A configured path that does not exist falls through to PATH.
-        assert_eq!(
-            resolve_llama_server_order(Some("Z:\\missing\\llama-server.exe"), Some(on_path.clone()), None),
-            Some(on_path.clone())
-        );
-        // 3. No configured path → PATH candidate.
-        assert_eq!(
-            resolve_llama_server_order(None, Some(on_path.clone()), None),
-            Some(on_path.clone())
-        );
-        // 4. No configured/PATH → winget shim (when it exists).
-        assert_eq!(
-            resolve_llama_server_order(None, None, Some(existing.clone())),
-            Some(existing)
-        );
-        // 5. A shim that does not exist is rejected; empty resolution → None.
-        assert_eq!(
-            resolve_llama_server_order(None, None, Some(PathBuf::from("Z:\\nope.exe"))),
-            None
-        );
-        assert_eq!(resolve_llama_server_order(None, None, None), None);
-    }
-
-    #[test]
-    fn install_llama_cpp_winget_unavailable_is_actionable_and_not_complete() {
-        let result = run_install_with(false, || {
-            panic!("must not execute when winget is unavailable")
-        });
-        assert!(!result.success);
-        assert_eq!(result.code, Some(LlamaCppInstallCode::WingetUnavailable));
-        let error = result.error.expect("actionable error");
-        assert!(error.contains("winget"));
-        assert!(error.contains("Re-check"));
-        assert!(!error.to_lowercase().contains("complete"));
-    }
-
-    #[test]
-    fn install_llama_cpp_nonzero_exit_reports_failure_with_tail() {
-        let result = run_install_with(true, || Ok((false, "0x8A150 something failed".to_string())));
-        assert!(!result.success);
-        assert_eq!(result.code, Some(LlamaCppInstallCode::InstallFailed));
-        assert!(result.error.expect("error").contains("something failed"));
-    }
-
-    #[test]
-    fn install_llama_cpp_success_reports_complete() {
-        let result = run_install_with(true, || Ok((true, "Successfully installed".to_string())));
-        assert!(result.success);
-        assert_eq!(result.code, None);
-        assert!(result.error.is_none());
-        assert!(result.output.contains("Successfully installed"));
-    }
-
-    #[test]
-    fn install_llama_cpp_spawn_error_is_structured() {
-        let result = run_install_with(true, || {
-            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "winget missing"))
-        });
-        assert!(!result.success);
-        assert_eq!(result.code, Some(LlamaCppInstallCode::SpawnFailed));
-    }
-
-    /// Guard: `-e` forces an exact PackageIdentifier match, so a wrong id fails with
-    /// "No package found matching input criteria." and the one-click install can never
-    /// succeed. Canonical id per the microsoft/winget-pkgs manifest
-    /// `manifests/g/ggml/llamacpp/<version>/ggml.llamacpp.installer.yaml`
-    /// (`PackageIdentifier: ggml.llamacpp`). `WINGET_APP_ID` is Windows-only.
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn winget_app_id_is_the_canonical_winget_package_identifier() {
-        assert_eq!(WINGET_APP_ID, "ggml.llamacpp");
-    }
-
-    #[test]
-    fn companion_readiness_serializes_camel_case() {
+    fn companion_readiness_serializes_camel_case_with_one_prerequisite() {
         let readiness = CompanionReadiness {
             ready: false,
-            prerequisites: vec![
-                PrerequisiteReport {
-                    id: "llamaServer".into(),
-                    state: PrerequisiteState::Missing,
-                    detail: "not found".into(),
-                    resolved_path: None,
-                },
-                PrerequisiteReport {
-                    id: "modelFiles".into(),
-                    state: PrerequisiteState::Installed,
-                    detail: "present".into(),
-                    resolved_path: Some(r"C:\models".into()),
-                },
-            ],
+            prerequisites: vec![PrerequisiteReport {
+                id: "modelFiles".into(),
+                state: PrerequisiteState::Missing,
+                detail: "0 of 3 model files present.".into(),
+                resolved_path: None,
+            }],
         };
         let json = serde_json::to_string(&readiness).unwrap();
         assert!(json.contains("\"resolvedPath\""));
-        assert!(json.contains("\"llamaServer\""));
+        assert!(json.contains("\"modelFiles\""));
         assert!(json.contains("\"missing\""));
-        assert!(json.contains("\"installed\""));
         assert!(json.contains("\"ready\":false"));
-
-        let install = LlamaCppInstallResult {
-            success: false,
-            output: String::new(),
-            error: Some("x".into()),
-            code: Some(LlamaCppInstallCode::WingetUnavailable),
-        };
-        let json = serde_json::to_string(&install).unwrap();
-        assert!(json.contains("\"wingetUnavailable\""));
+        // The retired prerequisite is gone from the wire vocabulary.
+        assert!(!json.contains("\"llamaServer\""));
     }
 
     // ── Spec #3052 round 2 FS-2: forced-not-installed readiness seam ──────
@@ -1637,21 +1383,17 @@ mod tests {
         );
     }
 
-    /// FS-2: the forced readiness report marks BOTH companion prerequisites
-    /// `Missing` (never `ready`), so the frontend derives both companion lines
-    /// `notSetUp` and the aggregate stays `healthy`.
+    /// FS-2 (#3141): the forced readiness report marks the ONE `modelFiles`
+    /// prerequisite `Missing` (never `ready`), so the frontend derives both
+    /// companion lines `notSetUp` and the aggregate stays healthy-or-neutral.
     #[test]
-    fn forced_not_installed_readiness_reports_both_prerequisites_missing() {
+    fn forced_not_installed_readiness_reports_the_model_files_prerequisite_missing() {
         let report = forced_not_installed_readiness();
         assert!(!report.ready, "forced readiness is never ready");
-        assert_eq!(report.prerequisites.len(), 2);
-        assert_eq!(report.prerequisites[0].id, "llamaServer");
+        assert_eq!(report.prerequisites.len(), 1);
+        assert_eq!(report.prerequisites[0].id, "modelFiles");
         assert_eq!(report.prerequisites[0].state, PrerequisiteState::Missing);
         assert!(report.prerequisites[0].resolved_path.is_none());
-        assert_eq!(report.prerequisites[1].id, "modelFiles");
-        assert_eq!(report.prerequisites[1].state, PrerequisiteState::Missing);
-        assert!(report.prerequisites[1].resolved_path.is_none());
-        // Every prerequisite is non-Installed, which keeps `ready` false.
         assert!(
             report
                 .prerequisites
@@ -1696,16 +1438,21 @@ mod tests {
         assert_eq!(report.detail, "2 of 3 model files present.");
         assert!(report.resolved_path.is_none());
 
-        // An errored file also blocks completion.
+        // An errored file blocks completion and reports `Error` (a determination
+        // failure), never `Installed`.
         let errored = vec![
             file("model", FileState::Present),
             file("vision", FileState::Error),
             file("mtp", FileState::Present),
         ];
-        assert_eq!(
-            model_files_prerequisite(&errored, "/models".to_string()).state,
-            PrerequisiteState::Missing
+        let report = model_files_prerequisite(&errored, "/models".to_string());
+        assert_eq!(report.state, PrerequisiteState::Error);
+        assert!(
+            report.detail.contains("re-download"),
+            "an errored file must name the recovery: {}",
+            report.detail
         );
+        assert!(report.resolved_path.is_none());
 
         // An empty/misconfigured manifest is never complete.
         let empty: Vec<ModelFileStatus> = Vec::new();
@@ -1722,12 +1469,5 @@ mod tests {
         assert_eq!(ids, vec!["model", "vision", "mtp"]);
         assert_eq!(manifest.subdir, "gemma-4-e2b-it-qat");
         assert!(manifest.files[2].path.starts_with("MTP/"));
-    }
-
-    #[test]
-    fn tail_of_truncates_long_output() {
-        let long = "x".repeat(1000);
-        assert_eq!(tail_of(&long, 400).chars().count(), 400);
-        assert_eq!(tail_of("short", 400), "short");
     }
 }

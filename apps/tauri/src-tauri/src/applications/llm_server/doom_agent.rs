@@ -10,14 +10,15 @@
 //! * [`build_doom_agent_request_body`] renders a schema-constrained
 //!   (`response_format: json_schema`, name
 //!   [`DOOM_PLAN_SCHEMA_NAME`](crate::infrastructure::companion::doom_decision::DOOM_PLAN_SCHEMA_NAME))
-//!   request via `chat::render_messages(..., None, None)`, so **no
-//!   `image_url`/`input_audio` part can appear** (the F-25 audit surface);
+//!   request body, so **no `image_url`/`input_audio` part can appear** (the F-25
+//!   audit surface);
 //! * [`ModelDoomDecisionSource`] implements the shared
 //!   [`DoomDecisionSource`](crate::infrastructure::companion::doom_decision::DoomDecisionSource)
-//!   trait over the existing `chat::run_stream` shell, with a bounded per-decision
-//!   timeout ([`DOOM_AUTOPLAY_DECISION_TIMEOUT_S`]), accumulating the structured
-//!   `delta.content` and parsing a
-//!   [`DoomPlan`](crate::infrastructure::companion::doom_decision::DoomPlan);
+//!   trait over the in-process engine's ONE-SHOT request
+//!   ([`EngineOneShotSource`](super::engine::stream::EngineOneShotSource)), with
+//!   a bounded per-decision timeout
+//!   ([`DOOM_AUTOPLAY_DECISION_TIMEOUT_S`]), accumulating the structured reply
+//!   and parsing a [`DoomPlan`](crate::infrastructure::companion::doom_decision::DoomPlan);
 //! * the source records an ADDITIVE
 //!   [`DoomDecisionTrace`](crate::infrastructure::companion::doom_decision::DoomDecisionTrace)
 //!   for its most recent decision (model id / server flags / prompt + schema
@@ -53,9 +54,24 @@ use crate::infrastructure::companion::doom_decision::{
 };
 use crate::infrastructure::storage::SettingsStore;
 
-use super::chat::{self, ChatStreamEvent, LlmMessage};
-use super::config::LlamaServerConfig;
-use super::{LLAMA_SERVER_ARGS_KEY, LLAMA_SERVER_MODEL_PATH_KEY};
+use super::chat::{LlmMessage, MAX_TOKENS};
+use super::engine::request::ChatTurn;
+use super::engine::sampling::DEFAULT_REASONING_MODE;
+use super::engine::stream::{EngineOneShotSource, OneShotSource};
+
+/// Persisted key carrying the main model path.
+///
+/// Read ONLY as best-effort DATASET-TRACE metadata (the `modelRaw` receipt's
+/// model identity); it is never an engine path source — the engine resolves
+/// every model file through the shared #2856 manifest (AC-18). Declared locally
+/// because the migration removed the shared launch-path constants.
+const LLAMA_SERVER_MODEL_PATH_KEY: &str = "llama_server_model_path";
+
+/// Persisted key carrying the optional launch-argv override JSON.
+///
+/// Read ONLY for the decision trace's served alias / `--reasoning` flag, never
+/// for engine configuration. Declared locally for the same reason.
+const LLAMA_SERVER_ARGS_KEY: &str = "llama_server_args";
 
 /// The Doom-playing persona.
 ///
@@ -75,15 +91,14 @@ pub const DOOM_AUTOPLAY_DECISION_TIMEOUT_S: u64 = 30;
 
 /// Maximum `max_tokens` for a single Doom decision reply (lever D, #3026 ST-5).
 ///
-/// Collapsed to the shared [`chat::MAX_TOKENS`] default. The earlier
+/// Collapsed to the shared [`MAX_TOKENS`] default. The earlier
 /// "256 is ample for a tiny `{tics, actions}` object" premise was falsified by the
-/// shipped managed config: the server runs reasoning **on** (`--reasoning on`) and
-/// its reasoning prefix is not surfaced to this path yet still consumes the token
-/// budget, so a 256-token cap could starve the reply to empty. The Doom request is
-/// therefore bounded to the SAME value as the shared builder — the override remains
-/// Doom-path-only, and `chat::build_response_format_request_body`'s own default and
-/// every other caller are untouched.
-pub const DOOM_AGENT_MAX_TOKENS: u32 = chat::MAX_TOKENS;
+/// shipped managed config: the engine runs reasoning **on** and its reasoning
+/// prefix is not surfaced to this path yet still consumes the token budget, so a
+/// 256-token cap could starve the reply to empty. The Doom request is therefore
+/// bounded to the SAME value as the shared turn default — the override remains
+/// Doom-path-only, and every other caller is untouched.
+pub const DOOM_AGENT_MAX_TOKENS: u32 = MAX_TOKENS;
 
 /// Persona/prompt version stamped into the decision trace (Spec #3032 ST-4).
 ///
@@ -143,23 +158,43 @@ pub fn doom_plan_schema() -> Value {
 
 /// Build the schema-constrained Doom plan request body.
 ///
-/// Pure. The system message is [`DOOM_AGENT_SYSTEM_PROMPT`]; the user message is a
-/// plain STRING carrying `{"observation": <state JSON>, "allowedActions":
-/// [<vocabulary>]}`. Rendered through `chat::build_response_format_request_body`
-/// (which uses `chat::render_messages(..., None, None)`), so no `image_url`/
-/// `input_audio` part and no image/audio field can appear (R-2).
+/// Pure, and TEST-ONLY: production shapes the same conversation as a
+/// [`ChatTurn`] through [`doom_turn`]. This is the frozen wire-shape view the
+/// payload pins compare against, retained until the pins no longer need it.
 ///
-/// The shared builder's `max_tokens` default is left untouched; the returned
-/// Doom body is then bounded to [`DOOM_AGENT_MAX_TOKENS`] (lever D, #3026 ST-5) —
-/// a Doom-path-only override, so no other feature inherits this token bound.
+/// The system message is [`DOOM_AGENT_SYSTEM_PROMPT`]; the user message is a
+/// plain STRING carrying `{"observation": <state JSON>, "allowedActions":
+/// [<vocabulary>]}`. It renders through the test-only retired renderer, so no
+/// `image_url`/`input_audio` part and no image/audio field can appear (R-2).
 ///
 /// `vocabulary` is a PARAMETER — this module never imports `applications/doom`.
+#[cfg(test)]
 pub fn build_doom_agent_request_body(observation: &Value, vocabulary: &Value) -> Value {
+    let messages = doom_messages(observation, vocabulary);
+    let mut body = super::chat::build_response_format_request_body(
+        &messages,
+        DOOM_PLAN_SCHEMA_NAME,
+        &doom_plan_schema(),
+    );
+    // Lever D (#3026 ST-5): bound generation on the Doom path ONLY, at the
+    // shared token default (the reasoning-enabled engine's invisible reasoning
+    // prefix consumes the budget, so a smaller cap can starve the reply). The
+    // shared renderer's own default is deliberately NOT changed.
+    body["max_tokens"] = json!(DOOM_AGENT_MAX_TOKENS);
+    body
+}
+
+/// The Doom conversation: the persona, then the structured observation.
+///
+/// Pure, and the ONE source both the wire-shape view
+/// ([`build_doom_agent_request_body`]) and the production turn ([`doom_turn`])
+/// render, so the shipped payload can never drift from the pinned body.
+fn doom_messages(observation: &Value, vocabulary: &Value) -> Vec<LlmMessage> {
     let user_payload = json!({
         "observation": observation,
         "allowedActions": vocabulary,
     });
-    let messages = vec![
+    vec![
         LlmMessage {
             role: "system".to_string(),
             content: DOOM_AGENT_SYSTEM_PROMPT.to_string(),
@@ -168,19 +203,18 @@ pub fn build_doom_agent_request_body(observation: &Value, vocabulary: &Value) ->
             role: "user".to_string(),
             content: user_payload.to_string(),
         },
-    ];
-    let mut body = chat::build_response_format_request_body(
-        &messages,
-        DOOM_PLAN_SCHEMA_NAME,
-        &doom_plan_schema(),
-    );
-    // Lever D (#3026 ST-5): bound generation on the Doom path ONLY, at the
-    // shared `chat::MAX_TOKENS` default (the reasoning-enabled server's invisible
-    // reasoning prefix consumes the budget, so a smaller cap can starve the
-    // reply). `chat::build_response_format_request_body`'s own default is
-    // deliberately NOT changed.
-    body["max_tokens"] = json!(DOOM_AGENT_MAX_TOKENS);
-    body
+    ]
+}
+
+/// Shape the production Doom decision turn: the schema-constrained `doom_plan`
+/// reply, with the Doom-path token bound.
+///
+/// This is the ONE production shaping rule for the decision source, and it
+/// carries NO media (no image, no audio), so the text-only receipt holds.
+pub fn doom_turn(observation: &Value, vocabulary: &Value) -> ChatTurn {
+    ChatTurn::text(doom_messages(observation, vocabulary))
+        .with_json_schema(DOOM_PLAN_SCHEMA_NAME, doom_plan_schema())
+        .with_max_tokens(DOOM_AGENT_MAX_TOKENS)
 }
 
 // ── Model-source metadata + dataset capture gates (Spec #3032 ST-4) ──────────
@@ -209,7 +243,7 @@ pub fn model_id_from(model_path: Option<&str>, args_json: Option<&str>) -> Optio
 }
 
 /// The best-effort server flags for the decision trace: the persisted
-/// `--reasoning` mode (else the launch-config default), rendered as
+/// `--reasoning` mode (else the reference default), rendered as
 /// `reasoning=<mode>`. Pure.
 pub fn server_flags_from(args_json: Option<&str>) -> String {
     let reasoning = args_json
@@ -217,7 +251,7 @@ pub fn server_flags_from(args_json: Option<&str>) -> String {
         .and_then(|value| value.get("reasoning").and_then(Value::as_str).map(str::to_string))
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| LlamaServerConfig::default().reasoning);
+        .unwrap_or_else(|| DEFAULT_REASONING_MODE.to_string());
     format!("reasoning={reasoning}")
 }
 
@@ -338,14 +372,14 @@ pub fn classify_doom_reply(content: &str) -> Result<DoomPlan, DoomDecisionError>
 
 // ── Model-backed decision source ──────────────────────────────────────────────
 
-/// A [`DoomDecisionSource`] backed by the managed companion model.
+/// A [`DoomDecisionSource`] backed by the in-process companion engine.
 ///
-/// Built over the existing `chat::run_stream` shell: it renders
-/// [`build_doom_agent_request_body`], accumulates the structured `delta.content`
-/// within [`DOOM_AUTOPLAY_DECISION_TIMEOUT_S`], and classifies the reply via
+/// Built over the engine's ONE-SHOT request: it shapes
+/// [`doom_turn`] (the schema-constrained `doom_plan` reply), runs it within
+/// [`DOOM_AUTOPLAY_DECISION_TIMEOUT_S`], and classifies the reply via
 /// [`classify_doom_reply`] (`Malformed` on invalid non-empty JSON,
-/// `ModelUnavailable` on an empty reply or a stream/transport error, `TimedOut` on
-/// the per-decision bound).
+/// `ModelUnavailable` on an empty reply or an engine failure, `TimedOut` on the
+/// per-decision bound).
 ///
 /// Each decision also records a [`DoomDecisionTrace`] for the MOST RECENT decision
 /// (Spec #3032 ST-4), exposed through
@@ -387,53 +421,38 @@ impl ModelDoomDecisionSource {
 #[async_trait]
 impl DoomDecisionSource for ModelDoomDecisionSource {
     async fn decide(&self, observation: &Value) -> Result<DoomPlan, DoomDecisionError> {
-        let body = build_doom_agent_request_body(observation, &self.vocabulary);
+        let turn = doom_turn(observation, &self.vocabulary);
 
-        let mut content = String::new();
-        let mut reasoning = String::new();
-        let stream_result = tokio::time::timeout(
-            Duration::from_secs(DOOM_AUTOPLAY_DECISION_TIMEOUT_S),
-            chat::run_stream(&self.app, &body, |frame| {
-                // The reasoning channel is separate from `content` (Spec #3032
-                // ST-4); capture it (gated later) without disturbing the plan
-                // reply accumulation.
-                if let Some(chunk) = frame.reasoning {
-                    reasoning.push_str(&chunk);
-                }
-                for event in frame.events {
-                    if let ChatStreamEvent::Delta(delta) = event {
-                        content.push_str(&delta);
-                    }
-                }
-                false
-            }),
-        )
-        .await;
+        let decision = match EngineOneShotSource::for_app(&self.app) {
+            Ok(source) => {
+                tokio::time::timeout(
+                    Duration::from_secs(DOOM_AUTOPLAY_DECISION_TIMEOUT_S),
+                    source.one_shot(turn),
+                )
+                .await
+            }
+            // A missing handle is a source-availability condition, not a fatal
+            // malformed decision: the loop degrades and keeps advancing.
+            Err((_code, detail)) => {
+                return Err(self.record_and_classify(DoomDecisionError::ModelUnavailable(detail)))
+            }
+        };
 
-        // Record the trace BEFORE returning: the failure paths (R-6) then also
-        // carry the model metadata + whatever reply/reasoning was captured.
-        let (model_id, server_flags) = self.model_metadata();
-        let (raw_enabled, reasoning_enabled) = dataset_capture_flags();
-        let trace = build_decision_trace(
-            model_id,
-            server_flags,
-            &content,
-            &reasoning,
-            raw_enabled,
-            reasoning_enabled,
-        );
-        *self
-            .last_trace
-            .lock()
-            .expect("the Doom decision trace lock is not poisoned") = Some(trace);
+        // Capture the reply text for the trace BEFORE classifying, so the failure
+        // paths (R-6) still carry whatever was produced.
+        let (content, reasoning) = match &decision {
+            Ok(Ok(reply)) => (reply.content.clone(), reply.reasoning.clone()),
+            _ => (String::new(), String::new()),
+        };
+        self.record_trace(&content, &reasoning);
 
-        match stream_result {
+        match decision {
             Err(_elapsed) => Err(DoomDecisionError::TimedOut),
             Ok(Err(detail)) => Err(DoomDecisionError::ModelUnavailable(detail)),
             // An empty reply is a source-availability condition (R-4), not a
             // malformed decision — `classify_doom_reply` maps it to
             // `ModelUnavailable` so the loop degrades and keeps advancing.
-            Ok(Ok(())) => classify_doom_reply(&content),
+            Ok(Ok(reply)) => classify_doom_reply(&reply.content),
         }
     }
 
@@ -442,6 +461,33 @@ impl DoomDecisionSource for ModelDoomDecisionSource {
             .lock()
             .expect("the Doom decision trace lock is not poisoned")
             .clone()
+    }
+}
+
+impl ModelDoomDecisionSource {
+    /// Record the trace for the reply captured so far (the failure paths also
+    /// carry it, so a dataset record is never lost).
+    fn record_trace(&self, content: &str, reasoning: &str) {
+        let (model_id, server_flags) = self.model_metadata();
+        let (raw_enabled, reasoning_enabled) = dataset_capture_flags();
+        let trace = build_decision_trace(
+            model_id,
+            server_flags,
+            content,
+            reasoning,
+            raw_enabled,
+            reasoning_enabled,
+        );
+        *self
+            .last_trace
+            .lock()
+            .expect("the Doom decision trace lock is not poisoned") = Some(trace);
+    }
+
+    /// Record an empty trace and return `error` — the source-availability path.
+    fn record_and_classify(&self, error: DoomDecisionError) -> DoomDecisionError {
+        self.record_trace("", "");
+        error
     }
 }
 
@@ -619,32 +665,19 @@ mod tests {
         assert!(DOOM_AGENT_SYSTEM_PROMPT.contains("pixels"));
         assert!(DOOM_AGENT_SYSTEM_PROMPT.contains("audio"));
         // ST-5 rework: the Doom bound is collapsed to the shared default.
-        assert_eq!(DOOM_AGENT_MAX_TOKENS, chat::MAX_TOKENS);
+        assert_eq!(DOOM_AGENT_MAX_TOKENS, crate::applications::llm_server::chat::MAX_TOKENS);
         assert_eq!(DOOM_AGENT_MAX_TOKENS, 1024);
     }
 
     /// **ST-5 (lever D, R-1; rework round 2).** The Doom body is bounded to
-    /// [`DOOM_AGENT_MAX_TOKENS`], which is now the shared `chat::MAX_TOKENS`
-    /// default, while `chat::build_response_format_request_body`'s OWN default is
-    /// left byte-for-byte unchanged (the override stays Doom-path-only).
+    /// [`DOOM_AGENT_MAX_TOKENS`], which is the shared
+    /// [`crate::applications::llm_server::chat::MAX_TOKENS`] default.
     #[test]
-    fn st5_doom_body_uses_the_shared_token_budget_and_leaves_the_shared_builder_untouched() {
+    fn st5_doom_body_uses_the_shared_token_budget() {
         let body = build_doom_agent_request_body(&json!({ "tic": 1 }), &json!([]));
-        assert_eq!(body["max_tokens"], chat::MAX_TOKENS);
+        assert_eq!(body["max_tokens"], MAX_TOKENS);
         assert_eq!(body["max_tokens"], DOOM_AGENT_MAX_TOKENS);
         assert_eq!(body["max_tokens"], 1024);
-
-        // The shared builder still renders its own (unchanged) default.
-        let shared = chat::build_response_format_request_body(
-            &[LlmMessage {
-                role: "user".to_string(),
-                content: "hello".to_string(),
-            }],
-            "fredo_reply",
-            &doom_plan_schema(),
-        );
-        assert_eq!(shared["max_tokens"], chat::MAX_TOKENS);
-        assert_eq!(shared["max_tokens"], DOOM_AGENT_MAX_TOKENS);
     }
 
     /// **ST-2 rework (R-4/AC4).** An EMPTY/whitespace accumulated reply is a
@@ -836,5 +869,138 @@ mod tests {
             "reasoning=off"
         );
         assert_eq!(server_flags_from(Some("not json")), "reasoning=on");
+    }
+
+    // ── ST-3: the Doom decision still parses through the ONE-SHOT turn ────────
+
+    /// **ST-3 (AC-26, Doom regression).** The production Doom turn keeps the
+    /// schema-constrained contract the decision source now drives through
+    /// `EngineCommand::OneShot`:
+    ///
+    /// * the persona is the system turn and the structured observation is a plain
+    ///   STRING user turn (the F-25 text-only receipt);
+    /// * the reply is constrained to the `doom_plan` schema, so the model's reply
+    ///   is exactly what [`classify_doom_reply`] parses;
+    /// * the Doom-path token bound is applied;
+    /// * no tools are offered and no media rides the turn.
+    ///
+    /// This is the producer-side half of the Doom pin; the parse half below feeds
+    /// the turn's expected reply back through the SAME classifier the source
+    /// calls.
+    #[test]
+    fn the_doom_oneshot_turn_keeps_the_schema_constrained_contract() {
+        let observation = json!({ "tic": 7, "player": { "health": 100 } });
+        let vocabulary = json!([{ "type": "forward", "summary": "hold forward" }]);
+
+        let turn = doom_turn(&observation, &vocabulary);
+
+        assert_eq!(turn.messages.len(), 2);
+        assert_eq!(turn.messages[0].role, "system");
+        assert_eq!(turn.messages[0].content, DOOM_AGENT_SYSTEM_PROMPT);
+        assert_eq!(turn.messages[1].role, "user");
+        let payload: Value =
+            serde_json::from_str(&turn.messages[1].content).expect("the observation is JSON");
+        assert_eq!(payload["observation"], observation);
+        assert_eq!(payload["allowedActions"], vocabulary);
+
+        // The reply schema is the doom_plan contract (the grammar the source's
+        // reply is decoded under).
+        let (name, schema) = turn
+            .json_schema
+            .as_ref()
+            .expect("the Doom turn constrains its reply");
+        assert_eq!(name, DOOM_PLAN_SCHEMA_NAME);
+        assert_eq!(schema, &doom_plan_schema());
+        assert_eq!(turn.max_tokens, DOOM_AGENT_MAX_TOKENS);
+
+        // No tools and NO media on the decision turn (the F-25 invariant carried
+        // onto the engine request model).
+        assert!(!turn.offer_tools);
+        assert!(turn.tools.is_empty());
+        assert!(turn.image.is_none());
+        assert!(turn.audio.is_none());
+        let serialized = turn.template_messages_json();
+        assert!(!serialized.contains("image_url"), "no image_url part: {serialized}");
+        assert!(!serialized.contains("input_audio"), "no input_audio part: {serialized}");
+    }
+
+    /// **ST-3 (AC-26).** The plan the one-shot turn produces still parses: the
+    /// reply the engine returns for the Doom turn is classified into the SAME
+    /// `DoomPlan` the scripted lever derives — so re-pointing the source onto
+    /// `EngineCommand::OneShot` cannot silently break Doom autoplay.
+    ///
+    /// The turn's schema accepts exactly the reply shapes exercised here (a plan
+    /// and the legacy object), and both decode: a valid plan yields typed steps,
+    /// and an enum-bearing plan keeps its bounds.
+    #[test]
+    fn the_doom_oneshot_reply_still_parses_into_a_plan() {
+        // The reply shape the schema-constrained engine emits for a routed plan.
+        let reply = r#"{"steps":[{"op":"move","bearing":90,"distance":256},{"op":"shoot","tics":10}]}"#;
+        let plan = classify_doom_reply(reply).expect("the engine's reply parses");
+        assert_eq!(
+            plan.steps,
+            vec![
+                DoomPlanStep::Move {
+                    bearing: 90,
+                    distance: 256,
+                },
+                DoomPlanStep::Shoot { tics: 10 },
+            ]
+        );
+        // The plan is exactly what the loop consumes.
+        assert_eq!(plan.steps.len(), 2);
+
+        // The legacy `{tics, actions}` shape still maps to a single Hold step.
+        let legacy = classify_doom_reply(r#"{"tics":5,"actions":[{"type":"forward"}]}"#)
+            .expect("a legacy reply still parses");
+        assert_eq!(legacy.as_single_hold().tics, 5);
+
+        // An empty reply is the NON-fatal availability branch (never Malformed).
+        assert!(matches!(
+            classify_doom_reply(""),
+            Err(DoomDecisionError::ModelUnavailable(_))
+        ));
+    }
+
+    /// **ST-3 (G-413 boundary pin).** The turn the engine receives and the body
+    /// the retired wire renderer produced agree on the CONVERSATION content — the
+    /// producer-side serialization proof for the re-point: the same system +
+    /// structured user payload, with the observation verbatim.
+    #[test]
+    fn the_engine_turn_carries_the_same_conversation_as_the_wire_body() {
+        let observation = json!({ "tic": 3, "walls": [{ "direction": "front", "distance": 48 }] });
+        let vocabulary = json!([{ "type": "forward", "summary": "hold forward" }]);
+
+        let body = build_doom_agent_request_body(&observation, &vocabulary);
+        let turn = doom_turn(&observation, &vocabulary);
+
+        // The wire body's `messages` and the engine turn's messages agree.
+        for (index, rendered) in body["messages"]
+            .as_array()
+            .expect("the wire body renders messages")
+            .iter()
+            .enumerate()
+        {
+            assert_eq!(rendered["role"], turn.messages[index].role, "role {index}");
+            assert_eq!(
+                rendered["content"], turn.messages[index].content,
+                "content {index}"
+            );
+        }
+
+        // The token bound and the schema name agree across both views.
+        assert_eq!(body["max_tokens"], json!(turn.max_tokens));
+        assert_eq!(
+            body["response_format"]["json_schema"]["name"],
+            DOOM_PLAN_SCHEMA_NAME
+        );
+        // The walls array survives into the engine turn verbatim.
+        let payload: Value =
+            serde_json::from_str(&turn.messages[1].content).expect("structured JSON");
+        assert_eq!(
+            payload["observation"]["walls"][0]["distance"],
+            json!(48),
+            "the observation is forwarded verbatim"
+        );
     }
 }
