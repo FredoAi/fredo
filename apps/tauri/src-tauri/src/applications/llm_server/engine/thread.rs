@@ -431,10 +431,14 @@ fn run_chat(
 ) {
     use crate::applications::llm_server::engine::stream::{self, ContentGate, EngineEvent};
 
-    // The template's DECLARED reasoning markers. A template whose declaration
-    // cannot be read is a typed failure for this turn — never a silent "there is
-    // no reasoning channel", which would re-open the D2 leak.
-    let (start_tag, end_tags) = match engine.format.reasoning_markers(&request.turn) {
+    // Every marker the streaming gate classifies, read from ONE template render:
+    // the declared reasoning span (consumed as the hidden channel) and the
+    // reserved control markers (never forwarded, but RETAINED in the gate's raw
+    // buffer so the template's reverse parser still sees a complete call body).
+    // A template whose declaration cannot be read is a typed failure for this turn
+    // — never a silent "there is no reasoning channel", which would re-open the D2
+    // leak.
+    let markers = match engine.format.stream_markers(&request.turn) {
         Ok(markers) => markers,
         Err((code, detail)) => {
             let _ = request.events.try_send(EngineEvent::Failed { code, detail });
@@ -442,9 +446,9 @@ fn run_chat(
         }
     };
     let mut gate = if request.turn.offer_tools {
-        ContentGate::for_tool_turn(&start_tag, &end_tags)
+        ContentGate::for_tool_turn(&markers.start, &markers.ends, &markers.reserved)
     } else {
-        ContentGate::for_content_turn(&start_tag, &end_tags)
+        ContentGate::for_content_turn(&markers.start, &markers.ends, &markers.reserved)
     };
     let events = request.events.clone();
     // Disjoint field borrows: the projector is `&mut` for this turn while the

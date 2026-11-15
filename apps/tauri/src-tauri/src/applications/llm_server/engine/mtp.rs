@@ -676,12 +676,7 @@ pub fn generate_speculative<'model>(
 
     let mut sampler: LlamaSampler =
         super::sampling::build_sampler(model, settings, grammar_spec, seed)?;
-    // The template declared its control markers as STRINGS; resolving them to ids
-    // needs the loaded vocabulary, so it happens here (the ONE site that owns the
-    // model). Before D2 this set was always empty — the parse read `Vec<i32>` from
-    // the shim's string array — so reserved-token dropping was dead code.
-    let reserved_ids = super::chat_format::resolve_reserved_tokens(model, &shaped.reserved_tokens)?;
-    let mut decoder = TokenStreamDecoder::new(model, &reserved_ids);
+    let mut decoder = TokenStreamDecoder::new(model);
     let mut content = String::new();
     let mut stats = MtpStats::default();
     let mut tokens_generated: u32 = 0;

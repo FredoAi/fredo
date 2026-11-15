@@ -68,13 +68,22 @@ pub const LLM_DONE_EVENT: &str = "llm-done";
 /// applies backpressure — it can never deadlock a turn.
 pub const ENGINE_EVENT_BUFFER: usize = 64;
 
-/// The control-token prefix of the pinned template family.
+/// The opening delimiter of the pinned template family's control tokens.
 ///
-/// A rendered tool-call body begins with a control marker (`<|tool_call>…`). A
-/// user-visible reply never starts one, so a tool-offering turn withholds
-/// everything from the first occurrence and decides at the finish whether it was
-/// a call body (dropped) or ordinary content (released).
+/// A rendered tool-call body opens a control token with this prefix. A user-visible
+/// reply never does, so a tool-offering turn withholds everything from the first
+/// occurrence and decides at the finish whether it was a call body (dropped) or
+/// ordinary content (released). This is a DELIMITER, not a marker: the markers
+/// themselves always come from the template's declaration (NFR-6).
 pub const CONTROL_TOKEN_PREFIX: &str = "<|";
+
+/// The closing delimiter of the pinned template family's control tokens.
+///
+/// Read by [`cut_control_spans`] — the last-resort cut applied to the non-call
+/// release path, so an undeclared or truncated control span can never reach
+/// `llm-token` (Spec #3141 fix D3). It is a DELIMITER, not a marker: the markers
+/// themselves always come from the template's declaration.
+pub const CONTROL_TOKEN_CLOSE: &str = "|>";
 
 // ── Engine → application layer ───────────────────────────────────────────────
 
@@ -684,12 +693,29 @@ enum GateState {
 /// * **Skipping** — the declared reasoning start marker matched: release nothing
 ///   until one of the declared end markers matches, then return to Streaming, so
 ///   every piece AFTER the span is emitted immediately (deltas genuinely stream);
-/// * **ToolBody** — a non-reasoning control marker opened a tool-call body:
-///   withhold it; [`Self::flush`] releases it unless the finish path classified
-///   it as a call (then it is never released).
+/// * **ToolBody** — a reserved control marker opened a tool-call body:
+///   withhold it; [`Self::flush`] releases it (minus the reserved markers) unless
+///   the finish path classified it as a call (then it is never released).
 ///
 /// A withheld reasoning span is NEVER released by [`Self::flush`]: it is a hidden
 /// channel, forwarded once as [`EngineEvent::Reasoning`] by the finish path.
+///
+/// ## The gate is the ONE classifying (deleting) stage (Spec #3141 fix D3)
+///
+/// The decoder is a UTF-8 boundary and removes nothing, so every control marker
+/// reaches this gate. Per class:
+///
+/// | class | gate behaviour |
+/// |---|---|
+/// | ordinary text | released immediately |
+/// | reasoning span markers (declared start / end) | consumed; body withheld as the hidden channel |
+/// | tool-call structure (the reserved opener / argument quote / closer) | enters ToolBody together with the body, so `raw()` stays complete for the template's reverse parser |
+/// | a reserved delimiter no state consumes | dropped from `pending`, RETAINED in `raw` |
+///
+/// Dropping at the decoder instead (round 3) ate the tool-call opener before the
+/// reverse parser could see it, so a real call decoded as content and the raw body
+/// was released as prose. `raw` therefore never loses a character; only the
+/// released `llm-token` text is filtered.
 #[derive(Debug, Clone)]
 pub struct ContentGate {
     /// Every byte the model produced (what the reverse parser decodes).
@@ -704,6 +730,9 @@ pub struct ContentGate {
     start_tag: String,
     /// The template's declared reasoning end markers.
     end_tags: Vec<String>,
+    /// The template's reserved control markers: never released as visible text,
+    /// but always retained in `raw` so the reverse parser stays complete.
+    reserved: Vec<String>,
     /// The scanner's position.
     state: GateState,
     /// Whether a declared reasoning span was ever entered.
@@ -714,19 +743,25 @@ impl ContentGate {
     /// A gate for a turn that offers tools.
     ///
     /// `start_tag` / `end_tags` are the template's DECLARED reasoning markers
-    /// ([`super::chat_format::AppliedChatFormat::thinking_start_tag`] /
-    /// [`thinking_end_tags`](super::chat_format::AppliedChatFormat::thinking_end_tags)).
-    pub fn for_tool_turn(start_tag: &str, end_tags: &[String]) -> Self {
-        Self::new(Some(CONTROL_TOKEN_PREFIX), start_tag, end_tags)
+    /// ([`super::chat_format::StreamMarkers::start`] / `::ends`); `reserved` is
+    /// every reserved control marker (declared, and never forwarded).
+    pub fn for_tool_turn(start_tag: &str, end_tags: &[String], reserved: &[String]) -> Self {
+        Self::new(Some(CONTROL_TOKEN_PREFIX), start_tag, end_tags, reserved)
     }
 
     /// A gate for a turn that offers no tools (no tool body to withhold, but the
-    /// reasoning span is still hidden from the reply).
-    pub fn for_content_turn(start_tag: &str, end_tags: &[String]) -> Self {
-        Self::new(None, start_tag, end_tags)
+    /// reasoning span is still hidden from the reply and reserved markers are
+    /// still never released).
+    pub fn for_content_turn(start_tag: &str, end_tags: &[String], reserved: &[String]) -> Self {
+        Self::new(None, start_tag, end_tags, reserved)
     }
 
-    fn new(hold: Option<&'static str>, start_tag: &str, end_tags: &[String]) -> Self {
+    fn new(
+        hold: Option<&'static str>,
+        start_tag: &str,
+        end_tags: &[String],
+        reserved: &[String],
+    ) -> Self {
         Self {
             raw: String::new(),
             pending: String::new(),
@@ -734,6 +769,7 @@ impl ContentGate {
             hold,
             start_tag: start_tag.to_string(),
             end_tags: end_tags.to_vec(),
+            reserved: reserved.to_vec(),
             state: GateState::Streaming,
             skipped: false,
         }
@@ -761,6 +797,10 @@ impl ContentGate {
     /// A withheld reasoning span is never released: it is the hidden channel, and
     /// the finish path forwards it as [`EngineEvent::Reasoning`] instead.
     ///
+    /// Reserved control markers are STRIPPED from the released text, and any
+    /// residual protocol prefix is cut, so this non-call release path can never
+    /// emit `<|`-syntax to a consumer (Spec #3141 fix D3).
+    ///
     /// Returns an empty string when nothing releasable was withheld.
     pub fn flush(&mut self) -> String {
         if self.state == GateState::Skipping {
@@ -771,7 +811,8 @@ impl ContentGate {
         if !self.pending.is_empty() {
             self.release_prefix(self.pending.len());
         }
-        std::mem::take(&mut self.visible)
+        let released = std::mem::take(&mut self.visible);
+        strip_control_syntax(&released, &self.reserved)
     }
 
     /// Whether the gate suppressed a declared reasoning span.
@@ -832,44 +873,57 @@ impl ContentGate {
                         return;
                     }
 
-                    let start_at = (!self.start_tag.is_empty())
-                        .then(|| self.pending.find(&self.start_tag))
-                        .flatten();
-                    let control_at = self.pending.find(CONTROL_TOKEN_PREFIX);
-
-                    // The earliest of the two markers decides; ties go to the
-                    // start tag (it BEGINS with the generic control prefix).
-                    let earliest = match (start_at, control_at) {
-                        (Some(start), Some(control)) if start <= control => Some((start, true)),
-                        (Some(start), None) => Some((start, true)),
-                        (_, Some(control)) => Some((control, false)),
-                        (None, None) => None,
-                    };
-                    let Some((at, is_reasoning_start)) = earliest else {
+                    // Earliest classification site. Precedence on a tie:
+                    // reasoning start (0) > reserved marker (1) > bare control
+                    // prefix (2) — a reserved marker begins with `<|`, so the
+                    // full-marker hit must win over the prefix-only hit.
+                    let mut candidates: Vec<(usize, u8, usize)> = Vec::new();
+                    if !self.start_tag.is_empty() {
+                        if let Some(at) = self.pending.find(&self.start_tag) {
+                            candidates.push((at, 0, self.start_tag.len()));
+                        }
+                    }
+                    if let Some((at, len)) = find_first(&self.pending, &self.reserved) {
+                        candidates.push((at, 1, len));
+                    }
+                    if let Some(at) = self.pending.find(CONTROL_TOKEN_PREFIX) {
+                        candidates.push((at, 2, CONTROL_TOKEN_PREFIX.len()));
+                    }
+                    let Some(&(at, rank, len)) =
+                        candidates.iter().min_by_key(|(at, rank, _)| (*at, *rank))
+                    else {
                         // Plain text: release it, holding back only a trailing
                         // proper prefix of a known marker (a split marker).
-                        let hold = trailing_partial(&self.pending, &self.start_tag)
+                        let mut hold = trailing_partial(&self.pending, &self.start_tag)
                             .max(trailing_partial(&self.pending, CONTROL_TOKEN_PREFIX));
+                        for marker in &self.reserved {
+                            hold = hold.max(trailing_partial(&self.pending, marker));
+                        }
                         let release = self.pending.len() - hold;
                         self.release_prefix(release);
                         return;
                     };
                     self.release_prefix(at);
-                    if is_reasoning_start {
+                    if rank == 0 {
                         self.drop_prefix(self.start_tag.len());
                         self.state = GateState::Skipping;
                         self.skipped = true;
                         continue;
                     }
                     if self.hold.is_some() {
-                        // A tool-call body: withhold it; the finish path decides
-                        // whether it was a call or ordinary content.
+                        // A tool-call body: withhold it INCLUDING its opener; the
+                        // finish path decides whether it was a call or ordinary
+                        // content. `raw` keeps every byte either way, so the
+                        // template's reverse parser still sees a complete body.
                         self.state = GateState::ToolBody;
                         return;
                     }
-                    // No tool body on this turn: the prefix is ordinary text, so
-                    // release it and keep scanning for a reasoning span.
-                    self.release_prefix(CONTROL_TOKEN_PREFIX.len());
+                    // No tool body on this turn: a reserved delimiter (rank 1) is
+                    // protocol syntax, never reply text — drop it from `pending`
+                    // but RETAIN it in `raw`, and keep scanning. A bare control
+                    // prefix (rank 2) that is not a declared marker is dropped the
+                    // same way, so a content/status turn never releases `<|`.
+                    self.drop_prefix(len);
                 }
             }
         }
@@ -877,12 +931,98 @@ impl ContentGate {
 }
 
 /// The earliest occurrence of any of `markers` in `text`, as `(offset, length)`.
+///
+/// Ties at the same offset go to the LONGEST marker, so a marker that is a prefix
+/// of another (e.g. a bare opener and the opener followed by a channel name) never
+/// shadows the longer declaration.
 fn find_first(text: &str, markers: &[String]) -> Option<(usize, usize)> {
     markers
         .iter()
         .filter(|marker| !marker.is_empty())
         .filter_map(|marker| text.find(marker.as_str()).map(|at| (at, marker.len())))
-        .min_by_key(|(at, _)| *at)
+        .min_by(|left, right| left.0.cmp(&right.0).then(right.1.cmp(&left.1)))
+}
+
+/// Remove the template's control syntax from text the non-call release path is
+/// about to emit.
+///
+/// This is the last line of the non-call release path (Spec #3141 fix D3): a turn
+/// that turns out not to be a tool call must never show the template's control
+/// syntax to a consumer. Two passes, in order:
+///
+/// 1. the template's OWN declared reserved markers are removed by exact text —
+///    the only set the text-matching gate can be certain of, since it deliberately
+///    never names a marker itself (NFR-6);
+/// 2. every residual control DELIMITER span is cut — the protocol's grammar
+///    ([`CONTROL_TOKEN_PREFIX`] … [`CONTROL_TOKEN_CLOSE`]) is a delimiter PAIR, not
+///    a named marker, so a marker the template did not declare, or a body the token
+///    budget cut mid-marker, still cannot reach `llm-token`.
+///
+/// Every byte involved is ASCII, so the offsets stay on character boundaries.
+fn strip_control_syntax(text: &str, reserved: &[String]) -> String {
+    let mut cleaned = text.to_string();
+    for marker in reserved.iter().filter(|marker| !marker.is_empty()) {
+        if cleaned.contains(marker.as_str()) {
+            cleaned = cleaned.replace(marker.as_str(), "");
+        }
+    }
+    cut_control_spans(&cleaned)
+}
+
+/// Cut every control-token span out of `text`.
+///
+/// The pinned template family delimits a control token in one of two DELIMITER
+/// forms — an opener `<|name>` and a closer `<name|>` — and this cuts both. It names
+/// no MARKER (NFR-6): the only bytes spelled here are the delimiters
+/// [`CONTROL_TOKEN_PREFIX`] and `|>`. That is what guarantees the non-call release
+/// path emits no `<|`-syntax (Spec #3141 fix D3) even for a marker the template did
+/// not declare, or a body the token budget cut mid-marker (the remaining span is
+/// dropped, since everything after an opener is protocol text).
+///
+/// A closer form's NAME must be marker-shaped (non-empty, no whitespace) so ordinary
+/// prose like `a < b |>` is preserved. A `<` that opens neither form is literal text
+/// and is kept.
+fn cut_control_spans(text: &str) -> String {
+    let mut kept = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('<') {
+        kept.push_str(&rest[..open]);
+        let candidate = &rest[open..];
+        if let Some(after_prefix) = candidate.strip_prefix(CONTROL_TOKEN_PREFIX) {
+            // Opener form: `<|name>` — the first `>` terminates it.
+            match after_prefix.find('>') {
+                Some(offset) => rest = &after_prefix[offset + 1..],
+                // Cut short mid-marker: everything after an opener is protocol text.
+                None => return kept,
+            }
+            continue;
+        }
+        // Closer form: `<name|>` — the name must sit between the delimiters, and no
+        // OTHER `<`/`>` may intervene (which would make this a literal `<`). The
+        // name must also be marker-shaped, so a comparison like `a < b |>` survives.
+        // (`candidate` starts with the `<` being examined, so inspect `candidate[1..]`.)
+        match candidate.find(CONTROL_TOKEN_CLOSE) {
+            Some(offset)
+                if is_marker_shaped(&candidate[1..offset])
+                    && !candidate[1..offset].contains(['<', '>']) =>
+            {
+                rest = &candidate[offset + CONTROL_TOKEN_CLOSE.len()..];
+            }
+            _ => {
+                kept.push('<');
+                rest = &candidate[1..];
+            }
+        }
+    }
+    kept.push_str(rest);
+    kept
+}
+
+/// Whether `name` looks like a control-token name rather than prose: non-empty and
+/// containing no whitespace. Used to keep the closer-form cut from eating a
+/// comparison like `a < b |>`.
+fn is_marker_shaped(name: &str) -> bool {
+    !name.is_empty() && !name.chars().any(char::is_whitespace)
 }
 
 /// The length of the longest trailing proper prefix of `marker` that `text` ends
@@ -1178,7 +1318,7 @@ mod tests {
 
     #[test]
     fn a_content_turn_forwards_every_character_exactly_once() {
-        let mut gate = ContentGate::for_content_turn("", &[]);
+        let mut gate = ContentGate::for_content_turn("", &[], &[]);
         assert_eq!(gate.push("hello"), "hello");
         assert_eq!(gate.push(" there"), " there");
         assert_eq!(gate.raw(), "hello there");
@@ -1187,30 +1327,28 @@ mod tests {
 
     #[test]
     fn a_tool_turn_holds_from_the_control_marker_and_keeps_the_prose() {
-        let mut gate = ContentGate::for_tool_turn("", &[]);
+        let mut gate = ContentGate::for_tool_turn("", &[], &[]);
         assert_eq!(gate.push("Opening it now. "), "Opening it now. ");
         // The call body starts with the control marker and is never forwarded.
         assert_eq!(gate.push("<|tool_call>call:open_app{"), "");
         assert_eq!(gate.push("app:1}<tool_call|>"), "");
-        assert_eq!(
-            gate.flush(),
-            "<|tool_call>call:open_app{app:1}<tool_call|>"
-        );
+        // Non-call release: the body comes back WITHOUT its control syntax.
+        assert_eq!(gate.flush(), "call:open_app{app:1}");
     }
 
     #[test]
     fn a_marker_split_across_two_pieces_never_leaks_its_prefix() {
-        let mut gate = ContentGate::for_tool_turn("", &[]);
+        let mut gate = ContentGate::for_tool_turn("", &[], &[]);
         // The trailing `<` could start a marker, so it is withheld.
         assert_eq!(gate.push("done <"), "done ");
         // The completion of the marker forwards nothing more.
         assert_eq!(gate.push("|tool_call>call:wait{"), "");
-        assert_eq!(gate.flush(), "<|tool_call>call:wait{");
+        assert_eq!(gate.flush(), "call:wait{");
     }
 
     #[test]
     fn a_content_turn_with_no_marker_never_holds_anything_back() {
-        let mut gate = ContentGate::for_tool_turn("", &[]);
+        let mut gate = ContentGate::for_tool_turn("", &[], &[]);
         let text = "a plain reply with no control tokens at all";
         assert_eq!(gate.push(text), text);
         assert_eq!(gate.flush(), "");
@@ -1230,6 +1368,20 @@ mod tests {
         vec![END.to_string()]
     }
 
+    /// The pinned template family's reserved control markers, as the gate receives
+    /// them from `chat_format::stream_markers` (the template's own declaration).
+    ///
+    /// Spelled only in this test module (production never names a marker — NFR-6,
+    /// enforced by `production_code_never_spells_the_reasoning_markers` and
+    /// `production_code_never_names_a_tool_marker`).
+    fn reserved_markers() -> Vec<String> {
+        vec![
+            "<|tool_call>".to_string(),
+            "<tool_call|>".to_string(),
+            ["<|", "\"", "|>"].concat(),
+        ]
+    }
+
     /// THE D2 pin: a reasoning-FIRST reply must stream its answer as ≥2 deltas,
     /// and NO delta may carry the reasoning markers (or the thought itself).
     ///
@@ -1237,7 +1389,7 @@ mod tests {
     /// finish path released it as ONE token beginning `<|channel>thought`.
     #[test]
     fn a_reasoning_first_reply_streams_the_answer_and_never_leaks_the_span() {
-        let mut gate = ContentGate::for_tool_turn(START, &end_tags());
+        let mut gate = ContentGate::for_tool_turn(START, &end_tags(), &[]);
         let thought = "<|channel>thought\nThe user wants one word.\n<channel|>";
         // The reasoning span streams in pieces, exactly as the model emits them.
         assert_eq!(gate.push(&thought[..10]), "", "the span is withheld");
@@ -1269,7 +1421,7 @@ mod tests {
     /// at most the marker length, never the whole generation.
     #[test]
     fn a_reasoning_marker_split_across_pieces_is_still_matched() {
-        let mut gate = ContentGate::for_tool_turn(START, &end_tags());
+        let mut gate = ContentGate::for_tool_turn(START, &end_tags(), &[]);
         // Split the START marker across two pieces, mid-token.
         assert_eq!(gate.push("<|channel>"), "");
         assert_eq!(gate.push("thought why"), "");
@@ -1285,7 +1437,7 @@ mod tests {
     /// channels); each pair flips back to streaming between them.
     #[test]
     fn recurring_reasoning_spans_are_each_skipped() {
-        let mut gate = ContentGate::for_content_turn(START, &end_tags());
+        let mut gate = ContentGate::for_content_turn(START, &end_tags(), &[]);
         assert_eq!(gate.push(START), "");
         assert_eq!(gate.push("one"), "");
         assert_eq!(gate.push(END), "");
@@ -1301,7 +1453,7 @@ mod tests {
     /// released from byte one and only a trailing partial control marker is held.
     #[test]
     fn a_turn_without_a_declared_span_streams_every_character() {
-        let mut gate = ContentGate::for_tool_turn("", &[]);
+        let mut gate = ContentGate::for_tool_turn("", &[], &[]);
         let text = "a plain reply with no reasoning span at all";
         assert_eq!(gate.push(text), text);
         assert_eq!(gate.flush(), "");
@@ -1309,20 +1461,31 @@ mod tests {
     }
 
     /// A prose reply keeps the tool-body contract: the prose streams, the call
-    /// body is withheld until the finish path classifies it.
+    /// body is withheld until the finish path classifies it. If that classification
+    /// says "content", the released text carries the BODY but no control syntax
+    /// (fix D3's non-call release rule).
     #[test]
     fn prose_before_a_tool_body_streams_and_the_body_is_withheld() {
-        let mut gate = ContentGate::for_tool_turn(START, &end_tags());
+        let reserved = reserved_markers();
+        let mut gate = ContentGate::for_tool_turn(START, &end_tags(), &reserved);
         assert_eq!(gate.push("Opening Mission Monitor. "), "Opening Mission Monitor. ");
         assert_eq!(gate.push("<|tool_call>call:open_app{"), "");
-        assert_eq!(gate.flush(), "<|tool_call>call:open_app{");
+        let released = gate.flush();
+        assert_eq!(released, "call:open_app{");
+        assert!(
+            !released.contains("<|"),
+            "the non-call release path must never emit control syntax: {released:?}"
+        );
+        // Non-vacuity: `raw` still carries the complete body, so the template's
+        // reverse parser can decode the call that was withheld.
+        assert_eq!(gate.raw(), "Opening Mission Monitor. <|tool_call>call:open_app{");
     }
 
     /// An UNCLOSED reasoning span is never released by `flush` — releasing it
     /// would leak the chain-of-thought as the reply.
     #[test]
     fn an_unclosed_reasoning_span_is_never_released_at_the_finish() {
-        let mut gate = ContentGate::for_tool_turn(START, &end_tags());
+        let mut gate = ContentGate::for_tool_turn(START, &end_tags(), &[]);
         assert_eq!(gate.push(START), "");
         assert_eq!(gate.push("a thought that never closes"), "");
         assert_eq!(gate.flush(), "", "the hidden span must never be flushed");
@@ -1374,6 +1537,148 @@ mod tests {
                  — it must come from the template's declaration"
             );
         }
+    }
+
+    // ── D3: the non-call release path can never emit control syntax ──────────
+
+    /// THE D3 pin for the release path: whatever a withheld ToolBody contains, the
+    /// non-call release (`flush`) emits NO `<|`-syntax.
+    ///
+    /// Round 3's regression released the withheld body VERBATIM as prose, so the
+    /// companion bubble showed `call:open_app{app:<|"|>Mission Monitor<|"|>}`. The
+    /// gate now strips the template's declared markers AND cuts any residual
+    /// control-token span, so only the call's own text can reach `llm-token`.
+    #[test]
+    fn the_non_call_release_path_never_emits_control_syntax() {
+        let reserved = reserved_markers();
+        // A complete body, exactly as the pinned template renders it.
+        let quote = ["<|", "\"", "|>"].concat();
+        let body = format!(
+            "<|tool_call>call:open_app{{app:{quote}Mission Monitor{quote}}}<tool_call|>"
+        );
+        let mut gate = ContentGate::for_tool_turn(START, &end_tags(), &reserved);
+        assert_eq!(gate.push("Okay."), "Okay.");
+        assert_eq!(gate.push(&body), "", "the whole body is withheld");
+        let released = gate.flush();
+        eprintln!("D3 RELEASE: {released:?}");
+
+        assert!(
+            !released.contains("<|"),
+            "the release path must emit NO opener syntax: {released:?}"
+        );
+        assert!(
+            !released.contains(&quote),
+            "the release path must emit NO argument-quote marker: {released:?}"
+        );
+        // Non-vacuity: `raw` still carries the complete marker-bearing body, so the
+        // template's reverse parser decodes a real call rather than prose.
+        assert!(
+            gate.raw().contains("<|tool_call>") && gate.raw().contains("<tool_call|>"),
+            "the raw buffer must retain the complete call body: {:?}",
+            gate.raw()
+        );
+    }
+
+    /// A body the token budget CUT mid-marker (the common truncation) is also
+    /// released without control syntax — the delimiter rule does not depend on a
+    /// well-formed body.
+    #[test]
+    fn a_truncated_call_body_is_released_without_control_syntax() {
+        let reserved = reserved_markers();
+        let mut gate = ContentGate::for_tool_turn(START, &end_tags(), &reserved);
+        // No closer: the generation stopped inside the call body.
+        assert_eq!(gate.push("<|tool_call>call:open_app{app:"), "");
+        let released = gate.flush();
+        assert!(
+            !released.contains("<|"),
+            "a truncated body must not leak opener syntax: {released:?}"
+        );
+        assert_eq!(released, "call:open_app{app:");
+    }
+
+    /// The pin that the release path cannot emit control syntax must be
+    /// non-vacuous: WITHOUT the template's boundary the same bytes are preserved,
+    /// so the pass above is the boundary doing work rather than a body that never
+    /// contained a marker.
+    #[test]
+    fn the_marker_boundary_is_what_strips_control_syntax() {
+        let reserved = reserved_markers();
+        let quote = ["<|", "\"", "|>"].concat();
+        let body = format!("call:open_app{{app:{quote}Settings{quote}}}");
+        let mut gate = ContentGate::for_tool_turn(START, &end_tags(), &reserved);
+        assert_eq!(gate.push("<|tool_call>"), "");
+        assert_eq!(gate.push(&body), "");
+        let released = gate.flush();
+        assert_eq!(released, "call:open_app{app:Settings}");
+        assert!(!released.contains(&quote));
+        // The raw body still has everything the reverse parser needs.
+        assert!(gate.raw().starts_with("<|tool_call>"));
+    }
+
+    /// `cut_control_spans` leaves ordinary `<`/`>` text alone: a reply about
+    /// comparisons must not be mangled by the delimiter rule.
+    #[test]
+    fn ordinary_angle_brackets_survive_the_release_filter() {
+        assert_eq!(cut_control_spans("a < b and c > d"), "a < b and c > d");
+        assert_eq!(cut_control_spans("use <div> tags"), "use <div> tags");
+        assert_eq!(cut_control_spans("plain text"), "plain text");
+        // A comparison with a stray `|>` must survive: the closer-form NAME is
+        // prose (it has whitespace), so it is not treated as a control token.
+        assert_eq!(cut_control_spans("a < b |> c"), "a < b |> c");
+        // Non-vacuity: a REAL control span IS cut — both forms.
+        assert_eq!(cut_control_spans("a<|x|>b"), "ab");
+        assert_eq!(cut_control_spans("a<tool_call|>b"), "ab");
+        // An unterminated opener drops the remainder (a body cut mid-marker).
+        assert_eq!(cut_control_spans("ok<|tool_call"), "ok");
+    }
+
+    /// NFR-6 / the F1 lesson applied to the TOOL path (Spec #3141 fix D3): the
+    /// tool-call markers must come from the template's declaration, never a literal
+    /// in PRODUCTION code.
+    ///
+    /// This is what makes the chosen design the only correct one: because we never
+    /// name a tool marker, no "filter the tool markers by name" tweak is possible —
+    /// the decoder must stop classifying and the gate must match marker TEXT it was
+    /// handed.
+    ///
+    /// The scan is RAW over the production modules (comments included) — the G-430
+    /// predicate is exactly "the literal does not appear in production code". Only
+    /// the DELIMITERS are allowed in production (protocol grammar, not markers), and
+    /// the declaration block / argument quote are owned by `chat_format` as its
+    /// `TOOL_DECLARATION_*` / `TOOL_ARGUMENT_QUOTE` constants — what must never be
+    /// spelled is the CALL marker itself.
+    #[test]
+    fn production_code_never_names_a_tool_marker() {
+        // Constructed at runtime so this very file can be scanned without the
+        // guard tripping on its own assertion text.
+        let opener = ["<|", "tool_call", ">"].concat();
+        let closer = ["<", "tool_call|>"].concat();
+        let sources: [(&str, &str); 4] = [
+            ("stream.rs", include_str!("stream.rs")),
+            ("chat_format.rs", include_str!("chat_format.rs")),
+            ("thread.rs", include_str!("thread.rs")),
+            ("detokenize.rs", include_str!("detokenize.rs")),
+        ];
+        for (name, source) in sources {
+            let production = source.split("\n#[cfg(test)]").next().unwrap_or(source);
+            assert!(
+                production.len() < source.len(),
+                "{name}: the production scan must exclude the file's test module"
+            );
+            assert!(
+                !production.contains(&opener),
+                "{name}: production code must not spell the tool-call OPENER — it \
+                 must come from the template's declaration (NFR-6 / fix D3)"
+            );
+            assert!(
+                !production.contains(&closer),
+                "{name}: production code must not spell the tool-call CLOSER — it \
+                 must come from the template's declaration (NFR-6 / fix D3)"
+            );
+        }
+        // Non-vacuity: the pinned template DOES declare these, so the knowledge
+        // lives in the declaration (asserted by `chat_format`'s template pins).
+        assert!(opener.starts_with(CONTROL_TOKEN_PREFIX));
     }
 
     // ── The wire vocabulary (R-26.1: frozen names) ───────────────────────────

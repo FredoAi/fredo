@@ -690,3 +690,190 @@ async fn a_reasoning_first_generation_streams_and_never_leaks_the_span() {
          reasoning_per_trial={trial_reasoning:?} deltas_per_trial={trial_deltas:?}"
     );
 }
+
+// ── REQUIRED ARTIFACT — D3: the FULL composition decodes a real tool call ─────
+
+/// THE D3 pin: the SHIPPED composition — real handle → real engine thread → real
+/// model → the token decoder → the streaming gate → the template's own reverse
+/// parser — emits a validated [`EngineEvent::ToolCall`] and NEVER forwards the raw
+/// call body as a `Token`.
+///
+/// ## Why the pre-existing pins could not catch the regression
+///
+/// Round 3 made reserved-token dropping live in the DECODER and the gate pin fed
+/// the tool-call opener straight into the gate — i.e. it injected input AFTER the
+/// transformation that broke. So the gate stayed green while the shipped path lost
+/// the opener, decoded no call, and released the withheld body as prose (live:
+/// nine `llm-token` deltas joined `call:open_app{app:<|"|>Mission Monitor<|"|>}`).
+///
+/// This pin drives the whole composition with the real `open_app` registry offer
+/// (the same `ChatTurn::with_tools` shape `skills::skill_turn` produces) and the
+/// prompt the Tester used, so the decoder stage the regression lived in is
+/// EXERCISED rather than bypassed.
+///
+/// ## Non-flakiness
+///
+/// Whether one sampling run picks the tool is model behaviour, not a product
+/// invariant, so the pin drives a few seeds and stops as soon as the call is
+/// OBSERVED. The absence clause (no `Token` may carry `<|`-syntax) and the
+/// single-`Finished` clause are asserted on EVERY trial that runs — so a
+/// regression that releases the raw body fails immediately, without depending on
+/// the model choosing the tool.
+#[tokio::test]
+async fn a_tool_offered_turn_emits_a_validated_tool_call_and_never_the_raw_body() {
+    let Some(model_paths) = models_or_skip() else {
+        return;
+    };
+    let handle = CompanionEngineHandle::spawn_with_budget(DEFAULT_START_BUDGET);
+    // `Auto` (the shipped default): the composition under test — decoder → gate →
+    // the template's reverse parser — is backend-independent, and the GPU path
+    // keeps the pin fast on a GPU host while still falling back to CPU elsewhere.
+    let started = handle.start(model_paths.clone(), CompanionBackendMode::Auto);
+    assert!(
+        started.success,
+        "the engine must start for the D3 gate: {:?} — {}",
+        started.code,
+        started.detail
+    );
+
+    // The shipped companion offer, obtained from the ONE shared builder — never a
+    // second registry construction (R-2; `voice_invariants` enforces it). With no
+    // published surfaces it is exactly the three static skills (`open_app`,
+    // `close_app`, `doom_mode`), which is what `skills::render_tools` then
+    // forwards verbatim into the turn.
+    let registry = crate::infrastructure::companion::surface_registry::build_companion_skill_registry(
+        &[],
+    );
+    let tools = crate::applications::llm_server::skills::render_tools(&registry)
+        .as_array()
+        .cloned()
+        .expect("the registry renders an array of tools");
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool["function"]["name"] == "open_app"),
+        "the offered registry must declare open_app: {tools:?}"
+    );
+
+    let mut calls: Vec<(Option<String>, Option<String>)> = Vec::new();
+    let mut trials_run = 0usize;
+    let mut failure: Option<String> = None;
+    let mut raw_body_leaks: Vec<String> = Vec::new();
+
+    for seed in 0..3u32 {
+        let turn = {
+            use crate::applications::llm_server::chat::LlmMessage;
+            crate::applications::llm_server::engine::request::ChatTurn::text(vec![
+                LlmMessage {
+                    role: "system".to_string(),
+                    content: "You are Fredo, a concise desktop assistant.".to_string(),
+                },
+                LlmMessage {
+                    role: "user".to_string(),
+                    content: "Open the Mission Monitor application for me.".to_string(),
+                },
+            ])
+            .with_tools(tools.clone(), "auto")
+            .with_max_tokens(200)
+        };
+
+        let (events_tx, mut events_rx) = tokio::sync::mpsc::channel(256);
+        let request = crate::applications::llm_server::engine::ChatRequest {
+            turn,
+            events: events_tx,
+            paths: model_paths.clone(),
+            mode: CompanionBackendMode::Auto,
+            seed: 101 + seed,
+        };
+        handle
+            .chat(request)
+            .expect("the engine must accept the tool turn");
+
+        let mut tokens: Vec<String> = Vec::new();
+        let mut turn_calls: Vec<(Option<String>, Option<String>)> = Vec::new();
+        let mut finished = 0usize;
+        while let Some(event) = events_rx.recv().await {
+            match event {
+                crate::applications::llm_server::engine::stream::EngineEvent::Token(text) => {
+                    tokens.push(text)
+                }
+                crate::applications::llm_server::engine::stream::EngineEvent::ToolCall {
+                    name,
+                    arguments,
+                    ..
+                } => turn_calls.push((name, arguments)),
+                crate::applications::llm_server::engine::stream::EngineEvent::Finished { .. } => {
+                    finished += 1
+                }
+                crate::applications::llm_server::engine::stream::EngineEvent::Failed {
+                    code,
+                    detail,
+                } => failure = Some(format!("{code:?}: {detail}")),
+                _ => {}
+            }
+        }
+        trials_run += 1;
+
+        let visible: String = tokens.concat();
+        eprintln!(
+            "D3 TOOL TRIAL {seed}: deltas={} calls={:?} finished={finished} visible={visible:?}",
+            tokens.len(),
+            turn_calls
+                .iter()
+                .map(|(name, arguments)| (name.clone(), arguments.clone()))
+                .collect::<Vec<_>>(),
+        );
+
+        assert!(
+            failure.is_none(),
+            "trial {seed}: the turn must not fail: {failure:?}"
+        );
+        assert_eq!(
+            finished, 1,
+            "trial {seed}: the turn must settle with exactly one Finished"
+        );
+        // UNIVERSAL (this is the regression's signature): no user-visible delta may
+        // carry control syntax — the raw call body is NEVER a `llm-token`.
+        if visible.contains("<|") {
+            raw_body_leaks.push(visible.clone());
+        }
+        let observed = !turn_calls.is_empty();
+        calls.extend(turn_calls);
+        if observed {
+            break;
+        }
+    }
+    handle.stop();
+
+    assert!(
+        raw_body_leaks.is_empty(),
+        "the raw tool-call body must never be forwarded as content: {raw_body_leaks:?}"
+    );
+
+    // THE MECHANISM CLAUSE: the call must actually be decoded at least once, so the
+    // pin cannot pass on prompts that simply never produced a call.
+    assert!(
+        !calls.is_empty(),
+        "no trial decoded an EngineEvent::ToolCall in {trials_run} trial(s) — the \
+         tool path was never exercised (a vacuous pass)"
+    );
+
+    let validated: Vec<&(Option<String>, Option<String>)> = calls
+        .iter()
+        .filter(|(name, _)| name.as_deref() == Some("open_app"))
+        .collect();
+    assert!(
+        !validated.is_empty(),
+        "the decoded call must be the offered open_app skill: {calls:?}"
+    );
+    let (_, arguments) = validated[0];
+    let arguments = arguments
+        .as_deref()
+        .expect("a decoded tool call must carry its argument JSON");
+    let parsed: serde_json::Value =
+        serde_json::from_str(arguments).expect("the decoded arguments must be JSON");
+    assert_eq!(
+        parsed["app"], "Mission Monitor",
+        "the template's reverse parser must recover the app name from the call: {arguments}"
+    );
+}
