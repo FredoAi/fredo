@@ -183,6 +183,10 @@ jobs:
       # the installed SDK - there is no CUDA runtime (`cudart`/`cublas`/
       # `cublasLt`) to discover any more, so the old toolkit-major-dependent
       # directory search is gone with it.
+      #
+      # The loader directory is DISCOVERED across an arch-correct candidate set,
+      # never named: the SDK does not keep the loader in `Bin`, so the previous
+      # single hardcoded candidate (`$VULKAN_SDK\Bin`) could never match.
       - name: Put the companion engine DLLs on PATH (dynamic-link payload)
         shell: pwsh
         run: |
@@ -196,17 +200,78 @@ jobs:
               $out = Join-Path $_.FullName "out"
               if (Test-Path -LiteralPath $out) { $dirs += (Resolve-Path -LiteralPath $out).Path }
             }
-          # `vulkan-1.dll` is imported by ggml-vulkan.dll and by the test
-          # binaries at load time. The SDK's loader directory is discovered, not
-          # named, so an SDK layout change cannot silently break enumeration.
-          $vulkanSearchPaths = @()
+          # `vulkan-1.dll` is a LOAD-TIME import of `ggml-vulkan.dll` -- verified
+          # by reading its PE import table, where `vulkan-1.dll` appears in the
+          # STATIC import list (not the delay-load table). `ggml-vulkan.dll` is
+          # itself a static import of `ggml.dll`, which every engine-linking test
+          # binary imports, so Windows must be able to resolve the loader when
+          # the binary is loaded. A miss therefore genuinely blocks enumeration
+          # and must FAIL LOUD -- it is not a warning.
+          #
+          # The loader's directory is DISCOVERED, never named. Two independent
+          # reasons the previous single candidate (`$VULKAN_SDK\Bin`) could never
+          # match:
+          #   1. `Bin` holds `glslc`, `vulkaninfoSDK.exe` and the layers -- the
+          #      loader is not there.
+          #   2. `install-vulkan-sdk-action`'s `install_runtime` input defaults to
+          #      FALSE (action.yml leaves it `required: false` and inputs.ts
+          #      evaluates `/true/i.test(inputInstallRuntime)`), so the copy-back
+          #      into `$VULKAN_SDK\runtime\{x64,x86}` never runs on this job.
+          # The loader that IS present is written by the SDK installer itself,
+          # which runs `Helpers\VulkanRT.exe` and drops it into the system
+          # directories. So the candidate set spans the SDK layout AND the system
+          # directories, and every candidate's outcome is printed.
+          # Arch-correct candidate order: the SDK's runtime copy-back layout is
+          # `runtime\{x64,x86}` (installer_vulkan.ts installVulkanRuntimeFromSdk),
+          # so probe the runner's own bitness first and the other second.
+          # PROCESSOR_ARCHITECTURE is `AMD64` / `ARM64` / `x86`; a 64-bit runner
+          # (this job) takes the x64 arm.
+          $procArch = "$env:PROCESSOR_ARCHITECTURE"
+          if ($procArch -eq "x86") { $archPrimary = "x86"; $archSecondary = "x64" }
+          else { $archPrimary = "x64"; $archSecondary = "x86" }
+          $vulkanCandidates = @()
           if ($env:VULKAN_SDK) {
-            $vulkanBin = Join-Path $env:VULKAN_SDK "Bin"
-            $vulkanSearchPaths += $vulkanBin
-            if (Test-Path -LiteralPath $vulkanBin -PathType Container) {
-              $dirs += (Resolve-Path -LiteralPath $vulkanBin).Path
+            $runtimeRoot = Join-Path $env:VULKAN_SDK "runtime"
+            $vulkanCandidates += (Join-Path $runtimeRoot $archPrimary)
+            $vulkanCandidates += (Join-Path $runtimeRoot $archSecondary)
+            $vulkanCandidates += $runtimeRoot
+            # Any other arch/layout directory the installer chose (arm64, a
+            # future subdir name) -- discovery must not depend on our guess.
+            if (Test-Path -LiteralPath $runtimeRoot -PathType Container) {
+              $vulkanCandidates += @(Get-ChildItem -LiteralPath $runtimeRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+            }
+            $vulkanCandidates += (Join-Path $env:VULKAN_SDK "Bin")
+            $vulkanCandidates += $env:VULKAN_SDK
+          }
+          $systemRoot = if ($env:SystemRoot) { $env:SystemRoot } else { "C:\Windows" }
+          $vulkanCandidates += (Join-Path $systemRoot "System32")
+          $vulkanCandidates = @($vulkanCandidates | Where-Object { $_ } | Select-Object -Unique)
+          $loaderDirs = @()
+          $searched = @()
+          foreach ($cand in $vulkanCandidates) {
+            if (-not (Test-Path -LiteralPath $cand -PathType Container)) {
+              Write-Host "Vulkan loader candidate: $cand -> (directory does not exist)"
+              $searched += "$cand [missing]"
+              continue
+            }
+            $resolved = (Resolve-Path -LiteralPath $cand).Path
+            $loaderHit = @(Get-ChildItem -LiteralPath $resolved -Filter "vulkan-1.dll" -File -ErrorAction SilentlyContinue)
+            if ($loaderHit.Count -gt 0) {
+              Write-Host "Vulkan loader candidate: $resolved -> vulkan-1.dll FOUND"
+              $loaderDirs += $resolved
+              $searched += "$resolved [hit]"
+            } else {
+              Write-Host "Vulkan loader candidate: $resolved -> (no vulkan-1.dll)"
+              $searched += "$resolved [no loader]"
             }
           }
+          if ($loaderDirs.Count -eq 0) {
+            Write-Host "::error::vulkan-1.dll not found in any candidate directory. ggml-vulkan.dll imports it at LOAD time, so a dynamic-link test binary cannot be enumerated. Searched: $($searched -join '; ')."
+            exit 1
+          }
+          # A discovered loader directory joins the payload set, so it is
+          # published to PATH and covered by the read-back assertion below.
+          foreach ($loaderDir in $loaderDirs) { $dirs += $loaderDir }
           $dirs = @($dirs | Select-Object -Unique)
           $ggml = @()
           foreach ($dir in $dirs) {
@@ -248,18 +313,20 @@ jobs:
           }
           # Fail LOUD on the Vulkan loader too: a miss is a named failure, never a
           # warning, so a green enumeration always means the payload is genuinely
-          # loadable (a false green is what shipped the round-4 red).
-          $guardDirs = @(@($dirs) + @($vulkanSearchPaths) | Where-Object { $_ } | Select-Object -Unique)
+          # loadable (a false green is what shipped the round-4 red). The loader
+          # dir(s) discovered above were folded into `$dirs` BEFORE this point, so
+          # this is the same publish + read-back guarantee the ggml DLLs get.
           $vulkanHits = @()
-          foreach ($dir in $guardDirs) {
+          foreach ($dir in $dirs) {
             $vulkanHits += @(Get-ChildItem -LiteralPath $dir -Filter "vulkan-1.dll" -File -ErrorAction SilentlyContinue)
           }
           if ($vulkanHits.Count -eq 0) {
-            Write-Host "::error::vulkan-1.dll not found (searched: $($guardDirs -join '; ')); the ggml-vulkan test binaries import it and cannot be enumerated."
+            Write-Host "::error::vulkan-1.dll not found (searched: $($dirs -join '; ')); ggml-vulkan.dll imports it at LOAD time and the test binaries cannot be enumerated."
             exit 1
           }
           $vulkanNames = ($vulkanHits | ForEach-Object { $_.Name }) -join ", "
           Write-Host "Vulkan loader: vulkan-1.dll -> $($vulkanHits.Count) match(es): $vulkanNames"
+          Write-Host "Vulkan loader dir(s) on PATH: $($loaderDirs -join '; ')"
           Write-Host "Companion engine DLL payload: $($ggml.Count) ggml DLL(s) + Vulkan loader; $($published.Count) dir(s) published to GITHUB_PATH."
       # Spec #3141 - run the `live` nextest profile, not the fast default.
       #
