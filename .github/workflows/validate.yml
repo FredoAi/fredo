@@ -139,6 +139,55 @@ jobs:
         with:
           tool: cargo-nextest
       - run: cargo check --manifest-path apps/tauri/src-tauri/Cargo.toml --locked
+      # Spec #3141 fix D4 — nextest must be able to LOAD what it enumerates.
+      #
+      # `llama-cpp-4` is linked with `dynamic-link`, so EVERY test binary statically
+      # imports `ggml*.dll` / `llama*.dll` / `mtmd.dll`. Those land in
+      # `target/debug/` (cargo's profile dir), while nextest's binaries live in
+      # `target/debug/deps/`. Windows resolves an import from the EXE's own
+      # directory, the system dirs, the CWD and PATH — never the PARENT profile dir —
+      # so enumeration died with `0xc0000135: The specified module could not be
+      # found` before a single test ran.
+      #
+      # ONE additive, job-scoped step: append the payload dirs to `GITHUB_PATH`
+      # (which applies to every LATER step of this job only) and FAIL if no
+      # `ggml*.dll` is found — a missing payload must be a named failure, never a
+      # silent skip that let the build look green.
+      - name: Put the companion engine DLLs on PATH (dynamic-link payload)
+        shell: pwsh
+        run: |
+          $root = "apps/tauri/src-tauri/target/debug"
+          $dirs = @()
+          if (Test-Path -LiteralPath $root) { $dirs += (Resolve-Path -LiteralPath $root).Path }
+          # The CMake output dir of the sys crate (where ggml*/llama*/mtmd DLLs are
+          # copied on a dynamic-link build).
+          Get-ChildItem -Path "apps/tauri/src-tauri/target/debug/build" -Directory -Filter "llama-cpp-sys-4-*" -ErrorAction SilentlyContinue |
+            ForEach-Object {
+              $out = Join-Path $_.FullName "out"
+              if (Test-Path -LiteralPath $out) { $dirs += (Resolve-Path -LiteralPath $out).Path }
+            }
+          # cudart / cublas / cublasLt are imported by ggml-cuda.dll at load time.
+          if ($env:CUDA_PATH) {
+            $cudaBin = Join-Path $env:CUDA_PATH "bin"
+            if (Test-Path -LiteralPath $cudaBin) { $dirs += (Resolve-Path -LiteralPath $cudaBin).Path }
+          }
+          $ggml = @()
+          foreach ($dir in $dirs) {
+            $found = Get-ChildItem -Path $dir -Filter "ggml*.dll" -File -ErrorAction SilentlyContinue
+            if ($found) {
+              $names = ($found | ForEach-Object { $_.Name }) -join ", "
+              Write-Host "DLL dir: $dir -> $names"
+              $ggml += $found
+            } else {
+              Write-Host "DLL dir: $dir -> (no ggml*.dll)"
+            }
+            Write-Host "$dir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          }
+          if ($ggml.Count -eq 0) {
+            Write-Host "::error::No ggml*.dll found. Searched: $($dirs -join '; '). A dynamic-link test binary cannot be enumerated without it."
+            exit 1
+          }
+          Write-Host "Companion engine DLL payload: $($ggml.Count) ggml DLL(s) on PATH."
       - run: cargo nextest run --manifest-path apps/tauri/src-tauri/Cargo.toml --locked
       - run: cargo clippy --manifest-path apps/tauri/src-tauri/Cargo.toml --locked -- -D warnings
 
