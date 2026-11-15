@@ -122,20 +122,28 @@ keyring = { version = "3", features = ["windows-native", "apple-native", "sync-s
 sqlparser = "0.63"
 # Spec #3141 ST-1 — in-process companion inference (llama-cpp-4 Rust bindings).
 # `mtmd` is REQUIRED for vision/audio (ST-4/ST-5); `native` is deliberately
-# absent (not portable); `rpc` is dropped. CUDA is the primary backend, Vulkan
-# the fallback (required by NFR-7 / ST-1 — a GPU-less host with a Vulkan device
-# still offloads), CPU always available.
+# absent (not portable); `rpc` is dropped. CPU is always available.
+#
+# VULKAN IS THE ONLY GPU BACKEND (decided post-#3141 audit). Vulkan covers
+# NVIDIA, AMD and Intel from ONE code path, and its build cost is an order of
+# magnitude smaller than CUDA's: ggml-vulkan is 3 C++ sources + 162 shader
+# compiles, while ggml-cuda is 71 `.cu` files pushed through
+# nvcc -> cicc -> ptxas (the step that saturated every core for ~40 min per
+# cold build and made every pipeline round pay for a native rebuild). CUDA's
+# only advantage was 10-30% faster inference on NVIDIA, which did not justify
+# a per-round build tax in CI and locally. Dropping `cuda` also removes the
+# `CUDA_PATH` import-library wiring, the CUDA Toolkit from both workflows, and
+# the CUDA runtime redistributables from the installer and third-party notices.
 #
 # `dynamic-link` is ENABLED on the strength of the EXECUTED ST-1 build gate
 # (NFR-7 delegates this decision to the gate; static was PREFERRED). A static
-# link archives `ggml-cuda` (links CUDA PRIVATE) and `llama-common` (links
-# `cpp-httplib` PRIVATE) into one archive, and a static archive does not
-# propagate private deps — the final binary link then fails with ~28 unresolved
-# external symbols from llama.cpp's download/hf-cache helpers. `dynamic-link`
-# builds each module as a DLL with its private deps linked in, which resolves
-# the link cleanly, at the cost of shipping the ggml/llama DLLs beside
-# `fredo.exe`.
-llama-cpp-4 = { version = "0.11.0", default-features = false, features = ["cuda", "vulkan", "mtmd", "openmp", "ggml", "dynamic-link"] }
+# link archives `llama-common` (links `cpp-httplib` PRIVATE) into one archive,
+# and a static archive does not propagate private deps — the final binary link
+# then fails with ~28 unresolved external symbols from llama.cpp's
+# download/hf-cache helpers. `dynamic-link` builds each module as a DLL with
+# its private deps linked in, which resolves the link cleanly, at the cost of
+# shipping the ggml/llama DLLs beside `fredo.exe`.
+llama-cpp-4 = { version = "0.11.0", default-features = false, features = ["vulkan", "mtmd", "openmp", "ggml", "dynamic-link"] }
 
 [dev-dependencies]
 tempfile = "3"

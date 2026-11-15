@@ -41,21 +41,15 @@ jobs:
         with:
           workspaces: apps/tauri/src-tauri
       # Spec #3141 ST-1 — the release build compiles llama.cpp/ggml from source
-      # with the SAME feature set as CI (`cuda`, `vulkan`, `mtmd`, `openmp`,
-      # `ggml`, `dynamic-link`). That requires the identical native
-      # prerequisite the `rust-validate` leg provisions, so a release build can
-      # never silently differ from the validated one:
-      #   * CUDA Toolkit — CMake's FindCUDAToolkit plus the `CUDA_PATH` export
-      #     that `apps/tauri/src-tauri/build.rs` reads for the cudart/cublas/
-      #     cublasLt import libraries;
+      # with the SAME feature set as CI (`vulkan`, `mtmd`, `openmp`, `ggml`,
+      # `dynamic-link`). That requires the identical native prerequisite the
+      # `rust-validate` leg provisions, so a release build can never silently
+      # differ from the validated one:
       #   * LunarG Vulkan SDK — ggml-vulkan's Windows CMake lookup hard-fails
       #     without it and `glslc` compiles the shaders.
-      # Both SHA-pinned (NFR-2). Neither changes the build's artifacts' feature
-      # set; they make the mandated one buildable.
-      - uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d # v0.2.36
-        id: cuda-toolkit
-        with:
-          cuda: '13.2.0'
+      # Vulkan is the ONLY GPU backend: `ggml-cuda` is not compiled, so no CUDA
+      # Toolkit is provisioned and no CUDA runtime is redistributed.
+      # SHA-pinned (NFR-2).
       - uses: jakoch/install-vulkan-sdk-action@7fe84289ddbf750f7eff9f8e4588e600e1dd06c8 # v1.8.1
         with:
           cache: true

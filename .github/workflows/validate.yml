@@ -102,17 +102,16 @@ jobs:
   # rust-validate — thorough Rust gate (warm-cache + nextest); NOT a required check.
   #
   # Spec #3141 ST-1: the crate now links the in-process companion engine
-  # (`llama-cpp-4`), which builds llama.cpp + ggml + ggml-cuda + ggml-vulkan FROM
-  # SOURCE — the crate publishes no CUDA prebuilt. The rust gate therefore needs
+  # (`llama-cpp-4`), which builds llama.cpp + ggml + ggml-vulkan FROM SOURCE
+  # (the crate publishes no matching prebuilt). The rust gate therefore needs
   # the native toolchain the engine compiles against:
-  #   * a CUDA Toolkit (CMake's FindCUDAToolkit; the action also exports
-  #     CUDA_PATH, which `apps/tauri/src-tauri/build.rs` reads to add the
-  #     cudart/cublas/cublasLt import libraries, and puts nvcc on PATH);
   #   * the LunarG Vulkan SDK (ggml-vulkan's Windows CMake lookup hard-fails
   #     without it, and glslc compiles the shaders).
-  # The CUDA/Vulkan source build is slow (tens of minutes on a cold cache), so
-  # the job budget is raised — the checks themselves are unchanged and are never
-  # weakened.
+  # Vulkan is the ONLY GPU backend (see the `llama-cpp-4` feature list in
+  # `apps/tauri/src-tauri/Cargo.toml`) — `ggml-cuda` is not compiled, so there
+  # is no CUDA Toolkit step. The source build is still slow on a cold cache, so
+  # the job budget stays raised and the CMake tree is cached; the checks
+  # themselves are unchanged and are never weakened.
   rust-validate:
     needs: paths
     if: needs.paths.outputs.rust == 'true'
@@ -123,15 +122,40 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           toolchain: stable
+      # Spec #3141 - resolve `llama-cpp-sys-4`'s CMake build cache dir.
+      #
+      # Its build.rs keys the expensive CMake/CUDA build tree on a hash of
+      # OUT_DIR and places it OUTSIDE the cargo target dir, at
+      # `%LOCALAPPDATA%\llcb\<hash>`. `Swatinem/rust-cache` only caches
+      # `./target` and `~/.cargo`, so without this the C++/CUDA compile was
+      # redone on EVERY run (measured: `cargo check` took 94m 32s on a cold
+      # run). The hash is stable for a given OUT_DIR string, so the directory
+      # is reusable across runs on the same runner image.
+      #
+      # Computed in a step because the action input needs a literal path and
+      # `cache-directories` entries are not shell-expanded.
+      - name: Resolve the llama.cpp CMake cache dir
+        id: llcb
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:LOCALAPPDATA "llcb"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Write-Host "llama.cpp CMake cache dir: $dir"
+          "dir=$dir" >> $env:GITHUB_OUTPUT
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: apps/tauri/src-tauri
-      # CUDA Toolkit (SHA-pinned). `CUDA_PATH` is exported to GITHUB_ENV.
-      - uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d # v0.2.36
-        id: cuda-toolkit
-        with:
-          cuda: '13.2.0'
+          # Cache the out-of-target-dir CMake/CUDA build tree (see above).
+          # ~1.2 GB per build configuration, well inside the 10 GB repo limit.
+          cache-directories: ${{ steps.llcb.outputs.dir }}
+          # The CMake tree is large and expensive; never throw it away because
+          # the job failed - a red run should still warm the next one.
+          cache-on-failure: true
       # LunarG Vulkan SDK (SHA-pinned). Exports `VULKAN_SDK` and puts glslc on PATH.
+      # Spec #3141: Vulkan is the ONLY GPU backend now (ggml-cuda is not
+      # compiled), so there is no CUDA Toolkit step any more — the CUDA
+      # source build (71 `.cu` files through nvcc/cicc/ptxas) was the dominant
+      # cost of this leg and of every local build.
       - uses: jakoch/install-vulkan-sdk-action@7fe84289ddbf750f7eff9f8e4588e600e1dd06c8 # v1.8.1
         with:
           cache: true
@@ -154,15 +178,11 @@ jobs:
       # `ggml*.dll` is found — a missing payload must be a named failure, never a
       # silent skip that let the build look green.
       #
-      # The CUDA runtime is the second half of the same payload: `ggml-cuda.dll`
-      # imports `cublas64_*.dll`, and every test binary imports
-      # `cudart`/`cublas`/`cublasLt` (`build.rs:77-79` emits
-      # `rustc-link-lib=dylib=` for all three). Its DIRECTORY MOVES BETWEEN
-      # TOOLKIT MAJORS — CUDA <= 12 keeps the DLLs in `%CUDA_PATH%\bin`, CUDA 13.x
-      # moved them to `%CUDA_PATH%\bin\x64` — so the directory is DISCOVERED from
-      # the DLLs that are actually there (depth-1 search under `bin`), never named.
-      # Hardcoding either layout breaks the other one (round 4 hardcoded `bin` and
-      # published an empty directory on CUDA 13.2 while reporting success).
+      # The GPU runtime is the second half of the payload. With the Vulkan-only
+      # backend (Spec #3141 re-scope) the import surface is `vulkan-1.dll` from
+      # the installed SDK - there is no CUDA runtime (`cudart`/`cublas`/
+      # `cublasLt`) to discover any more, so the old toolkit-major-dependent
+      # directory search is gone with it.
       - name: Put the companion engine DLLs on PATH (dynamic-link payload)
         shell: pwsh
         run: |
@@ -176,39 +196,15 @@ jobs:
               $out = Join-Path $_.FullName "out"
               if (Test-Path -LiteralPath $out) { $dirs += (Resolve-Path -LiteralPath $out).Path }
             }
-          # cudart / cublas / cublasLt are imported by ggml-cuda.dll (and by the test
-          # binaries) at load time. Discover the directory that actually holds them.
-          $cudaSearchPaths = @()
-          $cudaRuntimeDirs = @()
-          if ($env:CUDA_PATH) {
-            $cudaBin = Join-Path $env:CUDA_PATH "bin"
-            $cudaSearchPaths += $cudaBin
-            if (Test-Path -LiteralPath $cudaBin -PathType Container) {
-              $dirs += (Resolve-Path -LiteralPath $cudaBin).Path
-              # `bin` itself plus each immediate child: this covers CUDA <= 12
-              # (`bin`) and CUDA 13.x (`bin\x64`) without naming either layout, and
-              # keeps working if a later major moves it again.
-              $candidates = @($cudaBin) + @(Get-ChildItem -LiteralPath $cudaBin -Directory -ErrorAction SilentlyContinue |
-                ForEach-Object { $_.FullName })
-              $cudaRuntimeDirs = @($candidates |
-                Where-Object {
-                  (Test-Path -LiteralPath $_ -PathType Container) -and
-                  [bool](Get-ChildItem -LiteralPath $_ -Filter "cublasLt64_*.dll" -File -ErrorAction SilentlyContinue)
-                } |
-                ForEach-Object { (Resolve-Path -LiteralPath $_).Path } |
-                Select-Object -Unique)
-              $dirs += $cudaRuntimeDirs
-            }
-            if ($cudaRuntimeDirs.Count -gt 0) {
-              foreach ($dir in $cudaRuntimeDirs) {
-                $dllCount = @(Get-ChildItem -LiteralPath $dir -Filter "*.dll" -File -ErrorAction SilentlyContinue).Count
-                $cudart = @(Get-ChildItem -LiteralPath $dir -Filter "cudart64_*.dll" -File -ErrorAction SilentlyContinue).Count
-                $cublas = @(Get-ChildItem -LiteralPath $dir -Filter "cublas64_*.dll" -File -ErrorAction SilentlyContinue).Count
-                $cublasLt = @(Get-ChildItem -LiteralPath $dir -Filter "cublasLt64_*.dll" -File -ErrorAction SilentlyContinue).Count
-                Write-Host "CUDA runtime dir: $dir -> $dllCount dll(s) (cudart64_*: $cudart, cublas64_*: $cublas, cublasLt64_*: $cublasLt)"
-              }
-            } else {
-              Write-Host "CUDA runtime dir: none discovered under $cudaBin"
+          # `vulkan-1.dll` is imported by ggml-vulkan.dll and by the test
+          # binaries at load time. The SDK's loader directory is discovered, not
+          # named, so an SDK layout change cannot silently break enumeration.
+          $vulkanSearchPaths = @()
+          if ($env:VULKAN_SDK) {
+            $vulkanBin = Join-Path $env:VULKAN_SDK "Bin"
+            $vulkanSearchPaths += $vulkanBin
+            if (Test-Path -LiteralPath $vulkanBin -PathType Container) {
+              $dirs += (Resolve-Path -LiteralPath $vulkanBin).Path
             }
           }
           $dirs = @($dirs | Select-Object -Unique)
@@ -250,31 +246,32 @@ jobs:
             Write-Host "::error::Failed to publish DLL dir(s) to GITHUB_PATH: $($unpublished -join '; '). Published: $($published -join '; ')."
             exit 1
           }
-          # Fail LOUD on the CUDA runtime too: all three DLL families `build.rs:77-79`
-          # links must be resolvable from the PATH this step just published. A miss is a
-          # named failure — never a warning — so a green enumeration always means the
-          # payload is genuinely loadable (a false green is what shipped the round-4 red).
-          $guardDirs = @(@($dirs) + @($cudaSearchPaths) | Where-Object { $_ } | Select-Object -Unique)
-          $missing = @()
-          foreach ($pattern in @("cudart64_*.dll", "cublas64_*.dll", "cublasLt64_*.dll")) {
-            $hits = @()
-            foreach ($dir in $guardDirs) {
-              $hits += @(Get-ChildItem -LiteralPath $dir -Filter $pattern -File -ErrorAction SilentlyContinue)
-            }
-            if ($hits.Count -eq 0) {
-              $missing += $pattern
-              Write-Host "CUDA runtime: $pattern -> 0 match(es)"
-            } else {
-              $names = ($hits | ForEach-Object { $_.Name }) -join ", "
-              Write-Host "CUDA runtime: $pattern -> $($hits.Count) match(es): $names"
-            }
+          # Fail LOUD on the Vulkan loader too: a miss is a named failure, never a
+          # warning, so a green enumeration always means the payload is genuinely
+          # loadable (a false green is what shipped the round-4 red).
+          $guardDirs = @(@($dirs) + @($vulkanSearchPaths) | Where-Object { $_ } | Select-Object -Unique)
+          $vulkanHits = @()
+          foreach ($dir in $guardDirs) {
+            $vulkanHits += @(Get-ChildItem -LiteralPath $dir -Filter "vulkan-1.dll" -File -ErrorAction SilentlyContinue)
           }
-          if ($missing.Count -gt 0) {
-            Write-Host "::error::CUDA runtime ($($missing -join ', ')) not found under CUDA_PATH '$env:CUDA_PATH' (searched: $($guardDirs -join '; ')); the dynamic-link test binaries import it and cannot be enumerated."
+          if ($vulkanHits.Count -eq 0) {
+            Write-Host "::error::vulkan-1.dll not found (searched: $($guardDirs -join '; ')); the ggml-vulkan test binaries import it and cannot be enumerated."
             exit 1
           }
-          Write-Host "Companion engine DLL payload: $($ggml.Count) ggml DLL(s) + CUDA runtime ($($cudaRuntimeDirs.Count) dir(s)); $($published.Count) dir(s) published to GITHUB_PATH."
-      - run: cargo nextest run --manifest-path apps/tauri/src-tauri/Cargo.toml --locked
+          $vulkanNames = ($vulkanHits | ForEach-Object { $_.Name }) -join ", "
+          Write-Host "Vulkan loader: vulkan-1.dll -> $($vulkanHits.Count) match(es): $vulkanNames"
+          Write-Host "Companion engine DLL payload: $($ggml.Count) ggml DLL(s) + Vulkan loader; $($published.Count) dir(s) published to GITHUB_PATH."
+      # Spec #3141 - run the `live` nextest profile, not the fast default.
+      #
+      # The default profile SKIPS the model-loading modules
+      # (`llm_server::engine::mtp_tests` + `llm_server::engine::integration`)
+      # for fast local iteration - those tests load the real 2.44 GB GGUF trio
+      # and take 183-1141 s EACH. A CI runner has no models, so on CI those
+      # tests take the named-skip path anyway; `live` keeps the gate's intent
+      # (the full suite is enumerated and any genuine model-independent
+      # regression in those modules still fails) while remaining honest about
+      # what did and did not execute. See `apps/tauri/src-tauri/.config/nextest.toml`.
+      - run: cargo nextest run --manifest-path apps/tauri/src-tauri/Cargo.toml --locked --profile live
       - run: cargo clippy --manifest-path apps/tauri/src-tauri/Cargo.toml --locked -- -D warnings
 
   # validate — THE required check; always runs so it never goes "Expected" (AC2/AC3).

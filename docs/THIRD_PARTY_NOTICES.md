@@ -8,8 +8,8 @@ Apache-2.0 licenses — see the repository-root [`LICENSE`](../LICENSE),
 > **Scope.** Fredo ships three classes of third-party component with a distribution obligation:
 >
 > 1. **The companion inference runtime** — `llama.cpp` (linked into the Fredo binary through the
->    `llama-cpp-4` / `llama-cpp-sys-4` Rust bindings) plus the native GPU runtime redistributables
->    that build links against (CUDA and Vulkan). See §1 and §2.
+>    `llama-cpp-4` / `llama-cpp-sys-4` Rust bindings) plus the native GPU runtime redistributable
+>    that build links against (Vulkan). See §1 and §2.
 > 2. **Doom Mode** — the game data (`DOOM1.WAD`) and the engine (`neurodoom`). See §3 and §4.
 > 3. Nothing else is bundled with a source-distribution obligation.
 >
@@ -39,27 +39,28 @@ dual license cover the shipped artifact.
 
 ---
 
-## 2. Native GPU runtime redistributables (CUDA / Vulkan)
+## 2. Native GPU runtime redistributables (Vulkan)
 
-The release build enables the `cuda` + `vulkan` backends (with CPU always available) so ggml can
-select a device at runtime. Each backend links against vendor redistributables that the installer
-therefore ships or depends on:
+The release build enables the `vulkan` backend (with CPU always available) so ggml can select a
+device at runtime. The backend links against a vendor redistributable that the installer therefore
+ships or depends on:
 
 | Component | Role | License / terms | Upstream |
 |-----------|------|-----------------|----------|
-| **NVIDIA CUDA Toolkit runtime** (CUDA runtime libraries, e.g. `cudart`, and the CUBLAS/CUDA driver interface Fredo links) | Primary GPU backend for the `cuda` build feature | **NVIDIA CUDA Toolkit End User License Agreement (EULA)** — redistributable runtime libraries only; the toolkit itself is not redistributed as a developer product | https://docs.nvidia.com/cuda/eula/ |
-| **Vulkan** (loader + headers; the GPU driver's Vulkan ICD is supplied by the machine's graphics driver) | Fallback GPU backend for the `vulkan` build feature | **Apache-2.0** (Vulkan-Headers / Vulkan-Loader, Khronos Group) | https://www.vulkan.org/ · https://github.com/KhronosGroup/Vulkan-Loader |
-| **ggml** (in-tree in `llama.cpp`) | The tensor/graph backend both GPU paths and the CPU path run on | **MIT** (same upstream `llama.cpp` repository) | https://github.com/ggml-org/ggml |
+| **Vulkan** (loader + headers; the GPU driver's Vulkan ICD is supplied by the machine's graphics driver) | The GPU backend for the `vulkan` build feature | **Apache-2.0** (Vulkan-Headers / Vulkan-Loader, Khronos Group) | https://www.vulkan.org/ · https://github.com/KhronosGroup/Vulkan-Loader |
+| **ggml** (in-tree in `llama.cpp`) | The tensor/graph backend both the GPU path and the CPU path run on | **MIT** (same upstream `llama.cpp` repository) | https://github.com/ggml-org/ggml |
 
 **Notes.**
-- The CUDA runtime is redistributed under NVIDIA's EULA (the "CUDA Toolkit End User License
-  Agreement"), which permits redistribution of the runtime libraries with an application but not of
-  the toolkit as a whole. Fredo ships only the runtime libraries the built binary needs.
 - The Vulkan ICD (driver) is **not** bundled — it comes from the user's installed graphics driver;
   Fredo bundles only the loader/headers it links, under Apache-2.0.
-- If a release build enables only the CPU backend, neither CUDA nor Vulkan redistributables are
-  included; the entries above apply to the shipped CUDA+Vulkan build described in
-  `docs/ARCHITECTURE.md`.
+- **There is no CUDA redistributable.** The `cuda` backend is not compiled: Vulkan covers NVIDIA,
+  AMD and Intel from a single code path, and the CUDA build (71 `.cu` translation units through
+  `nvcc`/`cicc`/`ptxas`) dominated the native build cost for a 10-30% inference gain on one vendor.
+  Re-introducing it would mean re-adding the `cuda` feature, the `CUDA_PATH` import-library wiring
+  in `apps/tauri/src-tauri/build.rs`, the toolkit step in both workflows, and the NVIDIA EULA entry
+  in the table above.
+- If a release build enables only the CPU backend, no GPU redistributable is included; the entry
+  above applies to the shipped Vulkan build described in `docs/ARCHITECTURE.md`.
 
 ---
 

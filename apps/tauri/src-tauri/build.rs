@@ -1,9 +1,9 @@
 // ── Spec #3141 ST-1: the `dynamic-link` payload decision ──────────────────────
 //
 // `llama-cpp-4` is built with `dynamic-link` (see `Cargo.toml` — the EXECUTED
-// gate chose it: static archives do not propagate `ggml-cuda`'s private CUDA
-// link interface). That means `ggml*.dll` / `llama*.dll` (and the CUDA runtime
-// DLLs they load) must sit BESIDE `fredo.exe`.
+// gate chose it: static archives do not propagate private deps). That means
+// `ggml*.dll` / `llama*.dll` must sit BESIDE `fredo.exe`. The GPU backend is
+// Vulkan only (no `ggml-cuda`), so the payload is the ggml/llama/mtmd DLLs.
 //
 // DECISION (recorded here because `tauri.conf.json` is strict JSON and cannot
 // carry a comment; this build script is the file that owns the bundle wiring):
@@ -27,10 +27,12 @@
 //       2. the CI branch below CLEARS `bundle.resources` before `tauri_build`,
 //          so a resource entry added now would be silently dropped from the
 //          release installer CI produces;
-//       3. the CUDA redistributable set (cudart/cublas/cublasLt) is a
-//          licensing/notices decision (`docs/THIRD_PARTY_NOTICES.md`, AC-29).
+//       3. the GPU runtime redistributable set is a licensing/notices decision
+//          (`docs/THIRD_PARTY_NOTICES.md`, AC-29). With the Vulkan-only
+//          backend the payload is `vulkan-1.dll` (the loader) plus the
+//          ggml/llama/mtmd DLLs; there is no CUDA runtime to redistribute.
 //   * Follow-up owner: ST-6 (teardown/packaging) + the deployment installer
-//     leg, which must bundle the engine + CUDA/Vulkan DLLs via a matched
+//     leg, which must bundle the engine + Vulkan DLLs via a matched
 //     `bundle.resources` map and adjust the CI clear below in the same change.
 //
 // The manifest source for the engine crate is the crates.io registry
@@ -41,47 +43,14 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-/// Wire the CUDA toolkit import libraries for the in-process engine (Spec #3141,
-/// ST-1).
-///
-/// `llama-cpp-sys-4` builds `ggml-cuda` as a **static** archive and links
-/// `cudart` / `cublas` / `cublasLt` **PRIVATE** to it in CMake, so those link
-/// lines are NOT propagated to the final `fredo` binary — the link fails with
-/// `LNK2019: unresolved external symbol cudaGetLastError` (and its CUDA peers)
-/// unless the final link supplies them.
-///
-/// The toolkit location comes from `CUDA_PATH`, the SAME environment variable
-/// CMake's `FindCUDAToolkit` (and thus the crate's CUDA build) already resolved
-/// the toolkit with, so this cannot drift from the backend the build actually
-/// compiled against. When `CUDA_PATH` is unset (a CPU-only or Vulkan-only
-/// build), nothing is emitted — inert by construction.
-///
-/// This is a build-time wiring detail, not product runtime behaviour: the
-/// engine manifest still keeps the mandated feature list.
-fn link_cuda_import_libraries() {
-    // Only relevant on Windows/MSVC (the shipping target); other toolchains either
-    // propagate the CMake link interface or resolve CUDA dynamic loading.
-    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
-        return;
-    }
-    let Ok(cuda_path) = env::var("CUDA_PATH") else {
-        return;
-    };
-    let lib_dir = PathBuf::from(&cuda_path).join("lib").join("x64");
-    if !lib_dir.is_dir() {
-        return;
-    }
-    println!("cargo:rustc-link-search=native={}", lib_dir.display());
-    // The static ggml-cuda objects reference the CUDA runtime + cuBLAS entry
-    // points; the import libs resolve them against the shipped CUDA DLLs.
-    println!("cargo:rustc-link-lib=dylib=cudart");
-    println!("cargo:rustc-link-lib=dylib=cublas");
-    println!("cargo:rustc-link-lib=dylib=cublasLt");
-    println!("cargo:rerun-if-env-changed=CUDA_PATH");
-}
-
 fn main() {
-    link_cuda_import_libraries();
+    // NOTE: there is deliberately no CUDA import-library wiring here anymore.
+    // Spec #3141 was re-scoped to a Vulkan-only GPU backend (see the
+    // `llama-cpp-4` feature list in Cargo.toml for the build-cost rationale),
+    // so `ggml-cuda` is never compiled and `cudart`/`cublas`/`cublasLt` have
+    // nothing to resolve. `build.rs` previously emitted those link lines from
+    // `CUDA_PATH`; that function is removed rather than left inert so a
+    // future CUDA re-introduction is a deliberate, visible change.
 
     // CI environment variable is set to "true" by GitHub Actions (and other CI
     // providers). On CI runners, the OpenCode plugin dist doesn't exist, so we
