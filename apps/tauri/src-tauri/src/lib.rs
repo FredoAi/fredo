@@ -72,6 +72,16 @@ pub use applications::llm_server::skills::render_tools as render_companion_tools
 // it under `#[cfg(test)]`). `mod runtime` is private, hence the re-export.
 pub use runtime::command_manifest::COMMAND_MANIFEST;
 
+// Spec #3147 ST-2 — the installed-application package trust boundary
+// (`installed_apps::{manifest, archive, store, commands_install}`): zip ingest,
+// manifest validation, the frozen refusal vocabulary, hash pinning and the
+// on-disk install root. The command wrappers are registered below; the contract
+// modules are re-exported so the frozen surface is reachable by ST-3/ST-4/ST-5
+// (scheme handler, window lifecycle, theme push) and by the unit tests that pin
+// it. `#[doc(hidden)]`: not part of the app surface.
+#[doc(hidden)]
+pub use applications::installed_apps;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use applications::terminal::state::TerminalState;
@@ -1108,6 +1118,15 @@ pub fn run() {
             // Spec #3023 ST-2/ST-5/ST-6: the from-source provisioning command
             // surface (Spec #3012) and its module are removed — the native
             // in-process engine needs no build and no download.
+            // Spec #3147 ST-2 — the installed-application install pipeline
+            // (`applications::installed_apps`): turn a user-picked package into a
+            // validated, hashed, INERT install directory, and list what is
+            // installed. ST-4 (`open`/`close`) and ST-5 (`push_theme`) append
+            // their own registrations after this region. Nothing here runs at
+            // startup — `installed_apps_list` is only called by the settings
+            // pane (R-5.5).
+            applications::installed_apps::commands_install::installed_app_install,
+            applications::installed_apps::commands_install::installed_apps_list,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Fredo application")

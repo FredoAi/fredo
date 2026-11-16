@@ -161,6 +161,11 @@ pub const COMMAND_MANIFEST: &[&str] = &[
     "enter_doom_mode",
     "exit_doom_mode",
     "get_doom_mode_status",
+    // Spec #3147 ST-2 — the installed-application install pipeline. ST-4 and
+    // ST-5 append `installed_app_open` / `installed_app_close` /
+    // `installed_apps_push_theme` after these.
+    "installed_app_install",
+    "installed_apps_list",
 ];
 
 #[cfg(test)]

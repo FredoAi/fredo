@@ -303,13 +303,85 @@ retry implementation, not the fixture.
 
 ## 4. The package fixtures (`build-package-fixtures.mjs`, ST-2)
 
-Authored by ST-2 and **not** part of this deliverable; documented here because the suite reads
-both generators' output. It emits the install-validation packages — valid, no-manifest,
-bad-manifest, zip-slip, hash-tamper, `engines.fredo`-incompatible and reserved-`__fredo/` — plus
-its committed expected-output manifest naming each id and the refusal code it drives.
+Owned by **ST-2**. It emits the install-validation packages and its own committed
+expected-output manifest, **`fixtures/package-fixtures.expected.json`**. Like the behaviour
+generator it is Node-built-ins only (`node:crypto`, `node:fs`, `node:path`, `node:url`), needs no
+network and no npm package, and is byte-deterministic across runs (fixed entry order, stored
+entries, the same fixed 1980-01-01 DOS timestamp).
 
-Its output is read exactly the same way as the behaviour fixtures': `id`, `displayName` and the
-expected code come from the committed manifest, **never** from an assumption in the suite text.
+```powershell
+node .opencode/tests/installable-apps/fixtures/build-package-fixtures.mjs
+node .opencode/tests/installable-apps/fixtures/build-package-fixtures.mjs --verify
+node .opencode/tests/installable-apps/fixtures/build-package-fixtures.mjs --out .opencode/tmp/3147/fixtures/packages-b
+node .opencode/tests/installable-apps/fixtures/build-package-fixtures.mjs --write-expected
+node .opencode/tests/installable-apps/fixtures/build-package-fixtures.mjs --help
+```
+
+### The seven packages
+
+Read `id`, `expects`, `expectsStage` and the sha256 from
+**`fixtures/package-fixtures.expected.json`**, never from this table. `expectsStage` matters:
+
+| Fixture | `expects` | `expectsStage` | The defect it carries |
+|---|---|---|---|
+| `qa3147-valid` | _(none — installs)_ | `none (installs cleanly)` | none; the happy path (AC-1 / R-1.1) |
+| `qa3147-no-manifest` | `no_manifest` | install | a valid zip with **no** `fredo-app.json` at its root |
+| `qa3147-bad-manifest` | `manifest_unknown_field` | install | an **unknown top-level key** `capabilities` (shape recorded as `badManifestShape`) |
+| `qa3147-zip-slip` | `unsafe_path` | install | an entry `../../qa3147-escaped.txt` (shape recorded as `unsafeShape`) |
+| `qa3147-hash-tamper` | `integrity_mismatch` | **load** | none at install — the tester mutates one installed byte first |
+| `qa3147-incompatible-engines` | `host_incompatible` | install | `engines.fredo: ">=999.0.0"` — well-formed but excludes every real build |
+| `qa3147-reserved-path` | `reserved_path` | install | an entry `__fredo/bootstrap.js` claiming the host-reserved segment |
+
+**The bad-manifest shape is a choice, and the manifest records it.** An unparseable document, an
+unknown top-level key and a non-`1` `manifestVersion` drive **three different codes**
+(`manifest_malformed`, `manifest_unknown_field`, `unsupported_manifest_version`). This generator
+ships the **unknown-top-level-key** shape, and `badManifestShape` in the committed manifest says so.
+Do not assume a fixture drove a code other than the one recorded.
+
+**`hash-tamper` INSTALLS.** Its expected code is reached at LOAD time (the verify-at-serve step),
+so a tester must (a) install it, (b) mutate the recorded byte, then (c) attempt to open it. An
+install-time refusal from this package would itself be the defect. The mutation target and offset
+are committed under `tamper` in the expected manifest:
+
+```json
+"tamper": { "file": "main.js", "offset": 3 }
+```
+
+Offset 3 lands inside `main.js`'s leading comment block, so flipping it changes only the hash, never
+module semantics. Restoring the byte must make the app load again (the "block clears on the next
+activation attempt" leg of T-4.4).
+
+### Why the incompatible range is a fixed constant, not "the running version plus one"
+
+The running version's SOURCE is the crate version (`env!("CARGO_PKG_VERSION")` in
+`applications/installed_apps/mod.rs`). A generator that read the crate version to compute
+"current + 1" would change its own bytes on a version bump and silently invalidate the committed
+sha256s. `>=999.0.0` is well-formed, excludes every plausible build, and is stable.
+
+### Self-checks the generator runs on EVERY build (not opt-in)
+
+Before writing anything it asserts the catalog itself is coherent (22 frozen codes; every required
+code driven by some fixture). After building it re-opens each archive and asserts:
+
+- the entry order and names in the archive are exactly what was meant to write;
+- `fredo-app.json`, when present, round-trips to the object written;
+- the **bad-manifest** package carries **exactly** its declared unknown key and no second defect;
+- **every other** fixture's manifest is schema-legal (with the engines range validated separately,
+  because `>=999.0.0` is legal yet excludes the host);
+- each declared extra entry drives the package's expected code, and **every ordinary entry name is
+  safe** — so a fixture cannot be "unsafe by accident";
+- `index.html` is a real HTML document and `main.js` exports `mount`;
+- the tamper offset lies inside its target file.
+
+Any failure aborts with a non-zero exit code. A generator whose gate has never run is not evidence,
+so these run on the default path.
+
+### What each fixture is NOT here to prove
+
+Runtime behaviour — probe refusal, crash/hang containment, retry, laziness — belongs to the ST-7
+behaviour fixtures (§3). These packages exist only to drive the **install / integrity** decision
+matrix. The generated documents are minimal inert pages and the modules are minimal ESM `mount`
+exports; nothing here duplicates a host-owned `installed-app-*` testid.
 
 ---
 

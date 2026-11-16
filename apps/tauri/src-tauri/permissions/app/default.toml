@@ -132,4 +132,7 @@ permissions = [
   "allow-enter-doom-mode",
   "allow-exit-doom-mode",
   "allow-get-doom-mode-status",
+  # Spec #3147 ST-2 — the installed-application install pipeline (`installed_apps`).
+  "allow-installed-app-install",
+  "allow-installed-apps-list",
 ]
