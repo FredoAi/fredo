@@ -139,7 +139,7 @@ Voice input is **local-only by hard requirement**. Microphone capture is native 
 
 ## Tauri Capabilities
 
-Tauri v2 uses a capability system to declare the minimum set of permissions the webview requires. The production set lives in `capabilities/default.json`; the debug bridge's permission lives in a separate dev-only file, `capabilities/mcp-bridge-dev.json`. Fredo follows least-privilege:
+Tauri v2 uses a capability system to declare the minimum set of permissions the webview requires. There are three capability files, all auto-loaded: the production set (`capabilities/default.json`), the debug bridge's permission (`capabilities/mcp-bridge-dev.json`, dev-only), and — since Spec #3147 — `capabilities/app-commands.json`, which grants the application command surface to the built-in window class (see the application-manifest rule below). Fredo follows least-privilege:
 
 | Permission | Why required |
 |-----------|-------------|
@@ -166,6 +166,28 @@ The manifest halves must stay in lockstep, and the command list is the single so
 **Dev-only debug bridge.** `mcp-bridge:default` (which expands to the plugin's command set, including `execute_js`, `execute_command` and `capture_native_screenshot`) is granted only by `capabilities/mcp-bridge-dev.json`. That file is inert in a release build: the plugin itself is registered under `#[cfg(debug_assertions)]` (`src/lib.rs:169-179`), so a release binary never binds the bridge port and never exposes those commands. The tauri MCP driver still reaches the bridge in a dev build.
 
 **CSP and global Tauri.** The production CSP (`app.security.csp`) is `default-src 'self'; script-src 'self' blob: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost; worker-src blob:` — `script-src` does **not** contain `'unsafe-inline'`, so an injected inline script cannot execute. `style-src` retains `'unsafe-inline'` because Chakra UI v3 / emotion inject runtime `<style>` elements. `app.security.devCsp` is the dev-only policy and the only place `script-src … 'unsafe-inline'` remains (Vite HMR needs the inline preamble). `app.withGlobalTauri` is `false`, so a shipped webview has no `window.__TAURI__` handle; product code reaches native APIs only through `__TAURI_INTERNALS__` (the dynamic imports in `TauriAdapter.ts` / `adapterBridge.ts`). The dev-only override `tauri.dev.conf.json` (merged by `tauri dev --config`) re-enables `withGlobalTauri` in development only, because the pinned MCP bridge returns its `execute_js` results through `window.__TAURI__.core.invoke`; the `build` and `dev:release` paths do not pass it.
+
+---
+
+## Installed Applications (Spec #3147)
+
+An installed application is third-party code the user chose to add. It is contained by **four separate mechanisms**, each of which fails closed on its own: origin separation, zero capability grants, integrity pinned at install and re-verified at load, and install-time archive hardening. The isolation does **not** rest on the package behaving well.
+
+**Protections:**
+
+- **Origin separation.** An installed app is a document at the `fredoapp` scheme, which Tauri maps to `http://fredoapp.localhost` (Windows/Android) / `fredoapp://localhost` (elsewhere) — distinct from the host's `tauri://localhost` / `http://tauri.localhost` and from the dev server. A separate native window whose document has a separate origin, not an iframe in the host document, is what makes "cannot reach the host's context" structural rather than advisory.
+- **Zero grants.** No capability file lists an `installed-` label, so the `installed-<id>` window matches no capability and is refused **every** application command (see the application-manifest rule above). The served document's `connect-src` deliberately keeps the IPC transport reachable so that a command attempt is refused by the **ACL**, not by the network — a refusal the product can name, rather than an unexplained transport failure.
+- **Verify at serve, not verify then serve.** Each requested file is read **once**, that same buffer is hashed, the hash is compared to the install record, and **that buffer** is served. There is no "check this path, then open this path" step, so there is no window in which the bytes can be swapped between the check and the use (CWE-367). An unrecorded file has no route — the install record *is* the whitelist — and responses carry `Cache-Control: no-store`, so a re-verified document is never served from a cache.
+- **Host-authored policy and host-authored chrome.** The scheme handler authors the child document's CSP on every response (`default-src 'none'`, `script-src 'self'`, `base-uri 'none'`, `form-action 'none'`). `tauri.conf.json`'s `app.security.csp` is injected only for Tauri's own asset protocol, so it is untouched. The loading / failure / Retry surface and the theme style are host-authored and injected at serve time; an app supplies its own HTML, module and assets and nothing else.
+- **Install-time archive hardening.** Entry names are **refused**, never silently sanitized, for absolute/drive/UNC prefixes, backslashes, NUL, empty/`.`/`..` segments, link or any non-regular entry type, and the host-reserved `__fredo/` segment, plus a normalize-join containment check — so a package cannot write outside its own install directory (zip-slip). Three budgets (4,096 entries / 256 MiB total / 64 MiB per file) are validated over the archive's **declared** sizes before a byte is read and re-enforced while writing, so a lying header cannot fill the disk. The whole install is staged in a sibling directory and renamed into place only when complete, so a refusal leaves no partial install.
+- **The manifest is data, never code.** `fredo-app.json` is decoded with `serde_json` and nothing else; no field is interpreted as an executable path or a URL to fetch. `manifestVersion: 1` is a **closed** schema, so an unknown key is refused rather than silently ignored.
+
+**Limitations:**
+
+- **Package artifacts are unsigned.** There is no signature, registry, or update path in this slice. Trust in a package is the user's judgement at install time. The per-file SHA-256 record detects **post-install tampering** — it does not prove who authored the bytes, and it cannot detect a hostile package the user installed deliberately.
+- **Installed code has no sandbox of its own beyond the platform webview.** The isolation above bounds what an installed app can *reach* — no host origin, no capability grant, no command surface — not what it can *consume*: there is no per-app resource quota, no CPU/memory limit, and no separate security principal, so a hostile package can still burn CPU or memory within the webview it runs in.
+- **No declared-command surface yet.** The window receives zero application commands and `manifestVersion: 1` has no `capabilities[]`. Declared-command allowlisting and host-minted data handles are a separate, explicitly reviewed slice (#3146) — they are exactly the kind of decision that must not arrive as an incidental capability edit.
+- Adding an `installed-*` entry to any capability `windows` list, or a per-command grant for an installed app, **removes the isolation guarantee** (see the application-manifest rule above).
 
 ---
 

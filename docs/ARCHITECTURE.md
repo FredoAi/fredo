@@ -169,6 +169,7 @@ src-tauri/src/
 +-- runtime/
 |   +-- mod.rs                  — AppRuntime struct
 |   +-- capability.rs           — DesktopCapable, CliCapable traits
+|   +-- command_manifest.rs     — `COMMAND_MANIFEST`, the ONE list of registered app commands that `build.rs` hands to Tauri's application manifest (Spec #3147; see `## Tauri Capabilities`)
 +-- applications/
 |   +-- terminal/               — PTY-based AI CLI terminal
 |   |   +-- mod.rs              — TerminalApplication (DesktopCapable)
@@ -242,6 +243,18 @@ src-tauri/src/
 |       +-- save.rs             — `DoomSave`/`DoomSaveStatus`/`DoomCampaign` persistence contract: parse/serialize (rejects unknown version and out-of-range episode/map/skill), typed PostgreSQL feature-store load/store (`feature_doom_save`, singleton `id='singleton'` row, atomic upsert; Spec #3011) + induction-lever env seams (`FREDO_DOOM_SAVE_STATE_DIR`/`FREDO_DOOM_SAVE_FORCE_FAIL`); single-episode shareware campaign constants E1M1–E1M9 with save version 2 (Spec #3023)
 |       +-- progress.rs         — `DoomProgressWriter`: one bounded `DoomSave` persisted per campaign transition (best-effort; a write failure never fails the run) (Spec #2972)
 |       +-- commands.rs         — open_doom_window, launch_doom_runtime, stop_doom_runtime, get_doom_status, doom_read_state, doom_step, doom_frame_raw, start/stop/get_doom_autoplay, get/reset_doom_save, enter/exit/get_doom_mode_status + exit/close hooks (all route through `engine.rs`; no provisioning commands, Spec #3023)
+|   +-- installed_apps/        — Installed applications — the package trust boundary (Spec #3147): a user-picked `.zip` becomes a validated, SHA-256-pinned, INERT directory under `<app_data_dir>/installed-apps/<id>/`, served as a document at the host's own `fredoapp` origin and opened in its own native window. Nothing from a package is executed during install (the manifest is `serde_json` only); the window receives no capability grant.
+|       +-- mod.rs              — module map, the frozen `InstalledAppRefusalCode` vocabulary (22 `snake_case` wire codes), `InstalledAppError`/`InstalledAppResult`, the on-disk layout constants (`PACKAGE_MANIFEST_FILENAME`, `INSTALLED_RECORD_FILENAME`, `INSTALLED_FILES_SUBDIR`, `RESERVED_PATH_SEGMENT = "__fredo"`) and the three archive budgets (4,096 entries / 256 MiB total / 64 MiB per file)
+|       +-- manifest.rs         — `fredo-app.json` decode + every field rule with a binding error precedence (malformed → unknown key → version → fields → engines range); `manifestVersion: 1` is a CLOSED schema; the hand-implemented id pattern (≤ 96 chars, `RESERVED_APP_IDS` = the 8 built-in ids); `engines.fredo` semver range checked against `CARGO_PKG_VERSION`
+|       +-- archive.rs          — ZIP ingest where every safety rule is Fredo's own decision rather than a crate sanitizer: absolute / drive / UNC / backslash / NUL / `..` / non-regular entry, the reserved `__fredo` segment, then a normalize-join containment check (zip-slip); budgets validated over the DECLARED sizes before any payload is read and re-enforced while writing
+|       +-- store.rs            — the on-disk install root (directories ARE the registry — no central index); per-file SHA-256 sorted by path + one aggregate digest; the atomic install (sibling staging directory renamed into place only after `manifest.json`, `record.json` and every payload byte are on disk, so a refusal leaves no partial `<id>/`)
+|       +-- commands_install.rs — exactly `installed_app_install` (optional `archivePath`; absent ⇒ the native picker via `rfd`) and `installed_apps_list`; the install runs on the blocking pool and the listing is never called at startup
+|       +-- scheme.rs           — the `fredoapp` URI-scheme handler: routing (`/<id>/` ⇒ entry document, `/<id>/<relative>` ⇒ a file inside `<id>/files/`, `/__fredo/bootstrap.js` ⇒ the one host path), verify-at-serve (read once → hash that buffer → compare to the pin → serve THAT buffer), the per-document child CSP, and the served document
+|       +-- bootstrap.js        — host-authored (`include_str!`), Chakra-free loading → usable / loading → failure (with Retry) surface at the app's own origin: 10 s mount watchdog, `window.onerror`/`onunhandledrejection`, and `window.__FREDO_APPLY_THEME__`
+|       +-- window.rs           — `installed-<id>` labels, the served document URL (`<origin>/<id>/`, via `WebviewUrl::External` — never `App`, which would resolve against the HOST origin), the verify-before-open gate (`resolve_open_target`), the singleton build/focus, and the close path
+|       +-- commands_window.rs  — exactly `installed_app_open` (`appId` → `()`) and `installed_app_close` (`appId` → `bool`); verification runs on the blocking pool, the window on the async runtime
+|       +-- theme_state.rs      — the `ThemePayload`/`ThemeToken` transport types and the backend's in-memory theme mirror the handler inlines at serve time, with a system-colour fallback so a first paint is never unstyled
+|       +-- theme_push.rs       — exactly `installed_apps_push_theme`: validate the host's resolved token values (custom-property names only, 256-token cap), write the mirror, and `Webview::eval` the theme into every live `installed-*` window (no database, no file)
 +-- infrastructure/
     +-- comm/                   — Canonical wire types + the single IPC emitter
     |   +-- mod.rs              — re-exports: FredoEvent, EventBus, CommAdapter, InternalAdapter
@@ -1027,6 +1040,28 @@ The theme is inlined at serve time from `installed_apps::theme_state` (an in-mem
 
 Every request emits one `tracing` line on target `fredo::installed_apps` with message `installed-app serve` and the request `url` — the host-side instrument the QA serve-line receipt greps for.
 
+### Installing a package, and the window it opens (Spec #3147 ST-2 / ST-4)
+
+**Install is a pure file operation.** `installed_app_install` reads a user-picked `.zip` and writes a validated, hashed, **inert** tree under `<app_data_dir>/installed-apps/<id>/` — `manifest.json` (the normalized manifest), `record.json` (the file → SHA-256 pins) and `files/` (every package file at its archive-relative path). Nothing in the package is interpreted as code, a command, or a URL: the manifest is decoded with `serde_json` and nothing else, so the "nothing is executed" property holds by construction. The directory tree **is** the registry (there is no central index), so one corrupt record can only corrupt one application.
+
+The rules that refuse a package are Fredo's own, not a crate's sanitizer: entry names are rejected (not silently relocated) for absolute/drive/UNC prefixes, backslashes, NUL, empty/`.`/`..` segments, link or any non-regular entry type, and the host-reserved `__fredo/` segment, followed by a normalize-join containment check. Three budgets are validated over the archive's **declared** sizes before any payload is read — 4,096 entries, 256 MiB total, 64 MiB per file — and re-enforced while writing, so a lying header cannot fill the disk. The whole install is staged in a sibling directory and renamed into place only when every byte is on disk, so a refusal (including a mid-copy I/O failure) leaves no partial `<id>/`.
+
+**Every open verifies first, then builds a separate native window.** `installed_app_open` re-verifies the whole install record *before* any window exists, so a tampered file reports `integrity_mismatch` on the surface the user clicked from rather than inside a child document. A verified app opens in its own native window labelled `installed-<id>` at `WebviewUrl::External(<origin>/<id>/)` — never the `App` URL variant, which would resolve against the host origin and undo the isolation. Re-opening focuses the one existing window (per-app singleton); closing destroys the window, and destroying the window is how an installed application stops running (there is no `unmount` in the contract). No installed window of any kind exists at startup.
+
+**Theme.** The active theme's resolved CSS custom-property values are captured in the host (`shared/installed-apps/themeCapture.ts`), validated and mirrored backend-side (`theme_push.rs`), inlined into the served document at serve time (so a correctly-themed first paint needs no IPC) and re-evaluated into every live installed window on change — so an open app follows a light/dark or accent switch without reloading.
+
+### Installed applications: what slice 1 does not do
+
+These are deliberate, accepted scope boundaries of #3147 — not defects:
+
+| Limitation | Why it holds |
+|---|---|
+| An installed app cannot join the keyboard/navigation dispatch tree. | Its launcher entry is a plain button that contributes no verb, place or stroke; the installed document mounts no `NavigationHost`, so nothing an installed app does passes through `dispatch()`. |
+| An installed app cannot declare backend commands of its own. | `manifestVersion: 1` is a closed schema with no `capabilities[]`, and the `installed-<id>` label matches no capability — so it receives zero application commands. Declared-command allowlisting plus host-minted data handles is **#3146**, not this slice. |
+| An installed app opens only in its own window — never inside the main window. | The window is built from the `fredoapp` URL, which the main window's document cannot present without sharing its origin. |
+| Re-opening re-fetches and re-evaluates the app's module every time. | Closing destroys the document, and each response carries `Cache-Control: no-store` so a re-verified document is never served from a cache. There is no module cache across close/reopen, so the first-open cost is paid on every open. |
+| Package artifacts are **unsigned** in v1. | There is no registry, update, or signature path. Trust in a package is the user's judgement at install time; the per-file SHA-256 record is verified at load to detect **post-install tampering**, which is a different guarantee from proving who authored the bytes. |
+
 ### Installed applications in the UI: the second trust tier (Spec #3147 ST-6)
 
 An installed application is **never** a registered Fredo application. That is the whole point of the two-tier model: an application that arrived as a package must not become a built-in merely because it installed successfully.
@@ -1116,6 +1151,11 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 | `get_doom_mode_status` | doom | Report `DoomModeStatus` (`phase`/`active`/`voiceSuppressed`/`origin`/`enteredAt`/`lastError`/`code`) |
 | `get_doom_save` | doom | Report the persisted `DoomSaveStatus` resume point (`hasSave`/`episode`/`map`/`skill`/`seed`/`completed`/`updatedAt`); never fails |
 | `reset_doom_save` | doom | Discard the persisted save (explicit) → `DoomSaveStatus` with `hasSave=false` |
+| `installed_app_install` | installed_apps | Validate, hash and atomically install a picked `.zip` (optional `archivePath`; absent ⇒ native picker) → `InstalledAppEntry`, or a typed `InstalledAppError` naming one of the 22 refusal codes |
+| `installed_apps_list` | installed_apps | List validated install directories → `Vec<InstalledAppEntry>` (the only install-root reader; never called at startup) |
+| `installed_app_open` | installed_apps | Re-verify the whole install record, then build (or focus) the singleton `installed-<id>` window at the `fredoapp` document URL → `()`; a tampered or corrupt record is refused before any window exists |
+| `installed_app_close` | installed_apps | Destroy the app's window (which destroys its document) → `bool` (`false` when no such window, which is a successful answer) |
+| `installed_apps_push_theme` | installed_apps | Validate the host's resolved theme tokens, write the serve-time mirror, and eval the theme into every live `installed-*` window (no database, no file) |
 | `application_store_ensure_table` | storage | Create a typed-column application namespaced table |
 | `application_store_insert` | storage | Insert rows into an application namespaced table |
 | `application_store_query` | storage | Query rows with optional WHERE/ORDER BY/LIMIT |
