@@ -557,6 +557,13 @@ apps/ui/src/
     |   +-- EventSubscription.ts    — RTDB row wire types (RowDelivery / RowDeliveryBatch)
     |   +-- types.ts                — GridItemConfig
     +-- utils/adapterBridge.ts      — non-React singleton for application → invoke()
+    +-- installed-apps/          — the SECOND trust tier (Spec #3147 ST-6): a registry SEPARATE from
+    |   |                          `applications/applicationRegistry`. `types.ts` (the camelCase wire
+    |   |                          mirrors), `client.ts` (the five command wrappers + typed refusal
+    |   |                          narrowing), `store.ts` (module-scoped registry + list-load-failed
+    |   |                          verdict), `useInstalledApps.ts` (the `useSyncExternalStore` bindings),
+    |   |                          `refusals.ts` (the 22-code copy map + family→severity table),
+    |   |                          `RefusalBlocks.tsx` (the two refusal surfaces)
     +-- companion/              — Companion command publishing + intent (Spec #3099): `manifest.ts` (the ONE camelCase projection of the registered navigation surfaces), `publisher.ts` (`register_app_command_surfaces`, at boot and on every registration), `reply.ts` (the ONE deterministic copy source), `useAppCommandIntent.ts` (the generic application-side hook → the registered navigation host's `runIntent`), and `fixtures/` (the shared TS/Rust golden fixture)
     +-- navigation/             — the NavigationEngine (P3–P7): pure place tree, verb descriptors, key resolution, dispatch funnel, journal, context envelope and §8 derivations, plus the relocated keyboard primitives. Consumed by the Wireframe application (P5, Spec #3119 — `applications/wireframe/wireframeSurface.ts`), the `terminal` / `window-system` / `mission-monitor` / `database-client` / `dev-mode` surfaces (P7, Spec #3121) and the DEV prototype route (P4, Spec #3118)
     |   +-- keys.ts             — stroke parsing/serialisation, `serializeSequence`, `resolvePrimaryModifier`, `detectPlatform`
@@ -1019,6 +1026,28 @@ Because the child policy's `connect-src` allows only the IPC transport, the boot
 The theme is inlined at serve time from `installed_apps::theme_state` (an in-memory mirror the host pushes into), so a **correctly-themed first paint needs no IPC**; with an empty mirror a documented system-colour fallback is used. When the entry document no longer matches its pin, the handler serves a host-authored failure document carrying `startupFailure: "integrity_mismatch"` — not one byte of the mutated document, and never an HTTP error page no script can decorate.
 
 Every request emits one `tracing` line on target `fredo::installed_apps` with message `installed-app serve` and the request `url` — the host-side instrument the QA serve-line receipt greps for.
+
+### Installed applications in the UI: the second trust tier (Spec #3147 ST-6)
+
+An installed application is **never** a registered Fredo application. That is the whole point of the two-tier model: an application that arrived as a package must not become a built-in merely because it installed successfully.
+
+**The separate registry.** `apps/ui/src/shared/installed-apps/` holds a module-scoped registry with `getInstalledApps()`, `subscribeInstalledApps(listener)`, `refreshInstalledApps()`, `recordInstalledApp(entry)` and the `useInstalledApps()` / `useInstalledAppsStatus()` hooks. The directory is `shared/` **deliberately**: `applications/allApplications.ts` eagerly globs `./*/index.ts`, so any directory under `applications/` is auto-imported into the host bundle. Nothing in `shared/installed-apps/` calls `registerApplication()`, and `getApplications()` (the pinned eight-id set) cannot observe an installed app.
+
+**Where the two entry points live.**
+
+| Surface | File | What it does |
+|---|---|---|
+| Settings → Installed applications | `applications/settings-app/components/InstalledAppsSettings.tsx` | A **static** section of `SettingsSurface.tsx` (a `NavItem` after `settings-nav-layout`, NOT a `featureSettingsTab` — that memo is built from the built-in registry). Chooses a package (`installed_app_install`), renders the named refusal or a success strip, and lists the installed apps read-only. Uninstall/enable-disable are out of slice, and there is deliberately **no Open control** here — one open surface. |
+| Launcher → the `INSTALLED APPS` shelf | `applications/home/components/launcher/LauncherInstalledAppsSection.tsx` | A **sibling** of `LauncherAppGrid` in `LauncherShell.tsx`, gated on the same `engaged` flag and rendered only when its filtered list is non-empty. Each entry is an ordinary `chakra.button` calling `openInstalledApp(id)`; it contributes **no verb, no place and no stroke** to the declared navigation surface, so it never touches `dispatch()` and is not in the place tree. |
+
+**States the settings pane distinguishes.** `loading` (skeleton rows), `empty` (`installed-apps-empty`, and the list is NOT rendered — the shipped absence rule), `populated`, `refusal` (F1–F6, `role="alert"` + `data-refusal-code`), `success` (`role="status"` polite), and **`list-load-failed`** — a failed list read renders the refusal block with `io_error`, never a blank pane and never the empty state, so "nothing is installed" and "listing broke" can never be confused.
+
+**Refusals live on TWO surfaces, one per code, never both.** The 22 codes split into the install-time families F1–F6 (rendered in the settings pane by `InstalledAppRefusal`) and the load-time families F7–F8 (`integrity_mismatch`, `integrity_record_corrupt`, `id_not_installed`, `id_is_installed_app`). F7–F8 are refused **before any window exists**, so the failure has no child document to live in — it is reported by `InstalledAppOpenRefusal` in the launcher (`launcher-installed-app-error`), the surface the user clicked from. Both read the ONE family → severity table in `refusals.ts`, and the copy map (`INSTALL_REFUSAL_COPY`, 22 sentences) is pinned by a completeness + distinctness unit test.
+
+**The command transport.** `shared/installed-apps/client.ts` wraps the five commands (`installPackage`, `listInstalledApps`, `openInstalledApp`, `closeInstalledApp`, `pushTheme`) through `adapterBridge.invoke()` — no static `@tauri-apps/api` import. A rejection is narrowed into a typed `InstalledAppsCommandError` carrying one of the 22 frozen codes, and `installedAppErrorFrom` turns ANY caught value (a raw wire object, a string, `null`, an absent-key `field`) into a renderable `{ code, detail, field? }` — so a malformed rejection can never crash a pane.
+
+**The absent-key rule reaches the DOM.** `InstalledAppEntry.description` and `InstalledAppError.field` arrive as **absent keys** (never `null`) when unset; the pane renders the description line only when the key is present, so no `undefined`/`null` leaks into a row.
+
 
 ---
 

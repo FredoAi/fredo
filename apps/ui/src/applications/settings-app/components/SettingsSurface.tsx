@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { Box, Button, HStack, Icon, Text, VStack } from '@chakra-ui/react';
-import { LuPalette, LuBot, LuSave, LuSettings2, LuActivity, LuDatabase, LuAppWindow, LuLayoutGrid, LuServer } from 'react-icons/lu';
+import { LuPalette, LuBot, LuSave, LuSettings2, LuActivity, LuDatabase, LuAppWindow, LuLayoutGrid, LuPackageOpen, LuServer } from 'react-icons/lu';
 import { CompanionSettingsPanel } from '../../../shared/components/companion/CompanionSettingsPanel';
 import { SettingsSaveProvider, useSettingsSaveContext } from '../../settings/SettingsSaveContext';
 import { ThemingSettings } from '../../theming';
@@ -10,6 +10,7 @@ import { IngestAutostartSettings } from '../../ingest/IngestAutostartSettings';
 import { getApplications, dedupeByApplicationId } from '../../applicationRegistry';
 import { tint } from '../../../shared/utils/colorTint';
 import { AppPresentationSettings } from './AppPresentationSettings';
+import { InstalledAppsSettings } from './InstalledAppsSettings';
 import { LayoutSettings, LAYOUT_NAV_ID } from './LayoutSettings';
 import { PostgresSettings } from './PostgresSettings';
 
@@ -125,7 +126,7 @@ export const SettingsSurface: React.FC = () => {
     [],
   );
 
-  type StaticSection = 'appearance' | 'companion' | 'telemetry' | 'ingest' | 'layout';
+  type StaticSection = 'appearance' | 'companion' | 'telemetry' | 'ingest' | 'layout' | 'installed-apps';
   type SectionId = StaticSection | string;
   const [activeSection, setActiveSection] = useState<SectionId>('companion');
 
@@ -185,6 +186,13 @@ export const SettingsSurface: React.FC = () => {
         {/* Static: Layout (Spec #2980 ST-2 — platform-level, immediate write-through) */}
         <NavItem id={LAYOUT_NAV_ID} label="Layout" icon={LuLayoutGrid} activeSection={activeSection} onClick={setActiveSection} testId="settings-nav-layout" />
 
+        {/* Static: Installed applications (Spec #3147 ST-6). A STATIC section, not
+            a `featureSettingsTab`: the feature-tab memo above is built from the
+            built-in registry, and an installed app is a second trust tier that must
+            never join it. Placed at the END of the static group so the following
+            `Applications` header reads as the other tier. */}
+        <NavItem id="installed-apps" label="Installed applications" icon={LuPackageOpen} activeSection={activeSection} onClick={setActiveSection} testId="settings-nav-installed-apps" />
+
         {/* Feature settings */}
         {featureSettingsTabs.length > 0 && (
           <Text
@@ -242,6 +250,9 @@ export const SettingsSurface: React.FC = () => {
             )}
             {activeSection === LAYOUT_NAV_ID && (
               <Box p={0} minH="100%"><LayoutSettings /></Box>
+            )}
+            {activeSection === 'installed-apps' && (
+              <Box minH="100%"><InstalledAppsSettings /></Box>
             )}
             {featureSettingsTabs.map((feature) =>
               activeSection === feature.id ? (
