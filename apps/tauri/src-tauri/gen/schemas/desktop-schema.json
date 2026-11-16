@@ -387,6 +387,1428 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "The application command surface every built-in Fredo window has today.\n#### This default permission set includes:\n\n- `allow-subscribe-events`\n- `allow-unsubscribe-events`\n- `allow-stream-health`\n- `allow-application-data-read`\n- `allow-application-data-watch`\n- `allow-application-data-unwatch`\n- `allow-application-data-write`\n- `allow-application-data-delete`\n- `allow-application-data-declare`\n- `allow-stt-list-devices`\n- `allow-stt-start`\n- `allow-stt-stop`\n- `allow-stt-cancel`\n- `allow-stt-status`\n- `allow-stt-take-audio-clip`\n- `allow-save-setting`\n- `allow-get-setting`\n- `allow-get-control-setting`\n- `allow-save-control-setting`\n- `allow-ingest-autostart-get`\n- `allow-ingest-autostart-set`\n- `allow-open-terminal-window`\n- `allow-spawn-terminal-session`\n- `allow-list-terminal-sessions`\n- `allow-get-pty-buffer`\n- `allow-write-pty-input`\n- `allow-resize-pty`\n- `allow-close-terminal-session`\n- `allow-close-terminal-window`\n- `allow-list-persisted-terminal-sessions`\n- `allow-resume-terminal-session`\n- `allow-delete-terminal-session-record`\n- `allow-rename-terminal-session-record`\n- `allow-open-app-window`\n- `allow-close-app-window`\n- `allow-check-cli-installations`\n- `allow-install-plugin`\n- `allow-get-plugin-source-path`\n- `allow-check-fredo-in-path`\n- `allow-add-fredo-to-path`\n- `allow-check-otel-configured`\n- `allow-configure-otel`\n- `allow-get-setup-plan`\n- `allow-check-all-setup`\n- `allow-run-setup-step`\n- `allow-check-model-files`\n- `allow-download-model`\n- `allow-check-companion-readiness`\n- `allow-llm-chat`\n- `allow-llm-chat-with-image`\n- `allow-llm-chat-with-audio`\n- `allow-start-companion-engine`\n- `allow-launch-llama-server`\n- `allow-stop-llama-server`\n- `allow-get-llama-server-status`\n- `allow-stt-audio-capability`\n- `allow-llm-chat-with-skills`\n- `allow-llm-chat-with-status`\n- `allow-capture-screen-region`\n- `allow-pg-supervisor-status`\n- `allow-pg-server-log-tail`\n- `allow-pg-config-get`\n- `allow-pg-config-apply`\n- `allow-pg-database-reset`\n- `allow-db-connection-list`\n- `allow-db-connection-test`\n- `allow-db-connection-save`\n- `allow-db-connection-delete`\n- `allow-db-connect`\n- `allow-db-disconnect`\n- `allow-db-schema-list`\n- `allow-db-query-execute`\n- `allow-db-result-page`\n- `allow-storage-engine-status`\n- `allow-wireframe-save-as`\n- `allow-wireframe-open-document`\n- `allow-wireframe-export-png`\n- `allow-app-command-intent`\n- `allow-app-command-intent-take`\n- `allow-app-command-intent-result`\n- `allow-register-app-command-surfaces`\n- `allow-app-command-surfaces`\n- `allow-application-store-ensure-table`\n- `allow-application-store-insert`\n- `allow-application-store-query`\n- `allow-application-store-update`\n- `allow-application-store-delete`\n- `allow-telemetry-get-stats`\n- `allow-telemetry-purge`\n- `allow-telemetry-toggle`\n- `allow-telemetry-metrics-toggle`\n- `allow-telemetry-logging-toggle`\n- `allow-telemetry-logging-set-level`\n- `allow-confirm-app-open-request`\n- `allow-run-open-app-cli`\n- `allow-open-doom-window`\n- `allow-launch-doom-runtime`\n- `allow-stop-doom-runtime`\n- `allow-get-doom-status`\n- `allow-doom-read-state`\n- `allow-doom-step`\n- `allow-doom-frame-raw`\n- `allow-start-doom-autoplay`\n- `allow-stop-doom-autoplay`\n- `allow-get-doom-autoplay-status`\n- `allow-get-doom-dataset-status`\n- `allow-set-doom-dataset-enabled`\n- `allow-export-doom-dataset`\n- `allow-get-doom-save`\n- `allow-reset-doom-save`\n- `allow-enter-doom-mode`\n- `allow-exit-doom-mode`\n- `allow-get-doom-mode-status`\n- `allow-installed-app-install`\n- `allow-installed-apps-list`\n- `allow-installed-app-open`\n- `allow-installed-app-close`\n- `allow-installed-apps-push-theme`",
+          "type": "string",
+          "const": "default",
+          "markdownDescription": "The application command surface every built-in Fredo window has today.\n#### This default permission set includes:\n\n- `allow-subscribe-events`\n- `allow-unsubscribe-events`\n- `allow-stream-health`\n- `allow-application-data-read`\n- `allow-application-data-watch`\n- `allow-application-data-unwatch`\n- `allow-application-data-write`\n- `allow-application-data-delete`\n- `allow-application-data-declare`\n- `allow-stt-list-devices`\n- `allow-stt-start`\n- `allow-stt-stop`\n- `allow-stt-cancel`\n- `allow-stt-status`\n- `allow-stt-take-audio-clip`\n- `allow-save-setting`\n- `allow-get-setting`\n- `allow-get-control-setting`\n- `allow-save-control-setting`\n- `allow-ingest-autostart-get`\n- `allow-ingest-autostart-set`\n- `allow-open-terminal-window`\n- `allow-spawn-terminal-session`\n- `allow-list-terminal-sessions`\n- `allow-get-pty-buffer`\n- `allow-write-pty-input`\n- `allow-resize-pty`\n- `allow-close-terminal-session`\n- `allow-close-terminal-window`\n- `allow-list-persisted-terminal-sessions`\n- `allow-resume-terminal-session`\n- `allow-delete-terminal-session-record`\n- `allow-rename-terminal-session-record`\n- `allow-open-app-window`\n- `allow-close-app-window`\n- `allow-check-cli-installations`\n- `allow-install-plugin`\n- `allow-get-plugin-source-path`\n- `allow-check-fredo-in-path`\n- `allow-add-fredo-to-path`\n- `allow-check-otel-configured`\n- `allow-configure-otel`\n- `allow-get-setup-plan`\n- `allow-check-all-setup`\n- `allow-run-setup-step`\n- `allow-check-model-files`\n- `allow-download-model`\n- `allow-check-companion-readiness`\n- `allow-llm-chat`\n- `allow-llm-chat-with-image`\n- `allow-llm-chat-with-audio`\n- `allow-start-companion-engine`\n- `allow-launch-llama-server`\n- `allow-stop-llama-server`\n- `allow-get-llama-server-status`\n- `allow-stt-audio-capability`\n- `allow-llm-chat-with-skills`\n- `allow-llm-chat-with-status`\n- `allow-capture-screen-region`\n- `allow-pg-supervisor-status`\n- `allow-pg-server-log-tail`\n- `allow-pg-config-get`\n- `allow-pg-config-apply`\n- `allow-pg-database-reset`\n- `allow-db-connection-list`\n- `allow-db-connection-test`\n- `allow-db-connection-save`\n- `allow-db-connection-delete`\n- `allow-db-connect`\n- `allow-db-disconnect`\n- `allow-db-schema-list`\n- `allow-db-query-execute`\n- `allow-db-result-page`\n- `allow-storage-engine-status`\n- `allow-wireframe-save-as`\n- `allow-wireframe-open-document`\n- `allow-wireframe-export-png`\n- `allow-app-command-intent`\n- `allow-app-command-intent-take`\n- `allow-app-command-intent-result`\n- `allow-register-app-command-surfaces`\n- `allow-app-command-surfaces`\n- `allow-application-store-ensure-table`\n- `allow-application-store-insert`\n- `allow-application-store-query`\n- `allow-application-store-update`\n- `allow-application-store-delete`\n- `allow-telemetry-get-stats`\n- `allow-telemetry-purge`\n- `allow-telemetry-toggle`\n- `allow-telemetry-metrics-toggle`\n- `allow-telemetry-logging-toggle`\n- `allow-telemetry-logging-set-level`\n- `allow-confirm-app-open-request`\n- `allow-run-open-app-cli`\n- `allow-open-doom-window`\n- `allow-launch-doom-runtime`\n- `allow-stop-doom-runtime`\n- `allow-get-doom-status`\n- `allow-doom-read-state`\n- `allow-doom-step`\n- `allow-doom-frame-raw`\n- `allow-start-doom-autoplay`\n- `allow-stop-doom-autoplay`\n- `allow-get-doom-autoplay-status`\n- `allow-get-doom-dataset-status`\n- `allow-set-doom-dataset-enabled`\n- `allow-export-doom-dataset`\n- `allow-get-doom-save`\n- `allow-reset-doom-save`\n- `allow-enter-doom-mode`\n- `allow-exit-doom-mode`\n- `allow-get-doom-mode-status`\n- `allow-installed-app-install`\n- `allow-installed-apps-list`\n- `allow-installed-app-open`\n- `allow-installed-app-close`\n- `allow-installed-apps-push-theme`"
+        },
+        {
+          "description": "Enables the add_fredo_to_path command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-add-fredo-to-path",
+          "markdownDescription": "Enables the add_fredo_to_path command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the app_command_intent command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-app-command-intent",
+          "markdownDescription": "Enables the app_command_intent command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the app_command_intent_result command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-app-command-intent-result",
+          "markdownDescription": "Enables the app_command_intent_result command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the app_command_intent_take command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-app-command-intent-take",
+          "markdownDescription": "Enables the app_command_intent_take command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the app_command_surfaces command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-app-command-surfaces",
+          "markdownDescription": "Enables the app_command_surfaces command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the application_data_declare command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-application-data-declare",
+          "markdownDescription": "Enables the application_data_declare command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the application_data_delete command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-application-data-delete",
+          "markdownDescription": "Enables the application_data_delete command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the application_data_read command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-application-data-read",
+          "markdownDescription": "Enables the application_data_read command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the application_data_unwatch command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-application-data-unwatch",
+          "markdownDescription": "Enables the application_data_unwatch command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the application_data_watch command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-application-data-watch",
+          "markdownDescription": "Enables the application_data_watch command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the application_data_write command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-application-data-write",
+          "markdownDescription": "Enables the application_data_write command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the application_store_delete command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-application-store-delete",
+          "markdownDescription": "Enables the application_store_delete command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the application_store_ensure_table command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-application-store-ensure-table",
+          "markdownDescription": "Enables the application_store_ensure_table command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the application_store_insert command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-application-store-insert",
+          "markdownDescription": "Enables the application_store_insert command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the application_store_query command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-application-store-query",
+          "markdownDescription": "Enables the application_store_query command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the application_store_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-application-store-update",
+          "markdownDescription": "Enables the application_store_update command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the capture_screen_region command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-capture-screen-region",
+          "markdownDescription": "Enables the capture_screen_region command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the check_all_setup command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-check-all-setup",
+          "markdownDescription": "Enables the check_all_setup command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the check_cli_installations command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-check-cli-installations",
+          "markdownDescription": "Enables the check_cli_installations command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the check_companion_readiness command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-check-companion-readiness",
+          "markdownDescription": "Enables the check_companion_readiness command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the check_fredo_in_path command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-check-fredo-in-path",
+          "markdownDescription": "Enables the check_fredo_in_path command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the check_model_files command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-check-model-files",
+          "markdownDescription": "Enables the check_model_files command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the check_otel_configured command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-check-otel-configured",
+          "markdownDescription": "Enables the check_otel_configured command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the close_app_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-close-app-window",
+          "markdownDescription": "Enables the close_app_window command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the close_terminal_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-close-terminal-session",
+          "markdownDescription": "Enables the close_terminal_session command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the close_terminal_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-close-terminal-window",
+          "markdownDescription": "Enables the close_terminal_window command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the configure_otel command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-configure-otel",
+          "markdownDescription": "Enables the configure_otel command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the confirm_app_open_request command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-confirm-app-open-request",
+          "markdownDescription": "Enables the confirm_app_open_request command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the db_connect command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-db-connect",
+          "markdownDescription": "Enables the db_connect command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the db_connection_delete command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-db-connection-delete",
+          "markdownDescription": "Enables the db_connection_delete command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the db_connection_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-db-connection-list",
+          "markdownDescription": "Enables the db_connection_list command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the db_connection_save command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-db-connection-save",
+          "markdownDescription": "Enables the db_connection_save command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the db_connection_test command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-db-connection-test",
+          "markdownDescription": "Enables the db_connection_test command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the db_disconnect command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-db-disconnect",
+          "markdownDescription": "Enables the db_disconnect command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the db_query_execute command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-db-query-execute",
+          "markdownDescription": "Enables the db_query_execute command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the db_result_page command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-db-result-page",
+          "markdownDescription": "Enables the db_result_page command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the db_schema_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-db-schema-list",
+          "markdownDescription": "Enables the db_schema_list command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the delete_terminal_session_record command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-delete-terminal-session-record",
+          "markdownDescription": "Enables the delete_terminal_session_record command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the doom_frame_raw command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-doom-frame-raw",
+          "markdownDescription": "Enables the doom_frame_raw command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the doom_read_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-doom-read-state",
+          "markdownDescription": "Enables the doom_read_state command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the doom_step command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-doom-step",
+          "markdownDescription": "Enables the doom_step command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the download_model command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-download-model",
+          "markdownDescription": "Enables the download_model command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the enter_doom_mode command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-enter-doom-mode",
+          "markdownDescription": "Enables the enter_doom_mode command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the exit_doom_mode command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-exit-doom-mode",
+          "markdownDescription": "Enables the exit_doom_mode command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the export_doom_dataset command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-export-doom-dataset",
+          "markdownDescription": "Enables the export_doom_dataset command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_control_setting command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-control-setting",
+          "markdownDescription": "Enables the get_control_setting command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_doom_autoplay_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-doom-autoplay-status",
+          "markdownDescription": "Enables the get_doom_autoplay_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_doom_dataset_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-doom-dataset-status",
+          "markdownDescription": "Enables the get_doom_dataset_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_doom_mode_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-doom-mode-status",
+          "markdownDescription": "Enables the get_doom_mode_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_doom_save command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-doom-save",
+          "markdownDescription": "Enables the get_doom_save command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_doom_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-doom-status",
+          "markdownDescription": "Enables the get_doom_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_llama_server_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-llama-server-status",
+          "markdownDescription": "Enables the get_llama_server_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_plugin_source_path command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-plugin-source-path",
+          "markdownDescription": "Enables the get_plugin_source_path command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_pty_buffer command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-pty-buffer",
+          "markdownDescription": "Enables the get_pty_buffer command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_setting command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-setting",
+          "markdownDescription": "Enables the get_setting command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_setup_plan command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-setup-plan",
+          "markdownDescription": "Enables the get_setup_plan command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the ingest_autostart_get command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ingest-autostart-get",
+          "markdownDescription": "Enables the ingest_autostart_get command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the ingest_autostart_set command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ingest-autostart-set",
+          "markdownDescription": "Enables the ingest_autostart_set command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the install_plugin command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-install-plugin",
+          "markdownDescription": "Enables the install_plugin command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the installed_app_close command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-installed-app-close",
+          "markdownDescription": "Enables the installed_app_close command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the installed_app_install command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-installed-app-install",
+          "markdownDescription": "Enables the installed_app_install command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the installed_app_open command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-installed-app-open",
+          "markdownDescription": "Enables the installed_app_open command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the installed_apps_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-installed-apps-list",
+          "markdownDescription": "Enables the installed_apps_list command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the installed_apps_push_theme command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-installed-apps-push-theme",
+          "markdownDescription": "Enables the installed_apps_push_theme command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the launch_doom_runtime command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-launch-doom-runtime",
+          "markdownDescription": "Enables the launch_doom_runtime command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the launch_llama_server command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-launch-llama-server",
+          "markdownDescription": "Enables the launch_llama_server command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the list_persisted_terminal_sessions command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-list-persisted-terminal-sessions",
+          "markdownDescription": "Enables the list_persisted_terminal_sessions command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the list_terminal_sessions command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-list-terminal-sessions",
+          "markdownDescription": "Enables the list_terminal_sessions command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the llm_chat command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-llm-chat",
+          "markdownDescription": "Enables the llm_chat command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the llm_chat_with_audio command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-llm-chat-with-audio",
+          "markdownDescription": "Enables the llm_chat_with_audio command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the llm_chat_with_image command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-llm-chat-with-image",
+          "markdownDescription": "Enables the llm_chat_with_image command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the llm_chat_with_skills command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-llm-chat-with-skills",
+          "markdownDescription": "Enables the llm_chat_with_skills command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the llm_chat_with_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-llm-chat-with-status",
+          "markdownDescription": "Enables the llm_chat_with_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open_app_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-app-window",
+          "markdownDescription": "Enables the open_app_window command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open_doom_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-doom-window",
+          "markdownDescription": "Enables the open_doom_window command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open_terminal_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-terminal-window",
+          "markdownDescription": "Enables the open_terminal_window command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the pg_config_apply command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-pg-config-apply",
+          "markdownDescription": "Enables the pg_config_apply command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the pg_config_get command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-pg-config-get",
+          "markdownDescription": "Enables the pg_config_get command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the pg_database_reset command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-pg-database-reset",
+          "markdownDescription": "Enables the pg_database_reset command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the pg_server_log_tail command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-pg-server-log-tail",
+          "markdownDescription": "Enables the pg_server_log_tail command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the pg_supervisor_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-pg-supervisor-status",
+          "markdownDescription": "Enables the pg_supervisor_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the register_app_command_surfaces command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-register-app-command-surfaces",
+          "markdownDescription": "Enables the register_app_command_surfaces command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the rename_terminal_session_record command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-rename-terminal-session-record",
+          "markdownDescription": "Enables the rename_terminal_session_record command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the reset_doom_save command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-reset-doom-save",
+          "markdownDescription": "Enables the reset_doom_save command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the resize_pty command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-resize-pty",
+          "markdownDescription": "Enables the resize_pty command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the resume_terminal_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-resume-terminal-session",
+          "markdownDescription": "Enables the resume_terminal_session command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the run_open_app_cli command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-run-open-app-cli",
+          "markdownDescription": "Enables the run_open_app_cli command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the run_setup_step command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-run-setup-step",
+          "markdownDescription": "Enables the run_setup_step command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the save_control_setting command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-control-setting",
+          "markdownDescription": "Enables the save_control_setting command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the save_setting command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-setting",
+          "markdownDescription": "Enables the save_setting command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_doom_dataset_enabled command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-doom-dataset-enabled",
+          "markdownDescription": "Enables the set_doom_dataset_enabled command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the spawn_terminal_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-spawn-terminal-session",
+          "markdownDescription": "Enables the spawn_terminal_session command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the start_companion_engine command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-start-companion-engine",
+          "markdownDescription": "Enables the start_companion_engine command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the start_doom_autoplay command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-start-doom-autoplay",
+          "markdownDescription": "Enables the start_doom_autoplay command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the stop_doom_autoplay command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-stop-doom-autoplay",
+          "markdownDescription": "Enables the stop_doom_autoplay command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the stop_doom_runtime command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-stop-doom-runtime",
+          "markdownDescription": "Enables the stop_doom_runtime command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the stop_llama_server command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-stop-llama-server",
+          "markdownDescription": "Enables the stop_llama_server command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the storage_engine_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-storage-engine-status",
+          "markdownDescription": "Enables the storage_engine_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the stream_health command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-stream-health",
+          "markdownDescription": "Enables the stream_health command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the stt_audio_capability command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-stt-audio-capability",
+          "markdownDescription": "Enables the stt_audio_capability command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the stt_cancel command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-stt-cancel",
+          "markdownDescription": "Enables the stt_cancel command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the stt_list_devices command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-stt-list-devices",
+          "markdownDescription": "Enables the stt_list_devices command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the stt_start command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-stt-start",
+          "markdownDescription": "Enables the stt_start command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the stt_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-stt-status",
+          "markdownDescription": "Enables the stt_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the stt_stop command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-stt-stop",
+          "markdownDescription": "Enables the stt_stop command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the stt_take_audio_clip command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-stt-take-audio-clip",
+          "markdownDescription": "Enables the stt_take_audio_clip command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the subscribe_events command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-subscribe-events",
+          "markdownDescription": "Enables the subscribe_events command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the telemetry_get_stats command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-telemetry-get-stats",
+          "markdownDescription": "Enables the telemetry_get_stats command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the telemetry_logging_set_level command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-telemetry-logging-set-level",
+          "markdownDescription": "Enables the telemetry_logging_set_level command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the telemetry_logging_toggle command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-telemetry-logging-toggle",
+          "markdownDescription": "Enables the telemetry_logging_toggle command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the telemetry_metrics_toggle command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-telemetry-metrics-toggle",
+          "markdownDescription": "Enables the telemetry_metrics_toggle command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the telemetry_purge command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-telemetry-purge",
+          "markdownDescription": "Enables the telemetry_purge command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the telemetry_toggle command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-telemetry-toggle",
+          "markdownDescription": "Enables the telemetry_toggle command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the unsubscribe_events command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-unsubscribe-events",
+          "markdownDescription": "Enables the unsubscribe_events command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the wireframe_export_png command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-wireframe-export-png",
+          "markdownDescription": "Enables the wireframe_export_png command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the wireframe_open_document command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-wireframe-open-document",
+          "markdownDescription": "Enables the wireframe_open_document command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the wireframe_save_as command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-wireframe-save-as",
+          "markdownDescription": "Enables the wireframe_save_as command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the write_pty_input command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-write-pty-input",
+          "markdownDescription": "Enables the write_pty_input command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the add_fredo_to_path command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-add-fredo-to-path",
+          "markdownDescription": "Denies the add_fredo_to_path command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the app_command_intent command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-app-command-intent",
+          "markdownDescription": "Denies the app_command_intent command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the app_command_intent_result command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-app-command-intent-result",
+          "markdownDescription": "Denies the app_command_intent_result command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the app_command_intent_take command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-app-command-intent-take",
+          "markdownDescription": "Denies the app_command_intent_take command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the app_command_surfaces command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-app-command-surfaces",
+          "markdownDescription": "Denies the app_command_surfaces command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the application_data_declare command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-application-data-declare",
+          "markdownDescription": "Denies the application_data_declare command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the application_data_delete command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-application-data-delete",
+          "markdownDescription": "Denies the application_data_delete command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the application_data_read command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-application-data-read",
+          "markdownDescription": "Denies the application_data_read command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the application_data_unwatch command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-application-data-unwatch",
+          "markdownDescription": "Denies the application_data_unwatch command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the application_data_watch command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-application-data-watch",
+          "markdownDescription": "Denies the application_data_watch command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the application_data_write command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-application-data-write",
+          "markdownDescription": "Denies the application_data_write command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the application_store_delete command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-application-store-delete",
+          "markdownDescription": "Denies the application_store_delete command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the application_store_ensure_table command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-application-store-ensure-table",
+          "markdownDescription": "Denies the application_store_ensure_table command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the application_store_insert command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-application-store-insert",
+          "markdownDescription": "Denies the application_store_insert command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the application_store_query command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-application-store-query",
+          "markdownDescription": "Denies the application_store_query command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the application_store_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-application-store-update",
+          "markdownDescription": "Denies the application_store_update command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the capture_screen_region command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-capture-screen-region",
+          "markdownDescription": "Denies the capture_screen_region command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the check_all_setup command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-check-all-setup",
+          "markdownDescription": "Denies the check_all_setup command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the check_cli_installations command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-check-cli-installations",
+          "markdownDescription": "Denies the check_cli_installations command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the check_companion_readiness command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-check-companion-readiness",
+          "markdownDescription": "Denies the check_companion_readiness command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the check_fredo_in_path command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-check-fredo-in-path",
+          "markdownDescription": "Denies the check_fredo_in_path command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the check_model_files command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-check-model-files",
+          "markdownDescription": "Denies the check_model_files command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the check_otel_configured command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-check-otel-configured",
+          "markdownDescription": "Denies the check_otel_configured command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the close_app_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-close-app-window",
+          "markdownDescription": "Denies the close_app_window command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the close_terminal_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-close-terminal-session",
+          "markdownDescription": "Denies the close_terminal_session command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the close_terminal_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-close-terminal-window",
+          "markdownDescription": "Denies the close_terminal_window command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the configure_otel command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-configure-otel",
+          "markdownDescription": "Denies the configure_otel command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the confirm_app_open_request command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-confirm-app-open-request",
+          "markdownDescription": "Denies the confirm_app_open_request command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the db_connect command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-db-connect",
+          "markdownDescription": "Denies the db_connect command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the db_connection_delete command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-db-connection-delete",
+          "markdownDescription": "Denies the db_connection_delete command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the db_connection_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-db-connection-list",
+          "markdownDescription": "Denies the db_connection_list command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the db_connection_save command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-db-connection-save",
+          "markdownDescription": "Denies the db_connection_save command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the db_connection_test command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-db-connection-test",
+          "markdownDescription": "Denies the db_connection_test command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the db_disconnect command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-db-disconnect",
+          "markdownDescription": "Denies the db_disconnect command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the db_query_execute command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-db-query-execute",
+          "markdownDescription": "Denies the db_query_execute command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the db_result_page command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-db-result-page",
+          "markdownDescription": "Denies the db_result_page command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the db_schema_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-db-schema-list",
+          "markdownDescription": "Denies the db_schema_list command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the delete_terminal_session_record command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-delete-terminal-session-record",
+          "markdownDescription": "Denies the delete_terminal_session_record command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the doom_frame_raw command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-doom-frame-raw",
+          "markdownDescription": "Denies the doom_frame_raw command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the doom_read_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-doom-read-state",
+          "markdownDescription": "Denies the doom_read_state command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the doom_step command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-doom-step",
+          "markdownDescription": "Denies the doom_step command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the download_model command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-download-model",
+          "markdownDescription": "Denies the download_model command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the enter_doom_mode command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-enter-doom-mode",
+          "markdownDescription": "Denies the enter_doom_mode command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the exit_doom_mode command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-exit-doom-mode",
+          "markdownDescription": "Denies the exit_doom_mode command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the export_doom_dataset command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-export-doom-dataset",
+          "markdownDescription": "Denies the export_doom_dataset command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_control_setting command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-control-setting",
+          "markdownDescription": "Denies the get_control_setting command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_doom_autoplay_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-doom-autoplay-status",
+          "markdownDescription": "Denies the get_doom_autoplay_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_doom_dataset_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-doom-dataset-status",
+          "markdownDescription": "Denies the get_doom_dataset_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_doom_mode_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-doom-mode-status",
+          "markdownDescription": "Denies the get_doom_mode_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_doom_save command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-doom-save",
+          "markdownDescription": "Denies the get_doom_save command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_doom_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-doom-status",
+          "markdownDescription": "Denies the get_doom_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_llama_server_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-llama-server-status",
+          "markdownDescription": "Denies the get_llama_server_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_plugin_source_path command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-plugin-source-path",
+          "markdownDescription": "Denies the get_plugin_source_path command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_pty_buffer command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-pty-buffer",
+          "markdownDescription": "Denies the get_pty_buffer command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_setting command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-setting",
+          "markdownDescription": "Denies the get_setting command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_setup_plan command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-setup-plan",
+          "markdownDescription": "Denies the get_setup_plan command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ingest_autostart_get command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ingest-autostart-get",
+          "markdownDescription": "Denies the ingest_autostart_get command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ingest_autostart_set command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ingest-autostart-set",
+          "markdownDescription": "Denies the ingest_autostart_set command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the install_plugin command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-install-plugin",
+          "markdownDescription": "Denies the install_plugin command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the installed_app_close command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-installed-app-close",
+          "markdownDescription": "Denies the installed_app_close command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the installed_app_install command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-installed-app-install",
+          "markdownDescription": "Denies the installed_app_install command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the installed_app_open command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-installed-app-open",
+          "markdownDescription": "Denies the installed_app_open command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the installed_apps_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-installed-apps-list",
+          "markdownDescription": "Denies the installed_apps_list command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the installed_apps_push_theme command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-installed-apps-push-theme",
+          "markdownDescription": "Denies the installed_apps_push_theme command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the launch_doom_runtime command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-launch-doom-runtime",
+          "markdownDescription": "Denies the launch_doom_runtime command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the launch_llama_server command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-launch-llama-server",
+          "markdownDescription": "Denies the launch_llama_server command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the list_persisted_terminal_sessions command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-list-persisted-terminal-sessions",
+          "markdownDescription": "Denies the list_persisted_terminal_sessions command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the list_terminal_sessions command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-list-terminal-sessions",
+          "markdownDescription": "Denies the list_terminal_sessions command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the llm_chat command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-llm-chat",
+          "markdownDescription": "Denies the llm_chat command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the llm_chat_with_audio command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-llm-chat-with-audio",
+          "markdownDescription": "Denies the llm_chat_with_audio command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the llm_chat_with_image command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-llm-chat-with-image",
+          "markdownDescription": "Denies the llm_chat_with_image command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the llm_chat_with_skills command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-llm-chat-with-skills",
+          "markdownDescription": "Denies the llm_chat_with_skills command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the llm_chat_with_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-llm-chat-with-status",
+          "markdownDescription": "Denies the llm_chat_with_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_app_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-app-window",
+          "markdownDescription": "Denies the open_app_window command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_doom_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-doom-window",
+          "markdownDescription": "Denies the open_doom_window command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_terminal_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-terminal-window",
+          "markdownDescription": "Denies the open_terminal_window command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the pg_config_apply command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-pg-config-apply",
+          "markdownDescription": "Denies the pg_config_apply command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the pg_config_get command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-pg-config-get",
+          "markdownDescription": "Denies the pg_config_get command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the pg_database_reset command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-pg-database-reset",
+          "markdownDescription": "Denies the pg_database_reset command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the pg_server_log_tail command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-pg-server-log-tail",
+          "markdownDescription": "Denies the pg_server_log_tail command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the pg_supervisor_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-pg-supervisor-status",
+          "markdownDescription": "Denies the pg_supervisor_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the register_app_command_surfaces command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-register-app-command-surfaces",
+          "markdownDescription": "Denies the register_app_command_surfaces command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the rename_terminal_session_record command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-rename-terminal-session-record",
+          "markdownDescription": "Denies the rename_terminal_session_record command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the reset_doom_save command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-reset-doom-save",
+          "markdownDescription": "Denies the reset_doom_save command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the resize_pty command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-resize-pty",
+          "markdownDescription": "Denies the resize_pty command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the resume_terminal_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-resume-terminal-session",
+          "markdownDescription": "Denies the resume_terminal_session command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the run_open_app_cli command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-run-open-app-cli",
+          "markdownDescription": "Denies the run_open_app_cli command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the run_setup_step command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-run-setup-step",
+          "markdownDescription": "Denies the run_setup_step command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_control_setting command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-control-setting",
+          "markdownDescription": "Denies the save_control_setting command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_setting command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-setting",
+          "markdownDescription": "Denies the save_setting command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_doom_dataset_enabled command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-doom-dataset-enabled",
+          "markdownDescription": "Denies the set_doom_dataset_enabled command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the spawn_terminal_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-spawn-terminal-session",
+          "markdownDescription": "Denies the spawn_terminal_session command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the start_companion_engine command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-start-companion-engine",
+          "markdownDescription": "Denies the start_companion_engine command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the start_doom_autoplay command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-start-doom-autoplay",
+          "markdownDescription": "Denies the start_doom_autoplay command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stop_doom_autoplay command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-stop-doom-autoplay",
+          "markdownDescription": "Denies the stop_doom_autoplay command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stop_doom_runtime command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-stop-doom-runtime",
+          "markdownDescription": "Denies the stop_doom_runtime command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stop_llama_server command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-stop-llama-server",
+          "markdownDescription": "Denies the stop_llama_server command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the storage_engine_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-storage-engine-status",
+          "markdownDescription": "Denies the storage_engine_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stream_health command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-stream-health",
+          "markdownDescription": "Denies the stream_health command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stt_audio_capability command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-stt-audio-capability",
+          "markdownDescription": "Denies the stt_audio_capability command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stt_cancel command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-stt-cancel",
+          "markdownDescription": "Denies the stt_cancel command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stt_list_devices command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-stt-list-devices",
+          "markdownDescription": "Denies the stt_list_devices command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stt_start command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-stt-start",
+          "markdownDescription": "Denies the stt_start command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stt_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-stt-status",
+          "markdownDescription": "Denies the stt_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stt_stop command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-stt-stop",
+          "markdownDescription": "Denies the stt_stop command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stt_take_audio_clip command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-stt-take-audio-clip",
+          "markdownDescription": "Denies the stt_take_audio_clip command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the subscribe_events command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-subscribe-events",
+          "markdownDescription": "Denies the subscribe_events command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the telemetry_get_stats command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-telemetry-get-stats",
+          "markdownDescription": "Denies the telemetry_get_stats command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the telemetry_logging_set_level command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-telemetry-logging-set-level",
+          "markdownDescription": "Denies the telemetry_logging_set_level command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the telemetry_logging_toggle command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-telemetry-logging-toggle",
+          "markdownDescription": "Denies the telemetry_logging_toggle command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the telemetry_metrics_toggle command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-telemetry-metrics-toggle",
+          "markdownDescription": "Denies the telemetry_metrics_toggle command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the telemetry_purge command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-telemetry-purge",
+          "markdownDescription": "Denies the telemetry_purge command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the telemetry_toggle command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-telemetry-toggle",
+          "markdownDescription": "Denies the telemetry_toggle command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the unsubscribe_events command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-unsubscribe-events",
+          "markdownDescription": "Denies the unsubscribe_events command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the wireframe_export_png command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-wireframe-export-png",
+          "markdownDescription": "Denies the wireframe_export_png command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the wireframe_open_document command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-wireframe-open-document",
+          "markdownDescription": "Denies the wireframe_open_document command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the wireframe_save_as command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-wireframe-save-as",
+          "markdownDescription": "Denies the wireframe_save_as command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the write_pty_input command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-write-pty-input",
+          "markdownDescription": "Denies the write_pty_input command without any pre-configured scope."
+        },
+        {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
           "const": "core:default",

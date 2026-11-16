@@ -88,8 +88,8 @@ pub const SUPPORTED_MANIFEST_VERSION: u32 = 1;
 
 /// The running Fredo version, used for the `engines.fredo` range check.
 ///
-/// Source: the crate version (`CARGO_PKG_VERSION`, currently `0.1.0`) — the
-/// same string the installer/updater stamps on a build, so a package author can
+/// Source: the crate version (`CARGO_PKG_VERSION`) — the same string the
+/// installer/updater stamps on a build, so a package author can
 /// target the version the user actually runs.
 pub const HOST_FREDO_VERSION: &str = env!("CARGO_PKG_VERSION");
 

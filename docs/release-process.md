@@ -63,7 +63,7 @@ performing the owner-manual steps — if any differ, stop and reconcile rather t
   → `tauri-apps/tauri-action@v1`.
 - **`tauri-action` inputs:** `projectPath: apps/tauri/src-tauri` (the Tauri project is **not** at the
   repo root); `tagName: app-v__VERSION__` (`__VERSION__` is substituted from `tauri.conf.json`
-  `version` = `0.1.0`); `releaseName: 'Fredo v__VERSION__'`; `releaseBody: 'Fredo release for v__VERSION__ — see assets to download and install.'`;
+  `version` = `0.2.0`); `releaseName: 'Fredo v__VERSION__'`; `releaseBody: 'Fredo release for v__VERSION__ — see assets to download and install.'`;
   **`releaseDraft: true`**; `prerelease: false`; `args: ${{ matrix.args }}`.
 - **`releaseDraft: true` is the deliberately-reviewed gate** — tauri-action creates a **DRAFT**
   GitHub Release and uploads the artifacts to it. Nothing is public until the owner publishes the
@@ -98,7 +98,7 @@ performing the owner-manual steps — if any differ, stop and reconcile rather t
 
 ### 4. `apps/tauri/src-tauri/tauri.conf.json` — bundle config consumed by the release build
 
-- `productName: "Fredo"`, `version: "0.1.0"` (feeds `__VERSION__`), `identifier: "com.fredo.app"`.
+- `productName: "Fredo"`, `version: "0.2.0"` (feeds `__VERSION__`), `identifier: "com.fredo.app"`.
 - `bundle.active: true`, `bundle.targets: "all"`; Windows NSIS `perMachine`. **No change is
   required** — `release.yml` reads the existing config. **No signing identity is configured**
   (`macOS.signingIdentity: null`) — code signing/notarization is deferred (NFR-4).
@@ -246,14 +246,14 @@ or publishes.**
    requires a PR, there is no direct-merge path; the merge itself is the PR merge.)
 5. **`release.yml` fires on the merge push.** The push to `release/stable` triggers `Release`, which
    runs the Windows-only matrix, builds the Windows installer, and uploads it to a **DRAFT** GitHub
-   Release (tag `app-v0.1.0` at the branch tip).
+   Release (tag `app-v0.2.0` at the branch tip).
 6. **The owner reviews the DRAFT and publishes it.** Open the draft under `Releases`, confirm the
    artifact (the Windows NSIS `.exe` installer), then **Publish**. Users only download
    deliberately-reviewed artifacts because nothing is public before this step.
 
 > **Reproducibility note:** every artifact is built from the `release/stable` tip with a fixed ref,
 > `pnpm install --frozen-lockfile`, the committed `Cargo.lock`, and SHA-pinned actions — so a given
-> tip always yields the same build. The bundle `version` (`0.1.0`) is read from
+> tip always yields the same build. The bundle `version` (`0.2.0`) is read from
 > `tauri.conf.json` at build time and injected into the release tag/name.
 
 ---
@@ -276,14 +276,69 @@ matrix.
 
 ---
 
+## Version bumps — the ORDER is load-bearing
+
+A release ships whatever version `tauri.conf.json` holds, and a release sync sets the
+`release/stable` tree to **exactly `main`**. That makes `main` the single source of truth for the
+version, and it makes the **order** of a bump non-negotiable.
+
+### The rule
+
+**A version bump lands on `main` FIRST. Only then is `release/stable` synced from `main`.**
+
+```
+  1. bump  ->  PR into main              (version change lives here, once)
+  2. sync  ->  PR into release/stable    (tree = main, bump included)
+  3. the merge to release/stable fires release.yml -> DRAFT release
+  4. owner reviews + publishes the draft
+```
+
+Never open a release PR that carries version content `main` does not already have. The
+`release-version-guard` job in `validate.yml` fails closed on exactly that shape, on every PR
+into `release/stable`.
+
+### Why the order matters (a real incident)
+
+PR #3156 bumped the version to `0.2.0` on `release/stable` while `main` stayed on `0.1.0`. The
+release that shipped was correct — but the **next** release sync would have reset the tree to
+`main`, silently rebuilding `0.1.0` and reusing the old `app-v0.1.0` tag. Nothing caught it; it
+was found by comparing the two branches after the release had already been cut, and repaired by a
+second PR (#3157) that backfilled the bump onto `main`.
+
+The failure is silent by construction: the two branches each look internally consistent, and only
+their *comparison* reveals the drift. Hence the automated guard rather than a convention.
+
+### The version lives in five places (all must agree)
+
+| File | Consumed by |
+|------|-------------|
+| `apps/tauri/src-tauri/tauri.conf.json` | `__VERSION__` → release tag + release name |
+| `apps/tauri/src-tauri/Cargo.toml` | `CARGO_PKG_VERSION` = `HOST_FREDO_VERSION` — the host version an installed app targets via `engines.fredo` |
+| `apps/tauri/src-tauri/Cargo.lock` | the locked crate version (must be regenerated, not hand-edited) |
+| `apps/tauri/package.json`, `apps/ui/package.json` | workspace identity |
+
+Bump all five in one commit on the `main` PR. Regenerate the lock with
+`cargo update --workspace --offline -p fredo` rather than editing it by hand.
+
+**Constraint on the value:** `installed_apps::tests::the_host_version_is_a_parseable_semver`
+asserts the host **major is 0**. A `1.0.0` bump fails that test by design — it is a deliberate
+signal that jumping majors needs a decision about `engines.fredo` compatibility, not an accident
+to work around.
+
+**Semver policy for the value itself** (what counts as major/minor/patch) remains out of scope
+below — this section fixes only the *order* the bump must travel.
+
+---
+
 ## Explicit non-goals (deferred — NFR-4)
 
 This manual does **not** cover the following — they are deliberately deferred to a later slice and
 must **not** be added to this process without a new spec:
 
 - **Versioning scheme / tag strategy** — `release.yml` uses the single `app-v__VERSION__` tag
-  derived from `tauri.conf.json`; a semver/SemVer-policy scheme, version bump workflow, and tag
-  strategy are out of scope.
+  derived from `tauri.conf.json`; a semver policy for *which* number to increment, and a tag
+  strategy, are out of scope. (The bump *order* and the file set are specified above; only the
+  policy for choosing the number is deferred.)
 - **Code signing / notarization** — `release.yml` has no signing/notarize inputs and
   `tauri.conf.json` has no signing identity.
 - **Changelog / release-notes generation** — `releaseBody` is a fixed template string; there is no
