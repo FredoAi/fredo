@@ -1146,12 +1146,19 @@ pub fn run() {
             // Spec #3147 ST-2 — the installed-application install pipeline
             // (`applications::installed_apps`): turn a user-picked package into a
             // validated, hashed, INERT install directory, and list what is
-            // installed. ST-4 (`open`/`close`) and ST-5 (`push_theme`) append
-            // their own registrations after this region. Nothing here runs at
-            // startup — `installed_apps_list` is only called by the settings
-            // pane (R-5.5).
+            // installed. ST-5 (`push_theme`) appends its own registration after
+            // this region. Nothing here runs at startup — `installed_apps_list`
+            // is only called by the settings pane (R-5.5).
             applications::installed_apps::commands_install::installed_app_install,
             applications::installed_apps::commands_install::installed_apps_list,
+            // Spec #3147 ST-4 — the installed-application window lifecycle
+            // (`commands_window`): `installed_app_open` builds (or focuses) the
+            // singleton `installed-<id>` window at the `fredoapp` document URL
+            // once its install record has been re-verified, and
+            // `installed_app_close` destroys it. No window exists until the user
+            // opens one, so this registration is inert at startup (R-5.1/R-5.5).
+            applications::installed_apps::commands_window::installed_app_open,
+            applications::installed_apps::commands_window::installed_app_close,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Fredo application")

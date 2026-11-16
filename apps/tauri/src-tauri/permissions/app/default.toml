@@ -135,4 +135,9 @@ permissions = [
   # Spec #3147 ST-2 — the installed-application install pipeline (`installed_apps`).
   "allow-installed-app-install",
   "allow-installed-apps-list",
+  # Spec #3147 ST-4 — the installed-application window lifecycle. Granted to the
+  # BUILT-IN window class only: the `installed-<id>` window matches no capability,
+  # which is what makes its command access refuse (AC-2).
+  "allow-installed-app-open",
+  "allow-installed-app-close",
 ]
