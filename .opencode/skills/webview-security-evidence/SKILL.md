@@ -72,7 +72,7 @@ Static receipt:
 powershell -File .opencode/scripts/inspect-webview-config.ps1
 CHECK csp.script-src.no-unsafe-inline PASS script-src='self' blob: 'wasm-unsafe-eval'
 CHECK capabilities.release-set.excludes-bridge PASS auto-includes the capabilities dir; ...
-SUMMARY checks=24 passed=24 failed=0
+SUMMARY checks=25 passed=25 failed=0
 RESULT=PASS
 ```
 
@@ -107,6 +107,12 @@ RESULT=PASS
 - **Inspector FAIL** — quote the `CHECK` line. Fix the config, or update the inspector's
   expected values in the same change (a legitimate new capability file must be added to
   `-ExpectedCapabilities`). Never launch to "prove" a static value.
+- `capabilities.no-installed-window-reach` FAIL — a capability's `windows`/`webviews`
+  entry glob-matches an `installed-*` window label (or names the installed namespace at
+  all, or the file declares no window reach so it cannot be shown to exclude it). This is
+  the installed-app isolation boundary (Spec #3147 AC-2): an installed application must
+  match NO capability. Fix: narrow that capability's `windows` array. Never read a FAIL
+  here as "the directory gained a file" — the file count is `capabilities.expected-files`.
 - **Never** use `Test-NetConnection` (stalls on CLOSED ports), `Add-Type` C# Win32, window
   enumeration, or `CopyFromScreen` for this job — that combination hung in #3077.
 

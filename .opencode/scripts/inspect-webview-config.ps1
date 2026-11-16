@@ -17,6 +17,9 @@
     * the dev CSP differs only by the dev-only 'unsafe-inline' script allowance;
     * the capability set is the expected release set, with no shell permissions
       (shell:allow-spawn / shell:allow-execute / shell:allow-open);
+    * no capability `windows`/`webviews` entry can reach an `installed-*`
+      window label (the installed-app isolation boundary), and every capability
+      declares an explicit window reach;
     * the MCP bridge capability is dev-only and its plugin registration is
       `#[cfg(debug_assertions)]`-gated, so it is inert in a release build;
     * product source contains no `__TAURI__` global.
@@ -43,8 +46,14 @@
 
 .PARAMETER ExpectedCapabilities
   The capability file names that make up the expected release set. Default:
-  `default.json,mcp-bridge-dev.json`. Update this list (in the same change) when
-  a spec legitimately adds a capability file.
+  `default.json,mcp-bridge-dev.json,app-commands.json`.
+
+  This is a SET-EQUALITY check on FILE NAMES (count first, then elements), not a
+  "contains" check: the `capabilities/` directory must contain exactly these
+  files. A new capability file is therefore a DELIBERATE edit — add it to this
+  list in the same change that adds the file (the release-set assertion moves
+  with the file). It is never an automatic pass; a removal likewise requires
+  removing the name here.
 
 .EXAMPLE
   powershell -File .opencode/scripts/inspect-webview-config.ps1
@@ -57,7 +66,7 @@ param(
   [string]$ConfigPath = '',
   [string]$CapabilitiesDir = '',
   [string]$LibPath = '',
-  [string[]]$ExpectedCapabilities = @('default.json', 'mcp-bridge-dev.json')
+  [string[]]$ExpectedCapabilities = @('default.json', 'mcp-bridge-dev.json', 'app-commands.json')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -239,6 +248,56 @@ if ($hasExplicitCapabilities) { $explicitCaps = @($security.capabilities) }
 $releaseBridgeOk = if ($hasExplicitCapabilities) { -not ($explicitCaps -contains 'mcp-bridge-dev') } else { $true }
 $releaseDetail = if ($hasExplicitCapabilities) { "explicit=[$($explicitCaps -join ',')]" } else { 'auto-includes the capabilities dir; bridge permission is inert because the plugin is cfg(debug_assertions)-gated' }
 Add-Check 'capabilities.release-set.excludes-bridge' $releaseBridgeOk $releaseDetail
+
+# ---- Installed-app isolation: no capability may reach an installed-* window --
+# The ACL glob-matches a capability's `windows`/`webviews` entries against the
+# window label. An installed app's label always begins with `installed-`
+# (INSTALLED_APP_WINDOW_LABEL_PREFIX, Spec #3147), and the isolation AC-2 depends
+# on is that NO capability matches such a label. This asserts every declared
+# pattern fails to match the canonical installed label, and that no pattern even
+# names it.
+function Test-GlobMatch {
+  param([string]$Pattern, [string]$Label)
+  if ([string]::IsNullOrWhiteSpace($Pattern)) { return $false }
+  return $Label -like $Pattern   # Tauri window patterns are globs: * ? [..]
+}
+
+# NON-VACUITY CONTROL: the matcher MUST match app-terminal against app-* and MUST
+# NOT match the same label once it is installed-*, or the assertion below would
+# pass by matching nothing at all.
+$matchControlOk = (Test-GlobMatch -Pattern 'app-*' -Label 'app-terminal') -and
+  (-not (Test-GlobMatch -Pattern 'app-*' -Label 'installed-app-terminal'))
+
+$probeLabel = 'installed-fixture'
+$reachViolations = @()
+$undeclaredReach = @()
+foreach ($file in $capFiles) {
+  $doc = $capDocs[$file.Name]
+  if ($null -eq $doc) { $undeclaredReach += "$($file.Name):unparseable"; continue }
+  $windowEntries  = @($doc.windows  | Where-Object { $null -ne $_ })
+  $webviewEntries = @($doc.webviews | Where-Object { $null -ne $_ })
+  # Fail CLOSED: a capability with neither list declares no reach we can prove
+  # excludes installed-*. An absent/empty `windows` (and no `webviews`) FAILS
+  # here rather than being skipped as "matches nothing" (Spec #3147 QA row F-2.5).
+  if ($windowEntries.Count -eq 0 -and $webviewEntries.Count -eq 0) {
+    $undeclaredReach += "$($file.Name):no-windows-or-webviews"
+    continue
+  }
+  foreach ($entry in @($windowEntries + $webviewEntries)) {
+    $text = [string]$entry
+    if (Test-GlobMatch -Pattern $text -Label $probeLabel) {
+      $reachViolations += "$($file.Name):$text"
+    } elseif ($text -match '(?i)installed') {
+      # Names the installed namespace without glob-matching the probe: still a
+      # boundary edit — flag it, never let it pass silently.
+      $reachViolations += "$($file.Name):$text"
+    }
+  }
+}
+
+$reachOk = $matchControlOk -and ($reachViolations.Count -eq 0) -and ($undeclaredReach.Count -eq 0)
+$reachDetail = "matchControl=$matchControlOk probe=$probeLabel reachable=[$($reachViolations -join ' ')] undeclared=[$($undeclaredReach -join ' ')]"
+Add-Check 'capabilities.no-installed-window-reach' $reachOk $reachDetail
 
 # ---- The bridge plugin registration must be debug-only ----------------------
 $libText = if (Test-Path -LiteralPath $LibPath) { Get-Content -Raw -LiteralPath $LibPath } else { '' }

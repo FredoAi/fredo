@@ -1,0 +1,1334 @@
+//! The on-disk install root: hash pinning, the atomic install, and the registry
+//! listing (Spec #3147, ST-2).
+//!
+//! # Layout (backend-owned; the frontend never reads files)
+//!
+//! ```text
+//! <app_data_dir>/installed-apps/            # root; DIRECTORIES ARE THE REGISTRY
+//!   <id>/manifest.json                      # canonical normalized manifest copy
+//!   <id>/record.json                        # InstalledAppRecord (files + per-file sha256)
+//!   <id>/files/<entry.document, entry.module, assets...>
+//! ```
+//!
+//! There is deliberately **no central index file**: each install is one
+//! directory, so a corrupt record is corrupt for ONE application and every
+//! other application still lists and opens (T-4.5's per-directory property).
+//!
+//! # Nothing is half-installed
+//!
+//! Every refusal happens **before** the first write (the archive index validates
+//! names and budgets across the whole archive; the manifest is parsed before any
+//! file is touched), and the write phase is a single **staging directory** that
+//! is renamed into place only after `manifest.json`, `record.json` and every
+//! payload byte are on disk. A failure anywhere removes the staging directory,
+//! so the QA rows' "no new `<id>/`" assertion holds for every refusal path —
+//! including a mid-copy I/O failure.
+//!
+//! # Integrity (AC-4.4 / R-4.4)
+//!
+//! Each package file is read **once**, hashed **as it is written**, and recorded
+//! as `{path, sha256, bytes}` sorted by path, plus one aggregate digest over that
+//! sorted set. ST-3 verifies the record at serve time; this module produces it.
+
+use std::fs::File;
+use std::io::{BufReader, Read, Write};
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use zip::ZipArchive;
+
+use super::archive;use super::manifest::{self, AppManifest};
+use super::{
+    InstalledAppError, InstalledAppRefusalCode, InstalledAppResult, INSTALLED_APP_WINDOW_LABEL_PREFIX,
+    INSTALLED_APPS_ROOT_SUBDIR, INSTALLED_FILES_SUBDIR, INSTALLED_MANIFEST_FILENAME,
+    INSTALLED_RECORD_FILENAME, IO_CHUNK_BYTES, PACKAGE_MANIFEST_FILENAME,
+};
+
+/// One file's pin: where it lives inside `<id>/files`, what it hashes to, how big
+/// it is. `path` is a relative POSIX path (always `'/'`-separated).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledFileRecord {
+    pub path: String,
+    /// Lowercase hex SHA-256 of the file's bytes.
+    pub sha256: String,
+    pub bytes: u64,
+}
+
+/// `<id>/record.json` — everything ST-3 needs to verify what it serves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledAppRecord {
+    pub id: String,
+    pub version: String,
+    pub manifest_version: u32,
+    pub engines_fredo: String,
+    pub entry_document: String,
+    pub entry_module: String,
+    /// RFC 3339 timestamp of the completed install.
+    pub installed_at: String,
+    /// One digest over the sorted `(path, sha256)` set.
+    pub aggregate_sha256: String,
+    /// Every recorded file, sorted by `path`.
+    pub files: Vec<InstalledFileRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// `None` ⇒ the renderer falls back to `id` (an ABSENT key on the wire).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+}
+
+/// The list projection (plan §API Contracts) — what the launcher/settings show.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledAppEntry {
+    pub id: String,
+    pub display_name: String,
+    pub version: String,
+    /// The declared range, verbatim — never resolved to a boolean here.
+    pub engines_fredo: String,
+    pub installed_at: String,
+    /// Derived: `installed-<id>`.
+    pub window_label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+impl InstalledAppEntry {
+    /// Project a validated manifest into the list entry. `installed_at` is the
+    /// RFC 3339 stamp the caller recorded.
+    pub fn from_manifest(manifest: &AppManifest, installed_at: String) -> Self {
+        Self {
+            id: manifest.id.clone(),
+            display_name: manifest.display_name.clone(),
+            version: manifest.version.clone(),
+            engines_fredo: manifest.engines.fredo.clone(),
+            installed_at,
+            window_label: window_label_for(&manifest.id),
+            description: manifest.description.clone(),
+        }
+    }
+
+    /// Project a persisted [`InstalledAppRecord`].
+    pub fn from_record(record: &InstalledAppRecord) -> Self {
+        Self {
+            id: record.id.clone(),
+            display_name: record
+                .display_name
+                .clone()
+                .unwrap_or_else(|| record.id.clone()),
+            version: record.version.clone(),
+            engines_fredo: record.engines_fredo.clone(),
+            installed_at: record.installed_at.clone(),
+            window_label: window_label_for(&record.id),
+            description: record.description.clone(),
+        }
+    }
+}
+
+/// The window label for an installed application (`installed-<id>`).
+///
+/// This is the ONE derivation; ST-4 builds the window from it and the QA plan
+/// reads the constant from here (T-2.6).
+pub fn window_label_for(id: &str) -> String {
+    format!("{INSTALLED_APP_WINDOW_LABEL_PREFIX}{id}")
+}
+
+/// `<app_data_dir>/installed-apps` — the registry root. Pure.
+pub fn install_root(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join(INSTALLED_APPS_ROOT_SUBDIR)
+}
+
+/// `<app_data_dir>/installed-apps/<id>`. Pure.
+pub fn app_dir(root: &Path, id: &str) -> PathBuf {
+    root.join(id)
+}
+
+/// `<app_data_dir>/installed-apps-staging` — where an install is assembled
+/// before it is renamed into the registry.
+///
+/// Deliberately a SIBLING of the registry root, not a child: a staging
+/// directory inside the registry would appear as an application to any reader
+/// that lists directories, and "directories ARE the registry" must stay true.
+/// Both live under `app_data_dir`, so the rename is a same-volume atomic move.
+pub fn staging_root(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join(format!("{INSTALLED_APPS_ROOT_SUBDIR}-staging"))
+}
+
+/// Recursively remove `path`, ignoring "already gone". Used for staging cleanup
+/// so a failed install never leaves debris behind.
+fn remove_dir_all_if_present(path: &Path) {
+    if path.exists() {
+        let _ = std::fs::remove_dir_all(path);
+    }
+}
+
+/// Lowercase hex encoding (no extra crate dependency).
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+/// SHA-256 of a byte slice as lowercase hex.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex_encode(&hasher.finalize())
+}
+
+/// The aggregate digest over the SORTED `(path, sha256)` set.
+///
+/// The exact construction (`path` NUL `sha256` LF, repeated in path order) is
+/// part of the record contract: ST-3 recomputes nothing here, but the QA row
+/// T-N2 independently recomputes every per-file hash and can rebuild this value
+/// from the record alone. Deterministic by construction — no map iteration, no
+/// timestamps.
+pub fn aggregate_digest(files: &[InstalledFileRecord]) -> String {
+    let mut sorted: Vec<&InstalledFileRecord> = files.iter().collect();
+    sorted.sort_by(|left, right| left.path.cmp(&right.path));
+
+    let mut hasher = Sha256::new();
+    for file in sorted {
+        hasher.update(file.path.as_bytes());
+        hasher.update([0u8]);
+        hasher.update(file.sha256.as_bytes());
+        hasher.update(*b"\n");
+    }
+    hex_encode(&hasher.finalize())
+}
+
+/// Read `<id>/record.json`.
+///
+/// A missing or unparseable record is [`IntegrityRecordCorrupt`] — a distinct
+/// code from `io_error`, because "this application's integrity metadata is
+/// damaged" is a different fact from "a write failed" (T-4.5 asserts the
+/// specific code).
+///
+/// [`IntegrityRecordCorrupt`]: InstalledAppRefusalCode::IntegrityRecordCorrupt
+pub fn read_record(app_dir: &Path) -> InstalledAppResult<InstalledAppRecord> {
+    let path = app_dir.join(INSTALLED_RECORD_FILENAME);
+    let bytes = std::fs::read(&path).map_err(|error| {
+        InstalledAppError::new(
+            InstalledAppRefusalCode::IntegrityRecordCorrupt,
+            format!("{} could not be read: {error}", path.display()),
+        )
+    })?;
+    let record: InstalledAppRecord = serde_json::from_slice(&bytes).map_err(|error| {
+        InstalledAppError::new(
+            InstalledAppRefusalCode::IntegrityRecordCorrupt,
+            format!("{} is not a readable install record: {error}", path.display()),
+        )
+    })?;
+    Ok(record)
+}
+
+/// Read `<id>/manifest.json` (the canonical normalized copy).
+pub fn read_manifest_file(app_dir: &Path) -> InstalledAppResult<AppManifest> {
+    let path = app_dir.join(INSTALLED_MANIFEST_FILENAME);
+    let bytes = std::fs::read(&path).map_err(|error| {
+        InstalledAppError::new(
+            InstalledAppRefusalCode::IntegrityRecordCorrupt,
+            format!("{} could not be read: {error}", path.display()),
+        )
+    })?;
+    manifest::parse_manifest(&bytes).map_err(|error| InstalledAppError {
+        code: InstalledAppRefusalCode::IntegrityRecordCorrupt,
+        detail: format!(
+            "{} is not a valid canonical manifest: {}",
+            path.display(),
+            error.detail
+        ),
+        field: error.field,
+    })
+}
+
+/// List every installed application, sorted by id.
+///
+/// This is the ONLY reader of the registry, and nothing calls it at startup
+/// (R-5.5). A directory whose name cannot be an app id (a leftover staging
+/// directory, an OS artifact) is skipped rather than reported — but a directory
+/// that DOES look like an install with a damaged record is a hard
+/// [`IntegrityRecordCorrupt`], so the settings pane can render a verdict instead
+/// of a misleading empty state (T-6.4).
+///
+/// [`IntegrityRecordCorrupt`]: InstalledAppRefusalCode::IntegrityRecordCorrupt
+pub fn list_installed(root: &Path) -> InstalledAppResult<Vec<InstalledAppEntry>> {
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(InstalledAppError::io(
+                &format!("listing {}", root.display()),
+                &error,
+            ))
+        }
+    };
+
+    let mut entries_found: Vec<InstalledAppEntry> = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            InstalledAppError::io(&format!("listing {}", root.display()), &error)
+        })?;
+
+        let file_type = entry.file_type().map_err(|error| {
+            InstalledAppError::io(
+                &format!("inspecting {}", entry.path().display()),
+                &error,
+            )
+        })?;
+        if !file_type.is_dir() {
+            continue;
+        }
+
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // A directory that cannot be an app id is not a registry entry.
+        if !manifest::is_valid_app_id(&name) {
+            continue;
+        }
+
+        // An install directory without a record is a damaged install, not an
+        // empty one: surface it so the pane can say so.
+        let record = read_record(&entry.path())?;
+        entries_found.push(InstalledAppEntry::from_record(&record));
+    }
+
+    entries_found.sort_by(|left, right| left.id.cmp(&right.id));
+    Ok(entries_found)
+}
+
+/// Install one package archive into the registry.
+///
+/// The whole refusal vocabulary for the install path lives here or in the two
+/// helpers above; every failure happens before the rename, so a refusal leaves
+/// the registry byte-identical.
+pub fn install_archive(app_data_dir: &Path, archive_path: &Path) -> InstalledAppResult<InstalledAppEntry> {
+    let root = install_root(app_data_dir);
+
+    // ---- 1. Index the archive (names + budgets, whole-archive, no payload) ----
+    let mut archive = archive::open_archive(archive_path)?;
+    let index = archive_index_in_place(&mut archive)?;
+
+    // ---- 2. The manifest, read with serde_json and nothing else ----
+    let Some(manifest_entry) = index.manifest_entry() else {
+        return Err(InstalledAppError::new(
+            InstalledAppRefusalCode::NoManifest,
+            format!(
+                "the package has no {PACKAGE_MANIFEST_FILENAME} at its root; a package must \
+                 declare itself before anything is installed"
+            ),
+        ));
+    };
+    let manifest_bytes = archive::read_entry_bytes(&mut archive, manifest_entry)?;
+    let manifest = manifest::parse_manifest(&manifest_bytes)?;
+
+    // ---- 3. Both entry files must exist in the archive ----
+    require_entry_file(&index, &manifest.entry.document, "entry.document")?;
+    require_entry_file(&index, &manifest.entry.module, "entry.module")?;
+
+    // ---- 4. Refuse a re-install before writing anything ----
+    let target = app_dir(&root, &manifest.id);
+    if target.exists() {
+        return Err(already_installed_error(&manifest.id));
+    }
+
+    // ---- 5. Assemble in a staging directory, then rename ----
+    std::fs::create_dir_all(&root)
+        .map_err(|error| InstalledAppError::io(&format!("creating {}", root.display()), &error))?;
+    let staging_base = staging_root(app_data_dir);
+    std::fs::create_dir_all(&staging_base).map_err(|error| {
+        InstalledAppError::io(&format!("creating {}", staging_base.display()), &error)
+    })?;
+
+    let staging = staging_base.join(format!("{}-{}", manifest.id, unique_suffix()));
+    remove_dir_all_if_present(&staging);
+
+    let outcome = write_staged_install(&mut archive, &index, &manifest, &staging);
+    let installed_at = match outcome {
+        Ok(stamp) => stamp,
+        Err(error) => {
+            remove_dir_all_if_present(&staging);
+            return Err(error);
+        }
+    };
+
+    // A concurrent install of the same id may have won the race after step 4.
+    if target.exists() {
+        remove_dir_all_if_present(&staging);
+        return Err(already_installed_error(&manifest.id));
+    }
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            InstalledAppError::io(&format!("creating {}", parent.display()), &error)
+        })?;
+    }
+    if let Err(error) = std::fs::rename(&staging, &target) {
+        remove_dir_all_if_present(&staging);
+        if target.exists() {
+            return Err(already_installed_error(&manifest.id));
+        }
+        return Err(InstalledAppError::io(
+            &format!("publishing {}", target.display()),
+            &error,
+        ));
+    }
+
+    Ok(InstalledAppEntry::from_manifest(&manifest, installed_at))
+}
+
+/// The refusal for an id whose directory already exists.
+fn already_installed_error(id: &str) -> InstalledAppError {
+    InstalledAppError::field(
+        InstalledAppRefusalCode::AlreadyInstalled,
+        "id",
+        format!("\"{id}\" is already installed; nothing was changed"),
+    )
+}
+
+/// A short unique suffix for the staging directory name. Uses the process id and
+/// a monotonic counter — no `rand` dependency, and a collision only costs a
+/// retry-on-next-call (the staging dir is removed before use).
+fn unique_suffix() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("{}-{nanos}-{counter}", std::process::id())
+}
+
+/// Index the archive without consuming it, so the manifest and every payload can
+/// still be read afterwards.
+fn archive_index_in_place<R: Read + std::io::Seek>(
+    archive: &mut ZipArchive<R>,
+) -> InstalledAppResult<archive::ArchiveIndex> {
+    archive::index_archive_in_place(archive)
+}
+
+/// Is `relative_path` a REGULAR FILE in the index? A directory of the same name
+/// does not satisfy an `entry` claim.
+fn require_entry_file(
+    index: &archive::ArchiveIndex,
+    relative_path: &str,
+    field: &str,
+) -> InstalledAppResult<()> {
+    let found = index
+        .entries
+        .iter()
+        .any(|entry| entry.is_file && entry.relative_path == relative_path);
+    if found {
+        return Ok(());
+    }
+    Err(InstalledAppError::field(
+        InstalledAppRefusalCode::EntryMissing,
+        field,
+        format!("{field} names \"{relative_path}\", which is not a file in the package"),
+    ))
+}
+
+/// Write every payload file + `manifest.json` + `record.json` into `staging`.
+///
+/// Returns the RFC 3339 install timestamp. On error the caller removes the whole
+/// staging directory, so a partial write can never be published.
+fn write_staged_install<R: Read + std::io::Seek>(
+    archive: &mut ZipArchive<R>,
+    index: &archive::ArchiveIndex,
+    manifest: &AppManifest,
+    staging: &Path,
+) -> InstalledAppResult<String> {
+    let files_root = staging.join(INSTALLED_FILES_SUBDIR);
+    std::fs::create_dir_all(&files_root).map_err(|error| {
+        InstalledAppError::io(&format!("creating {}", files_root.display()), &error)
+    })?;
+
+    let mut files: Vec<InstalledFileRecord> = Vec::new();
+    let mut chunk = vec![0u8; IO_CHUNK_BYTES];
+
+    for entry in index.file_entries() {
+        // The manifest is re-serialized as the canonical copy; it is not itself
+        // a payload file, so it never appears in `files`.
+        if entry.archive_name == PACKAGE_MANIFEST_FILENAME {
+            continue;
+        }
+
+        let destination = archive::join_under_root(&files_root, &entry.relative_path)?;
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                InstalledAppError::io(&format!("creating {}", parent.display()), &error)
+            })?;
+        }
+
+        let mut source = archive.by_name(&entry.archive_name).map_err(|error| {
+            InstalledAppError::new(
+                InstalledAppRefusalCode::NotAZip,
+                format!("re-opening entry {:?}: {error}", entry.archive_name),
+            )
+        })?;
+
+        let mut sink = File::create(&destination).map_err(|error| {
+            InstalledAppError::io(&format!("creating {}", destination.display()), &error)
+        })?;
+
+        let mut hasher = Sha256::new();
+        let mut written: u64 = 0;
+        loop {
+            let read = source.read(&mut chunk).map_err(|error| {
+                InstalledAppError::new(
+                    InstalledAppRefusalCode::IoError,
+                    format!("reading entry {:?}: {error}", entry.archive_name),
+                )
+            })?;
+            if read == 0 {
+                break;
+            }
+
+            written = written.checked_add(read as u64).ok_or_else(|| {
+                InstalledAppError::new(
+                    InstalledAppRefusalCode::ArchiveTooLarge,
+                    format!("entry {:?} exceeds the size counter", entry.archive_name),
+                )
+            })?;
+
+            // Enforce the per-file declared size as we write: a declared size is
+            // a claim, and a lying archive must not fill the disk.
+            if written > entry.uncompressed_bytes {
+                return Err(InstalledAppError::new(
+                    InstalledAppRefusalCode::ArchiveTooLarge,
+                    format!(
+                        "entry {:?} decompressed past its declared {} bytes",
+                        entry.archive_name, entry.uncompressed_bytes
+                    ),
+                ));
+            }
+
+            hasher.update(&chunk[..read]);
+            sink.write_all(&chunk[..read]).map_err(|error| {
+                InstalledAppError::io(&format!("writing {}", destination.display()), &error)
+            })?;
+        }
+
+        sink.flush().map_err(|error| {
+            InstalledAppError::io(&format!("flushing {}", destination.display()), &error)
+        })?;
+
+        if written != entry.uncompressed_bytes {
+            return Err(InstalledAppError::new(
+                InstalledAppRefusalCode::ArchiveTooLarge,
+                format!(
+                    "entry {:?} declared {} bytes but yielded {written}",
+                    entry.archive_name, entry.uncompressed_bytes
+                ),
+            ));
+        }
+
+        files.push(InstalledFileRecord {
+            path: entry.relative_path.clone(),
+            sha256: hex_encode(&hasher.finalize()),
+            bytes: written,
+        });
+    }
+
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+
+    // `manifest.json` — the canonical normalized copy of what was validated.
+    let canonical_manifest = serde_json::to_vec_pretty(manifest).map_err(|error| {
+        InstalledAppError::new(
+            InstalledAppRefusalCode::IoError,
+            format!("serializing the canonical manifest: {error}"),
+        )
+    })?;
+    let manifest_path = staging.join(INSTALLED_MANIFEST_FILENAME);
+    std::fs::write(&manifest_path, &canonical_manifest).map_err(|error| {
+        InstalledAppError::io(&format!("writing {}", manifest_path.display()), &error)
+    })?;
+
+    let installed_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let record = InstalledAppRecord {
+        id: manifest.id.clone(),
+        version: manifest.version.clone(),
+        manifest_version: manifest.manifest_version,
+        engines_fredo: manifest.engines.fredo.clone(),
+        entry_document: manifest.entry.document.clone(),
+        entry_module: manifest.entry.module.clone(),
+        installed_at: installed_at.clone(),
+        aggregate_sha256: aggregate_digest(&files),
+        files,
+        description: manifest.description.clone(),
+        display_name: Some(manifest.display_name.clone()),
+    };
+
+    let record_json = serde_json::to_vec_pretty(&record).map_err(|error| {
+        InstalledAppError::new(
+            InstalledAppRefusalCode::IoError,
+            format!("serializing the install record: {error}"),
+        )
+    })?;
+    let record_path = staging.join(INSTALLED_RECORD_FILENAME);
+    std::fs::write(&record_path, &record_json).map_err(|error| {
+        InstalledAppError::io(&format!("writing {}", record_path.display()), &error)
+    })?;
+
+    Ok(installed_at)
+}
+
+/// Re-hash one installed file and compare it to its pin. The verify-at-serve
+/// half is ST-3's; this is the primitive it shares (and the QA row T-N2's
+/// independent recomputation target).
+pub fn verify_file(app_dir: &Path, file: &InstalledFileRecord) -> InstalledAppResult<()> {
+    let root = app_dir.join(INSTALLED_FILES_SUBDIR);
+    let path = archive::join_under_root(&root, &file.path)?;
+    let bytes = std::fs::read(&path).map_err(|error| {
+        InstalledAppError::new(
+            InstalledAppRefusalCode::IntegrityMismatch,
+            format!("{} could not be read: {error}", path.display()),
+        )
+    })?;
+    let actual = sha256_hex(&bytes);
+    if actual != file.sha256 || bytes.len() as u64 != file.bytes {
+        return Err(InstalledAppError::new(
+            InstalledAppRefusalCode::IntegrityMismatch,
+            format!(
+                "{} changed since install: recorded {} ({} bytes), found {} ({} bytes)",
+                file.path,
+                file.sha256,
+                file.bytes,
+                actual,
+                bytes.len()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Read one installed file's bytes, verifying its pin first.
+pub fn read_verified_file(app_dir: &Path, file: &InstalledFileRecord) -> InstalledAppResult<Vec<u8>> {
+    let root = app_dir.join(INSTALLED_FILES_SUBDIR);
+    let path = archive::join_under_root(&root, &file.path)?;
+    let bytes = std::fs::read(&path).map_err(|error| {
+        InstalledAppError::new(
+            InstalledAppRefusalCode::IntegrityMismatch,
+            format!("{} could not be read: {error}", path.display()),
+        )
+    })?;
+    if sha256_hex(&bytes) != file.sha256 {
+        return Err(InstalledAppError::new(
+            InstalledAppRefusalCode::IntegrityMismatch,
+            format!("{} does not match its recorded hash", file.path),
+        ));
+    }
+    Ok(bytes)
+}
+
+/// Read a package archive from a `BufReader` (test seam).
+pub fn open_from_reader<R: Read + std::io::Seek>(reader: R) -> InstalledAppResult<ZipArchive<R>> {
+    ZipArchive::new(reader).map_err(|error| {
+        InstalledAppError::new(
+            InstalledAppRefusalCode::NotAZip,
+            format!("not a readable ZIP archive: {error}"),
+        )
+    })
+}
+
+/// Read `buf` from a file into memory (helper for tests + ST-3).
+pub fn read_file_bytes(path: &Path) -> InstalledAppResult<Vec<u8>> {
+    let file = File::open(path)
+        .map_err(|error| InstalledAppError::io(&format!("opening {}", path.display()), &error))?;
+    let mut reader = BufReader::new(file);
+    let mut bytes = Vec::new();
+    reader
+        .read_to_end(&mut bytes)
+        .map_err(|error| InstalledAppError::io(&format!("reading {}", path.display()), &error))?;
+    Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::applications::installed_apps::archive::{index_archive, read_entry_bytes};
+    use std::io::{Cursor, Seek};
+
+    // ── Deterministic stored-entry zip builder (mirrors the fixture generator) ──
+
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = 0xffff_ffffu32;
+        for byte in data {
+            crc ^= *byte as u32;
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 { 0xedb8_8320 ^ (crc >> 1) } else { crc >> 1 };
+            }
+        }
+        crc ^ 0xffff_ffff
+    }
+
+    fn build_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut central: Vec<u8> = Vec::new();
+
+        for (name, data) in entries {
+            let offset = out.len() as u32;
+            let crc = crc32(data);
+            let size = data.len() as u32;
+            let name_bytes = name.as_bytes();
+            let name_len = name_bytes.len() as u16;
+
+            out.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
+            out.extend_from_slice(&20u16.to_le_bytes());
+            out.extend_from_slice(&0x0800u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0x0000u16.to_le_bytes());
+            out.extend_from_slice(&0x0021u16.to_le_bytes());
+            out.extend_from_slice(&crc.to_le_bytes());
+            out.extend_from_slice(&size.to_le_bytes());
+            out.extend_from_slice(&size.to_le_bytes());
+            out.extend_from_slice(&name_len.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(name_bytes);
+            out.extend_from_slice(data);
+
+            central.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
+            central.extend_from_slice(&20u16.to_le_bytes());
+            central.extend_from_slice(&20u16.to_le_bytes());
+            central.extend_from_slice(&0x0800u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0x0000u16.to_le_bytes());
+            central.extend_from_slice(&0x0021u16.to_le_bytes());
+            central.extend_from_slice(&crc.to_le_bytes());
+            central.extend_from_slice(&size.to_le_bytes());
+            central.extend_from_slice(&size.to_le_bytes());
+            central.extend_from_slice(&name_len.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u32.to_le_bytes());
+            central.extend_from_slice(&offset.to_le_bytes());
+            central.extend_from_slice(name_bytes);
+        }
+
+        let central_offset = out.len() as u32;
+        let central_size = central.len() as u32;
+        out.extend_from_slice(&central);
+        out.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        out.extend_from_slice(&central_size.to_le_bytes());
+        out.extend_from_slice(&central_offset.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out
+    }
+
+    /// A valid manifest body matching the entry pair used by [`valid_package`].
+    fn manifest_json(id: &str) -> String {
+        format!(
+            r#"{{
+  "manifestVersion": 1,
+  "id": "{id}",
+  "displayName": "QA3147 Sample",
+  "version": "1.2.3",
+  "engines": {{ "fredo": ">=0.0.0" }},
+  "entry": {{ "document": "index.html", "module": "main.js" }},
+  "description": "A sample package."
+}}"#
+        )
+    }
+
+    fn valid_package(id: &str) -> Vec<u8> {
+        let manifest = manifest_json(id);
+        build_zip(&[
+            (PACKAGE_MANIFEST_FILENAME, manifest.as_bytes()),
+            ("index.html", b"<!doctype html><html><body>hi</body></html>"),
+            ("main.js", b"export function mount(ctx) { ctx.root.textContent = 'hi'; }"),
+            ("assets/logo.png", b"\x89PNG\r\n\x1a\n-fake-"),
+        ])
+    }
+
+    /// Write `bytes` to a temp `.zip` and return (tempdir, path).
+    fn staged_zip(bytes: &[u8]) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("package.zip");
+        std::fs::write(&path, bytes).expect("write zip");
+        (dir, path)
+    }
+
+    fn data_dir() -> tempfile::TempDir {
+        tempfile::tempdir().expect("tempdir")
+    }
+
+    // ── Layout + projection ────────────────────────────────────────────────
+
+    #[test]
+    fn the_install_root_is_installed_apps_under_the_data_dir() {
+        let root = install_root(Path::new("C:/data"));
+        assert_eq!(root, Path::new("C:/data").join("installed-apps"));
+        assert!(root.ends_with("installed-apps"));
+    }
+
+    #[test]
+    fn the_staging_root_is_a_sibling_of_the_registry_not_a_child() {
+        let data = Path::new("C:/data");
+        let registry = install_root(data);
+        let staging = staging_root(data);
+        assert!(!staging.starts_with(&registry), "staging must not be inside the registry");
+        assert_eq!(staging.parent(), registry.parent());
+    }
+
+    #[test]
+    fn the_window_label_is_the_prefixed_id() {
+        assert_eq!(window_label_for("qa3147-sample"), "installed-qa3147-sample");
+    }
+
+    #[test]
+    fn the_entry_projection_carries_every_axis() {
+        let manifest = manifest::parse_manifest(manifest_json("qa3147-sample").as_bytes())
+            .expect("manifest");
+        let entry = InstalledAppEntry::from_manifest(&manifest, "2026-01-01T00:00:00Z".to_string());
+        assert_eq!(entry.id, "qa3147-sample");
+        assert_eq!(entry.display_name, "QA3147 Sample");
+        assert_eq!(entry.version, "1.2.3");
+        assert_eq!(entry.engines_fredo, ">=0.0.0");
+        assert_eq!(entry.installed_at, "2026-01-01T00:00:00Z");
+        assert_eq!(entry.window_label, "installed-qa3147-sample");
+        assert_eq!(entry.description.as_deref(), Some("A sample package."));
+    }
+
+    #[test]
+    fn the_entry_projection_omits_description_when_unset() {
+        let json = r#"{
+            "manifestVersion": 1,
+            "id": "qa3147-nodesc",
+            "displayName": "No Description",
+            "version": "1.0.0",
+            "engines": { "fredo": ">=0.0.0" },
+            "entry": { "document": "index.html", "module": "main.js" }
+        }"#;
+        let manifest = manifest::parse_manifest(json.as_bytes()).expect("manifest");
+        let entry = InstalledAppEntry::from_manifest(&manifest, "2026-01-01T00:00:00Z".into());
+        let value = serde_json::to_value(&entry).expect("serialize");
+        assert!(
+            !value.as_object().expect("object").contains_key("description"),
+            "an unset description must be an ABSENT key: {value}"
+        );
+    }
+
+    #[test]
+    fn the_entry_projection_falls_back_to_the_id_when_the_record_has_no_display_name() {
+        let record = InstalledAppRecord {
+            id: "qa3147-fallback".into(),
+            version: "1.0.0".into(),
+            manifest_version: 1,
+            engines_fredo: ">=0.0.0".into(),
+            entry_document: "index.html".into(),
+            entry_module: "main.js".into(),
+            installed_at: "2026-01-01T00:00:00Z".into(),
+            aggregate_sha256: aggregate_digest(&[]),
+            files: Vec::new(),
+            description: None,
+            display_name: None,
+        };
+        let entry = InstalledAppEntry::from_record(&record);
+        assert_eq!(entry.display_name, "qa3147-fallback");
+        assert_eq!(entry.window_label, "installed-qa3147-fallback");
+    }
+
+    // ── Hashing + aggregate ────────────────────────────────────────────────
+
+    #[test]
+    fn sha256_hex_matches_the_known_digest_of_an_empty_and_a_known_input() {
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn the_aggregate_digest_is_order_independent_and_path_sensitive() {
+        let a = InstalledFileRecord {
+            path: "a.txt".into(),
+            sha256: "11".repeat(32),
+            bytes: 1,
+        };
+        let b = InstalledFileRecord {
+            path: "b.txt".into(),
+            sha256: "22".repeat(32),
+            bytes: 2,
+        };
+
+        let forwards = aggregate_digest(&[a.clone(), b.clone()]);
+        let backwards = aggregate_digest(&[b.clone(), a.clone()]);
+        assert_eq!(forwards, backwards, "the digest is over the SORTED set");
+
+        let mut changed = a.clone();
+        changed.path = "c.txt".into();
+        assert_ne!(
+            aggregate_digest(&[a.clone(), b.clone()]),
+            aggregate_digest(&[changed, b]),
+            "the path participates in the digest"
+        );
+    }
+
+    #[test]
+    fn the_aggregate_digest_of_an_empty_set_is_the_empty_sha256() {
+        assert_eq!(aggregate_digest(&[]), sha256_hex(b""));
+    }
+
+    // ── The install happy path ─────────────────────────────────────────────
+
+    #[test]
+    fn a_valid_package_installs_with_the_documented_layout() {
+        let data = data_dir();
+        let (_zip_dir, zip_path) = staged_zip(&valid_package("qa3147-sample"));
+
+        let entry = install_archive(data.path(), &zip_path).expect("install");
+        assert_eq!(entry.id, "qa3147-sample");
+        assert_eq!(entry.display_name, "QA3147 Sample");
+        assert_eq!(entry.window_label, "installed-qa3147-sample");
+
+        let root = install_root(data.path());
+        let dir = app_dir(&root, "qa3147-sample");
+        assert!(dir.join(INSTALLED_MANIFEST_FILENAME).is_file(), "manifest.json");
+        assert!(dir.join(INSTALLED_RECORD_FILENAME).is_file(), "record.json");
+        let files = dir.join(INSTALLED_FILES_SUBDIR);
+        assert!(files.join("index.html").is_file());
+        assert!(files.join("main.js").is_file());
+        assert!(files.join("assets").join("logo.png").is_file());
+        assert!(
+            !files.join(PACKAGE_MANIFEST_FILENAME).exists(),
+            "the manifest is the canonical copy, not a payload file"
+        );
+
+        // Staging is cleaned up.
+        let staging = staging_root(data.path());
+        let leftovers: Vec<_> = std::fs::read_dir(&staging)
+            .map(|entries| entries.filter_map(std::result::Result::ok).collect())
+            .unwrap_or_default();
+        assert!(leftovers.is_empty(), "staging must be empty after success");
+    }
+
+    #[test]
+    fn the_record_pins_every_file_sorted_with_an_aggregate_digest() {
+        let data = data_dir();
+        let (_zip_dir, zip_path) = staged_zip(&valid_package("qa3147-pinned"));
+        install_archive(data.path(), &zip_path).expect("install");
+
+        let dir = app_dir(&install_root(data.path()), "qa3147-pinned");
+        let record = read_record(&dir).expect("record");
+
+        let paths: Vec<&str> = record.files.iter().map(|file| file.path.as_str()).collect();
+        assert_eq!(paths, vec!["assets/logo.png", "index.html", "main.js"]);
+        let mut sorted = paths.clone();
+        sorted.sort_unstable();
+        assert_eq!(paths, sorted, "files are sorted by path");
+
+        for file in &record.files {
+            let on_disk = dir.join(INSTALLED_FILES_SUBDIR).join(&file.path);
+            let bytes = std::fs::read(&on_disk).expect("read");
+            assert_eq!(sha256_hex(&bytes), file.sha256, "{} pin", file.path);
+            assert_eq!(bytes.len() as u64, file.bytes, "{} size", file.path);
+        }
+
+        assert_eq!(record.aggregate_sha256, aggregate_digest(&record.files));
+        assert_eq!(record.entry_document, "index.html");
+        assert_eq!(record.entry_module, "main.js");
+        assert_eq!(record.manifest_version, 1);
+        assert_eq!(record.engines_fredo, ">=0.0.0");
+        assert!(chrono::DateTime::parse_from_rfc3339(&record.installed_at).is_ok());
+    }
+
+    #[test]
+    fn the_canonical_manifest_copy_round_trips() {
+        let data = data_dir();
+        let (_zip_dir, zip_path) = staged_zip(&valid_package("qa3147-canonical"));
+        install_archive(data.path(), &zip_path).expect("install");
+
+        let dir = app_dir(&install_root(data.path()), "qa3147-canonical");
+        let manifest = read_manifest_file(&dir).expect("canonical manifest");
+        assert_eq!(manifest.id, "qa3147-canonical");
+        assert_eq!(manifest.display_name, "QA3147 Sample");
+        assert_eq!(manifest.entry.document, "index.html");
+        assert_eq!(manifest.entry.module, "main.js");
+    }
+
+    #[test]
+    fn verify_file_accepts_an_untouched_install_and_the_record_listing_round_trips() {
+        let data = data_dir();
+        let (_zip_dir, zip_path) = staged_zip(&valid_package("qa3147-verified"));
+        install_archive(data.path(), &zip_path).expect("install");
+
+        let dir = app_dir(&install_root(data.path()), "qa3147-verified");
+        let record = read_record(&dir).expect("record");
+        for file in &record.files {
+            verify_file(&dir, file).expect("untouched file verifies");
+        }
+
+        let listed = list_installed(&install_root(data.path())).expect("list");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "qa3147-verified");
+    }
+
+    // ── Integrity detection (the record ST-3 checks against) ───────────────
+
+    #[test]
+    fn a_mutated_byte_is_integrity_mismatch() {
+        let data = data_dir();
+        let (_zip_dir, zip_path) = staged_zip(&valid_package("qa3147-tamper"));
+        install_archive(data.path(), &zip_path).expect("install");
+
+        let dir = app_dir(&install_root(data.path()), "qa3147-tamper");
+        let record = read_record(&dir).expect("record");
+        let target = dir.join(INSTALLED_FILES_SUBDIR).join("main.js");
+
+        let mut bytes = std::fs::read(&target).expect("read");
+        bytes[0] ^= 0xff;
+        std::fs::write(&target, &bytes).expect("write");
+
+        let file = record
+            .files
+            .iter()
+            .find(|file| file.path == "main.js")
+            .expect("main.js record");
+        let error = verify_file(&dir, file).expect_err("mutated");
+        assert_eq!(error.code, InstalledAppRefusalCode::IntegrityMismatch);
+        assert!(error.detail.contains("main.js"));
+
+        let error = read_verified_file(&dir, file).expect_err("mutated read");
+        assert_eq!(error.code, InstalledAppRefusalCode::IntegrityMismatch);
+    }
+
+    #[test]
+    fn a_truncated_record_is_integrity_record_corrupt() {
+        let data = data_dir();
+        let (_zip_dir, zip_path) = staged_zip(&valid_package("qa3147-corrupt"));
+        install_archive(data.path(), &zip_path).expect("install");
+
+        let dir = app_dir(&install_root(data.path()), "qa3147-corrupt");
+        let record_path = dir.join(INSTALLED_RECORD_FILENAME);
+        let bytes = std::fs::read(&record_path).expect("read");
+        std::fs::write(&record_path, &bytes[..bytes.len() / 2]).expect("truncate");
+
+        let error = read_record(&dir).expect_err("truncated");
+        assert_eq!(
+            error.code,
+            InstalledAppRefusalCode::IntegrityRecordCorrupt,
+            "a damaged record is NOT a generic io_error (T-4.5)"
+        );
+    }
+
+    // ── Refusals leave the registry untouched ──────────────────────────────
+
+    /// Assert no `<id>/` exists and staging is empty after a refusal.
+    fn assert_nothing_installed(data: &Path, id: &str) {
+        let root = install_root(data);
+        assert!(
+            !app_dir(&root, id).exists(),
+            "refusal must leave no {id}/ behind"
+        );
+        let staging = staging_root(data);
+        let leftovers: Vec<_> = std::fs::read_dir(&staging)
+            .map(|entries| entries.filter_map(std::result::Result::ok).collect())
+            .unwrap_or_default();
+        assert!(leftovers.is_empty(), "refusal must leave no staging debris");
+    }
+
+    #[test]
+    fn a_package_without_a_manifest_is_no_manifest_and_installs_nothing() {
+        let data = data_dir();
+        let (_zip_dir, zip_path) = staged_zip(&build_zip(&[("index.html", b"<html></html>")]));
+
+        let error = install_archive(data.path(), &zip_path).expect_err("no manifest");
+        assert_eq!(error.code, InstalledAppRefusalCode::NoManifest);
+        assert_nothing_installed(data.path(), "qa3147-sample");
+    }
+
+    #[test]
+    fn a_non_zip_file_is_not_a_zip_and_installs_nothing() {
+        let data = data_dir();
+        let (_zip_dir, zip_path) = staged_zip(b"this is definitely not a zip archive");
+
+        let error = install_archive(data.path(), &zip_path).expect_err("not a zip");
+        assert_eq!(error.code, InstalledAppRefusalCode::NotAZip);
+        assert_eq!(
+            install_root(data.path()).read_dir().map(|d| d.count()).unwrap_or(0),
+            0,
+            "no install root content"
+        );
+    }
+
+    #[test]
+    fn an_unparseable_manifest_is_manifest_malformed_and_installs_nothing() {
+        let data = data_dir();
+        let (_zip_dir, zip_path) = staged_zip(&build_zip(&[
+            (PACKAGE_MANIFEST_FILENAME, b"{ this is not json"),
+            ("index.html", b"<html></html>"),
+            ("main.js", b"//"),
+        ]));
+
+        let error = install_archive(data.path(), &zip_path).expect_err("bad manifest");
+        assert_eq!(error.code, InstalledAppRefusalCode::ManifestMalformed);
+        assert_nothing_installed(data.path(), "qa3147-sample");
+    }
+
+    #[test]
+    fn an_unknown_manifest_key_is_manifest_unknown_field() {
+        let data = data_dir();
+        let manifest = r#"{
+            "manifestVersion": 1,
+            "id": "qa3147-unknown",
+            "displayName": "Unknown",
+            "version": "1.0.0",
+            "engines": { "fredo": ">=0.0.0" },
+            "entry": { "document": "index.html", "module": "main.js" },
+            "capabilities": ["read"]
+        }"#;
+        let (_zip_dir, zip_path) = staged_zip(&build_zip(&[
+            (PACKAGE_MANIFEST_FILENAME, manifest.as_bytes()),
+            ("index.html", b"<html></html>"),
+            ("main.js", b"//"),
+        ]));
+
+        let error = install_archive(data.path(), &zip_path).expect_err("unknown key");
+        assert_eq!(error.code, InstalledAppRefusalCode::ManifestUnknownField);
+        assert_eq!(error.field.as_deref(), Some("capabilities"));
+        assert_nothing_installed(data.path(), "qa3147-unknown");
+    }
+
+    #[test]
+    fn an_unsupported_manifest_version_is_unsupported_and_installs_nothing() {
+        let data = data_dir();
+        let manifest = r#"{
+            "manifestVersion": 7,
+            "id": "qa3147-future",
+            "displayName": "Future",
+            "version": "1.0.0",
+            "engines": { "fredo": ">=0.0.0" },
+            "entry": { "document": "index.html", "module": "main.js" }
+        }"#;
+        let (_zip_dir, zip_path) = staged_zip(&build_zip(&[
+            (PACKAGE_MANIFEST_FILENAME, manifest.as_bytes()),
+            ("index.html", b"<html></html>"),
+            ("main.js", b"//"),
+        ]));
+
+        let error = install_archive(data.path(), &zip_path).expect_err("future version");
+        assert_eq!(
+            error.code,
+            InstalledAppRefusalCode::UnsupportedManifestVersion
+        );
+        assert_nothing_installed(data.path(), "qa3147-future");
+    }
+
+    #[test]
+    fn a_reserved_built_in_id_is_id_reserved() {
+        let data = data_dir();
+        let (_zip_dir, zip_path) = staged_zip(&build_zip(&[
+            (PACKAGE_MANIFEST_FILENAME, manifest_json("terminal").as_bytes()),
+            ("index.html", b"<html></html>"),
+            ("main.js", b"//"),
+        ]));
+
+        let error = install_archive(data.path(), &zip_path).expect_err("reserved id");
+        assert_eq!(error.code, InstalledAppRefusalCode::IdReserved);
+        assert_nothing_installed(data.path(), "terminal");
+    }
+
+    #[test]
+    fn an_entry_naming_an_absent_file_is_entry_missing() {
+        let data = data_dir();
+        let manifest = r#"{
+            "manifestVersion": 1,
+            "id": "qa3147-missing-entry",
+            "displayName": "Missing Entry",
+            "version": "1.0.0",
+            "engines": { "fredo": ">=0.0.0" },
+            "entry": { "document": "index.html", "module": "absent.js" }
+        }"#;
+        let (_zip_dir, zip_path) = staged_zip(&build_zip(&[
+            (PACKAGE_MANIFEST_FILENAME, manifest.as_bytes()),
+            ("index.html", b"<html></html>"),
+        ]));
+
+        let error = install_archive(data.path(), &zip_path).expect_err("missing module");
+        assert_eq!(error.code, InstalledAppRefusalCode::EntryMissing);
+        assert_eq!(error.field.as_deref(), Some("entry.module"));
+        assert_nothing_installed(data.path(), "qa3147-missing-entry");
+    }
+
+    #[test]
+    fn a_zip_slip_entry_is_unsafe_path_and_installs_nothing() {
+        let data = data_dir();
+        let (_zip_dir, zip_path) = staged_zip(&build_zip(&[
+            (PACKAGE_MANIFEST_FILENAME, manifest_json("qa3147-slip").as_bytes()),
+            ("index.html", b"<html></html>"),
+            ("main.js", b"//"),
+            ("../../escaped.txt", b"owned"),
+        ]));
+
+        let error = install_archive(data.path(), &zip_path).expect_err("zip slip");
+        assert_eq!(error.code, InstalledAppRefusalCode::UnsafePath);
+        assert_nothing_installed(data.path(), "qa3147-slip");
+        // And nothing landed next to the app-data dir.
+        assert!(!data.path().parent().expect("parent").join("escaped.txt").exists());
+    }
+
+    #[test]
+    fn a_reserved_fredo_path_is_reserved_path_and_installs_nothing() {
+        let data = data_dir();
+        let (_zip_dir, zip_path) = staged_zip(&build_zip(&[
+            (PACKAGE_MANIFEST_FILENAME, manifest_json("qa3147-reserved").as_bytes()),
+            ("index.html", b"<html></html>"),
+            ("main.js", b"//"),
+            ("__fredo/bootstrap.js", b"// host-owned"),
+        ]));
+
+        let error = install_archive(data.path(), &zip_path).expect_err("reserved path");
+        assert_eq!(error.code, InstalledAppRefusalCode::ReservedPath);
+        assert_nothing_installed(data.path(), "qa3147-reserved");
+    }
+
+    #[test]
+    fn an_incompatible_engines_range_is_host_incompatible_and_installs_nothing() {
+        let data = data_dir();
+        let manifest = r#"{
+            "manifestVersion": 1,
+            "id": "qa3147-incompatible",
+            "displayName": "Incompatible",
+            "version": "1.0.0",
+            "engines": { "fredo": ">=999.0.0" },
+            "entry": { "document": "index.html", "module": "main.js" }
+        }"#;
+        let (_zip_dir, zip_path) = staged_zip(&build_zip(&[
+            (PACKAGE_MANIFEST_FILENAME, manifest.as_bytes()),
+            ("index.html", b"<html></html>"),
+            ("main.js", b"//"),
+        ]));
+
+        let error = install_archive(data.path(), &zip_path).expect_err("incompatible");
+        assert_eq!(error.code, InstalledAppRefusalCode::HostIncompatible);
+        assert_eq!(error.field.as_deref(), Some("engines.fredo"));
+        assert_nothing_installed(data.path(), "qa3147-incompatible");
+    }
+
+    #[test]
+    fn a_star_engines_range_is_engines_range_invalid() {
+        let data = data_dir();
+        let manifest = r#"{
+            "manifestVersion": 1,
+            "id": "qa3147-star",
+            "displayName": "Star",
+            "version": "1.0.0",
+            "engines": { "fredo": "*" },
+            "entry": { "document": "index.html", "module": "main.js" }
+        }"#;
+        let (_zip_dir, zip_path) = staged_zip(&build_zip(&[
+            (PACKAGE_MANIFEST_FILENAME, manifest.as_bytes()),
+            ("index.html", b"<html></html>"),
+            ("main.js", b"//"),
+        ]));
+
+        let error = install_archive(data.path(), &zip_path).expect_err("star range");
+        assert_eq!(error.code, InstalledAppRefusalCode::EnginesRangeInvalid);
+        assert_nothing_installed(data.path(), "qa3147-star");
+    }
+
+    #[test]
+    fn a_second_install_of_the_same_id_is_already_installed_and_preserves_the_first() {
+        let data = data_dir();
+        let (_zip_a, zip_a) = staged_zip(&valid_package("qa3147-twice"));
+        install_archive(data.path(), &zip_a).expect("first install");
+
+        let dir = app_dir(&install_root(data.path()), "qa3147-twice");
+        let before = std::fs::read(dir.join(INSTALLED_RECORD_FILENAME)).expect("record before");
+
+        let (_zip_b, zip_b) = staged_zip(&valid_package("qa3147-twice"));
+        let error = install_archive(data.path(), &zip_b).expect_err("second install");
+        assert_eq!(error.code, InstalledAppRefusalCode::AlreadyInstalled);
+
+        let after = std::fs::read(dir.join(INSTALLED_RECORD_FILENAME)).expect("record after");
+        assert_eq!(before, after, "the first installation is byte-identical");
+        assert_eq!(list_installed(&install_root(data.path())).expect("list").len(), 1);
+    }
+
+    // ── Listing ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn an_absent_install_root_lists_as_empty_not_an_error() {
+        let data = data_dir();
+        let listed = list_installed(&install_root(data.path())).expect("absent root is empty");
+        assert!(listed.is_empty());
+    }
+
+    #[test]
+    fn listing_returns_every_install_sorted_by_id() {
+        let data = data_dir();
+        for id in ["qa3147-zulu", "qa3147-alpha"] {
+            let (_zip_dir, zip_path) = staged_zip(&valid_package(id));
+            install_archive(data.path(), &zip_path).expect("install");
+        }
+        let listed = list_installed(&install_root(data.path())).expect("list");
+        let ids: Vec<&str> = listed.iter().map(|entry| entry.id.as_str()).collect();
+        assert_eq!(ids, vec!["qa3147-alpha", "qa3147-zulu"]);
+    }
+
+    #[test]
+    fn a_directory_that_cannot_be_an_app_id_is_not_a_registry_entry() {
+        let data = data_dir();
+        let root = install_root(data.path());
+        std::fs::create_dir_all(root.join("Not An Id")).expect("dir");
+        std::fs::create_dir_all(root.join(".hidden")).expect("dir");
+
+        let listed = list_installed(&root).expect("list");
+        assert!(listed.is_empty(), "non-id directories are skipped");
+    }
+
+    #[test]
+    fn a_damaged_install_makes_the_listing_a_refusal_not_an_empty_state() {
+        let data = data_dir();
+        let (_zip_dir, zip_path) = staged_zip(&valid_package("qa3147-damaged"));
+        install_archive(data.path(), &zip_path).expect("install");
+
+        let dir = app_dir(&install_root(data.path()), "qa3147-damaged");
+        std::fs::remove_file(dir.join(INSTALLED_RECORD_FILENAME)).expect("remove record");
+
+        let error = list_installed(&install_root(data.path())).expect_err("damaged record");
+        assert_eq!(error.code, InstalledAppRefusalCode::IntegrityRecordCorrupt);
+    }
+
+    // ── Test-sea helpers stay honest ───────────────────────────────────────
+
+    #[test]
+    fn the_in_memory_zip_builder_and_the_crate_agree_on_the_index() {
+        let bytes = valid_package("qa3147-index");
+        let archive = open_from_reader(Cursor::new(bytes)).expect("open");
+        let index = index_archive(archive).expect("index");
+        assert_eq!(index.entries.len(), 4);
+        assert!(index.manifest_entry().is_some());
+
+        let mut archive = open_from_reader(Cursor::new(valid_package("qa3147-index"))).expect("open");
+        let manifest_entry = index
+            .entries
+            .iter()
+            .find(|entry| entry.archive_name == PACKAGE_MANIFEST_FILENAME)
+            .expect("manifest entry")
+            .clone();
+        let read = read_entry_bytes(&mut archive, &manifest_entry).expect("read manifest");
+        assert!(std::str::from_utf8(&read).expect("utf8").contains("qa3147-index"));
+
+        // Keep the unused-import checker honest about `Seek`.
+        fn _assert_seek<T: Seek>() {}
+        _assert_seek::<Cursor<Vec<u8>>>();
+    }
+}

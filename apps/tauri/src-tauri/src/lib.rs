@@ -63,6 +63,25 @@ pub use applications::llm_server::doom_agent;
 #[doc(hidden)]
 pub use applications::llm_server::skills::render_tools as render_companion_tools;
 
+// Spec #3147 ST-1 — the application command manifest
+// (`runtime::command_manifest::COMMAND_MANIFEST`): the ONE list of registered
+// app commands, consumed by `build.rs` via `include!` to register Tauri's
+// application manifest (`tauri_build::AppManifest::commands(...)`). It is
+// re-exported here as the crate's public command-surface contract, which is
+// what keeps the constant live in the app crate (its drift guards live beside
+// it under `#[cfg(test)]`). `mod runtime` is private, hence the re-export.
+pub use runtime::command_manifest::COMMAND_MANIFEST;
+
+// Spec #3147 ST-2 — the installed-application package trust boundary
+// (`installed_apps::{manifest, archive, store, commands_install}`): zip ingest,
+// manifest validation, the frozen refusal vocabulary, hash pinning and the
+// on-disk install root. The command wrappers are registered below; the contract
+// modules are re-exported so the frozen surface is reachable by ST-3/ST-4/ST-5
+// (scheme handler, window lifecycle, theme push) and by the unit tests that pin
+// it. `#[doc(hidden)]`: not part of the app surface.
+#[doc(hidden)]
+pub use applications::installed_apps;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use applications::terminal::state::TerminalState;
@@ -184,6 +203,31 @@ pub fn run() {
             // default-app port. `bind_address` stays loopback-only.
             .base_port(env_config.mcp_base_port)
             .build()
+    );
+
+    // Spec #3147 ST-3 — the installed-application origin.
+    //
+    // Registering the `fredoapp` scheme is what makes an installed application a
+    // DOCUMENT at an origin the host does not own: Tauri maps it to
+    // `fredoapp://localhost` on macOS/Linux and `http://fredoapp.localhost` on
+    // Windows/Android, both of which differ from the host's
+    // `tauri://localhost` / `http://tauri.localhost`. The handler (`scheme.rs`)
+    // owns routing, verify-at-serve and the child document's CSP; it is
+    // registered here unconditionally (not debug-only) because the origin is the
+    // product's isolation mechanism.
+    //
+    // This registration performs NO work: it stores a closure. No window is
+    // created, no install directory is read and no document is built until a
+    // request arrives — which is what keeps R-5.5's "nothing installed-app-shaped
+    // happens at startup" true.
+    let builder = builder.register_uri_scheme_protocol(
+        applications::installed_apps::scheme::INSTALLED_APP_SCHEME,
+        |context, request| {
+            applications::installed_apps::scheme::handle_uri_request(
+                context.app_handle(),
+                request,
+            )
+        },
     );
 
     builder.setup(|app| {
@@ -1099,6 +1143,31 @@ pub fn run() {
             // Spec #3023 ST-2/ST-5/ST-6: the from-source provisioning command
             // surface (Spec #3012) and its module are removed — the native
             // in-process engine needs no build and no download.
+            // Spec #3147 ST-2 — the installed-application install pipeline
+            // (`applications::installed_apps`): turn a user-picked package into a
+            // validated, hashed, INERT install directory, and list what is
+            // installed. ST-5 (`push_theme`) appends its own registration after
+            // this region. Nothing here runs at startup — `installed_apps_list`
+            // is only called by the settings pane (R-5.5).
+            applications::installed_apps::commands_install::installed_app_install,
+            applications::installed_apps::commands_install::installed_apps_list,
+            // Spec #3147 ST-4 — the installed-application window lifecycle
+            // (`commands_window`): `installed_app_open` builds (or focuses) the
+            // singleton `installed-<id>` window at the `fredoapp` document URL
+            // once its install record has been re-verified, and
+            // `installed_app_close` destroys it. No window exists until the user
+            // opens one, so this registration is inert at startup (R-5.1/R-5.5).
+            applications::installed_apps::commands_window::installed_app_open,
+            applications::installed_apps::commands_window::installed_app_close,
+            // Spec #3147 ST-5 — the theme transport's live leg
+            // (`applications::installed_apps::theme_push`):
+            // `installed_apps_push_theme` validates the host's resolved token
+            // values, writes the in-memory mirror the scheme handler inlines at
+            // document-serve time (R-1.4), and `Webview::eval`s the theme into
+            // every live `installed-*` window so an open app follows a change
+            // without reloading (R-1.5). No database, no file, and nothing at
+            // startup — the host's theme effect is the only caller.
+            applications::installed_apps::theme_push::installed_apps_push_theme,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Fredo application")

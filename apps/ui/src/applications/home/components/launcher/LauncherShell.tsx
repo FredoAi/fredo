@@ -40,6 +40,11 @@ import { useBackgroundId } from '../background/backgroundStore';
 
 import { LauncherChrome } from './LauncherChrome';
 import { LauncherAppGrid } from './LauncherAppGrid';
+// Spec #3147 ST-6 — the installed-apps shelf. A SIBLING of the grid (never a
+// gridcell, never in `showableFeatures`): installed applications open in their own
+// native window and contribute NO verb, NO place and NO stroke to the declared
+// navigation surface, so this section never touches `dispatch()`.
+import { LauncherInstalledAppsSection } from './LauncherInstalledAppsSection';
 // Spec #2954 ST-2 — the in-launcher "Open apps" row + its pure query filter.
 import { LauncherOpenAppsRow } from './LauncherOpenAppsRow';
 import { filterOpenWindows } from './launcherOpenApps';
@@ -1931,6 +1936,12 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
               containerRef={gridRef}
             />
           )}
+          {/* Spec #3147 ST-6 — the installed-apps shelf, a SIBLING of the grid
+              (placed after it, per UI/UX §3.2). Gated on the SAME `engaged` flag as
+              the grid; the section itself returns `null` when its filtered list is
+              empty, so a user with no installed apps is never shown an empty shelf
+              (an all-filtered-out query is an ABSENCE, never an empty box). */}
+          {engaged && <LauncherInstalledAppsSection query={query} />}
         </Box>
       </Box>
       {/* Spec #3120 (P6) — the confirmation host (the ONLY await in the keystroke

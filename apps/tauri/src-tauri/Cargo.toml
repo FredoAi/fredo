@@ -144,6 +144,18 @@ sqlparser = "0.63"
 # its private deps linked in, which resolves the link cleanly, at the cost of
 # shipping the ggml/llama DLLs beside `fredo.exe`.
 llama-cpp-4 = { version = "0.11.0", default-features = false, features = ["vulkan", "mtmd", "openmp", "ggml", "dynamic-link"] }
+# Spec #3147 ST-2 — read-only ZIP ingest for installable applications. Only the
+# READ path is used (`ZipArchive` + the central directory), so default features
+# (which pull write-side encoders, aes, bzip2, lzma, zstd, zopfli) are OFF; the
+# single decoder needed is `deflate-flate2`, which reuses the `flate2` already
+# linked for `pg_supervisor`. Archive safety (entry-count/size budgets, zip-slip,
+# reserved paths, symlink rejection) is implemented in
+# `applications/installed_apps/archive.rs` — never delegated to the crate.
+zip = { version = "=2.4.2", default-features = false, features = ["deflate-flate2", "flate2"] }
+# Spec #3147 ST-2 — SemVer 2.0.0 parsing for `manifestVersion: 1`'s `version`
+# field and for the `engines.fredo` RANGE (`VersionReq`). Already in the graph
+# transitively; direct because `installed_apps::manifest` owns the rules.
+semver = "1"
 
 [dev-dependencies]
 tempfile = "3"
