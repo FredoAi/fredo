@@ -1,4 +1,9 @@
 pub mod capability;
+// Spec #3147 ST-1 — the application command manifest. `build.rs` `include!`-s
+// this file to hand the list to `tauri_build::AppManifest::commands(...)`; in
+// the app crate it carries the drift guard that keeps the list a superset of
+// `lib.rs`'s `generate_handler![]`. See the module docs for why both halve.
+pub mod command_manifest;
 
 /// The application composition root.
 ///

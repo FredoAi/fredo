@@ -63,6 +63,15 @@ pub use applications::llm_server::doom_agent;
 #[doc(hidden)]
 pub use applications::llm_server::skills::render_tools as render_companion_tools;
 
+// Spec #3147 ST-1 — the application command manifest
+// (`runtime::command_manifest::COMMAND_MANIFEST`): the ONE list of registered
+// app commands, consumed by `build.rs` via `include!` to register Tauri's
+// application manifest (`tauri_build::AppManifest::commands(...)`). It is
+// re-exported here as the crate's public command-surface contract, which is
+// what keeps the constant live in the app crate (its drift guards live beside
+// it under `#[cfg(test)]`). `mod runtime` is private, hence the re-export.
+pub use runtime::command_manifest::COMMAND_MANIFEST;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use applications::terminal::state::TerminalState;
