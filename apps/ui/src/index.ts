@@ -49,6 +49,7 @@ export type {
 // ── Shared window system (own kernel, Spec #2807 ST-1) ───────────────────────
 export { WindowSystemProvider } from './shared/window-system/WindowSystemProvider';
 export { WindowManager } from './shared/window-system/WindowManager';
+export { PlatformChordHost } from './shared/window-system/PlatformChordHost';
 export { useWindowActions } from './shared/window-system/useWindowActions';
 export { useWindows } from './shared/window-system/useWindows';
 export {
