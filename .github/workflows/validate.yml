@@ -163,21 +163,6 @@ jobs:
         with:
           tool: cargo-nextest
       - run: cargo check --manifest-path apps/tauri/src-tauri/Cargo.toml --locked
-      # Build + LINK the test binaries BEFORE the DLL discovery step below.
-      #
-      # `cargo check` is metadata-only: it never links, so it produces no
-      # `ggml*.dll` in `target/debug/`. The dynamic-link payload is emitted by
-      # the build script during a real LINK, which only happens when a binary or
-      # test artifact is built. Without this step the discovery step below can
-      # only pass when `rust-cache` happens to restore a payload from a PRIOR
-      # full build — i.e. it was cache luck, not a guarantee, and it failed
-      # closed (correctly) on every cold cache.
-      #
-      # `--no-run` compiles and links without executing, so the payload exists
-      # and the later `cargo nextest run` finds everything already built (no
-      # second build cost). It does not weaken the gate: the DLL assertion below
-      # still fails loud if the payload is genuinely absent.
-      - run: cargo nextest run --manifest-path apps/tauri/src-tauri/Cargo.toml --locked --profile live --no-run
       # Spec #3141 fix D4 — nextest must be able to LOAD what it enumerates.
       #
       # `llama-cpp-4` is linked with `dynamic-link`, so EVERY test binary statically
@@ -215,6 +200,46 @@ jobs:
               $out = Join-Path $_.FullName "out"
               if (Test-Path -LiteralPath $out) { $dirs += (Resolve-Path -LiteralPath $out).Path }
             }
+          # The sys crate's CMake build tree lives OUTSIDE `target` (see the
+          # rust-cache step above: `%LOCALAPPDATA%\llcb\<hash>`, cached because
+          # the C++ compile is expensive). The DLLs are staged in `<hash>\bin`.
+          #
+          # Why this is REQUIRED, not belt-and-braces: when rust-cache restores
+          # the sys crate's fingerprint, its `build.rs` does NOT re-run, so the
+          # copy into `target/debug` never happens and the only payload that
+          # exists is in this cached tree. Verified from a failing CI log: the
+          # build step finished green while `target\debug` held no ggml DLL.
+          #
+          # The hash is taken from the CURRENT build's `output` file, never by
+          # globbing every `llcb\*` dir — several stale trees coexist (different
+          # feature sets / CUDA-era), and putting more than one on PATH would mix
+          # mismatched ggml payloads. `output` is written by the sys crate's
+          # build.rs and names the exact CMake tree this build used.
+          $llcbRoot = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "llcb" } else { $null }
+          if ($llcbRoot) {
+            $outFile = Get-ChildItem -Path "apps/tauri/src-tauri/target/debug/build" -Directory -Filter "llama-cpp-sys-4-*" -ErrorAction SilentlyContinue |
+              ForEach-Object { Join-Path $_.FullName "output" } |
+              Where-Object { Test-Path -LiteralPath $_ } |
+              Sort-Object { (Get-Item -LiteralPath $_).LastWriteTime } -Descending |
+              Select-Object -First 1
+            if ($outFile) {
+              $hash = (Select-String -LiteralPath $outFile -Pattern "llcb[/\\]([0-9a-f]{6,})" -AllMatches |
+                ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value } |
+                Select-Object -Unique -First 1)
+              Write-Host "llcb hash from $outFile -> '$hash'"
+              if ($hash) {
+                $bin = Join-Path $llcbRoot (Join-Path $hash "bin")
+                if (Test-Path -LiteralPath (Join-Path $bin "ggml-vulkan.dll")) {
+                  $dirs += (Resolve-Path -LiteralPath $bin).Path
+                  Write-Host "llcb payload candidate: $bin -> (ggml-vulkan.dll present)"
+                } else {
+                  Write-Host "llcb payload candidate: $bin -> (missing or no ggml-vulkan.dll)"
+                }
+              }
+            } else {
+              Write-Host "llcb: no llama-cpp-sys-4 output file found under target/debug/build"
+            }
+          }
           # `vulkan-1.dll` is a LOAD-TIME import of `ggml-vulkan.dll` -- verified
           # by reading its PE import table, where `vulkan-1.dll` appears in the
           # STATIC import list (not the delay-load table). `ggml-vulkan.dll` is
