@@ -1204,6 +1204,9 @@ Test-Script "Serving guard: root at spec tip passes testing entry" {
   $issueNum = [int]$m.Groups[1].Value
   try {
     & rust-script $ps --action mock-commit --branch "spec/$issueNum" --commits 1 2>&1 | Out-Null
+    # The developer pushes the branch (the real workflow) — a spec PR can only be
+    # opened from a branch that exists on origin.
+    & rust-script $ps --action mock-git --gitargs "push -u origin spec/$issueNum" 2>&1 | Out-Null
     $p = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase testing 2>&1
     $pStr = if ($p -is [array]) { $p -join "`n" } else { "$p" }
     if ($LASTEXITCODE -ne 0) { throw "matching serving record should pass, got exit ${LASTEXITCODE}: $pStr" }
@@ -4319,6 +4322,216 @@ Test-Script "post-audit -> cleanup requires the merged SPEC MAINT PR" {
     Remove-Item -LiteralPath (Join-Path $env:FREDO_MOCK_STORE "maint-dirty") -Force -ErrorAction SilentlyContinue
     if ($refsBackup -and (Test-Path -LiteralPath $refsBackup)) { Copy-Item -LiteralPath $refsBackup -Destination $refs -Force; Remove-Item -LiteralPath $refsBackup -Force -ErrorAction SilentlyContinue }
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# --- Machine dead-end: `post-audit → testing` after the spec PR merged ---
+# The spec PR is squash-merged at `testing → audit` and the repo's
+# `delete_branch_on_merge` removes `spec/<N>` — so a later audit restart to
+# `testing` found no head branch. The machine used to call `gh pr create`
+# unconditionally, which can never succeed (`No commits between main and
+# spec/<N>` after a squash merge) → every post-merge restart to testing was
+# structurally impossible (observed live on #3141). Now: recreate the branch from
+# origin/main and skip the PR (NO-PR round).
+Test-Script "post-audit->testing recreates a merged-away spec branch and opens NO PR" {
+  $url = Mock-IssueCreate "temp: post-merge testing restart" "post-merge restart scratch" "post-audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $refs = "docs/agentic-pipeline/playbooks/references.md"
+  $refsBackup = Join-Path $env:TEMP ("refs-" + [Guid]::NewGuid().ToString("N") + ".md")
+  Copy-Item -LiteralPath $refs -Destination $refsBackup -Force
+  try {
+    # Post-merge state: the spec PR is MERGED and the head branch is GONE.
+    $prOut = & rust-script $ps --action mock-gh --ghargs "pr create --base main --head spec/$issueNum --title t --body b" 2>&1
+    $prStr = if ($prOut -is [array]) { $prOut -join "" } else { "$prOut" }
+    $prNum = [regex]::Match($prStr, "pull/(\d+)").Groups[1].Value
+    if (-not $prNum) { throw "no PR number from mock create: $prStr" }
+    $prFile = Join-Path $env:FREDO_MOCK_STORE "prs\$prNum.json"
+    $pr = Get-Content $prFile -Raw | ConvertFrom-Json
+    $pr.state = "MERGED"
+    [System.IO.File]::WriteAllText($prFile, ($pr | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --action mock-git --gitargs "push origin --delete spec/$issueNum" 2>&1 | Out-Null
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    if (Test-Path (Mock-StorePath "refs\spec\$issueNum")) { throw "precondition: remote spec branch should be gone" }
+    # The post-audit exit guard requires the Curator's recorded improvement.
+    & rust-script $ps --issue $issueNum --agent curator --action record-improvement --reason "harness: post-merge restart lesson" 2>&1 | Out-Null
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase testing 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "post-merge restart to testing must pass, got exit ${LASTEXITCODE}: $outStr" }
+    if ($outStr -match "No commits between") { throw "must not attempt gh pr create in the post-merge state: $outStr" }
+    if ($outStr -notmatch "TRANSITIONED: post-audit -> testing") { throw "Expected the transition, got: $outStr" }
+    if ($outStr -notmatch "SPEC BRANCH RECREATED from origin/main") { throw "Expected the recreate note, got: $outStr" }
+    if ($outStr -notmatch "no spec PR opened \(already merged") { throw "Expected the NO-PR note, got: $outStr" }
+    # The branch exists again, based on origin/main (G-421 descent).
+    if (-not (Test-Path (Mock-StorePath "refs\spec\$issueNum"))) { throw "spec branch was not recreated on origin" }
+    if (-not (Test-Path (Mock-StorePath "local-refs\spec\$issueNum"))) { throw "spec branch was not recreated locally" }
+    # No NEW spec PR was opened for the recreated branch (exactly the merged one).
+    $open = @(Mock-PrList "spec/$issueNum" "open")
+    if ($open.Count -ne 0) { throw "the NO-PR round must not open a spec PR, got $($open.Count) open" }
+    # The no-PR round is recorded so the orchestrator/auditor can see it.
+    $ev = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "spec-branch.recreated" } | Select-Object -Last 1
+    if (-not $ev) { throw "no spec-branch.recreated event recorded" }
+    if ($ev.attributes.pr -ne "none") { throw "spec-branch.recreated pr attr should be 'none', got '$($ev.attributes.pr)'" }
+    if ($ev.attributes.reason -ne "already-merged") { throw "spec-branch.recreated reason attr wrong: $($ev.attributes.reason)" }
+    return "post-merge restart to testing recreated spec/$issueNum from origin/main, opened NO PR (event recorded)"
+  } finally {
+    if ($refsBackup -and (Test-Path -LiteralPath $refsBackup)) { Copy-Item -LiteralPath $refsBackup -Destination $refs -Force; Remove-Item -LiteralPath $refsBackup -Force -ErrorAction SilentlyContinue }
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# Fail-CLOSED: a genuinely LOST branch (no head, and NO merged spec PR) must not be
+# silently re-invented — a main-based PR would show nothing, and a stale-tip PR
+# would replay work. The transition errors with an actionable message.
+Test-Script "post-audit->testing fails CLOSED when the spec branch is lost (no merged PR)" {
+  $url = Mock-IssueCreate "temp: lost spec branch" "lost branch scratch" "post-audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $refs = "docs/agentic-pipeline/playbooks/references.md"
+  $refsBackup = Join-Path $env:TEMP ("refs-" + [Guid]::NewGuid().ToString("N") + ".md")
+  Copy-Item -LiteralPath $refs -Destination $refsBackup -Force
+  try {
+    # No spec ref on origin, no PR of any state — a genuinely LOST branch. Model the
+    # realistic state: the post-audit doc-sync left the repo root checked out ON
+    # `spec/<N>`, so the local ref still exists (the refused-transition test above
+    # proves the serving guard is satisfied when a local ref exists and no merge is
+    # recorded). The mock serving guard reads refs: give it the local ref only.
+    & rust-script $ps --action mock-git --gitargs "branch spec/$issueNum origin/main" 2>&1 | Out-Null
+    & rust-script $ps --issue $issueNum --agent curator --action record-improvement --reason "harness: lost-branch lesson" 2>&1 | Out-Null
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase testing 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -eq 0) { throw "a lost spec branch must fail CLOSED, got exit 0: $outStr" }
+    if ($outStr -notmatch "missing on origin and no merged spec PR") { throw "Expected the lost-branch refusal, got: $outStr" }
+    if ($outStr -match "No commits between") { throw "must not attempt gh pr create on a lost branch: $outStr" }
+    $st = Mock-IssueState $issueNum
+    if ($st.Labels -notcontains "post-audit") { throw "issue must stay post-audit after the failed transition, got: $($st.Labels)" }
+    if (Test-Path (Mock-StorePath "refs\spec\$issueNum")) { throw "a lost branch must NOT be invented on origin" }
+    return "lost spec branch refusal: post-audit->testing fails closed with an actionable message (#$issueNum)"
+  } finally {
+    if ($refsBackup -and (Test-Path -LiteralPath $refsBackup)) { Copy-Item -LiteralPath $refsBackup -Destination $refs -Force; Remove-Item -LiteralPath $refsBackup -Force -ErrorAction SilentlyContinue }
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# The normal FIRST `→ testing` must be unchanged: branch present + commits beyond
+# main → the spec PR is opened (no recreate, no skip).
+Test-Script "first ->testing still opens the spec PR (branch present, commits ahead)" {
+  $url = Mock-IssueCreate "temp: first testing" "first testing scratch" "ready-for-dev"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    & rust-script $ps --action mock-git --gitargs "push -u origin spec/$issueNum" 2>&1 | Out-Null
+    & rust-script $ps --action mock-commit --branch "spec/$issueNum" --commits 2 2>&1 | Out-Null
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase testing 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "first ->testing should pass, got exit ${LASTEXITCODE}: $outStr" }
+    if ($outStr -notmatch "SPEC PR CREATED") { throw "first ->testing must open the spec PR, got: $outStr" }
+    if ($outStr -match "SPEC BRANCH RECREATED|SPEC PR SKIPPED") { throw "no post-merge path may fire on a first entry, got: $outStr" }
+    $open = @(Mock-PrList "spec/$issueNum" "open")
+    if ($open.Count -ne 1) { throw "expected exactly ONE open spec PR, got $($open.Count)" }
+    return "first ->testing opens the spec PR (no recreate/skip path) on #$issueNum"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# The OTHER post-merge dead-end: `post-audit → implementation`. That arm calls
+# `ensure_spec_branch`, which re-creates the (deleted) branch from main. Before this
+# fix it pushed the STALE local ref as-is, so the recreated branch replayed the
+# merged round (non-descendant, G-421) and the following `implementation → testing`
+# opened a PR whose diff was the whole previous round. Now the stale ref is reseeded
+# onto origin/main, so the recreated branch carries no commits beyond main.
+Test-Script "post-audit->implementation post-merge reseeds the stale ref onto main" {
+  $url = Mock-IssueCreate "temp: post-merge impl restart" "post-merge impl scratch" "post-audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $refs = "docs/agentic-pipeline/playbooks/references.md"
+  $refsBackup = Join-Path $env:TEMP ("refs-" + [Guid]::NewGuid().ToString("N") + ".md")
+  Copy-Item -LiteralPath $refs -Destination $refsBackup -Force
+  try {
+    # Post-merge: the PR merged, the remote head is gone, and a stale LOCAL ref
+    # survives (the post-audit doc-sync leaves the root checked out on spec/<N>).
+    $prOut = & rust-script $ps --action mock-gh --ghargs "pr create --base main --head spec/$issueNum --title t --body b" 2>&1
+    $prStr = if ($prOut -is [array]) { $prOut -join "" } else { "$prOut" }
+    $prNum = [regex]::Match($prStr, "pull/(\d+)").Groups[1].Value
+    $prFile = Join-Path $env:FREDO_MOCK_STORE "prs\$prNum.json"
+    $pr = Get-Content $prFile -Raw | ConvertFrom-Json
+    $pr.state = "MERGED"
+    [System.IO.File]::WriteAllText($prFile, ($pr | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --action mock-git --gitargs "push origin --delete spec/$issueNum" 2>&1 | Out-Null
+    & rust-script $ps --action mock-git --gitargs "branch spec/$issueNum origin/main" 2>&1 | Out-Null
+    # The stale local ref still counts "commits ahead" from the merged round.
+    & rust-script $ps --action mock-commit --branch "spec/$issueNum" --commits 3 2>&1 | Out-Null
+    & rust-script $ps --issue $issueNum --agent curator --action record-improvement --reason "harness: post-merge impl lesson" 2>&1 | Out-Null
+    # Restart to implementation: the branch is re-created from origin/main (G-421) —
+    # the stale ref must NOT be pushed as-is (it would replay the merged round).
+    New-Item -ItemType Directory -Path ".opencode/tmp/$issueNum" -Force | Out-Null
+    [System.IO.File]::WriteAllText(".opencode/tmp/$issueNum/triage.md", "# scratch A2A`n", [System.Text.UTF8Encoding]::new($false))
+    $impl = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase implementation 2>&1
+    $implStr = if ($impl -is [array]) { $impl -join "`n" } else { "$impl" }
+    if ($LASTEXITCODE -ne 0) { throw "post-merge restart to implementation must pass, got exit ${LASTEXITCODE}: $implStr" }
+    if ($implStr -notmatch "TRANSITIONED: post-audit -> implementation") { throw "Expected the transition, got: $implStr" }
+    if ($implStr -notmatch "SPEC BRANCH RESEEDED onto origin/main|SPEC BRANCH CREATED:") { throw "Expected the branch re-created from main, got: $implStr" }
+    if (-not (Test-Path (Mock-StorePath "refs\spec\$issueNum"))) { throw "spec branch was not re-created on origin" }
+    # The recreated branch carries NO commits beyond main (the stale 3 must be gone).
+    $ahead = & rust-script $ps --action mock-git --gitargs "fetch origin spec/$issueNum" 2>&1 | Out-Null
+    $aheadOut = & rust-script $ps --action mock-git --gitargs "rev-list --count origin/main..FETCH_HEAD" 2>&1
+    $aheadStr = if ($aheadOut -is [array]) { $aheadOut -join "" } else { "$aheadOut" }
+    if ($aheadStr.Trim() -ne "0") { throw "recreated branch must carry 0 commits beyond main, got: $aheadStr" }
+    # Next `implementation → testing` with NO new work is (correctly) blocked by the
+    # implementation exit gate — the developer must push this round's work.
+    $blocked = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase testing 2>&1
+    $blockedStr = if ($blocked -is [array]) { $blocked -join "`n" } else { "$blocked" }
+    if ($blockedStr -notmatch "has no commits beyond main") { throw "Expected the no-commits block on an empty recreated branch, got: $blockedStr" }
+    # After the developer pushes this round's work the transition must open a PR
+    # (never fail on gh pr create for a main-based branch).
+    & rust-script $ps --action mock-commit --branch "spec/$issueNum" --commits 1 2>&1 | Out-Null
+    $test = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase testing 2>&1
+    $testStr = if ($test -is [array]) { $test -join "`n" } else { "$test" }
+    if ($LASTEXITCODE -ne 0) { throw "post-merge implementation->testing must pass after a push, got exit ${LASTEXITCODE}: $testStr" }
+    if ($testStr -match "No commits between") { throw "must not attempt gh pr create on an empty branch: $testStr" }
+    if ($testStr -notmatch "SPEC PR CREATED") { throw "expected the round's spec PR after the push, got: $testStr" }
+    $open = @(Mock-PrList "spec/$issueNum" "open")
+    if ($open.Count -ne 1) { throw "expected exactly ONE open spec PR for the new round, got $($open.Count)" }
+    return "post-merge restart to implementation re-created from main; empty branch blocks, push opens the round PR (#$issueNum)"
+  } finally {
+    if ($refsBackup -and (Test-Path -LiteralPath $refsBackup)) { Copy-Item -LiteralPath $refsBackup -Destination $refs -Force; Remove-Item -LiteralPath $refsBackup -Force -ErrorAction SilentlyContinue }
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
