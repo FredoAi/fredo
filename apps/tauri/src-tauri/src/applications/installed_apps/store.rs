@@ -198,7 +198,7 @@ pub fn aggregate_digest(files: &[InstalledFileRecord]) -> String {
         hasher.update(file.path.as_bytes());
         hasher.update([0u8]);
         hasher.update(file.sha256.as_bytes());
-        hasher.update([b'\n']);
+        hasher.update(*b"\n");
     }
     hex_encode(&hasher.finalize())
 }
