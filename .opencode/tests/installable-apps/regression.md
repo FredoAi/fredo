@@ -20,14 +20,16 @@ non-goal of #3147 and must read identically on the spec tip.
 _Evidence convention: quote the `file:line` text, the grep count, the unit-test name, or the exit
 code. "No change" without a quoted artifact is not evidence._
 
-## R-1 — Capability files are unchanged
+## R-1 — The pre-spec capability files are unchanged, and no capability widens reach
 
 - [ ] **R-1.1** — `apps/tauri/src-tauri/capabilities/default.json` still reads
   `"windows": ["main", "terminal", "doom", "app-*"]` and `"platforms": ["linux", "macOS", "windows"]`.
   - EXPECT: both arrays byte-equal to the pre-spec text; the seven permissions (`core:default`,
     `core:event:allow-listen`, `core:event:allow-emit`, `core:window:allow-start-dragging`,
-    `core:window:allow-set-title`, `core:window:allow-create`, `core:window:allow-close`) unchanged
-    and no per-command grant added for a built-in.
+    `core:window:allow-set-title`, `core:window:allow-create`, `core:window:allow-close`) unchanged,
+    and `default.json` itself still grants **no per-command entry for a built-in** (this is scoped to
+    this FILE: the app-command surface legitimately lives in `capabilities/app-commands.json`, which
+    R-1.3 governs — its per-command grant to the built-in class is EXPECTED, never a FAIL here).
   - EDGE: a new entry for `installed-*` in `windows` is a FAIL of R-2.4 **and** of AC-2 — the
     refusal depends on the non-match.
 
@@ -37,21 +39,66 @@ code. "No change" without a quoted artifact is not evidence._
   - EDGE: an `installed-*` entry here would hand the debug bridge to an untrusted document — the
     worst possible regression in this spec.
 
-- [ ] **R-1.3** — the capability **directory** still contains exactly the pre-spec files (plus
-  nothing that widens reach): enumerate the directory and list every filename.
-  - EXPECT: no file whose `windows` list includes `*`, `installed-*`, or a bare `installed-` prefix.
-  - EDGE: `permissions/app/default.toml` is a permission SET (referenced from a capability), not a
-    capability — its presence is expected and does not widen any window.
+- [ ] **R-1.3** — the capability directory grants no reach it did not have before. Enumerate
+  `apps/tauri/src-tauri/capabilities/` with a **directory listing** (never a Glob — G-024/G-105) and
+  put in the evidence **every filename present and every file's full `windows` array**. The file
+  COUNT is **not** the assertion — it is enumerated at test time (three at the ST-1 tip, and a later
+  legitimate addition must not fail this row); the reach property is the assertion.
+  - EXPECT (reach — the binding, hard-FAIL assertion): **no** capability file has a `windows` entry
+    that matches an `installed-*` label — not `*`, not `installed-*`, not a bare `installed-` prefix,
+    not any wildcard that would match it. Apply the matcher per file and quote its result for EVERY
+    file alongside that file's `windows` array.
+  - EXPECT (no widening — a separate, still strict assertion): every `windows` array is exactly
+    `["main","terminal","doom","app-*"]` **or a strict subset of those four labels**, and the same holds
+    for any `webviews` array. No capability targets a window/webview pattern outside that pre-existing
+    set. **A capability whose whole purpose is to
+    grant the app-manifest `default` permission set (`permissions/app/default.toml`, which restates
+    the commands the built-ins already had) to exactly those four pre-existing built-in patterns is
+    EXPECTED and is NOT a violation** — ST-1's `capabilities/app-commands.json` is that file. A
+    capability that ADDS a window pattern, or that grants a permission to `installed-*`, IS a FAIL.
+  - EXPECT (pre-spec files untouched — the SEPARATE assertion, not the enumeration):
+    `default.json` and `mcp-bridge-dev.json` are each **byte-identical to their pre-spec text**. Quote
+    `git diff --stat origin/main...HEAD` scoped to those two paths as **empty output** (R-1.1 / R-1.2
+    pin their content in full, so an empty diff here is the corroborating artifact, not the proof).
+  - EXPECT (every file's reach is READABLE from the file): each capability file MUST carry an explicit,
+    non-empty `windows` array (or, if it targets webviews instead, a non-empty `webviews` array) —
+    quote it. A capability whose window reach cannot be read off its own declaration cannot be shown
+    not to reach `installed-*`, so record an absent or empty `windows`/`webviews` as a **FAIL of this
+    row** and quote the whole file, rather than assuming the omitted key means "no windows".
+  - NON-VACUITY CONTROL (mandatory, same round): apply the SAME matcher to the sample label
+    `app-terminal` and confirm it MATCHES `app-*`. A matcher that reports "no match" for every label
+    is matching nothing and cannot witness an absence.
+  - EDGE: a capability that reaches an `installed-*` label through `webviews` instead of `windows`
+    is the same reach and the same FAIL (Tauri matches `webviews` labels too — record which key
+    carried it). `permissions/app/default.toml` is a permission SET (referenced from a capability),
+    not a capability — its presence is expected and does not widen any window.
 
 ## R-2 — Every built-in window keeps every command it has today (R-2.3)
+
+> **The mechanism, named explicitly (it changed in ST-1 and this is the regression it can break).**
+> ST-1 turns Tauri's IPC authority gate ON: `build.rs` now registers
+> `tauri_build::AppManifest::commands(COMMAND_MANIFEST)`, so from that commit **a registered command
+> reaches a window only if a capability grants it** — registration alone is no longer access. Three
+> things must all hold, and each one alone is enough to silently deny every shipped window:
+> **(1)** the command is listed in `COMMAND_MANIFEST` (`src/runtime/command_manifest.rs`) — an absent
+> entry gets no autogenerated permission at all; **(2)** `permissions/app/default.toml` grants that
+> command (`allow-<command>`); **(3)** `capabilities/app-commands.json` grants the app-manifest
+> `default` permission set to the built-in window class `["main","terminal","doom","app-*"]` — the
+> component the pre-ST-1 plan did not name, and without it the permission set is INERT (nothing
+> references it, so nothing is granted). So a denial in R-2 is no longer only a "missing list entry":
+> read all three — which one is missing is what R-2.1's EDGE asks you to report. `capabilities/
+> default.json` and `mcp-bridge-dev.json` are unaffected in this respect (they grant `core:*` and the
+> dev bridge, not the app-command surface).
 
 - [ ] **R-2.1 — full command surface, from one window.** With only the `main` window open, invoke,
   via `tauri_ipc_execute_command` / `execute_js` `__TAURI_INTERNALS__.invoke`, the commands the
   shipped UI calls today: `get_control_setting`, `save_control_setting`, `get_setting`,
   `save_setting`, `stream_health`, `app_window_presentation`-backed `open_app_window`.
   - EXPECT: every call resolves (no `not allowed`/ACL error). Quote each result or its typed `Err`.
-  - EDGE: an ACL denial on ANY of these is the ST-1 regression — the `AppManifest::commands(...)`
-    list or `permissions/app/default.toml` is incomplete. Report the exact command name.
+  - EDGE: an ACL denial on ANY of these is the ST-1 regression — report WHICH of the three links is
+    broken: the command missing from `COMMAND_MANIFEST`, missing from `permissions/app/default.toml`,
+    or `capabilities/app-commands.json` not granting `default` to the `main` label. Name the exact
+    command and the exact missing link. A denial is never "the gate is just strict now".
 
 - [ ] **R-2.2 — the `app-*` window class still works.** Open Database Client (or any registered grid
   app) from the launcher; it opens as `app-<id>` (or renders in-window per the persisted
@@ -146,13 +193,15 @@ code. "No change" without a quoted artifact is not evidence._
   - EDGE: the installed document's CSP is authored by the scheme handler — a global CSP edit is a
     FAIL of N-1 (it also belongs to `webview-security-boundary`).
 
-- [ ] **R-6.2** — no new capability grant and no new command per application.
+- [ ] **R-6.2** — no new capability grant **per installed application**, and no new command per application.
   - EXPECT: the installed-app command set is exactly `installed_app_install`, `installed_apps_list`,
     `installed_app_open`, `installed_app_close`, `installed_apps_push_theme`; installing an app adds
     **no** command and no capability (grep `lib.rs` generate_handler for `installed_app` ⇒ those five
-    names only).
+    names only; grep `capabilities/` for an `installed-` entry ⇒ 0).
   - EDGE: an app-specific command is a FAIL of the "no new backend code per application" constraint;
-    #3146's allowlist/facade is out of scope — its absence is **not** a FAIL here.
+    #3146's allowlist/facade is out of scope — its absence is **not** a FAIL here. The single
+    `capabilities/app-commands.json` ST-1 adds is the BUILT-IN class grant, not a per-application
+    grant, and granting anything per installed app is a FAIL of AC-2 (and of F-2.5's reach check).
 
 - [ ] **R-6.3 — build gate.** `pnpm --filter @fredo/ui build` ⇒ exit `0` (no TS errors);
   `cargo check --locked` in `apps/tauri/src-tauri` ⇒ exit `0`, zero `warning:` lines;
@@ -164,13 +213,31 @@ code. "No change" without a quoted artifact is not evidence._
 
 ## R-7 — Prior-spec boundaries that must not be re-opened
 
-- [ ] **R-7.1** — `webview-security-boundary` F-1/F-3/F-6/F-9/F-10 still read the same: no shell
-  capability, the MCP bridge is dev-only, `shell:allow-open` absent, CSP + `withGlobalTauri: false`,
-  zero `__TAURI__` in product source (#3077/#3078 baseline).
-  - EXPECT: identical results to their last recorded evidence; #3147 adds no capability and no CSP
-    change. `__TAURI_INTERNALS__` remains the IPC handle (ST-1 must not add a global).
+- [ ] **R-7.1** — `webview-security-boundary` F-6/F-9/F-10 still read the same: no shell capability,
+  the MCP bridge is dev-only, `shell:allow-open` absent, CSP + `withGlobalTauri: false`, zero
+  `__TAURI__` in product source (#3077/#3078 baseline). Those are the PROPERTIES that must not
+  regress, and each is a hard FAIL if it moves.
+  - EXPECT: each named property reads identically to its last recorded evidence. #3147 adds **no CSP
+    change and no permissive grant**: the one capability it adds (`capabilities/app-commands.json`)
+    grants the app-manifest `default` permission set to the four pre-existing built-in window
+    patterns only, adds no privilege class (no shell, no bridge, no new command family), and does not
+    reach `installed-*` (R-1.3 / F-2.5 assert that reach property). `__TAURI_INTERNALS__` remains the
+    IPC handle (ST-1 must not add a global).
+  - **KNOWN COMPANION-SUITE DRIFT (report it; do not absorb it).** `webview-security-boundary` also
+    carries literal file-COUNT clauses — F-1 ("exactly `default.json` + `mcp-bridge-dev.json`"), F-3
+    ("the generated manifest lists exactly `default` + `mcp-bridge-dev`") and R-11 (`gen/schemas/
+    capabilities.json` "contains exactly `default` + `mcp-bridge-dev`") — which are now FALSE because
+    a third capability legitimately exists. Those clauses are in a suite this spec is not editing, so
+    when the cross-suite run shows them failing, record that as **companion-suite count drift in the
+    verdict** and keep the PROPERTY checks (`capabilities.all.no-shell-exec`,
+    `capabilities.bridge.identifier` / `capabilities.bridge.permissions`, the debug-assertions gate,
+    CSP, `withGlobalTauri: false`, zero `__TAURI__`) as the gate. The drift is a suite-ownership item
+    for the Orchestrator; the security properties are not negotiable and any of them moving IS a FAIL
+    of this row.
   - EDGE: a `withGlobalTauri: true` change (however tempting for the child document) is a FAIL of
-    this row — the child uses `__TAURI_INTERNALS__` via the served doc, not a global handle.
+    this row — the child uses `__TAURI_INTERNALS__` via the served doc, not a global handle. ANY
+    capability, beyond the one ST-1 adds, that widens a window class is a FAIL of R-1.3, and a
+    shell/bridge grant added to the new capability is a FAIL here.
 
 - [ ] **R-7.2** — Theme contract unchanged: every Chakra colour token still resolves to a `var(--…)`
   (`apps/ui/src/app/theme/system.ts`), and `SEMANTIC_TOKENS` (`app/theme/contract/tokens.ts`) is not
