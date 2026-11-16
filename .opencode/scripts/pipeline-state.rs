@@ -1162,6 +1162,34 @@ fn mock_git(args: &[&str]) -> anyhow::Result<String> {
                 }
                 return Ok(String::new());
             }
+            // git diff --quiet <branch> origin/main — the G-421 squash signature
+            // check. Success (exit 0) means the trees are identical. Modelled from
+            // the branch's ahead-count: a branch with round work on it differs.
+            if args.iter().any(|a| *a == "--quiet") {
+                let branch = args.iter().skip(1)
+                    .find(|a| a.starts_with("spec/") || a.starts_with("feat/"))
+                    .map(|s| s.to_string());
+                match branch {
+                    Some(b) if mock_commits_ahead(&b) > 0 => anyhow::bail!("git diff --quiet: trees differ"),
+                    _ => return Ok(String::new()),
+                }
+            }
+            Ok(String::new())
+        }
+        "update-ref" => {
+            // git update-ref refs/heads/<branch> origin/main — move a LOCAL ref
+            // without touching any worktree (the G-421 reseed / post-merge recreate).
+            // A ref moved onto `main` carries no commits beyond it, so the ahead
+            // counter resets (real git re-derives that from the commit graph).
+            if let Some(target) = args.get(1) {
+                let name = target.strip_prefix("refs/heads/").unwrap_or(target);
+                if !name.is_empty() && !name.starts_with('-') {
+                    mock_local_ref_write(name)?;
+                    if args.get(2).map(|s| *s == "origin/main").unwrap_or(false) {
+                        mock_set_commits_ahead(name, 0)?;
+                    }
+                }
+            }
             Ok(String::new())
         }
         "push" => {
@@ -1252,6 +1280,12 @@ fn mock_git(args: &[&str]) -> anyhow::Result<String> {
             } else if let Some(name) = args.get(1) {
                 if !name.is_empty() && !name.starts_with('-') {
                     mock_local_ref_write(name)?;
+                    // `git branch <name> origin/main` — a fresh ref at main carries no
+                    // commits beyond it (a stale ahead-count from a deleted round must
+                    // not survive the re-creation, G-421).
+                    if args.get(2).map(|s| *s == "origin/main").unwrap_or(false) {
+                        mock_set_commits_ahead(name, 0)?;
+                    }
                 }
             }
             Ok(String::new())
@@ -1984,16 +2018,137 @@ fn post_final_status(issue: u32, body_file: Option<&str>) -> anyhow::Result<()> 
     Ok(())
 }
 
+/// Does `branch` exist on `origin`? (`git ls-remote --exit-code` fails when absent.)
+fn remote_branch_exists(branch: &str) -> bool {
+    run_cmd("git", &["ls-remote", "--exit-code", "origin", &format!("refs/heads/{}", branch)]).is_ok()
+}
+
+/// Count the MERGED spec PRs whose head is `spec/<issue>`. A non-zero count is the
+/// durable proof that the round's tested work already landed on `main`: the spec PR
+/// is squash-merged at `testing → audit`, and the repo's `delete_branch_on_merge`
+/// then removes the head branch. It distinguishes a legitimate POST-MERGE restart
+/// (the branch is gone because the merge deleted it) from a genuinely LOST branch
+/// (no branch AND no merged PR — the work is nowhere).
+fn merged_spec_pr_count(issue: u32) -> anyhow::Result<usize> {
+    let head = format!("spec/{}", issue);
+    let out = run_gh(&["pr", "list", "--head", &head, "--state", "merged", "--json", "number"])?;
+    Ok(serde_json::from_str::<serde_json::Value>(&out)
+        .ok()
+        .and_then(|v| v.as_array().map(|a| a.len()))
+        .unwrap_or(0))
+}
+
+/// Commits reachable from `spec/<issue>` but not from `main` (`None` when the
+/// lookup fails — the branch is missing, or a fetch failed). Shared by the
+/// implementation exit guard and the spec-PR side-effect so both read one signal.
+fn spec_branch_ahead(issue: u32) -> Option<u64> {
+    let branch = format!("spec/{}", issue);
+    (|| {
+        run_cmd("git", &["fetch", "origin", "main"]).ok()?;
+        run_cmd("git", &["fetch", "origin", &branch]).ok()?;
+        run_cmd("git", &["rev-list", "--count", "origin/main..FETCH_HEAD"]).ok()?
+            .trim().parse::<u64>().ok()
+    })()
+}
+
+/// Recreate `spec/<issue>` AT `origin/main` for a POST-MERGE restart. The spec PR
+/// already squash-merged and `delete_branch_on_merge` removed the head, so the
+/// restart has no branch to test — but the tree it must test IS `main`'s tree (a
+/// squash merge makes the tested tip tree-equal to main).
+///
+/// **G-421 (descent):** the recreated branch MUST descend from `origin/main`.
+/// Seeding from a stale round tip re-creates a non-descendant branch whose next PR
+/// lists the whole previous round as additions (observed #3117 round 2). The local
+/// ref is therefore MOVED onto `origin/main` — via `update-ref` (plumbing), because
+/// the post-audit doc-sync leaves the repo root checked out ON `spec/<N>`, where
+/// `git branch -f` refuses to move the current branch. `update-ref` touches no
+/// worktree and no index (G-038: never `git checkout -b` — the tree can be dirty
+/// from planner-seeded suites), and because a squash merge leaves the trees equal,
+/// the served files still match the new HEAD.
+fn recreate_spec_branch_from_main(issue: u32) -> anyhow::Result<()> {
+    let branch = format!("spec/{}", issue);
+    run_cmd("git", &["fetch", "origin", "main"])?;
+    let local_exists = run_cmd("git", &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", branch)]).is_ok();
+    if local_exists {
+        run_cmd("git", &["update-ref", &format!("refs/heads/{}", branch), "origin/main"])?;
+    } else {
+        run_cmd("git", &["branch", &branch, "origin/main"])?;
+    }
+    // The remote head is known ABSENT on this path (`maybe_recreate_merged_spec_branch`
+    // only calls us when `remote_branch_exists` is false), so this is a plain create —
+    // no force-push is needed on a delivery branch.
+    run_cmd("git", &["push", "-u", "origin", &branch])?;
+    // Refresh the remote-tracking ref so `origin/spec/<N>` (the base every
+    // worktree/`resolve_base` reads) points at the recreated tip immediately.
+    let _ = run_cmd("git", &["fetch", "origin", &branch]);
+    Ok(())
+}
+
+/// The POST-MERGE restart path for `→ testing`: when `spec/<N>` is gone from origin
+/// BUT a merged spec PR proves the tested work landed on `main`, recreate the
+/// branch from `origin/main` and report a NO-PR round. Returns a note only when it
+/// ACTED; a no-op (`None`) in every other state, so callers keep their normal
+/// behaviour (a first `→ testing` still creates the branch and opens the PR).
+///
+/// **Why no PR:** after a SQUASH merge the branch content IS `main`, so `gh pr
+/// create` can never succeed (`No commits between main and spec/<N>`) and there is
+/// nothing left to merge. The restart tests the merged tree on a fresh branch. The
+/// action is recorded as a `spec-branch.recreated` event so the Orchestrator and
+/// the Auditor can see the round is PR-less.
+fn maybe_recreate_merged_spec_branch(issue: u32) -> anyhow::Result<Option<String>> {
+    let head = format!("spec/{}", issue);
+    if remote_branch_exists(&head) {
+        return Ok(None);
+    }
+    if merged_spec_pr_count(issue)? == 0 {
+        return Ok(None);
+    }
+    recreate_spec_branch_from_main(issue)?;
+    append_event_attrs(
+        issue,
+        "spec-branch.recreated",
+        "orchestrator",
+        "testing",
+        "success",
+        &format!("recreated {} from origin/main; no spec PR opened (already merged)", head),
+        &[("branch", head.as_str()), ("base", "origin/main"), ("pr", "none"), ("reason", "already-merged")],
+    )?;
+    println!(
+        "SPEC BRANCH RECREATED from origin/main; no spec PR opened (already merged — nothing to merge): {} — re-serve the root at the recreated tip (G-032) before the tester runs",
+        head
+    );
+    Ok(Some(format!("spec branch `{}` recreated from origin/main (NO-PR round — the spec PR already merged)", head)))
+}
+
 /// Transition side-effect: ensure the spec integration branch `spec/<issue>` exists
 /// on origin (created from `main`). Idempotent. Returns a note if it created it.
 fn ensure_spec_branch(issue: u32) -> anyhow::Result<Option<String>> {
     let branch = format!("spec/{}", issue);
-    let remote_exists = run_cmd("git", &["ls-remote", "--exit-code", "origin", &format!("refs/heads/{}", branch)]).is_ok();
-    if remote_exists {
+    if remote_branch_exists(&branch) {
         return Ok(None);
     }
     let local_exists = run_cmd("git", &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", branch)]).is_ok();
-    if !local_exists {
+    if local_exists {
+        // G-421 (descent): the ONLY way a local `spec/<N>` exists while its remote
+        // counterpart is gone is a previous round whose branch was deleted — a
+        // merged spec PR (`delete_branch_on_merge`) or `prune`. Pushing that stale
+        // ref re-creates a NON-descendant branch whose next PR lists the whole
+        // previous round as additions (observed #3117 round 2). Reseed it onto
+        // `origin/main` in that case: the round's work already landed (squash merge),
+        // and any local commits it carries are not this round's delivery. A ref that
+        // is merely contained in / tree-equal to `origin/main` is equally safe to
+        // reseed. Only a branch whose round NEVER merged keeps its local commits —
+        // that is genuine unpushed work and the pre-fix behaviour is preserved.
+        let merged_pr = merged_spec_pr_count(issue).unwrap_or(0) > 0;
+        let _ = run_cmd("git", &["fetch", "origin", "main"]);
+        let already_in_main = merged_pr
+            || run_cmd("git", &["merge-base", "--is-ancestor", &branch, "origin/main"]).is_ok()
+            || run_cmd("git", &["diff", "--quiet", &branch, "origin/main"]).is_ok();
+        if already_in_main {
+            run_cmd("git", &["update-ref", &format!("refs/heads/{}", branch), "origin/main"])?;
+            println!("SPEC BRANCH RESEEDED onto origin/main (the stale local ref held an already-merged round): {}", branch);
+        }
+    } else {
         // Fork from origin/main, not the local main ref: `persist_tests` (the
         // tests-commit side-effect) writes the QA-seeded suite to origin/main via
         // the GitHub Contents API, which does NOT advance the LOCAL main ref. A
@@ -2024,6 +2179,14 @@ fn ensure_spec_branch(issue: u32) -> anyhow::Result<Option<String>> {
 /// Transition side-effect: ensure an open spec PR (`spec/<issue>` → `main`) exists.
 /// Idempotent — skips if one is already open. Title/body default from the issue.
 /// Returns a note if it created one.
+///
+/// **Post-merge restart (`post-audit → testing` after the spec PR merged):** the
+/// head branch was deleted by `delete_branch_on_merge`, so there is nothing to open
+/// a PR from and — after a squash merge — nothing left to merge (`No commits
+/// between main and spec/<N>`). The branch is recreated from `origin/main`
+/// (`maybe_recreate_merged_spec_branch`) and the round is a NO-PR round. If the
+/// branch is GONE and no merged PR records the work, the transition fails CLOSED
+/// rather than inventing a branch whose PR would show nothing or replay stale work.
 fn ensure_spec_pr(issue: u32) -> anyhow::Result<Option<String>> {
     let head = format!("spec/{}", issue);
     let open_out = run_gh(&["pr", "list", "--head", &head, "--state", "open", "--json", "number"])?;
@@ -2033,6 +2196,36 @@ fn ensure_spec_pr(issue: u32) -> anyhow::Result<Option<String>> {
         .unwrap_or(0);
     if open_count > 0 {
         return Ok(None);
+    }
+    // POST-MERGE RESTART: recreate the deleted head branch from origin/main and open
+    // NO PR (see the doc above). Idempotent — a no-op once the branch exists again.
+    if let Some(note) = maybe_recreate_merged_spec_branch(issue)? {
+        return Ok(Some(note));
+    }
+    // The branch did not exist before that call, so it exists now only if the merge
+    // recreate just ran (which returned early) — i.e. it is still absent here unless
+    // an unrelated push landed meanwhile. Distinguish the two failure shapes:
+    //   absent + no merged PR  → genuinely LOST branch (fail CLOSED)
+    //   present + no commits   → nothing to deliver (fail CLOSED unless merged)
+    let ahead = spec_branch_ahead(issue).unwrap_or(0);
+    if ahead == 0 {
+        if merged_spec_pr_count(issue).unwrap_or(0) > 0 {
+            println!(
+                "SPEC PR SKIPPED: {} has no commits beyond main (the spec PR already merged) — this is a NO-PR round; re-serve the root at the branch tip (G-032) before the tester runs",
+                head
+            );
+            return Ok(Some(format!("spec PR skipped: `{}` carries no commits beyond main (NO-PR round — already merged)", head)));
+        }
+        if !remote_branch_exists(&head) {
+            anyhow::bail!(
+                "spec branch `{}` is missing on origin and no merged spec PR records the tested work — refusing to open a spec PR (creating a branch here would make the PR show nothing or replay stale work). Restart to implementation (`transition post-audit → implementation`) so `{}` is recreated from origin/main, or record the spec merge first",
+                head, head
+            );
+        }
+        anyhow::bail!(
+            "spec branch `{}` has no commits beyond main and no merged spec PR — there is no round work to deliver (the developer must push before `implementation → testing`)",
+            head
+        );
     }
     let title = get_issue(issue)?
         .map(|i| i.title)
@@ -3009,6 +3202,14 @@ fn serving_checkout_label(issue: u32) -> String {
 /// on `spec/<N>` or detached at its tip, so the branch-name check applies to the
 /// repo-root (legacy) path only; the HEAD==tip check always applies.
 fn serving_currency_ok(issue: u32) -> anyhow::Result<()> {
+    // POST-MERGE restart (`post-audit → testing` after the spec PR merged): the spec
+    // PR is squash-merged and `delete_branch_on_merge` removed `spec/<N>`, so there
+    // is no remote tip to compare against — and the transition's own side-effect
+    // recreates the branch from `origin/main` (`maybe_recreate_merged_spec_branch`).
+    // The tested tree IS main's tree (a squash merge copies the tree), so the
+    // precondition holds; the Orchestrator must re-serve the root at the recreated
+    // tip (G-032) before the tester runs — the recreate note says so.
+    let merged_pr = || merged_spec_pr_count(issue).unwrap_or(0) > 0;
     if mock_mode() {
         // Mock harness: the "root" state is simulated by the mock refs — once
         // spec/<N> exists with commits (the implementation exit gate already
@@ -3018,9 +3219,25 @@ fn serving_currency_ok(issue: u32) -> anyhow::Result<()> {
         if mock_commits_ahead(&branch) > 0 || mock_ref_exists(&branch) || mock_local_ref_exists(&branch) {
             return Ok(());
         }
+        if merged_pr() {
+            return Ok(());
+        }
         anyhow::bail!("repo root is not on spec/{} — checkout the spec branch and start the dev instance: dev-env.ps1 -Action Up -Spec {}", issue, issue);
     }
     let repo_root = project_root()?;
+    // Post-merge restart (see the doc above): no `spec/<N>` on origin, but a merged
+    // spec PR proves the tested tree IS main's tree. The transition's own side-effect
+    // recreates the branch from `origin/main`; serving currency is then satisfied by
+    // re-serving the root at the recreated tip (G-032) before the tester runs. Fail
+    // OPEN here — failing closed would re-create the very dead-end this fix removes,
+    // and there is no tip to compare against until the branch exists again.
+    if !remote_branch_exists(&format!("spec/{}", issue)) && merged_spec_pr_count(issue).unwrap_or(0) > 0 {
+        println!(
+            "SERVING CURRENCY: spec/{} is absent (merged + branch deleted) — the machine recreates it from origin/main; re-serve the root at the recreated tip (G-032) before the tester runs",
+            issue
+        );
+        return Ok(());
+    }
     let checkout = serving_checkout_root(issue)?;
     let per_issue = checkout != repo_root;
     let branch = run_git_in(&checkout, &["rev-parse", "--abbrev-ref", "HEAD"])
@@ -3507,13 +3724,7 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
             // (Sub-issues were removed; all work is tracked on the plan issue +
             // the spec branch.) Fails CLOSED on any lookup error.
             let branch = format!("spec/{}", issue);
-            let ahead: Option<u64> = (|| {
-                run_cmd("git", &["fetch", "origin", "main"]).ok()?;
-                run_cmd("git", &["fetch", "origin", &branch]).ok()?;
-                run_cmd("git", &["rev-list", "--count", "origin/main..FETCH_HEAD"]).ok()?
-                    .trim().parse::<u64>().ok()
-            })();
-            match ahead {
+            match spec_branch_ahead(issue) {
                 Some(n) if n > 0 => (true, String::new()),
                 Some(_) => (false, format!("{} has no commits beyond main — the developer must push", branch)),
                 None => (false, format!("cannot verify {} (does it exist on origin? planning→implementation creates it)", branch)),

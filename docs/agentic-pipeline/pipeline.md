@@ -172,7 +172,7 @@ When the Orchestrator requests changes:
 4. Post `Status: PR #N updated`.
 
 ### Merge
-The Orchestrator reviews each developer's pushes on the spec integration branch against the plan's checklist, requests changes when needed, and returns failed work to the same developer. Once the spec branch has commits beyond main, the Orchestrator transitions the feature to `testing` — which **auto-creates the spec PR** (`spec/<N>` → `main`) and applies the `testing` label — making the feature testable. Once testing passes, the Orchestrator transitions to `audit`, which **auto-merges the spec PR**; the `spec/<N>` branch is kept so evidence URLs keep rendering.
+The Orchestrator reviews each developer's pushes on the spec integration branch against the plan's checklist, requests changes when needed, and returns failed work to the same developer. Once the spec branch has commits beyond main, the Orchestrator transitions the feature to `testing` — which **auto-creates the spec PR** (`spec/<N>` → `main`) and applies the `testing` label — making the feature testable. (On a **post-merge restart** into `testing` there is nothing to open a PR from — the previous round's PR was squash-merged and its branch deleted — so the machine recreates `spec/<N>` from `origin/main` and opens NO PR, recording a `spec-branch.recreated` event; the root must be re-served at the recreated tip because the tree is identical but the commit is new.) Once testing passes, the Orchestrator transitions to `audit`, which **auto-merges the spec PR**. Merged spec PRs auto-delete their head branch (`delete_branch_on_merge`); evidence lives on GitHub as `user-attachments`, not in the branch.
 
 ---
 
