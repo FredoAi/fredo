@@ -1,0 +1,264 @@
+{
+  "description": "Committed expected-output manifest for the Spec #3147 ST-7 behaviour fixtures. Read ids / displayNames / hashes from HERE, never from an assumption: regenerate with node .opencode/tests/installable-apps/fixtures/build-behaviour-fixtures.mjs and confirm with --verify.",
+  "generator": ".opencode/tests/installable-apps/fixtures/build-behaviour-fixtures.mjs",
+  "schemaVersion": 1,
+  "zipPolicy": {
+    "method": "stored (0)",
+    "dosTimestamp": "1980-01-01T00:00:00 (dosTime 0x0000, dosDate 0x0021)",
+    "entryOrder": "fredo-app.json, index.html, main.js"
+  },
+  "fixtures": [
+    {
+      "id": "qa3147-probe",
+      "displayName": "QA3147 Probe",
+      "version": "1.0.0",
+      "enginesFredo": ">=0.0.0",
+      "optional": false,
+      "file": "qa3147-probe-1.0.0.zip",
+      "bytes": 11404,
+      "sha256": "5c69e764fdb00a349150c2a138a8761efc959c38862a495549bbe87f8ef602a7",
+      "entry": {
+        "document": "index.html",
+        "module": "main.js"
+      },
+      "entries": [
+        {
+          "name": "fredo-app.json",
+          "bytes": 336
+        },
+        {
+          "name": "index.html",
+          "bytes": 1661
+        },
+        {
+          "name": "main.js",
+          "bytes": 9095
+        }
+      ],
+      "asserts": [
+        "AC-2 / R-2.2 / F-2.2: save_control_setting (key qa3147-probe-child-<uuid>) and",
+        "installed_apps_list BOTH reject. [data-probe-error] carries the caught error name +",
+        "text verbatim, so an ACL/authority \"not allowed\" refusal is distinguishable from a",
+        "transport/CSP failure. [data-probe-mechanism] records which invoke path was used.",
+        "The host must confirm NO side effect exists for the child key (get_control_setting",
+        "returns null) while the same-round host control key reads back -- that pair proves the",
+        "child null is refusal, not a broken probe.",
+        "If no invoke mechanism is reachable at all the fixture records \"no-invoke-mechanism\" on",
+        "[data-probe-result]: report that to the Orchestrator -- it is a stronger structural",
+        "isolation fact, but it is NOT a substitute for a refusal observation."
+      ],
+      "dom": [
+        "[data-probe-result] -- mechanism used + resolved/rejected per command",
+        "[data-probe-error] -- caught error name + text, verbatim",
+        "[data-probe-mechanism] -- the invoke mechanism resolved",
+        "[data-probe-outcome] -- all-rejected | all-resolved | mixed | no-invoke-mechanism",
+        "[data-probe-state] -- pending | settled",
+        "[data-probe-child-key] -- the key passed to save_control_setting",
+        "[data-probe-host-key] -- a suggested control key for the host non-vacuity leg",
+        "[data-probe-log] -- append-only trace"
+      ]
+    },
+    {
+      "id": "qa3147-lazy-trace",
+      "displayName": "QA3147 Lazy Trace",
+      "version": "1.0.0",
+      "enginesFredo": ">=0.0.0",
+      "optional": false,
+      "file": "qa3147-lazy-trace-1.0.0.zip",
+      "bytes": 5950,
+      "sha256": "567fe19d5ac7cd88574d338a3dc490118087e55b16e87f87b279b8a3c3561fd7",
+      "entry": {
+        "document": "index.html",
+        "module": "main.js"
+      },
+      "entries": [
+        {
+          "name": "fredo-app.json",
+          "bytes": 351
+        },
+        {
+          "name": "index.html",
+          "bytes": 1671
+        },
+        {
+          "name": "main.js",
+          "bytes": 3616
+        }
+      ],
+      "asserts": [
+        "R-5.1 / F-5.1: no [data-mounted-at] exists anywhere before a first open (there is no",
+        "child document to carry it); after the first open the stamp is a non-empty ISO",
+        "timestamp. R-5.3 / F-5.3: closing the window destroys the context, so the stamp can",
+        "no longer be read. R-5.4 / F-5.4: a re-open yields NEW data-mounted-at / data-mount-ms /",
+        "data-mount-id values (a fresh document, never a reused one). R-1.5 / F-1.8: a theme",
+        "change pushed while the app is open MUST leave data-mounted-at unchanged."
+      ],
+      "dom": [
+        "[data-mounted-at] -- ISO stamp written on ctx.root (the discriminator)",
+        "[data-mount-ms] -- epoch-ms form of the same stamp",
+        "[data-mount-id] -- random per-document id (changes on every open)",
+        "[data-installed-context] -- ctx + window.__FREDO_INSTALLED__ readout",
+        "[data-theme-readout] -- getComputedStyle reads of the four theme custom properties"
+      ]
+    },
+    {
+      "id": "qa3147-crash-on-load",
+      "displayName": "QA3147 Crash On Load",
+      "version": "1.0.0",
+      "enginesFredo": ">=0.0.0",
+      "optional": false,
+      "file": "qa3147-crash-on-load-1.0.0.zip",
+      "bytes": 3462,
+      "sha256": "a363a56a61e29aaaac34cff76befb7a1a315fe9a4ef30c0eb1587fca19dea3ac",
+      "entry": {
+        "document": "index.html",
+        "module": "main.js"
+      },
+      "entries": [
+        {
+          "name": "fredo-app.json",
+          "bytes": 337
+        },
+        {
+          "name": "index.html",
+          "bytes": 1677
+        },
+        {
+          "name": "main.js",
+          "bytes": 1136
+        }
+      ],
+      "asserts": [
+        "R-4.1 / F-4.1: the host stays alive and responsive, and its OWN",
+        "[data-testid=\"installed-app-failure\"] panel renders naming THIS app",
+        "(heading \"Couldn't open QA3147 Crash On Load\") with a plain-language",
+        "[data-testid=\"installed-app-failure-reason\"]. No host error dialog, no host crash, and",
+        "the other windows are untouched."
+      ],
+      "dom": [
+        "[data-fixture=\"crash-on-load\"] -- set on ctx.root immediately before the throw, so the",
+        "failure is attributable to this fixture"
+      ]
+    },
+    {
+      "id": "qa3147-crash-on-import",
+      "displayName": "QA3147 Crash On Import",
+      "version": "1.0.0",
+      "enginesFredo": ">=0.0.0",
+      "optional": true,
+      "file": "qa3147-crash-on-import-1.0.0.zip",
+      "bytes": 2768,
+      "sha256": "49214503a5e92646dd1729127c94c8a505534823f7b4820750ebd9a0b4817853",
+      "entry": {
+        "document": "index.html",
+        "module": "main.js"
+      },
+      "entries": [
+        {
+          "name": "fredo-app.json",
+          "bytes": 363
+        },
+        {
+          "name": "index.html",
+          "bytes": 1681
+        },
+        {
+          "name": "main.js",
+          "bytes": 412
+        }
+      ],
+      "asserts": [
+        "OPTIONAL extra containment variant for R-4.1: exercises the import-rejection leg (the",
+        "module never evaluates, so no mount export exists) rather than the mount-call leg. The",
+        "suite names crash-on-load as the required fixture; use this one only if the round wants",
+        "both throw shapes."
+      ],
+      "dom": [
+        "(none -- the module never evaluates, so the host failure panel is the only surface)"
+      ]
+    },
+    {
+      "id": "qa3147-hang-on-load",
+      "displayName": "QA3147 Hang On Load",
+      "version": "1.0.0",
+      "enginesFredo": ">=0.0.0",
+      "optional": false,
+      "file": "qa3147-hang-on-load-1.0.0.zip",
+      "bytes": 3592,
+      "sha256": "3952213238f1314b024c4349812575e28e6f4bfc66b3896fe6c184d01dff8a9d",
+      "entry": {
+        "document": "index.html",
+        "module": "main.js"
+      },
+      "entries": [
+        {
+          "name": "fredo-app.json",
+          "bytes": 345
+        },
+        {
+          "name": "index.html",
+          "bytes": 1675
+        },
+        {
+          "name": "main.js",
+          "bytes": 1260
+        }
+      ],
+      "asserts": [
+        "R-4.2 / F-4.2: the host failure panel appears with reason mount_timeout and the",
+        "measured open -> panel interval lies in [9000, 20000] ms (watchdog",
+        "INSTALLED_APP_MOUNT_TIMEOUT_MS = 10 000 ms). R-5.2 / F-5.2:",
+        "[data-testid=\"installed-app-loading\"] is observable for the whole window and is",
+        "REPLACED by (never coexists with) the failure panel. N-3: the host stays interactive",
+        "throughout the wait."
+      ],
+      "dom": [
+        "[data-fixture=\"hang-on-load\"] -- set on ctx.root; no other child markup by design, so",
+        "the loading state is the only thing the child contributes"
+      ]
+    },
+    {
+      "id": "qa3147-fail-once",
+      "displayName": "QA3147 Fail Once",
+      "version": "1.0.0",
+      "enginesFredo": ">=0.0.0",
+      "optional": false,
+      "file": "qa3147-fail-once-1.0.0.zip",
+      "bytes": 5366,
+      "sha256": "9f4d8d7427c5ad51dda9f3faf36b660b76d754579574d61a54156426333eaa94",
+      "entry": {
+        "document": "index.html",
+        "module": "main.js"
+      },
+      "entries": [
+        {
+          "name": "fredo-app.json",
+          "bytes": 326
+        },
+        {
+          "name": "index.html",
+          "bytes": 1669
+        },
+        {
+          "name": "main.js",
+          "bytes": 3059
+        }
+      ],
+      "asserts": [
+        "R-4.3 / F-4.3: the first open fails and the host failure panel offers \"Try again\"; ONE",
+        "retry click lands the app's own interface with a data-mounted-at stamp, the host PIDs",
+        "and the window label (installed-<id>) are unchanged, and the whole cycle repeats a",
+        "second time (so a one-shot in-memory fluke cannot pass).",
+        "[data-fail-once-load] proves which document load this is and [data-fail-once-storage]",
+        "proves whether the sessionStorage lever was live."
+      ],
+      "dom": [
+        "[data-fail-once-load] -- 1 on the failing load, 2 on the recovery load",
+        "[data-fail-once-storage] -- sessionStorage | unavailable (lever liveness)",
+        "[data-mounted-at] -- on the recovery load only",
+        "[data-mount-id] -- random per-document id",
+        "[data-fail-once-panel] -- the recovered app interface"
+      ]
+    }
+  ]
+}
