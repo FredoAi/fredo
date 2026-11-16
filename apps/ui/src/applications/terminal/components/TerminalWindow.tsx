@@ -3,7 +3,15 @@ import { Flex, VisuallyHidden } from '@chakra-ui/react';
 import { installTerminalPassthrough } from '../../../shared/navigation/ui/terminalPassthrough';
 import { adapterBridge } from '../../../shared/utils/adapterBridge';
 import { ensureTerminalSettingsMigrated } from '../settings';
-import { TERMINAL_INTENT_AVAILABLE_EVENT } from '../presentation';
+import {
+  TERMINAL_APP_ID,
+  TERMINAL_INTENT_AVAILABLE_EVENT,
+} from '../presentation';
+import {
+  COMPANION_GROUNDING_VERSION,
+  registerCompanionGrounding,
+} from '../../../shared/companion/grounding';
+import { getApplications } from '../../applicationRegistry';
 import {
   COPILOT_AUTH_COMMAND,
   RENAME_EMPTY_MESSAGE,
@@ -668,6 +676,32 @@ export const TerminalWindow: React.FC = () => {
   const selectedSessionLabel = selected
     ? sessionDisplayTitle(selected, allSessions, persistedById)
     : selectedRecord?.title ?? null;
+
+  // #3151 ST-2 (AC5) — this window owns the Terminal selection, so it registers the
+  // application-level companion grounding source. The provider is a live closure over
+  // the CURRENT render's selection (the registration is refreshed when either value
+  // changes), so a turn always grounds on the session selected right now.
+  useEffect(
+    () =>
+      registerCompanionGrounding(TERMINAL_APP_ID, () => ({
+        version: COMPANION_GROUNDING_VERSION,
+        appId: TERMINAL_APP_ID,
+        appName:
+          getApplications().find((application) => application.id === TERMINAL_APP_ID)?.name ??
+          'Terminal',
+        selection:
+          selectedId === null
+            ? { count: 0, kinds: [], label: null, ids: [] }
+            : {
+                count: 1,
+                kinds: ['session'],
+                label: selectedSessionLabel,
+                ids: [selectedId],
+              },
+        dirty: false,
+      })),
+    [selectedId, selectedSessionLabel],
+  );
 
   return (
     <TerminalNavigationProvider

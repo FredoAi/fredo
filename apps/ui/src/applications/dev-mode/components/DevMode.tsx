@@ -11,6 +11,11 @@ import { useDevModeStream, useDevModeApplicationData } from '../hooks/useDevMode
 import type { DevModeStreamEvent, DevModeEventState } from '../hooks/useDevModeStream';
 import type { ApplicationNotificationLogEntry } from '../../../shared/application-data/store';
 import { tint } from '../../../shared/utils/colorTint';
+import {
+  COMPANION_GROUNDING_VERSION,
+  registerCompanionGrounding,
+} from '../../../shared/companion/grounding';
+import { getApplications } from '../../applicationRegistry';
 import { SpatiotemporalManifold } from './SpatiotemporalManifold';
 import {
   DevModeNavigationFooter,
@@ -566,6 +571,23 @@ export const DevMode: React.FC = () => {
   }, [filteredEvents.length]);
 
   const allStatesActive = activeStates.size === ALL_STATES.length;
+
+  // #3151 ST-2 (AC5) — Dev Mode's selection IS the active view (`rows` /
+  // `application-data`), so it registers the application-level companion grounding
+  // source. The closure reads the CURRENT `view` (re-registered when it changes).
+  useEffect(
+    () =>
+      registerCompanionGrounding('dev-mode', () => ({
+        version: COMPANION_GROUNDING_VERSION,
+        appId: 'dev-mode',
+        appName:
+          getApplications().find((application) => application.id === 'dev-mode')?.name ??
+          'Dev Mode',
+        selection: { count: 1, kinds: ['panel'], label: view, ids: [view] },
+        dirty: false,
+      })),
+    [view],
+  );
 
   // Spec #3121 (P7), ST-5 — the live callbacks the declared verbs delegate to. Every outcome
   // is exactly the shipped handler; a `false` return is the shipped no-op (R-04) and writes

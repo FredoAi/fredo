@@ -26,6 +26,7 @@
 
 import React, {
   useCallback,
+  useEffect,
   useMemo,
   useState,
   useSyncExternalStore,
@@ -43,6 +44,11 @@ import {
   buildNavigationMapModel,
 } from '../../../shared/navigation/ui';
 import { requestCompanionComposerOpen } from '../../../shared/companion/composerBridge';
+import {
+  COMPANION_GROUNDING_VERSION,
+  registerCompanionGrounding,
+} from '../../../shared/companion/grounding';
+import { getApplications } from '../../applicationRegistry';
 import { useAppCommandIntent } from '../../../shared/companion/useAppCommandIntent';
 import { formatGeometry } from '../model/geometry';
 import { WIREFRAME_APP_ID } from '../model/document';
@@ -90,6 +96,38 @@ function WireframeShell(): React.ReactElement {
   const { document, selectedIds, snapToGrid, view, filePath, dirty, panMode } = state;
 
   const [newDialogOpen, setNewDialogOpen] = useState(false);
+
+  // #3151 ST-2 (AC5) — this shell owns the Wireframe selection, so it registers the
+  // application-level companion grounding source. The provider reads the store
+  // SYNCHRONOUSLY at turn time (`getSnapshot()`), so a turn always carries the live
+  // selection/dirty — never a captured render snapshot. `label` reuses the store's
+  // existing element-title projection (`getWireframeContext().selection.label`);
+  // `kinds` is index-aligned with `ids` by construction.
+  useEffect(
+    () =>
+      registerCompanionGrounding(WIREFRAME_APP_ID, () => {
+        const snapshot = getSnapshot();
+        const byId = new Map(snapshot.document.elements.map((element) => [element.id, element]));
+        return {
+          version: COMPANION_GROUNDING_VERSION,
+          appId: WIREFRAME_APP_ID,
+          // The app's REAL feature name (`WireframeFeature.name`) read from the
+          // registry — the composer's target chip renders it; a literal fallback
+          // keeps a pre-registration read sane.
+          appName:
+            getApplications().find((application) => application.id === WIREFRAME_APP_ID)?.name ??
+            'Wireframe',
+          selection: {
+            count: snapshot.selectedIds.length,
+            ids: [...snapshot.selectedIds],
+            kinds: snapshot.selectedIds.map((id) => byId.get(id)?.type ?? 'element'),
+            label: getWireframeContext().selection.label,
+          },
+          dirty: snapshot.dirty,
+        };
+      }),
+    [],
+  );
 
   // Freshness seam (AC4) — the host is now the freshness authority: the provider publishes
   // store selection/dirty changes through `NavigationHost.refreshContext()`, so

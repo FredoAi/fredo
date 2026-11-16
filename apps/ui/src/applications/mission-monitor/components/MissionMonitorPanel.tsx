@@ -15,6 +15,11 @@ import { useWindowActions } from '../../../shared/window-system/useWindowActions
 import type { ChatRow, ToolUseRow } from '../../../shared/classes/EventSubscription';
 import { useStream } from '../../../shared/contexts/StreamContext';
 import { tint } from '../../../shared/utils/colorTint';
+import {
+  COMPANION_GROUNDING_VERSION,
+  registerCompanionGrounding,
+} from '../../../shared/companion/grounding';
+import { getApplications } from '../../applicationRegistry';
 import { useDeliveryGraph, type RowGraphSources } from '../hooks/useMissionMonitor';
 import { useDeliverySessions } from '../hooks/useSessionHistory';
 // Spec #2896 ST-9: the per-session canonical activity watch (query scope
@@ -871,6 +876,32 @@ export const MissionMonitorPanel: React.FC = () => {
     selectedSession?.derivedName ??
     selectedSession?.label ??
     null;
+
+  // #3151 ST-2 (AC5) — this panel owns the session selection, so it registers the
+  // application-level companion grounding source. The closure reads the CURRENT
+  // selection (re-registered when it changes), so a turn grounds on the session
+  // selected right now — never a stale render snapshot.
+  useEffect(
+    () =>
+      registerCompanionGrounding('mission-monitor', () => ({
+        version: COMPANION_GROUNDING_VERSION,
+        appId: 'mission-monitor',
+        appName:
+          getApplications().find((application) => application.id === 'mission-monitor')?.name ??
+          'Mission Monitor',
+        selection:
+          selectedSessionId === null
+            ? { count: 0, kinds: [], label: null, ids: [] }
+            : {
+                count: 1,
+                kinds: ['session'],
+                label: selectedSessionLabel,
+                ids: [selectedSessionId],
+              },
+        dirty: false,
+      })),
+    [selectedSessionId, selectedSessionLabel],
+  );
 
   // ── Spec #2896 ST-6/ST-9: the SELECTED SESSION's canonical activity ───────
   // The per-session watch (`sessionId = S` query scope, `initial: true`) is the

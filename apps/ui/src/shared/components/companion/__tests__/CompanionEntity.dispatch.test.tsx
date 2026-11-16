@@ -39,12 +39,15 @@ import {
   askActiveCompanionWithAudio,
   CompanionEntity,
   FREDO_CHAT_PERSONA,
+  FREDO_PERSONA,
 } from '@/shared/components/companion/CompanionEntity';
 import type { CompanionEntityHandle } from '@/shared/components/companion/CompanionEntity';
 import type { CompanionSendResult } from '@/shared/components/companion/companionDispatch';
-import { CAPABILITY_LIMITS } from '@/shared/navigation/types';
-import type { ContextEnvelope } from '@/shared/navigation/types';
+import { COMPANION_CAPABILITY_LIMITS } from '@/shared/companion/grounding';
+import type { CompanionGrounding } from '@/shared/companion/grounding';
 import { pushAppOpenReply } from '@/shared/components/companion/skillBridge';
+import { COMPANION_COMPOSER_TESTID } from '@/shared/components/companion/CompanionComposer';
+import { resetCompanionComposerBridgeForTests } from '@/shared/companion/composerBridge';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
 import type { LlmMessage, LlmSkillCall } from '@/app/adapters/HostAdapter';
 
@@ -161,7 +164,7 @@ function askNow(ref: React.RefObject<CompanionEntityHandle>, text: string): Comp
 function askNowWith(
   ref: React.RefObject<CompanionEntityHandle>,
   text: string,
-  options?: { context?: ContextEnvelope },
+  options?: { context?: CompanionGrounding },
 ): CompanionSendResult {
   let result: CompanionSendResult | undefined;
   act(() => { result = ref.current?.ask(text, options); });
@@ -169,29 +172,17 @@ function askNowWith(
 }
 
 /**
- * #3120 ST-3 — a minimal wireframe-shaped envelope. Deliberately a literal (not
- * `buildContextEnvelope`) so the seam's assertion is about the EXACT object the
- * launcher hands over, including array/object ordering in `JSON.stringify`.
+ * #3151 ST-2 — a minimal wireframe-shaped grounding payload. Deliberately a
+ * literal so the seam's assertion is about the EXACT object the caller hands
+ * over, including array/object ordering in `JSON.stringify`.
  */
-function makeContext(overrides: Partial<ContextEnvelope> = {}): ContextEnvelope {
+function makeContext(overrides: Partial<CompanionGrounding> = {}): CompanionGrounding {
   return {
     version: 1,
     appId: 'wireframe',
-    placePath: [{ id: 'root', label: 'Wireframe', transient: false, sticky: true }],
+    appName: 'Wireframe',
     selection: { count: 1, kinds: ['element'], label: 'Rectangle', ids: ['el-1'] },
-    verbs: [
-      {
-        id: 'wireframe.element.delete',
-        title: 'Delete element',
-        risk: 'destructive',
-        keys: ['d'],
-        available: true,
-        unavailableReason: null,
-      },
-    ],
-    journal: { last: [], undoableCount: 0 },
     dirty: true,
-    limits: CAPABILITY_LIMITS,
     ...overrides,
   };
 }
@@ -696,13 +687,15 @@ describe('#2903 ST-2 — model-audio generations are skill-aware', () => {
   });
 });
 
-// ── #3120 ST-3 — companion grounding seam ─────────────────────────────────────
+// ── #3120 ST-3 — companion grounding seam (re-pointed by #3151 ST-2) ──────────
 //
-// R-2.2: the launcher hands the current `ContextEnvelope` to the typed/voice turn.
-// With `{ context }` the entity prepends EXACTLY ONE `system` message carrying
-// `JSON.stringify(context)` before the existing FREDO_CHAT_PERSONA + user turn and
-// adds NO transcript/history. Without a context the legacy array is byte-identical.
-// The audio clip remains the turn's input (an empty user turn, never a transcript).
+// R-2.2: the caller hands the target app's current `CompanionGrounding` to the
+// typed/voice turn. With `{ context }` the entity prepends EXACTLY ONE `system`
+// message carrying `JSON.stringify(context)` before the existing
+// FREDO_CHAT_PERSONA + user turn and adds NO transcript/history. Without a context
+// the legacy array is byte-identical. The audio clip remains the turn's input (an
+// empty user turn, never a transcript). The engine's `ContextEnvelope` is GONE
+// from this seam (#3151).
 
 describe('#3120 ST-3 — companion grounding seam', () => {
   it('prepends exactly one grounding system message before the persona + user turn', async () => {
@@ -723,7 +716,7 @@ describe('#3120 ST-3 — companion grounding seam', () => {
     // No transcript/history: no assistant turns, no prior user turns.
     expect(messages.filter((m) => m.role === 'assistant')).toHaveLength(0);
     expect(messages.filter((m) => m.role === 'user')).toHaveLength(1);
-    // The grounding payload round-trips to the exact envelope handed over.
+    // The grounding payload round-trips to the exact payload handed over.
     expect(JSON.parse(messages[0].content)).toStrictEqual(context);
   });
 
@@ -767,7 +760,7 @@ describe('#3120 ST-3 — companion grounding seam', () => {
     act(() => { lastGen().driver.onToken('reply alpha'); });
     act(() => { lastGen().driver.onDone(); });
 
-    // The drained generation carries the SAME envelope the queued send supplied.
+    // The drained generation carries the SAME grounding the queued send supplied.
     expect(generations.map((g) => g.text)).toEqual(['alpha', 'beta']);
     expect(lastGen().messages).toStrictEqual([
       { role: 'system', content: JSON.stringify(context) },
@@ -779,7 +772,7 @@ describe('#3120 ST-3 — companion grounding seam', () => {
   it('an over-cap context is never injected (the grounding payload stays bounded)', async () => {
     const { ref } = await mountEntity();
     vi.useFakeTimers();
-    // 20k ASCII bytes > CAPABILITY_LIMITS.maxContextBytes (16384).
+    // 20k ASCII bytes > COMPANION_CAPABILITY_LIMITS.maxContextBytes (16384).
     const oversized = makeContext({ appId: 'x'.repeat(20_000) });
 
     expect(askNowWith(ref, 'hello', { context: oversized })).toEqual({ outcome: 'dispatched' });
@@ -820,5 +813,158 @@ describe('#3120 ST-3 — companion grounding seam', () => {
       { role: 'system', content: FREDO_CHAT_PERSONA },
       { role: 'user', content: '' },
     ]);
+  });
+});
+
+// ── #3151 ST-2 (AC5 / R-5.5) — the avatar pointer opener ──────────────────────
+//
+// The rail's `Ask` row (the only pre-existing pointer opener) and the five nav
+// providers that published composer-open requests die with the navigation engine.
+// The surviving avatar click box is therefore the ONE pointer entry point: a
+// pointer click on the existing `.fredo-companion-avatar` wrapper (NO new testid —
+// the wrapper carries none and none is invented) opens EXACTLY ONE composer,
+// preserves the shipped `askForJoke()` on the same single-click branch, and
+// involves no keyboard path.
+//
+// TIMER DISCIPLINE (binding): the single-click branch is armed by
+// `setTimeout(..., 250)`, so an immediate assertion observes ZERO composers — the
+// fake timers are advanced 250 ms after the click before asserting.
+// SURFACE DISCIPLINE (binding): the entity mounts with `surface="overlay"` — the
+// render gate means a `seat` mount can never render a composer.
+
+const avatarEl = (): HTMLElement => {
+  const el = document.querySelector<HTMLElement>('.fredo-companion-avatar');
+  if (el === null) throw new Error('avatar wrapper not found');
+  return el;
+};
+
+const composerCount = (): number => screen.queryAllByTestId(COMPANION_COMPOSER_TESTID).length;
+
+const jokeGenerations = (): Generation[] =>
+  generations.filter((generation) => generation.messages[0]?.content === FREDO_PERSONA);
+
+/** A provider already HOSTING the away overlay (the composer's only mount point). */
+function OverlayHarnessProbe() {
+  const { state, setHosting, teleport } = useCompanion();
+  React.useEffect(() => {
+    if (!state.isVisible || state.isAway) return;
+    setHosting(true);
+    teleport(500, 400);
+  }, [state.isVisible, state.isAway, setHosting, teleport]);
+  return null;
+}
+
+/**
+ * Mount the entity ON THE OVERLAY (the hosting-window case AC5 speaks about).
+ * The overlay teleport arms its own settle-open (450 ms) exactly as in the
+ * product, so the caller dismisses that one before exercising the avatar click.
+ */
+async function mountOverlayEntity() {
+  localStorage.clear();
+  localStorage.setItem('Fredo_companion_visible', 'true');
+  const view = renderWithChakra(
+    React.createElement(
+      CompanionProvider,
+      null,
+      React.createElement(OverlayHarnessProbe, null),
+      React.createElement(CompanionEntity, { surface: 'overlay' }),
+      React.createElement(ApiProbe, null),
+    ),
+  );
+  await waitFor(() => {
+    expect(api.idleTimeoutSeconds).toBe(60);
+    expect(document.querySelector('.fredo-companion-avatar')).not.toBeNull();
+  });
+  // The teleport settle opens the composer once; wait for it, then dismiss so the
+  // avatar-click assertion is unambiguous about what opened the next box.
+  await waitFor(() => expect(composerCount()).toBe(1));
+  act(() => {
+    fireEvent.click(screen.getByTestId('fredo-companion-composer-dismiss'));
+  });
+  await waitFor(() => expect(composerCount()).toBe(0));
+  return view;
+}
+
+describe('#3151 ST-2 (AC5) — the avatar pointer opener', () => {
+  beforeEach(() => {
+    resetCompanionComposerBridgeForTests();
+  });
+
+  it('a POINTER click on the avatar opens EXACTLY ONE composer and still fires askForJoke', async () => {
+    await mountOverlayEntity();
+    vi.useFakeTimers();
+    expect(composerCount()).toBe(0);
+    expect(jokeGenerations()).toHaveLength(0);
+
+    // A pointer activation of the surviving wrapper class (its aria-label prefixes
+    // `Fredo companion -- `; no testid exists on it and none is invented).
+    expect(avatarEl().getAttribute('aria-label')?.startsWith('Fredo companion -- ')).toBe(true);
+    act(() => { fireEvent.click(avatarEl()); });
+
+    // TIMER DISCIPLINE: the 250 ms single/double discriminator has not elapsed —
+    // observing zero here is the ARMED state, never a false FAIL.
+    expect(composerCount()).toBe(0);
+    expect(jokeGenerations()).toHaveLength(0);
+
+    act(() => { vi.advanceTimersByTime(250); });
+
+    // EXACTLY ONE composer instance — the assertion IS the guard (a second mounted
+    // element would mean a second render gate).
+    expect(composerCount()).toBe(1);
+    // The shipped joke behaviour is PRESERVED, not replaced.
+    expect(jokeGenerations()).toHaveLength(1);
+    expect(jokeGenerations()[0].messages[1]).toMatchObject({ role: 'user' });
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it('a keyboard event opens NO composer (the opener is pointer-only)', async () => {
+    await mountOverlayEntity();
+    vi.useFakeTimers();
+
+    act(() => {
+      fireEvent.keyDown(document.body, { key: 'Enter' });
+      fireEvent.keyDown(document.body, { key: ' ' });
+      fireEvent.keyDown(document.body, { key: 'k' });
+    });
+    act(() => { vi.advanceTimersByTime(500); });
+
+    expect(composerCount()).toBe(0);
+    expect(jokeGenerations()).toHaveLength(0);
+  });
+
+  it('opens exactly one composer again after the first is dismissed (no latch)', async () => {
+    await mountOverlayEntity();
+    vi.useFakeTimers();
+
+    act(() => { fireEvent.click(avatarEl()); });
+    act(() => { vi.advanceTimersByTime(250); });
+    expect(composerCount()).toBe(1);
+
+    act(() => {
+      fireEvent.click(screen.getByTestId('fredo-companion-composer-dismiss'));
+    });
+    expect(composerCount()).toBe(0);
+
+    act(() => { fireEvent.click(avatarEl()); });
+    act(() => { vi.advanceTimersByTime(250); });
+    expect(composerCount()).toBe(1);
+  });
+
+  it('a DOUBLE click still only toggles the TicTacToe bubble and opens no composer', async () => {
+    await mountOverlayEntity();
+    vi.useFakeTimers();
+
+    // Two clicks inside the 250 ms discriminator ⇒ the game toggle path.
+    act(() => {
+      fireEvent.click(avatarEl());
+      fireEvent.click(avatarEl());
+    });
+    act(() => { vi.advanceTimersByTime(250); });
+
+    // The TicTacToe board is up…
+    expect(screen.getByText('Your turn (X)')).toBeInTheDocument();
+    // …no composer and no joke were triggered by the double click.
+    expect(composerCount()).toBe(0);
+    expect(jokeGenerations()).toHaveLength(0);
   });
 });

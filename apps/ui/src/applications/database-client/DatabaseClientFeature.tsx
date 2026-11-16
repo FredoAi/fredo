@@ -46,6 +46,11 @@ import {
   buildDatabaseClientSelection,
   registerDatabaseClientActionHandlers,
 } from './databaseClientSurface';
+import {
+  COMPANION_GROUNDING_VERSION,
+  registerCompanionGrounding,
+} from '../../shared/companion/grounding';
+import { getApplications } from '../applicationRegistry';
 import type {
   DbConnectionView,
   DbSchemaNodeAction,
@@ -416,6 +421,24 @@ export const DatabaseClientFeatureView: React.FC = () => {
   useEffect(() => {
     publishSelection?.(selection);
   }, [publishSelection, selection]);
+
+  // #3151 ST-2 (AC5) — SQL Studio owns its selection, so it registers the
+  // application-level companion grounding source. The closure reads the CURRENT
+  // `selection` projection (re-registered when it changes), so a turn grounds on the
+  // live connection/table/query/resultSet — never a stale render snapshot.
+  useEffect(
+    () =>
+      registerCompanionGrounding('database-client', () => ({
+        version: COMPANION_GROUNDING_VERSION,
+        appId: 'database-client',
+        appName:
+          getApplications().find((application) => application.id === 'database-client')?.name ??
+          'SQL Studio',
+        selection,
+        dirty: false,
+      })),
+    [selection],
+  );
 
   // The surface's action verbs delegate to these LIVE callbacks through one latest-value ref,
   // so a declaration never captures stale React state.
