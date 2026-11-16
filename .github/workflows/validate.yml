@@ -404,12 +404,97 @@ jobs:
       - run: cargo nextest run --manifest-path apps/tauri/src-tauri/Cargo.toml --locked --profile live
       - run: cargo clippy --manifest-path apps/tauri/src-tauri/Cargo.toml --locked -- -D warnings
 
+  # release-version-guard — a release PR may not carry version content `main` lacks.
+  #
+  # WHY THIS EXISTS
+  # ---------------
+  # The documented release flow (`docs/release-process.md` Step 5) is ONE-DIRECTIONAL:
+  # a release PR "brings `main` into `release/stable`", and a release sync sets the
+  # `release/stable` tree to EXACTLY `main` (the pattern `ced8d7a` / `03efd0e` used).
+  # So `main` is the source of truth for the version, and anything present ONLY on
+  # `release/stable` is transient: the next sync overwrites it with `main`'s content.
+  #
+  # That is what made PR #3156 a silent trap: it bumped the version to 0.2.0 on
+  # `release/stable` while `main` stayed on 0.1.0. The release that shipped was
+  # correct, but the NEXT sync would have reset the tree to `main`, silently
+  # rebuilding 0.1.0 and reusing the old tag. No check caught it; it took a manual
+  # post-release comparison.
+  #
+  # THE RULE (deliberately one rule, no heuristics):
+  #   On a PR into `release/stable`, every version-bearing file's content at the PR
+  #   head must EQUAL `main`'s content. That is exactly "this release brings main".
+  #   A PR that adds version content main does not have fails.
+  #
+  #   On a PR into `main` this job is a no-op: `main` is the source of truth, so a
+  #   main PR legitimately moves the version and the release line catches up at the
+  #   next sync. Failing it here would block the correct order of operations.
+  #
+  # No false positives: the normal release flow (main -> release/stable) has
+  # `pr == main` by construction, so it passes without any escape hatch.
+  release-version-guard:
+    needs: paths
+    if: always() && needs.paths.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 1
+      - name: Assert a release PR brings main's version content
+        shell: bash
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          FILES=(
+            "apps/tauri/src-tauri/tauri.conf.json"
+            "apps/tauri/src-tauri/Cargo.toml"
+            "apps/tauri/src-tauri/Cargo.lock"
+            "apps/tauri/package.json"
+            "apps/ui/package.json"
+          )
+
+          if [ "$BASE_REF" != "release/stable" ]; then
+            echo "Base is '$BASE_REF', not release/stable — main is the source of truth,"
+            echo "so the version guard does not apply here. The release line catches up"
+            echo "at the next release/stable sync."
+            exit 0
+          fi
+
+          git fetch --no-tags --depth=1 origin main "+${HEAD_SHA}:refs/pr/head" >/dev/null 2>&1 \
+            || { echo "::error::could not fetch main and the PR head"; exit 1; }
+
+          status=0
+          for f in "${FILES[@]}"; do
+            m="$(git show "origin/main:$f" 2>/dev/null || echo "__ABSENT__")"
+            p="$(git show "refs/pr/head:$f" 2>/dev/null || echo "__ABSENT__")"
+
+            if [ "$m" = "$p" ]; then
+              echo "OK    $f — matches main"
+              continue
+            fi
+
+            echo "::error file=$f::This release PR carries content for '$f' that main does not have. The documented flow is main -> release/stable, and a release sync sets the tree to exactly main — so this change would be silently reverted by the next sync. Land it on main first, then sync."
+            status=1
+          done
+
+          if [ "$status" -ne 0 ]; then
+            echo ""
+            echo "A release PR must bring main's version content, not introduce its own."
+            echo "Correct order: (1) the change lands on main, (2) sync main -> release/stable."
+            echo "See docs/release-process.md Step 5."
+            exit 1
+          fi
+          echo "Version invariant holds: this release PR brings main's version content."
+
   # validate — THE required check; always runs so it never goes "Expected" (AC2/AC3).
   # Fail-closed: a non-success `paths` result, or any leg result other than exactly
   # `success`/`skipped`, turns this check red. `if: always()` is load-bearing — without it
   # adding `paths` to `needs` would make this job skip when the discriminator fails.
   validate:
-    needs: [paths, ui-validate, rust-validate]
+    needs: [paths, ui-validate, rust-validate, release-version-guard]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -419,13 +504,14 @@ jobs:
           PATHS_RESULT: ${{ needs.paths.result }}
           UI_RESULT: ${{ needs.ui-validate.result }}
           RUST_RESULT: ${{ needs.rust-validate.result }}
+          VERSION_GUARD_RESULT: ${{ needs.release-version-guard.result }}
         run: |
           status=0
           if [ "$PATHS_RESULT" != "success" ]; then
             echo "::error::paths discriminator result was '$PATHS_RESULT' (expected success) - failing closed"
             status=1
           fi
-          for entry in "ui-validate=$UI_RESULT" "rust-validate=$RUST_RESULT"; do
+          for entry in "ui-validate=$UI_RESULT" "rust-validate=$RUST_RESULT" "release-version-guard=$VERSION_GUARD_RESULT"; do
             leg="${entry%%=*}"
             result="${entry#*=}"
             case "$result" in
