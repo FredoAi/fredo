@@ -82,7 +82,7 @@ abstract class FredoFeatureClass<TProps = {}> {
 ### Feature Categories
 
 **Grid-Based Features** (extend FredoFeatureClass):
-- **DiagramFeature** - Infrastructure diagram (singleton pattern)
+- **Diagram Feature** - Infrastructure diagram (singleton pattern)
   - Visualizes Kubernetes cluster
   - Processes `infrastructure_stream` and `k8s_diagram` events
   - Single instance shared across application
@@ -177,15 +177,15 @@ apps/browser-extension/
 │   │   ├── alerts/          # 📌 Fixed component - Alert toasts
 │   │   │   └── components/
 │   │   │       └── AlertHandler.tsx
-│   │   ├── azdo-create-workitem/ # 🔲 Grid feature - Work item creation
-│   │   │   ├── AzdoCreateWorkItemFeature.tsx
+│   │   ├── azdo-create-work-item/ # 🔲 Grid feature - Work item creation
+│   │   │   ├── Azdo Create Work Item Feature.tsx
 │   │   │   ├── components/
-│   │   │   │   ├── CreateWorkItemForm.tsx
+│   │   │   │   ├── Create Work Item Form.tsx
 │   │   │   │   └── WorkItemSuccess.tsx
 │   │   │   └── hooks/
-│   │   │       └── useCreateWorkItem.ts
-│   │   ├── azdo-start-workitem/ # 🔲 Grid feature - Work item viewer
-│   │   │   ├── AzdoWorkItemFeature.tsx
+│   │   │       └── the create-work-item hook.ts
+│   │   ├── azdo-start-work-item/ # 🔲 Grid feature - Work item viewer
+│   │   │   ├── Azdo Work Item Feature.tsx
 │   │   │   └── components/
 │   │   │       └── WorkItemModal.tsx
 │   │   ├── dashboard/       # 📌 Fixed component - Empty state
@@ -195,9 +195,9 @@ apps/browser-extension/
 │   │   │   └── components/
 │   │   │       └── DevMode.tsx
 │   │   ├── diagram/         # 🔲 Grid feature - Architecture diagrams
-│   │   │   ├── DiagramFeature.tsx
+│   │   │   ├── Diagram Feature.tsx
 │   │   │   ├── components/
-│   │   │   │   ├── ArchitectureDiagram.tsx
+│   │   │   │   ├── Architecture Diagram.tsx
 │   │   │   │   └── K8sNode.tsx
 │   │   │   ├── hooks/
 │   │   │   │   └── useDiagram.ts       # SSE connection
@@ -240,7 +240,7 @@ apps/browser-extension/
 ### Grid-Based Features (4)
 Features that extend `FredoFeatureClass` and render in the Home grid:
 
-#### 1. diagram (DiagramFeature)
+#### 1. diagram (Diagram Feature)
 - **Pattern**: Singleton
 - **Purpose**: Kubernetes infrastructure visualization
 - **Events**: `infrastructure_stream`, `k8s_diagram`
@@ -254,17 +254,17 @@ Features that extend `FredoFeatureClass` and render in the Home grid:
 - **Components**: Data tables with pagination, filtering
 - **Lifecycle**: New instance per query
 
-#### 3. azdo-start-workitem (AzdoWorkItemFeature)
+#### 3. azdo-start-work-item (Azdo Work Item Feature)
 - **Pattern**: Factory (multiple instances)
 - **Purpose**: Azure DevOps work item viewer
-- **Events**: `azdo_start_workitem`
+- **Events**: `azdo_start_work_item`
 - **Components**: Work item modal with details
 - **Lifecycle**: New instance per work item
 
-#### 4. azdo-create-workitem (AzdoCreateWorkItemFeature)
+#### 4. azdo-create-work-item (Azdo Create Work Item Feature)
 - **Pattern**: Factory (multiple instances)
 - **Purpose**: Azure DevOps work item creation with AI-assisted form
-- **Events**: `azdo_create_workitem`
+- **Events**: `azdo_create_work_item`
 - **Components**: Pre-filled form modal, work item creation hook
 - **Lifecycle**: New instance per work item creation request
 
@@ -355,8 +355,8 @@ Feature Classes (Grid-Based)
 Feature classes encapsulate all logic for grid-renderable features:
 
 ```typescript
-// DiagramFeature.tsx
-export class DiagramFeature extends FredoFeatureClass {
+// Diagram Feature.tsx
+export class Diagram Feature extends FredoFeatureClass {
   readonly name = 'Infrastructure Diagram';
   readonly icon = LuNetwork;
   readonly eventFilters = [
@@ -364,11 +364,11 @@ export class DiagramFeature extends FredoFeatureClass {
   ];
   
   processEvent(event: StreamEvent): void {
-    // Handled by ArchitectureDiagram component internally
+    // Handled by Architecture Diagram component internally
   }
   
   render() {
-    return <ArchitectureDiagram />;
+    return <Architecture Diagram />;
   }
    (Component-Level)
 React hooks for component state:
@@ -424,7 +424,7 @@ import { motion } from 'framer-motion';
 Standard React functional components with hooks:
 
 ```typescript
-export const ArchitectureDiagram: React.FC = () => {
+export const Architecture Diagram: React.FC = () => {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const { isStreaming, startStreaming } = useDiagram();
@@ -459,7 +459,7 @@ export const ExtensionProvider: React.FC<{ children: ReactNode }> = ({ children 
 // Usage in components
 const Component = () => {
   const { currentPage, setCurrentPage } = useExtension();
-  return <button onClick={() => setCurrentPage('diagram')}>Go to Diagram</button>;
+  return <button onClick={() => setCurrentPage('architecture')}>Go to Diagram</button>;
 };
 ```n
 - **Browser API**: Cross-context messaging

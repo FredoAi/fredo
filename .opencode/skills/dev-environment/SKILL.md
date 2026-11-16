@@ -1,6 +1,6 @@
 ---
 name: dev-environment
-description: Dev instance lifecycle management and E2E testing methodology. Loaded by the Self-Improver (orchestrator) and QA.
+description: Dev instance lifecycle management and E2E testing methodology. Loaded by the Orchestrator and QA.
 ---
 
 # Dev Environment — Lifecycle & E2E Testing
@@ -14,35 +14,82 @@ No state files. Ports (5174 Vite, 9223 MCP Bridge) are the source of truth. Dual
 | Action | Command | Description |
 |--------|---------|-------------|
 | Up | `powershell -File .opencode/scripts/dev-env.ps1 -Action Up` | Ensure dev instance is running AND ready. Auto-starts if not running. Polls ports until responsive. |
-| Down | `powershell -File .opencode/scripts/dev-env.ps1 -Action Down` | Stop dev instance. Finds process by port, kills tree. |
+| Down | `powershell -File .opencode/scripts/dev-env.ps1 -Action Down` | Stop dev instance. Finds process by port, kills tree. Keeps the env's data (intra-run recovery). |
+| Clean | `powershell -File .opencode/scripts/dev-env.ps1 -Action Clean -EnvId <id>` | **Run-complete teardown (isolated env).** Stop the env, then remove ONLY its manifest/app-data/PostgreSQL dir/cache/logs and release its lease — nothing left behind. See [Cleanup](#cleanup). |
 | Status | `powershell -File .opencode/scripts/dev-env.ps1 -Action Status` | Read-only: `running` / `starting` / `stopped`. |
-| Restart | `powershell -File .opencode/scripts/dev-env.ps1 -Action Restart -Spec <N>` | Down then Up. **`-Spec` (or a repo root already on `spec/<N>`) is resolved BEFORE anything is stopped** — a missing `-Spec` now exits with a clear error and leaves the running instance up, instead of killing it and then failing the Up leg's range guard. |
+| Restart | `powershell -File .opencode/scripts/dev-env.ps1 -Action Restart -Spec <N>` | Down then Up. **`-Spec` (or a repo root already on `spec/<N>`) is resolved BEFORE anything is stopped** — a missing `-Spec` now exits with a clear error and leaves the running instance up, instead of killing it and then failing the Up leg's range guard. **The Restart verb does NOT persist `-EnvSlot`** (G-328): for a per-issue ISOLATED env it silently falls back to the legacy ports (5174/9223) while keeping the env-scoped PG dir. To recover/restart an isolated env, run an explicit `-Action Down -EnvId <id>` followed by `-Action Up -Spec <N> -EnvId <id> -EnvSlot <n>`; name that isolated form in any tester brief so the round never enters the legacy shared path. |
 | Logs | `powershell -File .opencode/scripts/dev-env.ps1 -Action Logs` | Tail process stdout/stderr. |
 
 Optional parameters: `-VitePort 5174`, `-McpPort 9223`, `-TimeoutSecs 120`, `-Lines 50`, `-At <commit-ish>` (baseline-leg serving, Up only — see the baseline rule below).
 
-> **`-EnvVar` (Up only) — the sanctioned way to drive an ENV-GATED app seam.** Repeatable `NAME=value` pairs inject extra environment variables into the launched dev instance (and every opencode session it spawns). Agents cannot set a process env var for the app any other way: every script invocation is a fresh shell and shell chaining/metacharacters are sandbox-denied, so an env-gated seam is otherwise undrivable and the row becomes a permanent named blocker. Example (the STT deterministic capture feed): `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec <N> -EnvVar "FREDO_STT_FEED_WAV=C:\Code\fredo\.opencode\tests\voice-dictation\fixtures\dictation-phrase-16k-mono.wav"`. **Do NOT use the `-EnvVars @{ NAME = "value" }` hashtable form from a `powershell -File` invocation** — the outer shell passes the literal to the script as a STRING and it fails with `Cannot convert the ... Hashtable value`; `-EnvVars` remains available only to dot-sourced callers. Inject a var ONLY from an in-repo value (never a path outside the repo — G-172), and always pair an env-gated leg with an unset-env control run so the observation is non-vacuous.
+> **`-EnvVar` (Up only) — the sanctioned way to drive an ENV-GATED app seam.** Pass ONE comma-delimited array argument: `-EnvVar "A=1","B=2","C=3"` (values must not contain a comma). **Repeated `-EnvVar` flags are NOT reliable under `powershell -File`** — they fail with `ParameterAlreadyBound` (re-observed #3070 rounds 2–4); the comma form injected all three seams. The variables reach the launched dev instance (and every opencode session it spawns). Agents cannot set a process env var for the app any other way: every script invocation is a fresh shell and shell chaining/metacharacters are sandbox-denied, so an env-gated seam is otherwise undrivable and the row becomes a permanent named blocker. Example (the STT deterministic capture feed): `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec <N> -EnvVar "FREDO_STT_FEED_WAV=C:\Code\fredo\.opencode\tests\voice-dictation\fixtures\dictation-phrase-16k-mono.wav"`. **Do NOT use the `-EnvVars @{ NAME = "value" }` hashtable form from a `powershell -File` invocation** — the outer shell passes the literal to the script as a STRING and it fails with `Cannot convert the ... Hashtable value`; `-EnvVars` remains available only to dot-sourced callers. Inject a var ONLY from an in-repo value (never a path outside the repo — G-172), and always pair an env-gated leg with an unset-env control run so the observation is non-vacuous. **Verify each injected seam is ACTIVE before trusting its rows** — a per-command path seam that did not bind looks exactly like a product no-op (a save that writes nowhere).
 
-## Cleaning the Fredo DB (fresh-slate reset for live e2e)
+## Isolated Environments (Spec #2944)
 
-Single script: `.opencode/scripts/clean-fredo-db.ps1` (allowed for the tester + self-improver).
+One machine can run several fully isolated Fredo environments concurrently, one per issue/spec.
 
-The tester **cannot** `Remove-Item` the live DB directly — the sandbox allowlist only permits `.opencode/*` paths, so a raw `Remove-Item "C:\Users\...\fredo.db"` is DENIED and the agent loops. Use the script instead; it is a single allowed `powershell -File` call.
+- **Instance selector:** `dev-env.ps1 -EnvId <id>` (default derived from `-Spec <N>` → `spec<N>`).
+- **Port block:** `-EnvSlot <n>` (slot 0 = legacy 5174/9223/4317/4318; slot n≥1 = base `16000 + 10*(n-1)`, then Vite=P+0, MCP=P+1, OTLP/gRPC=P+2, OTLP/HTTP=P+3). Explicit `-VitePort`/`-McpPort` overrides are recorded in the manifest; a collision fails closed (never scans to another port). **No companion `llama` port exists** (Spec #3141): companion inference runs in-process, so there is no listener to isolate — only the companion DIRECTORY (`FREDO_LLAMA_SERVER_COMPANION_DIR`) is per-env.
+- **Serving checkout:** `-ServingCheckout <path>` launches a per-issue checkout (`.serve/<issue>`); default = repo root (byte-identical legacy behavior).
+- **State root:** `FREDO_ENV_ROOT` (default `<repo>/.opencode/tmp/envs/<envId>`); the app-data dir is `FREDO_DATA_DIR` (default `<env-root>/data`) and the embedded PostgreSQL cluster's data dir is `<env-root>/postgres`.
+- **Manifest:** `<env-root>/manifest.json` (`FREDO_ENV_MANIFEST` overrides) records `ports` (vite/mcp/otlpGrpc/otlpHttp/pg — **no `llama`**), `dbPath`, `pipe`, `appIdentity`, and the launched `processes[].pid`. `Down`/`Clean` kill ONLY those PIDs.
+- **Identity / routing:** `FREDO_ENV_ID` is injected into the app and every OpenCode session it spawns; the CLI pipe is `FREDO_CLI_PIPE` (`\\.\pipe\fredo-ipc-<envId>`); the MCP `appIdentifier` for an environment is its MCP port as a decimal string (e.g. `"16001"`). Read an environment's rows from ITS OWN store, never the legacy `%APPDATA%\com.fredo.app` path.
+- **Read lever is PostgreSQL-only (G-284, closed by Spec #3005).** Read an environment's rows through the `telemetry-query` skill (`-Manifest <env-root>/manifest.json`, or `-PgPort <ports.pg>`) — the managed `psql` against the env's embedded PostgreSQL cluster (database `postgres`). The cluster's ephemeral port is the manifest's `ports.pg`; when it reads `0` a re-resolve is required (G-307). The password lives in the OS keychain (service `fredo.postgres`, account `loopback:password`). State the port the evidence came from; if the app pool holds every connection and `psql` is refused (`too many clients`), use the named app-pool fallback (`telemetry_get_stats`) and DISCLOSE the substitution.
+
+### Continuous isolation invariant checker (Spec #2944 ST-7)
+
+Single read-only script: `.opencode/scripts/verify-env-isolation.ps1`. While two or more environments are live it proves — **read-only** (never kills, never binds, never starts/stops) — that each env's data root is distinct, no port is recorded by two envs, and each live env's recorded endpoint is bound only by a PID recorded in that env's own manifest (never a sibling's, never a foreign owner). It owns the *continuous* invariant (R-1.3/R-2.3) as its own line; `dev-env.ps1 -Action Status` also invokes it read-only (`-Summary`) and prints an `isolation` assertion line.
 
 | Command | Description |
 |---------|-------------|
-| `powershell -File .opencode/scripts/clean-fredo-db.ps1` | Stop dev instance (`dev-env.ps1 -Action Down`), delete `%APPDATA%\com.fredo.app\fredo.db` (+ `-wal`/`-shm`), verify deletion. |
-| `powershell -File .opencode/scripts/clean-fredo-db.ps1 -Restart` | Clean, then restart the dev instance (`dev-env.ps1 -Action Up`). |
-| `powershell -File .opencode/scripts/clean-fredo-db.ps1 -Backup [-Name <n>]` | Stop the app and copy the live DB (+ `-wal`/`-shm`) into `.opencode/tmp/db-snapshots/<name>/` (default name = timestamp). Does NOT delete the live DB. Add `-Restart` to bring the app back up. |
-| `powershell -File .opencode/scripts/clean-fredo-db.ps1 -Restore -Name <n> [-Restart]` | Stop the app, replace the live DB with the named snapshot, verify. Errors with the available snapshot names when `<n>` is missing. |
+| `powershell -File .opencode/scripts/verify-env-isolation.ps1 -Spec 2944,2945` | Check the named issues' default manifests (`<repo>/.opencode/tmp/envs/spec<N>/manifest.json`). |
+| `powershell -File .opencode/scripts/verify-env-isolation.ps1 -EnvRoot .opencode/tmp/envs/spec2944 -EnvRoot .opencode/tmp/envs/spec2945` | Check explicit env roots (each resolves to `<root>/manifest.json`). |
+| `powershell -File .opencode/scripts/verify-env-isolation.ps1 -ManifestPath <manifest.json> [...]` | Check explicit manifest paths. |
+| `powershell -File .opencode/scripts/verify-env-isolation.ps1 -Scan` | Discover every `<repo>/.opencode/tmp/envs/*/manifest.json`; inactive (not-live) envs are reported and excluded from the cross-env pair checks. `-Scan` is also the default when no manifest/root/spec is given. |
+| `powershell -File .opencode/scripts/verify-env-isolation.ps1 -Summary` | Print a single result line (used by `dev-env.ps1 -Action Status`). |
 
 Notes:
-- **Corpus-size comparison levers (`-Backup` / `-Restore`).** A check that compares behavior across corpus sizes (e.g. "open time does not grow with total stored history") needs BOTH a small corpus and the real corpus back. Sequence: measure on the real DB → `-Backup -Name big` → `-Restart` (fresh small DB; drive a few fixtures) → measure → `-Restore -Name big -Restart`. Snapshots are gitignored in-repo state under `.opencode/tmp/db-snapshots/`, so the real corpus is never lost. Never use `Remove-Item` on the live DB directly (G-009).
-- The app holds `fredo.db` open (WAL) while running, so it MUST be stopped first — the script does this. If you see "fredo.db still present", the app is still up.
-- The schema is recreated on next launch (`CREATE TABLE IF NOT EXISTS` / `ensure_schema`), so a deleted DB is a fully clean slate.
-- This wipes `feature_mission-monitor_*` tables AND `telemetry_spans`/`telemetry_metrics`/`telemetry_logs` — everything. Use it when a spec AC requires "fresh DBs" (e.g. Mission Monitor e2e) or when the DB has bloated (a stray DB has grown to ~1.9 GB from accumulated telemetry).
-- The thousands of `.tmpXXXXXX\fredo.db` files under `%TEMP%` are Rust unit-test temp DBs — never clean those manually; they are test debris, ignore them.
-- Run the clean BEFORE `dev-env.ps1 -Action Up` for the next test session.
+- **Exit code:** `0` = OK (or trivially OK for a single/zero env); `1` = at least one isolation violation (shared data root, duplicate port, duplicate env id, cross-env PID, or a live env's endpoint bound by an unrecorded/foreign owner). Every recorded endpoint is a required one (four: Vite/MCP/OTLP gRPC/OTLP HTTP) — the retired companion `llama` optional endpoint is gone with the out-of-process runtime (Spec #3141).
+- **Shared-root violation (Spec #3066 ST-3):** an ACTIVE env whose data root equals or is nested under the shared `%APPDATA%\com.fredo.app` cluster dir is a violation (`... is the SHARED cluster dir ...`, exit `1`) — the checker now surfaces a round that landed on the shared cluster. The shared identity is overridable via `FREDO_SHARED_APPDATA_DIR` (test seam).
+- `-TimeoutSecs <n>` bounds each native query (default 5 s, G-263) — no unbounded wait.
+- Read-only: safe to run repeatedly while envs are live; it never alters `Status` semantics.
+
+### Round isolation (Spec #3066)
+
+Every dev/test/pipeline round MUST run against its own isolated env slot — never the legacy shared path.
+
+- **Mandated round form:** `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec <N> -EnvId <id> -EnvSlot <n> -RequireIsolation`. `-RequireIsolation` (or the env flag `FREDO_REQUIRE_ENV_ISOLATION`) arms the guard; env mode arms it regardless of the marker.
+- **The legacy shared path is FORBIDDEN for rounds.** A round that resolves to the shared `%APPDATA%\com.fredo.app` PostgreSQL cluster dir fails closed with `ISOLATION REFUSED (shared-dir)` and exits `3` BEFORE PostgreSQL starts; the credential sentinel seams (`FREDO_PG_PASSWORD_FILE` / `FREDO_PG_KEYCHAIN_DISABLED`) are refused there too (`ISOLATION REFUSED (sentinel-seam)`), so `initdb` can never re-password the shared cluster. The human's manual legacy run WITHOUT the marker is intentionally left unchanged.
+- **`Restart` is forbidden for isolated envs** (it drops `-EnvSlot`, G-328) — recover with an explicit `powershell -File .opencode/scripts/dev-env.ps1 -Action Down -EnvId <id>` then `... -Action Up -Spec <N> -EnvId <id> -EnvSlot <n>`.
+- **Audit trace:** every isolation/refusal is appended to `.opencode/state/env-isolation.jsonl` (one JSON object per line, `decision` in {`refused`,`isolated`}). `dev-env.ps1 -Action Status` surfaces the read-only isolation check, and `verify-env-isolation.ps1` flags an active env whose data root IS the shared cluster dir.
+
+### Error-path induction levers (Spec #2944 ST-14, G-275)
+
+Test-only levers for the error-path ACs live in `.opencode/tests/multi-env-isolation/error-path-levers.ps1` (inert by default; writes only under `.opencode/tmp/2944/`). Run them through the allowlisted `run-exitcode.ps1 -Command` wrapper:
+
+| Command | Induces |
+|---------|---------|
+| `... -Lever NoImageKill` | Static pin: `dev-env.ps1` contains no global image-name kill (`/IM`) and its teardown is image-guarded (AC3). |
+| `... -Lever DecoyManifest -Stage Run` | A decoy manifest recording a long-running `Start-Sleep` PID under role `app`; Down must refuse the foreign-image PID and leave it alive (AC3). |
+| `... -Lever PortCollision` | A bound recorded port + an `Up` to that port; `Up` must exit non-zero with the fail-closed collision message and must not scan (AC4). |
+| `... -Lever ForgedEvidence -RunAudit` | A tampered `evidence.json` via `FREDO_EVIDENCE_FILE`; the audit must reject it (AC5). |
+
+## Fresh-slate reset (embedded PostgreSQL)
+
+The store is the embedded PostgreSQL cluster. There is no separate DB-reset script. The
+fresh-slate reset depends on the instance kind:
+
+| Instance | Fresh-slate reset |
+|----------|-------------------|
+| Legacy single-env (no `-EnvId`) | `powershell -File .opencode/scripts/dev-env.ps1 -Action Down`, then `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec <N>` **carrying a fresh `FREDO_DATA_DIR`** (point it at a new, empty dir). |
+| Isolated env (`-EnvId <id>`) | `powershell -File .opencode/scripts/dev-env.ps1 -Action Clean -EnvId <id>`, then `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec <N> -EnvId <id> -EnvSlot <n>`. `Clean` stops the env (manifest-scoped, image-guarded) and removes ONLY its manifest, app-data dir (`FREDO_DATA_DIR`), PostgreSQL data dir (`<env-root>/postgres`), cache, and logs — never a sibling env. |
+
+Notes:
+- **Legacy single-env:** `-Action Clean` is env-mode only, so a fresh slate is `-Action Down` then an `-Action Up` carrying a fresh `FREDO_DATA_DIR` (emptied or newly created) — the schema is recreated on first boot.
+- The managed cluster MUST be stopped before its data dir is removed (`Down`/`Clean` do the manifest-scoped stop first; a sibling env is never touched).
+- The tester **cannot** `Remove-Item` the live store directly — the sandbox allowlist only permits `.opencode/*` paths. Use the env-scoped `Clean` action or the `Down` → fresh-`FREDO_DATA_DIR` `Up`; never a raw path removal (G-009).
+- `Clean` (and a fresh `FREDO_DATA_DIR`) wipes `feature_mission-monitor_*` tables AND `telemetry_spans`/`telemetry_metrics`/`telemetry_logs` — everything. Use it when a spec AC requires "fresh DBs" (e.g. Mission Monitor e2e).
+- Reset the store BEFORE `dev-env.ps1 -Action Up` for the next test session.
 
 ## Evidence upload (gh-image prerequisite)
 
@@ -61,21 +108,43 @@ Test screenshots are uploaded to GitHub as `user-attachments` by the `gh-image` 
 
 Single script: `.opencode/scripts/wait-telemetry.ps1` (allowed for the tester).
 
-Runs a readonly sqlite3 query against the live `fredo.db` in a bounded polling loop (Start-Sleep INSIDE the script — safe for sandboxes that ban direct sleep) until the query returns at least one row or the attempt budget is spent. Prints each attempt's row count. Use it for CONFIRM-COMPLETE telemetry gates (e.g. `telemetry_spans` fixture-session / task-edge queries) instead of many manual query roundtrips.
+Runs a read-only query against the live embedded PostgreSQL store in a bounded polling loop (Start-Sleep INSIDE the script — safe for sandboxes that ban direct sleep) until the query returns at least one row or the attempt budget is spent. Prints each attempt's row count. Use it for CONFIRM-COMPLETE telemetry gates (e.g. `telemetry_spans` fixture-session / task-edge queries) instead of many manual query roundtrips.
 
 | Command | Description |
 |---------|-------------|
-| `powershell -File .opencode/scripts/wait-telemetry.ps1 -Query "SELECT ... " -Attempts 20 -IntervalSec 15` | Poll every 15 s, up to 20 attempts. Exit 0 as soon as ≥1 row (a bare `0` aggregate result counts as zero rows), 1 on timeout, 2 on query/DB-not-found errors, 3 on sqlite failure. |
+| `powershell -File .opencode/scripts/wait-telemetry.ps1 -Query "SELECT ... " -PgPort <ports.pg> -Attempts 20 -IntervalSec 15` | Poll the env's PostgreSQL cluster at `-PgPort` every 15 s, up to 20 attempts. Exit 0 as soon as ≥1 row (a bare `0` aggregate result counts as zero rows), 1 on timeout, 2 on query-rejected / psql-not-found / port-unresolved errors, 3 on psql failure. |
+| `powershell -File .opencode/scripts/wait-telemetry.ps1 -Query "SELECT ... " -Manifest "<env-root>/manifest.json" -Attempts 10 -IntervalSec 5` | Poll an isolated env's own cluster, resolving `ports.pg` from its manifest. When the port reads `0`, re-resolve it (G-307) and pass the fresh `-PgPort`. |
 
 Notes:
-- Readonly guardrail: only SELECT / PRAGMA / WITH accepted (same DDL/DML rejection as `telemetry-query.ps1`); the `-readonly` connection never blocks the running app.
+- Read-only guardrail: only SELECT / WITH accepted (same DDL/DML rejection as `telemetry-query.ps1`); the connection sets `default_transaction_read_only=on`, so the `telemetry_spans` READ-ONLY invariant holds and the running app is never written to.
+- The password is resolved like `telemetry-query.ps1` (param → `$env:PGPASSWORD` → `FREDO_PG_PASSWORD_FILE` → loopback fallback; the live secret is in the OS keychain, service `fredo.postgres`, account `loopback:password`) and is never printed.
 - On timeout the condition was NEVER met — treat the leg as not converged (BLOCKED-environment or genuine stall per the governing fix plan); never record a mid-flight partial result as evidence.
+
+## Native CLI exit codes (sandboxed)
+
+Single script: `.opencode/scripts/run-exitcode.ps1` (allowlisted for the tester).
+
+The bash sandbox forbids command chaining (`;`, `&&`, `|`) and multi-statement lines, so a native command's `$LASTEXITCODE` — only reachable in a FOLLOW-UP statement — cannot be read directly from the shell (an AC asserting a CLI exit code is otherwise a permanent named blocker). Use this wrapper to run the command and print its exit code:
+
+| Command | Description |
+|---------|-------------|
+| `powershell -File .opencode/scripts/run-exitcode.ps1 -Command "fredo open-terminal --cli bogus"` | Runs the command, prints its output plus a machine-readable `EXITCODE=<n>` line, and exits with that code. |
+
+Notes:
+- Pass the WHOLE command as the single `-Command` string; the inner sequence runs INSIDE the script file, so the caller's no-chaining rule does not apply.
+- Use it for `fredo open-terminal` exit-code rows (`opened`/`started`=0, `invalid-*`=1, app-not-running=2). The numeric mapping is also statically pinned by `cargo test` (`exit_code_for_response`), so a wrapper failure never re-FAILs a round on its own.
+- Read-only wrapper: it adds no behaviour to the command it runs.
+- **Quoting caveat (G-342):** the inner command runs with PowerShell expression
+  semantics, so a **double-quoted SQL identifier** (`SELECT "sessionId" …`) is mis-parsed
+  (`NamedParameterNotFound`/`PositionalParameterNotFound`). Keep SQL inside a helper that
+  receives the query as a parameter (a scratch `pg-query.ps1 -Query`), or use single quotes /
+  `SELECT *` when the wrapper is unavoidable.
 
 ## Process hygiene (orphaned opencode/node cleanup)
 
 Single script: `.opencode/scripts/process-hygiene.ps1` (allowed for the tester).
 
-Prior rounds' kill paths (Run CLI close, `dev-env.ps1 -Action Down`) kill only the direct child; on Windows opencode resolves to a `.cmd`/`.bat` shim whose cmd.exe → node.exe descendants survive, hold locks in the fixture workdir, and block a fresh `opencode run` before its first byte (observed #2762 rounds 1-4: Run CLI stuck at "Starting OpenCode…" with zero PTY bytes). Run `-List` once after every `Up`, before launching Run CLI.
+Prior rounds' kill paths (Terminal close, `dev-env.ps1 -Action Down`) kill only the direct child; on Windows opencode resolves to a `.cmd`/`.bat` shim whose cmd.exe → node.exe descendants survive, hold locks in the fixture workdir, and block a fresh `opencode run` before its first byte (observed #2762 rounds 1-4: Run CLI stuck at "Starting OpenCode…" with zero PTY bytes). Run `-List` once after every `Up`, before launching a Terminal session.
 
 | Command | Description |
 |---------|-------------|
@@ -84,20 +153,30 @@ Prior rounds' kill paths (Run CLI close, `dev-env.ps1 -Action Down`) kill only t
 | `powershell -File .opencode/scripts/dev-env.ps1 -Action Hygiene [-Kill] [-Spec <N>]` | Passthrough when direct execution of `process-hygiene.ps1` is denied by the shell: resolves the sibling copy next to `dev-env.ps1` first, then the served worktree copy `.serve/<N>/.opencode/scripts/process-hygiene.ps1` (with `-Spec`), and runs it as a child powershell (`-Kill` → `-KillOrphans`, default → `-List`). Prints which copy was invoked and its exit code; "not found" exits 1 — distinguishable from "no orphans" (exit 0). |
 
 Notes:
-- Kill scope is deliberately narrow: only opencode/node processes in a DEAD tree (an ancestral parent PID is no longer alive) or whose CommandLine references `.serve\2762`. The script NEVER kills its own shell ancestry or any descendant of it, anything with a live `fredo.exe` ancestor (the current run's children, e.g. the active Run CLI PTY), or `fredo.exe` itself.
+- Kill scope is deliberately narrow: only opencode/node processes in a DEAD tree (an ancestral parent PID is no longer alive) or whose CommandLine references `.serve\2762`. The script NEVER kills its own shell ancestry or any descendant of it, anything with a live `fredo.exe` ancestor (the current run's children, e.g. the active Terminal session PTY), or `fredo.exe` itself.
 - Orphan flags in `-List` are advisory; nothing is killed without the explicit `-KillOrphans` pass.
-- A CONFIRM-STARTED gate usage: after `open_run_cli`, `-List` must show a NEW opencode/node process carrying the fixture workdir in its CommandLine, parented under the CURRENT fredo PID, AND the PTY buffer non-empty — only then submit the fixture prompt.
+- A CONFIRM-STARTED gate usage: after `open_terminal_window` + `spawn_terminal_session`, `-List` must show a NEW opencode/node process carrying the fixture workdir in its CommandLine, parented under the CURRENT fredo PID, AND that session's PTY buffer (`get_pty_buffer{sessionId}`) non-empty — only then submit the fixture prompt.
 - A mismatch between the PID owning :9223 and the current run's `fredo.exe` (process start time after `Up`) means an orphaned instance owns the port — full `Down`, verify :9223 is free via `-List`, then `Up` again.
 
 > **Which branch runs?** The dev instance builds whatever is checked out. Both the **Tester** and the **Developer** run against the **spec integration branch** — before `Up`, checkout `spec/<N>` (`git fetch origin spec/<N> && git checkout spec/<N>`) and pull the latest state. The Developer works in a worktree detached at `spec/<N>`'s tip; the Tester tests the accumulated feature on it. Never test against `main` mid-spec; the feature isn't there yet.
 
-> **Baseline legs (research-first specs) — NEVER hand-roll a dev-server spawn.** A Before/baseline measurement in a research-first perf spec (Spec #498 pattern, e.g. #2835) runs against the **pre-fix `spec/<N>` state** — the branch state BEFORE the fix work pushed (that state IS the same buggy code as `main`). The rule: **a baseline leg runs through `dev-env.ps1 -Action Up -Spec <N>`; you NEVER check out `main` for a baseline and NEVER hand-roll a detached spawn** (no ad-hoc `.mjs`/`.ps1`/`.js` scratch script that starts `pnpm dev:tauri` — `.opencode/tmp/<issue>/` is for DATA, not for re-inventing infrastructure). When the fix commits already sit on the branch and a pre-fix measurement is still required, serve the pre-fix ancestor commit through the sanctioned tool: `dev-env.ps1 -Action Up -Spec <N> -At <pre-fix-sha>` — the tool materializes ONLY the pre-fix product code (`apps/`) into the current `spec/<N>` serving tree and cold-starts it (tooling/`opencode.json` stay at the tip, so the sandbox and tool surface are unchanged); it is fail-closed (root must be on `spec/<N>`; the commit must be reachable from the `origin/spec/<N>` tip — main and foreign commits are refused). After the baseline leg, the next standard `Up` (no `-At`) restores the tip product code for the AFTER legs. **If a genuine cross-branch measurement (code NOT reachable from the spec branch tip) is ever required, that is a TOOLING REQUEST to the Self-Improver (a new script/param), not an ad-hoc agent script** — report the exact gap (command + why denied + what the provisioned tool lacks) and block/escalate instead of writing a scratch runner that re-implements a sanctioned tool's internals (G-110).
+> **Baseline legs (research-first specs) — NEVER hand-roll a dev-server spawn.** A Before/baseline measurement in a research-first perf spec (Spec #498 pattern, e.g. #2835) runs against the **pre-fix `spec/<N>` state** — the branch state BEFORE the fix work pushed (that state IS the same buggy code as `main`). The rule: **a baseline leg runs through `dev-env.ps1 -Action Up -Spec <N>`; you NEVER check out `main` for a baseline and NEVER hand-roll a detached spawn** (no ad-hoc `.mjs`/`.ps1`/`.js` scratch script that starts `pnpm dev:tauri` — `.opencode/tmp/<issue>/` is for DATA, not for re-inventing infrastructure). When the fix commits already sit on the branch and a pre-fix measurement is still required, serve the pre-fix ancestor commit through the sanctioned tool: `dev-env.ps1 -Action Up -Spec <N> -At <pre-fix-sha>` — the tool materializes ONLY the pre-fix product code (`apps/`) into the current `spec/<N>` serving tree and cold-starts it (tooling/`opencode.json` stay at the tip, so the sandbox and tool surface are unchanged); it is fail-closed (root must be on `spec/<N>`; the commit must be reachable from the `origin/spec/<N>` tip — main and foreign commits are refused). After the baseline leg, the next standard `Up` (no `-At`) restores the tip product code for the AFTER legs. **If a genuine cross-branch measurement (code NOT reachable from the spec branch tip) is ever required, that is a TOOLING REQUEST to the Orchestrator (a new script/param), not an ad-hoc agent script** — report the exact gap (command + why denied + what the provisioned tool lacks) and block/escalate instead of writing a scratch runner that re-implements a sanctioned tool's internals (G-110).
 
 > **Screenshot analysis is vision-native — no image-decoding scripts.** Every agent role is vision-capable: read a screenshot directly (the Read tool) to judge what it shows. Do NOT hand-roll PNG decode/measure/composite scripts (`*.mjs`/`*.js`/`*.ps1` under `.opencode/tmp/<issue>/`) — the image-analysis scratch scripts seen in early specs are obsolete. For exact pixel geometry, use measured rendered values (DOM `getBoundingClientRect`/`offsetWidth`), not pixel sampling (G-154).
 
 > **Worktree prerequisites (Tester + Developer).** A `git worktree` is a full checkout but has **no `node_modules`** — run `pnpm install` in it before `dev-env Up`, or `tauri dev` fails with "node_modules missing". Also ensure `spec/<N>` is synced with `main`'s pipeline config (`git fetch origin main && git merge origin/main` + push) before dispatching the tester — the tester's sandbox permissions come from the working tree's `opencode.json`, and a stale spec branch silently re-blocks it.
+>
+> **Served-checkout dependencies after a dependency change.** The repo-root checkout's `node_modules` is NOT refreshed by a branch switch. When the spec adds a UI dependency (manifest + lockfile), run `pnpm install --frozen-lockfile` at the workspace root BEFORE the live round — otherwise the first open fails with a Vite "Failed to resolve import" overlay that reads as a product crash (#3070 round 2 lost a cycle to this). The tester owns this pre-flight; the SI should name it in the dispatch brief.
+>
+> **No window-focus lever on bridge plugin 0.12.** `tauri_manage_window action="focus"` requires plugin 0.13 and `window.setFocus()` is capability-denied, so once the main window loses OS focus a hotkey/reply leg cannot be re-focused. Use a host that receives focus on open — the app's OWN window (`app-<id>`) — for focused-host legs, and disclose the substitution.
+>
+> **Sanctioned Rust test runner — verify, then fall back and DISCLOSE (G-282).** CI's Rust gate runs `cargo nextest run --locked` (`.github/workflows/validate.yml`). Verify the runner before a Rust leg: `cargo nextest --version`. If `cargo-nextest` is ABSENT in this environment (it is, as of #3080), run the equivalent `cargo test --locked` — or `cargo test --lib --locked` for the library leg — and **DISCLOSE the substitution against the CI command in the verdict**; never claim a `nextest` run. CI remains the authority for nextest; the local substitute is a runner swap, not a weaker gate. Do NOT `cargo install` host tools ad-hoc.
+>
+> **`cargo test --locked` while the env is up.** The running `fredo.exe` locks the target binary (`Access is denied` removing it). Run the Rust test leg with the env `Down`, then `Up` again — or state the substitution in the verdict (#3070 round 4, E-24).
 
-> **Fredo plugin prerequisite (live opencode runs).** Live opencode sessions are launched through Fredo's Run CLI feature, which requires the Fredo OpenCode plugin at `~\.config\opencode\plugins\fredo.js`. **The tester must NOT install it by copying files outside the repo** (the tester sandbox only allows `Copy-Item * .opencode/*`). Install the plugin through the app's native path: the **Fredo Setup → SetupWizard** UI, or the `install_plugin` Tauri command via the MCP bridge (`features/setup/commands.rs` writes `~/.config/opencode/plugins/fredo.js`). Build it first with `bun build src/index.ts --outdir dist --target bun` in `apps/opencode-plugin`. Verify with `Test-Path ~\.config\opencode\plugins\fredo.js` (allowed). Without the plugin, live opencode sessions emit no telemetry and the tester cannot verify spans/events. The tester never invokes the `opencode` binary from a shell — Run CLI launches opencode itself. **`Test-Path` proves presence, NOT currency** (G-047): a plugin fix merged to the spec branch is invisible to live runs until the plugin is REBUILT from the spec branch tip and re-installed through the native path — the installed file can silently lag the branch (observed #2745 rounds 2-6: installed file lacked the R-3 fix symbol, so live runs produced NULL child attrs / zero telemetry despite a clean environment). After a plugin-source change, rebuild from the branch tip, re-install via SetupWizard/`install_plugin`, and verify the installed file carries the fix's defining symbol before the live run.
+> **Fredo plugin prerequisite (live opencode runs).** Live opencode sessions are launched through Fredo's Terminal feature, which requires the Fredo OpenCode plugin at `~\.config\opencode\plugins\fredo.js`. **The tester must NOT install it by copying files outside the repo** (the tester sandbox only allows `Copy-Item * .opencode/*`). Install the plugin through the app's native path: the **Fredo Setup → SetupWizard** UI, or the `install_plugin` Tauri command via the MCP bridge (`features/setup/commands.rs` writes `~/.config/opencode/plugins/fredo.js`). Build it first with `bun build src/index.ts --outdir dist --target bun` in `apps/opencode-plugin`. Verify with `Test-Path ~\.config\opencode\plugins\fredo.js` (allowed). Without the plugin, live opencode sessions emit no telemetry and the tester cannot verify spans/events. The tester never invokes the `opencode` binary from a shell — Terminal launches opencode itself. **`Test-Path` proves presence, NOT currency** (G-047): a plugin fix merged to the spec branch is invisible to live runs until the plugin is REBUILT from the spec branch tip and re-installed through the native path — the installed file can silently lag the branch (observed #2745 rounds 2-6: installed file lacked the R-3 fix symbol, so live runs produced NULL child attrs / zero telemetry despite a clean environment). After a plugin-source change, rebuild from the branch tip, re-install via SetupWizard/`install_plugin`, and verify the installed file carries the fix's defining symbol before the live run.
+
+> **Isolated-env OTLP endpoint shadowing (G-345).** In an isolated env, env mode sets the opencode OTLP endpoint to the env's own receiver port, but a persistent OS **User-level** `OPENCODE_OTLP_ENDPOINT` (written by the app's setup on a prior legacy run) can shadow it — the Terminal-spawned opencode then emits OTLP to `:4317` while the env receiver is on the slot port, so `telemetry_spans` stays empty and a live-policy receipt cannot be won by a genuine session. Before a live round, compare the endpoint the plugin/session actually uses against the env's `ports.otlpGrpc` (from the manifest). If they differ, do NOT burn the round: obtain the receipt on the env's REAL receiver (a disclosed real-channel fixture into `ports.otlpGrpc`) and record the shadowing as an environment caveat; the durable fix (env mode authoritative over a stale User-level endpoint) is an SI follow-up.
 
 > **G-084 — NEVER Grep the installed plugin path.** Do NOT use the Grep tool (or any interactive search tool) against `~\.config\opencode\plugins\fredo.js` — the `~` home-dir path is not usable by the Grep tool in this sandbox on Windows; the call stalls and the agent waits indefinitely (observed #2770 rounds 3-4: two tester rounds lost). Verify currency with these sandbox-safe PowerShell methods instead:
 > 1. **Hash comparison (proves byte-equality → currency):** `Get-FileHash ~\.config\opencode\plugins\fredo.js` vs `Get-FileHash apps\opencode-plugin\dist\index.js`. Equal SHA256 hashes prove the installed plugin is byte-identical to the built bundle — no further symbol check is needed.
@@ -121,7 +200,15 @@ tauri_driver_session start
 # Check logs if something's wrong
 powershell -File .opencode/scripts/dev-env.ps1 -Action Logs
 
-# Leave running after testing — do NOT stop
+# Intra-run reuse: leave the dev instance RUNNING for the next round's agent
+# (rework/audit reuses the boot) — stop only YOUR driver session, do NOT Down it.
+tauri_driver_session stop
+
+# Run complete (the `cleanup` phase — success OR canceled): STOP + CLEAN the
+# isolated env so completed specs do not accumulate envs/watchers holding ports
+# (G-401). Resolve the env id from the lease, then Clean (see Cleanup below):
+#   .opencode/state/env-leases/<N>.json  ->  envId
+#   powershell -File .opencode/scripts/dev-env.ps1 -Action Clean -EnvId <id> -Spec <N>
 ```
 
 ## Connecting to the App
@@ -134,6 +221,8 @@ tauri_driver_session start
 
 Default window is "main". Use `tauri_manage_window(action="list")` to verify windows.
 
+> **Terminal multi-session.** Terminal is a separate native window (label `terminal`) rendering a Ghostty canvas. PTY I/O is **session-scoped**: read a session's buffer with `get_pty_buffer{sessionId}`, write input with `write_pty_input{sessionId,data}`, resize with `resize_pty{sessionId,rows,cols}`, and close one session with `close_terminal_session{sessionId}`. Enumerate the live sessions (each carrying its `sessionId` + status) with `list_terminal_sessions`. `open_terminal_window` opens the window only — a session is created by `spawn_terminal_session{cli,workDir}` (or the in-window "Add session" flow), so any checklist that needs a live session must spawn one explicitly. Session events are `terminal-output{sessionId,data}` / `terminal-exited{sessionId}`.
+
 ## Diagnostics
 
 ### Process logs (startup, Vite, Cargo build)
@@ -142,15 +231,23 @@ Default window is "main". Use `tauri_manage_window(action="list")` to verify win
 powershell -File .opencode/scripts/dev-env.ps1 -Action Logs
 ```
 
+> **`-Action Logs` can print a STALE log** from a prior run (#3070 round 3). When its timestamps do not match the current boot, read the env's own log directly: `<env-root>/logs/dev-env-stdout.log`.
+
+### Blank webview that is still BOOTING (not a wedge) — G-386 class
+
+A fresh isolated boot can take **3–5 minutes** before first paint: `tauri_manage_window action="list"` reports the window URL as `about:blank`, a DOM snapshot shows a root element with no children, and every `tauri_webview_execute_js` returns `Request timeout after 2000ms`. This is a BOOTING webview, not a dead one — `Down`/`Up`, `Clean`, driver-session restarts and `msedgewebview2` kills do NOT shorten it; **waiting it out does**, after which every webview tool works (#3070 round 4 spent five boot cycles learning this). Budget the wait and disclose it as an environment caveat; only after the app has painted is a timeout a genuine wedge (see G-046 below).
+
 ### MCP bridge wedge — the "everything live is dead" signature (G-046)
 
-When ALL live-AC evidence fails at once (Mission Monitor won't mount, Run CLI stalls at "Starting OpenCode…", `install_plugin` times out) while static checks pass and the frontend console is clean, check the logs for the wedged MCP bridge:
+When ALL live-AC evidence fails at once (Mission Monitor won't mount, Terminal stalls at "Starting OpenCode…", `install_plugin` times out) while static checks pass and the frontend console is clean, check the logs for the wedged MCP bridge:
 
 ```
 [ MCP ][ WS_SERVER ][ERROR] WebSocket connection error: Handshake not finished
 ```
 
-A wedged WS server blocks every MCP-command path (including `install_plugin` and Run CLI) and survives `clean-fredo-db.ps1 -Restart`. Recovery is a **full Down → Up** (`dev-env.ps1 -Action Down` kills the process tree holding :9223/:5174, then `-Action Up`); verify the clean handshake log line (`[MCP][WS_SERVER][INFO] WebSocket server listening on: 127.0.0.1:9223`) before re-dispatching the tester. Never loop a round back to implementation on this signature alone — it is an environment wedge, not a spec defect (observed #2745 rounds 2-4).
+A wedged WS server blocks every MCP-command path (including `install_plugin` and Terminal) and survives a store reset or `-Action Restart`. Recovery is a **full Down → Up** (`dev-env.ps1 -Action Down` kills the process tree holding :9223/:5174, then `-Action Up`); verify the clean handshake log line (`[MCP][WS_SERVER][INFO] WebSocket server listening on: 127.0.0.1:9223`) before re-dispatching the tester. Never loop a round back to implementation on this signature alone — it is an environment wedge, not a spec defect (observed #2745 rounds 2-4). **Blank-window variant (`about:blank`) + orphaned OS sockets (observed #2977):** after repeated dev-env cycles the main window can stick at `about:blank` with the MCP bridge unresponsive, and a dead PID can hold OS-level LISTENING sockets on :9223/:4318 that `Down`/`process-hygiene` cannot reclaim. A subsequent `-Action Up -Spec <N>` recovers it — `Up` clears the WebView2 caches (`EBWebView/Default/{Cache,Code Cache,GPUCache}`) and kills the stale instance before launching. When :9223 stays bound the bridge auto-scans to the next free port (e.g. :9228/:9229); the driver must attach to the scanned port. The orphaned :4318 socket can leave the OTLP HTTP receiver unbound (`os error 10048`) while gRPC :4317 works — disclose it, do not report it as a product defect.
+
+**Recurring-wedge completion strategy (G-338).** When the wedge RECURS across a round and blocks the rows driven LAST (observed #3007: the error/transient stub-lever rows stayed UNVERIFIED while the early heavy legs passed), do NOT re-issue the identical brief. Change the evidence STRATEGY: bring up a fresh clean env slot, clear process orphans (`dev-env.ps1 -Action Hygiene -Spec <N> -Kill`), run the G-067 driver `stop`/`start` ladder between native-window interactions, and drive the fragile error/transient rows FIRST — before the heavy open/autoplay/close legs. The reordered resume is how the outstanding rows get completed.
 
 ### MCP driver-session staleness — the `resolveRef is not a function` signature (G-067)
 
@@ -181,7 +278,7 @@ For runtime errors, traces, and performance data from the Rust tracing subsystem
 powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 -Query "SELECT ... FROM telemetry_logs WHERE level = 'ERROR'" -Format md
 ```
 
-The telemetry-query skill has recipes for recent errors, latency percentiles, session traces, and more. Use it when process logs don't show enough detail.
+The telemetry-query skill has recipes for recent errors, latency percentiles, session traces, and more. Use it when process logs don't show enough detail. For an isolated env, pass `-Manifest <env-root>/manifest.json` (or `-PgPort <ports.pg>`); the PostgreSQL read lever (G-284/G-307) is documented in that skill.
 
 ## E2E Testing
 
@@ -237,6 +334,8 @@ final.jpeg                          # Final state after all ACs tested
 **The element under test MUST be completely shown.** Before capturing an AC screenshot, ensure the element/region the AC describes is **fully in view and uncut**: scroll/zoom/pan (or `tauri_webview_interact`/resize the window) so the whole element — e.g. the entire session token bar, the full node card, the complete panel — fits inside the viewport with no clipping. A screenshot that cuts off the element (partial bar, half a node, a panel edge) does not prove the AC — capture the whole thing. Verify via the DOM (`getBoundingClientRect` within viewport bounds, or a structure snapshot) that the element is fully visible before shooting, and prefer a `maxWidth` on the screenshot call that keeps the whole viewport rather than a crop.
 
 **Measure layout width, not zoom-scaled rects (G-040).** When a test asserts rendered WIDTH/GEOMETRY, measure the LAYOUT width (element `offsetWidth`, or the component/library store width), never `getBoundingClientRect().width` — the rect is transform-scaled whenever the viewport is zoomed (ReactFlow graph canvases are almost always non-identity). A measured width near `expected × zoom` (e.g. 320.7 ≈ 480 × 0.668) is the signature of a zoom-scaled rect, not a width defect.
+
+**A stage/acquire script's exit 0 does not prove the runtime is READY from the named install dir (G-323).** When a plan names a fixture/scratch install directory for an external runtime, the stage script's exit 0 proves only that the artifact was written. Verify the runtime's own readiness probe from that directory; if the staged copy does not become ready (e.g. a `readyTimeout` with an empty engine log), drive the real runtime from the default install directory, DISCLOSE the substitution, and never present a stub.
 
 Create the directory before testing:
 ```powershell
@@ -322,7 +421,7 @@ tauri_webview_screenshot(filePath="...<issue>/e2e/after-<visual-check>.jpeg")
 
 **Pattern 8: Regression Smoke Test (No User-Observable ACs)**
 
-When a spec has zero user-observable ACs (performance audits, internal refactors, cleanup, infrastructure changes), run this smoke test to verify the app's core features still work. The Self-Improver (orchestrator) dispatches in "regression" mode.
+When a spec has zero user-observable ACs (performance audits, internal refactors, cleanup, infrastructure changes), run this smoke test to verify the app's core features still work. The Orchestrator dispatches in "regression" mode.
 
 **Checklist:**
 
@@ -336,7 +435,7 @@ When a spec has zero user-observable ACs (performance audits, internal refactors
 | 6* | Agent/Session nodes render (MANDATORY for ECE/mission-monitor specs) | Inject mock events via `fredo emit`, then `tauri_webview_dom_snapshot(type="structure")` inside Mission Monitor panel | Agent node visible in graph. If spec involves subagents, Subagent node visible and composited under parent. Graph is NOT empty. |
 | 7* | Console errors after event injection (for ECE/mission-monitor specs) | `tauri_read_logs(source="console", lines=100)` AFTER completing all event injection + UI interactions | No `Error:`, `Uncaught`, or `Maximum update depth exceeded` entries. Bug #523: 11+ re-render errors appeared only after ECE delivery processing — invisible at initial app shell render. |
 
-\* Steps 6-7 apply when the spec touches ECE, Mission Monitor graph rendering, session compositing, or event delivery infrastructure. The Self-Improver (orchestrator) should include these in the dispatch instructions for such specs.
+\* Steps 6-7 apply when the spec touches ECE, Mission Monitor graph rendering, session compositing, or event delivery infrastructure. The Orchestrator should include these in the dispatch instructions for such specs.
 
 **Pattern 9: React pointer-handler interactions (drag/resize with pointer capture)**
 
@@ -363,7 +462,7 @@ Note: the component under test may call `setPointerCapture`, which jsdom and som
 **Summary:** 5/5 passed — no regressions detected.
 ```
 
-If any check fails, report it as a regression bug to the Self-Improver (orchestrator). Do NOT retry or diagnose — the Self-Improver dispatches a Developer for the fix.
+If any check fails, report it as a regression bug to the Orchestrator. Do NOT retry or diagnose — the Orchestrator dispatches a Developer for the fix.
 
 **MCP Bridge IPC Limitation:** `tauri_ipc_execute_command` only supports a subset of Tauri commands. Feature-specific backend commands may return "Unsupported Tauri command". Do NOT treat this as FAIL — instead, verify backend state through the webview using `tauri_webview_execute_js(script="(() => { return __TAURI__.core.invoke('command_name', { ... }); })()")`.
 
@@ -414,8 +513,35 @@ Retry up to 3 times. After 3 restart cycles, report "E2E BLOCKED: webview unresp
 
 ### Cleanup
 
+Always stop your driver session when a testing round ends:
+
 ```
 tauri_driver_session stop
 ```
 
-Do NOT stop the dev:tauri instance — leave it running for the next agent.
+**Intra-run reuse (between rounds) — leave the env RUNNING.** A rework round's tester, the
+Auditor, and the next round's agent reuse the SAME isolated env and skip the 3–5 min boot
+(G-386). Within a run, do NOT `Down`/`Clean` the dev instance — stop only your driver session
+and leave the app up for the next agent. (The human's post-run review is **async** and is
+**not** a reason to keep the env: it is read from the record, not from a live app.)
+
+**Run complete (the `cleanup` phase — success OR canceled) — STOP + CLEAN the isolated env.**
+When the run is over, tear the env down. A completed spec must not leave its isolated env (or
+its watchers) running: the accumulation holds ports and is the **G-401** collision class
+(stale envs/watchers starving the next round's `Up`). The env id is recorded in the run's
+lease — `.opencode/state/env-leases/<N>.json` (`envId`) — and is **not** always `spec<N>`
+(custom ids like `wf3087-a` occur):
+
+```
+# 1. read the lease for this issue and take its envId:
+#    .opencode/state/env-leases/<N>.json  ->  { "issue": N, "envId": "<id>", "pid": ..., ... }
+# 2. stop + remove ONLY that env (manifest / app-data / PostgreSQL dir / cache / logs)
+#    and release its lease:
+powershell -File .opencode/scripts/dev-env.ps1 -Action Clean -EnvId <id> -Spec <N>
+```
+
+`Clean` is the run-complete verb — the spec is finished, so nothing is left behind. `Down`
+keeps the data and is for intra-run recovery only. Passing `-Spec <N>` also releases the
+lease when the env's manifest is already gone. If the lease is absent (the env was never
+isolated, or it was already torn down), there is nothing to clean — the command is a safe
+no-op.

@@ -7,7 +7,7 @@ description: CLI-based mock event injection for Fredo e2e testing. Load when the
 
 ## How It Works
 
-`fredo emit` → IPC socket (`\\.\pipe\fredo-ipc` on Windows) → `CliCommand::EmitEvent` → `InternalAdapter::enrich` → **RTDB ingest classifier** (`rtdb/ingest.rs`) → canonical rows (`chat_rows` / `tool_use_rows` / `agent_session_rows`) → subscriptions → `fredo-stream-event` → React frontend (Spec #2788 — the RTDB row pipeline is the ONLY delivery path).
+`fredo emit` → IPC socket (`\\.\pipe\fredo-ipc` on Windows; an isolated env's pipe is `FREDO_CLI_PIPE`, e.g. `\\.\pipe\fredo-ipc-<envId>`) → `CliCommand::EmitEvent` → `InternalAdapter::enrich` → **RTDB ingest classifier** (`rtdb/ingest.rs`) → canonical rows (`chat_rows` / `tool_use_rows` / `agent_session_rows`) → subscriptions → `fredo-stream-event` → React frontend (Spec #2788 — the RTDB row pipeline is the ONLY delivery path).
 
 Same row path real OTLP spans take. Only works when the dev:tauri instance is running and the `fredo` binary is built.
 
@@ -20,7 +20,7 @@ Same row path real OTLP spans take. Only works when the dev:tauri instance is ru
 - Testing span attribute extraction (the `rtdb/attrs.rs` extract rules against real plugin shapes)
 - End-to-end OTLP transport validation (gRPC/HTTP legs, cross-transport dedupe)
 
-**For real pipeline verification, drive a live opencode session through Fredo's Run CLI feature instead** (maomaolabs toolbar → Run CLI; see the "Feature usage: Run CLI" section of the feature's `smoke.md` for the full method — `write_pty_input` with trailing `\r`, wait through `Starting OpenCode…`, never `opencode run` from a shell). `fredo emit` is appropriate for row-classification testing, Mission Monitor row rendering from canonical mock shapes, and IPC-socket testing.
+**For real pipeline verification, drive a live opencode session through Fredo's Terminal feature instead** (maomaolabs toolbar → Terminal; see the "Feature usage: launching sessions in the Terminal window" section of `.opencode/tests/terminal/smoke.md` for the full method — `write_pty_input{sessionId,data}` with trailing `\r`, wait through `Starting OpenCode…`, never `opencode run` from a shell). `fredo emit` is appropriate for row-classification testing, Mission Monitor row rendering from canonical mock shapes, and IPC-socket testing.
 
 ## Finding the Binary
 
@@ -31,6 +31,17 @@ $fredoBin = Get-ChildItem -Path "apps/tauri/src-tauri/target" -Recurse -Filter "
 If not found: `pnpm dev:tauri` must have run at least once to build the binary. Report "E2E BLOCKED: fredo binary not found" if missing.
 
 Sanity check: `& $fredoBin --version` should print version info.
+
+## Isolated Environments (Spec #2944)
+
+`fredo emit` delivers through the running app's IPC pipe, so the environment you target is the app
+whose pipe you hit. The legacy default is `\\.\pipe\fredo-ipc`; an isolated environment uses
+`FREDO_CLI_PIPE` (`\\.\pipe\fredo-ipc-<envId>`). Run the CLI from a shell carrying that
+environment's `FREDO_CLI_PIPE` (and `FREDO_ENV_ID`) so the emit lands in that environment only —
+never a sibling's. The rows persist in that environment's own embedded PostgreSQL store; verify them
+with the `telemetry-query` skill's `-Manifest`/`-PgPort` lever (the manifest records `ports.pg`,
+G-284/G-307), never a sibling or legacy path. The environment's MCP `appIdentifier` is its MCP port as
+a decimal string (e.g. `"16001"`).
 
 ## Using `fredo emit` Directly
 
@@ -75,7 +86,7 @@ All effects now come from classified RTDB rows (the v1 delivery streams no longe
 | `agent_session` | `response` | Session aggregate patch (total_tokens / total_messages / total_cost_usd) |
 | `infrastructure` / `ui` / `custom` | any | Classified only through the CLI mock shapes — no dedicated UI consumer today |
 
-→ Verify via Mission Monitor DOM captures or the row stores (`chat_rows`/`tool_use_rows`/`agent_session_rows` in fredo.db, read-only via the telemetry-query skill).
+→ Verify via Mission Monitor DOM captures or the row stores (`chat_rows`/`tool_use_rows`/`agent_session_rows` in the target env's embedded PostgreSQL store — read-only via the telemetry-query skill, `-Manifest`/`-PgPort`).
 
 ---
 
@@ -85,7 +96,7 @@ All effects now come from classified RTDB rows (the v1 delivery streams no longe
 
 ### Verification Recipe
 
-To check which spans a given agent session actually produced, load the **`telemetry-query`** skill and use its sanctioned wrapper. It owns `fredo.db` path resolution, enforces read-only guardrails, and uses the `telemetry_spans.session_id` column — do NOT call `sqlite3 fredo.db` directly:
+To check which spans a given agent session actually produced, load the **`telemetry-query`** skill and use its sanctioned wrapper. It owns the PostgreSQL connection (port + keychain password), enforces read-only guardrails, and uses the `telemetry_spans.session_id` column — do NOT open the store directly:
 
 ```powershell
 # 1. Find the session ID from Mission Monitor or query telemetry

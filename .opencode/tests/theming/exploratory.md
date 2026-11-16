@@ -1,5 +1,7 @@
 # Theming — Exploratory
 
+> **Withdrawn artifact:** `docs/features/desktop-background-life.md` was deleted. Its citations record real observations made while the doc existed; they are kept as evidence and are **not** a live dependency. The Life contract now lives in source: `lifePatterns.ts` (pattern catalogue + CC BY-SA 3.0 attribution) and `lifeConstants.ts` (derived palette).
+
 > Unscripted probes the Tester runs beyond the functional cases. A confirmed finding PROMOTES to
 > `functional.md` as a new `F-` row (keep the origin note).
 
@@ -206,3 +208,120 @@
 - **E-38 (emulation lever hunt) — no lever.** raw `matchMedia('(prefers-reduced-motion: reduce)').matches` = false; no CDP `Emulation.setEmulatedMedia` port reachable through the Tauri MCP driver. F-45's named blocker reaffirmed (G-050/G-148/#2870); assertion not weakened.
 - **E-43 (paused-but-declared-animated) — metric cannot be gamed.** The Δt=0 control (animations at an identical `currentTime`) reads 0.02–0.05 % despite `data-motion="animated"` and 3 present animations — a present-but-frozen animation reads far below every floor.
 - **Not exercised this round (no AC depends on them):** E-37 (theme-change-between-captures anti-pattern), E-39 (minutes-long F-39 re-measure — the 100.3 s soak kept counts constant and the strobe series shows continuous motion), E-40 (dpr 1.25/1.5 — measured at dpr 1 only), E-41 (small/heavily-occluded viewport), E-42 (high-refresh display).
+
+## #2915 extension — Conway's Game of Life background probes
+
+> Unscripted probes for issue #2915 (a NEW Life option beside None + the six recipes). A confirmed
+> finding PROMOTES to `functional.md` as a new `F-` row (keep the origin note). No prior probe is
+> superseded. The perceptibility metric itself is F-61; these probe the MEASUREMENT and the
+> automaton's failure modes.
+
+- [x] **E-44 — Rapid Life/recipe churn.** Cycle None → Life → each recipe → None (≥ 3 full cycles); watch
+      for `Maximum update depth exceeded`, stale paint, an orphaned Life loop or canvas surviving a
+      selection switch, or lag (AGENTS.md #523). Any finding promotes to F-57/F-66.
+- [x] **E-45 — Sustained Life soak + re-seed cadence.** Leave Life active for several minutes; sample heap,
+      generation/step cadence, and grid/step counts at start/middle/end. Does the automaton die out or
+      freeze into a still life between re-seeds? Does the re-seed cadence drift? Any finding promotes to
+      F-61/F-66/F-69.
+- [x] **E-46 — Reduced-motion path (named blocker).** Read `matchMedia('(prefers-reduced-motion: reduce)').matches`
+      and attempt to flip it live; record the live flip as UNVERIFIED with the Tauri-driver named blocker
+      (G-050/#2870). Confirm via the product-unit pin that under reduce NO simulation loop is scheduled and
+      the frame is static; any loop/step under reduce is a finding (promotes to F-64).
+- [x] **E-47 — Visibility/pause probe.** Minimize, switch away, and occlude the window; does
+      `data-life-running` flip to `"false"` while `visibilityState === 'hidden'` (or the frame freeze to
+      ≤ noise floor) and resume cleanly on restore? Any drift, a loop that keeps stepping hidden, or a
+      stale/torn frame on restore promotes to F-67.
+- [x] **E-48 — Life + theme/accent churn.** Switch dark↔light + set/clear the accent override while Life
+      animates; watch for a stopped loop, a frozen frame, a stale cell colour, or a re-render loop. Any
+      finding promotes to F-63.
+- [x] **E-49 — Canvas / performance probe.** Measure the canvas backing-store size at dpr 1 and a scaled dpr,
+      the per-step allocation behaviour, and the step cadence. Does a dpr/monitor change blow up the grid or
+      the backing store unboundedly? Any runaway promotes to F-66.
+- [x] **E-50 — Pattern legibility probe.** With the authored cell size/step rate, does the render read as
+      Life (recognizable gliders/oscillators, a live frontier) rather than visual noise or a static
+      checkerboard? Is the step rate perceptible but non-strobing? Any "looks like noise"/"looks frozen"
+      finding promotes to F-60/F-61.
+
+### #2915 testing round 1 (spec/2915 @ a3c7f245) — results
+
+- **E-44 PASS (live).** None→Life→None ×3 and the full 8-option sweep: console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`; no orphaned canvas survives a switch (canvas count 0 with None, 1 with Life).
+- **E-45 PASS (live).** 90 s soak: heap 238.3→240.5 MB (+0.92 %) pre-GC then GC → 53.8 MB — no monotonic climb; canvas/backing store constant 1920×1017; the field keeps evolving (non-ground 2.1–3.5 % across the sweep) and re-seeds (direct 8.447 % single-sample jump observed).
+- **E-46 UNVERIFIED — NAMED BLOCKER (live flip only).** raw `matchMedia('(prefers-reduced-motion: reduce)').matches=false`; no Tauri MCP media-emulation lever (G-050/G-148/#2870); closed by the F-64 product-unit pin (zero scheduling on the static leg).
+- **E-47 PASS (live) with named blockers.** Synthetic `visibilitychange` (real handler; `document.hidden` overridden): `data-life-running` true→false→true; 6 s-hidden frame diff 0.000 %. Native minimize/hide undrivable (plugin <0.13; no `core:window:allow-hide`).
+- **E-48 PASS (live).** preset dark↔light + accent override/clear while Life animates: painted ground/cell recolour live, loop keeps running, no stale colour, no re-render loop.
+- **E-49 PASS (live).** backing store = 1920×1017 at dpr 1 = 1.0× CSS viewport (≤ `LIFE_DPR_MAX` 1.5 linear); constant through the soak; no grid/backing-store growth on relayout.
+- **E-50 PASS (vision).** the field reads as Life (stable blocks, blinkers, a live frontier) — not noise and not a still checkerboard; 160 ms steps are perceptible and non-strobing. **Promotion:** the F-63 light-preset cell/ground contrast miss (1.90–2.93:1 < 3:1) is a new confirmed finding; it is tracked by F-63 (FAIL) rather than a new E row.
+
+### #2915 testing round 2 (spec/2915 @ 79a80c1b) — results
+
+- **E-44 PASS (live).** 8-option sweep + None churn console-clean; no orphaned canvas.
+- **E-45 PASS (live).** clean 70 s soak: bounded sawtooth heap (start 36.97 → peak 37.29 MB = +0.882 %), canvas constant 1920×1017; field keeps evolving and re-seeds.
+- **E-46 UNVERIFIED — NAMED BLOCKER.** raw `matchMedia('(prefers-reduced-motion: reduce)').matches = false`; no Tauri MCP media-emulation lever (G-050/G-148/#2870); closed by the F-64 product-unit pin.
+- **E-47 PASS (live) with named blockers.** real `visibilitychange` + `document.hidden` override: true→false→true; hidden full-frame diff 0.000 % over 15.365 s. Native minimize/hide undrivable.
+- **E-48 PASS (live).** preset/accent churn while animating: live recolour, loop keeps running, no stale colour, no re-render loop.
+- **E-49 PASS (live).** backing store = 1920×1017 = 1.0× CSS viewport (≤ `LIFE_DPR_MAX` 1.5), constant through the soak.
+- **E-50 PASS (vision).** reads as Life; not noise, not a frozen checkerboard. **Resolution:** the round-1 E-50 promotion (F-63 light-preset contrast miss) is now **resolved** — the cell paints from `--accent-strong` and all five light presets clear ≥3:1 (5.078/3.742/4.588/4.729/5.051).
+
+## #2925 extension — dimmed-Life measurement + failure-mode probes
+
+> Unscripted probes for issue #2925 (a calmer, less glaring Life backdrop). A confirmed finding
+> PROMOTES to `functional.md` as a new `F-` row (keep the origin note). The dimming/legibility rows
+> themselves are F-73..F-88; these probe the MEASUREMENT (noise, aliasing, mechanism interaction) and
+> the dim-vs-perceptibility failure modes.
+
+- [ ] **E-51 — AC1 measurement-noise floor.** Capture the SAME frame twice (Δt = 0) at the tested tip and
+      run the AC1 luminance + dominance harness on both. Isolate the backdrop rect from shell chrome
+      (clock/status/launcher strip) if the residual exceeds 1 % relative. A metric that reads a dim on
+      an identical frame is a finding (promotes to F-73).
+- [ ] **E-52 — dim-vs-perceptibility margin sweep.** Across the lightest and dimmest presets/accents (and
+      across the full day/night range the dim control can reach, if it is adjustable), measure both the
+      AC1 field luminance and the AC2 per-interval coverage. Is there any preset where the dim pushes
+      coverage below the 2.0 % floor? Any such preset is a finding — record the raw pair (promotes to
+      F-73/F-75); the floor is never lowered.
+- [ ] **E-53 — "less same-colour" reads as muddy?** With the dim applied, does the field still read as
+      Life (live frontier, recognizable motion) rather than a flat neutral wash? A vision read of the
+      BEFORE vs AFTER frames. "Less one colour" that becomes "no colour/no readable field" is a finding
+      (promotes to F-74/F-75).
+- [ ] **E-54 — off-harmonic cadence stress (G-228).** Verify the re-seed discontinuity is actually
+      captured at the declared 10 000 ms cadence (24 000/10 000 = 2.4, off-harmonic). If the plan's
+      cadence lands harmonically (e.g. the authored re-seed period changes), report the raw per-interval
+      series + the fine-granularity (per-step) max/median ratio rather than looping (promotes to F-75).
+- [ ] **E-55 — dimming-mechanism / stacking interaction.** If the dim is implemented as a translucent
+      overlay, read its stacking context vs the Life canvas and vs `WindowManager`; `elementFromPoint`
+      at a point inside a floating window rect. An overlay that paints above a window, intercepts input,
+      or shifts z-order is a finding (promotes to F-85/R-36).
+- [ ] **E-56 — thumbnail vs live-field divergence (open Q5).** Compare the chooser thumbnail
+      (`data-life-preview="static"`) with the live dimmed canvas after the dim + a theme/accent change.
+      Does the thumbnail visibly contradict the field (bright vs dim; `--accent-primary` vs
+      `--accent-strong`)? Any visible contradiction is a finding (promotes to F-86).
+- [ ] **E-57 — theme/accent churn under the dim (double-apply probe).** Rapidly switch preset/accent
+      (≥ 5 switches) while Life runs; re-read the field luminance after returning to the starting preset.
+      Does the dim accumulate (each switch darkening further) or leave a stale dim? Any drift is a
+      finding (promotes to F-79/F-80).
+- [ ] **E-58 — doc/comment drift (open Q8).** Check `backgroundRegistry.ts`'s `LIFE_BACKGROUND` comment
+      (still names `--accent-primary` after #2915 round 2) and `docs/features/desktop-background-life.md`
+      for a stale token name or a missing dimming note. Stale doc text is a finding (promotes to F-86).
+
+### #2925 testing round 1 (spec/2925 @ 446ac18a) — results
+
+- **E-51 PASS.** identical-frame (Δt=0) repeat of the AC1 harness: `relDeltaPct = 0.000000`, `changedPct = 0.000` — no invented dim from capture noise.
+- **E-52 UNVERIFIED — NAMED BLOCKER.** only light-default received a full 55 s coverage run (F-75); the dim-vs-perceptibility margin was not swept across the lightest/dimmest presets (round time-box after the BEFORE-leg dev-env cycle; the F-75 in-page accumulator takes ~55 s per preset). No preset measured falls below the 2.0 % floor; the floor was never lowered.
+- **E-53 PASS (vision).** BEFORE vs AFTER light-default: the field still reads as Life (recognizable oscillators, a live frontier), not a flat neutral wash; the dim removed glare without destroying the pattern.
+- **E-54 PASS with raw series disclosed.** the declared 10 000 ms cadence (24 000/10 000 = 2.4) did not capture a ≥3× re-seed discontinuity (max 6.5964 % vs median 5.62 % = 1.17× at 10 s; 1.98× at 2 s) — raw per-interval series reported under F-75 (same residual class #2915 disclosed).
+- **E-55 PASS.** the dim is canvas-baked (no overlay element); the backdrop stays at the z=0 layer below `WindowManager`; `elementFromPoint` over a floating window returns window content.
+- **E-56 PASS.** after the dim + a preset/accent change the thumbnail paints the same resolved dimmed expression as the canvas (computed ground/cell fills + the `color(srgb 0 0 0 / 0.12)` scrim rect; no `var(--accent-primary)`); no bright-vs-dim contradiction.
+- **E-57 PASS.** after 20 preset switches + accent set/reset the light-default paint returned identical (ground `rgb(224,224,224)`, cell `rgb(6,88,92)`, mean L 0.73387 vs the initial 0.73136) — no accumulation, no stale dim.
+- **E-58 PASS.** the `LIFE_BACKGROUND` comment now names `--life-cell` / the dimmed `--accent-strong` expression (`backgroundRegistry.ts:416-418`) and the docs carry the new "Dimming and legibility (#2925)" section (tokens, scrim/`paint()` contract, guard, 20-row pre-validation, thumbnail alignment); the stale `--accent-primary` claim is gone.
+
+### #2925 testing round 2 (spec/2925 @ 897ce4cc) — results
+
+> Exploratory re-probe after the round-1 fix (mid-neutral chroma leg + 7.2 % scrim). Live policy.
+
+- **E-51 PASS.** identical-frame repeat of the F-74 harness invents no dim/chroma; the deterministic modal-cell S is `0.7075` (light) / `0.3915` (dark).
+- **E-52 PASS (round-1 UNVERIFIED resolved).** coverage sweep extended to **solarized**: per-interval dense coverage **4.6561 / 4.8288 / 7.1099 / 4.7061 %** (4/4 ≥ 2.0 %), further samples 5.3125 / 4.2722 %. Every measured preset clears the floor — the smaller scrim widened the margin; floor never lowered.
+- **E-53 PASS (vision).** BEFORE vs AFTER light-default: the field still reads as Life (recognizable oscillators, live frontier) with a muted teal-green palette, not a flat neutral wash.
+- **E-54 PASS with raw series disclosed.** the 10 000 ms cadence (24 000/10 000 = 2.4) did not capture a ≥3× re-seed discontinuity (max 6.1454 % vs 5.20 % median = 1.18×); raw fine 320 ms series 2.4441–3.4206 % (median 2.8562, max/median 1.20×) reported rather than looping.
+- **E-55 PASS.** the dim is canvas-baked (no overlay); the backdrop stays at z=0 below `WindowManager`; `elementFromPoint` over the floating window returns window content (F-85).
+- **E-56 PASS.** the thumbnail paints the same resolved dimmed expression as the canvas (ground `--body-bg`, cells `--life-cell` = the canvas's computed `color`, final `color(srgb 0 0 0 / 0.072)` scrim); no `var(--accent-primary)`.
+- **E-57 PASS.** after the round-2 preset/accent churn the light-default paint returned exactly (ground `rgb(237,237,237)`, cell `rgb(30,103,105)`); the smaller scrim does not accumulate or leave a stale dim.
+- **E-58 PASS.** docs carry the round-2 weights, the mid-neutral rationale, both G-227 tables, the declared targets and the two-tier AC3b gate; the stale `--accent-primary` claim is gone.

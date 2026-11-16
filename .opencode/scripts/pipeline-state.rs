@@ -176,17 +176,19 @@ enum Phase {
     Implementation,
     Testing,
     Audit,
+    PostAudit,
     Cleanup,
     Done,
 }
 
 impl Phase {
-    const ORDER: [Phase; 7] = [
+    const ORDER: [Phase; 8] = [
         Phase::Backlog,
         Phase::Planning,
         Phase::Implementation,
         Phase::Testing,
         Phase::Audit,
+        Phase::PostAudit,
         Phase::Cleanup,
         Phase::Done,
     ];
@@ -198,6 +200,7 @@ impl Phase {
             Phase::Implementation => "implementation",
             Phase::Testing => "testing",
             Phase::Audit => "audit",
+            Phase::PostAudit => "post-audit",
             Phase::Cleanup => "cleanup",
             Phase::Done => "done",
         }
@@ -210,6 +213,7 @@ impl Phase {
             "implementation" => Some(Phase::Implementation),
             "testing" => Some(Phase::Testing),
             "audit" => Some(Phase::Audit),
+            "post-audit" => Some(Phase::PostAudit),
             "cleanup" => Some(Phase::Cleanup),
             "done" => Some(Phase::Done),
             _ => None,
@@ -750,11 +754,40 @@ fn mock_gh_pr(args: &[&str]) -> anyhow::Result<String> {
             mock_write_pr(n, &pr)?;
             Ok(format!("https://github.com/{}/pull/{}", mock_repo_name(), n))
         }
+        "close" => {
+            // gh pr close <n> — the maint-pr failed-attempt recovery path closes a
+            // stale OPEN `maint/<N>` PR before recreating it (#3075).
+            let p = args.get(2).ok_or_else(|| anyhow::anyhow!("mock gh pr close: no pr number"))?.to_string();
+            let n = p.trim_start_matches('#').parse::<u32>().map_err(|_| anyhow::anyhow!("mock gh pr close: bad pr `{}`", p))?;
+            if !mock_pr_path(n).exists() {
+                anyhow::bail!("mock gh pr close #{}: not found", n);
+            }
+            let mut pr = mock_read_pr(n);
+            pr["state"] = serde_json::json!("CLOSED");
+            mock_write_pr(n, &pr)?;
+            Ok(String::new())
+        }
         "merge" => {
             let p = args.get(2).ok_or_else(|| anyhow::anyhow!("mock gh pr merge: no pr number"))?.to_string();
             let n = p.trim_start_matches('#').parse::<u32>().map_err(|_| anyhow::anyhow!("mock gh pr merge: bad pr `{}`", p))?;
+            // The machine FORCE-merges the SPEC MAINT PR with `--admin` (the repo has
+            // auto-merge disabled, so `--auto` is not used). A privileged merge applies
+            // immediately; the markers drive the failure branches deterministically:
+            // `maint-merge-closed` → CLOSED (verification errors) and `maint-merge-pending`
+            // → OPEN (the poll times out). Plain `--squash` merges (spec PRs) always merge.
+            let forced = args.iter().any(|a| *a == "--admin" || *a == "--auto");
             let mut pr = mock_read_pr(n);
-            pr["state"] = serde_json::json!("MERGED");
+            if forced {
+                if mock_file(&["maint-merge-closed"]).exists() {
+                    pr["state"] = serde_json::json!("CLOSED");
+                } else if mock_file(&["maint-merge-pending"]).exists() {
+                    pr["state"] = serde_json::json!("OPEN");
+                } else {
+                    pr["state"] = serde_json::json!("MERGED");
+                }
+            } else {
+                pr["state"] = serde_json::json!("MERGED");
+            }
             mock_write_pr(n, &pr)?;
             Ok(String::new())
         }
@@ -776,6 +809,12 @@ fn mock_gh_api(args: &[&str]) -> anyhow::Result<String> {
     let repo = mock_repo_name();
     // Normalize the URL: repos/<owner>/<repo>/<api-path>
     let api = url.strip_prefix(&format!("repos/{}/", repo)).unwrap_or(&url);
+    // `gh api graphql …` (the project-status sync). Emulated so the harness can
+    // exercise the real query/mutation shapes offline AND enforce `gh`'s `-F`
+    // type inference (#3071) — see `mock_gh_graphql`.
+    if api == "graphql" {
+        return mock_gh_graphql(rest.get(1..).unwrap_or(&[]));
+    }
     if api.starts_with("contents/") {
         let path_and_branch = &api["contents/".len()..];
         // path may carry `?ref=<branch>`
@@ -931,6 +970,84 @@ fn mock_gh_api(args: &[&str]) -> anyhow::Result<String> {
     anyhow::bail!("mock gh api: unsupported path `{}`", url)
 }
 
+/// Emulate `gh api graphql -f query=… [-f k=v | -F k=v]…` against the mock.
+///
+/// The one behavior that matters here is `gh`'s **`-F` type inference** (#3071):
+/// `-F k=v` coerces an all-digit `v` to a JSON Int, while `-f k=v` always sends a
+/// raw string. GitHub then validates each value against its GraphQL variable's
+/// declared type — an Int against a `String!` variable is rejected
+/// (`Could not coerce value 98236657 to String`). The `canceled` Status
+/// option id (`98236657`) is all digits, so passing it with `-F o=` failed the
+/// whole canceled leg silently; the machine now passes every id with `-f`. This mock
+/// enforces the rule so the regression test FAILS if the machine regresses to `-F`
+/// and PASSES with `-f`. It also returns the JSON shape each project-status query
+/// parses, so the full sync runs offline.
+fn mock_gh_graphql(rest: &[&str]) -> anyhow::Result<String> {
+    // Test hook (#3071 Change 2): force every project-status graphql call to fail
+    // so the harness can exercise the best-effort + failure-recording path.
+    if std::env::var("FREDO_MOCK_GRAPHQL_FAIL").map(|v| v == "1").unwrap_or(false) {
+        anyhow::bail!("mock gh api graphql forced failure (FREDO_MOCK_GRAPHQL_FAIL=1)");
+    }
+    let mut query = String::new();
+    // (variable name, value, passed-via-`-F`) — `-F` values get type inference.
+    let mut vars: Vec<(String, String, bool)> = Vec::new();
+    let mut i = 0;
+    while i < rest.len() {
+        let flag = rest[i];
+        if flag == "-f" || flag == "-F" {
+            if let Some(kv) = rest.get(i + 1) {
+                if let Some((k, v)) = kv.split_once('=') {
+                    if k == "query" {
+                        query = v.to_string();
+                    } else if k != "operationName" {
+                        vars.push((k.to_string(), v.to_string(), flag == "-F"));
+                    }
+                }
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+
+    // Simulate `gh -F` coercion: an all-digit value becomes a JSON number, and a
+    // number against a `String` (or `[String]`) variable is what GitHub rejects.
+    for (name, value, inferred) in &vars {
+        if !*inferred || value.is_empty() || !value.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let needle = format!("${}:", name);
+        if let Some(pos) = query.find(&needle) {
+            let base: String = query[pos + needle.len()..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '!' || *c == '[' || *c == ']')
+                .filter(|c| *c != '[' && *c != ']' && *c != '!')
+                .collect();
+            if base == "String" {
+                anyhow::bail!("Could not coerce value {} to String", value);
+            }
+        }
+    }
+
+    // Return the JSON shape each project-status query parses.
+    if query.contains("updateProjectV2ItemFieldValue") {
+        return Ok(serde_json::json!({
+            "data": { "updateProjectV2ItemFieldValue": { "projectV2Item": { "id": "PVTI_mock_item" } } }
+        }).to_string());
+    }
+    if query.contains("addProjectV2ItemById") {
+        return Ok(serde_json::json!({
+            "data": { "addProjectV2ItemById": { "item": { "id": "PVTI_mock_item" } } }
+        }).to_string());
+    }
+    if query.contains("items(first:100)") {
+        return Ok(serde_json::json!({
+            "data": { "node": { "items": { "nodes": [] } } }
+        }).to_string());
+    }
+    anyhow::bail!("mock gh api graphql: unrecognized query")
+}
+
 /// Minimal `--jq` support for the handful of selectors the machine/harness use.
 fn mock_jq(v: &serde_json::Value, query: &str) -> String {
     match query {
@@ -963,6 +1080,27 @@ fn mock_git(args: &[&str]) -> anyhow::Result<String> {
             }
             Ok(String::new())
         }
+        "status" => {
+            // git status --porcelain -- <paths>. The mock reports the named paths as
+            // modified when the `maint-dirty` marker exists, so `maint-pr` can be
+            // exercised offline (the test that drives it writes the marker).
+            if mock_file(&["maint-dirty"]).exists() {
+                let mut out = String::new();
+                let mut after = false;
+                for a in args.iter().skip(1) {
+                    if *a == "--" {
+                        after = true;
+                        continue;
+                    }
+                    if after {
+                        out.push_str(&format!(" M {}\n", a));
+                    }
+                }
+                return Ok(out.trim_end().to_string());
+            }
+            Ok(String::new())
+        }
+        "add" | "commit" => Ok(String::new()),
         "ls-remote" => {
             // git ls-remote --exit-code origin refs/heads/<branch>
             if args.iter().any(|a| *a == "--exit-code") {
@@ -998,10 +1136,59 @@ fn mock_git(args: &[&str]) -> anyhow::Result<String> {
             Ok(String::new())
         }
         "checkout" => {
-            // git checkout -b spec/N main  (create a LOCAL ref) / git checkout main (no-op)
-            if args.iter().any(|a| *a == "-b") {
+            // git checkout -b|-B <branch> [start] (create/reset a LOCAL ref) /
+            // git checkout <branch> (no-op)
+            if args.iter().any(|a| *a == "-b" || *a == "-B") {
                 let branch = args.get(2).copied().unwrap_or("");
-                mock_local_ref_write(branch)?;
+                if !branch.is_empty() {
+                    mock_local_ref_write(branch)?;
+                }
+                // Record the start point so the harness can assert the maint branch
+                // was based on `origin/main` rather than the spec tip/HEAD (#3075).
+                if let Some(start) = args.get(3) {
+                    mock_write(&mock_file(&["checkout-base"]), start)?;
+                }
+            }
+            Ok(String::new())
+        }
+        "diff" => {
+            // git diff --name-only HEAD origin/main -- <paths>: the mock does not
+            // model commit trees, so an identical tree is the default. The
+            // `maint-base-diverged` marker models main having moved a gate-edited
+            // path, driving the loud-failure (G-1976) branch deterministically.
+            if args.iter().any(|a| *a == "--name-only") {
+                if mock_file(&["maint-base-diverged"]).exists() {
+                    return Ok("docs/ARCHITECTURE.md".to_string());
+                }
+                return Ok(String::new());
+            }
+            // git diff --quiet <branch> origin/main — the G-421 squash signature
+            // check. Success (exit 0) means the trees are identical. Modelled from
+            // the branch's ahead-count: a branch with round work on it differs.
+            if args.iter().any(|a| *a == "--quiet") {
+                let branch = args.iter().skip(1)
+                    .find(|a| a.starts_with("spec/") || a.starts_with("feat/"))
+                    .map(|s| s.to_string());
+                match branch {
+                    Some(b) if mock_commits_ahead(&b) > 0 => anyhow::bail!("git diff --quiet: trees differ"),
+                    _ => return Ok(String::new()),
+                }
+            }
+            Ok(String::new())
+        }
+        "update-ref" => {
+            // git update-ref refs/heads/<branch> origin/main — move a LOCAL ref
+            // without touching any worktree (the G-421 reseed / post-merge recreate).
+            // A ref moved onto `main` carries no commits beyond it, so the ahead
+            // counter resets (real git re-derives that from the commit graph).
+            if let Some(target) = args.get(1) {
+                let name = target.strip_prefix("refs/heads/").unwrap_or(target);
+                if !name.is_empty() && !name.starts_with('-') {
+                    mock_local_ref_write(name)?;
+                    if args.get(2).map(|s| *s == "origin/main").unwrap_or(false) {
+                        mock_set_commits_ahead(name, 0)?;
+                    }
+                }
             }
             Ok(String::new())
         }
@@ -1093,6 +1280,12 @@ fn mock_git(args: &[&str]) -> anyhow::Result<String> {
             } else if let Some(name) = args.get(1) {
                 if !name.is_empty() && !name.starts_with('-') {
                     mock_local_ref_write(name)?;
+                    // `git branch <name> origin/main` — a fresh ref at main carries no
+                    // commits beyond it (a stale ahead-count from a deleted round must
+                    // not survive the re-creation, G-421).
+                    if args.get(2).map(|s| *s == "origin/main").unwrap_or(false) {
+                        mock_set_commits_ahead(name, 0)?;
+                    }
                 }
             }
             Ok(String::new())
@@ -1151,7 +1344,7 @@ fn gh_api_raw_opt(args: &[String]) -> anyhow::Result<Option<String>> {
 /// excluded by title, never by this set.
 const PIPELINE_ISSUE_LABELS: &[&str] = &[
     "backlog", "planning", "ready-for-dev", "in-progress-dev", "ready-for-test",
-    "testing", "audit", "cleanup", "done",
+    "testing", "audit", "post-audit", "cleanup", "done",
 ];
 
 /// Lock an issue's conversation (durable per-conversation comment restriction).
@@ -1479,10 +1672,10 @@ fn flag_untrusted_comments(issue: u32, flagged: &[serde_json::Value]) {
         if !seen.insert(key.clone()) {
             continue;
         }
-        let _ = append_event(issue, "guard.fired", "pipeline-state", "unknown", "blocked",
-            &format!("untrusted comment author ({}) excluded from agent context", assoc));
-        let snippet: String = body.chars().take(80).collect();
-        println!("GUARD.FIRED: #{} comment by {} excluded from agent context (author not write-capable): {}", issue, assoc, snippet);
+        let _ = append_event_attrs(issue, "guard.fired", "pipeline-state", "unknown", "blocked",
+            &format!("untrusted comment author ({}) excluded from agent context", assoc),
+            &[("guardId", "untrusted_comment_filter"), ("guardKey", "untrusted_comment_filter"), ("failureClass", "untrusted_comment_excluded_from_context"), ("site", "comment-read")]);
+        println!("GUARD.FIRED: #{} comment by {} excluded from agent context (author not write-capable)", issue, assoc);
     }
 }
 
@@ -1592,12 +1785,54 @@ fn pr_merge_guard(pr: &str) -> anyhow::Result<(bool, String)> {
     Ok((true, String::new()))
 }
 
-/// Post a compact final-metrics `Status` comment for a completed issue (durations,
-/// rework, blocked, failures, event count). The mechanical half of the closing summary.
-fn post_final_summary(issue: u32) -> anyhow::Result<()> {
+/// Title-case a hyphenated agent name for the `*Authored by <Agent>*` footer
+/// (`orchestrator` → `Orchestrator`, `software-architect` → `Software Architect`).
+fn agent_title(agent: &str) -> String {
+    agent
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Anti-spoofing (G-223): ensure a machine-posted comment carries its
+/// `*Authored by <Agent>*` footer. Idempotent — a body that already carries a
+/// footer is returned unchanged (the machine is the single writer; the footer
+/// attributes the post to the agent the machine posted it for, never the human
+/// whose `gh` auth was used).
+fn ensure_author_footer(body: &str, agent: &str) -> String {
+    if body.to_lowercase().contains("*authored by") {
+        body.to_string()
+    } else {
+        format!("{}\n\n*Authored by {}*", body.trim_end(), agent_title(agent))
+    }
+}
+
+/// Strip a leading machine-owned `## <heading>` header (and the blank lines after
+/// it) from an agent-authored draft, so the machine can prepend its own header
+/// without duplicating one the agent included.
+fn strip_leading_heading(body: &str, heading: &str) -> String {
+    let text = body.strip_prefix('\u{feff}').unwrap_or(body).trim();
+    match text.strip_prefix(heading) {
+        Some(rest) => rest.trim_start().to_string(),
+        None => text.to_string(),
+    }
+}
+
+/// The machine-computed final-metrics block for the `## Final Status` comment
+/// (durations, rework, blocked, failures, event count). The mechanical half of
+/// the closing report.
+fn final_metrics_text(issue: u32) -> String {
     let events = read_issue_events(issue);
     if events.is_empty() {
-        return Ok(());
+        return "no metric events recorded".to_string();
     }
     let mut phase_starts: BTreeMap<String, i64> = BTreeMap::new();
     let mut phase_completes: BTreeMap<String, i64> = BTreeMap::new();
@@ -1628,28 +1863,292 @@ fn post_final_summary(issue: u32) -> anyhow::Result<()> {
     } else {
         durations.iter().map(|(p, m)| format!("{}:{:.0}m", p, m)).collect::<Vec<_>>().join(", ")
     };
-    let body = format!(
-        "## Status\n\nFinal metrics: **{}** events · rework **{}** · blocked **{}** · failures **{}** · phase durations ({})",
+    format!(
+        "**{}** events · rework **{}** · blocked **{}** · failures **{}** · phase durations ({})",
         events.len(), rework, blocked, failures, dur_text
+    )
+}
+
+/// Deterministically inventory the ad-hoc scripts an agent improvised under the
+/// issue's scratch directory (the #3077 lesson: the tester wrote throwaway
+/// `e2e/*.ps1` scripts and nothing ever surfaced them for promotion into the
+/// tooling library).
+///
+/// Walks `.opencode/tmp/<issue>/**` and returns repo-relative, forward-slashed,
+/// sorted paths of every `*.ps1` / `*.js` / `*.ts` file (`node_modules` is not
+/// descended into — an improvised script may have installed one). Deterministic
+/// and best-effort: a missing or unreadable directory/entry yields an empty list,
+/// never an error, and surface never blocks a transition or a close.
+fn adhoc_scripts(issue: u32) -> Vec<String> {
+    let root = match project_root() {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    let mut out: Vec<String> = Vec::new();
+    let mut stack: Vec<PathBuf> = vec![root.join(".opencode").join("tmp").join(issue.to_string())];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let file_type = match entry.file_type() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            let path = entry.path();
+            if file_type.is_dir() {
+                if entry.file_name().to_string_lossy().eq_ignore_ascii_case("node_modules") {
+                    continue;
+                }
+                stack.push(path);
+            } else if file_type.is_file() {
+                let ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if matches!(ext.as_str(), "ps1" | "js" | "ts") {
+                    if let Ok(rel) = path.strip_prefix(&root) {
+                        out.push(rel.to_string_lossy().replace('\\', "/"));
+                    }
+                }
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Print + record the ad-hoc-script inventory for an issue. Prints the list (or a
+/// `none` line) and appends an additive `ad-hoc-scripts` event carrying `count` and
+/// the comma-joined `scripts` paths so the Orchestrator can route recurring ones to
+/// the Toolsmith. Every failure is swallowed — surfacing is instrumentation, never a
+/// gate.
+fn surface_adhoc_scripts(issue: u32, actor: &str, phase: &str) {
+    let scripts = adhoc_scripts(issue);
+    if scripts.is_empty() {
+        println!("AD-HOC SCRIPTS: none under .opencode/tmp/{}/ (no .ps1/.js/.ts to promote)", issue);
+    } else {
+        println!("AD-HOC SCRIPTS ({}): {}", scripts.len(), scripts.join(", "));
+    }
+    let count = scripts.len().to_string();
+    let paths = scripts.join(",");
+    let message = format!("{} ad-hoc script(s) under .opencode/tmp/{}", scripts.len(), issue);
+    let _ = append_event_attrs(
+        issue,
+        "ad-hoc-scripts",
+        actor,
+        phase,
+        "success",
+        &message,
+        &[("count", count.as_str()), ("scripts", paths.as_str())],
     );
-    let tmp = project_root()?.join(".opencode").join("tmp").join(format!("summary-{}.md", uuid::Uuid::new_v4()));
+}
+
+/// The machine-computed `## Ad-hoc Scripts` block for the `## Final Status`
+/// comment: the deterministic closing inventory so a recurring improvised script is
+/// visible at the end of the run (#3077) instead of vanishing with the scratch dir.
+fn final_adhoc_text(issue: u32) -> String {
+    let scripts = adhoc_scripts(issue);
+    if scripts.is_empty() {
+        return format!(
+            "None — no `.ps1` / `.js` / `.ts` scripts under `.opencode/tmp/{}/`.",
+            issue
+        );
+    }
+    let mut text = format!(
+        "{} ad-hoc script(s) under `.opencode/tmp/{}/` — promote recurring ones to the toolsmith's tooling library:\n",
+        scripts.len(),
+        issue
+    );
+    for s in &scripts {
+        text.push_str(&format!("\n- `{}`", s));
+    }
+    text
+}
+
+/// Post the ONE `## Final Status` closing comment for a completed issue (the
+/// `close-issue --to-phase done` path). It folds the Orchestrator's outcome/doc-sync
+/// draft (`--body-file`, else the conventional `.opencode/tmp/<issue>/final-status.md`)
+/// and the machine's final metrics into a single message — replacing the former
+/// separate metrics `## Status` comment. The machine owns the header + the metrics
+/// block + the footer (anti-spoofing); the Orchestrator owns the outcome/doc-sync prose.
+fn post_final_status(issue: u32, body_file: Option<&str>) -> anyhow::Result<()> {
+    let conventional = project_root()?.join(".opencode").join("tmp").join(issue.to_string()).join("final-status.md");
+    let raw = match body_file {
+        Some(f) => std::fs::read_to_string(f)
+            .map_err(|e| anyhow::anyhow!("cannot read --body-file {}: {}", f, e))?,
+        None => {
+            if conventional.exists() { std::fs::read_to_string(&conventional)? } else { String::new() }
+        }
+    };
+    let mut content = strip_leading_heading(&raw, "## Final Status");
+    let metrics = final_metrics_text(issue);
+    // Fold the machine metrics into the single `## Metrics` section: replace the
+    // Orchestrator's (template) section in place when present, else append it.
+    if content.lines().any(|l| l.trim() == "## Metrics") {
+        content = replace_section(&content, "metrics", &metrics)?;
+    } else if content.trim().is_empty() {
+        content = format!("## Metrics\n\n{}", metrics);
+    } else {
+        content = format!("{}\n\n## Metrics\n\n{}", content.trim_end(), metrics);
+    }
+    // Machine-computed ad-hoc-script inventory (#3077): a deterministic closing note
+    // listing scripts improvised under the issue's scratch dir. Folded in place when
+    // the Orchestrator's draft already carries the section, else appended.
+    let adhoc = final_adhoc_text(issue);
+    if content.lines().any(|l| l.trim() == "## Ad-hoc Scripts") {
+        content = replace_section(&content, "ad-hoc-scripts", &adhoc)?;
+    } else {
+        content = format!("{}\n\n## Ad-hoc Scripts\n\n{}", content.trim_end(), adhoc);
+    }
+    let body = ensure_author_footer(&format!("## Final Status\n\n{}", content), "orchestrator");
+    let tmp = project_root()?.join(".opencode").join("tmp").join(format!("final-status-{}.md", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(tmp.parent().unwrap())?;
     std::fs::write(&tmp, body)?;
     run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
     let _ = std::fs::remove_file(&tmp);
+    // Consume the conventional draft so a re-run never re-posts it.
+    if body_file.is_none() && conventional.exists() {
+        let _ = std::fs::remove_file(&conventional);
+    }
+    println!("FINAL STATUS POSTED: #{}", issue);
     Ok(())
+}
+
+/// Does `branch` exist on `origin`? (`git ls-remote --exit-code` fails when absent.)
+fn remote_branch_exists(branch: &str) -> bool {
+    run_cmd("git", &["ls-remote", "--exit-code", "origin", &format!("refs/heads/{}", branch)]).is_ok()
+}
+
+/// Count the MERGED spec PRs whose head is `spec/<issue>`. A non-zero count is the
+/// durable proof that the round's tested work already landed on `main`: the spec PR
+/// is squash-merged at `testing → audit`, and the repo's `delete_branch_on_merge`
+/// then removes the head branch. It distinguishes a legitimate POST-MERGE restart
+/// (the branch is gone because the merge deleted it) from a genuinely LOST branch
+/// (no branch AND no merged PR — the work is nowhere).
+fn merged_spec_pr_count(issue: u32) -> anyhow::Result<usize> {
+    let head = format!("spec/{}", issue);
+    let out = run_gh(&["pr", "list", "--head", &head, "--state", "merged", "--json", "number"])?;
+    Ok(serde_json::from_str::<serde_json::Value>(&out)
+        .ok()
+        .and_then(|v| v.as_array().map(|a| a.len()))
+        .unwrap_or(0))
+}
+
+/// Commits reachable from `spec/<issue>` but not from `main` (`None` when the
+/// lookup fails — the branch is missing, or a fetch failed). Shared by the
+/// implementation exit guard and the spec-PR side-effect so both read one signal.
+fn spec_branch_ahead(issue: u32) -> Option<u64> {
+    let branch = format!("spec/{}", issue);
+    (|| {
+        run_cmd("git", &["fetch", "origin", "main"]).ok()?;
+        run_cmd("git", &["fetch", "origin", &branch]).ok()?;
+        run_cmd("git", &["rev-list", "--count", "origin/main..FETCH_HEAD"]).ok()?
+            .trim().parse::<u64>().ok()
+    })()
+}
+
+/// Recreate `spec/<issue>` AT `origin/main` for a POST-MERGE restart. The spec PR
+/// already squash-merged and `delete_branch_on_merge` removed the head, so the
+/// restart has no branch to test — but the tree it must test IS `main`'s tree (a
+/// squash merge makes the tested tip tree-equal to main).
+///
+/// **G-421 (descent):** the recreated branch MUST descend from `origin/main`.
+/// Seeding from a stale round tip re-creates a non-descendant branch whose next PR
+/// lists the whole previous round as additions (observed #3117 round 2). The local
+/// ref is therefore MOVED onto `origin/main` — via `update-ref` (plumbing), because
+/// the post-audit doc-sync leaves the repo root checked out ON `spec/<N>`, where
+/// `git branch -f` refuses to move the current branch. `update-ref` touches no
+/// worktree and no index (G-038: never `git checkout -b` — the tree can be dirty
+/// from planner-seeded suites), and because a squash merge leaves the trees equal,
+/// the served files still match the new HEAD.
+fn recreate_spec_branch_from_main(issue: u32) -> anyhow::Result<()> {
+    let branch = format!("spec/{}", issue);
+    run_cmd("git", &["fetch", "origin", "main"])?;
+    let local_exists = run_cmd("git", &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", branch)]).is_ok();
+    if local_exists {
+        run_cmd("git", &["update-ref", &format!("refs/heads/{}", branch), "origin/main"])?;
+    } else {
+        run_cmd("git", &["branch", &branch, "origin/main"])?;
+    }
+    // The remote head is known ABSENT on this path (`maybe_recreate_merged_spec_branch`
+    // only calls us when `remote_branch_exists` is false), so this is a plain create —
+    // no force-push is needed on a delivery branch.
+    run_cmd("git", &["push", "-u", "origin", &branch])?;
+    // Refresh the remote-tracking ref so `origin/spec/<N>` (the base every
+    // worktree/`resolve_base` reads) points at the recreated tip immediately.
+    let _ = run_cmd("git", &["fetch", "origin", &branch]);
+    Ok(())
+}
+
+/// The POST-MERGE restart path for `→ testing`: when `spec/<N>` is gone from origin
+/// BUT a merged spec PR proves the tested work landed on `main`, recreate the
+/// branch from `origin/main` and report a NO-PR round. Returns a note only when it
+/// ACTED; a no-op (`None`) in every other state, so callers keep their normal
+/// behaviour (a first `→ testing` still creates the branch and opens the PR).
+///
+/// **Why no PR:** after a SQUASH merge the branch content IS `main`, so `gh pr
+/// create` can never succeed (`No commits between main and spec/<N>`) and there is
+/// nothing left to merge. The restart tests the merged tree on a fresh branch. The
+/// action is recorded as a `spec-branch.recreated` event so the Orchestrator and
+/// the Auditor can see the round is PR-less.
+fn maybe_recreate_merged_spec_branch(issue: u32) -> anyhow::Result<Option<String>> {
+    let head = format!("spec/{}", issue);
+    if remote_branch_exists(&head) {
+        return Ok(None);
+    }
+    if merged_spec_pr_count(issue)? == 0 {
+        return Ok(None);
+    }
+    recreate_spec_branch_from_main(issue)?;
+    append_event_attrs(
+        issue,
+        "spec-branch.recreated",
+        "orchestrator",
+        "testing",
+        "success",
+        &format!("recreated {} from origin/main; no spec PR opened (already merged)", head),
+        &[("branch", head.as_str()), ("base", "origin/main"), ("pr", "none"), ("reason", "already-merged")],
+    )?;
+    println!(
+        "SPEC BRANCH RECREATED from origin/main; no spec PR opened (already merged — nothing to merge): {} — re-serve the root at the recreated tip (G-032) before the tester runs",
+        head
+    );
+    Ok(Some(format!("spec branch `{}` recreated from origin/main (NO-PR round — the spec PR already merged)", head)))
 }
 
 /// Transition side-effect: ensure the spec integration branch `spec/<issue>` exists
 /// on origin (created from `main`). Idempotent. Returns a note if it created it.
 fn ensure_spec_branch(issue: u32) -> anyhow::Result<Option<String>> {
     let branch = format!("spec/{}", issue);
-    let remote_exists = run_cmd("git", &["ls-remote", "--exit-code", "origin", &format!("refs/heads/{}", branch)]).is_ok();
-    if remote_exists {
+    if remote_branch_exists(&branch) {
         return Ok(None);
     }
     let local_exists = run_cmd("git", &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", branch)]).is_ok();
-    if !local_exists {
+    if local_exists {
+        // G-421 (descent): the ONLY way a local `spec/<N>` exists while its remote
+        // counterpart is gone is a previous round whose branch was deleted — a
+        // merged spec PR (`delete_branch_on_merge`) or `prune`. Pushing that stale
+        // ref re-creates a NON-descendant branch whose next PR lists the whole
+        // previous round as additions (observed #3117 round 2). Reseed it onto
+        // `origin/main` in that case: the round's work already landed (squash merge),
+        // and any local commits it carries are not this round's delivery. A ref that
+        // is merely contained in / tree-equal to `origin/main` is equally safe to
+        // reseed. Only a branch whose round NEVER merged keeps its local commits —
+        // that is genuine unpushed work and the pre-fix behaviour is preserved.
+        let merged_pr = merged_spec_pr_count(issue).unwrap_or(0) > 0;
+        let _ = run_cmd("git", &["fetch", "origin", "main"]);
+        let already_in_main = merged_pr
+            || run_cmd("git", &["merge-base", "--is-ancestor", &branch, "origin/main"]).is_ok()
+            || run_cmd("git", &["diff", "--quiet", &branch, "origin/main"]).is_ok();
+        if already_in_main {
+            run_cmd("git", &["update-ref", &format!("refs/heads/{}", branch), "origin/main"])?;
+            println!("SPEC BRANCH RESEEDED onto origin/main (the stale local ref held an already-merged round): {}", branch);
+        }
+    } else {
         // Fork from origin/main, not the local main ref: `persist_tests` (the
         // tests-commit side-effect) writes the QA-seeded suite to origin/main via
         // the GitHub Contents API, which does NOT advance the LOCAL main ref. A
@@ -1680,6 +2179,14 @@ fn ensure_spec_branch(issue: u32) -> anyhow::Result<Option<String>> {
 /// Transition side-effect: ensure an open spec PR (`spec/<issue>` → `main`) exists.
 /// Idempotent — skips if one is already open. Title/body default from the issue.
 /// Returns a note if it created one.
+///
+/// **Post-merge restart (`post-audit → testing` after the spec PR merged):** the
+/// head branch was deleted by `delete_branch_on_merge`, so there is nothing to open
+/// a PR from and — after a squash merge — nothing left to merge (`No commits
+/// between main and spec/<N>`). The branch is recreated from `origin/main`
+/// (`maybe_recreate_merged_spec_branch`) and the round is a NO-PR round. If the
+/// branch is GONE and no merged PR records the work, the transition fails CLOSED
+/// rather than inventing a branch whose PR would show nothing or replay stale work.
 fn ensure_spec_pr(issue: u32) -> anyhow::Result<Option<String>> {
     let head = format!("spec/{}", issue);
     let open_out = run_gh(&["pr", "list", "--head", &head, "--state", "open", "--json", "number"])?;
@@ -1689,6 +2196,36 @@ fn ensure_spec_pr(issue: u32) -> anyhow::Result<Option<String>> {
         .unwrap_or(0);
     if open_count > 0 {
         return Ok(None);
+    }
+    // POST-MERGE RESTART: recreate the deleted head branch from origin/main and open
+    // NO PR (see the doc above). Idempotent — a no-op once the branch exists again.
+    if let Some(note) = maybe_recreate_merged_spec_branch(issue)? {
+        return Ok(Some(note));
+    }
+    // The branch did not exist before that call, so it exists now only if the merge
+    // recreate just ran (which returned early) — i.e. it is still absent here unless
+    // an unrelated push landed meanwhile. Distinguish the two failure shapes:
+    //   absent + no merged PR  → genuinely LOST branch (fail CLOSED)
+    //   present + no commits   → nothing to deliver (fail CLOSED unless merged)
+    let ahead = spec_branch_ahead(issue).unwrap_or(0);
+    if ahead == 0 {
+        if merged_spec_pr_count(issue).unwrap_or(0) > 0 {
+            println!(
+                "SPEC PR SKIPPED: {} has no commits beyond main (the spec PR already merged) — this is a NO-PR round; re-serve the root at the branch tip (G-032) before the tester runs",
+                head
+            );
+            return Ok(Some(format!("spec PR skipped: `{}` carries no commits beyond main (NO-PR round — already merged)", head)));
+        }
+        if !remote_branch_exists(&head) {
+            anyhow::bail!(
+                "spec branch `{}` is missing on origin and no merged spec PR records the tested work — refusing to open a spec PR (creating a branch here would make the PR show nothing or replay stale work). Restart to implementation (`transition post-audit → implementation`) so `{}` is recreated from origin/main, or record the spec merge first",
+                head, head
+            );
+        }
+        anyhow::bail!(
+            "spec branch `{}` has no commits beyond main and no merged spec PR — there is no round work to deliver (the developer must push before `implementation → testing`)",
+            head
+        );
     }
     let title = get_issue(issue)?
         .map(|i| i.title)
@@ -1717,7 +2254,7 @@ fn ensure_spec_pr_merged(issue: u32) -> anyhow::Result<Option<String>> {
         // delivery artifact is ambiguous and one would never be merged. Fail the
         // transition CLOSED instead of warn-and-continue into audit (audit fix):
         // the human must close all but one PR before the spec can merge.
-        append_event(issue, "guard.fired", "self-improver", "audit", "blocked", &format!("duplicate spec PRs: {} open {} PRs (#{}); refusing to merge", numbers.len(), head, numbers.join(", #")))?;
+        append_event_attrs(issue, "guard.fired", "orchestrator", "audit", "blocked", &format!("duplicate spec PRs: {} open {} PRs (#{}); refusing to merge", numbers.len(), head, numbers.join(", #")), &[("guardId", "duplicate_spec_pr"), ("guardKey", "duplicate_spec_pr"), ("failureClass", "ambiguous_delivery_artifact"), ("site", "ensure_spec_pr_merged")])?;
         anyhow::bail!(
             "{} open {} PRs (#{}) — expected exactly one; close the duplicates before transitioning to audit",
             numbers.len(), head, numbers.join(", #")
@@ -1737,6 +2274,232 @@ fn ensure_spec_pr_merged(issue: u32) -> anyhow::Result<Option<String>> {
     run_gh(&["pr", "merge", pr, "--squash"])?;
     println!("SPEC PR MERGED: #{}", pr);
     Ok(Some(format!("spec PR #{} merged", pr)))
+}
+
+/// The post-audit **SPEC MAINT PR** — replaces the orchestrator's former direct
+/// `git push origin main`. Opens ONE `maint/<N>` PR **based on the current
+/// `origin/main`** (never HEAD — the spec PR was squash-merged, so the spec tip is
+/// not a descendant of main and replaying it would carry the whole spec diff)
+/// carrying ALL post-audit paths in a single commit:
+///   - the pipeline's own edits — `docs/agentic-pipeline/`, `.opencode/skills/`,
+///     `.opencode/scripts/`, `.opencode/pipeline.json`, `opencode.json`; and
+///   - the product docs — ARCHITECTURE/CLI_GUIDE/SETUP/SECURITY/FAQ.
+/// The PR is FORCE-merged as the privileged writer (`gh pr merge --admin --squash
+/// --delete-branch`) — the repo has auto-merge DISABLED (`allow_auto_merge: false`),
+/// so `--auto` fails outright, and the human chose the admin bypass (it SKIPS the
+/// required `validate` status check). `gh` applies the merge synchronously; the
+/// machine then VERIFIES the PR is actually MERGED and only then records the
+/// `maint-pr` event (`merged: true`). A PR that is not MERGED (closed unmerged) or a
+/// bounded timeout is an ERROR — the post-audit gate must fail so `done` stays
+/// unreachable. An empty change set is a NO-OP (never fatal): no PR, no merged event.
+/// An already-open `maint/<N>` PR (a failed earlier attempt) is closed and its stale
+/// head dropped before a clean PR is opened and merged (idempotent recovery).
+fn post_audit_maint_pr(
+    issue: u32,
+    actor: &str,
+    phase: &str,
+    title: Option<&str>,
+    body_file: Option<&str>,
+) -> anyhow::Result<()> {
+    // ALL post-audit paths ride the ONE PR: the pipeline's own edits + the
+    // product docs.
+    const PATHS: &[&str] = &[
+        "docs/agentic-pipeline",
+        ".opencode/skills",
+        ".opencode/scripts",
+        ".opencode/pipeline.json",
+        "opencode.json",
+        "docs/ARCHITECTURE.md",
+        "docs/CLI_GUIDE.md",
+        "docs/SETUP.md",
+        "docs/SECURITY.md",
+        "docs/FAQ.md",
+    ];
+    // Anything to commit at all?
+    let mut st: Vec<&str> = vec!["status", "--porcelain", "--"];
+    st.extend(PATHS.iter().copied());
+    let dirty = run_cmd("git", &st)?;
+    if dirty.trim().is_empty() {
+        println!("NO-OP: no post-audit changes for #{} — nothing to open a SPEC MAINT PR for", issue);
+        append_event_attrs(issue, "maint-pr", actor, phase, "success", &format!("no post-audit changes to sync for #{}", issue), &[("merged", "false"), ("noop", "true")])?;
+        return Ok(());
+    }
+    let branch = format!("maint/{}", issue);
+    // Base the branch on the CURRENT `origin/main`, NOT `HEAD` (G-406 / #3075).
+    //
+    // The gate runs with the repo root on the spec branch (`doc-sync` Step 1), and
+    // the spec PR is SQUASH-merged into main at `testing → audit`. A squash merge
+    // creates a NEW commit whose tree equals the spec tip but which is NOT a
+    // descendant of it. Building the branch at HEAD therefore replays the WHOLE
+    // spec diff on the PR (PR #3095: +1639/−361 instead of the ~6 gate-edited
+    // docs) and conflicts whenever both sides changed a file differently. Base on
+    // `origin/main` so the PR carries ONLY the post-audit paths.
+    run_cmd("git", &["fetch", "origin", "main"])?;
+    // Safety (G-1976): switching the base rewrites every path that differs between
+    // HEAD and `origin/main`. If one of those paths also carries a pending
+    // working-tree edit, the checkout would refuse — and a forced one would lose
+    // the edit. Fail loudly instead of silently discarding the gate's edits.
+    let mut diff_args: Vec<&str> = vec!["diff", "--name-only", "HEAD", "origin/main", "--"];
+    diff_args.extend(PATHS.iter().copied());
+    let base_changed = run_cmd("git", &diff_args)?;
+    // `git status --porcelain` lines are `XY <path>` (path starts at column 3).
+    let dirty_paths: Vec<String> = dirty
+        .lines()
+        .filter_map(|line| line.get(3..).map(|p| p.trim().to_string()))
+        .filter(|p| !p.is_empty())
+        .collect();
+    let mut clobbered: Vec<String> = base_changed
+        .lines()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty() && dirty_paths.iter().any(|d| d == p))
+        .collect();
+    clobbered.sort();
+    clobbered.dedup();
+    if !clobbered.is_empty() {
+        anyhow::bail!(
+            "cannot base the SPEC MAINT PR for #{} on origin/main: pending post-audit edit(s) overlap path(s) changed on main: {}. Preserve them (commit, or copy under .opencode/tmp/{}/) and reconcile before re-running `maint-pr` — refusing to discard them (G-1976); the post-audit gate failed",
+            issue,
+            clobbered.join(", "),
+            issue
+        );
+    }
+    // Create/reset the branch on origin/main, carrying the working-tree edits.
+    run_cmd("git", &["checkout", "-B", &branch, "origin/main"])?;
+    let mut add: Vec<&str> = vec!["add", "--"];
+    add.extend(PATHS.iter().copied());
+    run_cmd("git", &add)?;
+    let pr_title = title
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("Spec #{}: maintenance sync", issue));
+    // Commit message via a file (G-268: an inline `-m` carrying a `#` reference is
+    // sandbox-denied for agents; the file form is uniformly safe for the machine).
+    let msg_file = project_root()?
+        .join(".opencode")
+        .join("tmp")
+        .join(format!("maint-commit-{}.txt", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(msg_file.parent().unwrap())?;
+    std::fs::write(&msg_file, &pr_title)?;
+    run_cmd("git", &["commit", "-F", msg_file.to_str().unwrap()])?;
+    let _ = std::fs::remove_file(&msg_file);
+    // Idempotency / failed-attempt recovery: a previous attempt can leave an OPEN
+    // PR for `maint/<N>` (e.g. its forced merge hit a conflict). Reusing it would
+    // replay the stale spec-diff commit and `gh pr create` would fail with "a pull
+    // request for branch … already exists". Chosen strategy: CLOSE the stale PR,
+    // delete the stale remote head, then push the freshly-based branch and open a
+    // clean PR. Closing before deleting keeps the PR from dangling; because the
+    // old head is gone, the new push is a plain fast-forward-free create — no
+    // force-push is needed (the alternative, force-updating the branch in place,
+    // does). The end state is the same either way: `maint/<N>` = origin/main + only
+    // the post-audit edits, and the PR is MERGED.
+    let open = run_gh(&["pr", "list", "--head", &branch, "--state", "open", "--json", "number"])?;
+    let stale: Vec<String> = serde_json::from_str::<serde_json::Value>(&open)
+        .ok()
+        .and_then(|v| v.as_array().cloned())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|p| p.get("number").and_then(|n| n.as_u64()).map(|n| n.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    if !stale.is_empty() {
+        for n in &stale {
+            run_gh(&["pr", "close", n])?;
+        }
+        println!("closed stale SPEC MAINT PR(s) {:?} for {}", stale, branch);
+    }
+    // Drop any stale remote head (an interrupted attempt can leave the branch
+    // pushed without an open PR). The push below must be a clean create, never a
+    // non-fast-forward rejection onto the old spec-tip commit. Best-effort: an
+    // absent head is not an error (git exits non-zero, which we ignore).
+    let _ = run_cmd("git", &["push", "origin", "--delete", &branch]);
+    run_cmd("git", &["push", "-u", "origin", &branch])?;
+    let body = match body_file {
+        Some(f) => std::fs::read_to_string(f).unwrap_or_else(|_| format!("Post-audit maintenance sync for #{}.", issue)),
+        None => format!("Post-audit maintenance sync for #{}.", issue),
+    };
+    let url = run_gh(&["pr", "create", "--base", "main", "--head", &branch, "--title", &pr_title, "--body", &body])?;
+    let url = url.trim().to_string();
+    let pr_n = url.rsplit('/').next().unwrap_or("").to_string();
+    // FORCE-merge as the privileged writer (`--admin`): the repo has auto-merge
+    // DISABLED (`allow_auto_merge: false`), so `--auto` fails outright. The admin
+    // bypass SKIPS the required `validate` status check — the human's call. `gh`
+    // applies the merge synchronously; `await_maint_pr_merged` then VERIFIES the PR
+    // is actually MERGED (it resolves on the first poll).
+    run_gh(&["pr", "merge", &pr_n, "--admin", "--squash", "--delete-branch"])?;
+    await_maint_pr_merged(&pr_n)?;
+    append_event_attrs(
+        issue,
+        "maint-pr",
+        actor,
+        phase,
+        "success",
+        &format!("merged SPEC MAINT PR {} for #{}", url, issue),
+        &[
+            ("branch", branch.as_str()),
+            ("pr", pr_n.as_str()),
+            ("merged", "true"),
+        ],
+    )?;
+    println!("SPEC MAINT PR MERGED: {} ({})", url, branch);
+    Ok(())
+}
+
+/// Post-merge VERIFICATION: poll `gh pr view <pr> --json state,mergeStateStatus`
+/// on a bounded interval until the SPEC MAINT PR is MERGED. With the forced
+/// (`--admin`) merge this resolves on the FIRST poll; the loop + bounded timeout
+/// remain as a safety net (an unmerged PR, a CLOSED PR, or a timeout errors the
+/// gate). The attempt count + interval are env-overridable so the offline harness
+/// can drive the timeout branch deterministically.
+fn await_maint_pr_merged(pr: &str) -> anyhow::Result<()> {
+    let attempts: u32 = std::env::var("FREDO_MAINT_MERGE_ATTEMPTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(60);
+    let interval_ms: u64 = std::env::var("FREDO_MAINT_MERGE_INTERVAL_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10_000);
+    let mut last = String::from("(no poll completed)");
+    for i in 0..attempts {
+        let json = run_gh(&["pr", "view", pr, "--json", "state,mergeStateStatus"])?;
+        let v: serde_json::Value = serde_json::from_str(&json)?;
+        let state = v.get("state").and_then(|s| s.as_str()).unwrap_or("");
+        let mss = v.get("mergeStateStatus").and_then(|s| s.as_str()).unwrap_or("");
+        if state == "MERGED" {
+            return Ok(());
+        }
+        if state == "CLOSED" {
+            anyhow::bail!("SPEC MAINT PR #{} closed unmerged (state CLOSED) — the post-audit gate failed", pr);
+        }
+        last = format!("state={}, mergeStateStatus={}", state, mss);
+        if i + 1 < attempts {
+            std::thread::sleep(std::time::Duration::from_millis(interval_ms));
+        }
+    }
+    anyhow::bail!(
+        "SPEC MAINT PR #{} did not merge within the timeout ({} poll(s); last: {}) — a failed/pending required check blocks the gate; the post-audit gate failed",
+        pr, attempts, last
+    )
+}
+
+/// The success-only post-audit gate: leaving `post-audit` for `cleanup` (the road
+/// to `done`) requires the SPEC MAINT PR to have MERGED. Ok iff the issue's event
+/// log carries a `maint-pr` event with `merged: true`. A restart exit
+/// (`post-audit → <phase>`) does NOT consult this — the run is not done, so the
+/// maintenance PR is not required yet. Net effect: `done` is unreachable unless
+/// the maintenance PR merged.
+fn maint_pr_merged(issue: u32) -> anyhow::Result<()> {
+    let merged = read_issue_events(issue)
+        .iter()
+        .any(|e| e.event_name == "maint-pr" && e.attributes.get("merged").map(|v| v == "true").unwrap_or(false));
+    if merged {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "no merged SPEC MAINT PR recorded — run `maint-pr` (it opens ONE `maint/<N>` PR, force-merges it as the privileged writer (`--admin`), and records a `maint-pr` event with merged:true) before `post-audit → cleanup`"
+        ))
+    }
 }
 
 /// Swap an issue's phase label from `from` to `to` (removes the source label,
@@ -1900,7 +2663,7 @@ fn assemble_impl_plan(issue: u32, actor: &str) -> anyhow::Result<Option<()>> {
     }
     // The `## Triage Plan` timeline draft must carry the agent footer (anti-spoofing).
     if !body.to_lowercase().contains("*authored by") {
-        body.push_str("\n\n*Authored by Self-Improver*");
+        body.push_str("\n\n*Authored by Orchestrator*");
     }
     let draft_dir = project_root()?.join(".opencode").join("tmp").join(issue.to_string());
     std::fs::create_dir_all(&draft_dir)?;
@@ -1978,13 +2741,46 @@ fn derive_fix_plan_body(full: &str) -> String {
 
 /// GitHub project (v2) Status sync (PO feedback, #2688): alongside the phase labels,
 /// mirror the issue's phase onto the configured project's Status single-select field
-/// (Backlog → Planning → Coding → E2E → Reviewing → Done). The issue is added to the
+/// (Backlog → Planning → Coding → E2E → Reviewing; `done` stays at `Reviewing` —
+/// awaiting human review — and only `canceled` reaches `Done`). The issue is added to the
 /// project on first sync if it is not already there. **Best-effort and fail-safe:** any
-/// failure (mock mode where `gh api graphql` is unsupported, no project access, missing
-/// item) logs a `[project-status]` note and is never fatal to the create/transition/close
-/// it runs alongside. The issue stays OPEN on `done` (manual human close); only the
-/// Status field becomes "Done".
+/// failure (no project access, missing item, an unsupported mock) is recorded as a
+/// `state_machine.failure` event and logged as a `[project-status]` note, but is never
+/// fatal to the create/transition/close it runs alongside. The issue stays OPEN on
+/// `done` (manual human close) with Status "Reviewing"; only `canceled` becomes "Done".
+///
+/// **Every id is passed with `-f` (raw string), never `-F`** (#3071): `gh` coerces an
+/// all-digit `-F` value to an Int, and GitHub rejects an Int against a GraphQL `String!`
+/// variable (`Could not coerce value 98236657 to String`). The `canceled` option
+/// id (`98236657`) is all digits, so `-F o=…` failed the whole canceled leg silently; `-f`
+/// sends the value as a raw string and the mutation is accepted.
 fn sync_project_status(issue: u32, phase: &str) -> anyhow::Result<()> {
+    match sync_project_status_inner(issue, phase) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // Best-effort, never fatal — but never SILENT either (#3071): a failed
+            // sync is recorded in the event log so a stalled Status transition is
+            // visible in the log/metrics instead of vanishing into a println.
+            let reason = e.to_string();
+            let _ = append_event_attrs(
+                issue,
+                "state_machine.failure",
+                "pipeline-state",
+                phase,
+                "failure",
+                &format!("project-status sync failed ({}): {}", phase, reason),
+                &[("site", "sync-project-status"), ("phase", phase), ("reason", reason.as_str())],
+            );
+            println!("[project-status] #{} → '{}' sync failed ({}) — skipping", issue, phase, reason);
+            Ok(())
+        }
+    }
+}
+
+/// The fallible body of `sync_project_status`. Every failure returns `Err` so the
+/// caller can record it; the only `Ok` early-returns are the legitimate no-ops
+/// (no project configured / no Status mapping for the phase).
+fn sync_project_status_inner(issue: u32, phase: &str) -> anyhow::Result<()> {
     let cfg = load_config()?;
     let project = match cfg.project.as_ref() {
         Some(p) => p,
@@ -1996,56 +2792,45 @@ fn sync_project_status(issue: u32, phase: &str) -> anyhow::Result<()> {
     };
     let owner_repo = gh_repo()?;
     // Resolve the issue's GraphQL node id (REST exposes it as `node_id`).
-    let node_id = match run_gh(&["api", &format!("repos/{}/issues/{}", owner_repo, issue), "--jq", ".node_id"]) {
-        Ok(s) => s.trim().to_string(),
-        Err(e) => { println!("[project-status] cannot resolve #{} node_id ({}) — skipping", issue, e); return Ok(()); }
-    };
+    let node_id = run_gh(&["api", &format!("repos/{}/issues/{}", owner_repo, issue), "--jq", ".node_id"])?
+        .trim()
+        .to_string();
     if node_id.is_empty() {
-        println!("[project-status] empty node_id for #{} — skipping", issue);
-        return Ok(());
+        anyhow::bail!("empty node_id for #{}", issue);
     }
 
-    // Find the project item for this issue.
+    // Find the project item for this issue. `-f` (raw string) for every variable —
+    // see the `-F` coercion note on `sync_project_status`.
     let q_find = "query($p:ID!){ node(id:$p){ ... on ProjectV2 { items(first:100){ nodes{ id content{ ... on Issue { number } } } } } } }";
-    let find = match run_gh(&["api", "graphql", "-f", &format!("query={}", q_find), "-F", &format!("p={}", project.id)]) {
-        Ok(s) => s,
-        Err(e) => { println!("[project-status] find-item query failed ({}) — skipping", e); return Ok(()); }
-    };
-    let item_id: String = match serde_json::from_str::<serde_json::Value>(&find) {
-        Ok(v) => v["data"]["node"]["items"]["nodes"]
+    let find = run_gh(&["api", "graphql", "-f", &format!("query={}", q_find), "-f", &format!("p={}", project.id)])?;
+    let item_id: String = serde_json::from_str::<serde_json::Value>(&find)
+        .ok()
+        .and_then(|v| v["data"]["node"]["items"]["nodes"]
             .as_array()
-            .map(|a| a.iter()
+            .and_then(|a| a.iter()
                 .find(|it| it["content"]["number"].as_i64() == Some(issue as i64))
-                .and_then(|it| it["id"].as_str().map(|s| s.to_string())))
-            .flatten()
-            .unwrap_or_default(),
-        Err(_) => String::new(),
-    };
+                .and_then(|it| it["id"].as_str().map(|s| s.to_string()))))
+        .unwrap_or_default();
 
     // Not in the project yet — add it, then capture the new item id.
     let item_id = if item_id.is_empty() {
         let q_add = "mutation($p:ID!,$c:ID!){ addProjectV2ItemById(input:{projectId:$p,contentId:$c}){ item{ id } } }";
-        match run_gh(&["api", "graphql", "-f", &format!("query={}", q_add), "-F", &format!("p={}", project.id), "-F", &format!("c={}", node_id)]) {
-            Ok(s) => serde_json::from_str::<serde_json::Value>(&s)
-                .ok()
-                .and_then(|v| v["data"]["addProjectV2ItemById"]["item"]["id"].as_str().map(|x| x.to_string()))
-                .unwrap_or_default(),
-            Err(e) => { println!("[project-status] add-item failed (#{}: {}) — skipping", issue, e); return Ok(()); }
-        }
+        let s = run_gh(&["api", "graphql", "-f", &format!("query={}", q_add), "-f", &format!("p={}", project.id), "-f", &format!("c={}", node_id)])?;
+        serde_json::from_str::<serde_json::Value>(&s)
+            .ok()
+            .and_then(|v| v["data"]["addProjectV2ItemById"]["item"]["id"].as_str().map(|x| x.to_string()))
+            .unwrap_or_default()
     } else {
         item_id
     };
     if item_id.is_empty() {
-        println!("[project-status] no project item id for #{} — skipping", issue);
-        return Ok(());
+        anyhow::bail!("no project item id for #{}", issue);
     }
 
     // Set the Status field to the phase's option.
     let q_upd = "mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){ updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{singleSelectOptionId:$o}}){ projectV2Item{ id } } }";
-    match run_gh(&["api", "graphql", "-f", &format!("query={}", q_upd), "-F", &format!("p={}", project.id), "-F", &format!("i={}", item_id), "-F", &format!("f={}", project.status_field_id), "-F", &format!("o={}", entry.option_id)]) {
-        Ok(_) => println!("[project-status] #{} → Status '{}'", issue, entry.status),
-        Err(e) => println!("[project-status] update Status failed ({}) — skipping", e),
-    }
+    run_gh(&["api", "graphql", "-f", &format!("query={}", q_upd), "-f", &format!("p={}", project.id), "-f", &format!("i={}", item_id), "-f", &format!("f={}", project.status_field_id), "-f", &format!("o={}", entry.option_id)])?;
+    println!("[project-status] #{} → Status '{}'", issue, entry.status);
     Ok(())
 }
 
@@ -2168,7 +2953,7 @@ fn sync_root_checkout_after_tests_commit(paths: &[std::path::PathBuf]) -> anyhow
 }
 
 /// Seed the Implementation Plan issue body from the triage-plan template when the
-/// orchestrator (self-improver) creates an impl-plan without a
+/// orchestrator creates an impl-plan without a
 /// `--body-file`. Substitutes the title and a backlog marker; the `<issue>`
 /// placeholder cannot be filled until the issue number is known, so it is patched
 /// by the caller after creation.
@@ -2264,13 +3049,167 @@ fn line_has_verdict(l: &str) -> bool {
     t.starts_with("verdict:")
 }
 
+/// Whether a line carries an audit-verdict marker — `Verdict: ...` (the
+/// `## Audit Verdict` template's first content line) or the legacy
+/// `Audit verdict: ...` phrasing. Case-insensitive; tolerant of a leading
+/// BOM/blockquote/bold. Used by the audit/cleanup exit guards and by the
+/// `audit-record` injection (so a draft written in either phrasing is read).
+fn line_has_audit_verdict(l: &str) -> bool {
+    let t = l.trim().trim_start_matches('\u{feff}').trim().trim_start_matches('>').trim().trim_start_matches('*').trim().to_lowercase();
+    t.starts_with("verdict:") || t.starts_with("audit verdict:")
+}
+
+/// Whether a posted `## Audit Verdict` comment records a SUCCESS verdict (the
+/// template's first content line `Verdict: **SUCCESS**`, or the machine's
+/// synthesized default). Used by the cleanup exit guard. Tolerant of bolding —
+/// the verdict word is matched case-insensitively, and a `restart` line is never
+/// read as a success even if its prose mentions the word.
+fn audit_verdict_is_success(body: &str) -> bool {
+    body.lines().any(|l| {
+        if !line_has_audit_verdict(l) {
+            return false;
+        }
+        let t = l.to_lowercase();
+        t.contains("success") && !t.contains("restart")
+    })
+}
+
+/// Run `git` against a specific checkout root. After #2944 the served root may be
+/// the per-issue `.serve/<issue>` checkout rather than the process CWD, so the
+/// serving guards must resolve branch/HEAD from that checkout. In mock mode the
+/// `-C <dir>` prefix is dropped (the mock store has no checkout dirs) and the
+/// emulation runs as usual.
+fn run_git_in(dir: &Path, args: &[&str]) -> anyhow::Result<String> {
+    if mock_mode() {
+        return run_cmd("git", args);
+    }
+    let mut owned: Vec<String> = vec!["-C".to_string(), dir.to_string_lossy().to_string()];
+    owned.extend(args.iter().map(|a| (*a).to_string()));
+    let refs: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    run_cmd("git", &refs)
+}
+
+/// Per-issue env lease (Spec #2944 Names Block) at
+/// `.opencode/state/env-leases/<issue>.json` — the machine's serving record.
+/// Written by `dev-env.ps1 -Action Up` when an environment is started; the state
+/// machine reads it to learn the per-issue serving checkout, surface the lease in
+/// the context block, and (CU-G) validate env-tagged evidence. The `pid` field
+/// lets a caller reclaim a lease whose process is dead (R-3.4). Mock mode never
+/// reads the real state dir, so the offline harness stays deterministic.
+#[derive(Debug, Clone, Deserialize)]
+struct EnvLease {
+    #[serde(default)]
+    issue: u32,
+    #[serde(rename = "envId", default)]
+    env_id: String,
+    #[serde(rename = "servingCheckout", default)]
+    serving_checkout: String,
+    #[serde(default)]
+    pid: u32,
+    #[serde(rename = "startedAt", default)]
+    started_at: String,
+}
+
+/// Absolute path of the per-issue env-lease record.
+fn env_lease_path(issue: u32) -> anyhow::Result<PathBuf> {
+    Ok(project_root()?
+        .join(".opencode")
+        .join("state")
+        .join("env-leases")
+        .join(format!("{}.json", issue)))
+}
+
+/// Human-facing (repo-relative) label of the per-issue env-lease record.
+fn env_lease_display(issue: u32) -> String {
+    format!(".opencode/state/env-leases/{}.json", issue)
+}
+
+/// Read the per-issue env lease (`None` when absent, unparseable, or carrying a
+/// mismatched `issue` — a foreign/forged record is never trusted).
+fn read_env_lease(issue: u32) -> Option<EnvLease> {
+    if mock_mode() {
+        return None;
+    }
+    let raw = std::fs::read_to_string(env_lease_path(issue).ok()?).ok()?;
+    let lease: EnvLease = serde_json::from_str(&raw).ok()?;
+    if lease.issue != 0 && lease.issue != issue {
+        return None;
+    }
+    Some(lease)
+}
+
+/// The serving checkout for an issue: the per-issue `.serve/<issue>` checkout
+/// recorded in the env lease when it exists on disk, else the repo root. The
+/// repo-root fallback keeps the legacy single-env behavior byte-identical when
+/// no lease is present (Names Block: `dev-env.ps1 -ServingCheckout` default repo
+/// root).
+fn serving_checkout_root(issue: u32) -> anyhow::Result<PathBuf> {
+    let root = project_root()?;
+    if mock_mode() {
+        return Ok(root);
+    }
+    if let Some(lease) = read_env_lease(issue) {
+        let sc = lease.serving_checkout.trim();
+        if !sc.is_empty() {
+            let p = PathBuf::from(sc);
+            let abs = if p.is_absolute() { p } else { root.join(p) };
+            if abs.exists() {
+                return Ok(abs);
+            }
+        }
+    }
+    Ok(root)
+}
+
+/// Human-facing label for the serving checkout: the lease's recorded
+/// `servingCheckout` (e.g. `.serve/2944`) when present, else `repo root`. The
+/// repo root — recorded absolutely, or as `.` — normalizes to `repo root` so the
+/// legacy default is reported identically to the no-lease case.
+fn serving_checkout_label(issue: u32) -> String {
+    if mock_mode() {
+        return "repo root".to_string();
+    }
+    match read_env_lease(issue) {
+        Some(l) => {
+            let sc = l.serving_checkout.trim();
+            if sc.is_empty() {
+                return "repo root".to_string();
+            }
+            if let Ok(root) = project_root() {
+                let p = PathBuf::from(sc);
+                let abs = if p.is_absolute() { p } else { root.join(p) };
+                let abs = abs.canonicalize().unwrap_or(abs);
+                let rootc = root.canonicalize().unwrap_or(root);
+                if abs == rootc {
+                    return "repo root".to_string();
+                }
+                if let Ok(rel) = abs.strip_prefix(&rootc) {
+                    return rel.to_string_lossy().replace('\\', "/");
+                }
+            }
+            sc.to_string()
+        }
+        None => "repo root".to_string(),
+    }
+}
+
 /// Serving-currency guard (testing entry; harness fix for the G-052 drift class).
-/// The repo root IS the serving checkout: `dev-env.ps1 -Action Up -Spec <N>`
-/// serves the app from the root, so the root must sit on `spec/<N>` at the
-/// origin tip. The transition into testing is BLOCKED unless the root's branch
-/// is `spec/<N>` AND its HEAD equals `origin/spec/<N>` — a stale or
-/// wrong-branch checkout can never reach the tester.
+/// The app is served from the issue's serving checkout: the per-issue
+/// `.serve/<issue>` worktree recorded in the env lease when one is leased, else
+/// the repo root (legacy). The transition into testing is BLOCKED unless that
+/// checkout's HEAD equals `origin/spec/<N>` — a stale or wrong-branch checkout
+/// can never reach the tester. A per-issue serving worktree may be checked out
+/// on `spec/<N>` or detached at its tip, so the branch-name check applies to the
+/// repo-root (legacy) path only; the HEAD==tip check always applies.
 fn serving_currency_ok(issue: u32) -> anyhow::Result<()> {
+    // POST-MERGE restart (`post-audit → testing` after the spec PR merged): the spec
+    // PR is squash-merged and `delete_branch_on_merge` removed `spec/<N>`, so there
+    // is no remote tip to compare against — and the transition's own side-effect
+    // recreates the branch from `origin/main` (`maybe_recreate_merged_spec_branch`).
+    // The tested tree IS main's tree (a squash merge copies the tree), so the
+    // precondition holds; the Orchestrator must re-serve the root at the recreated
+    // tip (G-032) before the tester runs — the recreate note says so.
+    let merged_pr = || merged_spec_pr_count(issue).unwrap_or(0) > 0;
     if mock_mode() {
         // Mock harness: the "root" state is simulated by the mock refs — once
         // spec/<N> exists with commits (the implementation exit gate already
@@ -2280,47 +3219,271 @@ fn serving_currency_ok(issue: u32) -> anyhow::Result<()> {
         if mock_commits_ahead(&branch) > 0 || mock_ref_exists(&branch) || mock_local_ref_exists(&branch) {
             return Ok(());
         }
+        if merged_pr() {
+            return Ok(());
+        }
         anyhow::bail!("repo root is not on spec/{} — checkout the spec branch and start the dev instance: dev-env.ps1 -Action Up -Spec {}", issue, issue);
     }
-    let branch = run_cmd("git", &["rev-parse", "--abbrev-ref", "HEAD"])
+    let repo_root = project_root()?;
+    // Post-merge restart (see the doc above): no `spec/<N>` on origin, but a merged
+    // spec PR proves the tested tree IS main's tree. The transition's own side-effect
+    // recreates the branch from `origin/main`; serving currency is then satisfied by
+    // re-serving the root at the recreated tip (G-032) before the tester runs. Fail
+    // OPEN here — failing closed would re-create the very dead-end this fix removes,
+    // and there is no tip to compare against until the branch exists again.
+    if !remote_branch_exists(&format!("spec/{}", issue)) && merged_spec_pr_count(issue).unwrap_or(0) > 0 {
+        println!(
+            "SERVING CURRENCY: spec/{} is absent (merged + branch deleted) — the machine recreates it from origin/main; re-serve the root at the recreated tip (G-032) before the tester runs",
+            issue
+        );
+        return Ok(());
+    }
+    let checkout = serving_checkout_root(issue)?;
+    let per_issue = checkout != repo_root;
+    let branch = run_git_in(&checkout, &["rev-parse", "--abbrev-ref", "HEAD"])
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
-    if branch != format!("spec/{}", issue) {
+    if !per_issue && branch != format!("spec/{}", issue) {
         anyhow::bail!("repo root is on '{}' — checkout spec/{} before testing (G-052): the tester drives the app served from the repo root", branch, issue);
     }
-    let head = run_cmd("git", &["rev-parse", "HEAD"])
+    let head = run_git_in(&checkout, &["rev-parse", "HEAD"])
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
     // Spec tip: the remote ref is authoritative; fall back to the local branch
     // for offline runs.
-    let tip = run_cmd("git", &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/spec/{}", issue)])
-        .or_else(|_| run_cmd("git", &["rev-parse", "--verify", "--quiet", &format!("refs/heads/spec/{}", issue)]))
+    let tip = run_git_in(&checkout, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/spec/{}", issue)])
+        .or_else(|_| run_git_in(&checkout, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/spec/{}", issue)]))
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
     if head.is_empty() || tip.is_empty() {
-        anyhow::bail!("cannot resolve the repo-root HEAD or the spec/{} tip — serving currency unverifiable; git fetch and retry", issue);
+        anyhow::bail!("cannot resolve the serving checkout HEAD or the spec/{} tip — serving currency unverifiable; git fetch and retry", issue);
     }
     if head != tip {
         anyhow::bail!(
-            "repo root is STALE: HEAD {} but spec/{} tip is {} — sync (G-032) then restart: dev-env.ps1 -Action Up -Spec {}",
+            "serving checkout is STALE: HEAD {} but spec/{} tip is {} — sync (G-032) then restart: dev-env.ps1 -Action Up -Spec {}",
             &head[..head.len().min(8)], issue, &tip[..tip.len().min(8)], issue
         );
     }
     Ok(())
 }
 
-/// Root serving state for the tester's context block (best-effort): returns
-/// `(branch, head)` when the root sits on `spec/<issue>`, else `None`.
-fn serving_record(issue: u32) -> Option<(String, String)> {
+/// Serving state for the tester's context block (best-effort): returns
+/// `(checkout_label, branch, head)` for the issue's serving checkout — the
+/// per-issue `.serve/<issue>` checkout recorded in the env lease when present,
+/// else the repo root (legacy). `None` when the repo-root path does not sit on
+/// `spec/<issue>` or no HEAD resolves.
+fn serving_record(issue: u32) -> Option<(String, String, String)> {
     if mock_mode() {
-        return Some((format!("spec/{}", issue), "mock-sha".to_string()));
+        return Some(("repo root".to_string(), format!("spec/{}", issue), "mock-sha".to_string()));
     }
-    let branch = run_cmd("git", &["rev-parse", "--abbrev-ref", "HEAD"]).ok()?.trim().to_string();
-    if branch != format!("spec/{}", issue) {
+    let repo_root = project_root().ok()?;
+    let checkout = serving_checkout_root(issue).ok()?;
+    let per_issue = checkout != repo_root;
+    let branch = run_git_in(&checkout, &["rev-parse", "--abbrev-ref", "HEAD"]).ok()?.trim().to_string();
+    if !per_issue && branch != format!("spec/{}", issue) {
         return None;
     }
-    let head = run_cmd("git", &["rev-parse", "HEAD"]).ok()?.trim().to_string();
-    if head.is_empty() { None } else { Some((branch, head)) }
+    let head = run_git_in(&checkout, &["rev-parse", "HEAD"]).ok()?.trim().to_string();
+    if head.is_empty() {
+        return None;
+    }
+    let label = if per_issue {
+        checkout
+            .strip_prefix(&repo_root)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|_| checkout.to_string_lossy().to_string())
+    } else {
+        "repo root".to_string()
+    };
+    Some((label, branch, head))
+}
+
+/// Env-tagged evidence record written by `dev-env.ps1 -Action Up` (Spec #2944
+/// Names Block, R-5.1). Every named field is defaulted so a partial/forged record
+/// still parses and is then rejected by the required-field check rather than
+/// crashing the audit. Unknown fields are ignored.
+#[derive(Debug, Clone, Deserialize, Default)]
+struct EnvEvidence {
+    #[serde(rename = "envId", default)]
+    env_id: String,
+    #[serde(rename = "servingCheckout", default)]
+    serving_checkout: String,
+    #[serde(rename = "servedCommit", default)]
+    served_commit: String,
+    #[serde(rename = "dbPath", default)]
+    db_path: String,
+    #[serde(rename = "manifestPath", default)]
+    manifest_path: String,
+    #[serde(rename = "appIdentity", default)]
+    app_identity: String,
+    #[serde(default)]
+    endpoints: serde_json::Value,
+}
+
+/// Outcome of validating the env evidence record against the intended
+/// environment (R-5.2). `present == false` means no env-tagged evidence was
+/// evaluated (legacy single-env runs write none) — that is NOT a rejection; the
+/// audit only rejects, never deletes.
+struct EnvEvidenceCheck {
+    present: bool,
+    valid: bool,
+    reason: String,
+    path: String,
+}
+
+impl EnvEvidenceCheck {
+    fn absent(reason: &str) -> Self {
+        Self { present: false, valid: true, reason: reason.to_string(), path: String::new() }
+    }
+}
+
+fn short_sha(s: &str) -> String {
+    s.chars().take(8).collect()
+}
+
+/// Absolute path of the env evidence record. Precedence: explicit
+/// `FREDO_EVIDENCE_FILE` (Names Block override), else `<env-root>/evidence.json`
+/// where the env root is `FREDO_ENV_ROOT` (resolved against the repo root) or the
+/// default `<repo>/.opencode/tmp/envs/<envId>`, and `<envId>` is the per-issue
+/// lease's env id (fallback `spec<issue>`). Returns `None` when neither an
+/// explicit evidence file nor an active env indicator (lease / FREDO_ENV_ROOT /
+/// FREDO_ENV_ID) is present, so stale leftover evidence is never mis-validated.
+fn env_evidence_path(issue: u32) -> Option<PathBuf> {
+    let root = project_root().ok()?;
+    let explicit = std::env::var("FREDO_EVIDENCE_FILE")
+        .ok()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty());
+    if let Some(p) = explicit {
+        let pb = PathBuf::from(&p);
+        return Some(if pb.is_absolute() { pb } else { root.join(pb) });
+    }
+    let lease = read_env_lease(issue);
+    let env_root_env = std::env::var("FREDO_ENV_ROOT")
+        .ok()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty());
+    let env_id_env = std::env::var("FREDO_ENV_ID")
+        .ok()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty());
+    if lease.is_none() && env_root_env.is_none() && env_id_env.is_none() {
+        return None;
+    }
+    let env_id = lease
+        .as_ref()
+        .map(|l| l.env_id.clone())
+        .filter(|s| !s.trim().is_empty())
+        .or(env_id_env)
+        .unwrap_or_else(|| format!("spec{}", issue));
+    let env_root = match env_root_env {
+        Some(r) => {
+            let pb = PathBuf::from(&r);
+            if pb.is_absolute() { pb } else { root.join(pb) }
+        }
+        None => root.join(".opencode").join("tmp").join("envs").join(env_id),
+    };
+    Some(env_root.join("evidence.json"))
+}
+
+/// Normalize a path for comparison: resolve against `root` when relative,
+/// canonicalize when possible, forward slashes, trim a trailing separator.
+fn normalize_path_for_compare(p: &str, root: &Path) -> String {
+    let t = p.trim();
+    if t.is_empty() { return String::new(); }
+    let pb = PathBuf::from(t);
+    let abs = if pb.is_absolute() { pb } else { root.join(pb) };
+    let canon = abs.canonicalize().unwrap_or(abs);
+    let mut s = canon.to_string_lossy().replace('\\', "/");
+    while s.len() > 1 && s.ends_with('/') { s.pop(); }
+    s
+}
+
+/// The commit the environment is intended to serve: the serving checkout's HEAD
+/// when it resolves, else the `spec/<issue>` tip (remote first, then local).
+fn intended_served_commit(issue: u32) -> String {
+    if let Some((_, _, head)) = serving_record(issue) {
+        if !head.is_empty() { return head; }
+    }
+    let root = match project_root() { Ok(r) => r, Err(_) => return String::new() };
+    run_git_in(&root, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/spec/{}", issue)])
+        .or_else(|_| run_git_in(&root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/spec/{}", issue)]))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
+/// Validate the env-tagged evidence record against the intended environment
+/// (R-5.2): the per-issue lease's env id + serving checkout, and the serving
+/// checkout's HEAD commit. A present record whose env id / serving checkout /
+/// served commit disagrees (or which is missing a required named field) is
+/// REJECTED with a reason. An absent record is not a rejection.
+fn check_env_evidence(issue: u32) -> EnvEvidenceCheck {
+    if mock_mode() {
+        return EnvEvidenceCheck::absent("mock mode — env evidence not read");
+    }
+    let path = match env_evidence_path(issue) {
+        Some(p) => p,
+        None => return EnvEvidenceCheck::absent("no active environment — env evidence not evaluated"),
+    };
+    let display = path.to_string_lossy().replace('\\', "/");
+    if !path.exists() {
+        return EnvEvidenceCheck::absent(&format!("no env evidence record at {}", display));
+    }
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(r) => r,
+        Err(e) => return EnvEvidenceCheck { present: true, valid: false, reason: format!("env evidence unreadable: {}", e), path: display },
+    };
+    let ev: EnvEvidence = match serde_json::from_str(&raw) {
+        Ok(e) => e,
+        Err(e) => return EnvEvidenceCheck { present: true, valid: false, reason: format!("env evidence unparseable: {}", e), path: display },
+    };
+    let root = match project_root() {
+        Ok(r) => r,
+        Err(e) => return EnvEvidenceCheck { present: true, valid: false, reason: format!("cannot resolve repo root: {}", e), path: display },
+    };
+
+    // Required named fields (R-5.1): a record missing any of these cannot be
+    // attributed to the intended environment (R-5.2).
+    let mut missing: Vec<&str> = Vec::new();
+    if ev.env_id.trim().is_empty() { missing.push("envId"); }
+    if ev.serving_checkout.trim().is_empty() { missing.push("servingCheckout"); }
+    if ev.served_commit.trim().is_empty() { missing.push("servedCommit"); }
+    if ev.db_path.trim().is_empty() { missing.push("dbPath"); }
+    if ev.manifest_path.trim().is_empty() { missing.push("manifestPath"); }
+    if ev.app_identity.trim().is_empty() { missing.push("appIdentity"); }
+    if ev.endpoints.get("mcp").and_then(|v| v.as_i64()).is_none() { missing.push("endpoints.mcp"); }
+    if !missing.is_empty() {
+        return EnvEvidenceCheck { present: true, valid: false, reason: format!("env evidence missing required field(s): {}", missing.join(", ")), path: display };
+    }
+
+    // Intended environment: the per-issue lease, else the derived default.
+    let lease = read_env_lease(issue);
+    let intended_env_id = lease
+        .as_ref()
+        .map(|l| l.env_id.clone())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| format!("spec{}", issue));
+    if !ev.env_id.eq_ignore_ascii_case(&intended_env_id) {
+        return EnvEvidenceCheck { present: true, valid: false, reason: format!("env id mismatch: evidence '{}' != intended '{}'", ev.env_id, intended_env_id), path: display };
+    }
+
+    let intended_checkout_raw = lease
+        .as_ref()
+        .map(|l| l.serving_checkout.clone())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| ".".to_string());
+    let intended_checkout = normalize_path_for_compare(&intended_checkout_raw, &root);
+    let ev_checkout = normalize_path_for_compare(&ev.serving_checkout, &root);
+    if intended_checkout.is_empty() || !ev_checkout.eq_ignore_ascii_case(&intended_checkout) {
+        return EnvEvidenceCheck { present: true, valid: false, reason: format!("serving checkout mismatch: evidence '{}' != intended '{}'", ev.serving_checkout, intended_checkout_raw), path: display };
+    }
+
+    let intended_commit = intended_served_commit(issue);
+    if intended_commit.is_empty() || !ev.served_commit.eq_ignore_ascii_case(&intended_commit) {
+        return EnvEvidenceCheck { present: true, valid: false, reason: format!("served commit mismatch: evidence '{}' != intended '{}'", short_sha(&ev.served_commit), short_sha(&intended_commit)), path: display };
+    }
+
+    EnvEvidenceCheck { present: true, valid: true, reason: "env evidence matches the intended environment".to_string(), path: display }
 }
 
 /// Count `## Tests Runs` comments already posted on the issue in
@@ -2354,6 +3517,25 @@ fn count_verdict_comments_in_round(issue: u32, round: u32) -> usize {
 /// it must not count as live-telemetry evidence, which would let a static plan's
 /// evidence be misread as live and defeat the fail-closed live policy.
 fn line_is_telemetry_negation(line_lower: &str) -> bool {
+    // A line that ALSO carries a positive live-query signal is NOT a static-only
+    // sentence, even when it contains a disclosure such as "the feature emits no
+    // `telemetry_spans` row". That disclosure is REQUIRED for a native-loop feature
+    // whose telemetry surface differs from the derived-span pipeline, and combining
+    // it with the genuine live count on one (markdown table) line must not be read
+    // as static-only evidence (Spec #3026 hardening). The false positive blocked a
+    // genuinely live verdict, and the timeline's per-round verdict dedup (G-020)
+    // forbids a corrected re-post — so the guard MUST accept the combined line.
+    // Only a negation line WITHOUT a positive signal counts as static-only.
+    const POSITIVE_SIGNALS: [&str; 5] = [
+        "spancount",
+        "span_count",
+        "ingested_at",
+        "rows=",
+        "rows =",
+    ];
+    if POSITIVE_SIGNALS.iter().any(|s| line_lower.contains(s)) {
+        return false;
+    }
     const NEGATION_MARKERS: [&str; 9] = [
         "no `telemetry_spans`",
         "no telemetry_spans",
@@ -2542,13 +3724,7 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
             // (Sub-issues were removed; all work is tracked on the plan issue +
             // the spec branch.) Fails CLOSED on any lookup error.
             let branch = format!("spec/{}", issue);
-            let ahead: Option<u64> = (|| {
-                run_cmd("git", &["fetch", "origin", "main"]).ok()?;
-                run_cmd("git", &["fetch", "origin", &branch]).ok()?;
-                run_cmd("git", &["rev-list", "--count", "origin/main..FETCH_HEAD"]).ok()?
-                    .trim().parse::<u64>().ok()
-            })();
-            match ahead {
+            match spec_branch_ahead(issue) {
                 Some(n) if n > 0 => (true, String::new()),
                 Some(_) => (false, format!("{} has no commits beyond main — the developer must push", branch)),
                 None => (false, format!("cannot verify {} (does it exist on origin? planning→implementation creates it)", branch)),
@@ -2557,31 +3733,50 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
         Phase::Testing => {
             // A tester verdict comment must exist to leave testing at all — a FAIL
             // verdict routes BACK to implementation (rework), a PASS continues to
-            // cleanup. The cleanup-specific full verification (policy + live evidence,
-            // fail-closed) is enforced in the transition for the testing→cleanup leg.
+            // audit. The verification (policy + live evidence, fail-closed) is
+            // enforced in the transition for the testing→audit leg.
             let (has_evidence, _, _, _, _, reason) = verification_status(issue);
             (has_evidence, if has_evidence { String::new() } else { reason })
         }
         Phase::Audit => {
             let comments = get_issue_comments(issue);
-            // `audit-record` posts "## Decision" + "Audit verdict: ...". Require the
-            // Decision prefix AND the verdict marker together, not either alone.
+            // `audit-record` posts the `## Audit Verdict` comment carrying a
+            // machine-parseable `Verdict:` line. Require the header AND the verdict
+            // marker together, not either alone.
             let has = comments.iter().any(|b| {
-                let trimmed = b.trim_start();
-                trimmed.starts_with("## Decision") && trimmed.contains("Audit verdict")
+                b.trim_start().starts_with("## Audit Verdict") && b.lines().any(line_has_audit_verdict)
             });
             (has, if has { String::new() } else { "no audit verdict found".into() })
+        }
+        Phase::PostAudit => {
+            // The post-audit phase is where the pipeline's own self-improvement runs
+            // before teardown/rework: the Curator distills the durable lesson
+            // (`record-improvement` — a `pipeline.improvement` event + the
+            // `## Pipeline Improvement` comment), and the specialists'
+            // pipeline edits (Curator playbooks/references, Machinist machine/config,
+            // Toolsmith scripts/skills) + the product docs are synced through ONE
+            // **SPEC MAINT PR** (`maint-pr` — a `maint/<N>` branch force-merged with
+            // `--admin`). The
+            // deterministic anchor the machine can verify HERE is the Curator's
+            // recorded improvement — without it the post-audit did not run. The
+            // SUCCESS exit (`post-audit → cleanup`) ADDITIONALLY requires the merged
+            // SPEC MAINT PR, enforced at the transition site (`maint_pr_merged`); a
+            // restart exit (`post-audit → <phase>`) does not require it.
+            let recorded = read_issue_events(issue)
+                .iter()
+                .any(|e| e.event_name == "pipeline.improvement");
+            (recorded, if recorded { String::new() } else { "no Curator improvement recorded — the post-audit (record-improvement + the SPEC MAINT PR) has not run".into() })
         }
         Phase::Cleanup => {
             // Teardown-only phase: exit requires the teardown to be complete
             // (worktrees pruned, scratch cleaned, evidence retained, no leftover
             // dirty state) before closing as done. The SI runs the cleanup actions
             // then transitions cleanup → done (close-issue), which closes the issue.
-            // The audit verdict was already recorded as the testing → audit gate.
+            // The success audit verdict was recorded at the audit → post-audit gate
+            // (audit-record) and survives on the issue's `## Audit Verdict` comment.
             let comments = get_issue_comments(issue);
             let verdict_ok = comments.iter().any(|b| {
-                let trimmed = b.trim_start();
-                trimmed.starts_with("## Decision") && trimmed.contains("Audit verdict: **success**")
+                b.trim_start().starts_with("## Audit Verdict") && audit_verdict_is_success(b)
             });
             // Teardown completeness is enforced at the cleanup → done transition; the
             // exit guard checks the audit verdict exists (the gate into the cleanup
@@ -2763,6 +3958,10 @@ struct ActionArgs {
     /// (a `fix` is a rejection of the prior feature; `enhancement` is healthy
     /// evolution). Only meaningful together with `--revises`.
     intent: Option<String>,
+    /// `human.review` operator note (`--note`) recorded on the event.
+    note: Option<String>,
+    /// `human.review` reviewer identity (`--reviewer`) recorded on the event.
+    reviewer: Option<String>,
 }
 
 /// Working-conventions header prepended to every triage A2A file. The triage
@@ -2779,25 +3978,149 @@ const TRIAGE_A2A_HEADER: &str = "\
 ";
 
 /// Post any pending timeline-comment drafts in `.opencode/tmp/<issue>/` as GitHub
-/// comments. Each draft file maps to a titled comment (the PO backlog, the triage
-/// plan, the Architect-authored fix plan, the development summary, the tests runs,
-/// the SI summary). The file is consumed (deleted) after posting so a draft is
+/// comments. Each draft file maps to a titled comment (the triage plan, the
+/// Architect-authored fix plan, the development summary, the tests runs). The file
+/// is consumed (deleted) after posting so a draft is
 /// never posted twice. Runs as a transition side-effect and via the `post-comments`
 /// action. **Best-effort:** a failed comment post is logged, never fatal — a comment
 /// failure must not undo an already-applied phase transition or issue close.
+/// True when a `## Fix Plan (round N)` comment for the CURRENT rework round already
+/// exists on the issue. Makes the retry-compaction idempotent so a manual
+/// `post-comments` flush (or any repeated flush) never posts a SECOND fallback
+/// Fix Plan for a round whose Fix Plan was already authored + posted (G-344).
+fn fix_plan_round_posted(issue: u32) -> bool {
+    let round = prior_phase_entries(issue, "implementation") + 1;
+    let needle = format!("## Fix Plan (round {})", round);
+    get_issue_comments(issue).iter().any(|b| b.trim_start().starts_with(&needle))
+}
+
+/// True when the feature issue already carries its governing `## Triage Plan`
+/// comment. Used to recover a plan comment that was lost when the
+/// `planning → implementation` transition's comment write failed (e.g. a GitHub
+/// API outage) — the machine must never compact a rework-shaped draft into a
+/// `## Fix Plan` when no governing plan exists to fix (G-259 family; observed
+/// on #3036).
+fn triage_plan_posted(issue: u32) -> bool {
+    get_issue_comments(issue)
+        .iter()
+        .any(|b| b.trim_start().starts_with("## Triage Plan"))
+}
+
+/// Recovery for a LOST `## Triage Plan` comment. The plan comment can vanish when
+/// the `planning → implementation` transition's comment write fails during an API
+/// outage, and its assembled `triage-plan.md` draft is then consumed by a manual
+/// `post-comments` flush — which compacts a rework-shaped draft into a spurious
+/// `## Fix Plan`, losing the plan entirely (#3036). When the governing plan comment
+/// is ABSENT and no `triage-plan.md` draft remains, re-assemble it from the
+/// CONVERGED A2A file and post the FULL plan, restoring the issue's single plan
+/// artifact. Idempotent: a present plan comment or a present draft (owned by the
+/// generic flush) short-circuits; a non-converged A2A is never posted. Never fatal
+/// — a recovery failure is surfaced as a warning only.
+fn recover_missing_triage_plan(issue: u32, actor: &str, phase: &str) {
+    if triage_plan_posted(issue) {
+        return;
+    }
+    let dir = match project_root() {
+        Ok(r) => r.join(".opencode").join("tmp").join(issue.to_string()),
+        Err(_) => return,
+    };
+    let draft = dir.join("triage-plan.md");
+    if draft.exists() {
+        return; // a present draft is owned by the generic flush
+    }
+    let a2a = std::fs::read_to_string(triage_a2a_path(issue).unwrap_or_default()).unwrap_or_default();
+    if !a2a.contains("## Convergence: agreed") {
+        return; // never re-post a non-converged plan
+    }
+    if assemble_impl_plan(issue, actor).is_err() {
+        return;
+    }
+    let body = match std::fs::read_to_string(&draft) {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+    match post_one_timeline_comment(issue, actor, phase, &draft, "Triage Plan", &body) {
+        Ok(()) => println!("RECOVERY: re-posted the missing `## Triage Plan` comment on #{}", issue),
+        Err(e) => println!("WARNING: could not re-post the missing Triage Plan on #{}: {}", issue, e),
+    }
+}
+
+/// The per-developer verification draft convention: a file named
+/// `dev-verify-<ST-id>.md` maps to the comment title
+/// `Developer <ST-id> — verification`. Shared by the transition flush AND the
+/// `comment` action so both documented channels produce the SAME documented
+/// top-level header (G-405 — the `comment` action's Status-only prefix gate
+/// cannot otherwise reach it). `None` when `name` is not a dev-verify draft.
+fn dev_verify_title(name: &str) -> Option<String> {
+    name.strip_prefix("dev-verify-")
+        .and_then(|s| s.strip_suffix(".md"))
+        .filter(|st| !st.is_empty())
+        .map(|st| format!("Developer {} — verification", st))
+}
+
+/// Discover the per-developer verification drafts
+/// (`.opencode/tmp/<issue>/dev-verify-<ST-id>.md`) for the timeline flush. The
+/// `<ST-id>` varies per developer, so the flush list cannot be a static const;
+/// the comment title is DERIVED from the filename (`dev_verify_title`). Sorted by
+/// filename so the flush order is deterministic (and therefore idempotent across
+/// repeated flushes).
+fn dev_verify_drafts(dir: &std::path::Path) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return out,
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if let Some(title) = dev_verify_title(&name) {
+            out.push((name, title));
+        }
+    }
+    out.sort();
+    out
+}
+
+/// True when the issue already carries a per-developer verification comment with
+/// this title. Makes the `dev-verify-*.md` flush idempotent against a draft
+/// already posted through the documented `comment` action — the two channels
+/// never double-post the same developer's record (G-405).
+///
+/// The match is LINE-ANCHORED, not only at the body start: an older
+/// `## Status`-headed verification carries the documented header NESTED on its
+/// own line below `## Status` (observed on #3080, where the `comment` action
+/// prepended `## Status` and the developer's
+/// `## Developer <ST-id> — verification` heading sat under it). A body-start-only
+/// check would miss it and re-post the stale draft as a duplicate.
+fn dev_verify_posted(issue: u32, title: &str) -> bool {
+    let needle = format!("## {}", title);
+    get_issue_comments(issue)
+        .iter()
+        .any(|b| b.lines().any(|l| l.trim_start().starts_with(&needle)))
+}
+
 fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str>) -> anyhow::Result<()> {
-    const TIMELINE: &[(&str, &str)] = &[
-        ("triage-plan.md", "Triage Plan"),
-        ("fix-plan.md", "Fix Plan"),
-        ("dev-summary.md", "Development Summary"),
-        ("tests-runs.md", "Tests Runs"),
-        ("si-summary.md", "SI Summary"),
-    ];
     let dir = project_root()?.join(".opencode").join("tmp").join(issue.to_string());
     if !dir.is_dir() {
         return Ok(());
     }
-    for (fname, title) in TIMELINE {
+    // The flush work list: the static phase drafts in fixed order, with the
+    // per-developer verification drafts (`dev-verify-<ST-id>.md`, discovered
+    // dynamically — the `<ST-id>` varies) inserted BEFORE the assembled roll-up so
+    // each developer's record precedes `## Development Summary`. G-405: the
+    // `comment` action posts the per-developer verification at implementation
+    // (the primary channel), and this flush is the transition-time safety net —
+    // both produce the documented `## Developer <ST-id> — verification` header,
+    // and `dev_verify_posted` keeps them idempotent (never a duplicate).
+    let mut work: Vec<(String, String)> = vec![
+        ("triage-plan.md".to_string(), "Triage Plan".to_string()),
+        ("fix-plan.md".to_string(), "Fix Plan".to_string()),
+    ];
+    work.extend(dev_verify_drafts(&dir));
+    work.push(("dev-summary.md".to_string(), "Development Summary".to_string()));
+    work.push(("tests-runs.md".to_string(), "Tests Runs".to_string()));
+    for (fname, title) in &work {
+        let fname = fname.as_str();
+        let title = title.as_str();
         let p = dir.join(fname);
         if !p.exists() {
             continue;
@@ -2809,8 +4132,15 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
         // Anti-spoofing: a timeline draft must carry the template's `*Authored by
         // <Agent>*` footer, else it is never auto-posted as a bot comment.
         if !body.to_lowercase().contains("*authored by") {
-            let _ = append_event(issue, "guard.fired", actor, phase, "blocked", &format!("anti-spoofing: {} lacks an '*Authored by <Agent>*' footer — not posting", fname));
+            let _ = append_event_attrs(issue, "guard.fired", actor, phase, "blocked", &format!("anti-spoofing: {} lacks an '*Authored by <Agent>*' footer — not posting", fname), &[("guardId", "G-223"), ("guardKey", "draft_author_footer_absent"), ("failureClass", "unattributed_draft_posted"), ("site", "post-comments")]);
             println!("WARNING: {} lacks an '*Authored by <Agent>*' footer — not posting (anti-spoofing)", fname);
+            continue;
+        }
+        // G-405 idempotency: a per-developer draft already posted through the
+        // documented `comment` action is consumed, never re-posted as a duplicate.
+        if fname.starts_with("dev-verify-") && dev_verify_posted(issue, title) {
+            let _ = std::fs::remove_file(&p);
+            println!("SKIPPED: {} — the `{}` comment is already posted", fname, title);
             continue;
         }
         // PO feedback (#2688): a `## Tests Runs` draft MUST carry a literal `Verdict:`
@@ -2818,10 +4148,10 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
         // `## Tests Runs -- PASS 7/7` with no `Verdict:` line is REFUSED (the draft is
         // kept for the tester to fix) so the timeline never receives an unparseable
         // verdict comment.
-        if *fname == "tests-runs.md" {
+        if fname == "tests-runs.md" {
             let has_verdict = body.lines().any(|l| l.trim_start().to_lowercase().starts_with("verdict:"));
             if !has_verdict {
-                let _ = append_event(issue, "guard.fired", actor, phase, "blocked", "tests-runs draft refused: no literal Verdict: line");
+                let _ = append_event_attrs(issue, "guard.fired", actor, phase, "blocked", "tests-runs draft refused: no literal Verdict: line", &[("guardId", "G-013"), ("guardKey", "tests_runs_verdict_line"), ("failureClass", "unparseable_verdict_comment"), ("site", "post-comments")]);
                 println!("WARNING: tests-runs.md lacks a `Verdict:` line — not posting (template format). Fix the draft, then re-run post-comments.");
                 continue;
             }
@@ -2837,7 +4167,7 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
                     && !t.contains("https://")
             });
             if has_dead_image_ref {
-                let _ = append_event(issue, "guard.fired", actor, phase, "blocked", "tests-runs draft refused: image reference without https:// (unviewable evidence)");
+                let _ = append_event_attrs(issue, "guard.fired", actor, phase, "blocked", "tests-runs draft refused: image reference without https:// (unviewable evidence)", &[("guardId", "G-104"), ("guardKey", "tests_runs_evidence_renderability"), ("failureClass", "unviewable_evidence"), ("site", "post-comments")]);
                 println!("WARNING: tests-runs.md references a screenshot by bare filename or local path — not posting (unviewable evidence). Run `upload-evidence --image <screenshot>` PER AC and paste the returned https:// user-attachment URL into that AC's Screenshot cell; write `n/a — not visually observable` for backend-only ACs. Then re-run post-comments.");
                 continue;
             }
@@ -2856,14 +4186,20 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
         // "unchanged" (the Fix Plan preamble says the full plan is unchanged, which
         // is false after a rescope). Manual flushes (`from == None`) keep the
         // prior-implementation behavior.
+        // The rework re-entry into implementation: a tester-FAIL rework
+        // (`testing → implementation`) or an audit restart
+        // (`audit → post-audit → implementation`). `post-audit` is a rework source
+        // too — the fix plan authored during the post-audit is posted on the
+        // post-audit → implementation transition. A manual flush (`from == None`)
+        // or the `audit-record` flush keeps the prior-implementation heuristic.
         let is_rework_reentry = match from {
-            Some(src) => src == "testing",           // rework: testing → implementation
-            None => prior_phase_entries(issue, "implementation") > 0, // manual flush / audit restart
+            Some(src) => src == "testing" || src == "post-audit",
+            None => prior_phase_entries(issue, "implementation") > 0, // manual flush / audit-record flush
         };
         let authored_fix_plan = dir.join("fix-plan.md").exists();
-        let (post_title, post_body) =         if *fname == "fix-plan.md" {
+        let (post_title, post_body) =         if fname == "fix-plan.md" {
             if !is_rework_reentry {
-                let _ = append_event(issue, "guard.fired", actor, phase, "blocked", "stray fix-plan.md on a first implementation entry — not posting");
+                let _ = append_event_attrs(issue, "guard.fired", actor, phase, "blocked", "stray fix-plan.md on a first implementation entry — not posting", &[("guardId", "G-339"), ("guardKey", "stray_fix_plan_first_entry"), ("failureClass", "spurious_fix_plan_posted"), ("site", "post-comments")]);
                 println!("WARNING: fix-plan.md present but this is not a rework re-entry — not posting (kept on disk)");
                 continue;
             }
@@ -2874,7 +4210,7 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
             // draft is kept (never posted) until the Architect classifies it.
             match parse_root_cause_class(&body) {
                 None => {
-                    let _ = append_event(issue, "guard.fired", actor, phase, "blocked", "fix-plan refused: missing/invalid 'Root cause class:' line");
+                    let _ = append_event_attrs(issue, "guard.fired", actor, phase, "blocked", "fix-plan refused: missing/invalid 'Root cause class:' line", &[("guardId", "fix_plan_unclassified"), ("guardKey", "fix_plan_root_cause_class"), ("failureClass", "unclassified_rework_round"), ("site", "post-comments")]);
                     println!("WARNING: fix-plan.md lacks a valid 'Root cause class: defect|technique|environment|scope' line — not posting. The Architect must classify this round's failure; fix the draft, then re-run.");
                     continue;
                 }
@@ -2885,12 +4221,16 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
                 }
             }
             (format!("Fix Plan (round {})", prior_phase_entries(issue, "implementation") + 1), body)
-        } else if *fname == "triage-plan.md" {
-            if is_rework_reentry && authored_fix_plan {
+        } else if fname == "triage-plan.md" {
+            if is_rework_reentry && (authored_fix_plan || fix_plan_round_posted(issue)) {
                 // The Architect-authored Fix Plan replaces the derived compaction —
-                // consume the plan draft so it is never double-posted later.
+                // consume the plan draft so it is never double-posted later. This is
+                // ALSO idempotent against a round whose Fix Plan was ALREADY posted (e.g.
+                // the authored draft was consumed by a manual `post-comments` flush):
+                // re-drafting the triage plan on the rework re-entry must not emit a
+                // SECOND fallback Fix Plan for the same round (G-344).
                 let _ = std::fs::remove_file(&p);
-                println!("SKIPPED: triage-plan.md compaction replaced by the Architect-authored fix-plan.md");
+                println!("SKIPPED: triage-plan.md compaction — a Fix Plan for this round is already authored/posted");
                 continue;
             }
             let prior_impl = prior_phase_entries(issue, "implementation");
@@ -2904,7 +4244,16 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
         };
         match post_one_timeline_comment(issue, actor, phase, &p, &post_title, &post_body) {
             Ok(()) => {}
-            Err(e) => println!("WARNING: could not post {} comment ({}): {}", post_title, fname, e),
+            Err(e) => {
+                // A failed timeline post must be OBSERVABLE, not silent: a lost
+                // plan/verdict comment is otherwise invisible until an agent
+                // notices the gap (observed #3036 — the `## Triage Plan` post
+                // failed during an API outage and the loss was never surfaced).
+                let _ = append_event_attrs(issue, "guard.fired", actor, phase, "blocked",
+                    &format!("timeline comment post failed for {}: {}", fname, e),
+                    &[("guardId", "G-359"), ("guardKey", "timeline_post_failed"), ("failureClass", "timeline_comment_lost"), ("site", "post-comments")]);
+                println!("WARNING: could not post {} comment ({}): {}", post_title, fname, e);
+            }
         }
     }
     Ok(())
@@ -2912,15 +4261,15 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
 
 /// Post a single timeline-comment draft (writes `## <title>` + body, posts it,
 /// consumes the file). Retry-relevant timeline comments (Development Summary,
-/// Tests Runs, SI Summary) get a machine-stamped `(round N)` header — the round is
+/// Tests Runs) get a machine-stamped `(round N)` header — the round is
 /// derived from the event log (`retry_state` / the testing-entry count), never
 /// written by the drafting agent, so the GitHub timeline is unambiguously
 /// round-tagged and round-1/round-2 verdicts never collide. The Development
 /// Summary stamps the round whose testing entry is being created (count + 1);
-/// Tests Runs and SI Summary stamp the round that is ending. PO Backlog and
-/// Triage Plan are round-1-only artifacts and stay untagged.
+/// Tests Runs stamps the round that is ending. Triage Plan is a round-1-only
+/// artifact and stays untagged.
 fn post_one_timeline_comment(issue: u32, actor: &str, phase: &str, p: &std::path::Path, title: &str, body: &str) -> anyhow::Result<()> {
-    const ROUND_TAGGED: &[&str] = &["Development Summary", "Tests Runs", "SI Summary"];
+    const ROUND_TAGGED: &[&str] = &["Development Summary", "Tests Runs"];
     // G-020 on the timeline path (audit fix): the `comment` action refuses a second
     // verdict-carrying comment per round, but this path bypassed it — two
     // tests-runs.md flushes in one round BOTH posted. A verdict-carrying
@@ -2929,15 +4278,15 @@ fn post_one_timeline_comment(issue: u32, actor: &str, phase: &str, p: &std::path
     if title == "Tests Runs" && has_verdict_line(body) {
         let (round, _) = retry_state(issue);
         if count_verdict_comments_in_round(issue, round) > 0 {
-            append_event_attrs(issue, "guard.fired", actor, phase, "blocked", "G-020 timeline dedup: refusing a second verdict-carrying ## Tests Runs post in this round", &[("guardId", "G-020"), ("guardKey", "timeline_dedup"), ("failureClass", "tester_duplicate_verdict_posting")])?;
+            append_event_attrs(issue, "guard.fired", actor, phase, "blocked", "G-020 timeline dedup: refusing a second verdict-carrying ## Tests Runs post in this round", &[("guardId", "G-020"), ("guardKey", "timeline_dedup"), ("failureClass", "tester_duplicate_verdict_posting"), ("site", "post-comments")])?;
             println!("WARNING: a verdict-carrying ## Tests Runs comment already exists for round {} — not posting (G-020). Reconcile into the existing verdict, then re-run.", round);
             return Ok(());
         }
     }
     let header = if ROUND_TAGGED.contains(&title) {
-        // Round-stamp derivation (#2788 audit fix): Tests Runs and SI Summary
-        // document the testing round that is ENDING — the raw count of testing
-        // `phase.started` entries at post time is correct for them. The
+        // Round-stamp derivation (#2788 audit fix): Tests Runs documents the
+        // testing round that is ENDING — the raw count of testing
+        // `phase.started` entries at post time is correct for it. The
         // Development Summary documents the fix round whose testing entry this
         // transition is ABOUT to create (drafts flush BEFORE the destination
         // `phase.started` append), so its stamp is count + 1 — otherwise every
@@ -2959,7 +4308,14 @@ fn post_one_timeline_comment(issue: u32, actor: &str, phase: &str, p: &std::path
     };
     let tmp = project_root()?.join(".opencode").join("tmp").join(format!("timeline-{}.md", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(tmp.parent().unwrap())?;
-    std::fs::write(&tmp, format!("## {}\n\n{}", header, body))?;
+    // G-405 no-double-head: never prepend a header the draft already carries on
+    // its own line. A `dev-verify-<ST-id>.md` draft may include the documented
+    // `## Developer <ST-id> — verification` heading itself; unconditionally
+    // prepending it produced a doubled header on #3080
+    // (`## Developer ST-1 — verification` twice).
+    let already_headed = body.lines().any(|l| l.trim_start().starts_with(&format!("## {}", header)));
+    let content = if already_headed { body.to_string() } else { format!("## {}\n\n{}", header, body) };
+    std::fs::write(&tmp, content)?;
     run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
     let _ = std::fs::remove_file(&tmp);
     let _ = std::fs::remove_file(p);
@@ -3047,8 +4403,9 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                         match lock_issue(&gh_repo()?, n) {
                             Ok(()) => println!("LOCKED ON CREATE: #{}", n),
                             Err(e) => {
-                                let _ = append_event(n, "guard.fired", &a.actor, "unknown", "blocked",
-                                    &format!("lock-on-create failed for #{}: {}", n, e));
+                                let _ = append_event_attrs(n, "guard.fired", &a.actor, "unknown", "blocked",
+                                    &format!("lock-on-create failed for #{}: {}", n, e),
+                                    &[("guardId", "lock_on_create"), ("guardKey", "lock_on_create_failed"), ("failureClass", "issue_born_unlocked"), ("site", "create-issue")]);
                                 println!("WARNING: lock-on-create failed for #{}: {}", n, e);
                             }
                         }
@@ -3149,26 +4506,26 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             //   — use the `block` action (label + SLA + Status reason) instead of a
             //   parallel Q/A channel nobody reads (workers get answers via their
             //   re-dispatch briefs, never by scanning threads).
-            // - `Decision` is MACHINE-ONLY: the audit-record action posts the verdict
-            //   Decision internally. Free-form Decision comments are refused — a
-            //   decision reaches the record through `audit-record` or a PO amendment
-            //   via `Status`, never as agent prose.
+            // - `Decision` is MACHINE-ONLY: the `audit-record` action posts the
+            //   `## Audit Verdict` comment internally. Free-form Decision comments
+            //   are refused — a decision reaches the record through `audit-record`
+            //   or a PO amendment via `Status`, never as agent prose.
             if prefix == "Evidence" {
-                let _ = append_event(issue, "guard.fired", &a.actor, phase.as_str(), "blocked", "refused --prefix Evidence (removed; verdict goes via tests-runs.md draft)");
+                let _ = append_event_attrs(issue, "guard.fired", &a.actor, phase.as_str(), "blocked", "refused --prefix Evidence (removed; verdict goes via tests-runs.md draft)", &[("guardId", "G-064"), ("guardKey", "evidence_prefix_removed"), ("failureClass", "removed_prefix_used"), ("site", "comment")]);
                 anyhow::bail!(
                     "the `Evidence` comment prefix is removed — post the verdict via the `.opencode/tmp/<issue>/tests-runs.md` draft (the machine posts it round-stamped as `## Tests Runs (round N)`); upload screenshots via `upload-evidence` and paste the raw URLs into the draft"
                 );
             }
             if prefix == "Question" {
-                let _ = append_event(issue, "guard.fired", &a.actor, phase.as_str(), "blocked", "refused --prefix Question (removed; ambiguity = block action)");
+                let _ = append_event_attrs(issue, "guard.fired", &a.actor, phase.as_str(), "blocked", "refused --prefix Question (removed; ambiguity = block action)", &[("guardId", "G-065"), ("guardKey", "question_prefix_removed"), ("failureClass", "removed_prefix_used"), ("site", "comment")]);
                 anyhow::bail!(
                     "the `Question` comment prefix is removed — ambiguity blocks work until answered: request the `block` action with `--reason` (label + SLA + recorded reason), and the orchestrator resolves and re-dispatches with the answer inlined in the brief"
                 );
             }
             if prefix == "Decision" {
-                let _ = append_event(issue, "guard.fired", &a.actor, phase.as_str(), "blocked", "refused free-form Decision (machine-only via audit-record)");
+                let _ = append_event_attrs(issue, "guard.fired", &a.actor, phase.as_str(), "blocked", "refused free-form Decision (machine-only via audit-record)", &[("guardId", "decision_prefix_machine_only"), ("guardKey", "decision_prefix_machine_only"), ("failureClass", "machine_only_prefix_used"), ("site", "comment")]);
                 anyhow::bail!(
-                    "`Decision` comments are machine-only (posted by the `audit-record` verdict) — decisions reach the record via `audit-record --reason` or a PO amendment through `--prefix Status`"
+                    "`Decision` comments are machine-only — the audit verdict is the machine-posted `## Audit Verdict` comment (via `audit-record`); decisions reach the record via `audit-record` or a PO amendment through `--prefix Status`"
                 );
             }
             if !["Status"].contains(&prefix) {
@@ -3230,7 +4587,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             if has_verdict_line(&body) {
                 let (round, _) = retry_state(issue);
                 if count_verdict_comments_in_round(issue, round) > 0 {
-                    let _ = append_event_attrs(issue, "guard.fired", &a.actor, phase.as_str(), "blocked", "G-020: refusing a second verdict-carrying comment in this round", &[("guardId", "G-020"), ("guardKey", "timeline_dedup"), ("failureClass", "tester_duplicate_verdict_posting")]);
+                    let _ = append_event_attrs(issue, "guard.fired", &a.actor, phase.as_str(), "blocked", "G-020: refusing a second verdict-carrying comment in this round", &[("guardId", "G-020"), ("guardKey", "timeline_dedup"), ("failureClass", "tester_duplicate_verdict_posting"), ("site", "comment")]);
                     anyhow::bail!(
                         "refusing a second verdict-carrying comment in round {} — one `## Tests Runs` verdict per round; fold ALL receipts into the single verdict comment (G-020)",
                         round
@@ -3239,11 +4596,29 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             }
             let tmp = project_root()?.join(".opencode").join("tmp").join(format!("comment-{}.md", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(tmp.parent().unwrap())?;
-            // Skip the header prepend when the drafted body already starts with the
-            // `## <prefix>` heading (agents sometimes include it — a duplicate header
-            // produced `## Status\n\n## Status\n\n...` on #2734's closing comment).
+            // Header selection. Normally the machine owns the `## <prefix>` heading
+            // (skip the prepend when the drafted body already starts with it — a
+            // duplicate header produced `## Status\n\n## Status\n\n...` on #2734's
+            // closing comment). G-405: the per-developer verification comment's
+            // DOCUMENTED header is `## Developer <ST-id> — verification`, which the
+            // Status-only prefix cannot produce — so honour it when the drafted body
+            // already carries a `## Developer …` heading, OR derive it from a
+            // `dev-verify-<ST-id>.md` body file. The prefix gate is UNCHANGED
+            // (arbitrary prose still gets `## Status`; a non-`Status` prefix is still
+            // refused) — only this one documented header bypasses the prepend.
             let header = format!("## {}", prefix);
-            let content = if body.trim_start().starts_with(&header) {
+            // G-405 no-double-head: the documented `## Developer …` header may
+            // already be present — at the body start (the developer authored it)
+            // OR nested (a legacy draft whose top line is `## Status`). Detect it
+            // on ANY line so the machine never prepends a second copy.
+            let has_dev_header = body.lines().any(|l| l.trim_start().starts_with("## Developer "));
+            let starts_status = body.trim_start().starts_with(&header);
+            let dev_title = dev_verify_title(&body_file_name);
+            let content = if has_dev_header {
+                body
+            } else if let Some(t) = dev_title {
+                format!("## {}\n\n{}", t, body)
+            } else if starts_status {
                 body
             } else {
                 format!("## {}\n\n{}", prefix, body)
@@ -3259,46 +4634,80 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // pending drafts without a transition).
             let issue = req_issue(a)?;
             let phase = phase_of(a)?.as_str().to_string();
+            // Recovery: re-assemble + post a `## Triage Plan` comment that was lost
+            // to a failed transition-side post (API outage) BEFORE the generic
+            // flush — whose rework heuristic would otherwise compact a rework-shaped
+            // draft into a spurious `## Fix Plan` with no governing plan to fix
+            // (G-259 family; observed on #3036). Idempotent and non-fatal.
+            recover_missing_triage_plan(issue, &a.actor, &phase);
             post_pending_comments(issue, &a.actor, &phase, None)?;
         }
         "record-improvement" => {
-            // The SI records a pipeline improvement it made on the go — posts a
-            // `## Pipeline Improvement (round N)` comment on the feature issue
-            // immediately (so the timeline shows the improvement at the moment it
-            // happened, not only at audit), records a `pipeline.improvement` metric
-            // event (tracked in the event log + metrics), and appends a guardrail
-            // record to `references.md` `Known Failure Modes` (retro-analysis
-            // Recipe 6 format, SI-owned G- records). Requires --reason.
+            // The Curator records a pipeline improvement — posts the ONE structured
+            // `## Pipeline Improvement` comment on the feature issue immediately (the
+            // timeline shows the improvement at the moment it happened, not only at
+            // audit; ONE comment per curation pass, never one per guardrail),
+            // records a `pipeline.improvement` metric event (tracked in the event
+            // log + metrics), and allocates the next free `### G-NNN` id (stamped as
+            // `guardrailId` on the event and printed for the Curator). The machine
+            // does NOT author the `### G-` record — the guardrail records are
+            // Curator-authored (principle 6); the Curator writes the record in the
+            // same pass with the allocated id. The structured body comes from
+            // `--body-file` (the `pipeline-improvement.md` template draft); a bare
+            // `--reason` is the fallback. One of the two is required.
             if !actor_allowed(a.action.as_str(), &a.actor) {
                 append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action))?;
                 println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
                 return Ok(());
             }
             let issue = req_issue(a)?;
-            let reason = a.reason.as_deref().unwrap_or("").trim();
-            if reason.is_empty() {
-                anyhow::bail!("record-improvement requires --reason \"<what was improved>\"");
+            let reason = a.reason.as_deref().unwrap_or("").trim().to_string();
+            let body_file = a.body_file.as_deref();
+            // The structured body source: `--body-file`, else the conventional
+            // `.opencode/tmp/<issue>/pipeline-improvement.md` draft, else a bare
+            // `--reason`. At least one of `--reason`/`--body-file` is required; the
+            // conventional draft is only consulted when `--body-file` is absent.
+            let conventional = project_root()?.join(".opencode").join("tmp").join(issue.to_string()).join("pipeline-improvement.md");
+            if reason.is_empty() && body_file.is_none() && !conventional.exists() {
+                anyhow::bail!("record-improvement requires --reason \"<what was improved>\" or --body-file <structured draft>");
             }
             let phase = phase_of(a)?.as_str().to_string();
             let (round, _) = retry_state(issue);
-            // 1) Post the `## Pipeline Improvement (round N)` comment on the issue.
-            let body = format!("## Pipeline Improvement (round {})\n\n{}\n\n*Authored by Self-Improver*", round, reason);
+            // 1) Post the ONE `## Pipeline Improvement` comment on the issue. The
+            //    machine owns the header + footer (anti-spoofing); the Curator owns
+            //    the structured body.
+            let (raw_body, from_conventional) = match body_file {
+                Some(f) => (std::fs::read_to_string(f)
+                    .map_err(|e| anyhow::anyhow!("cannot read --body-file {}: {}", f, e))?, false),
+                None if conventional.exists() => (std::fs::read_to_string(&conventional)?, true),
+                None => (reason.clone(), false),
+            };
+            let body = ensure_author_footer(
+                &format!("## Pipeline Improvement\n\n{}", strip_leading_heading(&raw_body, "## Pipeline Improvement")),
+                "curator",
+            );
             let tmp = project_root()?.join(".opencode").join("tmp").join(format!("improvement-{}.md", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(tmp.parent().unwrap())?;
             std::fs::write(&tmp, &body)?;
             run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
             let _ = std::fs::remove_file(&tmp);
+            if from_conventional {
+                let _ = std::fs::remove_file(&conventional);
+            }
             println!("IMPROVEMENT COMMENTED: round {} on #{}", round, issue);
-            // 2) Persist the guardrail FIRST so its allocated id can be stamped on
-            //    the metric event — making `pipeline.improvement` / `guard.fired` /
-            //    `### G-NNN` joinable (guardrail identity for effectiveness work).
-            let guard_id = persist_improvement_guardrail(issue, reason, round).ok().flatten();
-            // 3) Record the metric event (with guardrailId when a G-record landed).
+            // 2) Allocate the next free guardrail id (deterministic) so it can be
+            //    stamped on the metric event — making `pipeline.improvement` /
+            //    `guard.fired` / `### G-NNN` joinable (guardrail identity for
+            //    effectiveness work). The machine allocates the id only; the
+            //    Curator authors the `### G-` record in the same pass.
+            let guard_id = allocate_guardrail_id(issue).ok().flatten();
+            // 3) Record the metric event (with guardrailId when an id was allocated).
             let round_s = round.to_string();
             let gid = guard_id.map(|g| format!("G-{:03}", g)).unwrap_or_default();
             let mut attrs: Vec<(&str, &str)> = vec![("round", round_s.as_str())];
             if !gid.is_empty() { attrs.push(("guardrailId", gid.as_str())); }
-            append_event_attrs(issue, "pipeline.improvement", &a.actor, &phase, "success", reason, &attrs)?;
+            let msg = if reason.is_empty() { "pipeline improvement (structured body)".to_string() } else { reason };
+            append_event_attrs(issue, "pipeline.improvement", &a.actor, &phase, "success", &msg, &attrs)?;
         }
         "transition" => {
             if !actor_allowed(a.action.as_str(), &a.actor) {
@@ -3320,11 +4729,12 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 println!("BLOCKED: illegal transition {} -> {}", phase.as_str(), to.as_str());
                 return Ok(());
             }
-            // `done` is reached only through `audit-record --verdict success` (which
-            // closes the issue); a bare `transition` to `done` would relabel without
-            // closing — refuse it.
+            // `done` is reached only through the cleanup close
+            // (`close-issue --to-phase done`), after the audit verdict moved the issue
+            // audit → post-audit and the post-audit ran; a bare `transition` to `done`
+            // would relabel without closing — refuse it.
             if to == Phase::Done {
-                let msg = "transition to done is not allowed — use audit-record --verdict success (audit → cleanup), then close-issue --to-phase done to close as done".to_string();
+                let msg = "transition to done is not allowed — use audit-record --verdict success (audit → post-audit), then transition post-audit → cleanup, then close-issue --to-phase done to close as done".to_string();
                 append_event(issue, "transition", &a.actor, phase.as_str(), "blocked", &msg)?;
                 println!("BLOCKED: {}", msg);
                 return Ok(());
@@ -3340,14 +4750,10 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // planning cluster re-converges the new scope). All other transitions
             // keep their normal exit guard.
             //
-            // A REOPEN (`done → planning`) is the human-review rework leg: a defect
-            // reported after the feature was labeled done (the issue stays OPEN for
-            // manual human close) loops the feature back to planning so the triage
-            // cluster re-converges a fix round. Its exit guard (Done's) always
-            // passes, and entering planning re-seeds the A2A fresh like the
-            // rescope/restart legs (the retry round advances from the testing-entry
-            // count, so the fix round is machine-stamped). The reopenCount /
-            // reopenRate metrics derive from these transition events.
+            // There is NO `done → planning` reopen leg: a post-merge defect is
+            // handled by a follow-up spec linked to the finished one via the PO's
+            // `revises: #N` (`feature.revised`) — the revised issue is never
+            // reopened. `done` is terminal in the machine; only the human closes it.
             // Serving-currency guard (G-052): entering testing requires the repo
             // root (the serving checkout) to sit on spec/<N> at the origin tip.
             // Checked BEFORE the exit gate — a wrong-branch/stale root is the most
@@ -3369,6 +4775,17 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 && to == Phase::Implementation
                 && a.human_authorized
                 && a.reason.as_deref().map(|r| !r.trim().is_empty()).unwrap_or(false);
+            // The Testing exit guard requires a POSTED tester verdict comment (a FAIL
+            // routes to rework, a PASS to audit). The tester leaves that verdict as a
+            // `tests-runs.md` draft and the transition's own flush runs AFTER the guard,
+            // so post pending timeline drafts BEFORE evaluating the guard for any leg
+            // leaving Testing. Idempotent (a no-op when nothing is pending); the normal
+            // end-of-transition flush then finds them consumed. This removes the manual
+            // `post-comments` step — and its duplicate-Fix-Plan hazard — from the
+            // retry/PASS workflow (G-344).
+            if phase == Phase::Testing {
+                let _ = post_pending_comments(issue, &a.actor, phase.as_str(), Some(phase.as_str()));
+            }
             let (ok, reason) = if (phase == Phase::Implementation && to == Phase::Planning)
                 || human_authorized_rework
             {
@@ -3380,6 +4797,20 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 append_event(issue, "transition", &a.actor, phase.as_str(), "blocked", &reason)?;
                 println!("BLOCKED: {}", reason);
                 return Ok(());
+            }
+            // Success-only post-audit gate: `post-audit → cleanup` (the road to
+            // `done`) ADDITIONALLY requires the SPEC MAINT PR to have MERGED. A
+            // restart exit (`post-audit → <phase>`) does NOT require it — the run is
+            // not done. Net effect: `done` is unreachable unless the maintenance PR
+            // merged. Enforced here (not in `exit_guard_passes`) because only this
+            // leg is the success path.
+            if phase == Phase::PostAudit && to == Phase::Cleanup {
+                if let Err(e) = maint_pr_merged(issue) {
+                    let reason = e.to_string();
+                    append_event(issue, "transition", &a.actor, phase.as_str(), "blocked", &reason)?;
+                    println!("BLOCKED: {}", reason);
+                    return Ok(());
+                }
             }
             if human_authorized_rework {
                 append_event(issue, "human.authorization", &a.actor, phase.as_str(), "success",
@@ -3407,13 +4838,14 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 Phase::Planning => {
                     // Auto-seed the A2A deliberation file (idempotent) so the planning
                     // cluster has a place to draft before the SI dispatches it.
-                    // On an `audit → planning` restart, an `implementation →
-                    // planning` rescope, OR a `done → planning` reopen, back up
-                    // the stale converged file and re-seed fresh — the retry/
-                    // rescope/reopen cluster must not inherit the previous
-                    // round's converged drafts (the fix round re-converges a
-                    // new plan from scratch).
-                    if phase == Phase::Audit || phase == Phase::Implementation || phase == Phase::Done {
+                    // On an `audit → planning` restart or an `implementation →
+                    // planning` rescope, back up the stale converged file and
+                    // re-seed fresh — the retry/rescope cluster must not inherit
+                    // the previous round's converged drafts (the fix round
+                    // re-converges a new plan from scratch). An audit restart now
+                    // routes `audit → post-audit → planning`, so `post-audit` is a
+                    // restart source too.
+                    if phase == Phase::Audit || phase == Phase::PostAudit || phase == Phase::Implementation {
                         let p = triage_a2a_path(issue)?;
                         if p.exists() {
                             let ts = chrono::Utc::now().format("%Y%m%d%H%M%S");
@@ -3443,7 +4875,19 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                         // during testing, so a re-entry has nothing new to add.
                         if prior_phase_entries(issue, "implementation") == 0 {
                             let a2a = std::fs::read_to_string(triage_a2a_path(issue)?).unwrap_or_default();
-                            for feat in parse_feature_names(&a2a) {
+                            let features = parse_feature_names(&a2a);
+                            // G-240: the QA marker line must carry ONLY bare comma-separated
+                            // lowercase-kebab feature names. A marker embedded in a comma-rich
+                            // sentence parses to ZERO valid tokens, and the suites would be
+                            // silently skipped — the parser is lenient about POSITION but
+                            // strict about TOKEN SHAPE (same family as #2877/#2897, whose
+                            // fixes only covered position). Surface it loudly instead.
+                            if features.is_empty() && section(&a2a, "## QA Expert").contains(FEATURE_TESTS_PREFIX) {
+                                let msg = "QA `**Feature tests:**` marker present but no valid feature names parsed — no suites persisted (write `**Feature tests:** <lowercase-kebab>[, <name>]` and put any prose on a following line)";
+                                notes.push(format!("WARNING: {}", msg));
+                                let _ = append_event_attrs(issue, "guard.fired", &a.actor, to.as_str(), "blocked", msg, &[("guardId", "G-240"), ("guardKey", "feature_tests_marker_token_shape"), ("failureClass", "suite_persistence_silently_skipped"), ("site", "transition")]);
+                            }
+                            for feat in features {
                                 match persist_tests(&feat) {
                                     Ok(n) => { if n > 0 { notes.push(format!("tests for '{}' → main", feat)); } }
                                     // A declared-but-unseeded suite must surface, not vanish:
@@ -3462,6 +4906,14 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     if let Some(n) = ensure_spec_pr(issue)? { notes.push(n); }
                 }
                 Phase::Audit => { if phase == Phase::Testing { if let Some(n) = ensure_spec_pr_merged(issue)? { notes.push(n); } } }
+                Phase::Cleanup => {
+                    // Deterministic ad-hoc-script surfacing (the #3077 lesson): at the
+                    // cleanup boundary list every script an agent improvised under
+                    // `.opencode/tmp/<issue>/` and record it, so the Orchestrator can
+                    // route recurring ones to the Toolsmith before the run closes.
+                    // Best-effort and additive — it never blocks the transition.
+                    surface_adhoc_scripts(issue, &a.actor, to.as_str());
+                }
                 _ => {}
             }
             swap_phase_label(issue, phase, to)?;
@@ -3477,7 +4929,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 println!("SIDE-EFFECTS: {}", notes.join("; "));
             }
             // Post any pending timeline-comment drafts (`.opencode/tmp/<issue>/*.md`):
-            // PO Backlog, Triage Plan, Development Summary, Tests Runs, SI Summary.
+            // Triage Plan, Fix Plan, Development Summary, Tests Runs.
             // NOTE ordering: this MUST run BEFORE the destination `phase.started` is
             // appended — the plan-comment decision counts prior `phase.started`
             // entries for the destination phase (prior_phase_entries), so appending
@@ -3502,7 +4954,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             run_gh(&["issue", "edit", &issue.to_string(), "--add-label", &blocked_label])?;
             let tmp = project_root()?.join(".opencode").join("tmp").join(format!("block-{}.md", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(tmp.parent().unwrap())?;
-            std::fs::write(&tmp, format!("## Status\n\nBlocked: {}", reason))?;
+            std::fs::write(&tmp, ensure_author_footer(&format!("## Status\n\nBlocked: {}", reason), &a.actor))?;
             run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
             let _ = std::fs::remove_file(&tmp);
             println!("BLOCKED: #{} ({})", issue, reason);
@@ -3538,8 +4990,9 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             }
             if to_str == "done" {
                 // A feature closes as done from the Cleanup phase (teardown complete;
-                // the SI's audit verdict was already recorded as the audit → cleanup
-                // gate). Sub-issues were removed — the plan issue is closed alongside
+                // the SI's success audit verdict was already recorded as the audit →
+                // post-audit gate, and the post-audit ran before cleanup). Sub-issues
+                // were removed — the plan issue is closed alongside
                 // the feature by the cleanup close only (it never holds a phase label).
                 if phase != Phase::Cleanup {
                     let msg = format!("issue is in {}, only cleanup-phase features can close as done", phase.as_str());
@@ -3578,8 +5031,14 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 swap_phase_label(issue, Phase::Cleanup, Phase::Done)?;
                 append_event_attrs(issue, "phase.completed", &a.actor, "cleanup", "success", "completed cleanup", &[("phase", "cleanup"), ("to", "done")])?;
                 append_event_attrs(issue, "phase.started", &a.actor, "done", "success", "started done", &[("phase", "done"), ("from", "cleanup")])?;
-                // Auto final-metrics summary (the mechanical half of the closing report).
-                let _ = post_final_summary(issue);
+                // Deterministic ad-hoc-script surfacing (#3077): re-run at the close
+                // so the printed list + the `ad-hoc-scripts` event reflect the final
+                // scratch tree even when the cleanup entry predates it. Additive and
+                // best-effort — it never blocks the close.
+                surface_adhoc_scripts(issue, &a.actor, phase.as_str());
+                // Post the ONE `## Final Status` closing comment: the Orchestrator's
+                // outcome/doc-sync draft (`--body-file`) + the machine's final metrics.
+                let _ = post_final_status(issue, a.body_file.as_deref());
                 // Mirror the done status onto the project Status field (issue stays OPEN).
                 let _ = sync_project_status(issue, "done");
                 println!("CLEANUP -> DONE: #{} labeled done (issue left OPEN for human close)", issue);
@@ -3714,7 +5173,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // issue). Replaces one whole `##` section of that draft with the new
             // content, writing it back to the draft (idempotent per section — the
             // machine reads it on the next `post-comments` flush / transition).
-            // Gated to the self-improver.
+            // Gated to the orchestrator.
             if !actor_allowed(a.action.as_str(), &a.actor) {
                 append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action))?;
                 println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
@@ -3752,7 +5211,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // planners write under their own sections and converse in `##
             // Discussion` instead of GitHub comments; the converged result is
             // assembled into the plan by the `triage → implementation` transition.
-            // Also an auto side-effect of `intake → triage`. Gated to self-improver.
+            // Also an auto side-effect of `intake → triage`. Gated to orchestrator.
             if !actor_allowed(a.action.as_str(), &a.actor) {
                 append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action))?;
                 println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
@@ -3768,7 +5227,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // main as the regression asset; unique paths keep concurrent specs
             // conflict-free). Also an auto side-effect of `triage → implementation`
             // (feature names come from the QA Expert's `**Feature tests:**` line).
-            // Gated to self-improver and tester.
+            // Gated to orchestrator and tester.
             if !actor_allowed(a.action.as_str(), &a.actor) {
                 append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action))?;
                 println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
@@ -3797,7 +5256,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // this sweep catches abandoned/cancelled specs and stragglers).
             // Local deletes: any local `spec/*`/`feat/*` whose remote counterpart is
             // gone (already deleted upstream), plus legacy merged `feat/*`.
-            if a.actor != "self-improver" {
+            if a.actor != "orchestrator" {
                 println!("BLOCKED: actor {} not allowed to prune", a.actor);
                 return Ok(());
             }
@@ -3929,8 +5388,8 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             audit_evidence(issue, a.json)?;
         }
         "audit-record" => {
-            // SI verdict: posts the Decision comment AND records the metric event —
-            // one write path, one event, no separate `comment` step.
+            // SI verdict: posts the `## Audit Verdict` comment AND records the metric
+            // event — one write path, one event, no separate `comment` step.
             if !actor_allowed(a.action.as_str(), &a.actor) {
                 append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action))?;
                 println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
@@ -3943,6 +5402,17 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // verification policy. A static-only PASS, a FAIL, or no Evidence
             // comment cannot close a feature as done — the SI must restart instead.
             if verdict == "success" {
+                // Spec #2944 CU-G (R-5.2): env-tagged evidence must be attributable
+                // to the intended environment — a forged/mismatched record blocks the
+                // success verdict (reject, never delete). Evaluated first so the
+                // rejection is surfaced independently of the comment verdict.
+                let env_check = check_env_evidence(req_issue(a)?);
+                if env_check.present && !env_check.valid {
+                    let msg = format!("cannot record success: env evidence rejected — {}", env_check.reason);
+                    append_event(req_issue(a)?, "audit-record", &a.actor, "audit", "blocked", &msg)?;
+                    println!("BLOCKED: {}", msg);
+                    return Ok(());
+                }
                 let (_, _, _, _, verification_ok, reason) = verification_status(req_issue(a)?);
                 if !verification_ok {
                     let msg = format!("cannot record success: {}", reason);
@@ -3951,13 +5421,19 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     return Ok(());
                 }
             }
-            // `phase` is derived from --phase for the Decision comment / event message.
+            // `phase` is derived from --phase for the Audit Verdict comment / event
+            // message — it is the RECORDED restart target (the phase the post-audit
+            // will exit to once the specialists have run). "audit" (the default)
+            // means a success verdict.
             let phase = a.to_phase.as_deref().unwrap_or("audit");
             let reason = a.reason.as_deref().unwrap_or("");
             // Validate the restart target before any write: only the four real restart
-            // phases are legal. `done` is rejected explicitly (audit:done is a close,
-            // not a restart) — otherwise `--verdict restart --phase done` would leave
-            // the issue open in `done` with no close.
+            // phases are legal, and they are the exits of the POST-AUDIT phase (the
+            // restart now routes audit → post-audit → <phase>; the Orchestrator runs
+            // the post-audit → <phase> transition after the specialists ran). `done`
+            // is rejected explicitly (a close, not a restart) — otherwise
+            // `--verdict restart --phase done` would leave the issue open in `done`
+            // with no close.
             // Structured root cause (SI-decision data): restarts MUST classify WHY —
             // defect (product code), technique (evidence/test method), environment
             // (wedges/wedges-adjacent), scope (AC ambiguity/PO decision) — as an
@@ -3969,7 +5445,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 if to == Phase::Done {
                     anyhow::bail!("illegal restart phase: done");
                 }
-                if !is_legal_transition(Phase::Audit, to) {
+                if !is_legal_transition(Phase::PostAudit, to) {
                     anyhow::bail!("illegal restart phase: {}", phase);
                 }
                 if let Some(rc) = a.root_cause.as_deref() {
@@ -3982,7 +5458,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             } else {
                 None
             };
-            // The Decision comment implies a label swap (+ transition on success) —
+            // The Audit Verdict comment implies a label swap (audit → post-audit) —
             // refuse to post it unless the issue is actually in the audit phase, so a
             // failed label swap can never leave a posted verdict behind (no half-state).
             let current = phase_of(a)?;
@@ -3992,19 +5468,48 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 println!("BLOCKED: {}", msg);
                 return Ok(());
             }
-            let body = if verdict == "success" {
-                format!("## Decision\n\nAudit verdict: **success**.\n\n{}", reason)
+            // Machine-stamped round: the restart names the round the next dispatch is
+            // completing, so the timeline is round-tagged and the reason (missed-AC
+            // list) is scoped to that round.
+            let (round, _) = retry_state(issue);
+            // The Auditor's structured body: `--body-file` (the `## Audit Verdict`
+            // template draft, `.opencode/tmp/<issue>/audit-verdict.md`) if given, else
+            // the conventional draft path, else a machine-synthesized default. The
+            // machine owns the `## Audit Verdict` header + the `Verdict:` line +
+            // the footer (anti-spoofing); the Auditor owns the per-AC detail. The
+            // verdict is machine-known (`--verdict`), never parsed from the prose.
+            let default_body = if verdict == "success" {
+                format!("Verdict: **SUCCESS**\n\n{}", reason)
             } else {
-                // Machine-stamped round: the restart Decision names the round the
-                // next dispatch is completing, so the timeline is round-tagged and
-                // the reason (missed-AC list) is scoped to that round.
-                let (round, _) = retry_state(issue);
                 let rc_line = match a.root_cause.as_deref() {
-                    Some(rc) => format!("\nRoot cause: **{}**.\n", rc),
+                    Some(rc) => format!("Root cause: **{}**.\n\n", rc),
                     None => String::new(),
                 };
-                format!("## Decision\n\nAudit verdict: **restart → {} (round {})**.{}\nMissed ACs to complete in round {}:\n{}", phase, round, rc_line, round, reason)
+                format!("Verdict: **RESTART → {} (round {})**\n\n{}Missed ACs to complete in round {}:\n{}", phase, round, rc_line, round, reason)
             };
+            let raw_body = match a.body_file.as_deref() {
+                Some(f) => std::fs::read_to_string(f)
+                    .map_err(|e| anyhow::anyhow!("cannot read --body-file {}: {}", f, e))?,
+                None => {
+                    let conventional = project_root()?.join(".opencode").join("tmp").join(issue.to_string()).join("audit-verdict.md");
+                    if conventional.exists() { std::fs::read_to_string(&conventional)? } else { default_body }
+                }
+            };
+            let detail = strip_leading_heading(&raw_body, "## Audit Verdict");
+            // Guarantee a machine-parseable verdict line (the template's first content
+            // line) so the audit/cleanup exit guards can read the verdict from the
+            // posted comment even when the Auditor's draft omitted it.
+            let detail = if detail.lines().any(line_has_audit_verdict) {
+                detail
+            } else {
+                let verdict_line = if verdict == "success" {
+                    "Verdict: **SUCCESS**".to_string()
+                } else {
+                    format!("Verdict: **RESTART → {} (round {})**", phase, round)
+                };
+                if detail.trim().is_empty() { verdict_line } else { format!("{}\n\n{}", verdict_line, detail) }
+            };
+            let body = ensure_author_footer(&format!("## Audit Verdict\n\n{}", detail), "auditor");
             let tmp = project_root()?.join(".opencode").join("tmp").join(format!("audit-{}.md", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(tmp.parent().unwrap())?;
             std::fs::write(&tmp, body)?;
@@ -4022,47 +5527,36 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             } else if verdict == "success" {
                 println!("NOTE: no 'Effort: N story points' line found in the ## Triage Plan comment — spec size not recorded for trend normalization");
             }
-            append_event_attrs(issue, "audit.verdict", "self-improver", phase,
+            append_event_attrs(issue, "audit.verdict", &a.actor, phase,
                 if verdict == "success" { "passed" } else { "failed" },
                 reason, &verdict_attrs)?;
-            // The verdict IS the decision — drive the next phase automatically.
+            // Post any pending timeline-comment drafts (a restart's authored
+            // `fix-plan.md`, ...) BEFORE the destination
+            // `phase.started` is appended below. The plan-comment decision counts
+            // prior `implementation` `phase.started` entries to stamp
+            // `## Fix Plan (round N)`; flushing AFTER the destination entry
+            // double-counted it and stamped an off-by-one round (#2974). Mirror the
+            // `transition` handler's ordering.
+            post_pending_comments(issue, &a.actor, "audit", None)?;
+            // The verdict IS the decision — drive the audit → post-audit handoff.
+            // The post-audit phase is where the pipeline's self-improvement + the gate
+            // merge run: the Curator records the durable lesson (record-improvement),
+            // the specialists' pipeline edits are committed with the product-doc sync,
+            // and the product docs are synced. The RECORDED verdict (success, or
+            // restart + target phase — stamped on the `audit.verdict` event above and
+            // in the Audit Verdict comment) tells the Orchestrator where the post-audit
+            // exits to once the specialists have run: `transition post-audit →
+            // cleanup` on success, or `transition post-audit → <phase>` on a restart.
+            swap_phase_label(issue, Phase::Audit, Phase::PostAudit)?;
+            append_event(issue, "transition", &a.actor, "post-audit", "success", "audit -> post-audit (audit verdict recorded)")?;
+            append_event_attrs(issue, "phase.completed", &a.actor, "audit", "success", "completed audit", &[("phase", "audit"), ("to", "post-audit")])?;
+            append_event_attrs(issue, "phase.started", &a.actor, "post-audit", "success", "started post-audit", &[("phase", "post-audit"), ("from", "audit")])?;
             if verdict == "success" {
-                // Success transitions audit → cleanup (the teardown-only phase). The
-                // issue stays OPEN; the SI runs the cleanup teardown, then closes as
-                // done via close-issue (cleanup → done).
-                swap_phase_label(issue, Phase::Audit, Phase::Cleanup)?;
-                append_event(issue, "transition", "self-improver", "cleanup", "success", "audit -> cleanup (audit success)")?;
-                append_event_attrs(issue, "phase.completed", "self-improver", "audit", "success", "completed audit", &[("phase", "audit"), ("to", "cleanup")])?;
-                append_event_attrs(issue, "phase.started", "self-improver", "cleanup", "success", "started cleanup", &[("phase", "cleanup"), ("from", "audit")])?;
-                println!("AUDIT PASS -> CLEANUP (auto): #{} entered cleanup", issue);
+                println!("AUDIT PASS -> POST-AUDIT (auto): #{} entered post-audit", issue);
             } else if let Some(to) = restart_to {
-                // A restart supersedes the round's testing — the stale Evidence
-                // verdict lives as a comment on the feature issue; the tester
-                // re-posts a fresh verdict. On a restart → planning, re-seed the A2A
-                // file (the retry cluster must NOT inherit the prior round's
-                // converged drafts) — mirrors the transition's planning side-effect.
-                if to == Phase::Planning {
-                    let p = triage_a2a_path(issue)?;
-                    if p.exists() {
-                        let ts = chrono::Utc::now().format("%Y%m%d%H%M%S");
-                        let backup = p.with_file_name(format!("triage.restart-{}.md", ts));
-                        if std::fs::rename(&p, &backup).is_ok() {
-                            println!("A2A re-seeded (previous file backed up as `{}`)", backup.display());
-                        }
-                    }
-                    if let Some(n) = ensure_triage_a2a(issue, &a.actor)? {
-                        println!("{}", n);
-                    }
-                }
-                swap_phase_label(issue, Phase::Audit, to)?;
-                append_event(issue, "transition", "self-improver", to.as_str(), "success", &format!("audit -> {} (auto restart)", to.as_str()))?;
-                append_event_attrs(issue, "phase.completed", "self-improver", "audit", "success", "completed audit", &[("phase", "audit"), ("to", to.as_str())])?;
-                append_event_attrs(issue, "phase.started", "self-improver", to.as_str(), "success", &format!("started {}", to.as_str()), &[("phase", to.as_str()), ("from", "audit")])?;
-                println!("AUDIT -> {} (auto restart)", to.as_str());
+                println!("AUDIT RESTART -> POST-AUDIT (auto): #{} entered post-audit (recorded target: {})", issue, to.as_str());
             }
             println!("AUDIT RECORDED: {} on #{}", verdict, issue);
-            // Post any pending timeline-comment drafts (SI Summary, Tests Runs, ...).
-            post_pending_comments(issue, &a.actor, "audit", None)?;
         }
         "upload-evidence" => {
             // Uploads a screenshot to GitHub as a `user-attachments` asset via the
@@ -4070,7 +5564,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // `https://github.com/user-attachments/...` URL for the tester to embed in
             // the SINGLE `## Tests Runs` comment. Nothing is written to the repo, so
             // evidence never bloats `main` or the spec branch. Upload-ONLY: no comment
-            // is posted per upload. Gated to the tester (and self-improver).
+            // is posted per upload. Gated to the tester (and orchestrator).
             if !actor_allowed(a.action.as_str(), &a.actor) {
                 append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action))?;
                 println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
@@ -4113,7 +5607,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
         }
         "improvement" => {
             // The honest self-improvement signal: acceptance rate (specs not later
-            // revised/reopened) with an interval + a half-vs-half change test.
+            // revised) with an interval + a half-vs-half change test.
             improvement_report(a.json)?;
         }
         "verify" => {
@@ -4257,8 +5751,12 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             }
             let role = a.role.as_deref().ok_or_else(|| anyhow::anyhow!("set-permission requires --role <agent>"))?;
             let tool = a.tool.as_deref().ok_or_else(|| anyhow::anyhow!("set-permission requires --tool <category>"))?;
-            let pattern = a.pattern.as_deref().ok_or_else(|| anyhow::anyhow!("set-permission requires --pattern <glob>"))?;
-            let decision = a.decision.as_deref().ok_or_else(|| anyhow::anyhow!("set-permission requires --decision allow|ask|deny"))?;
+            // `--pattern` is optional: with it, the rule inside the per-pattern map
+            // `permission.<tool>` is edited; without it, the top-level
+            // `permission.<tool>` member itself is added/replaced/removed (used to
+            // rename a flat tool-namespace glob like `chakra_ui_*`).
+            let pattern = a.pattern.as_deref();
+            let decision = a.decision.as_deref().ok_or_else(|| anyhow::anyhow!("set-permission requires --decision allow|ask|deny|remove"))?;
             let path = match a.config_file.as_deref() {
                 Some(p) => PathBuf::from(p),
                 None => project_root()?.join("opencode.json"),
@@ -4268,6 +5766,54 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             if let Some(issue) = a.issue {
                 append_event(issue, "set-permission", &a.actor, "unknown", "success", &summary)?;
             }
+        }
+        "human.review" => {
+            // The operator's accept/reject at the `done` human-review window
+            // (research/27 §4.1b) — the ONLY action that records the outcome the
+            // acceptance metric pairs with. The human cannot invoke the machine
+            // directly (they have no `--agent` identity in the sandbox), so the
+            // Product Owner — the human-facing intake/hand-off proxy — records the
+            // decision on the operator's behalf. Additive and non-mutating: it never
+            // reopens the issue or changes its phase (a post-merge defect is a
+            // follow-up `revises: #N` spec, never a reopen). `accept` → outcome
+            // `success`; `reject` → outcome `failed` (a revealed rejection even when
+            // no follow-up spec is ever filed).
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
+            let issue = req_issue(a)?;
+            let decision = a.decision.as_deref().unwrap_or("").trim().to_ascii_lowercase();
+            if !matches!(decision.as_str(), "accept" | "reject") {
+                anyhow::bail!("human.review requires --decision accept|reject");
+            }
+            let phase = phase_of(a)?.as_str().to_string();
+            let note = a.note.as_deref().unwrap_or("").trim().to_string();
+            let reviewer = a.reviewer.as_deref().unwrap_or("").trim().to_string();
+            let outcome = if decision == "accept" { "success" } else { "failed" };
+            append_event_attrs(issue, "human.review", &a.actor, &phase, outcome,
+                &format!("human review: {} at the done window", decision),
+                &[("decision", decision.as_str()), ("note", note.as_str()), ("reviewer", reviewer.as_str())])?;
+            println!(
+                "HUMAN REVIEW RECORDED: {} on #{} (reviewer: {})",
+                decision, issue, if reviewer.is_empty() { "unspecified" } else { reviewer.as_str() }
+            );
+        }
+        "maint-pr" => {
+            // The post-audit gate merge (replaces the orchestrator's direct
+            // `git push origin main`): open ONE `maint/<N>` SPEC MAINT PR off main
+            // carrying ALL post-audit paths (the pipeline's own edits + the product
+            // docs), FORCE-merge it as the privileged writer (`--admin`, skipping the
+            // required check), and record the `maint-pr` event only once it MERGED.
+            // See `state-machine.md`.
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action))?;
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
+            let issue = req_issue(a)?;
+            let phase = phase_of(a)?.as_str().to_string();
+            post_audit_maint_pr(issue, &a.actor, &phase, a.title.as_deref(), a.body_file.as_deref())?;
         }
         other => anyhow::bail!("unknown action: {}", other),
     }
@@ -4283,34 +5829,41 @@ fn req_issue(a: &ActionArgs) -> anyhow::Result<u32> {
 /// actor. Unknown actions default to allowed (they fail later on the match arm).
 fn actor_allowed(action: &str, actor: &str) -> bool {
     match action {
-        "create-issue" => matches!(actor, "product-owner" | "self-improver"),
+        "create-issue" => matches!(actor, "product-owner" | "orchestrator"),
         // Product Owner posts non-gate comments (`Status` amendments/decisions,
         // `Question` clarifications). Gate-critical prefixes (`Decision`,
         // `Evidence`) remain restricted by the prefix gate in the comment action —
         // the PO can never forge an exit guard. (#2734: the PO had no way to record
         // an AC amendment and had to route through the SI.)
         "comment" => true,
-        "transition" => actor == "self-improver",
-        "block" | "unblock" => matches!(actor, "self-improver" | "developer"),
-        "close-issue" => actor == "self-improver",
+        "transition" => actor == "orchestrator",
+        "block" | "unblock" => matches!(actor, "orchestrator" | "developer"),
+        "close-issue" => actor == "orchestrator",
         "create-worktree" => actor == "developer",
         "remove-worktree" => actor == "developer",
-        "update-plan" => actor == "self-improver",
-        "triage-init" => actor == "self-improver",
+        "update-plan" => actor == "orchestrator",
+        "triage-init" => actor == "orchestrator",
         // The ONLY sanctioned writer of `opencode.json` agent `permission` blocks:
         // the SI grants a missing allowlist verb to a role instead of routing a
         // sandbox change to the human (G-142). Scoped to permission blocks by
         // construction — the editor refuses everything else.
-        "set-permission" => actor == "self-improver",
-        "tests-commit" => matches!(actor, "tester" | "self-improver"),
-        "audit-record" => actor == "self-improver",
-        "upload-evidence" => matches!(actor, "tester" | "self-improver"),
-        "post-comments" => matches!(actor, "self-improver" | "tester"),
-        "record-improvement" => actor == "self-improver",
-        "link-revision" => matches!(actor, "self-improver" | "product-owner"),
-        "hardening-lock-open-issues" => actor == "self-improver",
-        "interaction-limit" => actor == "self-improver",
-        "close-dependabot-prs" => actor == "self-improver",
+        "set-permission" => actor == "machinist",
+        "tests-commit" => matches!(actor, "tester" | "orchestrator"),
+        "audit-record" => actor == "auditor",
+        "upload-evidence" => matches!(actor, "tester" | "orchestrator"),
+        "post-comments" => matches!(actor, "orchestrator" | "tester"),
+        "record-improvement" => actor == "curator",
+        // The operator's accept/reject at the done human-review window: recorded by
+        // the Product Owner — the human-facing proxy (the human has no machine
+        // identity) — never by the machine itself (research/27 §4.1b).
+        "human.review" => actor == "product-owner",
+        // The post-audit gate opens the single SPEC MAINT PR (the gate runner is
+        // the orchestrator).
+        "maint-pr" => actor == "orchestrator",
+        "link-revision" => matches!(actor, "orchestrator" | "product-owner"),
+        "hardening-lock-open-issues" => actor == "machinist",
+        "interaction-limit" => actor == "machinist",
+        "close-dependabot-prs" => actor == "machinist",
         "audit" | "prune" | "metrics" | "health" | "improvement" | "verify" | "context" => true,
         _ => true,
     }
@@ -4319,8 +5872,8 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
 // ── opencode.json agent-permission editor (`set-permission`) ─────────────────
 //
 // `opencode.json` is human-owned EXCEPT the per-agent `permission` blocks, which
-// the Self-Improver owns through this action: the sandbox is code, so an agent
-// that hits a missing allowlist verb (e.g. a deletion verb, G-142) has the SI
+// the Machinist owns through this action: the sandbox is code, so an agent
+// that hits a missing allowlist verb (e.g. a deletion verb, G-142) has the Machinist
 // grant it instead of routing a config change to the human. The editor is
 // TEXT-SURGICAL and never re-serializes the document: opencode evaluates
 // permission rules LAST-match-wins, so member ORDER is semantics — a serde_json
@@ -4478,6 +6031,89 @@ fn json_object_append_member(t: &str, obj_start: usize, obj_end: usize, member: 
     }
 }
 
+/// Remove member `key` from the JSON object spanning `t[obj_start..obj_end]`,
+/// order-preserving. Returns the new document text, or `None` when the key is
+/// absent. A multi-line object loses the member's whole line; a trailing member
+/// also consumes the preceding comma so the object stays valid.
+fn json_object_remove_member(t: &str, obj_start: usize, obj_end: usize, key: &str) -> anyhow::Result<Option<String>> {
+    let bytes = t.as_bytes();
+    // Locate the member (key start .. value end).
+    let mut i = json_skip_ws(bytes, obj_start);
+    if bytes.get(i) != Some(&b'{') {
+        anyhow::bail!("expected '{{' at byte {}", i);
+    }
+    i += 1;
+    let mut span: Option<(usize, usize)> = None;
+    loop {
+        i = json_skip_ws(bytes, i);
+        match bytes.get(i) {
+            Some(b'}') | None => break,
+            Some(b'"') => {
+                let ks = i;
+                let ke = json_skip_string(bytes, i)?;
+                let found = std::str::from_utf8(&bytes[i + 1..ke - 1]).ok() == Some(key);
+                i = json_skip_ws(bytes, ke);
+                if bytes.get(i) != Some(&b':') {
+                    anyhow::bail!("expected ':' at byte {}", i);
+                }
+                i = json_skip_ws(bytes, i + 1);
+                let ve = json_skip_value(bytes, i)?;
+                if found {
+                    span = Some((ks, ve));
+                    break;
+                }
+                i = json_skip_ws(bytes, ve);
+                match bytes.get(i) {
+                    Some(b',') => i += 1,
+                    Some(b'}') | None => break,
+                    _ => anyhow::bail!("expected ',' or '}}' at byte {}", i),
+                }
+            }
+            _ => anyhow::bail!("expected a member key at byte {}", i),
+        }
+    }
+    let (ks, ve) = match span {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+    // Inline (single-line) object: drop the member plus one adjacent comma.
+    if !t[obj_start + 1..obj_end - 1].contains('\n') {
+        let after = json_skip_ws(bytes, ve);
+        if bytes.get(after) == Some(&b',') {
+            let mut end = after + 1;
+            while end < obj_end && matches!(bytes[end], b' ' | b'\t') {
+                end += 1;
+            }
+            return Ok(Some(format!("{}{}", &t[..ks], &t[end..])));
+        }
+        let mut j = ks;
+        while j > obj_start + 1 && matches!(bytes[j - 1], b' ' | b'\t') {
+            j -= 1;
+        }
+        let start = if j > obj_start + 1 && bytes[j - 1] == b',' { j - 1 } else { ks };
+        return Ok(Some(format!("{}{}", &t[..start], &t[ve..])));
+    }
+    // Multi-line object: the member owns its line.
+    let line_start = t[..ks].rfind('\n').map(|p| p + 1).unwrap_or(obj_start + 1);
+    let after = json_skip_ws(bytes, ve);
+    if bytes.get(after) == Some(&b',') {
+        let nl = t[after..].find('\n').map(|p| after + p + 1).unwrap_or(ve);
+        Ok(Some(format!("{}{}", &t[..line_start], &t[nl..])))
+    } else {
+        // Last member: also consume the preceding comma (if any) so no dangling
+        // comma is left before the closing brace.
+        let mut j = ks;
+        while j > obj_start + 1 && matches!(bytes[j - 1], b' ' | b'\t' | b'\r' | b'\n') {
+            j -= 1;
+        }
+        if j > obj_start + 1 && bytes[j - 1] == b',' {
+            Ok(Some(format!("{}{}", &t[..j - 1], &t[ve..])))
+        } else {
+            Ok(Some(format!("{}{}", &t[..ks], &t[ve..])))
+        }
+    }
+}
+
 fn json_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
@@ -4490,17 +6126,28 @@ fn permission_token_ok(s: &str) -> bool {
         && s.len() <= 128
         && s.chars().all(|c| {
             c.is_ascii_alphanumeric()
-                || matches!(c, ' ' | '_' | '-' | '*' | '?' | '.' | '/' | ':' | '+' | '=' | '@' | '[' | ']' | '(' | ')')
+                || matches!(c, ' ' | '_' | '-' | '*' | '?' | '.' | '/' | ':' | '+' | '=' | '@' | '[' | ']' | '(' | ')' | '~' | '$')
         })
 }
 
 /// Rewrite one agent permission rule in `opencode.json` and return a summary of
 /// the change (or `NO-OP: ...` when the rule already holds the requested value).
+///
+/// Two shapes are supported:
+/// - `pattern = Some(p)` edits the rule inside the per-pattern map
+///   `permission.<tool>.<p>`; `decision = "remove"` deletes that rule
+///   (order-preserving). A flat `permission.<tool>` string is refused.
+/// - `pattern = None` operates on the top-level `permission.<tool>` member itself:
+///   `allow|ask|deny` sets/replaces a FLAT `"<tool>": "<decision>"` member (an
+///   existing per-pattern map is refused — no accidental clobbering), and
+///   `remove` deletes the whole member (flat or map). This is how a flat
+///   tool-namespace glob (e.g. a mis-spelled `chakra_ui_*`) is renamed: add the
+///   corrected key, then remove the dead one.
 fn set_agent_permission(
     path: &Path,
     role: &str,
     tool: &str,
-    pattern: &str,
+    pattern: Option<&str>,
     decision: &str,
 ) -> anyhow::Result<String> {
     if !permission_token_ok(role) {
@@ -4509,24 +6156,26 @@ fn set_agent_permission(
     if !permission_token_ok(tool) {
         anyhow::bail!("set-permission: invalid --tool '{}'", tool);
     }
-    if !permission_token_ok(pattern) {
-        anyhow::bail!("set-permission: invalid --pattern '{}'", pattern);
+    if let Some(p) = pattern {
+        if !permission_token_ok(p) {
+            anyhow::bail!("set-permission: invalid --pattern '{}'", p);
+        }
     }
-    if !matches!(decision, "allow" | "ask" | "deny") {
-        anyhow::bail!("set-permission: --decision must be allow|ask|deny (got '{}')", decision);
+    if !matches!(decision, "allow" | "ask" | "deny" | "remove") {
+        anyhow::bail!("set-permission: --decision must be allow|ask|deny|remove (got '{}')", decision);
     }
+    let removing = decision == "remove";
     let raw = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("set-permission: cannot read {}: {}", path.display(), e))?;
     let text = raw.strip_prefix('\u{feff}').unwrap_or(&raw).to_string();
     // Validate BEFORE editing so a corrupt config is never compounded.
     let parsed: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| anyhow::anyhow!("set-permission: {} is not valid JSON: {}", path.display(), e))?;
-    let agent_exists = parsed
+    parsed
         .get("agent")
         .and_then(|a| a.get(role))
         .map(|_| ())
         .ok_or_else(|| anyhow::anyhow!("set-permission: no agent '{}' in {}", role, path.display()))?;
-    let _ = agent_exists;
     parsed
         .get("agent")
         .and_then(|a| a.get(role))
@@ -4545,47 +6194,85 @@ fn set_agent_permission(
         anyhow::bail!("set-permission: agent '{}' permission is not an object", role);
     }
 
-    let label = format!("agent '{}'.{}['{}']", role, tool, pattern);
-    let new_text = match json_find_member(bytes, ps, tool)? {
-        Some((vs, ve)) if bytes[vs] == b'"' => {
-            let current: String = serde_json::from_str(&text[vs..ve]).unwrap_or_default();
-            if current == decision {
-                return Ok(format!("NO-OP: {} = '{}' already in {}", label, decision, path.display()));
-            }
-            anyhow::bail!(
-                "set-permission: '{}.{}' is a flat action ('{}') — only per-pattern maps can be edited; \
-                 change the whole category by hand or via a new action",
-                role, tool, current
-            );
+    let (label, verb, new_text) = match pattern {
+        // ── per-pattern rule inside `permission.<tool>` ────────────────────────
+        Some(p) => {
+            let label = format!("agent '{}'.{}['{}']", role, tool, p);
+            let new_text = match json_find_member(bytes, ps, tool)? {
+                Some((vs, _)) if bytes[vs] == b'"' => {
+                    anyhow::bail!(
+                        "set-permission: '{}.{}' is a flat action — only per-pattern maps can be edited; \
+                         pass --tool '{}' with no --pattern to change the whole category",
+                        role, tool, tool
+                    );
+                }
+                Some((vs, ve)) if bytes[vs] == b'{' => match json_find_member(bytes, vs, p)? {
+                    Some((pvs, pve)) => {
+                        if removing {
+                            json_object_remove_member(&text, vs, ve, p)?.ok_or_else(|| {
+                                anyhow::anyhow!("set-permission: '{}.{}' vanished mid-edit", role, tool)
+                            })?
+                        } else {
+                            let current: String = serde_json::from_str(&text[pvs..pve]).unwrap_or_default();
+                            if current == decision {
+                                return Ok(format!("NO-OP: {} = '{}' already in {}", label, decision, path.display()));
+                            }
+                            format!("{}\"{}\"{}", &text[..pvs], decision, &text[pve..])
+                        }
+                    }
+                    None => {
+                        if removing {
+                            return Ok(format!("NO-OP: {} not present in {}", label, path.display()));
+                        }
+                        let member = format!("\"{}\": \"{}\"", json_escape(p), decision);
+                        json_object_append_member(&text, vs, ve, &member, eol)
+                    }
+                },
+                Some(_) => anyhow::bail!("set-permission: '{}.{}' value is not an object or string", role, tool),
+                None => {
+                    if removing {
+                        return Ok(format!("NO-OP: {} not present in {}", label, path.display()));
+                    }
+                    let unit = json_member_indent_unit(bytes, ps, pe);
+                    let close_line_start = text[..pe - 1].rfind('\n').map(|q| q + 1).unwrap_or(0);
+                    let close_indent = &text[close_line_start..pe - 1];
+                    let inner_indent = format!("{}{}", close_indent, unit);
+                    let obj = if text[ps + 1..pe - 1].contains('\n') {
+                        format!("{{{e0}{inner_indent}\"{}\": \"{}\"{e0}{close_indent}}}", json_escape(p), decision, e0 = eol)
+                    } else {
+                        format!("{{ \"{}\": \"{}\" }}", json_escape(p), decision)
+                    };
+                    let member = format!("\"{}\": {}", json_escape(tool), obj);
+                    json_object_append_member(&text, ps, pe, &member, eol)
+                }
+            };
+            (label, if removing { "REMOVED" } else { "SET" }, new_text)
         }
-        Some((vs, ve)) if bytes[vs] == b'{' => {
-            match json_find_member(bytes, vs, pattern)? {
-                Some((pvs, pve)) => {
-                    let current: String = serde_json::from_str(&text[pvs..pve]).unwrap_or_default();
+        // ── the top-level `permission.<tool>` member itself ────────────────────
+        None => {
+            let label = format!("agent '{}'.{}", role, tool);
+            let new_text = match json_find_member(bytes, ps, tool)? {
+                Some((_, _)) if removing => json_object_remove_member(&text, ps, pe, tool)?.ok_or_else(|| {
+                    anyhow::anyhow!("set-permission: '{}.{}' vanished mid-edit", role, tool)
+                })?,
+                Some((vs, ve)) if bytes[vs] == b'"' => {
+                    let current: String = serde_json::from_str(&text[vs..ve]).unwrap_or_default();
                     if current == decision {
                         return Ok(format!("NO-OP: {} = '{}' already in {}", label, decision, path.display()));
                     }
-                    format!("{}\"{}\"{}", &text[..pvs], decision, &text[pve..])
+                    format!("{}\"{}\"{}", &text[..vs], decision, &text[ve..])
                 }
+                Some(_) => anyhow::bail!(
+                    "set-permission: '{}.{}' is a per-pattern map — pass --pattern to edit a rule inside it",
+                    role, tool
+                ),
+                None if removing => return Ok(format!("NO-OP: {} not present in {}", label, path.display())),
                 None => {
-                    let member = format!("\"{}\": \"{}\"", json_escape(pattern), decision);
-                    json_object_append_member(&text, vs, ve, &member, eol)
+                    let member = format!("\"{}\": \"{}\"", json_escape(tool), decision);
+                    json_object_append_member(&text, ps, pe, &member, eol)
                 }
-            }
-        }
-        Some(_) => anyhow::bail!("set-permission: '{}.{}' value is not an object or string", role, tool),
-        None => {
-            let unit = json_member_indent_unit(bytes, ps, pe);
-            let close_line_start = text[..pe - 1].rfind('\n').map(|p| p + 1).unwrap_or(0);
-            let close_indent = &text[close_line_start..pe - 1];
-            let inner_indent = format!("{}{}", close_indent, unit);
-            let obj = if text[ps + 1..pe - 1].contains('\n') {
-                format!("{{{e0}{inner_indent}\"{}\": \"{}\"{e0}{close_indent}}}", json_escape(pattern), decision, e0 = eol)
-            } else {
-                format!("{{ \"{}\": \"{}\" }}", json_escape(pattern), decision)
             };
-            let member = format!("\"{}\": {}", json_escape(tool), obj);
-            json_object_append_member(&text, ps, pe, &member, eol)
+            (label, if removing { "REMOVED" } else { "SET" }, new_text)
         }
     };
 
@@ -4595,12 +6282,12 @@ fn set_agent_permission(
         .map_err(|e| anyhow::anyhow!("set-permission: edit produced invalid JSON, NOT written: {}", e))?;
     std::fs::write(path, new_text.as_bytes())
         .map_err(|e| anyhow::anyhow!("set-permission: cannot write {}: {}", path.display(), e))?;
-    Ok(format!("PERMISSION SET: {} = '{}' in {}", label, decision, path.display()))
+    Ok(format!("PERMISSION {}: {} = '{}' in {}", verb, label, decision, path.display()))
 }
 
 // ── Context block ────────────────────────────────────────────────────────────
 
-/// Read-only operational snapshot for the orchestrator (self-improver) context
+/// Read-only operational snapshot for the orchestrator context
 /// block: the linked plan, work items, A2A file, spec branch, and open blockers.
 /// Best-effort — every field falls back to a safe default if the underlying
 /// read fails, so the context block always renders.
@@ -4659,9 +6346,9 @@ fn print_context(issue: u32, actor: &str, raw: bool) -> anyhow::Result<()> {
     // reason is the audit's recorded cause of the restart.
     let (attempt, retry_reason) = retry_state(issue);
     let on_retry = attempt > 1;
-    // The orchestrator (self-improver) gets an operational snapshot — the linked
+    // The orchestrator gets an operational snapshot — the linked
     // artifacts it steers — so it does not re-discover the pipeline state each wake.
-    let orch = if actor == "self-improver" {
+    let orch = if actor == "orchestrator" {
         Some(orchestration_snapshot(issue))
     } else {
         None
@@ -4672,6 +6359,31 @@ fn print_context(issue: u32, actor: &str, raw: bool) -> anyhow::Result<()> {
     let next_phase = Phase::ORDER[next_idx];
 
     if raw {
+        // Per-issue serving checkout + env lease (Spec #2944, CU-D): surfaced so
+        // the tester/audit can read the served root and the same-issue lease
+        // without a separate lookup. The lease is the machine's serving record
+        // (Names Block); it is written by dev-env `-Action Up`.
+        let lease_json = match read_env_lease(issue) {
+            Some(l) => serde_json::json!({
+                "path": env_lease_display(issue),
+                "present": true,
+                "envId": l.env_id,
+                "pid": l.pid,
+                "servingCheckout": l.serving_checkout,
+                "startedAt": l.started_at,
+            }),
+            None => serde_json::json!({ "path": env_lease_display(issue), "present": false }),
+        };
+        // Env-tagged evidence attribution (Spec #2944 CU-G, R-5.2): surfaced so a
+        // caller can see whether the environment's evidence matches the intended
+        // env id / serving checkout / served commit.
+        let env_ev = check_env_evidence(issue);
+        let env_ev_json = serde_json::json!({
+            "present": env_ev.present,
+            "valid": env_ev.valid,
+            "reason": env_ev.reason,
+            "path": env_ev.path,
+        });
         let mut block = serde_json::json!({
             "phase": phase.as_str(),
             "feature": format!("#{}", issue),
@@ -4688,6 +6400,9 @@ fn print_context(issue: u32, actor: &str, raw: bool) -> anyhow::Result<()> {
             "handoff": format!("Next phase: {} — what must exist: {}", next_phase.as_str(), goals),
             "validation": validation,
             "doc_references": "common-rules.md, pipeline.md, github.md, staffing.md, state-machine.md",
+            "serving_checkout": serving_checkout_label(issue),
+            "env_lease": lease_json,
+            "env_evidence": env_ev_json,
         });
         if let Some(o) = &orch {
             block["orchestration"] = o.clone();
@@ -4713,9 +6428,23 @@ fn print_context(issue: u32, actor: &str, raw: bool) -> anyhow::Result<()> {
         println!("{:<16} {}", "Handoff:", format!("Next: {} — requires: {}", next_phase.as_str(), goals));
         println!("{:<16} {}", "Validation:", validation);
         println!("{:<16} {}", "Doc references:", "common-rules.md, pipeline.md, github.md, staffing.md, state-machine.md");
+        // Per-issue serving checkout + same-issue env lease (Spec #2944, CU-D,
+        // R-3.4/R-5.1): surfaced for every phase so the served root and the
+        // lease are visible without a separate lookup.
+        println!("{:<16} {}", "Serving checkout:", serving_checkout_label(issue));
+        match read_env_lease(issue) {
+            Some(l) => println!("{:<16} {}", "Env lease:", format!("{} (envId {}, pid {})", env_lease_display(issue), l.env_id, l.pid)),
+            None => println!("{:<16} {}", "Env lease:", format!("none ({})", env_lease_display(issue))),
+        }
+        // Env-tagged evidence attribution (Spec #2944 CU-G, R-5.2).
+        {
+            let ev = check_env_evidence(issue);
+            let state = if !ev.present { "none" } else if ev.valid { "OK" } else { "REJECTED" };
+            println!("{:<16} {}", "Env evidence:", format!("{} ({})", state, ev.reason));
+        }
         if phase == Phase::Testing {
             match serving_record(issue) {
-                Some((b, c)) => println!("{:<16} {}", "Served commit:", format!("{} @ {} (dev-env -Spec {})", b, &c[..c.len().min(8)], issue)),
+                Some((b, c, _checkout)) => println!("{:<16} {}", "Served commit:", format!("{} @ {} (dev-env -Spec {})", b, &c[..c.len().min(8)], issue)),
                 None => println!("{:<16} {}", "Served commit:", "NONE — checkout spec/<N> at the origin tip, then: dev-env.ps1 -Action Up -Spec <N>"),
             }
         }
@@ -4909,18 +6638,34 @@ fn context_read_streak(issue: u32, actor: &str) -> usize {
 /// audit is round 2). `last_failure` is the reason recorded with the most recent
 /// failed verdict — the missed-AC context the restarted agents must complete.
 fn retry_state(issue: u32) -> (u32, String) {
-    // Round = the number of times the issue has ENTERED testing (each `phase.started`
-    // for `testing` = one test round). This advances on EVERY rework (tester-FAIL →
-    // implementation → testing), not just audit.verdict failures, so a round-3 run's
-    // `## Tests Runs`/`## SI Summary` are stamped `(round 3)`, never "round 1";
-    // the `## Development Summary` is stamped the round whose testing entry is
-    // being created (count + 1 — see post_one_timeline_comment).
+    // Round = the number of times the issue has ENTERED testing (each
+    // `phase.started` for `testing` = one test round), advanced EARLY when the
+    // issue is mid-rework. A tester-FAIL rework (or an audit restart) re-enters
+    // `implementation` BEFORE the next `testing` entry, so while an agent is
+    // dispatched ONTO the rework the testing count alone still reads the
+    // PREVIOUS round and the RETRY marker was missing for the common rework path
+    // (observed #2940: the fix-round developer saw "round 1" during the round-2
+    // rework). Counting re-entries (implementation `phase.started` whose `from`
+    // is `testing` or `post-audit` — an audit restart now routes `audit →
+    // post-audit → implementation`) and taking the max keeps a first pass at round 1
+    // and stays stable once the next testing entry lands.
     // PO feedback (#2688): previous rounds showed "round 1" across many iterations.
-    let round = read_issue_events(issue)
+    let testing_entries = read_issue_events(issue)
         .into_iter()
         .filter(|e| e.event_name == "phase.started" && e.phase == "testing")
-        .count()
-        .max(1) as u32;
+        .count();
+    let rework_re_entries = read_issue_events(issue)
+        .into_iter()
+        .filter(|e| {
+            e.event_name == "phase.started"
+                && e.phase == "implementation"
+                && matches!(
+                    e.attributes.get("from").map(|s| s.as_str()),
+                    Some("testing") | Some("post-audit")
+                )
+        })
+        .count();
+    let round = testing_entries.max(rework_re_entries + 1).max(1) as u32;
     let failed: Vec<(String, String)> = read_issue_events(issue)
         .into_iter()
         .filter(|e| e.event_name == "audit.verdict" && e.outcome == "failed")
@@ -5028,18 +6773,21 @@ fn regex_lite_find(haystack: &str) -> Option<String> {
     if digits.is_empty() { None } else { Some(digits) }
 }
 
-/// Persist an on-the-go improvement as a guardrail record under `## Known Failure
-/// Modes` in `docs/agentic-pipeline/playbooks/references.md` (retro-analysis Recipe 6
-/// format). The `record-improvement` action calls this so a pipeline fix is recorded
-/// immediately, not only at audit. Best-effort: returns Ok even if the file write
-/// fails (the GitHub comment + metric event remain the durable record). Guardrail id
-/// is the next free `### G-NNN`; records are prose-only and never touch `AGENTS.md`/
-/// `opencode.json` (human-owned).
-fn persist_improvement_guardrail(issue: u32, reason: &str, round: u32) -> anyhow::Result<Option<u32>> {
+/// Allocate the next free `### G-NNN` guardrail id by scanning the existing
+/// records under `## Known Failure Modes` in
+/// `docs/agentic-pipeline/playbooks/references.md`. The `record-improvement`
+/// action calls this so the allocated id can be stamped on the
+/// `pipeline.improvement` event (`guardrailId`) and printed for the Curator.
+/// The machine does NOT author the `### G-` record — the guardrail records are
+/// Curator-authored (principle 6); the Curator writes the record in the same
+/// pass with the allocated id. Best-effort: returns Ok(None) when the ledger
+/// cannot be read (the GitHub comment + metric event remain the durable record).
+/// Never touches `AGENTS.md`/`opencode.json` (human-owned).
+fn allocate_guardrail_id(issue: u32) -> anyhow::Result<Option<u32>> {
     let path = project_root()?.join("docs").join("agentic-pipeline").join("playbooks").join("references.md");
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
-        Err(e) => { println!("WARNING: could not read references.md for guardrail persist ({})", e); return Ok(None); }
+        Err(e) => { println!("WARNING: could not read references.md to allocate a guardrail id ({})", e); return Ok(None); }
     };
     // Find the next free G-NNN id (scan existing `### G-` headings).
     let next_id: u32 = content.lines()
@@ -5049,24 +6797,7 @@ fn persist_improvement_guardrail(issue: u32, reason: &str, round: u32) -> anyhow
         .max()
         .map(|m| m + 1)
         .unwrap_or(1);
-    let today = chrono::Utc::now().format("%Y-%m-%d");
-    let anchor = if content.contains("## Known Failure Modes") { "## Known Failure Modes" } else { "## Useful External References" };
-    let record = format!(
-        "\n### G-{:03}: on_the_go_improvement\n- **activation_date:** {}\n- **observed:** #{} round {}\n- **target_failure:** (on-the-go pipeline improvement)\n- **guardrail:** {}\n- **home:** references.md (G-{:03})\n- **effectiveness:** Pending\n",
-        next_id, today, issue, round, reason, next_id
-    );
-    let updated = match content.find(anchor) {
-        Some(idx) => {
-            let (head, tail) = content.split_at(idx + anchor.len());
-            format!("{}{}{}", head, record, tail)
-        }
-        None => format!("{}{}", content, record),
-    };
-    if let Err(e) = std::fs::write(&path, updated) {
-        println!("WARNING: could not write guardrail to references.md ({})", e);
-        return Ok(None);
-    }
-    println!("GUARDRAIL PERSISTED: G-{:03} on #{}", next_id, issue);
+    println!("GUARDRAIL ID ALLOCATED: G-{:03} on #{} — Curator: author the `### G-{:03}` record in references.md with this id", next_id, issue, next_id);
     Ok(Some(next_id))
 }
 
@@ -5201,6 +6932,11 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
     // Evidence/Verdict), and the verification signals come from the shared helper.
     let (evidence_on_plan, verdict_pass, plan_policy, live_evidence, verification_ok, _reason) = verification_status(issue);
     let has_record = evidence_on_plan;
+    // Spec #2944 CU-G (R-5.2): validate env-tagged evidence against the intended
+    // environment. A present-but-mismatched record is REJECTED (never deleted).
+    let env_check = check_env_evidence(issue);
+    let env_ok = !env_check.present || env_check.valid;
+    let audit_ok = verification_ok && env_ok;
     // Linked-artifact status: the leader's verdict must see what it actually
     // steered — the merged spec PR. (Sub-issues were removed; the spec branch +
     // the plan's Evidence are the work record.)
@@ -5221,6 +6957,11 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
             "verification_policy": plan_policy,
             "live_telemetry_evidence": live_evidence,
             "verification_ok": verification_ok,
+            "env_evidence_present": env_check.present,
+            "env_evidence_valid": env_check.valid,
+            "env_evidence_reason": env_check.reason,
+            "env_evidence_path": env_check.path,
+            "audit_ok": audit_ok,
             "spec_pr_merged": spec_merged,
         }))?);
         return Ok(());
@@ -5239,9 +6980,20 @@ fn audit_evidence(issue: u32, json: bool) -> anyhow::Result<()> {
     println!("Verification policy (plan): {}", plan_policy);
     println!("Live telemetry evidence (telemetry_spans refs): {}", live_evidence);
     println!("Verification OK (evidence PASS + policy-live has telemetry): {}", verification_ok);
+    // Spec #2944 CU-G (R-5.2): env-tagged evidence attribution. A present record
+    // that disagrees with the intended environment is REJECTED here (the audit
+    // never deletes it); an absent record is not a rejection.
+    if !env_check.present {
+        println!("Env evidence: none evaluated ({})", env_check.reason);
+    } else if env_check.valid {
+        println!("Env evidence: OK — {} ({})", env_check.reason, env_check.path);
+    } else {
+        println!("ENV EVIDENCE REJECTED: {} ({})", env_check.reason, env_check.path);
+    }
+    println!("Audit OK (verification + env evidence attribution): {}", audit_ok);
     println!("Spec PR merged: {}", spec_merged);
     println!();
-    println!("Record verdict: pipeline-state.rs --action audit-record --issue {} --verdict success|restart [--phase <p> --reason <why>]", issue);
+    println!("Record verdict: pipeline-state.rs --action audit-record --issue {} --verdict success|restart [--phase <p> --reason <why>] [--body-file <audit-verdict.md>]", issue);
     Ok(())
 }
 
@@ -5573,7 +7325,7 @@ fn health_report(json: bool) -> anyhow::Result<()> {
 // ── Self-improvement: "are we improving?" ────────────────────────────────────
 //
 // The primary honest signal: the share of shipped specs that were ACCEPTED —
-// i.e. NOT later revised by a linked follow-up (`feature.revised`) or reopened.
+// i.e. NOT later revised by a linked follow-up (`feature.revised`).
 // Acceptance is the complement of the operator's revealed rejection, so the
 // human reports only what went wrong; silence (no link) is acceptance-so-far.
 // Reported with a Wilson interval and half-vs-half change test; raw counts are
@@ -5612,19 +7364,15 @@ fn improvement_report(json: bool) -> anyhow::Result<()> {
         .filter(|e| e.event_name == "create-issue")
         .filter_map(|e| e.entity.as_ref().and_then(|x| x.issue_id.clone())).collect();
 
-    // A spec is REVISED if any later spec declares `feature.revised{revises == id}`
-    // or the spec itself was reopened (`done -> planning`). This is the revealed
-    // rejection signal; the link lives forward on the follow-up.
+    // A spec is REVISED if any later spec declares `feature.revised{revises == id}`.
+    // This is the revealed rejection signal; the link lives forward on the follow-up.
+    // (There is no `done -> planning` reopen to fold in — a post-merge defect is a
+    // follow-up spec, not a reopened one.)
     let mut revised_targets: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for e in &all {
         if e.event_name == "feature.revised" {
             if let Some(rev) = e.attributes.get("revises") {
                 if spec_issues.contains(rev) { revised_targets.insert(rev.clone()); }
-            }
-        }
-        if e.event_name == "transition" && e.message.contains("done -> planning") {
-            if let Some(id) = e.entity.as_ref().and_then(|x| x.issue_id.clone()) {
-                if spec_issues.contains(&id) { revised_targets.insert(id); }
             }
         }
     }
@@ -5713,6 +7461,53 @@ fn improvement_report(json: bool) -> anyhow::Result<()> {
         ordered.len() as f64 / span_h
     } else { 0.0 };
 
+    // Root-cause mix — the SI's routing input for which lever to strengthen
+    // (playbooks/curator.md: Class → Lever). Restarts carry `audit.verdict`
+    // rootCause; the per-round loop carries `rework.rootcause` (the Architect's fix-plan
+    // class). Most rounds burn in the rework loop, so the round mix is the primary source
+    // and the restart mix is the fallback.
+    let mut restart_causes: BTreeMap<String, usize> = BTreeMap::new();
+    let mut rework_causes: BTreeMap<String, usize> = BTreeMap::new();
+    for e in &all {
+        match e.event_name.as_str() {
+            "audit.verdict" if e.outcome == "failed" => {
+                if let Some(rc) = e.attributes.get("rootCause") {
+                    *restart_causes.entry(rc.clone()).or_insert(0) += 1;
+                }
+            }
+            "rework.rootcause" => {
+                if let Some(rc) = e.attributes.get("rootCause") {
+                    *rework_causes.entry(rc.clone()).or_insert(0) += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    let (dominant_root_cause_class, dominant_source, dominant_n, dominant_total): (Option<String>, Option<&'static str>, usize, usize) =
+        if !rework_causes.is_empty() {
+            (rework_causes.iter().max_by_key(|(_, v)| **v).map(|(k, _)| k.clone()), Some("per-round rework"), rework_causes.values().copied().max().unwrap_or(0), rework_causes.values().sum())
+        } else if !restart_causes.is_empty() {
+            (restart_causes.iter().max_by_key(|(_, v)| **v).map(|(k, _)| k.clone()), Some("restarts"), restart_causes.values().copied().max().unwrap_or(0), restart_causes.values().sum())
+        } else {
+            (None, None, 0, 0)
+        };
+
+    // Human-review outcome counts (research/27 §4.1b): the operator's explicit
+    // accept/reject at the done window — the outcome signal the acceptance metric
+    // pairs with (a `reject` is a revealed rejection even when no follow-up spec is
+    // ever filed). Raw counts only; never a target.
+    let mut review_accept = 0usize;
+    let mut review_reject = 0usize;
+    for e in &all {
+        if e.event_name == "human.review" {
+            match e.attributes.get("decision").map(|s| s.as_str()) {
+                Some("accept") => review_accept += 1,
+                Some("reject") => review_reject += 1,
+                _ => {}
+            }
+        }
+    }
+
     if json {
         println!("{}", serde_json::to_string_pretty(&serde_json::json!({
             "acceptance": {
@@ -5722,6 +7517,10 @@ fn improvement_report(json: bool) -> anyhow::Result<()> {
             },
             "revise_growth_amsaa_beta": beta_amsaa,
             "link_coverage": if created > 0 { Some(linked as f64 / created as f64) } else { None },
+            "root_cause_mix_on_restarts": restart_causes,
+            "rework_cause_mix_on_rounds": rework_causes,
+            "dominant_root_cause_class": dominant_root_cause_class,
+            "human_review": { "accept": review_accept, "reject": review_reject },
             "raw": {
                 "specs_created": created, "accepted": accepted, "revised": revised,
                 "canceled": canceled, "in_flight": in_flight,
@@ -5739,12 +7538,19 @@ fn improvement_report(json: bool) -> anyhow::Result<()> {
             posterior_mean * 100.0, accepted, resolved, ci_lo * 100.0, ci_hi * 100.0);
     }
     println!("Trend (half vs half): {} (delta {:+.0}pp, z {:.2})", decision, delta * 100.0, z);
+    println!("Human review: {} accepted, {} rejected (raw counts)", review_accept, review_reject);
     match beta_amsaa {
         Some(b) => println!("Reliability growth (Crow-AMSAA beta): {:.2} ({})", b, if b < 0.95 { "growing" } else if b > 1.05 { "degrading" } else { "stable" }),
         None => println!("Reliability growth (Crow-AMSAA beta): insufficient revision events (need >= 3)"),
     }
     println!("Link coverage: {}/{} specs declared a revision (raw: {} revised, {} canceled, {} in flight, {} rework loops)",
         linked, created, revised, canceled, in_flight, spec_rework);
+    if let (Some(dc), Some(src)) = (&dominant_root_cause_class, dominant_source) {
+        println!("Dominant root-cause class: {} ({} of {} {} classifications) — strengthen this class's lever per the Class → Lever table",
+            dc, dominant_n, dominant_total, src);
+    } else {
+        println!("Dominant root-cause class: none recorded yet");
+    }
     println!("Raw: {} created, {} accepted, {} revised, {} canceled, {} in flight; throughput {:.3}/hr",
         created, accepted, revised, canceled, in_flight, throughput);
     Ok(())
@@ -5791,6 +7597,8 @@ fn parse_args() -> ActionArgs {
         human_authorized: args.iter().any(|a| a == "--human-authorized"),
         revises: val("--revises").and_then(|s| s.parse().ok()),
         intent: val("--intent"),
+        note: val("--note"),
+        reviewer: val("--reviewer"),
     }
 }
 

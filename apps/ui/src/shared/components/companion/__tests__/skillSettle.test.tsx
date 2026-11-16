@@ -24,7 +24,7 @@ import { act, cleanup, screen, waitFor } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { CompanionProvider, useCompanion } from '@/shared/contexts/CompanionContext';
-import { CompanionEntity } from '@/shared/components/companion/CompanionEntity';
+import { CompanionEntity, WORKING_BEAT_MS } from '@/shared/components/companion/CompanionEntity';
 import type { CompanionEntityHandle } from '@/shared/components/companion/CompanionEntity';
 import { pushAppOpenReply, registerAppOpenReplyPusher } from '@/shared/components/companion/skillBridge';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
@@ -140,6 +140,12 @@ beforeEach(() => {
   adapterBridge.setLlmChatWithSkills(async (_messages, onToken, onDone, onSkillCall, onError) => {
     skills = { onToken, onDone, onSkillCall, onError: (message: string) => onError?.(message) };
   });
+  // #2918 ST-5 — the structured-status transport is now the ONE generation route
+  // (joke / typed ask / dictation). The skill-aware generation's callbacks are
+  // captured here verbatim; every shipped per-generation assertion is unchanged.
+  adapterBridge.setLlmChatWithStatus(async (_messages, _options, onToken, onDone, _onStatus, onSkillCall, onError) => {
+    skills = { onToken, onDone, onSkillCall: (c: LlmSkillCall) => onSkillCall?.(c), onError: (message: string) => onError?.(message) };
+  });
 });
 
 afterEach(() => {
@@ -168,12 +174,19 @@ describe('#2893 ST-7 — companion skill-call settle routing', () => {
     expect(avatarState(view.container)).not.toBe('happy');
 
     // The deterministic reply lands → applied to the existing reply channel.
+    // FIX-1 (r2): the pushed settle completes the bounded `working` beat BEFORE
+    // the shipped `happy` expression (the round-1 immediate-happy sequencing was
+    // exactly the RC-1 defect the fix removes). Refreshed, not weakened. G-125.
     act(() => { pushAppOpenReply({ kind: 'success', text: 'Opening Mission Monitor' }); });
     expect(surfaceText()).toBe('Opening Mission Monitor');
-    expect(avatarState(view.container)).toBe('happy');
+    expect(avatarState(view.container)).toBe('working');
     expect(liveRegionText()).toBe('Opening Mission Monitor');
 
-    // Shipped HAPPY_HOLD_MS clears it.
+    // Completing the beat renders the shipped `happy` settle.
+    act(() => { vi.advanceTimersByTime(WORKING_BEAT_MS); });
+    expect(avatarState(view.container)).toBe('happy');
+
+    // Shipped HAPPY_HOLD_MS clears it (measured from the settle).
     act(() => { vi.advanceTimersByTime(5000); });
     expect(surfaceText()).not.toContain('Opening Mission Monitor');
   });
@@ -227,9 +240,13 @@ describe('#2893 ST-7 — companion skill-call settle routing', () => {
       act(() => { pushAppOpenReply({ kind, text }); });
 
       expect(surfaceText()).toBe(text);
-      expect(avatarState(view.container)).not.toBe('happy');
+      // FIX-1 (r2): the pushed settle renders the bounded `working` beat first…
+      expect(avatarState(view.container)).toBe('working');
 
-      // Shipped ERROR_HOLD_MS clears it (8 s > the 5 s happy hold).
+      // …then the shipped `error` expression for ERROR_HOLD_MS, measured from the
+      // settle (8 s > the 5 s happy hold). Refreshed, not weakened. G-125.
+      act(() => { vi.advanceTimersByTime(WORKING_BEAT_MS); });
+      expect(avatarState(view.container)).not.toBe('happy');
       act(() => { vi.advanceTimersByTime(7999); });
       expect(surfaceText()).toBe(text);
       act(() => { vi.advanceTimersByTime(1); });
@@ -310,6 +327,9 @@ describe('#2893 ST-9 — always settle / never stuck (R-1.4)', () => {
 
     expect(api.state.isInUse).toBe(false);
     expect(streamingMark(view.container)).toBe(false);
+    // FIX-1 (r2): the bounded `working` beat precedes the shipped `happy` settle.
+    expect(avatarState(view.container)).toBe('working');
+    act(() => { vi.advanceTimersByTime(WORKING_BEAT_MS); });
     expect(avatarState(view.container)).toBe('happy');
 
     // The single-in-flight guard is released: a later ask runs a NEW generation.

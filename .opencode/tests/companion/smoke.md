@@ -260,3 +260,105 @@
 ### #2892 testing round 1 — result
 
 - [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+
+## #2917 extension — solid-Fredo + status-vocabulary quick paths
+
+> Issue #2917 fills Fredo's hollow interior and audits/extends the status vocabulary. Quick paths only —
+> the full matrix lives in `functional.md` F-116..F-125 / `regression.md` R-58..R-62. **Verification
+> policy: live** — screenshot + the dense metric per state; a property-existence check is never a PASS.
+
+- [ ] S-38: **Solid interior in both themes.** Companion ON (and OFF for the decorative mascot); capture
+      dark base + `light-default`; sample the head-interior/mouth-void pixels inside the figure.
+      **Expected:** the interior resolves to the live accent (no background showing through) in BOTH
+      themes; `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`/`Maximum update
+      depth exceeded`.
+- [ ] S-39: **A state renders legibly over the fill.** Single-click the avatar → the joke streams.
+      **Expected:** `#fredo-expression[data-state=talk]` (and `joking` during the stream) renders its
+      shapes ON TOP of the fill, visible and distinguishable from idle; screenshot succeeds; console clean.
+- [ ] S-40: **No stuck state after a moment.** Complete a joke and a TicTacToe turn. **Expected:** the
+      avatar returns to `idle` (no lingering `thinking`/`joking`/`happy`), the fill stays intact;
+      screenshot succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-41: **Perceptibility quick check + reduced-motion static gate.** Capture a 3-frame filmstrip of
+      one new state at 100 ms cadence over 2400 ms and confirm a visible change; confirm the
+      reduced-motion rules keep every shape legible (named G-053 blocker for the live flip).
+      **Expected:** the dense filmstrip shows a perceptible change; no `opacity:0`/strobe rule; screenshot
+      succeeds; console clean.
+
+## #2918 extension — structured-reply quick paths
+
+> Issue #2918 delivers the whole reply as a JSON-Schema-constrained object + a model-declared status.
+> Quick paths only — the full matrix lives in `functional.md` F-126..F-133 / `regression.md`
+> R-63..R-65. **Verification policy: live** — the real managed `llama-server`, the rendered reply
+> surface, and the mandatory F-132 receipt. A static-only PASS is a FALSE PASS.
+
+- [ ] S-42: **Structured reply quick path (no raw JSON).** Companion ON at the seat; send
+      `Reply with exactly: Hi there!`. **Expected:** the reply streams into
+      `[data-testid="fredo-reply-surface"]` and the settled text is EXACTLY `Hi there!` — never any
+      `{`, `}` or `"reply"`/`"status"` fragment at any frame; the wrapper `data-state` is a member of
+      `FREDO_AVATAR_STATES`; the companion returns to rest; `tauri_webview_screenshot` succeeds;
+      console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-43: **Unknown status heals quick path.** Companion ON; inject `{"reply":"Hello
+      there","status":"dancing"}` on `llm-token` then `llm-done` (`tauri_ipc_emit_event`). **Expected:**
+      the surface shows exactly `Hello there` (no raw fragment) and the wrapper `data-state` heals to
+      the safe default (never `dancing`); the companion returns to rest; screenshot succeeds; console
+      clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
+## #2922 extension — whole-body solid Fredo quick paths
+
+> Issue #2922 extends the additive interior fill from the head to the WHOLE body. Quick paths only —
+> the full matrix lives in `functional.md` F-135..F-143 / `regression.md` R-66..R-69; the metric
+> definition is in the companion functional `#2922 extension` block. **Verification policy: live** —
+> a property-existence check is never a PASS.
+
+- [ ] S-44: **Solid body in both themes.** Companion ON at the seat; freeze motion
+      (`document.getAnimations().forEach(a => { a.currentTime = 0; a.pause(); })`); capture dark base
+      + `light-default` and evaluate the BINDING `seeThrough` metric over the mask `M`
+      (`union(58 base rects) ∪ union(17 interior bands)`, eroded `E = 2 rendered px`) — frame **A**
+      (as rendered, backdrop `B0`) vs frame **D** (the same DOM with a solid probe `B1` inserted
+      BEHIND the figure in the same stacking context; `B1` = `#ffffff` on dark presets, `#000000` on
+      `light-default`), `T = 8`. **Expected:** `seeThroughCount == 0` (no backdrop shows through the
+      body: bow tie, arms, buttons, legs, feet) in BOTH themes — the residual is zero, not a
+      property check; `tauri_webview_screenshot` succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-45: **A state renders legibly over the solid body.** Single-click the avatar → the joke streams
+      (`thinking` → `joking` → `happy`). **Expected:** the expression overlay renders ON TOP of the
+      filled body and is distinguishable from `idle`; the body stays solid across the states;
+      screenshot succeeds; console clean.
+- [ ] S-46: **No leak + no stuck state.** Ctrl+right-click (teleport-out → in → idle) and drive
+      `open NotARealApp` (`error`). **Expected:** `leakCount == 0` — frames A + C (`T = 8`) over the
+      UI/UX-bound negative-space boxes `N`, inset per box by the binding non-uniform tuck rule
+      `inset = min(6, floor(w/4), floor(h/4))` (every box 6 except the bow-tie notch 2) — so the
+      inter-leg gap and shoulder notches stay background (no fill leak), the avatar returns to `idle`
+      (no lingering `error`/`joking`), the body stays solid; screenshot succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
+## #3099 extension — published-command-surface quick paths
+
+> Spec #3099 generates each application's companion skill from its published TypeScript command
+> surface. Quick paths only — the full matrix lives in `functional.md` F-144..F-163 /
+> `regression.md` R-70..R-75. **Verification policy: live.** Each live row states PATH-A (real
+> `llama-server` turn) or FALLBACK-F (`tauri_ipc_emit_event` on `llm-skill-call`) with the literal
+> disclosure `model-turn not exercised`.
+
+- [ ] S-47: **The companion still chats and still opens apps.** With the companion ON at the seat,
+      send `Reply with exactly: Hi there!`, then `open Mission Monitor`. **Expected:** the reply streams
+      into `[data-testid="fredo-reply-surface"]` and settles; one Mission Monitor window opens with the
+      reply EXACTLY `Opening Mission Monitor`; screenshot succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-48: **Wireframe quick path while CLOSED.** With Wireframe closed, send (PATH-A)
+      `Create a wireframe for the Reporter app` — or (FALLBACK-F) emit
+      `{skill:"wireframe",arguments:{action:"wireframe.companion.draftApp",arguments:{app_name:"Reporter"}}}`.
+      **Expected:** the Wireframe window opens, `[data-testid="wireframe-root"]`
+      `data-wireframe-element-count` ≥ 3, the reply is the performed sentence ending with a PERIOD
+      (`` `Performed in Wireframe: … .` ``, `kind: 'success'`), screenshot succeeds, console clean.
+- [ ] S-49: **Action-list quick path while CLOSED.** Emit
+      `{skill:"wireframe",arguments:{action:"listActions"}}`. **Expected:** the reply starts
+      `Wireframe actions:` and lists every id from `invoke('app_command_surfaces')` with a non-empty
+      description in order (`; ` join, em dash, no trailing period, `kind: 'success'`); ZERO windows
+      open; screenshot succeeds; console clean.
+- [ ] S-50: **Honest-rejection quick path.** Emit
+      `{skill:"wireframe",arguments:{action:"wireframe.qa.unknown.<nonce>",arguments:{}}}`. **Expected:**
+      ZERO windows open, NO `app-command-intent` is emitted, and the reply is EXACTLY
+      `I don't know the Wireframe action "wireframe.qa.unknown.<nonce>". Nothing changed.`
+      (`kind: 'unknown'`); screenshot succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.

@@ -1,5 +1,7 @@
 # Theming — Smoke
 
+> **Withdrawn artifact:** `docs/features/desktop-background-life.md` was deleted. Its citations record real observations made while the doc existed; they are kept as evidence and are **not** a live dependency. The Life contract now lives in source: `lifePatterns.ts` (pattern catalogue + CC BY-SA 3.0 attribution) and `lifeConstants.ts` (derived palette).
+
 > Standardized boilerplate (from `.opencode/tests/README.md`) adapted to the theming surface.
 > These confirm the app still boots and the theming path is reachable.
 
@@ -119,3 +121,81 @@
 - **S-17 PASS (live).** Chooser renders None + the six recipes (`desktop-background-option-{none,aurora,nebula,mesh,topography,constellation,halo}`); raw `matchMedia('(prefers-reduced-motion: reduce)').matches` = **false**; with a recipe selected `data-motion="animated"`, `data-background-id` = the recipe, 2–3 running backdrop animations; caption `Motion: on`; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
 - **S-18 PASS (live).** Dense full-frame diff of paused seek 0 vs 3000 ms, all six recipes: aurora 64.7 %, nebula 2.93 %, mesh 18.3 %, topography 12.0 %, constellation 40.9 %, halo 13.0 % — every recipe additionally clears its floor on ≥ 2 of the 3 phase-spread intervals and the max pairwise interval (see F-39). Reselecting None → `desktop-backdrop` null; today's desktop returns; screenshot succeeds.
 - **S-19 PASS.** Reduced-motion pin passes (`resolveBackgroundMotion({true})` → `'static'`, static render zero `animation*`); build exit 0; `test:run` 108 files / 1805 tests; live OS flip recorded UNVERIFIED-with-named-blocker (no media-emulation API).
+
+## #2915 extension — Conway's Game of Life smoke
+
+> Issue #2915 adds a **Life** option beside None + the six recipes. Live policy — a rendered-webview
+> read (`tauri_webview_*`) + a **rendered-pixel** quick diff; F-70 in `functional.md` carries the
+> `telemetry_spans` leg. No prior smoke row is superseded.
+
+- [x] **S-20:** Background selector reachable + Life present — Settings → Appearance → Desktop Background
+      renders **None + the six recipes + Life** (`[data-testid="desktop-background-option-life"]`); a fresh
+      profile shows **None**; `tauri_read_logs(source="console", lines=50)` clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [x] **S-21:** Quick Life switch + repaint — select Life; `[data-testid="desktop-backdrop"]` present with
+      `data-background-id="life"`; a dense quick diff of two frames ≈2 s apart (windows closed) is a
+      non-zero change (sanity — the full gate is F-61); open a feature window and confirm it renders above;
+      reselect **None** → backdrop DOM absent + today's desktop returns; screenshot succeeds; console clean.
+- [x] **S-22:** Reduced-motion + gates — the Life reduced-motion product-unit pin exists and passes (static
+      render schedules no loop, `data-motion="static"`); `pnpm --filter @fredo/ui build` exit 0;
+      `pnpm --filter @fredo/ui test:run` green; the live OS flip is recorded
+      **UNVERIFIED-with-named-blocker** (Tauri MCP has no media-emulation API — G-050/G-148/#2870).
+- [x] **S-23:** Attribution quick check — the **CC BY-SA 3.0** attribution + licence notice is present in the
+      Life pattern module (source) and in the docs; the curated pattern set is bounded (no full-lexicon dump).
+
+### #2915 testing round 1 (spec/2915 @ a3c7f245) — results
+
+- **S-20 PASS (live).** Chooser renders None + six recipes + Life (`desktop-background-option-life`, `aria-label="Life"`, `aria-description="Living Conway's Game of Life"`); fresh profile → None; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded` (only the pre-existing `motion() is deprecated` WARN).
+- **S-21 PASS (live).** Life selected → `data-background-id="life"` + Life canvas; dense diff of two fresh loads 11.974 %; Settings window renders above the field; reselect None → backdrop DOM absent + today's desktop returns.
+- **S-22 PASS (gates) + named blocker.** Life reduced-motion pin passes (lifeBounds 8/8, lifeEngine 12/12); build exit 0; `test:run` 115 files / 1700 tests; live OS flip UNVERIFIED-with-named-blocker (no media-emulation API).
+- **S-23 PASS.** CC BY-SA 3.0 notice in `lifePatterns.ts:6-21`, `docs/features/desktop-background-life.md`, and live at `desktop-background-life-attribution`; catalogue bounded at 10 patterns (module-load guard).
+
+### #2915 testing round 2 (spec/2915 @ 79a80c1b) — results
+
+- **S-20 PASS (live).** chooser None + six recipes + Life; fresh profile → None; console clean (only the pre-existing `motion() is deprecated` WARN).
+- **S-21 PASS (live).** Life switch → `data-background-id="life"` + Life canvas; reselect None → backdrop DOM absent + today's desktop returns.
+- **S-22 PASS (gates) + named blocker.** reduced-motion pin green (`lifeBounds` 8/8, `lifeEngine` 12/12); build exit 0; `test:run` 115 files / 1700 tests; live OS flip UNVERIFIED-with-named-blocker (no media-emulation API).
+- **S-23 PASS.** attribution in source + docs + live notice; catalogue bounded at 10.
+
+## #2925 extension — dimmed Life backdrop smoke
+
+> Issue #2925 revises #2915: the Life field must be **materially dimmer, less single-hue** and still
+> alive. Live policy — a rendered-webview read (`tauri_webview_*`) + a **rendered-pixel** screenshot;
+> F-87 in `functional.md` carries the `telemetry_spans` leg. **This extends S-20..S-23** (their mechanics
+> are unchanged; the new rows re-baseline the expected dimmed render). No prior smoke row is superseded.
+
+- [ ] **S-24:** Selector + Life renders, dimmed — Settings → Appearance → Desktop Background renders
+      **None + the six recipes + Life**; select Life; `[data-testid="desktop-backdrop"]` carries
+      `data-background-id="life"` and the Life canvas paints; screenshot the desktop.
+      **Expected:** the rendered field is **materially dimmer than the #2915 baseline screenshot** (a
+      side-by-side pair is visibly darker, not merely present) and is not a uniform flat grey;
+      `tauri_read_logs(source="console", lines=50)` clean of `Error:`/`Uncaught`/`Maximum update depth
+      exceeded`.
+- [ ] **S-25:** Quick perceptibility sanity — with all windows closed, capture two rendered frames
+      `PERCEPT_SAMPLE_MS = 10 000` ms apart and run a **dense full-frame diff** of the backdrop rect.
+      **Expected:** non-zero change consistent with **≥ 2.0 %/interval** (the full gate is F-75; a
+      present-but-frozen field reads ≈ 0 %). Do **not** lower `PIXEL_DELTA_MIN` to pass. Then reselect
+      **None** and confirm the backdrop DOM is absent and today's desktop returns; screenshot succeeds.
+- [ ] **S-26:** Reduced-motion + gates — the Life reduced-motion product-unit pin exists and passes
+      (static render schedules no loop, `data-life-motion="static"`); `pnpm --filter @fredo/ui build`
+      exit 0; `pnpm --filter @fredo/ui test:run` green; the live OS flip is recorded
+      **UNVERIFIED-with-named-blocker** (Tauri MCP has no media-emulation API — G-050/G-148/#2870).
+- [ ] **S-27:** Token purity + live recolour quick path — grep the Life slice for hex/rgb/hsl literals
+      and `var(--x)NN` (zero); switch preset dark↔light and set/clear an `accentPrimary` override while
+      Life runs; confirm the dimmed field recolours live with no restart and no stale dim; console clean.
+
+### #2925 testing round 1 (spec/2925 @ 446ac18a) — results
+
+- **S-24 PASS (live).** chooser renders None + the six recipes + Life; selecting Life → `data-background-id="life"` + the dimmed canvas; the field is visibly darker than the #2915 baseline (before/after pair in the verdict); console clean (only the pre-existing `motion() is deprecated` WARN).
+- **S-25 PASS (live).** two frames ≈6 s apart differ densely; reselecting None removes the backdrop DOM and returns today's desktop; `PIXEL_DELTA_MIN` never lowered.
+- **S-26 PASS (pin) + named blocker.** reduced-motion product pin green (lifeBounds 11/11); build exit 0; suite green; live OS flip UNVERIFIED-with-named-blocker (no Tauri MCP media-emulation API).
+- **S-27 PASS (live).** zero literals / `var(--x)NN`; dark↔light + accent override/clear recolour the dimmed field live with no stale dim; console clean.
+
+### #2925 testing round 2 (spec/2925 @ 897ce4cc) — results
+
+> Re-test after the round-1 fix. Live policy; raw `matchMedia('(prefers-reduced-motion: reduce)').matches = false`.
+
+- **S-24 PASS (live).** chooser renders None + the six recipes + Life; selecting Life → `data-background-id="life"` + the dimmed canvas; the field is visibly darker than the #2915 baseline (F-73 before/after pair) and not a flat grey; console clean (only the pre-existing `motion() is deprecated` WARN).
+- **S-25 PASS (live).** two frames ≈10 s apart differ densely (3.36–6.15 % coverage); reselecting None removes the backdrop DOM and returns today's desktop; `PIXEL_DELTA_MIN` never lowered.
+- **S-26 PASS (pin) + named blocker.** reduced-motion product pin green (`vitest run background/life` 52/52); build exit 0; suite 1787/1787; live OS flip UNVERIFIED-with-named-blocker (no Tauri MCP media-emulation API).
+- **S-27 PASS (live).** zero literals / `var(--x)NN`; dark↔light + accent override/clear recolour the dimmed field live (cell `rgb(30,103,105) → rgb(115,33,120)` and back) with no stale dim; console clean.

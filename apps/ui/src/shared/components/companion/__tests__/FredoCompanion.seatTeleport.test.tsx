@@ -125,6 +125,8 @@ beforeEach(() => {
   adapterBridge.setInvoke(devAdapter.invoke.bind(devAdapter));
   adapterBridge.setLlmChat(devAdapter.llmChat.bind(devAdapter));
   adapterBridge.setLlmChatWithImage(devAdapter.llmChatWithImage.bind(devAdapter));
+  // #2918 ST-5 — the structured-status transport is now the entity's ONE route.
+  adapterBridge.setLlmChatWithStatus(devAdapter.llmChatWithStatus.bind(devAdapter));
   adapterBridge.setListen(() => Promise.resolve(() => {}));
 });
 

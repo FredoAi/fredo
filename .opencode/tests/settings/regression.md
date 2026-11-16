@@ -13,10 +13,11 @@
       section-switch remount (`SettingsSaveProvider key={activeSection}`). The chrome recolor
       must not change layout/nav order/labels. Cross-ref `.opencode/tests/desktop-chrome/`
       F-19 and `.opencode/tests/app-dock/` S-4.
-- [ ] **R-2 (section content unchanged):** Appearance (`ThemingSettings` + `DockPositionSettings`),
+- [ ] **R-2 (section content unchanged):** Appearance (`ThemingSettings` + `BackgroundSettings` — the
+      `DockPositionSettings` control is REMOVED by #2954, see the #2954 note below),
       Fredo Setup (`SetupWizard`), and Telemetry (`TelemetrySettings`) content is functionally
       unchanged by the chrome recolor. Reference `.opencode/tests/theming/` F-1..F-10,
-      `.opencode/tests/app-dock/` F-1, app feature settings sections.
+      app feature settings sections.
 - [ ] **R-3 (SaveFooter contract + T5 on-accent):** The unified save footer still shows only when
       a panel registers a save fn (`useSettingsSave` / `SettingsSaveContext.saveFn`) and hides
       otherwise (`SaveFooter` returns null) — the recolor must not change its show/hide semantics.
@@ -41,7 +42,11 @@
   (F-1..F-13, R-1..R-13).
 - `.opencode/tests/companion/` — the Companion panel content + not-ready wizard (F-42..F-48,
   R-24..R-26).
-- `.opencode/tests/app-dock/` — Appearance section + Dock position (F-1, S-6).
+- ~~`.opencode/tests/app-dock/`~~ — **RETIRED by #2954**: the persistent dock AND the Appearance
+  dock-position control are removed. The open-apps surface now lives in the engaged launcher
+  (`.opencode/tests/launcher/` `#2954 extension` F-118..F-125 / R-70..R-74). Do NOT run the app-dock
+  suite. **#2954 note:** assert `[data-testid="dock-position-settings"]` is ABSENT and
+  `ThemingSettings`/`BackgroundSettings` still render (launcher F-125).
 - `.opencode/tests/desktop-chrome/` — settings gear entry + chrome z-order (F-19).
 - `.opencode/tests/llama-setup/` — the Companion not-ready wizard prerequisite actions.
 

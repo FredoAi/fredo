@@ -41,7 +41,9 @@ jobs:
           cache: 'pnpm'
           cache-dependency-path: pnpm-lock.yaml
       # Install only the @fredo/ui workspace deps (fast).
-      - run: pnpm install --filter @fredo/ui...
+      # Deterministic install (AC2). Non-gating signal: never add this job to
+      # validate.yml's `needs`, never change this file's trigger-level paths.
+      - run: pnpm install --frozen-lockfile --filter @fredo/ui...
       # Cheapest high-signal check for the most common contributor error.
       - run: pnpm --filter @fredo/ui typecheck
       # ---- OPTIONAL early Rust signal — DEFAULT OFF (runner-minute tradeoff). --

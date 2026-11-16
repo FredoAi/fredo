@@ -1,7 +1,10 @@
 [package]
 name = "fredo"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+# Selects the app binary for bare `cargo run` invocations (`tauri dev` ->
+# `cargo run`). The crate has a single binary, `fredo`.
+default-run = "fredo"
 
 [lib]
 name = "fredo_lib"
@@ -11,10 +14,38 @@ crate-type = ["lib", "cdylib", "staticlib"]
 name = "fredo"
 path = "src/main.rs"
 
+# Acquisition-mode build-time switch (Spec #2978 S1). The shipped default is the
+# crate `runtime-download` mode (`default = []`, no `bundled`), so the installer
+# does not grow and the distribution is fetched on first run through Fredo's
+# SHA-256-pinned streaming engine (`applications/pg_supervisor/acquisition.rs`).
+#
+# `bundled` compile-time-embeds the PostgreSQL archive into the binary (+54,048,768 B
+# installer growth) and removes the first-run network fetch. It is deliberately
+# NOT the default. The crate's `bundled` build-time fetch from
+# `theseus-rs/postgresql-binaries` is OUTSIDE Fredo's SHA-pinned integrity surface
+# unless it is replaced by a SHA-pinned resource (Spec #2978 S3 / AC4).
+[features]
+default = []
+bundled = ["postgresql_embedded/bundled"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 tonic-build = "0.12"
 serde_json = "1"
+# Spec #3141 ST-1 — pin `syn` 2 for the HOST (build) graph.
+#
+# `llama-cpp-sys-4` (the FFI layer behind the in-process engine) runs `bindgen
+# 0.73.2` as a build-dependency. `bindgen` declares `syn = ">=2, <4"` for its own
+# codegen but its default `prettyplease` formatter links `syn` 2, so when a
+# `syn` 3 is already present in the host graph (`async-trait 0.1.92` is a
+# proc-macro dependency and requires `syn = "^3"`) cargo hands `bindgen` the
+# `syn` 3 build and its `prettyplease::unparse(&syn::parse_quote!(..))` fails to
+# compile with `the trait bound syn::file::File: ParseQuote is not satisfied`.
+# A `^2` requirement here intersects `bindgen`'s `>=2, <4` and unifies its
+# `syn` back to the 2.x `prettyplease` actually expects, so no phantom version
+# is introduced — it pins an existing crate in the graph and touches neither
+# runtime behaviour nor the target graph.
+syn = { version = "2", default-features = false }
 
 [dependencies]
 tauri = { version = "2", features = [] }
@@ -30,7 +61,6 @@ async-trait = "0.1"
 rfd = "0.14"
 kube = { version = "0.97", features = ["client", "config", "rustls-tls", "ws"] }
 k8s-openapi = { version = "0.23", features = ["v1_30"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
 tauri-plugin-shell = "2"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 futures-util = "0.3"
@@ -46,9 +76,21 @@ prost = "0.13"
 bytes = "1"
 # Streaming SHA-256 verification for model-file acquisition (Spec #2856)
 sha2 = "0.10"
+# Fredo-owned verified-archive extraction (Spec #3076 ST-1): a streaming
+# `flate2::bufread::GzDecoder` + `tar::Archive` unpack of the SHA-256-verified
+# PostgreSQL archive. Both were already transitive at these versions; they are
+# direct because `pg_supervisor::extraction` owns the extract now.
+flate2 = "1"
+tar = "0.4"
 schemars = "1"
 # PostgreSQL (for observability tools)
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "json", "chrono"] }
+# Managed embedded-PostgreSQL lifecycle (Spec #2974, ST-1; packaging #2978 S1).
+# Acquisition mode is the crate default `runtime-download`; the `bundled` crate
+# feature is wired through the `[features]` table above and deliberately NOT
+# enabled by default. `settings.timeout` must always be `Some(PG_CONTROL_TIMEOUT)`
+# — leaving it `None` is the #2948 ~11 h stop hang.
+postgresql_embedded = { version = "0.21", features = ["tokio"] }
 # Structured logging (tracing ecosystem)
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -56,14 +98,64 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 base64 = "0.22"
 tokio-util = { version = "0.7", features = ["io"] }
 tauri-plugin-mcp-bridge = "0.12"
-# Voice input / STT — local, on-device transcription (see infrastructure/voice).
-# cpal 0.18 (native WASAPI capture) and sherpa-onnx 1.13.8 (pinned via `=`,
-# streaming zipformer decode) are the shipped production dependencies.
-# On Windows, sherpa-onnx-sys fetches its prebuilt static win-x64 archive at
-# build time; set SHERPA_ONNX_LIB_DIR to point at a local library directory
-# instead (offline/CI builds).
+# Native in-process Doom engine (Spec #3023, ST-1). Pure-Rust, BSD-3-Clause,
+# `#![no_std]` + `alloc` (std feature on by default) — a cargo dependency, NOT
+# vendored source — so Doom Mode needs no GPL engine build, no MSVC/`cc`
+# toolchain, and no separate process. See `applications/doom/engine.rs`.
+neurodoom = "0.6.7"
+# Voice input — local, on-device capture (see infrastructure/voice). The
+# captured clip is handed to the managed multimodal model over IPC; there is no
+# native speech engine dependency.
 cpal = "0.18"
-sherpa-onnx = "=1.13.8"
+# OS-keychain credential storage for the built-in Postgres client (Spec #2950,
+# ST-2): Windows Credential Manager / macOS Keychain / Linux Secret Service. The
+# native backend for each platform is enabled explicitly (keyring 3 ships none
+# by default); only the host platform's backend is compiled. The db-client
+# stores only the connection password here; no secret ever reaches the settings
+# KV, logs, or an export.
+keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service"] }
+# SQL statement splitting + classification for the built-in Postgres client's
+# safety gates (Spec #2950, ST-4). The PostgreSQL dialect (`PostgreSqlDialect`)
+# is used to classify `db_query_execute` statements as read/write/ddl/
+# destructive/unknown before any server contact; no other backend dialect is
+# compiled in. `std` is on by default.
+sqlparser = "0.63"
+# Spec #3141 ST-1 — in-process companion inference (llama-cpp-4 Rust bindings).
+# `mtmd` is REQUIRED for vision/audio (ST-4/ST-5); `native` is deliberately
+# absent (not portable); `rpc` is dropped. CPU is always available.
+#
+# VULKAN IS THE ONLY GPU BACKEND (decided post-#3141 audit). Vulkan covers
+# NVIDIA, AMD and Intel from ONE code path, and its build cost is an order of
+# magnitude smaller than CUDA's: ggml-vulkan is 3 C++ sources + 162 shader
+# compiles, while ggml-cuda is 71 `.cu` files pushed through
+# nvcc -> cicc -> ptxas (the step that saturated every core for ~40 min per
+# cold build and made every pipeline round pay for a native rebuild). CUDA's
+# only advantage was 10-30% faster inference on NVIDIA, which did not justify
+# a per-round build tax in CI and locally. Dropping `cuda` also removes the
+# `CUDA_PATH` import-library wiring, the CUDA Toolkit from both workflows, and
+# the CUDA runtime redistributables from the installer and third-party notices.
+#
+# `dynamic-link` is ENABLED on the strength of the EXECUTED ST-1 build gate
+# (NFR-7 delegates this decision to the gate; static was PREFERRED). A static
+# link archives `llama-common` (links `cpp-httplib` PRIVATE) into one archive,
+# and a static archive does not propagate private deps — the final binary link
+# then fails with ~28 unresolved external symbols from llama.cpp's
+# download/hf-cache helpers. `dynamic-link` builds each module as a DLL with
+# its private deps linked in, which resolves the link cleanly, at the cost of
+# shipping the ggml/llama DLLs beside `fredo.exe`.
+llama-cpp-4 = { version = "0.11.0", default-features = false, features = ["vulkan", "mtmd", "openmp", "ggml", "dynamic-link"] }
+# Spec #3147 ST-2 — read-only ZIP ingest for installable applications. Only the
+# READ path is used (`ZipArchive` + the central directory), so default features
+# (which pull write-side encoders, aes, bzip2, lzma, zstd, zopfli) are OFF; the
+# single decoder needed is `deflate-flate2`, which reuses the `flate2` already
+# linked for `pg_supervisor`. Archive safety (entry-count/size budgets, zip-slip,
+# reserved paths, symlink rejection) is implemented in
+# `applications/installed_apps/archive.rs` — never delegated to the crate.
+zip = { version = "=2.4.2", default-features = false, features = ["deflate-flate2", "flate2"] }
+# Spec #3147 ST-2 — SemVer 2.0.0 parsing for `manifestVersion: 1`'s `version`
+# field and for the `engines.fredo` RANGE (`VersionReq`). Already in the graph
+# transitively; direct because `installed_apps::manifest` owns the rules.
+semver = "1"
 
 [dev-dependencies]
 tempfile = "3"

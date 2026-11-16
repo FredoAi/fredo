@@ -419,3 +419,147 @@
 - [ ] **E-62 (send while the game bubble is open) — not driven.** Named blocker: TicTacToe double-click + bar send inside one window was not sequenced.
 - [x] **E-63 (disposition changed mid-stream) — observed.** Switching `queue` → `interrupt` (and back) via the Settings select updated the persisted value and the effective dispatch followed it on the next send (superseded vs queued). A flip between an enqueue and its drain was not isolated.
 - **Finding (harness technique, no product defect) — promoted to `launcher` F-93/F-94 round 2.** In-flight sends require an in-page single-script dual-send (or a real-keyboard second send against a long generation); serial driver round-trips (~6 s) always land after the local ~1–2 s generation.
+
+---
+
+## #2917 extension — solid-fill / vocabulary edge probes
+
+> Unscripted probes for issue #2917. A confirmed finding PROMOTES to `functional.md` as a new `F-` row
+> (keep the origin note); a confirmed regression-free probe is recorded here. Live policy; an undrivable
+> lever is a named blocker (G-053) with a static/unit pin — never fabricated.
+
+- [ ] E-27: **Worst-case accent contrast for the fill.** Pick the shipped preset whose accent is closest
+      to the page/card background (or a user accent set near-background). Is the filled interior still
+      distinguishable from the surface behind Fredo (and is the head rim still readable against the
+      fill), or does the figure visually merge? Any interior that is indistinguishable from the
+      background in a shipped theme/accent is a finding (promotes to F-116).
+- [ ] E-28: **Fill vs overlay at a colour collision.** With the fill active, check each state's shapes
+      for a same-colour-on-same-colour collision (the #2850 E-25 class). Any distinguishing shape that
+      is invisible in principle on the fill is a finding (promotes to F-118).
+- [ ] E-29: **Rapid status churn over the fill.** Interleave `thinking → joking → happy → playful` and a
+      teleport in quick succession. Does every state settle with the correct overlay over the fill (no
+      stuck/merged state, no fill flash, no console error)? Any stuck/mislabeled state is a finding
+      (promotes to F-118/F-121).
+- [ ] E-30: **Reduced-motion flip while a new state is active.** If the environment can flip
+      `prefers-reduced-motion` reduce ↔ no-preference while a new state is mounted, does the motion stop
+      while the distinguishing shape stays legible (never `opacity:0`, no strobe)? If the lever is not
+      drivable, record the G-053 named blocker + the static-CSS/unit pin. Any invisible/strobing state is
+      a finding (promotes to F-122).
+- [ ] E-31: **Fractional-DPI / narrow-viewport fill integrity.** At a fractional OS scale and at a narrow
+      viewport, does the fill stay inside the silhouette (no seam-shifted/overflowing cells), and do the
+      overlays stay crisp over it? Any overflow, seam shift, or subpixel smear is a finding (promotes to
+      F-116/F-118).
+- [ ] E-32: **Dense-vs-sparse metric disagreement (aliasing check).** For a thin/periodic state (e.g.
+      `teleport-in` sparkles), compute both a dense full-frame diff and a sparse point-grid diff. Do they
+      disagree (the sparse grid reports ~zero where the dense diff shows real change)? Any state where the
+      sparse grid would pass but the dense diff fails must be recorded — the sparse grid is never
+      admissible (promotes to F-119/F-121).
+
+---
+
+## #2918 extension — structured-reply / model-status edge probes
+
+> Unscripted probes for issue #2918. A confirmed finding PROMOTES to `functional.md` as a new `F-` row
+> (keep the origin note). Live policy; an undrivable lever is a named blocker (G-053) with a static/unit
+> pin — never fabricated. Levers: LV1 real managed `llama-server`, LV2 synthetic `llm-*` injection,
+> LV3 the existing probe, LV4 pure pins.
+
+- [ ] E-64: **Prose that LOOKS like markup (parser false-positive).** Ask the model (LV1) for a reply
+      whose text legitimately contains braces / quotes / the word `json` (e.g. "Reply with exactly:
+      Use the set notation {a, b} and mention json.") and separately inject such a reply as the
+      `reply` field (LV2). Does the surface render the prose verbatim, or does a naive
+      stripping/parsing path eat the `{`/quote or leak the object fragment? Any eaten/leaked
+      character is a finding (promotes to F-127). A JSON-shaped reply whose prose is truncated is
+      also a finding.
+- [ ] E-65: **Retry storm / double-settle under the watchdog.** Drive repeated empty content (LV2)
+      back-to-back and, in one leg, an `llm-error` immediately followed by `llm-done` at the retry
+      boundary. Count the re-requests and the settles. Does the retry stay BOUNDED (never unbounded,
+      never a second settled reply), and does the turn always settle exactly once? Any unbounded
+      retry, double-settle, or hung turn is a finding (promotes to F-128).
+- [ ] E-66: **Model status racing a skill selection / a teleport.** Inject a status-bearing reply
+      object (LV2) while a skill selection is pending, and again while a teleport is in flight. Does
+      the status compose through the resolver without masking `working` / the teleport base state, and
+      does it apply to the correct turn (not a stale one)? Any masked `working`, status leaking across
+      a teleport, or a       status applied to the wrong turn is a finding (promotes to F-131).
+
+---
+
+## #2922 extension — body-solidity edge probes (see the metric in `functional.md` F-135)
+
+> Unscripted probes for issue #2922 (the body-wide interior fill). A confirmed finding PROMOTES to
+> `functional.md` as a new `F-` row (keep the origin note); a confirmed regression-free probe is
+> recorded here. Live policy; an undrivable lever is a named blocker (G-053) with a static/unit pin —
+> never fabricated.
+
+- [ ] E-67: **Worst-case accent vs the body fill.** Pick the shipped preset whose accent is closest to
+      the page/card background (or set a near-background accent) and re-run the F-135 metric on the
+      body ROI. Is the body still distinguishable as a FILLED region (the fill-vs-backdrop delta above
+      `4×T = 32`) and does the figure read as one solid shape at the sm 80×100 scale — or does the
+      body visually merge with the surface? Any body region where the fill is indistinguishable from
+      the background is a finding (promotes to F-137; raises QA Discussion Q-2).
+- [ ] E-68: **Fill vs expression ink on the new body bands.** With the fill active, check every
+      state's shapes for a same-colour-on-same-colour collision on or near a body band (the #2850 E-25
+      / #2917 E-28 class) — `working` chevrons, `happy` cheek star, `playful` cheek star/brow. Any
+      distinguishing shape invisible in principle over the fill is a finding (promotes to F-136).
+- [ ] E-69: **Dense-vs-sparse metric disagreement (aliasing check).** For a thin/periodic state
+      (`teleport-in` sparkles, `working` chevrons) compute BOTH the dense per-pixel body metric and a
+      sparse point grid over the same ROI. Any state where the sparse grid reports 0 holes while the
+      dense metric reports holes (or the reverse) must be recorded — the sparse grid is NEVER
+      admissible (promotes to F-135/F-143).
+- [ ] E-70: **Fractional-DPI / narrow-viewport body integrity.** At a fractional OS scale and at the
+      shipped minimum 900×600 (narrower is dev-advisory), check the body bands for seam-shifted /
+      overflowing / antialiased gaps at band joins (the per-box tuck under the rim), and that the figure
+      stays un-clipped. Any overflow, seam gap, or subpixel smear is a finding (promotes to F-135).
+- [ ] E-71: **Leak probe at the negative-space boxes.** Evaluate `leakCount` (`{ p ∈ N : maxChannel
+      |A(p) − C(p)| > T }`, `T = 8`; frames A + C in one task) over each of the UI/UX-bound boxes `N`,
+      inset per box by the binding NON-UNIFORM tuck rule `inset = min(6, floor(w/4), floor(h/4))`
+      (every box 6 except the bow-tie notch 2); walk the outer-arm/hip steps, the jaw→arm neck band
+      and the crotch at 1-unit steps for antialias bleed past the box edge. Any fill pixel inside `N`
+      is a finding (promotes to F-138); explicitly re-check the `x 460, y 1150` note (the left inner
+      leg's own edge, outside `N` once the per-box inset is applied) so a future round does not
+      re-file it as a product defect.
+
+---
+
+## #3099 extension — published-surface / generic-relay probes
+
+> Unscripted probes for issue #3099 (one TS source of truth → published registry → generated offer →
+> generic relay). A confirmed finding PROMOTES to `functional.md`/`regression.md` as a new row (keep
+> the origin note). Live policy; an undrivable lever is a named blocker (G-053) with a static/unit
+> pin — never fabricated.
+
+- [ ] E-72: **Concurrent publish from every webview.** With main + an `app-wireframe` window + the
+      `run-cli-terminal` window open, reload them in different orders (and one while a turn is in
+      flight). Does each publisher's UPSERT converge on the SAME manifest (identical bytes are
+      idempotent) with no flap — a turn's offer must never lose the wireframe skill mid-session — and
+      does `app_command_surfaces()` end on exactly one entry per `appId`? Any offer flapping, a
+      partial set replacing a full one, or a duplicate surface is a finding (promotes to F-144/F-145
+      + QA Discussion D4).
+- [ ] E-73: **Publish storm.** Publish 20 different probe surfaces back-to-back (each a new `appId`).
+      Does the registry stay bounded/consistent (the next turn offers what the LAST read shows, no
+      union of stale ids), and does the app stay responsive? Any stale id lingering, a bound violation
+      without an `Err`, or a wedge is a finding (promotes to F-158/F-160).
+- [ ] E-74: **Identical publish is a no-op.** Publish the SAME manifest twice and watch the invoke
+      traffic (`tauri_ipc_monitor` / a `__TAURI__.core.invoke` wrapper). Does the SECOND publish get
+      skipped by the TS publisher (identical consecutive manifests are not re-sent) and is a direct
+      duplicate re-publish idempotent at the registry (same bytes, no order change)? A needless
+      republish that replaces an in-flight turn's offer is a finding (promotes to F-144).
+- [ ] E-75: **An id offered but absent from the TS surface.** Publish a wireframe surface containing a
+      command id that does NOT exist in `wireframeCommandSurface.ts`, then call it. Does layer 1 accept
+      it (it is IN the published manifest) while the app fails CLOSED at layer 2 (`outcome:"Invalid"`
+      / `unknown-command`, nothing changed, honest reply), with no crash and no partial mutation? Any
+      silent success, or an exception reaching the console, is a finding (promotes to F-152/F-153).
+- [ ] E-76: **Intent flood while the app stays closed.** Push 100 intents for `wireframe` with no
+      consumer, then open the app. Is the queue clamped at 16 (oldest evicted), does the editor drain
+      in order, and does every drained intent get exactly one result (no silent drop, no duplicate
+      execution, no runaway `element-count`)? Any unbounded growth or duplicate execution is a
+      finding (promotes to R-73/F-150).
+- [ ] E-77: **Timeout versus a slow-but-alive app.** Publish a surface for a real app whose intent hook
+      exists but whose command work is slow (a heavy wireframe action on a large document). Does the
+      10 s bound settle exactly one reply (never two, never a silent hang), and is a late result after
+      the timeout ignored rather than pushing a second reply? A late duplicate reply is a finding
+      (promotes to F-151/F-161).
+- [ ] E-78: **Empty publish mid-session.** Publish `{surfaces: []}` while a turn is in flight, then
+      again while idle. Is the registry read byte-identical before/after (no clear), and does the next
+      turn's offer still carry the full set? Any offer shrinkage, a lost wireframe skill, or an `Err`
+      is a finding (promotes to F-158/F-160 + QA Discussion D4).

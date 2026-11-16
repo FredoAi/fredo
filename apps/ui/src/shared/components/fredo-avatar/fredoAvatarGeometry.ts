@@ -155,3 +155,77 @@ export function expandFredoRects(src: readonly FredoAvatarSourceRect[]): FredoRe
 
   return expanded;
 }
+
+/**
+ * #2917 ST-1 — ADDITIVE interior-fill geometry (head interior + mouth void).
+ *
+ * This table is SEPARATE from `FREDO_AVATAR_SOURCE_RECTS`: the 58 base rects stay
+ * byte-identical (the canonical count-parity guard is keyed off the base table
+ * only — `expandFredoRects`), and the fill is rendered as ONE `<path>` (never a
+ * `<rect>`), so `svg.querySelectorAll('rect')` stays exactly 58.
+ *
+ * Bands 1–9 tile the head cavity (#2917): rows 1–5 cover the head interior (the
+ * eyes sit on top of the fill) and rows 6–9 cover the mouth void down to the jaw
+ * bar (y=761). Their x-ranges are the cavity's inner faces expanded 6 units
+ * outward so each band tucks UNDER the opaque accent rim (invisible there) and
+ * every band is symmetric about X=507.
+ *
+ * Bands 10–17 (#2922) extend the SAME single fill through the body cavity
+ * (torso/hips/legs, y 824–1200) so the whole figure reads opaque: the inter-leg
+ * slit (x 488–526) and the shoulder/neck + armpit notches stay background (bound
+ * negative space, never filled), the feet rows keep the between-feet gap, and
+ * each band tucks ~6 units under the base-rect rim so no fill paints past the
+ * silhouette.
+ *
+ * Bands 6 and 7 are trimmed 1 unit at their bottom edge (h=58 / h=41) versus the
+ * triage table (h=59 / h=42): the head rim steps INWARD at y=644 (the inner face
+ * jumps x166 → x215 on the left and x848 → x799 on the right) and again at
+ * y=686 (x215 → x276 / x799 → x738). A band that extends across those step lines
+ * would expose the fill outside the head silhouette (9–15 units horizontally
+ * over 1 unit of height), exceeding the plan's own ≤8-unit tolerance. Band 6's
+ * width is 694 (not 700) so it tucks exactly 6 units under both rim faces, per
+ * the table's stated "inner faces expanded 6 units outward" rule.
+ *
+ * @see C:\Code\fredo\.opencode\wireframes\fredo-avatar.html
+ */
+export const FREDO_AVATAR_INTERIOR_RECTS: readonly FredoAvatarSourceRect[] = [
+  { x: 364, y: 106, width: 286, height: 43, src: 'interior-1', mirrored: false }, // crown under forehead band
+  { x: 270, y: 150, width: 474, height: 44, src: 'interior-2', mirrored: false }, // crown
+  { x: 210, y: 194, width: 594, height: 76, src: 'interior-3', mirrored: false }, // crown
+  { x: 161, y: 270, width: 692, height: 47, src: 'interior-4', mirrored: false }, // crown → temples
+  { x: 122, y: 317, width: 770, height: 268, src: 'interior-5', mirrored: false }, // face (eyes on top)
+  { x: 160, y: 585, width: 694, height: 58, src: 'interior-6', mirrored: false }, // lower face
+  { x: 209, y: 644, width: 596, height: 41, src: 'interior-7', mirrored: false }, // mouth void
+  { x: 270, y: 686, width: 474, height: 42, src: 'interior-8', mirrored: false }, // mouth void
+  { x: 337, y: 727, width: 340, height: 34, src: 'interior-9', mirrored: false }, // mouth void → jaw
+  // ---- #2922 ST-1 — BODY interior fill (torso, hips, legs; additive, appended
+  // AFTER the byte-identical 9 head bands). Tiles the body cavity so the torso,
+  // arms and legs render opaque instead of letting the page show through. The
+  // inter-leg slit (x 488–526, y 1097–1200) and the shoulder/neck + armpit
+  // notches stay background (bound negative space); every band tucks ~6 units
+  // under the opaque base-rect rim so its free edges terminate on an existing rim
+  // edge and no fill paints past the silhouette. The feet rows (y 1201–1234) keep
+  // the between-feet gap so two legs stay two legs.
+  { x: 382, y: 824, width: 51, height: 10, src: 'interior-10', mirrored: false }, // left chest cavity, tucked 6 under the inner-arm + bow-tie rims
+  { x: 581, y: 824, width: 51, height: 10, src: 'interior-11', mirrored: false }, // right chest cavity (mirror of band 10)
+  { x: 382, y: 834, width: 250, height: 82, src: 'interior-12', mirrored: false }, // torso core — bow-tie knot + chest → waist, tucked under both inner-arm rims
+  { x: 414, y: 916, width: 186, height: 93, src: 'interior-13', mirrored: false }, // lower torso around the centre button, tucked 6 under the inner lower-arm rims
+  { x: 327, y: 1009, width: 360, height: 52, src: 'interior-14', mirrored: false }, // hips, tucked 6 under the hip rims
+  { x: 327, y: 1061, width: 360, height: 24, src: 'interior-15', mirrored: false }, // hip → leg bridge — closes the rim gap so the body reads solid to the legs
+  { x: 355, y: 1085, width: 133, height: 115, src: 'interior-16', mirrored: false }, // left leg interior, stops at the inter-leg slit (x 488)
+  { x: 526, y: 1085, width: 133, height: 115, src: 'interior-17', mirrored: false }, // right leg interior (mirror of band 16), stops at the inter-leg slit (x 526)
+];
+
+/**
+ * #2917 ST-1 — builds the single `<path>` `d` for the interior fill from
+ * expanded interior rects (pure; unit-tested).
+ *
+ * Each rect becomes the relative subpath `M x y h w v h h -w Z` (clockwise in
+ * SVG space); every subpath shares one winding direction, so the non-zero fill
+ * rule unions them with no seams. Overlaps between adjacent bands are harmless.
+ */
+export function buildInteriorPathD(rects: readonly FredoRect[]): string {
+  return rects
+    .map((rect) => `M ${rect.x} ${rect.y} h ${rect.width} v ${rect.height} h ${-rect.width} Z`)
+    .join(' ');
+}

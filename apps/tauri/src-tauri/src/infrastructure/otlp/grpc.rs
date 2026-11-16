@@ -10,8 +10,8 @@
 /// (Spec #2788 P3.1). Metrics and logs are persisted to `telemetry_metrics` /
 /// `telemetry_logs` (Spec #1499, GA-5/6/7).
 use std::sync::Arc;
+use std::time::Instant;
 
-use tauri::{AppHandle, Manager};
 use tonic::{Request, Response, Status};
 
 use opentelemetry_proto::tonic::collector::{
@@ -32,15 +32,22 @@ use opentelemetry_proto::tonic::common::v1::{any_value, AnyValue, KeyValue};
 use opentelemetry_proto::tonic::metrics::v1 as otlp_metrics;
 
 use crate::infrastructure::comm::event::Transport;
-use crate::infrastructure::rtdb::ingest::IngestClassifierState;
 use crate::infrastructure::telemetry::metrics_collector::{MetricPoint, MetricType, SpanStoreMetricsExt};
 use crate::infrastructure::otlp::raw::raw_spans_from_export;
-use crate::infrastructure::storage::span_store::SpanStore;
+use crate::infrastructure::otlp::ReceiverContext;
+use crate::infrastructure::telemetry::backoff::ErrorBackoff;
 use crate::infrastructure::telemetry::log::LogRecord;
+
+/// R-5 (Spec #3067): per-site back-off gating the gRPC OTLP persist error
+/// emissions, so a fail-closed engine does not flood the log with identical
+/// insert-failure lines. Spans, metrics, and logs keep distinct keys.
+static OTLP_SPANS_BACKOFF: ErrorBackoff = ErrorBackoff::new();
+static OTLP_METRICS_BACKOFF: ErrorBackoff = ErrorBackoff::new();
+static OTLP_LOGS_BACKOFF: ErrorBackoff = ErrorBackoff::new();
 
 // ── TraceService ──────────────────────────────────────────────────────────────
 
-pub struct OtlpTraceService(pub AppHandle);
+pub struct OtlpTraceService(pub Arc<ReceiverContext>);
 
 #[tonic::async_trait]
 impl TraceService for OtlpTraceService {
@@ -60,11 +67,18 @@ impl TraceService for OtlpTraceService {
         // R1/R5: Raw span ingestion on receipt — persist every span BEFORE and
         // independent of delivery processing. Insert failure logs-and-continues
         // and never fails the export response or blocks delivery (R11).
-        let store = self.0.state::<Arc<SpanStore>>();
+        let store = &self.0.span_store;
         let raw_spans = raw_spans_from_export(&req, "otlp_grpc");
-        match store.insert_raw_spans(&raw_spans) {
-            Ok(n) => tracing::info!(target: "fredo::otlp", inserted = n, "raw OTLP spans persisted"),
-            Err(e) => tracing::error!(target: "fredo::otlp", error = %e, "raw OTLP span insert failed"),
+        match store.insert_raw_spans(&raw_spans).await {
+            Ok(n) => {
+                tracing::info!(target: "fredo::otlp", inserted = n, "raw OTLP spans persisted");
+                OTLP_SPANS_BACKOFF.reset();
+            }
+            Err(e) => {
+                if let Some(suppressed) = OTLP_SPANS_BACKOFF.due(Instant::now()) {
+                    tracing::error!(target: "fredo::otlp", error = %e, suppressed = suppressed, "raw OTLP span insert failed");
+                }
+            }
         }
 
         let json_value = serde_json::json!({
@@ -76,8 +90,8 @@ impl TraceService for OtlpTraceService {
         // from the export — unconditionally, never gated by subscriptions
         // (R-4a). Log-and-continue: a classifier failure never affects the
         // export response.
-        let classifier = self.0.state::<IngestClassifierState>();
-        let rows = classifier.ingest_otlp(Transport::OtlpGrpc, &json_value);
+        let classifier = &self.0.classifier;
+        let rows = classifier.ingest_otlp(Transport::OtlpGrpc, &json_value).await;
         tracing::debug!(target: "fredo::rtdb::ingest", rows = rows, "gRPC export classified into RTDB rows");
 
         Ok(Response::new(ExportTraceServiceResponse {
@@ -88,7 +102,7 @@ impl TraceService for OtlpTraceService {
 
 // ── MetricsService ────────────────────────────────────────────────────────────
 
-pub struct OtlpMetricsService(pub AppHandle);
+pub struct OtlpMetricsService(pub Arc<ReceiverContext>);
 
 #[tonic::async_trait]
 impl MetricsService for OtlpMetricsService {
@@ -100,10 +114,17 @@ impl MetricsService for OtlpMetricsService {
         let points = otlp_metrics_to_points(&request);
         if !points.is_empty() {
             // Spec #1499 (GA-7): persist OTLP metrics to telemetry_metrics.
-            let store = self.0.state::<Arc<SpanStore>>();
-            match store.insert_metrics(&points) {
-                Ok(n) => tracing::info!(target: "fredo::otlp", inserted = n, "OTLP metrics persisted"),
-                Err(e) => tracing::error!(target: "fredo::otlp", error = %e, "OTLP metrics insert failed"),
+            let store = &self.0.span_store;
+            match store.insert_metrics(&points).await {
+                Ok(n) => {
+                    tracing::info!(target: "fredo::otlp", inserted = n, "OTLP metrics persisted");
+                    OTLP_METRICS_BACKOFF.reset();
+                }
+                Err(e) => {
+                    if let Some(suppressed) = OTLP_METRICS_BACKOFF.due(Instant::now()) {
+                        tracing::error!(target: "fredo::otlp", error = %e, suppressed = suppressed, "OTLP metrics insert failed");
+                    }
+                }
             }
         }
         Ok(Response::new(ExportMetricsServiceResponse {
@@ -114,7 +135,7 @@ impl MetricsService for OtlpMetricsService {
 
 // ── LogsService ───────────────────────────────────────────────────────────────
 
-pub struct OtlpLogsService(pub AppHandle);
+pub struct OtlpLogsService(pub Arc<ReceiverContext>);
 
 #[tonic::async_trait]
 impl LogsService for OtlpLogsService {
@@ -126,10 +147,17 @@ impl LogsService for OtlpLogsService {
         let records = otlp_logs_to_records(&request);
         if !records.is_empty() {
             // Spec #1499 (GA-5/GA-6): persist OTLP log records / events to telemetry_logs.
-            let store = self.0.state::<Arc<SpanStore>>();
-            match store.insert_logs(&records) {
-                Ok(n) => tracing::info!(target: "fredo::otlp", inserted = n, "OTLP log records persisted"),
-                Err(e) => tracing::error!(target: "fredo::otlp", error = %e, "OTLP log insert failed"),
+            let store = &self.0.span_store;
+            match store.insert_logs(&records).await {
+                Ok(n) => {
+                    tracing::info!(target: "fredo::otlp", inserted = n, "OTLP log records persisted");
+                    OTLP_LOGS_BACKOFF.reset();
+                }
+                Err(e) => {
+                    if let Some(suppressed) = OTLP_LOGS_BACKOFF.due(Instant::now()) {
+                        tracing::error!(target: "fredo::otlp", error = %e, suppressed = suppressed, "OTLP log insert failed");
+                    }
+                }
             }
         }
         Ok(Response::new(ExportLogsServiceResponse {
@@ -268,7 +296,7 @@ pub(crate) fn otlp_metrics_to_points(request: &ExportMetricsServiceRequest) -> V
                         }
                     }
                     _ => {
-                        // ExponentialHistogram / Summary — not mapped by any UI feature.
+                        // ExponentialHistogram / Summary — not mapped by any UI application.
                     }
                 }
             }
@@ -350,15 +378,23 @@ pub(crate) fn otlp_logs_to_records(request: &ExportLogsServiceRequest) -> Vec<Lo
 
 // ── Server startup ────────────────────────────────────────────────────────────
 
-pub async fn start(app: AppHandle) -> anyhow::Result<()> {
-    let addr = "127.0.0.1:4317".parse()?;
+/// The default loopback gRPC OTLP port (unchanged from the pre-#2992 receiver).
+pub const DEFAULT_GRPC_PORT: u16 = 4317;
+
+pub async fn start_with(ctx: Arc<ReceiverContext>) -> anyhow::Result<()> {
+    start_with_on_port(ctx, DEFAULT_GRPC_PORT).await
+}
+
+/// Serve the gRPC receiver on an explicit loopback `port` (Spec #2992 ST-5).
+pub async fn start_with_on_port(ctx: Arc<ReceiverContext>, port: u16) -> anyhow::Result<()> {
+    let addr = format!("127.0.0.1:{port}").parse()?;
 
     tracing::info!(target: "fredo::otlp", addr = %addr, "gRPC receiver listening");
 
     tonic::transport::Server::builder()
-        .add_service(TraceServiceServer::new(OtlpTraceService(app.clone())))
-        .add_service(MetricsServiceServer::new(OtlpMetricsService(app.clone())))
-        .add_service(LogsServiceServer::new(OtlpLogsService(app)))
+        .add_service(TraceServiceServer::new(OtlpTraceService(Arc::clone(&ctx))))
+        .add_service(MetricsServiceServer::new(OtlpMetricsService(Arc::clone(&ctx))))
+        .add_service(LogsServiceServer::new(OtlpLogsService(ctx)))
         .serve(addr)
         .await?;
 
@@ -587,5 +623,43 @@ mod tests {
         };
         let records = otlp_logs_to_records(&request);
         assert!(records.is_empty());
+    }
+
+    // ── ST-3 (R-1): the trace service consumes ReceiverContext, no AppHandle ──
+
+    #[tokio::test]
+    async fn trace_service_consumes_receiver_context_without_apphandle() {
+        use crate::infrastructure::otlp::test_support::receiver_context;
+        use opentelemetry_proto::tonic::trace::v1::{
+            ResourceSpans, ScopeSpans, Span as OtlpSpan,
+        };
+
+        let service = OtlpTraceService(receiver_context());
+        let request = ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                resource: None,
+                scope_spans: vec![ScopeSpans {
+                    scope: None,
+                    spans: vec![OtlpSpan {
+                        name: "my.llm".to_string(),
+                        trace_id: vec![0x22; 16],
+                        span_id: vec![0x11; 8],
+                        attributes: vec![kv(
+                            "session.id",
+                            any_value::Value::StringValue("sess-ctx".to_string()),
+                        )],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let response = service.export(Request::new(request)).await;
+        assert!(
+            response.is_ok(),
+            "the export must succeed AppHandle-free (raw insert + classification log-and-continue)"
+        );
     }
 }

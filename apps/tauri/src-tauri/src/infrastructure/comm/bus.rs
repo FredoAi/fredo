@@ -7,10 +7,12 @@
 //!
 //! Registered as Tauri state in lib.rs and consumed by the RTDB flush loop.
 
+use serde::Serialize;
 use tauri::{AppHandle, Emitter};
-use crate::infrastructure::feature_data::envelope::{
-    FeatureDeliveryBatch, FeatureRowNotification,
+use crate::infrastructure::application_data::envelope::{
+    ApplicationDeliveryBatch, ApplicationRowNotification,
 };
+use crate::infrastructure::rtdb::health::StreamHealthHeartbeat;
 use crate::infrastructure::rtdb::project::{RowDelivery, RowDeliveryBatch};
 
 /// EventBus emits RTDB row batches on the "fredo-stream-event" Tauri channel.
@@ -50,21 +52,80 @@ impl EventBus {
         }
     }
 
-    /// Emit a BATCH of feature-data notifications as ONE
+    /// Emit a BATCH of application-data notifications as ONE
     /// "fredo-stream-event" IPC event (Spec #2896 ST-4): the wire envelope is
-    /// the camelCase `{"featureBatch": FeatureRowNotification[]}` struct
-    /// (`FeatureDeliveryBatch` in `feature_data/envelope.rs`), discriminated by
-    /// the `featureBatch` field in AppProvider BEFORE the RTDB `rowBatch`
+    /// the camelCase `{"applicationBatch": ApplicationRowNotification[]}` struct
+    /// (`ApplicationDeliveryBatch` in `application_data/envelope.rs`), discriminated by
+    /// the `applicationBatch` field in AppProvider BEFORE the RTDB `rowBatch`
     /// validators.
     ///
-    /// This is the ONLY sanctioned feature-data emission path (declared-table
+    /// This is the ONLY sanctioned application-data emission path (declared-table
     /// watches never call `app_handle.emit` directly) and it rides the SAME
     /// channel as [`Self::emit_row_delivery_batch`] — the RTDB `rowBatch`
     /// contract and its emission path are unchanged.
-    pub fn emit_feature_delivery_batch(&self, notifications: &[FeatureRowNotification]) {
-        let envelope = FeatureDeliveryBatch::new(notifications.to_vec());
+    pub fn emit_application_delivery_batch(&self, notifications: &[ApplicationRowNotification]) {
+        let envelope = ApplicationDeliveryBatch::new(notifications.to_vec());
         if let Err(e) = self.app.emit("fredo-stream-event", &envelope) {
-            tracing::error!(target: "fredo::comm", error = %e, "emit featureBatch failed");
+            tracing::error!(target: "fredo::comm", error = %e, "emit applicationBatch failed");
+        }
+    }
+
+    /// Emit ONE stream-health heartbeat on the SAME "fredo-stream-event" channel
+    /// (Spec #3064 ST-1): the wire envelope is the camelCase
+    /// `{"streamHealth": StreamHealthHeartbeat}` payload, discriminated by the
+    /// `streamHealth` field in AppProvider BEFORE the application/row validators
+    /// so it can never be mis-routed into the row store.
+    ///
+    /// This is the ONLY sanctioned stream-health emission path — the liveness
+    /// publisher never calls `app_handle.emit` directly. The RTDB `rowBatch`
+    /// contract and its emission path are unchanged.
+    pub fn emit_stream_health(&self, heartbeat: &StreamHealthHeartbeat) {
+        #[derive(Serialize)]
+        struct StreamHealthEnvelope<'a> {
+            #[serde(rename = "streamHealth")]
+            stream_health: &'a StreamHealthHeartbeat,
+        }
+        let envelope = StreamHealthEnvelope {
+            stream_health: heartbeat,
+        };
+        if let Err(e) = self.app.emit("fredo-stream-event", &envelope) {
+            tracing::error!(target: "fredo::comm", error = %e, "emit streamHealth failed");
+        }
+    }
+
+    /// Emit `event` with `payload` to ONE webview `window` (targeted delivery).
+    ///
+    /// This is the sanctioned path for an application's window-scoped status event
+    /// (Spec #2969 ST-5: the Doom window's `doom-autoplay-changed`): like
+    /// [`Self::emit_row_delivery_batch`], it keeps the emission behind the
+    /// EventBus so application code never calls `AppHandle::emit_to` directly. A
+    /// missing window is not an error — it is logged at debug.
+    pub fn emit_to_window<T: Serialize>(&self, window: &str, event: &str, payload: &T) {
+        if let Err(error) = self.app.emit_to(window, event, payload) {
+            tracing::debug!(
+                target: "fredo::comm",
+                error = %error,
+                window,
+                event,
+                "emit_to_window skipped (no such window?)"
+            );
+        }
+    }
+
+    /// Emit `event` with `payload` to EVERY webview (a global broadcast).
+    ///
+    /// This is the sanctioned path for a cross-window state broadcast (Spec
+    /// #2970 ST-2: the Doom Mode `doom-mode-changed`): like
+    /// [`Self::emit_row_delivery_batch`], it keeps the emission behind the
+    /// EventBus so application code never calls `AppHandle::emit` directly.
+    pub fn emit_global<T: Serialize>(&self, event: &str, payload: &T) {
+        if let Err(error) = self.app.emit(event, payload) {
+            tracing::error!(
+                target: "fredo::comm",
+                error = %error,
+                event,
+                "emit_global failed"
+            );
         }
     }
 }

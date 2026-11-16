@@ -14,6 +14,13 @@
       Promotes to F-3.
 - [x] E-4: **Stale socket vs live app.** With a leftover socket file but no app, does the CLI follow
       the documented exit-2 fallback or hang? Promotes to F-4.
+- [ ] E-5: **`open-terminal` while the window is in an error state.** Does the command focus the
+      window, start a session, or wedge? Record the defined behavior (promotes to F-6).
+- [ ] E-6: **Concurrent `open-terminal` invocations with different `--cli`/`--dir`.** Duplicate
+      windows? Lost responses? Two sessions in one window? Promotes to F-6.
+- [ ] E-7: **`open-terminal` with pathological arguments.** Long path; unicode path; a path with
+      spaces; a relative path; a UNC-looking string. Every case must produce a readable outcome and
+      open nothing wrong (promotes to F-10/F-11).
 
 ### #2893 testing round 1 (spec/2893 @ 614f26d3) — results
 

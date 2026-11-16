@@ -274,4 +274,4 @@ patterns:
   - Motion: 0.4s fade-in entrance with stagger (0.1s per child), 0.2s hover lift on cards
 ```
 
-The Developer receives this capsule and implements accordingly — no skill loading needed at Developer level. The Self-Improver (orchestrator) checks the PR against these aesthetic patterns alongside functional acceptance criteria.
+The Developer receives this capsule and implements accordingly — no skill loading needed at Developer level. The Orchestrator checks the PR against these aesthetic patterns alongside functional acceptance criteria.

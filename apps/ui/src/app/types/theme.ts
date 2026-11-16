@@ -156,7 +156,10 @@ export const themes: Record<ThemeMode, Theme> = {
       cardHoverBg: '#3a3a3a',
       
       textPrimary: '#cccccc',
-      textSecondary: '#888888',
+      // #3035 ST-2 — `textSecondary` tightened from #888888 so `fg.muted`
+      // (`surface|default|fg-muted`) clears its 4.5:1 floor on the card surface
+      // (3.89 → 4.89). Authored preset DATA; no component-local colour.
+      textSecondary: '#9a9a9a',
       
       borderColor: '#454545',
       
@@ -280,7 +283,8 @@ export const themePresets: ThemePreset[] = [
       cardBg: '#24283b',
       headerBg: '#1a1b26',
       textPrimary: '#c0caf5',
-      textSecondary: '#565f89',
+      // #3035 ST-2 — tightened from #565f89 (fg.muted min 2.35 → 4.86 on card).
+      textSecondary: '#8a93bf',
       statusSuccess: '#9ece6a',
       statusWarning: '#e0af68',
       statusError: '#f7768e',
@@ -298,8 +302,12 @@ export const themePresets: ThemePreset[] = [
       bodyBg: '#fdf6e3',
       cardBg: '#eee8d5',
       headerBg: '#f5efdc',
-      textPrimary: '#586e75',
-      textSecondary: '#93a1a1',
+      // #3035 ST-2 — the short solarized preset tightened: `textPrimary`
+      // #586e75 → #4d6167 (fg.default on card 4.39 → 5.32, the one preset whose
+      // SOURCE primary could not clear 4.5) and `textSecondary` #93a1a1 →
+      // #54676d (fg.muted min 2.18 → 4.84). fg.subtle then clears 4.5 too.
+      textPrimary: '#4d6167',
+      textSecondary: '#54676d',
       statusSuccess: '#859900',
       statusWarning: '#b58900',
       statusError: '#dc322f',
@@ -356,7 +364,8 @@ export const themePresets: ThemePreset[] = [
       cardBg: '#f8fbfd',
       headerBg: '#e2eef5',
       textPrimary: '#1e3a4c',
-      textSecondary: '#5d7789',
+      // #3035 ST-2 — tightened from #5d7789 (fg.muted min 3.98 → 5.31 on card).
+      textSecondary: '#526c7e',
       statusSuccess: '#3fbf7f',
       statusWarning: '#e5a83b',
       statusError: '#e86a5e',
@@ -394,7 +403,8 @@ export const themePresets: ThemePreset[] = [
       cardBg: '#21222c',
       headerBg: '#282a36',
       textPrimary: '#f8f8f2',
-      textSecondary: '#6272a4',
+      // #3035 ST-2 — tightened from #6272a4 (fg.muted min 3.03 → 5.38 on card).
+      textSecondary: '#8a96bb',
       statusSuccess: '#50fa7b',
       statusWarning: '#f1fa8c',
       statusError: '#ff5555',
@@ -432,7 +442,8 @@ export const themePresets: ThemePreset[] = [
       cardBg: '#fff7f2',
       headerBg: '#fbe0d2',
       textPrimary: '#4a2c26',
-      textSecondary: '#8a6a5f',
+      // #3035 ST-2 — tightened from #8a6a5f (fg.muted min 3.88 → 5.82 on card).
+      textSecondary: '#7a5a50',
       statusSuccess: '#4caf7d',
       statusWarning: '#e0a83b',
       statusError: '#e0554f',
@@ -470,7 +481,8 @@ export const themePresets: ThemePreset[] = [
       cardBg: '#3b4252',
       headerBg: '#2e3440',
       textPrimary: '#d8dee9',
-      textSecondary: '#7b88a1',
+      // #3035 ST-2 — tightened from #7b88a1 (fg.muted min 2.82 → 4.77 on card).
+      textSecondary: '#a9b3c6',
       statusSuccess: '#a3be8c',
       statusWarning: '#ebcb8b',
       statusError: '#bf616a',
@@ -527,7 +539,8 @@ export const themePresets: ThemePreset[] = [
       cardBg: '#fbf8f1',
       headerBg: '#ece5d8',
       textPrimary: '#3a3226',
-      textSecondary: '#8c7f6b',
+      // #3035 ST-2 — tightened from #8c7f6b (fg.muted min 3.13 → 5.71 on card).
+      textSecondary: '#6c6152',
       statusSuccess: '#6a9955',
       statusWarning: '#c9a227',
       statusError: '#c05f4a',

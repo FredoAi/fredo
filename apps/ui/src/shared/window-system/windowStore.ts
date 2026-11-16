@@ -98,7 +98,11 @@ export function openWindow(params: OpenWindowParams): void {
     canClose: params.canClose ?? true,
     canMaximize: params.canMaximize ?? true,
     canMinimize: params.canMinimize ?? true,
-    isMaximized: params.isMaximized ?? false,
+    // Spec #2924 REQ-2: full-bleed is the kernel default-open state. An omitted
+    // `isMaximized` resolves to the `canMaximize`-guarded full-bleed value
+    // (a non-maximizable window must never be born with no restore affordance);
+    // an explicit `false` always means float.
+    isMaximized: params.isMaximized ?? (params.canMaximize ?? true),
     isMinimized: false,
     focused: true,
     zIndex: nextZ,

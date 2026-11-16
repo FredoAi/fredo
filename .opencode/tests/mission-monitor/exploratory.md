@@ -74,3 +74,52 @@
 - [ ] E-32 (OPEN): Field-watch isolation churn — mutate two sibling fields in alternating order across many writes; does either sibling watch ever fire spuriously (REQ-2 field isolation)? Probe (A-12): `tauri_ipc_execute_command` drives two `feature_data_watch` calls with `fields` narrowing; `tauri_ipc_monitor`/`tauri_ipc_get_captured` and the Dev Mode → Feature Data feed read the deliveries.
 - [ ] E-33 (OPEN): Very large corpus (history far exceeding one replay batch) + no session selected — does the table watch stay live and responsive, and does a newly created session appear without a full-history rescan (REQ-4/REQ-5)?
 - [ ] E-34 (OPEN): Console check on every probe — any `Maximum update depth exceeded` or `Uncaught` invalidates that leg's evidence (NFR-3).
+
+---
+
+# Mission Monitor — Exploratory Probes (Spec #2945 — multi-CLI sessions + CLI labeling)
+
+> Unscripted edge/failure probes for the multi-CLI session list + CLI label. A CONFIRMED finding promotes to `functional.md` as a new `F-` case (keep the origin note). Real-path classes (G-088): provider re-derivation, mid-flight provider patches, and mixed-provider corpora — fixture-only evidence is invalid where the probe is about live behavior.
+
+## Probes to run beyond the script
+
+- [ ] E-35 (OPEN): Two sessions with the SAME `session_id` but different providers (a Copilot CLI and the plugin both emitting the same id) — does the list show one merged entry with the wrong label, two entries, or the correct attribution? Cross-check `chat_rows`/`tool_use_rows` at the same instant.
+- [ ] E-36 (OPEN): A session whose provider is the fallback `unknown` at first sight and is later re-derived to a real token on a live update (Spec #2932 upgrade path) — does the label update without a flicker/blank frame, or does it stay stale? Cross-check the row's `provider` before/after.
+- [ ] E-37 (OPEN): A provider token with unusual formatting reaching the label (uppercase, hyphen, underscore, whitespace, empty string) — does the label render a sane, non-blank string or surface a raw/empty value? (Reads the row's `provider`; the classifier's normalization is `rtdb-provider-attribution` E-2.)
+- [x] E-38 (PASS 2026-09-25 #2945 round 1): switched selection across OpenCode → Copilot → Unknown repeatedly; after each click the header chip's `data-provider`/text matched the newly selected session (never the previous CLI's label); the list chips stayed per-row-stable. Cross-checked against the selected row's declared `provider` at the same instant.
+- [ ] E-39 (OPEN): A Copilot session that later gains a `task`/subagent dispatch (if the CLI ever produces one) — does a SubagentNode appear with the same structural detail as an OpenCode subagent, and does the CLI label remain correct? (Guards the AC-1 parity claim beyond the split-turn shape.)
+- [ ] E-40 (OPEN): The list at a high mixed-provider session count (many real + several `unknown` + both CLIs) — does the label derivation stay a single map pass without lag/block, and does every row show exactly one label? (NFR-1/NFR-2.)
+- [x] E-41 (PASS 2026-09-25 #2945 round 1): renamed the OpenCode session (`OC-2945-LIVE-RENAME`) — the `◈OpenCode` chip stayed on the renamed row; deleted a Copilot session — the row was absorbed cleanly (no orphan/blank row, durable tombstone `["e2e-copilotsplit2945"]`), the sibling sessions' labels unaffected; no resurrection on the next read.
+- [x] E-42 (PASS 2026-09-25 #2945 round 1 → promoted to F-52): both providers' labels + the fallback re-tint with the user theme/accent — dark, Light Default, and a `#ff3b30`/`#ff9500` accent override all recomputed the chips' `color-mix` values live; zero hardcoded colour. Confirmed finding; F-52 carries the evidence.
+- [x] E-43 (PASS 2026-09-25 #2945 round 1): `tauri_read_logs(source="console")` after every interaction — no `Maximum update depth exceeded`, no `Uncaught`, no `Error:`. The only non-product line is the synthetic-open probe WARN (`confirm_app_open_request failed … "lat*"`), disclosed as a fixture-seam artifact of the latency lever.
+
+---
+
+# Mission Monitor — Exploratory Probes (Slice 3, #2976 — migrated PostgreSQL RTDB/SpanStore)
+
+> Unscripted edge/failure probes for the migrated store behind Mission Monitor. A confirmed finding
+> **promotes** to `functional.md` as a new `F-` row (keep the origin note). Real-path classes (G-088):
+> sustained live streaming, write-behind overflow, and mid-switch timing — fixture-only evidence is
+> invalid where the probe is about live behavior. **G-263 SAFETY:** every probe is time-bounded and torn
+> down via `dev-env.ps1`; never an unbounded run.
+
+## Probes to run beyond the script (Slice 3)
+
+- [ ] **E-44:** While Mission Monitor is open on the migrated store, stream a live OpenCode session
+  continuously and compare the panel's live updates against `telemetry_spans` at intervals — does any
+  change lag/drop, or does a row-shape difference surface from PostgreSQL? Cross-check the migrated
+  `chat_rows`/`tool_use_rows`/`agent_session_rows` at the same instant.
+- [ ] **E-45:** With MM open, run a burst of canonical mutations via `fredo emit` — does the panel
+  update live, and does the delivered batch count stay below the row count (coalescing preserved on the
+  migrated store)?
+- [ ] **E-46:** Switch selection rapidly between a streaming session and a static one during active
+  writes — any stale/wrong-session graph or missed update introduced by the store swap?
+- [ ] **E-47:** Restart the app on the migrated store (same PG data dir) and reopen MM — do all
+  sessions and the current values return, with no duplicate and no reset seq visible in the rows?
+- [ ] **E-48:** Induce a PG store failure (`FREDO_PG_POOL_FORCE_FAIL=1` / a corrupt `FREDO_PG_DATA_DIR`
+  under `.opencode/tmp/2976/`) — does MM fail closed with a structured reason (with any legacy SQLite
+  file untouched), or does it blank?
+- [ ] **E-49:** A large live corpus (many sessions / rows) on the migrated store — does MM's first paint
+  and interaction latency stay bounded (no full-history scan introduced by the store swap)?
+- [ ] **E-50 (console):** `tauri_read_logs(source="console")` after every probe — any `Error:` /
+  `Uncaught` / `Maximum update depth exceeded` invalidates that leg's evidence (#523).

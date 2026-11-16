@@ -24,7 +24,7 @@
 //! ## Retention
 //!
 //! The writer task prunes at a 60-minute interval (and lib.rs prunes at
-//! startup), re-reading the AppStore knobs `rtdb.retention_days` /
+//! startup), re-reading the SettingsStore knobs `rtdb.retention_days` /
 //! `rtdb.max_rows` fresh at every cycle via [`read_knobs`]. Since P2.3 the
 //! prune's evicted keys route `kind: remove` deliveries through the [`Rtdb`]
 //! orchestrator (R-2d: retention eviction is the ONLY remove producer).
@@ -35,10 +35,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tauri::Manager;
 
-use crate::infrastructure::rtdb::commands::RtdbState;
+use crate::infrastructure::rtdb::commands::{Rtdb, RtdbState};
 use crate::infrastructure::rtdb::rows::{AgentSessionRow, ChatRow, ToolUseRow};
 use crate::infrastructure::rtdb::store::{RowKind, RtdbStore};
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::SettingsStore;
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -256,16 +256,20 @@ impl RtdbCache {
 
     // ── Reads: cache-first, SQLite reload on miss ───────────────────────────
 
-    /// Get a chat row — cache-first; a miss reloads from SQLite and
-    /// re-populates the cache (SQLite is authoritative).
-    pub fn get_chat(&self, session_id: &str, correlation_id: &str) -> anyhow::Result<Option<ChatRow>> {
+    /// Get a chat row — cache-first; a miss reloads from the active engine and
+    /// re-populates the cache (storage is authoritative).
+    pub async fn get_chat(
+        &self,
+        session_id: &str,
+        correlation_id: &str,
+    ) -> anyhow::Result<Option<ChatRow>> {
         {
             let mut cache = self.lock_chats();
             if let Some(row) = cache.get(session_id, correlation_id) {
                 return Ok(Some(row));
             }
         }
-        match self.store.get_chat_row(session_id, correlation_id)? {
+        match self.store.get_chat_row(session_id, correlation_id).await? {
             Some(row) => {
                 self.lock_chats().put(
                     (row.session_id.clone(), row.correlation_id.clone()),
@@ -277,8 +281,8 @@ impl RtdbCache {
         }
     }
 
-    /// Get a tool-use row — cache-first, SQLite reload on miss.
-    pub fn get_tool_use(
+    /// Get a tool-use row — cache-first, storage reload on miss.
+    pub async fn get_tool_use(
         &self,
         session_id: &str,
         correlation_id: &str,
@@ -289,7 +293,7 @@ impl RtdbCache {
                 return Ok(Some(row));
             }
         }
-        match self.store.get_tool_use_row(session_id, correlation_id)? {
+        match self.store.get_tool_use_row(session_id, correlation_id).await? {
             Some(row) => {
                 self.lock_tools().put(
                     (row.session_id.clone(), row.correlation_id.clone()),
@@ -301,8 +305,8 @@ impl RtdbCache {
         }
     }
 
-    /// Get an agent-session row — cache-first, SQLite reload on miss.
-    pub fn get_agent_session(
+    /// Get an agent-session row — cache-first, storage reload on miss.
+    pub async fn get_agent_session(
         &self,
         session_id: &str,
         correlation_id: &str,
@@ -313,7 +317,7 @@ impl RtdbCache {
                 return Ok(Some(row));
             }
         }
-        match self.store.get_agent_session_row(session_id, correlation_id)? {
+        match self.store.get_agent_session_row(session_id, correlation_id).await? {
             Some(row) => {
                 self.lock_sessions().put(
                     (row.session_id.clone(), row.correlation_id.clone()),
@@ -328,21 +332,27 @@ impl RtdbCache {
     // ── Per-session key listing (Spec #2788 P3.1 re-key input) ──────────────
 
     /// All keys `(session_id, correlation_id)` belonging to `session_id` for a
-    /// row kind — the CACHED leg unioned with the PERSISTED leg (SQLite is
+    /// row kind — the CACHED leg unioned with the PERSISTED leg (storage is
     /// authoritative per key; a later `get_*` re-reads the winning row).
     /// Deduplicated. Both legs are bounded (cache cap / indexed select).
-    fn keys_for_session_union(
+    async fn keys_for_session_union(
         &self,
         kind: RowKind,
         cached: Vec<RowKey>,
         session_id: &str,
     ) -> anyhow::Result<Vec<RowKey>> {
         let mut keys: Vec<RowKey> = cached;
-        for row in self.store.select_snapshot(
-            kind,
-            "session_id = ?1",
-            vec![rusqlite::types::Value::Text(session_id.to_string())],
-        )? {
+        for row in self
+            .store
+            .select_snapshot(
+                kind,
+                "session_id = ?1",
+                vec![crate::infrastructure::rtdb::store::SqlValue::Text(
+                    session_id.to_string(),
+                )],
+            )
+            .await?
+        {
             let key = row.key();
             keys.push((key.session_id, key.correlation_id));
         }
@@ -352,28 +362,34 @@ impl RtdbCache {
     }
 
     /// Chat keys for a session (cached ∪ persisted) — P3.1 re-key input.
-    pub fn chat_keys_for_session(&self, session_id: &str) -> anyhow::Result<Vec<RowKey>> {
+    pub async fn chat_keys_for_session(&self, session_id: &str) -> anyhow::Result<Vec<RowKey>> {
         let cached = self.lock_chats().keys_for_session(session_id);
         self.keys_for_session_union(RowKind::Chat, cached, session_id)
+            .await
     }
 
     /// Tool-use keys for a session (cached ∪ persisted) — P3.1 re-key input.
-    pub fn tool_keys_for_session(&self, session_id: &str) -> anyhow::Result<Vec<RowKey>> {
+    pub async fn tool_keys_for_session(&self, session_id: &str) -> anyhow::Result<Vec<RowKey>> {
         let cached = self.lock_tools().keys_for_session(session_id);
         self.keys_for_session_union(RowKind::ToolUse, cached, session_id)
+            .await
     }
 
     /// Agent-session keys for a session (cached ∪ persisted) — P3.1 re-key input.
-    pub fn agent_session_keys_for_session(&self, session_id: &str) -> anyhow::Result<Vec<RowKey>> {
+    pub async fn agent_session_keys_for_session(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<RowKey>> {
         let cached = self.lock_sessions().keys_for_session(session_id);
         self.keys_for_session_union(RowKind::AgentSession, cached, session_id)
+            .await
     }
 
     // ── Write-behind flush ──────────────────────────────────────────────────
 
     /// Flush one drained batch: partition by kind, upsert each in a single
     /// store transaction per kind. Called by the writer task (and tests).
-    pub fn flush_pending(&self, batch: Vec<PendingWrite>) -> anyhow::Result<usize> {
+    pub async fn flush_pending(&self, batch: Vec<PendingWrite>) -> anyhow::Result<usize> {
         let mut chats = Vec::new();
         let mut tools = Vec::new();
         let mut sessions = Vec::new();
@@ -386,13 +402,13 @@ impl RtdbCache {
         }
         let mut total = 0usize;
         if !chats.is_empty() {
-            total += self.store.upsert_chat_rows(&chats)?;
+            total += self.store.upsert_chat_rows(&chats).await?;
         }
         if !tools.is_empty() {
-            total += self.store.upsert_tool_use_rows(&tools)?;
+            total += self.store.upsert_tool_use_rows(&tools).await?;
         }
         if !sessions.is_empty() {
-            total += self.store.upsert_agent_session_rows(&sessions)?;
+            total += self.store.upsert_agent_session_rows(&sessions).await?;
         }
         Ok(total)
     }
@@ -443,11 +459,15 @@ impl RtdbCache {
 
 // ── Writer task + retention knobs ────────────────────────────────────────────
 
-/// Dedicated write-behind task: drains the bounded queue in ~30 ms batches and
-/// runs retention pruning on a 60-minute interval (knobs re-read each cycle).
-/// Spawned by lib.rs via `tauri::async_runtime::spawn`.
-pub async fn run_writer_task(
-    app: tauri::AppHandle,
+/// AppHandle-free core of the write-behind task: drains the bounded queue in
+/// ~30 ms batches and runs retention pruning on a 60-minute interval (knobs
+/// re-read each cycle). The GUI wrapper [`run_writer_task`] resolves the
+/// dependencies from Tauri state and delegates here; the headless ingest daemon
+/// (Spec #2992) calls this directly because it has no `AppHandle`.
+pub async fn run_writer_task_core(
+    cache: Arc<RtdbCache>,
+    app_store: Arc<SettingsStore>,
+    rtdb: Option<Arc<Rtdb>>,
     mut rx: tokio::sync::mpsc::Receiver<PendingWrite>,
 ) {
     let mut last_prune = tokio::time::Instant::now();
@@ -461,42 +481,68 @@ pub async fn run_writer_task(
                 while let Ok(pending) = rx.try_recv() {
                     batch.push(pending);
                 }
-                if let Some(cache) = app.try_state::<Arc<RtdbCache>>() {
-                    let count = batch.len();
-                    if let Err(e) = cache.flush_pending(batch) {
-                        tracing::error!(
-                            target: "fredo::rtdb",
-                            error = %e,
-                            count,
-                            "rtdb write-behind batch flush failed — in-memory rows unaffected"
-                        );
-                    }
-                }
+                flush_rtdb_batch_core(&cache, batch).await;
             }
             Ok(None) => break,  // channel closed — all senders dropped
             Err(_elapsed) => {} // flush window elapsed with nothing queued
         }
 
         if last_prune.elapsed() >= WRITER_PRUNE_INTERVAL {
-            prune_with_knobs(&app);
+            prune_with_knobs_core(&cache, &app_store, rtdb.as_ref()).await;
             last_prune = tokio::time::Instant::now();
         }
     }
 }
 
-/// Run one prune cycle using the current AppStore knob values. Since P2.3,
-/// every eviction is routed through the RTDB orchestrator (`Rtdb`, when
-/// running) as a `kind: remove` delivery to matching subscribers — R-2d.
-pub fn prune_with_knobs(app: &tauri::AppHandle) {
+/// Dedicated write-behind task (GUI wrapper): resolves the AppHandle-free
+/// dependencies from Tauri state and delegates to [`run_writer_task_core`].
+/// Spawned by lib.rs via `tauri::async_runtime::spawn`.
+pub async fn run_writer_task(
+    app: tauri::AppHandle,
+    rx: tokio::sync::mpsc::Receiver<PendingWrite>,
+) {
     let Some(cache) = app.try_state::<Arc<RtdbCache>>() else {
         return;
     };
-    let app_store = app.state::<Arc<AppStore>>();
-    let (retention_days, max_rows) = read_knobs(&app_store);
-    match cache.store().prune(retention_days, max_rows) {
+    let app_store = app.state::<Arc<SettingsStore>>();
+    let rtdb = app.try_state::<RtdbState>();
+    run_writer_task_core(
+        cache.inner().clone(),
+        app_store.inner().clone(),
+        rtdb.map(|state| state.inner().clone()),
+        rx,
+    )
+    .await;
+}
+
+/// Flush one drained batch through the RTDB cache (storage write). AppHandle-
+/// free — used by [`run_writer_task_core`].
+async fn flush_rtdb_batch_core(cache: &RtdbCache, batch: Vec<PendingWrite>) {
+    let count = batch.len();
+    if let Err(e) = cache.flush_pending(batch).await {
+        tracing::error!(
+            target: "fredo::rtdb",
+            error = %e,
+            count,
+            "rtdb write-behind batch flush failed — in-memory rows unaffected"
+        );
+    }
+}
+
+/// AppHandle-free core of one prune cycle: reads the SettingsStore knobs, prunes
+/// the store, and routes every eviction through the RTDB orchestrator (`Rtdb`,
+/// when running) as a `kind: remove` delivery — R-2d. Since P2.3, retention
+/// eviction is the ONLY remove producer.
+pub async fn prune_with_knobs_core(
+    cache: &RtdbCache,
+    app_store: &SettingsStore,
+    rtdb: Option<&Arc<Rtdb>>,
+) {
+    let (retention_days, max_rows) = read_knobs(app_store);
+    match cache.store().prune(retention_days, max_rows).await {
         Ok(outcome) => {
             if !outcome.evicted.is_empty() {
-                if let Some(rtdb) = app.try_state::<RtdbState>() {
+                if let Some(rtdb) = rtdb {
                     rtdb.route_evictions(outcome.evicted);
                 }
             }
@@ -516,21 +562,38 @@ pub fn prune_with_knobs(app: &tauri::AppHandle) {
     }
 }
 
-/// Read the retention knobs fresh from the AppStore (defaults when unset or
-/// unparseable). The binding config-first mechanism: AppStore KV keys.
-pub fn read_knobs(app_store: &AppStore) -> (i64, i64) {
+/// Run one prune cycle using the current SettingsStore knob values (GUI wrapper):
+/// resolves the AppHandle-free dependencies from Tauri state and delegates to
+/// [`prune_with_knobs_core`].
+pub async fn prune_with_knobs(app: &tauri::AppHandle) {
+    let Some(cache) = app.try_state::<Arc<RtdbCache>>() else {
+        return;
+    };
+    let app_store = app.state::<Arc<SettingsStore>>();
+    let rtdb = app.try_state::<RtdbState>();
+    prune_with_knobs_core(
+        cache.inner(),
+        app_store.inner(),
+        rtdb.as_ref().map(|state| state.inner()),
+    )
+    .await;
+}
+
+/// Read the retention knobs fresh from the SettingsStore (defaults when unset or
+/// unparseable). The binding config-first mechanism: SettingsStore KV keys.
+pub fn read_knobs(app_store: &SettingsStore) -> (i64, i64) {
     use crate::infrastructure::rtdb::store::{
         RTDB_DEFAULT_MAX_ROWS, RTDB_DEFAULT_RETENTION_DAYS, RTDB_MAX_ROWS_KEY,
         RTDB_RETENTION_DAYS_KEY,
     };
     let retention_days = app_store
-        .get(RTDB_RETENTION_DAYS_KEY)
+        .cached_get(RTDB_RETENTION_DAYS_KEY)
         .ok()
         .flatten()
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(RTDB_DEFAULT_RETENTION_DAYS);
     let max_rows = app_store
-        .get(RTDB_MAX_ROWS_KEY)
+        .cached_get(RTDB_MAX_ROWS_KEY)
         .ok()
         .flatten()
         .and_then(|v| v.parse::<i64>().ok())
@@ -544,24 +607,23 @@ pub fn read_knobs(app_store: &AppStore) -> (i64, i64) {
 mod tests {
     use super::*;
     use crate::infrastructure::rtdb::rows::RowState;
+    use crate::infrastructure::rtdb::store::{
+        RTDB_DEFAULT_MAX_ROWS, RTDB_DEFAULT_RETENTION_DAYS, RTDB_MAX_ROWS_KEY,
+        RTDB_RETENTION_DAYS_KEY,
+    };
+    use crate::infrastructure::storage::EngineHandle;
 
-    fn open_store() -> (tempfile::TempDir, Arc<RtdbStore>) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let store = Arc::new(RtdbStore::open(dir.path().to_path_buf()).expect("open"));
-        store.ensure_schema().expect("schema");
-        (dir, store)
-    }
-
-    fn chat_row(session: &str, corr: &str, seq: i64) -> ChatRow {
+    fn chat_row(session: &str, corr: &str) -> ChatRow {
         ChatRow {
             session_id: session.to_string(),
             correlation_id: corr.to_string(),
-            seq,
+            seq: 1,
             started_at_ns: Some(1_000),
             ended_at_ns: None,
-            updated_at: "2026-08-31T00:00:00+00:00".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
             state: RowState::Init,
-            user_message: Some("q".to_string()),
+            provider: Some("open_code".to_string()),
+            user_message: Some("hello".to_string()),
             agent_reply: None,
             prompt_tokens: None,
             completion_tokens: None,
@@ -574,210 +636,53 @@ mod tests {
         }
     }
 
-    fn tool_row(session: &str, corr: &str, seq: i64) -> ToolUseRow {
-        ToolUseRow {
-            session_id: session.to_string(),
-            correlation_id: corr.to_string(),
-            seq,
-            started_at_ns: Some(2_000),
-            ended_at_ns: None,
-            updated_at: "2026-08-31T00:00:00+00:00".to_string(),
-            state: RowState::Update,
-            tool_name: Some("bash".to_string()),
-            tool_success: None,
-            tool_error: None,
-            duration_ms: None,
-            tool_input_json: None,
-            tool_output_json: None,
-            is_subagent: None,
-            raw_json: "{}".to_string(),
-        }
-    }
-
-    fn session_row(session: &str, corr: &str, seq: i64) -> AgentSessionRow {
-        AgentSessionRow {
-            session_id: session.to_string(),
-            correlation_id: corr.to_string(),
-            seq,
-            started_at_ns: Some(3_000),
-            ended_at_ns: None,
-            updated_at: "2026-08-31T00:00:00+00:00".to_string(),
-            state: RowState::Init,
-            total_tokens: None,
-            total_messages: None,
-            total_cost_usd: None,
-            agent_name: None,
-            raw_json: "{}".to_string(),
-        }
-    }
-
-    // ── RowCache LRU mechanics ──────────────────────────────────────────────
-
-    #[test]
-    fn lru_evicts_the_oldest_entries_and_keeps_recent_ones() {
-        let mut cache: RowCache<u32> = RowCache::new(10);
-        for i in 0..10 {
-            cache.put((format!("s"), format!("k{i}")), i);
-        }
-        assert_eq!(cache.len(), 10);
-
-        // Touch k0 and k1 — they become recent.
-        assert_eq!(cache.get("s", "k0"), Some(0));
-        assert_eq!(cache.get("s", "k1"), Some(1));
-
-        // Overflow with 3 more → bulk eviction removes ~10% (1 entry) per
-        // put beyond cap until back under the hysteresis target (9).
-        cache.put(("s".to_string(), "k10".to_string()), 10);
-        assert!(cache.len() <= 10, "cap enforced");
-        // The untouched oldest (k2) is gone; touched k0/k1 survive.
-        assert_eq!(cache.get("s", "k2"), None, "untouched oldest evicted");
-        assert_eq!(cache.get("s", "k0"), Some(0), "recently used entry survives");
-        assert_eq!(cache.get("s", "k10"), Some(10), "newest entry survives");
-    }
-
-    #[test]
-    fn lru_cap_of_one_keeps_exactly_the_newest_entry() {
-        let mut cache: RowCache<u32> = RowCache::new(1);
-        cache.put(("s".to_string(), "a".to_string()), 1);
-        cache.put(("s".to_string(), "b".to_string()), 2);
-        assert_eq!(cache.len(), 1);
-        assert_eq!(cache.get("s", "a"), None);
-        assert_eq!(cache.get("s", "b"), Some(2));
-    }
-
-    // ── Write-behind: batch flush persists through the queue ────────────────
-
-    #[tokio::test]
-    async fn write_behind_batch_flush_persists_all_row_kinds() {
-        let (_dir, store) = open_store();
-        let (cache, mut rx) = RtdbCache::new(store);
-
-        cache.upsert_chat(chat_row("ses_a", "ses_a_1", 1));
-        cache.upsert_tool_use(tool_row("ses_a", "ses_a_2", 2));
-        cache.upsert_agent_session(session_row("ses_a", "ses_a", 3));
-
-        // Cache updated synchronously; SQLite still empty (write-behind).
-        let (chat, tool, agent) = cache.store().row_counts().expect("counts");
-        assert_eq!((chat, tool, agent), (0, 0, 0));
-        assert_eq!(cache.chat_cache_len(), 1);
-        assert_eq!(cache.tool_cache_len(), 1);
-        assert_eq!(cache.session_cache_len(), 1);
-
-        // Drain the queue like the writer task and flush one batch.
-        let mut batch = Vec::new();
-        while let Ok(pending) = rx.try_recv() {
-            batch.push(pending);
-        }
-        let flushed = cache.flush_pending(batch).expect("flush");
-        assert_eq!(flushed, 3);
-
-        let (chat, tool, agent) = cache.store().row_counts().expect("counts");
-        assert_eq!((chat, tool, agent), (1, 1, 1));
-        assert_eq!(cache.dropped_count(), 0);
-    }
-
-    // ── LRU eviction + reload from SQLite (authoritative) ───────────────────
-
-    #[tokio::test]
-    async fn evicted_entries_reload_from_sqlite_on_demand() {
-        let (_dir, store) = open_store();
-        // Cache cap 1: writing row B evicts row A from the cache.
-        let (cache, mut rx) = RtdbCache::with_capacity(store, 1, QUEUE_CAPACITY);
-
-        let row_a = chat_row("ses_a", "row_a", 1);
-        cache.upsert_chat(row_a.clone());
-        let row_b = chat_row("ses_a", "row_b", 2);
-        cache.upsert_chat(row_b.clone());
-
-        // Persist both rows so SQLite is authoritative.
-        let mut batch = Vec::new();
-        while let Ok(pending) = rx.try_recv() {
-            batch.push(pending);
-        }
-        cache.flush_pending(batch).expect("flush");
-
-        // row_b is in cache; row_a was evicted by the cap-1 LRU…
-        assert_eq!(cache.chat_cache_len(), 1);
-        // …but reloads from SQLite on demand.
-        let reloaded = cache.get_chat("ses_a", "row_a").expect("get").expect("reloaded");
-        assert_eq!(reloaded, row_a);
-        // And is cached again — the cap is enforced on reload too, so the
-        // previously-cached row_b was evicted and reloads from SQLite itself.
-        assert_eq!(cache.chat_cache_len(), 1, "cap enforced even across a reload");
-        let again = cache.get_chat("ses_a", "row_b").expect("get").expect("reloaded from sqlite");
-        assert_eq!(again, row_b, "the other side of the cap reloads on demand too");
-    }
-
-    #[tokio::test]
-    async fn cache_miss_with_no_storage_row_returns_none() {
-        let (_dir, store) = open_store();
-        let (cache, _rx) = RtdbCache::new(store);
-        let missing = cache.get_chat("nope", "nope").expect("get");
-        assert!(missing.is_none());
-        assert_eq!(cache.chat_cache_len(), 0, "a miss caches nothing");
-    }
-
-    // ── Overflow sheds the storage write, never the in-memory state ─────────
-
-    #[tokio::test]
-    async fn queue_overflow_sheds_storage_writes_never_in_memory_state() {
-        let (_dir, store) = open_store();
-        // Queue capacity 1: the first enqueue buffers, the rest are shed.
-        let (cache, mut rx) = RtdbCache::with_capacity(store, DEFAULT_CACHE_CAPACITY, 1);
-
-        let mut last = None;
-        for i in 0..10 {
-            let row = chat_row("ses_q", &format!("q{i}"), i);
-            // Every call returns immediately — the live path is never blocked.
-            cache.upsert_chat(row.clone());
-            last = Some(row);
-        }
-        assert_eq!(cache.dropped_count(), 9, "9 of 10 storage enqueues shed");
-
-        // In-memory/live state is fully intact — all 10 rows readable.
-        for i in 0..10 {
-            let got = cache.get_chat("ses_q", &format!("q{i}")).expect("get");
-            assert!(got.is_some(), "in-memory row q{i} must survive the shed");
-        }
-        let expected = last.expect("last row");
-        assert_eq!(cache.get_chat("ses_q", "q9").expect("get"), Some(expected));
-
-        // The one buffered write is intact for the writer task.
-        let buffered = rx.try_recv().expect("first enqueue is buffered");
-        match buffered {
-            PendingWrite::Chat(row) => assert_eq!(row.correlation_id, "q0"),
-            other => panic!("expected a chat pending write, got {other:?}"),
-        }
-    }
-
-    // ── Retention knobs (AppStore KV, config-first) ─────────────────────────
-
-    #[test]
-    fn read_knobs_defaults_when_unset_and_reads_configured_values() {
+    /// A cache + synchronous-settings SettingsStore over a PENDING data-plane handle
+    /// (no PostgreSQL pool is installed in unit tests). The TempDir is returned so
+    /// the app-data dir outlives the store.
+    fn make_cache() -> (Arc<RtdbCache>, Arc<SettingsStore>, tempfile::TempDir) {
+        let engine = EngineHandle::new_pending();
+        let store = Arc::new(RtdbStore::open(engine.clone()).expect("RtdbStore::open"));
+        let (cache, _rx) = RtdbCache::with_capacity(store, 8, 8);
         let dir = tempfile::tempdir().expect("tempdir");
-        let app_store = AppStore::open(dir.path().to_path_buf()).expect("appstore");
+        let app_store = Arc::new(SettingsStore::open(engine, dir.path()).expect("SettingsStore::open"));
+        (cache, app_store, dir)
+    }
 
-        // Unset → defaults (7 days / 100k rows).
-        let (days, rows) = read_knobs(&app_store);
-        assert_eq!(days, crate::infrastructure::rtdb::store::RTDB_DEFAULT_RETENTION_DAYS);
-        assert_eq!(rows, crate::infrastructure::rtdb::store::RTDB_DEFAULT_MAX_ROWS);
+    #[test]
+    fn read_knobs_defaults_then_reads_app_store_overrides() {
+        let engine = EngineHandle::new_pending();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_store = SettingsStore::open(engine, dir.path()).expect("SettingsStore::open");
+        assert_eq!(
+            read_knobs(&app_store),
+            (RTDB_DEFAULT_RETENTION_DAYS, RTDB_DEFAULT_MAX_ROWS)
+        );
+        app_store.cached_set(RTDB_RETENTION_DAYS_KEY, "3").unwrap();
+        app_store.cached_set(RTDB_MAX_ROWS_KEY, "42").unwrap();
+        assert_eq!(read_knobs(&app_store), (3, 42));
+    }
 
-        // Configured → the configured values win (read fresh each cycle).
-        app_store
-            .set(crate::infrastructure::rtdb::store::RTDB_RETENTION_DAYS_KEY, "3")
-            .expect("set");
-        app_store
-            .set(crate::infrastructure::rtdb::store::RTDB_MAX_ROWS_KEY, "5000")
-            .expect("set");
-        let (days, rows) = read_knobs(&app_store);
-        assert_eq!(days, 3);
-        assert_eq!(rows, 5000);
+    /// ST-4: the write-behind core runs with NO `AppHandle`; a buffered row is
+    /// drained and the loop terminates once every sender is dropped (the
+    /// pending engine fails the flush closed — logged, never a panic). This is
+    /// the direct-write assertion re-homed from the retired writer barrier: the
+    /// batch is flushed unconditionally.
+    #[tokio::test]
+    async fn writer_task_core_is_apphandle_free_and_terminates_on_channel_close() {
+        let (cache, app_store, _dir) = make_cache();
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        tx.send(PendingWrite::Chat(chat_row("s", "c")))
+            .await
+            .expect("queue one pending write");
+        drop(tx);
+        run_writer_task_core(cache, app_store, None, rx).await;
+    }
 
-        // Unparseable → back to defaults, never a panic.
-        app_store
-            .set(crate::infrastructure::rtdb::store::RTDB_RETENTION_DAYS_KEY, "bogus")
-            .expect("set");
-        let (days, _) = read_knobs(&app_store);
-        assert_eq!(days, crate::infrastructure::rtdb::store::RTDB_DEFAULT_RETENTION_DAYS);
+    /// ST-4: the prune core runs with NO `AppHandle` and fails closed on a
+    /// pending engine (logged), returning without a panic.
+    #[tokio::test]
+    async fn prune_with_knobs_core_is_apphandle_free() {
+        let (cache, app_store, _dir) = make_cache();
+        prune_with_knobs_core(&cache, &app_store, None).await;
     }
 }

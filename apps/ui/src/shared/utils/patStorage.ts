@@ -8,7 +8,7 @@
  */
 
 import type { AzdoUserProfile } from './azdoApi';
-import { settingsService } from '../../features/settings';
+import { settingsService } from '../../applications/settings';
 
 const STORAGE_PREFIX = 'Fredo_azdo_';
 const PAT_KEY = `${STORAGE_PREFIX}pat`;

@@ -57,3 +57,31 @@ On pass keep the checkbox and append evidence; on fail mark `FAIL` with expected
 - [x] F-18: **Clear error on launch failure via toolbar launch (AC4, live).** Set `run_cli_work_dir` to a nonexistent path (`C:\NonexistentDir12345`), click the toolbar item. Expected: exactly one window opens showing a CLEAR error (cause stated, Retry + Close surface); no hang, no blank window, no forever "Launching…"; the error window closes cleanly; after restoring the directory and retrying, the session launches normally. Re-asserts F-8/F-9 via the new affordance. **PASS** — Set work dir to `C:\NonexistentDir12345`, clicked Run CLI. Terminal window opened with error: "Working directory not found: C:\NonexistentDir12345", title "Working directory not found", with Retry and Close buttons. Restored work dir to `C:\Code\fredo`, clicked Retry. Session launched successfully (status: "running"). Evidence: DOM snapshot at 2026-08-13T21:06:54Z, retry at 2026-08-13T21:07:10Z.
 
 - [x] F-19: **Duplicate toolbar invocation → one-window guarantee (AC5).** Click the Run CLI toolbar desktop item; while the session is running, click it again (and a third time). Expected: window count NEVER exceeds main + 1 at any sampled point; no second terminal window opens; the existing window is focused/raised. Also rapid double-click (~200 ms) at a cold start — still exactly one window. Edge cases: click during the launch window (before the session registers), click while the F-18 error state is showing, click immediately after auto-close (fresh single window launches cleanly). **PASS** — Clicked Run CLI while session running, then clicked twice more rapidly. Window count stayed at 2 (main + run-cli-terminal) throughout. No duplicate windows created. Evidence: window list at 2026-08-13T21:04:41Z, 2026-08-13T21:04:53Z, 2026-08-13T21:05:13Z.
+
+## #2934 pre-rename regression cases (legacy contract must keep passing)
+
+> Spec #2934 renames this surface to **Terminal** and replaces the single session with a
+> multi-session sidebar. The rows below are the pre-rename contract that MUST remain true
+> through the rename: the legacy behavior is retired deliberately, never silently broken.
+> Where a row is superseded by a `terminal/functional.md` row, the link is stated — the
+> tester runs BOTH: this suite proves the change is scoped, `terminal/` proves the new
+> behavior. Run this section's `regression.md` for every #2934 diff on the surface.
+
+- [ ] F-20: **Legacy single-session launch contract still holds until renamed.** (Superseded by `terminal/functional.md` F-6/F-7 once the sidebar ships; until then this row is the live contract.) Click the toolbar item; assert exactly ONE terminal window opens and hosts a live CLI session; no intermediate panel window.
+  EXPECTED: main + 1 window at every sample; no panel; a session renders.
+  Edge: cold start; rapid double-click; click from the error state.
+  **#2934 disposition:** after the rename the launch affordance/display name changes to `Terminal`, the window label to `terminal`, and the session gains a sidebar — assert the SAME one-window invariant via `terminal/functional.md` F-6.
+
+- [ ] F-21: **Legacy working-directory key is migrated, not dropped.** Pre-seed `run_cli_work_dir` (the pre-rename key), launch the renamed Terminal, and assert the value is honored.
+  EXPECTED: the migrated value governs the session's `workDir` with no user re-entry; the legacy key is consumed by the migration only (changing it afterwards does not move the session dir).
+  Full assertions: `terminal/functional.md` F-4/F-5.
+  Edge: legacy key absent → home fallback; new key already set (new wins); `localStorage` shadowing.
+
+- [ ] F-22: **Legacy PTY IPC contract preserved per session.** The old `open_run_cli`/`get_pty_buffer`/`write_pty_input`/`resize_pty`/`close_run_cli` semantics must survive as the per-session variants: input reaches the process, output replays on mount, resize is applied, close reaps.
+  EXPECTED: for a single session the new per-session commands behave identically to the legacy contract (trailing `\r` for submit; `get_pty_buffer` replay renders the initial burst).
+  Edge: input larger than one chunk; empty buffer before first output; listener-vs-replay timing.
+  Full assertions: `terminal/functional.md` F-8/F-11/F-19.
+
+- [ ] F-23: **Legacy Ghostty renderer contract preserved.** The terminal is still the Ghostty canvas with the `GHOSTTY_THEME` ANSI palette; no xterm classes; no dual-renderer state.
+  EXPECTED: unchanged from F-3/F-15.
+  Full assertions: `terminal/regression.md` R-1.

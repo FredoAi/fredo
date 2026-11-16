@@ -1,7 +1,47 @@
-import React, { createContext, useContext, useEffect, useMemo, type ReactNode } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useSyncExternalStore,
+  type ReactNode,
+} from 'react';
 import type { ThemeMode, Theme, ThemeOverrides, ThemePreset } from '../types/theme';
 import { themes, themePresets, USER_PRESET_PREFIX } from '../types/theme';
 import { usePersistedSetting } from '../../shared/hooks/usePersistedSetting';
+// #2971 ST-4 — the mode-scoped Doom layer. `DOOM_PALETTE` is the ONLY token
+// record this file imports (never added to `themePresets`/`allPresets`); the
+// module-scoped store is the ONE cross-mount engaged flag shared with the armor
+// overlay (ST-5).
+import { DOOM_PALETTE } from '../theme/doomTheme';
+import { isDoomVisualEngaged, subscribeDoomVisual } from '../../shared/doom-mode';
+// #2925 ST-1 — the three authored Life dim weights are the SINGLE number home.
+// This is a legal DOWNWARD import (app → feature); feature → feature would be
+// the forbidden edge. The provider composes the live `color-mix()` tokens from
+// these so the engine's contrast guard and the paint expression cannot drift.
+import {
+  LIFE_CELL_MIX,
+  LIFE_NEUTRAL_BG_MIX,
+  LIFE_SCRIM_WEIGHT,
+} from '../../applications/home/components/background/life/lifeConstants';
+// #3034 ST-2 — the theme contract is the SINGLE home for every derivation weight
+// (collapsing the triplication `ThemeProvider.tsx:291-295` ↔ `matrix.ts:121-125`
+// ↔ `system.ts:114-115`). The engine derives its `color-mix()` presentation vars
+// from `SEMANTIC_TOKENS` — no weight is inlined in this file any more. The
+// `life.*` weights stay single-homed in `lifeConstants.ts` (imported above),
+// whose slice owns a source-shape pin for the `--life-*` expressions.
+import {
+  SEMANTIC_TOKENS,
+  type SemanticToken,
+  type TokenDerivation,
+} from '../theme/contract';
+// Spec #3147 ST-5 — the ONE producer side of the installed-application theme
+// transport. `scheduleThemePush` reads the resolved values this effect just
+// wrote off `document.documentElement` AFTER paint and hands them to the
+// backend mirror (serve-time injection is ST-3's; the live broadcast to every
+// open `installed-*` window is `installed_apps_push_theme`). It carries no state
+// and starts no subscription — it is ONE call at the end of this effect.
+import { scheduleThemePush } from '../../shared/installed-apps/themeCapture';
 
 export interface ThemeContextType {
   currentTheme: ThemeMode;
@@ -52,6 +92,60 @@ export const useTheme = () => {
 const ACCENT_CONTRAST_LIGHT = '#ffffff';
 const ACCENT_CONTRAST_DARK = '#0c1117';
 const ACCENT_CONTRAST_DARK_RGB: [number, number, number] = [12, 17, 23];
+
+/**
+ * #2925 ST-1 — the derived Life `color-mix()` percentages, computed from the
+ * authored weights in `lifeConstants.ts`. The cell mix targets a DERIVED
+ * mid-neutral rather than `--text-primary` directly (HSL saturation is
+ * scale-invariant under a multiplicative darken, so a near-black target did not
+ * reduce chroma on light presets): `LIFE_NEUTRAL_BG_MIX = 0.3` ⇒
+ * `--life-neutral: text-primary 70%, body-bg 30%`; `LIFE_CELL_MIX = 0.35` ⇒
+ * `--life-cell: accent-strong 65%, life-neutral 35%`; `LIFE_SCRIM_WEIGHT = 0.12`
+ * ⇒ `--life-dim: transparent 88%, overlay-bg 12%` (0.6 × 0.12 = 7.2% black).
+ */
+const LIFE_NEUTRAL_BG_PCT = LIFE_NEUTRAL_BG_MIX * 100;
+const LIFE_NEUTRAL_TEXT_PCT = 100 - LIFE_NEUTRAL_BG_PCT;
+const LIFE_CELL_MIX_PCT = LIFE_CELL_MIX * 100;
+const LIFE_CELL_BASE_PCT = 100 - LIFE_CELL_MIX_PCT;
+const LIFE_SCRIM_PCT = LIFE_SCRIM_WEIGHT * 100;
+const LIFE_SCRIM_BASE_PCT = 100 - LIFE_SCRIM_PCT;
+
+/** Authored var names — a derived token aliasing one is not engine-written. */
+const AUTHORED_VAR_NAMES: ReadonlySet<string> = new Set(
+  SEMANTIC_TOKENS.filter((token) => token.authored).map((token) => token.varName),
+);
+
+/**
+ * #3034 ST-2 — the engine-written derived `color-mix` tokens, read from the
+ * contract. Excludes:
+ *  - the Chakra-only aliases (`accent.subtle` / `accent.muted` → `--accent-primary`)
+ *    — their live mix is bridged in `theme/system.ts`, not written here;
+ *  - the `life.*` presentation vars, whose numeric weights are single-homed in
+ *    `lifeConstants.ts` and pinned by the Life slice's own source test.
+ * Every weight below is the contract's — never a local literal.
+ */
+const ENGINE_COLOR_MIX_TOKENS: readonly SemanticToken[] = SEMANTIC_TOKENS.filter(
+  (token) =>
+    !token.authored &&
+    token.derivation?.fn === 'color-mix' &&
+    !AUTHORED_VAR_NAMES.has(token.varName) &&
+    !token.name.startsWith('life.'),
+);
+
+/**
+ * Build the `color-mix(in srgb, …)` value for a contract derivation. A single
+ * colour stop mixes toward `transparent` (the visible-tint form); an unweighted
+ * stop takes the remainder. The weights are the contract's percentages, so the
+ * engine expression cannot drift from the gate's arithmetic.
+ */
+export function colorMixValueFor(derivation: TokenDerivation): string {
+  const stops = derivation.sources.map((source, index) => {
+    const weight = derivation.weights?.[index];
+    return weight === undefined ? `var(${source})` : `var(${source}) ${Math.round(weight * 100)}%`;
+  });
+  if (stops.length === 1) stops.push('transparent');
+  return `color-mix(in srgb, ${stops.join(', ')})`;
+}
 
 /**
  * Parse a CSS color (hex or rgb/rgba) into 0-255 RGB channels. Returns null for
@@ -120,6 +214,28 @@ export function resolveAccentContrast(accent: string): string {
   return againstWhite >= againstDark ? ACCENT_CONTRAST_LIGHT : ACCENT_CONTRAST_DARK;
 }
 
+/**
+ * #3034 ST-2 — resolve the NEW `status.onSolids` token: the foreground painted on
+ * a solid status fill. It reuses the SAME `#ffffff` vs `#0c1117` WCAG-max
+ * luminance rule as `resolveAccentContrast`, generalised to the resolved status
+ * colours — the candidate with the higher MINIMUM contrast across every status
+ * hue wins, so a status pill can never pair white-on-yellow. A tie resolves to
+ * `#ffffff`; empty/unparseable input falls back to `#ffffff` (the safe choice).
+ */
+export function resolveOnSolids(statusColors: readonly string[]): string {
+  const rgbs = statusColors
+    .map(parseAccentRgb)
+    .filter((rgb): rgb is [number, number, number] => rgb !== null);
+  if (rgbs.length === 0) return ACCENT_CONTRAST_LIGHT;
+  const minContrast = (candidate: string): number => {
+    const candidateLuminance = relativeLuminance(parseAccentRgb(candidate)!);
+    return Math.min(...rgbs.map((rgb) => contrastRatio(candidateLuminance, relativeLuminance(rgb))));
+  };
+  const againstWhite = minContrast(ACCENT_CONTRAST_LIGHT);
+  const againstDark = minContrast(ACCENT_CONTRAST_DARK);
+  return againstWhite >= againstDark ? ACCENT_CONTRAST_LIGHT : ACCENT_CONTRAST_DARK;
+}
+
 interface ThemeProviderProps {
   children: ReactNode;
 }
@@ -165,6 +281,16 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
 
   // All selectable presets: user presets first, then the 18 built-ins.
   const allPresets = useMemo(() => [...userPresets, ...themePresets], [userPresets]);
+
+  // #2971 ST-4 — the module-scoped Doom-engagement flag (ST-2). Read through the
+  // shipped external-store pattern so a `doom-mode-changed` broadcast re-runs the
+  // theme effect and applies (or reverts) the Doom layer. Never a `useRef`: the
+  // flag must survive component/window mount cycles (ENGINEERING_RULES).
+  const doomEngaged = useSyncExternalStore(
+    subscribeDoomVisual,
+    isDoomVisualEngaged,
+    isDoomVisualEngaged,
+  );
 
   // All 15 user-overridable tokens (12 colors + 3 fonts) used to capture the
   // effective palette when persisting a new user preset.
@@ -235,15 +361,47 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
     root.style.setProperty('--font-secondary', theme.colors.fontSecondary);
     root.style.setProperty('--font-base', theme.colors.fontBase);
 
-    // --- #2864 ST-1 derived presentation vars (set ONCE in the base pass) ---
-    // These are `color-mix()` expressions over the live theme vars, so they resolve
-    // against whatever the preset/override passes put on --text-primary /
-    // --text-secondary / --accent-primary later — no per-preset values needed.
-    root.style.setProperty('--hover-bg', 'color-mix(in srgb, var(--text-primary) 6%, transparent)'); // T1
-    root.style.setProperty('--text-subtle', 'color-mix(in srgb, var(--text-secondary) 65%, var(--text-primary) 35%)'); // T2
-    root.style.setProperty('--scrollbar-thumb', 'color-mix(in srgb, var(--text-secondary) 45%, transparent)'); // T3
-    root.style.setProperty('--scrollbar-thumb-hover', 'color-mix(in srgb, var(--text-secondary) 70%, transparent)'); // T4
-    root.style.setProperty('--accent-strong', 'color-mix(in srgb, var(--accent-primary) 55%, var(--text-primary) 45%)'); // T6
+    // --- #3034 ST-2: contract-driven derived presentation vars (base pass) ---
+    // Every `color-mix()` expression is built from the contract's `SEMANTIC_TOKENS`
+    // (the ONE weight home that also feeds the contrast gate), so a weight change
+    // in the contract re-resolves here with no per-file edit — no per-preset
+    // values, no remount. These are live var references, so they resolve against
+    // whatever the preset/override/Doom passes put on `--text-primary` /
+    // `--accent-primary` / `--body-bg` / … later. Covers T1 (`--hover-bg`),
+    // T2 (`--text-subtle`), T3/T4 (scrollbar), T6 (`--accent-strong`) and the
+    // avatar interior (`--fredo-avatar-interior`).
+    for (const token of ENGINE_COLOR_MIX_TOKENS) {
+      root.style.setProperty(token.varName, colorMixValueFor(token.derivation!));
+    }
+    // #2925 ST-1 — the Life field's three dimmed paint tokens. Set ONCE here,
+    // like `--accent-strong`, as live `color-mix()` expressions so they
+    // re-resolve against whatever the preset/override passes put on
+    // `--accent-strong`/`--text-primary`/`--body-bg`/`--overlay-bg` (live
+    // recolour, no remount). The three numeric weights are the single authored
+    // home in `lifeConstants.ts` (`LIFE_NEUTRAL_BG_MIX` / `LIFE_CELL_MIX` /
+    // `LIFE_SCRIM_WEIGHT`) — imported downward (app → feature) so the
+    // expression cannot drift from the constants the engine's contrast guard
+    // reads. `--life-neutral` is the mid-luminance chroma-reducing target
+    // (`--text-primary` toward `--body-bg`); `--life-cell` blends the
+    // accent-strong cell 35% toward it; `--life-dim` is the field-wide
+    // translucent-black scrim (0.6 × 0.12 = 0.072 black).
+    root.style.setProperty(
+      '--life-neutral',
+      `color-mix(in srgb, var(--text-primary) ${LIFE_NEUTRAL_TEXT_PCT}%, var(--body-bg) ${LIFE_NEUTRAL_BG_PCT}%)`,
+    );
+    root.style.setProperty(
+      '--life-cell',
+      `color-mix(in srgb, var(--accent-strong) ${LIFE_CELL_BASE_PCT}%, var(--life-neutral) ${LIFE_CELL_MIX_PCT}%)`,
+    );
+    root.style.setProperty(
+      '--life-dim',
+      `color-mix(in srgb, transparent ${LIFE_SCRIM_BASE_PCT}%, var(--overlay-bg) ${LIFE_SCRIM_PCT}%)`,
+    );
+    // #2917 ST-1 (T9): the FREDO avatar interior fill is now written by the
+    // contract loop above (`avatar.interior` — accent mixed into the OPAQUE body
+    // surface, NOT --card-bg, which is rgba(0,0,0,0.3) in the classic dark preset
+    // and would re-open the hollow-figure defect). Opaque in every preset;
+    // re-resolves live on any preset/accent change with no remount.
     // T7/T8 — base-record-only presentation values (never part of the override contract).
     root.style.setProperty('--overlay-bg', theme.colors.overlayBg);
     root.style.setProperty('--shadow-dialog', theme.colors.shadowDialog);
@@ -322,13 +480,87 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
       document.body.style.fontFamily = overrides.fontBase;
     }
 
+    // --- #2971 ST-4: mode-scoped Doom layer (base < preset < override < Doom) ---
+    // Applied INSIDE this single effect, AFTER the override pass and BEFORE the
+    // on-accent contrast computation, so flipping `doomEngaged` re-runs the whole
+    // base → preset → override chain from the top. The revert on
+    // `doomEngaged === false` is therefore byte-exact with ZERO storage writes:
+    // the setter API below (`setOverride`/`setPreset`/`resetTheme`) is NEVER
+    // called by this feature, so the user's persisted theme/overrides/accent stay
+    // untouched. While engaged, Doom wins (unmistakable); the three lower layers
+    // stay intact underneath and reappear verbatim when the layer is skipped.
+    // Token-first: every value comes from `DOOM_PALETTE`; no `--doom-*` namespace.
+    if (doomEngaged) {
+      root.style.setProperty('--body-bg', DOOM_PALETTE.bodyBg);
+      root.style.setProperty('--header-bg', DOOM_PALETTE.headerBg);
+      root.style.setProperty('--footer-bg', DOOM_PALETTE.footerBg);
+      root.style.setProperty('--card-bg', DOOM_PALETTE.cardBg);
+      root.style.setProperty('--card-hover-bg', DOOM_PALETTE.cardHoverBg);
+      root.style.setProperty('--text-primary', DOOM_PALETTE.textPrimary);
+      root.style.setProperty('--text-secondary', DOOM_PALETTE.textSecondary);
+      root.style.setProperty('--border-color', DOOM_PALETTE.borderColor);
+      root.style.setProperty('--accent-primary', DOOM_PALETTE.accentPrimary);
+      root.style.setProperty('--accent-secondary', DOOM_PALETTE.accentSecondary);
+      root.style.setProperty('--accent-subagent', DOOM_PALETTE.accentSubagent);
+      root.style.setProperty('--accent-nested-subagent', DOOM_PALETTE.accentNestedSubagent);
+      root.style.setProperty('--status-success', DOOM_PALETTE.statusSuccess);
+      root.style.setProperty('--status-warning', DOOM_PALETTE.statusWarning);
+      root.style.setProperty('--status-error', DOOM_PALETTE.statusError);
+      root.style.setProperty('--status-info', DOOM_PALETTE.statusInfo);
+      root.style.setProperty('--gradient-text', DOOM_PALETTE.gradientText);
+      root.style.setProperty('--gradient-button', DOOM_PALETTE.gradientButton);
+      root.style.setProperty('--node-bg', DOOM_PALETTE.nodeBg);
+      root.style.setProperty('--node-box-shadow', DOOM_PALETTE.nodeBoxShadow);
+      root.style.setProperty('--edge-gradient', DOOM_PALETTE.edgeGradient);
+      root.style.setProperty('--overlay-bg', DOOM_PALETTE.overlayBg);
+      root.style.setProperty('--shadow-dialog', DOOM_PALETTE.shadowDialog);
+
+      // Mirror the body paint to the Doom ground/ink (the base pass did this for
+      // the user theme). Body className is deliberately NOT touched here.
+      document.body.style.background = DOOM_PALETTE.bodyBg;
+      document.body.style.color = DOOM_PALETTE.textPrimary;
+
+      // Recompute the on-accent foreground from the Doom accent, otherwise
+      // `--accent-contrast` stays stale from the pre-mode accent.
+      root.style.setProperty('--accent-contrast', resolveAccentContrast(DOOM_PALETTE.accentPrimary));
+
+      // QA seams (G-187): class token + attribute on <html> only.
+      root.classList.add('doom-mode');
+      root.setAttribute('data-doom-mode', 'engaged');
+    } else {
+      root.classList.remove('doom-mode');
+      root.removeAttribute('data-doom-mode');
+    }
+
     // --- #2864 ST-1 (T5): on-accent foreground ---
     // Computed in JS from the RESOLVED accent (base → preset → override) — WCAG
     // relative luminance has no sufficient CSS equivalent. Reading the applied
     // inline value guarantees arbitrary user accentPrimary overrides are covered.
     const resolvedAccent = root.style.getPropertyValue('--accent-primary') || theme.colors.accentPrimary;
     root.style.setProperty('--accent-contrast', resolveAccentContrast(resolvedAccent));
-  }, [activeTheme, overrides, activePreset]);
+
+    // --- #3034 ST-2: status-solid foreground (`status.onSolids`) ---
+    // The contract declares `status.onSolids` (`--status-on-solids`) as a
+    // `wcag-max-contrast` derivation over the four status tokens. Like the
+    // on-accent foreground it is computed in JS (no sufficient CSS equivalent)
+    // from the RESOLVED status vars — covering base, preset, override and Doom.
+    const resolvedStatus = ['--status-success', '--status-warning', '--status-error', '--status-info']
+      .map((name) => root.style.getPropertyValue(name))
+      .filter((value): value is string => value.length > 0);
+    root.style.setProperty('--status-on-solids', resolveOnSolids(resolvedStatus));
+
+    // --- #3147 ST-5: publish the painted theme to the installed-app transport ---
+    // ONE call site, at the very end of the effect: every declaration this
+    // effect owns (base → preset → override → Doom, the contract-derived
+    // `color-mix()` tokens, `--accent-contrast` and `--status-on-solids`) has now
+    // been written, so the post-paint read sees the resolved values a child
+    // document will consume. The producer derives `colorScheme` from the
+    // resolved `--body-bg` luminance and pushes to the backend mirror, which is
+    // what makes a closed app open in the CURRENT theme (R-1.4) and an open one
+    // follow a change without reloading (R-1.5). No new effect, no subscription,
+    // no polling — a failed push never affects this effect's own result.
+    scheduleThemePush();
+  }, [activeTheme, overrides, activePreset, doomEngaged]);
 
   const setOverride = (key: keyof ThemeOverrides, value: string) => {
     const next = { ...overrides };

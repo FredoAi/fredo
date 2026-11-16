@@ -1,12 +1,19 @@
 /**
- * Stream Context — connection status + the RTDB row store (Spec #2788 P4.1).
+ * Stream Context — stream health + the RTDB row store (Spec #2788 P4.1).
  *
  * The v1 delivery queue (`deliveries`/`ADD_DELIVERY`/`deliveryToFredoEvent`),
  * the legacy raw-event array, and the ECE selector hooks were deleted in
  * Spec #2788 P5.1 — RTDB row deliveries are the ONLY thing that crosses IPC,
  * routed by AppProvider straight into the module-scoped row store below.
- * The context itself now carries only the connection flag; the row store is
- * module-scoped and consumed via `useEventRows`.
+ * The context itself now carries the THREE-VALUED stream health (Spec #3064
+ * ST-2) plus the derived connection flag; the row store is module-scoped and
+ * consumed via `useEventRows`.
+ *
+ * Spec #3064: the stream flag is no longer a mount constant. `health` is a
+ * `StreamHealth` (`healthy` | `degraded` | `down`) driven by the backend
+ * liveness producer (ST-3); `isConnected` is DERIVED (`health === 'healthy'`)
+ * so every existing consumer (`useConnectionStatus`, Mission Monitor, Dev Mode)
+ * reflects real telemetry health with no per-consumer change.
  */
 
 import React, { createContext, useContext, useState, useCallback, useMemo, useEffect, useSyncExternalStore } from 'react';
@@ -17,18 +24,30 @@ import type {
   RtdbRow,
 } from '../classes/EventSubscription';
 import { rowKeyString } from '../classes/EventSubscription';
+import type { StreamHealth } from '../hooks/streamHealth';
 
 /**
  * Stream state interface
  */
 interface StreamState {
-  isConnected: boolean;
+  /** The three-valued stream/telemetry health (Spec #3064 ST-2). */
+  health: StreamHealth;
 }
 
 /**
  * Stream context value
  */
 interface StreamContextValue extends StreamState {
+  /** Derived: `health === 'healthy'`. Every binary consumer reads this. */
+  isConnected: boolean;
+  /** The ONLY health writer — the liveness producer (ST-3) calls this. */
+  setStreamHealth: (health: StreamHealth) => void;
+  /**
+   * @deprecated Compatibility shim for the pre-#3064 mount-constant writer.
+   * Maps `true` → `healthy`, `false` → `down`. Retained so the existing
+   * `AppProvider` mount effect still compiles until ST-3 replaces it with the
+   * liveness producer; it delegates to `setStreamHealth` (ONE source of truth).
+   */
   setConnectionStatus: (connected: boolean) => void;
 }
 
@@ -41,19 +60,28 @@ const StreamContext = createContext<StreamContextValue | undefined>(undefined);
  * Provider component
  */
 export function StreamProvider({ children }: { children: React.ReactNode }) {
-  const [state, setState] = useState<StreamState>({ isConnected: false });
+  // Cold start is `degraded` (not `down`): no fresh heartbeat/probe has landed
+  // yet, so the status must NOT read `down` spuriously — the first producer tick
+  // settles it to `healthy` within one bounded interval (ST-3).
+  const [state, setState] = useState<StreamState>({ health: 'degraded' });
+
+  const setStreamHealth = useCallback((health: StreamHealth) => {
+    setState({ health });
+  }, []);
 
   const setConnectionStatus = useCallback((connected: boolean) => {
-    setState({ isConnected: connected });
+    setState({ health: connected ? 'healthy' : 'down' });
   }, []);
 
   // Memoize context value
   const value = useMemo<StreamContextValue>(
     () => ({
       ...state,
+      isConnected: state.health === 'healthy',
+      setStreamHealth,
       setConnectionStatus,
     }),
-    [state, setConnectionStatus]
+    [state, setStreamHealth, setConnectionStatus]
   );
 
   return <StreamContext.Provider value={value}>{children}</StreamContext.Provider>;
@@ -68,6 +96,18 @@ export function useStream() {
     throw new Error('useStream must be used within a StreamProvider');
   }
   return context;
+}
+
+/**
+ * The three-valued stream-health accessor (Spec #3064 ST-2). Returns the raw
+ * `health` plus the derived `isConnected` (`health === 'healthy'`).
+ */
+export function useStreamHealth() {
+  const { health, isConnected } = useStream();
+  return useMemo(
+    () => ({ health, isConnected }),
+    [health, isConnected]
+  );
 }
 
 export function useConnectionStatus() {

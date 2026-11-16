@@ -6,7 +6,7 @@ export { ThemeProvider, useTheme, ThemeContext } from './app/providers/ThemeProv
 export type { ThemeContextType } from './app/providers/ThemeProvider';
 
 // ── Settings service ──────────────────────────────────────────────────────────
-export { settingsService, serializeValue } from './features/settings';
+export { settingsService, serializeValue } from './applications/settings';
 
 export { StreamProvider, useStream } from './shared/contexts/StreamContext';
 
@@ -85,5 +85,10 @@ export type { GenericFeatureResponse } from './shared/utils/featureResponseApi';
 export { API_BASE_URL, STEP_STATUSES } from './shared/constants';
 
 // ── Feature classes ───────────────────────────────────────────────────────────
-export { FredoFeatureClass } from './shared/classes/FredoFeatureClass';
+export { FredoApplicationClass } from './shared/classes/FredoApplicationClass';
 export type { GridItemConfig } from './shared/classes/types';
+
+export * from './shared/navigation';
+
+// ── Navigation UI surfaces (Spec #3118 ST-7) — second, additive barrel ────────
+export * from './shared/navigation/ui';

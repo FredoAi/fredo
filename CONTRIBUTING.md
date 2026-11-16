@@ -10,6 +10,14 @@ Thank you for your interest in contributing to Fredo — a desktop platform for 
 - **Node.js 20+** with **pnpm** — the frontend is React 19 / TypeScript
 - Platform-specific build prerequisites for Tauri v2 on your operating system (WebView2 runtime on Windows, Xcode command line tools on macOS, `webkit2gtk` and friends on Linux)
 
+> **Before you change code, read [`docs/ENGINEERING_RULES.md`](docs/ENGINEERING_RULES.md)**. It
+> holds the binding engineering rules — no cross-feature imports, the sanctioned row-pipeline module
+> layout, the token-only colour rule, the emit path, and the build-hygiene commands — and it is
+> **auto-injected into every AI agent session** via `opencode.json`, so code written with an agent
+> must satisfy it whether or not you read it. [`AGENTS.md`](AGENTS.md) (repo root) carries the
+> operating model and pointers; [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) has the architecture
+> summary. Full documentation index: [`docs/README.md`](docs/README.md).
+
 ### Setup
 
 From the repository root:
@@ -26,9 +34,12 @@ pnpm dev:tauri
 Continuous integration (`.github/workflows/validate.yml`) runs the following commands with these exact flags. Run the full set locally before opening a pull request:
 
 ```sh
+pnpm install --frozen-lockfile
 pnpm --filter @fredo/ui typecheck
 pnpm --filter @fredo/ui build
 pnpm --filter @fredo/ui test:run
+pnpm --filter @fredo/ui contrast:gate
+pnpm --filter @fredo/fredo-opencode-plugin build
 cargo check --manifest-path apps/tauri/src-tauri/Cargo.toml --locked
 cargo test --manifest-path apps/tauri/src-tauri/Cargo.toml --locked
 cargo clippy --manifest-path apps/tauri/src-tauri/Cargo.toml --locked -- -D warnings

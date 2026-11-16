@@ -1,5 +1,13 @@
 # Window Manager — Functional Test Cases (Spec #2807 — Own OS-style window-system kernel)
 
+> **#2954 note:** the persistent dock (`app-dock` / `data-dock-entry` / `data-dock-item` /
+> `.dock-close`) is REMOVED and the open-apps surface moved into the engaged launcher. Dock-bound
+> references in the F-20..F-28 lifecycle rows (e.g. the `app-dock` restore entry at F-38) are
+> RE-BOUND: the window store/kernel behavior is unchanged, but the observable open-apps surface is
+> now `[data-testid="launcher-open-apps"]` / `launcher-open-app-entry-<windowId>` (see
+> `.opencode/tests/launcher/functional.md` `#2954 extension`). The dock-hosted assertions are
+> retired; the window-store/kernel rows stay in force.
+
 > Durable functional suite (feature domain `window-manager`). One `- [ ]` case per requirement; observable expected outcome per case. Each case carries the QA-Plan row number (T-R1..T-R4) and its Acceptance Criterion (AC1..AC4) so the tester's `## Tests Runs` verdict maps a row to an AC — a FAIL on any row fails that AC.
 >
 > **Evidence policy: LIVE** — the exit gate / audit fail-closed unless the tester's Evidence references `telemetry_spans` (a live-query result via `.opencode/skills/telemetry-query/telemetry-query.ps1`) for this frontend rendering/UX feature. A static-only PASS is a FALSE PASS.
@@ -28,9 +36,10 @@
 - [ ] F-5 (T-R2 / AC2): Minimize the window (minimize control), confirm it hides, then restore it (focus/programmatic restore).
   - EXPECTED: minimize hides the window from the workspace and moves focus to the next visible window; restore brings the SAME window back with identity + content intact. DOM snapshot before/after.
   - Edge: an update while minimized does NOT silently restore or steal focus — the window stays minimized until an explicit restore/focus.
-- [ ] F-6 (T-R2 / AC2): Maximize, then restore, the window.
-  - EXPECTED: maximize goes full-bleed (radius 0, no drag/resize, control flips to "restore"); restore returns to the prior float geometry with content + identity intact. DOM snapshot at maximized and restored states.
-  - Edge: maximize while already maximized toggles to restore; double-click header toggles maximize/restore; maximize then minimize then restore preserves state.
+- [ ] F-6 (T-R2 / AC2): Open a feature window (default-open arrives full-bleed per #2924), then Maximize/Restore, then Maximize again.
+  - EXPECTED: the default-open window is full-bleed (`rect.left===0`, `rect.top===0`, `rect.right===view.w` ±1px, `rect.bottom===view.h` ±1px, `borderRadius:0px`, `boxShadow:none`, 0 grips, control reads "Restore <title>" with `aria-expanded="true"`); Restore returns a sensible float (on-screen, `width>=320`, `height>=200`, radius 8px, exactly 8 grips) — record the EXACT restored rect and confirm it equals the Architect-stated float; Maximize returns full-bleed again. DOM snapshot at each state.
+  - Edge: maximize while already maximized toggles to restore; double-click header toggles maximize/restore; maximize then minimize then restore preserves state; restore after dragging/resizing returns the EDITED float, not the seed.
+  - **#2924 note:** the pre-#2924 expectation (a window opened as a 480×320 float and maximize was a user action) is SUPERSEDED — windows open maximized; the Restore leg is now the geometric test. The 480×320 @ 48,48 seed is only the fallback for a window restored with no saved pre-maximize geometry.
 - [ ] F-7 (T-R2 / AC2): Focus / z-order — open a second window, then focus the first again (click it or drive focus).
   - EXPECTED: focused window comes to the top of the z-order (accent border + halo) and the previously-top window drops to unfocused (neutral border + muted title). DOM snapshot shows the topmost change.
   - Edge: `focusWindow` is the programmatic path; any window behind drops to unfocused; the content of the receding window stays fully readable.
@@ -51,6 +60,7 @@
 - [ ] F-12 (T-R3 / AC3): Grep the NEW window chrome components (header, title, icon, min/max/close controls, drag grip, resize grip, float) for hardcoded hex/rgba and for shared `tint()` usage.
   - EXPECTED: zero hardcoded hex/rgba (allowing `transparent`, `inherit`, `currentColor`, `none` and the documented data/art-palette exemptions); every surfaced color references a theme CSS var (`var(--card-bg)`, `var(--border-color)`, `var(--accent-primary)`, `var(--status-*)`, `--body-bg`, `--header-bg`); hover/active mixed tints use the shared `tint()` helper (`color-mix`).
   - Edge: `var(--accent-primary)22` (alpha-append onto a `var()`) is an invalid-CSS FAIL; a hex embedded in an rgba fallback is a FAIL unless it is an exempt data/art palette; no Chrome surface branches on light/dark — only the CSS vars the theme swaps.
+  - **#2924 addition (header composition grep):** `WindowChrome.tsx` must contain NO `F` monogram literal — the brand-cap Box (`WindowChrome.tsx:163-180`, `>F<`) is REMOVED. Grep the file for the cap JSX / a standalone `F` text node = 0; the icon tile (`WindowChrome.tsx:183-199`) remains. A reintroduced `>F<` in any chrome file is a REQ-2 FAIL.
 - [ ] F-13 (T-R3 / AC3, live render): In the running app, visually verify the chrome in BOTH light and dark theme (toggle via the theming feature) and under a user-accent override.
   - EXPECTED: the chrome re-tints from the theme tokens with no hardcoded color; hover tints respond to the accent/theme override; focused vs unfocused (top vs behind) frame states are distinguishable; the frame renders acceptably in both themes.
   - Edge: a fixed non-token color that ignores the user accent is a defect (FAIL); close control renders its destructive affordance via a hover tint, NOT via `variant="outline" colorPalette="red"` (the known #431 pitfall).
@@ -312,3 +322,212 @@
     terminal window mid-transit → no crash, main companion recovers.
   - **Environment note:** if Run CLI cannot be launched (plugin/binary missing), report
     BLOCKED-environment — never convert to a same-window-only PASS.
+
+---
+
+## #2924 extension — full-bleed default-open + icon/title-only header + flush content
+
+> Issue #2924 — feature windows open full-bleed (no desktop gutter, no 16px cascade), the
+> header carries only the feature icon tile + title (the `F` brand cap is removed), and the
+> frame's content region is flush (no blanket `p="4"`; per-feature spacing audit). Map 1:1 to
+> `.opencode/tmp/2924/triage.md` `## QA Expert` (REQ-1..REQ-5; T-R1a..T-R5 + T-LIVE).
+> **Verification policy: live** — DOM geometry + rendered header composition + the
+> `telemetry_spans` live reference (T-LIVE) are required; a static-only PASS is a FALSE PASS.
+> Geometry contract: `view = {w: innerWidth, h: innerHeight}`; `r = .fredo-window__surface.getBoundingClientRect()`;
+> full-bleed ⟺ `r.left===0 && r.top===0 && |r.right-view.w|<=1 && |r.bottom-view.h|<=1` + `borderRadius:0px`;
+> cascade fingerprint = `r.left===48+16*stackIndex` (its presence is a REQ-1 FAIL);
+> flush content ⟺ content region (`WindowFrame.tsx:247-257`) computed `padding:0px` and its `left/right/bottom` == surface's.
+
+- [ ] F-38 (T-R1a / REQ-1): Open a feature window from EACH entry point: launcher grid tile / APPS search; app-dock restore; companion/CLI app-open request (`fredo open-app <identity>`, `useAppOpenRequests`); Settings launcher tile; Setup launcher tile (#3010 — the wizard NO LONGER auto-opens); Settings → Fredo Setup (#3010); Dev Mode auto-open; feature `openSelf()`.
+  - EXPECTED: EVERY entry point yields the SAME full-bleed geometry (all four edges flush ±1px, radius 0, boxShadow none, 0 grips, "Restore <title>" + `aria-expanded="true"`); no desktop gutter; no cascade fingerprint; every feature window TYPE (Mission Monitor ≡ "Sessions", Query Viewer, Stepper Probe, Dev Mode, Settings, Setup wizard) measures identically.
+
+- [ ] F-39 (T-R1b / REQ-1 edge): Open A, open B, then re-invoke A's entry point (tile, dock restore, or app-open request).
+  - EXPECTED: A and B rects are byte-identical before/after the re-focus; exactly one surface per feature id (no duplicate); no second cascade offset.
+  - Edge: re-open a minimized A (dock restore) → full-bleed again; rapid double-invoke; re-open while B focused.
+
+- [ ] F-40 (T-R2a / REQ-2): DOM-snapshot `.fredo-window__header` + grep `WindowChrome.tsx`.
+  - EXPECTED: exactly ONE icon tile (24px, `WindowChrome.tsx:183-199`) + ONE title node (`<p>`, ellipsis, `WindowChrome.tsx:202-214`) + ONE control cluster; `header.querySelectorAll(':scope > div').length === 2`; ZERO `F` monogram nodes — the brand-cap Box (`WindowChrome.tsx:163-180`) ABSENT; no `>F<` literal in `WindowChrome.tsx`; icon tile keeps `aria-hidden="true"`.
+  - Edge: a title that itself contains "F" (assert the cap NODE is absent, not the character); feature with no icon (tile still 24×24); long title (ellipsis, tile + controls keep full size).
+
+- [ ] F-41 (T-R2b / REQ-2): Assert the control cluster + every aria attribute on the open window.
+  - EXPECTED: real `<button>`s `aria-label="Minimize <title>"` (`WindowChrome.tsx:220`), `"Maximize <title>"`/`"Restore <title>"` (`WindowChrome.tsx:231`), `"Close <title>"` (`WindowChrome.tsx:243`); `aria-expanded` on the max/restore control only (`WindowChrome.tsx:232`) = `"true"` maximized / `"false"` floating; frame `role="group"` named by the title (`WindowFrame.tsx:217-218`); glyphs `aria-hidden="true"` (`WindowChrome.tsx:39,47,55,64`); tab order minimize → max/restore → close.
+  - Edge: `canMaximize`/`canClose`/`canMinimize` false combinations; focused vs unfocused (`fg.default` vs `fg.muted`, `WindowChrome.tsx:205`); light + dark.
+
+- [ ] F-42 (T-R3 / REQ-3): Measure the content region, then audit EVERY feature window type's first-level content (BEFORE→AFTER).
+  - EXPECTED: content region computed `padding:0px` all sides; `p="4"` absent from `WindowFrame.tsx`; content region `left/right/bottom` == surface's (flush). Per-feature audit line records feature-owned padding + content rect + verdict (`ok-edge-to-edge` / `ok-feature-padded`); NONE `cramped` (0 gap where the feature needs breathing room) and NONE `edge-clipped`.
+  - Edge: intentionally edge-to-edge content (canvas/terminal/monaco/table); scrollable content (scrollbar flush); feature shells that already pad; empty/loading/error content; floating + maximized; light + dark. BEFORE = the pre-change `main` checkout (see triage BEFORE→AFTER procedure); record the actual BEFORE padding, never assume.
+
+- [ ] F-43 (T-R4a / REQ-4): Default-open (already maximized) → `Restore <title>` → `Maximize <title>` → repeat twice.
+  - EXPECTED: default open full-bleed; Restore = sensible float (on-screen, `>=320×200`, radius >0, 8 grips) — record the EXACT rect and confirm it equals the Architect-stated float; second Maximize full-bleed; stable over >=2 cycles with no drift; content + identity intact.
+  - Edge: restore after drag/resize returns the EDITED float; maximize-while-maximized toggles; maximize→minimize→restore order; header double-click toggles (`WindowFrame.tsx:165-167`).
+  - **Named blocker if the plan does not state the restored float:** report it as a gap, do not pass on a guess.
+
+- [ ] F-44 (T-R4b / REQ-4): minimize / close / focus / z-order.
+  - EXPECTED: minimize → `display:none`, entry stays in `useWindows()`, dock marks it minimized; restore returns same id/content; close removes frame + entry (idempotent), focus to next topmost; opening a 2nd window focuses it (accent border) and drops the 1st to unfocused.
+  - Edge: update-while-minimized does NOT auto-restore/steal focus; close focused vs backgrounded; close the only window; rapid interleave.
+
+- [ ] F-45 (T-R4c / REQ-4): drag-by-header + 8 grips + 24px gesture inset on a RESTORED window (real `PointerEvent` dispatch).
+  - EXPECTED: drag translates and clamps `x >= 24 - width`, `x <= containerWidth - 24`, `y >= 0` (`WindowFrame.tsx:135-141`); a drag past the right edge leaves >=24px of the window inside the container; exactly 8 `.fredo-window__grip--{n,s,e,w,ne,nw,se,sw}` elements; each grip moves only its edge(s); min 320×200; drag/resize are no-ops while maximized (`WindowFrame.tsx:128,170`); grips absent while maximized/hidden (`WindowFrame.tsx:259`); pointerdown on a control does NOT start a drag (`WindowChrome.tsx:144`).
+  - Edge: each of the 8 grips individually; drag to each boundary; resize to min on every side; drag/resize while maximized; gesture cancel; narrow viewport.
+
+- [ ] F-46 (T-R4d / REQ-4): keyboard-only operation of the chrome.
+  - EXPECTED: every control reachable by Tab in order and activates on Enter/Space; no focus trap; a minimized window leaves the tab order. If the plan ships global window keys (`CmdOrCtrl+W`/`M`/`Shift+M`, `Ctrl+Tab`), drive them; if deferred per plan, record "deferred per plan — not a FAIL".
+  - Edge: keyboard after maximize→restore; two windows (Ctrl+Tab focus-next); `:focus-visible` uses the accent token.
+
+- [ ] F-47 (T-R5 / REQ-5): grep `apps/ui/src/shared/window-system/**` + live re-tint.
+  - EXPECTED: zero true colour literals — `#[0-9a-fA-F]{3,8}` only in issue-ref comments (list them); `rgba(`/`rgb(`/`hsla(` = 0; `var\(--[a-z0-9-]+\)[0-9]` alpha-append (#2770) = 0; all tints via `tint()`. Live Classic↔Turbo + accent override: header (`var(--header-bg)`), tile (`var(--card-hover-bg)`), frame border, focus halo, grip hover all re-tint; title readable in both presets.
+  - Edge: no-space `var(--x)22`; hex inside a `color-mix` fallback; hardcoded accent ignoring the user theme; focused vs unfocused.
+
+- [ ] F-48 (T-LIVE / live gate): `telemetry_spans` + one classified row.
+  - EXPECTED: `.opencode/skills/telemetry-query/telemetry-query.ps1` → `SELECT COUNT(*), MAX(timestamp) FROM telemetry_spans` non-zero with a recent timestamp; one injected `fredo emit` event classifies into `chat_rows`/`tool_use_rows`. REQUIRED for the live-policy exit gate.
+  - Edge: telemetry DB absent/empty → NAMED BLOCKER; never substitute a static PASS.
+
+## Test run (#2924 round 1) — Verdict: **PASS** (F-6 / F-38..F-48)
+
+> Live-driven via `pnpm dev:tauri` (served root on `spec/2924 @ 33faafef`; dev-env Status:
+> `running (repo root on spec/2924 @ 33faafef)`). Viewport `view = {w:1920, h:1017}`.
+> `surface = .fredo-window__surface[role="group"]`; all rects from `getBoundingClientRect()`.
+> DOM snapshot + screenshot per AC; console read after every leg. Full per-AC evidence in the
+> `## Tests Runs (round 1)` comment on #2924.
+
+- **F-38 (T-R1a / REQ-1) — PASS.** Every DRIVEN entry point yields the identical full-bleed rect
+  `{left:0, top:0, right:1920, bottom:1017}`, `borderRadius:0px`, `boxShadow:none`, 0 grips,
+  control `Restore <title>` + `aria-expanded="true"`:
+  (1) launcher grid tile (Mission Monitor → Sessions); (2) APPS search (typed `stepper` in
+  `[data-testid=launcher-command-input]` → grid filtered to exactly one tile → Stepper Probe);
+  (3) app-dock restore (Query Viewer minimized → bottom dock revealed via document `pointermove`
+  at `clientY=1015` → entry `Query Viewer (minimized)` clicked); (4) companion/CLI app-open
+  (`fredo open-app "mission-monitor"` / `"Query Viewer"` / `"stepper-probe"`); (5) Settings
+  launcher tile; (6) Dev Mode auto-open (konami `↑↑↓↓←→←→ba` dispatched to `document`).
+  Feature window TYPES measured identically (5 concurrent + Settings + Dev Mode): Sessions,
+  Query Viewer, Stepper Probe, Dev Mode, Settings. Container reconciliation: the
+  `WindowManager` container rect == `#root` rect == `body` rect == the viewport rect
+  `0,0,1920,1017`; `body` margin `0px`; `documentElement.scrollWidth/Height = 1920/1017` →
+  ZERO gutter anywhere in the chain. ZERO cascade fingerprint (`r.left` observed 0 / 720 / 210,
+  never `48 + 16·stackIndex`). Narrow viewport (OS-window resize to 900×600): surface
+  `0,0,900,600` full-bleed.
+  - **NOT DRIVEN (named blockers, G-053):** (a) *Setup entry* — RECONCILED by #3010: the auto-open route is DELETED (the wizard
+    no longer auto-opens on boot); the Setup surface is now reachable via the launcher tile
+    (`showable` flipped `false`→`true`) or Settings → Fredo Setup. Drive those two user-initiated
+    entries instead of the retired auto-open (see `.opencode/tests/setup/` F-2/F-3/F-4).
+    (b) *feature
+    `openSelf()`* — `FredoFeatureClass.openSelf()`
+    (`FredoFeatureClass.ts:175`) has no in-repo caller (`git grep openSelf apps/ui/src` = the
+    definition + a comment only); the callback it dispatches is the SAME
+    `openFeatureWindow` the CLI/app-open path drives above, so the open contract is covered
+    transitively. Neither is a FAIL — both are entry-point reachability gaps in the fixture, not
+    product defects.
+- **F-39 (T-R1b / REQ-1 edge) — PASS.** Opened A (Sessions) + B (Query Viewer); re-invoked A via
+  `fredo open-app "mission-monitor"`: still exactly 2 `.fredo-window__surface` (one per feature
+  id), both rects byte-identical `0,0,1920,1017` before and after; A re-focused
+  (`borderColor rgb(0,209,209)` accent), B dropped to unfocused (`rgb(43,52,64)`). No second
+  cascade offset. Re-open of a MINIMIZED A = the dock-restore leg above → full-bleed again.
+  Rapid double-invoke (`fredo open-app` ×2 while focused) → one surface, no duplicate.
+- **F-40 (T-R2a / REQ-2) — PASS.** `header.querySelectorAll(':scope > div').length === 2`;
+  header children = `DIV` (icon tile) + `P` (title) + `DIV` (control cluster); tile 24×24 px,
+  `aria-hidden="true"`; title `<p>` text `Sessions`; structural leaf-`F` scan over
+  `.fredo-window__header *` = **0**; `git grep ">F<" apps/ui/src/shared/window-system` = **0**
+  (the `F` brand-cap Box is absent; `git show main:...WindowChrome.tsx` confirms the removed
+  `accent.default` 16×16 cap with the literal `F`). Edge (title containing "F" / no icon / long
+  title) pinned at unit level (`WindowChrome.test.tsx` `does not mistake a title containing “F”`,
+  `keeps the tile … when the feature has no icon`).
+- **F-41 (T-R2b / REQ-2) — PASS.** Real `<button>`s: `Minimize Sessions` /
+  `Restore Sessions` (`aria-expanded="true"` maximized → `Maximize Sessions` /
+  `aria-expanded="false"` floating) / `Close Sessions`, all 28×28, `tabIndex=0`, glyphs
+  `aria-hidden="true"`, DOM order minimize → max/restore → close; frame `role="group"`
+  `aria-label="Sessions"`; content region `tabIndex=-1`. `aria-expanded` flip observed live on
+  the restore/maximize round-trip.
+- **F-42 (T-R3 / REQ-3) — PASS.** Content region (surface `children[1]`) computed `padding:0px`
+  all sides, `margin:0px`; content rect `left=1, right=1919, bottom=1016` vs surface
+  `0/1920/1017` — the 1px difference IS the surface's `1px solid` border (no padding beyond it);
+  `p="4"` absent from `WindowFrame.tsx` (grep = 0; the ST-5 source guard pins it). Per-feature
+  first-level audit (live): Settings content root `padding 0px` (sidebar `px=5 pt=5` = 20px,
+  right panes `p=6` = 24px) → `ok-feature-padded`; Dev Mode root `padding 0px` (sections
+  `px={3}`) → `ok-edge-to-edge`; Query Viewer `p={3}` = 12px → `ok-feature-padded`; Stepper
+  Probe `p={4}` = 16px → `ok-feature-padded`; mission-monitor root `0` (token bar + canvas
+  edge-to-edge) → `ok-edge-to-edge`. No feature `cramped` (0 gap) and none `edge-clipped`;
+  `scrollHeight == clientHeight (975)` on each → no viewport-unit overflow/scrollbar.
+  **BEFORE (reference-not-re-measured):** the pre-change `main` checkout was NOT re-materialized
+  (the environment lever for a second env cycle was unavailable in this dispatch — the repo is
+  served from the single spec-2924 root and `git worktree` is outside the tester sandbox);
+  independent BEFORE receipts: `git show main:apps/ui/src/shared/window-system/WindowFrame.tsx`
+  ships `p="4"` on the content Box + `BASE 48`/`CASCADE 16` (`x: BASE + stackIndex*CASCADE`) +
+  an unread `savedGeomRef` restore, and `git show main:...WindowChrome.tsx` ships the `F` cap —
+  the removed-code diff. Durable suite recorded BEFORE: #2807 round-2/3 F-6 restore
+  `480×320 @ 48,48` (cascade), maximized `1920×1017`; #2838 F-22 maximized `{0,0,1920,1017}`.
+  Per the plan's procedure these are the BEFORE column, explicitly marked
+  reference-not-re-measured.
+- **F-43 (T-R4a / REQ-4) — PASS.** Default-open is full-bleed; `Restore` → float
+  `{left:720, top:348.5, width:480, height:320}`, `borderRadius:8px`, exactly 8 grips — this
+  EQUALS the Architect's binding `resolveFloatGeometry(1920×1017)`:
+  `x=(1920−480)/2=720`, `y=(1017−320)/2=348.5`, size `min(480,1920−48)=480 × min(320,1017−48)=320`.
+  Second `Maximize` → full-bleed `0,0,1920,1017, radius 0, shadow none, 0 grips`; over 2 cycles
+  the restored rect is byte-identical (no drift). Narrow-viewport leg (900×600): restore =
+  `{210,140,480,320}` = the same formula. Edge: maximize→restore after the OS window was
+  resized returns the EDITED (saved) float, not a re-derived one.
+- **F-44 (T-R4b / REQ-4) — PASS.** Minimize → surface `display:none` (`0×0`), the entry STAYS in
+  `useWindows()` (surface count unchanged), dock entry reads `Query Viewer (minimized)`; dock
+  activation restores the SAME id at full-bleed. Close removes frame + entry: closing a focused
+  and a backgrounded window both succeed; closing the only window → 0 surfaces, clean workspace,
+  no stray frame; close idempotent/re-entrancy-guarded. Opening a 2nd window focuses it (accent
+  `rgb(0,209,209)`) and drops the 1st to unfocused (neutral `rgb(43,52,64)` + muted title).
+  Update-while-minimized is pinned by `windowStore.test.ts` (`never full-replaces — control
+  state (minimize) survives a content-only patch`).
+- **F-45 (T-R4c / REQ-4) — PASS (real `PointerEvent` dispatch).** Drag by header: dispatched
+  `pointerdown` on `.fredo-window__header` + `pointermove`/`pointerup` on `window` moved the
+  float `720→840` (+120) / `348.5→408.5` (+60) exactly. Clamps: drag past the right edge →
+  `x=1896` (`=1920−24`, ≥24px stays inside); past the left edge → `x=−456` (`=24−480`,
+  `right=24`); drag up past the top → `y=0`. Exactly 8
+  `.fredo-window__grip--{n,s,e,w,ne,nw,se,sw}` present while floating, **0** while maximized,
+  0 while minimized; EACH of the 8 grips driven individually with the expected edge-only delta
+  (n: top+30/height−30; s: height+30; e: width+40; w: left+40/width−40; ne: top+30/width+40/
+  height−30; nw: left+40/top+30/width−40/height−30; se: width+40/height+30; sw: left+40/width−40/
+  height+30); shrink past MIN clamps at exactly `320×200`; drag while maximized is a no-op
+  (rect unchanged); `stopPropagation` on the controls keeps a control pointerdown from starting
+  a drag.
+- **F-46 (T-R4d / REQ-4) — PASS (tab order, DOM) / driver-limited on activation.** Static DOM:
+  the cluster holds 3 real `<button>`s in the order minimize → max/restore → close, all
+  `tabIndex=0`, no focus trap, frame non-modal, content `tabIndex=-1` (minimized window is
+  `display:none` → out of the tab order). Live key activation was NOT drivable: injected `Tab`
+  did not move `document.activeElement` (stayed on `Minimize Sessions`) and injected `Enter` /
+  `Space` on the focused `Restore Sessions` button did not dispatch the click — the MCP bridge's
+  synthetic keys do not reach WebView2's trusted input pipeline (same driver class as the
+  documented synthetic-pointer limitation). Named blocker, not a product defect. Global window
+  shortcuts (`CmdOrCtrl+W/M/Shift+M`, `Ctrl+Tab`) are **deferred per the #2807 baseline — not a
+  FAIL**.
+- **F-47 (T-R5 / REQ-5) — PASS.** Static grep over `apps/ui/src/shared/window-system/**`:
+  `#[0-9a-fA-F]{3,8}` matches ONLY issue-ref comments/prose (`#2924`, `#2807`, `#431`, `#2770`);
+  `rgba(|rgb(|hsla(|hsl(` = 0 in code (2 matches are test description strings);
+  `var\(--[a-z0-9-]+\)[0-9]` alpha-append = **0**; `tint(` present and used
+  (`WindowFrame.tsx:239-240,294`; `WindowChrome.tsx:227`). Live re-tint with a window open
+  (Settings, Appearance pane → `select[aria-label="Theme presets"]`, presets switched via the
+  real change event): Dark → header `rgb(12,17,23)` = `var(--header-bg) #0c1117`; Terminal Green →
+  header `rgb(10,10,10)` = `#0a0a0a`, border `rgb(31,60,31)` = `var(--border-color)`, accent
+  `#3fbf7f`, title `rgb(90,138,90)` on `#0a0a0a` ≈5.1:1; Light Default → header
+  `rgb(238,238,238)` = `#eeeeee`, title `rgb(95,107,122)` ≈6.5:1 (dark-on-light). Icon tile =
+  `rgb(58,58,58)` = `var(--card-hover-bg) #3a3a3a` in every preset. Chrome re-tints with the
+  theme; title stays readable in every preset.
+- **F-48 (T-LIVE / live gate) — PASS.** `telemetry-query.ps1`:
+  `SELECT COUNT(*), MAX(ingested_at) FROM telemetry_spans` → `spans: 27422`,
+  `newest_ingest: 2026-09-21T22:01:03.441408600+00:00` (seconds before the query), and
+  `chat_rows: 31690 / tool_use_rows: 40515 / agent_session_rows: 439`. One injected
+  `fredo emit --event-type chat --state response --session-id e2e-2924-tlive
+  --correlation-id e2e-2924-tlive-1` classified into `chat_rows` (row present,
+  `updated_at 2026-09-21T22:01:42Z`), and one
+  `fredo emit --event-type tool_use --tool-name e2e_probe_2924 --session-id e2e-2924-tlive
+  --correlation-id e2e-2924-tlive-2` classified into `tool_use_rows` (`tool_name: e2e_probe_2924`).
+  The classifier/row pipeline flows while the window default changed.
+- **F-6 (AC2, #2924 re-point) — PASS.** Default-open arrives full-bleed (`0,0,1920,1017`,
+  radius 0, shadow none, 0 grips, `Restore Sessions` + `aria-expanded="true"`); Restore yields
+  the sensible centered float (recorded exactly `720,348.5,480,320`, radius 8px, 8 grips);
+  Maximize returns full-bleed. The pre-#2924 cascade expectation is superseded; no cascade
+  fingerprint anywhere.
+- **Build/test gates — PASS.** `pnpm --filter @fredo/ui test:run` → **120 files / 1776 tests
+  passed, 0 failed** (includes the new `windowGeometry` 11, `WindowChrome` 11,
+  `WindowFrame` 17, `featureRoots.contentRegionSizing` 6, +8 store cases); `pnpm --filter
+  @fredo/ui build` (`tsc && vite build`) exit 0, 2583 modules transformed (only the pre-existing
+  `>500 kB` chunk advisory).
+- **Console hygiene — PASS.** `tauri_read_logs(source="console")` after each leg: no `Error:` /
+  `Uncaught` / `Maximum update depth exceeded` (only the pre-existing `motion() is deprecated`
+  warn and benign `[mission-monitor] auto-fit` debug lines). `prefers-reduced-motion: reduce` =
+  false; no new animation introduced by this presentation change.

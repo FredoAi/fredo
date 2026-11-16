@@ -8,44 +8,24 @@
  * string as a demoted `technicalDetail`.
  *
  * Proves:
- *   1. a typed install code → curated copy naming cause + next step;
- *   2. an unknown code → the safe generic fallback (`Something went wrong during …`);
- *   3. a download failure names the cause (disk space / writability / connection);
- *   4. a raw backend string is NEVER the primary `message` — it is demoted;
- *   5. the server launch reuses the existing curated server copy;
- *   6. absent detail → no `technicalDetail`.
+ *   1. a download failure names the cause (disk space / writability / connection);
+ *   2. a raw backend string is NEVER the primary `message` — it is demoted;
+ *   3. the engine start routes through the typed engine-copy table (#3141 ST-6);
+ *   4. absent detail → no `technicalDetail`.
+ *
+ * Spec #3141 ST-6 (G-411): the retired `llamaServer` install cases are gone with
+ * the step; the engine-start leg keeps its assertion STRENGTH (the typed code's
+ * exact sentence), re-pointed onto `engineFailureCopy`.
  */
 
 import { describe, it, expect } from 'vitest';
 
 import {
+  engineFailureCopy,
   errorCopyFor,
-  serverLaunchFailureCopy,
 } from '@/shared/components/companion/companionReadiness';
 
 describe('#2865 errorCopyFor — curated actionable failure copy', () => {
-  it('maps the typed install code to curated copy naming cause + next step', () => {
-    const copy = errorCopyFor(
-      'llamaServer',
-      'wingetUnavailable',
-      "Couldn't install llama.cpp — winget isn't available. Choose Re-check.",
-    );
-    expect(copy.message).toContain("winget isn't available");
-    expect(copy.message).toContain('Re-check');
-    // The raw backend string is demoted, never the primary sentence.
-    expect(copy.technicalDetail).toBe(
-      "Couldn't install llama.cpp — winget isn't available. Choose Re-check.",
-    );
-  });
-
-  it('falls back to a safe generic sentence for an unknown install code', () => {
-    const copy = errorCopyFor('llamaServer', 'mystery', 'boom');
-    expect(copy.message).toBe(
-      'Something went wrong during the llama.cpp install. Choose Retry; if it persists, re-check.',
-    );
-    expect(copy.technicalDetail).toBe('boom');
-  });
-
   it('names a writability cause for a download that could not create files (H3 observed string)', () => {
     const raw =
       'failed to create C:\\Code\\fredo\\.opencode\\tmp\\2865\\fixture-unwritable\\gemma-4-e2b-it-qat';
@@ -85,11 +65,16 @@ describe('#2865 errorCopyFor — curated actionable failure copy', () => {
     expect(copy.technicalDetail).toBeNull();
   });
 
-  it('routes the server launch through the existing curated server copy', () => {
-    const copy = errorCopyFor('serverLaunch', 'spawnFailed', 'EPERM spawn llama-server');
-    expect(copy.message).toBe(
-      serverLaunchFailureCopy('spawnFailed', 'http://127.0.0.1:8080'),
-    );
-    expect(copy.technicalDetail).toBe('EPERM spawn llama-server');
+  it('routes the engine start through the typed engine-copy table', () => {
+    const copy = errorCopyFor('serverLaunch', 'gpuUnavailable', 'raw GPU refusal');
+    expect(copy.message).toBe(engineFailureCopy('gpuUnavailable').sentence);
+    expect(copy.message).toContain('no usable GPU');
+    expect(copy.technicalDetail).toBe('raw GPU refusal');
+  });
+
+  it('uses the null-code engine row for an invoke rejection with no typed code', () => {
+    const copy = errorCopyFor('serverLaunch', null, 'EPERM spawn');
+    expect(copy.message).toBe(engineFailureCopy(null).sentence);
+    expect(copy.technicalDetail).toBe('EPERM spawn');
   });
 });

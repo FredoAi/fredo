@@ -1,11 +1,11 @@
 use clap::Parser;
 use std::path::{Path, PathBuf};
 
-use crate::features::setup::model_download::{
+use crate::applications::setup::model_download::{
     download_missing_files, DownloadProgress, ProgressReporter, ProgressState, ReqwestTransport,
     SystemClock,
 };
-use crate::features::setup::model_download_state::{default_manifest, probe_files, FileState};
+use crate::applications::setup::model_download_state::{default_manifest, probe_files, FileState};
 
 /// Check or perform Fredo setup operations
 ///
@@ -187,7 +187,7 @@ fn cli_configure_opencode_otel() -> Result<(), String> {
     }
 }
 
-/// Run CLI setup commands standalone (no IPC / no AppHandle).
+/// Execute setup commands standalone (no IPC / no AppHandle).
 pub async fn run_setup(args: &SetupArgs) -> anyhow::Result<()> {
     if args.check {
         let bin_is_available = is_binary_available("opencode");
@@ -195,7 +195,7 @@ pub async fn run_setup(args: &SetupArgs) -> anyhow::Result<()> {
         let plugin_installed = is_opencode_plugin_installed(&home);
 
         // fredo-path
-        let fredo_status = crate::features::setup::commands::check_fredo_in_path();
+        let fredo_status = crate::applications::setup::commands::check_fredo_in_path();
         let fredo_path = if fredo_status.in_path {
             serde_json::json!({"status": "ok", "detail": "Fredo binary is in PATH."})
         } else {
@@ -267,7 +267,7 @@ pub async fn run_setup(args: &SetupArgs) -> anyhow::Result<()> {
     }
 
     if args.add_to_path {
-        let result = crate::features::setup::commands::add_fredo_to_path();
+        let result = crate::applications::setup::commands::add_fredo_to_path();
         if result.success {
             println!("{}", result.output);
         } else {

@@ -1,6 +1,7 @@
 //! Native microphone capture: a `cpal` input stream (WASAPI on Windows) that
 //! mono-mixes, linear-resamples to 16 kHz, slices into fixed 3200-sample chunks
-//! and forwards them over a `std::sync::mpsc` channel to the recognition loop.
+//! and forwards them over a `std::sync::mpsc` channel to the model-audio session
+//! loop.
 //!
 //! The `cpal::Stream` is created and owned by the session's worker thread and
 //! never crosses a thread boundary. Capture is device-selectable: the persisted
@@ -20,7 +21,7 @@
 //! [`CaptureSource::Device`], so the shipped `cpal` path is unchanged. In Feed
 //! mode **no `cpal` device (and no host) is ever constructed**, so the
 //! microphone is opened strictly *less* than in production — this seam can never
-//! open the mic earlier. `stt_warm` never reaches it (warm never calls
+//! open the mic earlier. No startup path reaches it (only `stt_start` calls
 //! [`start_capture`]), and the feed is read-only: it adds no persisted key.
 //!
 //! **Stated limitation (honest):** a feed proves capture was live before the
@@ -36,10 +37,18 @@ use std::time::Duration;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
 
-use super::engine::{CAPTURE_CHUNK_SAMPLES, ENGINE_SAMPLE_RATE};
 use super::state::{SttDeviceInfo, SttErrorCode, VoiceError};
 
-/// Message protocol between capture and the recognition loop.
+/// The audio sample rate the whole model-audio path runs at: 16 kHz mono.
+/// Capture resamples every device to this rate, and it is the rate the clip WAV
+/// is encoded at.
+pub const AUDIO_SAMPLE_RATE: u32 = 16_000;
+
+/// Audio chunk handed to the session loop: 3200 f32 samples (~200 ms at
+/// 16 kHz), matching the official microphone example's default `chunk_size`.
+pub const CAPTURE_CHUNK_SAMPLES: usize = 3200;
+
+/// Message protocol between capture and the session loop.
 pub enum AudioMsg {
     /// A 3200-sample 16 kHz mono f32 chunk.
     Samples(Vec<f32>),
@@ -129,12 +138,12 @@ struct LinearResampler {
 impl LinearResampler {
     fn new(input_rate: u32) -> Self {
         let in_rate = if input_rate == 0 {
-            ENGINE_SAMPLE_RATE as u32
+            AUDIO_SAMPLE_RATE
         } else {
             input_rate
         };
         Self {
-            ratio: in_rate as f64 / ENGINE_SAMPLE_RATE as f64,
+            ratio: in_rate as f64 / AUDIO_SAMPLE_RATE as f64,
             position: 0.0,
             tail: Vec::new(),
         }
@@ -552,10 +561,10 @@ fn validate_feed_format(path: &Path, body: &[u8]) -> Result<(), VoiceError> {
             format!("expected mono, found {channels} channels"),
         ));
     }
-    if sample_rate != ENGINE_SAMPLE_RATE as u32 {
+    if sample_rate != AUDIO_SAMPLE_RATE {
         return Err(feed_error(
             path,
-            format!("expected {ENGINE_SAMPLE_RATE} Hz, found {sample_rate} Hz"),
+            format!("expected {AUDIO_SAMPLE_RATE} Hz, found {sample_rate} Hz"),
         ));
     }
     if bits_per_sample != 16 {
@@ -661,7 +670,7 @@ fn start_feed_capture(tx: Sender<AudioMsg>, path: &Path) -> Result<CaptureHandle
     let reader = spawn_feed_reader(tx, path, FEED_CHUNK_PERIOD)?;
     Ok(CaptureHandle {
         device_name: FEED_DEVICE_NAME.to_string(),
-        device_sample_rate: ENGINE_SAMPLE_RATE as u32,
+        device_sample_rate: AUDIO_SAMPLE_RATE,
         _stream: None,
         _feed: Some(reader),
     })
@@ -906,7 +915,7 @@ mod tests {
             "Feed mode must not enter the cpal device path"
         );
         assert_eq!(handle.device_name, FEED_DEVICE_NAME);
-        assert_eq!(handle.device_sample_rate, ENGINE_SAMPLE_RATE as u32);
+        assert_eq!(handle.device_sample_rate, AUDIO_SAMPLE_RATE);
         drop(handle);
     }
 
@@ -976,7 +985,7 @@ mod tests {
         assert_eq!(FEED_CHUNK_PERIOD, Duration::from_millis(200));
         assert_eq!(
             CAPTURE_CHUNK_SAMPLES,
-            ENGINE_SAMPLE_RATE as usize / 5,
+            AUDIO_SAMPLE_RATE as usize / 5,
             "3200 samples at 16 kHz IS 200 ms"
         );
     }

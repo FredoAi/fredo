@@ -62,12 +62,23 @@ it satisfies, and the files it owns. Developers work these checklist items on th
 
 ## QA Expert
 
-> **Verification policy: live** — replace `live` with `static` ONLY if every AC in this
-> plan is genuinely verifiable without observing a running system (pure unit-testable
-> logic). Emission/observability features (telemetry, spans, events, metrics, UI
-> rendering) MUST stay `live`: the testing exit gate and audit fail-closed unless the
-> tester's Evidence references `telemetry_spans` (a live-query result) for live-policy
-> plans. A static PASS for a live-policy plan is a false PASS.
+> **Verification policy: live** — replace `live` with `static` if every AC in this plan is
+> genuinely verifiable without observing a running system. That includes a **prove-a-negative
+> / static-config AC** (the absence of a privilege or debug surface, or a build-profile/config
+> value such as CSP, `withGlobalTauri`, a capability grant, or `#[cfg(debug_assertions)]`
+> gating) — those MUST be `static`, verified from the source/config/built artifact via
+> `Read`/`Grep` plus the committed gate wrapper (`run-exitcode.ps1`). `live` is ONLY for a
+> genuine runtime behaviour a user can observe. Emission/observability features (telemetry,
+> spans, events, metrics, UI rendering) MUST stay `live`: the testing exit gate and audit
+> fail-closed unless the tester's Evidence references `telemetry_spans` (a live-query result)
+> for live-policy plans. A static PASS for a live-policy plan is a false PASS.
+>
+> **A CI-workflow-logic spec is `static`:** when the deliverable is workflow source and its gate
+> semantics (path filters, job graph, aggregator logic, required-check identity) there is no app,
+> webview, or telemetry surface, so `live` is unsatisfiable. Declare `static` AND bind a real CI
+> run of the workflow on the spec PR's final head SHA as the receipt, and pre-authorize the
+> literal disclosure `logic-verified, no discriminating run` for any row this spec's own PR
+> cannot discriminate (G-410).
 
 ### QA Plan
 
@@ -75,6 +86,11 @@ it satisfies, and the files it owns. Developers work these checklist items on th
 |-----|-----------|----------|------------|
 
 <plus pass/fail criteria, required test data, non-functional checks>
+
+> Every evidence artifact a row names must be a **NON-DRAFT record** — the POSTED timeline
+> comment or a committed / non-consumed path; never a `.opencode/tmp/<issue>/` timeline draft
+> (the developer summary, the tests-runs draft, the triage plan or a fix plan), which the
+> transition posts and then consumes (G-415).
 
 ---
 
@@ -98,3 +114,5 @@ it satisfies, and the files it owns. Developers work these checklist items on th
 ## Risks & Mitigations
 
 <risk> → <mitigation>
+
+*Authored by Orchestrator*

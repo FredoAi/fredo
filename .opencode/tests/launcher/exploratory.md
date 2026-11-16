@@ -506,3 +506,126 @@
 - **E-67 PASS (live).** Countdown copy `Fredo is listening · 7s left` (146.8×24, ONE line, whole countdown visible — no ellipsis of the bound) at default; processing copy `Fredo is processing your speech…` (212.2×24, ONE line). At the narrowest supported window (900×600, bar constant 560) both stayed one line with `fieldContentW ≥ 140`; no field displacement. No promotion.
 - **E-68 PASS (live, driven mid-capture).** While the model capture was live, switched the shipped `select[aria-label="Theme presets"]` `dark`→`light-default` in one in-page task: chip color `rgb(229,231,235)` → `rgb(12,17,23)`, card `#151a21` → `#f7f8fa`, chip rect **byte-identical** (`left 1037.2 / right 1143 / 105.8×24`), still `nowrap`/`horizontal-tb`; dot stayed `rgb(0,209,209)`, field border accent-30. No stale color, no geometry change, no console error. No promotion.
 - **E-69 PASS (resize churn) / 125% DPI sub-leg UNVERIFIED (named blocker).** Mid-capture churn 900×600 ↔ 1400×900 ↔ 700×900 ↔ 1936×1056: one line + clear of the field at every width; full-size restored cleanly. **NAMED BLOCKER:** no lever to force a fractional OS/webview scale — the MCP driver exposes only `tauri_manage_window resize` in logical px, and the observed scale is 1:1 (`window.innerWidth 1936 == window width 1936` ⇒ 100%); `execute_js` cannot set devicePixelRatio. Command attempted: `tauri_manage_window(action="resize", width=…)` + `window.innerWidth` probe. No promotion.
+
+---
+
+## #2917 extension — solid-fill edge probes on the launcher surface
+
+> Unscripted probes for issue #2917. A confirmed finding PROMOTES to `functional.md` as a new `F-` row
+> (keep the origin note); a confirmed regression-free probe is recorded here. Live policy; an undrivable
+> lever is a named blocker (G-053) with a static/unit pin — never fabricated.
+
+- [ ] E-70: **Worst-case accent contrast for the launcher fill.** Pick the shipped preset whose accent is
+      closest to the launcher background (or a near-background user accent). Is the filled interior still
+      distinguishable from the surface behind Fredo, and is the head rim still readable? Any interior
+      that merges with the background is a finding (promotes to F-108).
+- [ ] E-71: **Fractional-DPI / narrow-viewport fill integrity.** At a fractional OS scale and at the
+      shipped minimum 900×600 (and narrower, dev-advisory), does the fill stay inside the silhouette with
+      no seam-shifted/overflowing cells, and does the figure stay un-clipped? Any overflow, seam shift, or
+      subpixel smear is a finding (promotes to F-108).
+- [ ] E-72: **Theme/accent flip mid-open/close over the fill.** Switch presets while the launcher is
+      opening/closing and the mascot animates. Does the fill re-tint token-native with no stale colour and
+      no geometry jump? Any stale colour, layout jump, or console error is a finding (promotes to F-109).
+- [ ] E-73: **Dense-vs-sparse metric aliasing at the launcher size.** For a thin/periodic state captured
+      on the launcher leg, compare a dense full-frame diff with a sparse point-grid diff. Any state where
+      the sparse grid would pass while the dense diff fails must be recorded — the sparse grid is never
+      admissible (promotes to `companion` F-121).
+
+---
+
+## #2922 extension — body-solidity edge probes on the launcher surface
+
+> Unscripted probes for issue #2922. A confirmed finding PROMOTES to `functional.md` as a new `F-` row
+> (keep the origin note); a confirmed regression-free probe is recorded here. Live policy; an
+> undrivable lever is a named blocker (G-053) with a static/unit pin — never fabricated. The metric
+> definition lives in `.opencode/tests/companion/functional.md` `#2922 extension`.
+
+- [ ] E-74: **Seat mascot solidity across open/close churn.** Remount the launcher (open → close →
+      open) several times and re-run the body metric at the seat each time. Does the mascot render
+      fully solid every time (no partial/stale fill after a remount, no stale colour, no half-painted
+      body), and does the open/close animation frame where the mascot is mid-bob still measure 0? Any
+      partial fill / stale frame is a finding (promotes to launcher F-113).
+- [ ] E-75: **Worst-case accent vs the seat fill.** With the accent nearest the launcher page
+      background, is the seat mascot's body still distinguishable as a filled region at the sm 80×100
+      scale (fill-vs-backdrop delta > `4×T = 32`) and does the figure read as one solid shape? Any
+      body region merging with the surface is a finding (promotes to launcher F-114 + the QA
+      Discussion Q-2).
+- [ ] E-76: **Leak probe on the seat mascot's negative-space boxes.** Evaluate `leakCount` over the
+      UI/UX-bound boxes `N` (frames A + C, `T = 8`), inset per box by the binding NON-UNIFORM tuck rule
+      `inset = min(6, floor(w/4), floor(h/4))` (every box 6 except the bow-tie notch 2); walk the
+      outer-arm/hip steps, the neck band either side of the jaw bar, and the crotch at 1-unit steps
+      for antialias bleed past the box edge. Any fill pixel inside `N` is a finding (promotes to
+      launcher F-115 / companion F-138); explicitly note the `x 460, y 1150` note (the left inner
+      leg's own edge, outside `N`) so it is not re-filed.
+- [ ] E-77: **The md 132×165 render leg (only if a surface ever renders it).** No surface renders
+      `size="md"` today (`AVATAR_MD` is only exported). If one is wired, re-run the body metric at md
+      and check band joins at the larger scale (the per-box rim tuck is scale-independent in viewBox
+      units but the antialias width is not). Absent an md surface, record the shared-component RTL pin
+      as the residual and do NOT claim a rendered md PASS (promotes to launcher F-113).
+
+---
+
+## #2954 extension — open-apps row edge probes
+
+> Unscripted probes for issue #2954. A confirmed finding PROMOTES to `functional.md` as a new `F-`
+> row (keep the origin note). Live policy; an undrivable lever is a named blocker (G-053) with a
+> static/unit pin — never fabricated.
+
+- [ ] E-78: **Rapid window open/close churn while engaged.** Open and close windows rapidly with the
+      launcher engaged — does the row track the store exactly (one entry per window, no ghost entry,
+      no stale count), with no flicker / re-render loop / console error?
+- [ ] E-79: **Query churn against the row.** Type/clear queries rapidly while windows open/close — does
+      the row + grid always filter from the SAME query with no stale entry, and does an open app whose
+      title matches reappear when the query clears?
+- [ ] E-80: **Palette ↔ query toggle.** Type `>` then delete it repeatedly with windows open — does the
+      row cleanly disappear in palette mode and reappear in normal mode, with no orphan container?
+- [ ] E-81: **Close the last window from the row.** With exactly one window open and the launcher
+      engaged, click its close control — does the row vanish entirely (not an empty box) and the grid
+      remain intact?
+- [ ] E-82: **Minimize/restore from the row.** Minimize a window, engage, activate its entry — does the
+      window restore and raise (topmost) with the entry label updating to/from `(minimized)`?
+
+---
+
+## #3120 extension — navigation-grounded launcher edge probes
+
+> Unscripted probes for issue #3120. A confirmed finding PROMOTES to `functional.md` as a new `F-`
+> row (keep the origin note). Live policy; an undrivable lever is a named blocker (G-053) with a
+> static/unit pin — never fabricated. Levers: the `functional.md` `#3120` L1–L6 recipe.
+
+- [ ] E-83: **Stale-envelope race.** Fire a navigation dispatch (place entry) and a keystroke in
+      quick succession — does the context header ever render a stale path (an envelope captured
+      before the dispatch), and does the palette group order match the header? Any frame where the
+      header and the palette disagree about the current place is a finding (promotes to F-128).
+- [ ] E-84: **Two pending confirmations.** Trigger two destructive intents back-to-back (palette
+      Enter twice on `delete`, and a relay in the same window) — is exactly one dialog shown, does
+      the second resolve the first (or vanish), and is anything applied that was never confirmed?
+      Any double-apply or orphaned promise is a finding (promotes to F-141/F-143).
+- [ ] E-85: **Esc ordering across S4/S5/S6.** With the secondary open, a confirmation pending and an
+      S6 line visible in sequence, press Esc repeatedly — does each press consume exactly one branch
+      (confirmation → secondary → top-level close) with no double-fire, and does the response line
+      survive one Esc too many? Any skipped/doubled level is a finding (promotes to F-135).
+- [ ] E-86: **Undo during an in-flight intent.** Send a companion mutation (relay) and immediately
+      type `undo the companion's last change` — does the undo see the new entry, or silently undo the
+      previous one? Record the journal order; a wrong target or a double undo is a finding (promotes
+      to F-145).
+- [ ] E-87: **Window switch while the launcher is open.** With the launcher open over Wireframe, focus
+      another window (or minimize Wireframe) — does the context source switch, disappear, or keep
+      rendering a stale header? Any header for a non-active app is a finding (promotes to F-127).
+- [ ] E-88: **Envelope-cap interaction with the palette.** Create many elements (or select the
+      maximum) so the envelope truncates (`maxSelectionIds` 32 / `maxPathDepth` 8 / `maxVerbs` 64) —
+      does the palette still list the full 55 rows, does the context header truncate gracefully
+      (no clip/overflow), and does the list scroll (`min(52vh, 420px)`) without horizontal scroll?
+      Any lost row, clipped header or h-scroll is a finding (promotes to F-126/F-130/F-160).
+- [ ] E-89: **Relay to a closed window (queued take).** Send an `app_command_intent` while the
+      Wireframe window is closed, then open it — does the intent drain on mount (`_take`), execute
+      once, and answer exactly one result event? A lost intent, a double execution or a missing
+      result is a finding (promotes to F-138/F-139). Queue bound: 16 (oldest-first eviction).
+- [ ] E-90: **Reduced-motion override mid-animation.** Flip the `matchMedia` stub to `true` while a
+      palette entrance / selection transition is running — does the running animation stop cleanly
+      (no stuck transform/opacity) and does the next state render instantly? Any stuck mid-animation
+      frame is a finding (promotes to F-156).
+- [ ] E-91: **Recents churn.** Run 8 mutations so the journal overflows `maxJournalEntries` (10) and
+      the recents exceed `PALETTE_MAX_RECENTS` (5) — does the recent set stay deduped/capped, do
+      undo entries (`Undo …`) enter recents, and does the palette order stay stable (no flicker,
+      no duplicate row)? A duplicated/lost row is a finding (promotes to F-129/F-130).

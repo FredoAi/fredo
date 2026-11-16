@@ -1,0 +1,521 @@
+/**
+ * QueryTabs tests (Spec #2950, ST-5).
+ *
+ * Pins R-3.1 (independent per-tab SQL + results; tab strip scrolls and only the
+ * label ellipsizes), R-3.2/R-3.6 (default Run is mode:single; Run all is
+ * explicit), R-3.5 (error surface) and R-5.3 UI (destructive confirmation echoes
+ * the statement hash only after an explicit confirm).
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
+import { QueryTabs } from '../QueryTabs';
+import type { DbQueryOutcome, DbResultSet } from '../../lib/types';
+
+vi.mock('../../lib/api', () => ({
+  dbQueryExecute: vi.fn(),
+  dbResultPage: vi.fn(),
+  normalizeDbError: (error: unknown) =>
+    Array.isArray(error)
+      ? error.map((item) => String(item)).join('; ')
+      : error instanceof Error
+        ? error.message
+        : String(error),
+}));
+
+import { dbQueryExecute } from '../../lib/api';
+
+const dbQueryExecuteMock = vi.mocked(dbQueryExecute);
+
+const set: DbResultSet = {
+  resultSetId: 'rs-1',
+  columns: [{ name: 'value', typeName: 'text' }],
+  rows: [['one']],
+  rowCountLoaded: 1,
+  hasMore: false,
+  truncated: false,
+  durationMs: 2,
+};
+
+function outcome(overrides: Partial<DbQueryOutcome> = {}): DbQueryOutcome {
+  return { resultSets: [], confirmationRequired: null, error: null, ...overrides };
+}
+
+const editor = (): HTMLTextAreaElement =>
+  screen.getByTestId('db-query-editor') as HTMLTextAreaElement;
+
+/**
+ * Build a pointer event with clientX/clientY/pointerId explicitly defined. jsdom
+ * does not propagate PointerEvent init props onto the created event, so a plain
+ * bubbling Event with the properties defined is the reliable simulation.
+ */
+function makePointerEvent(
+  type: string,
+  init: { clientX?: number; clientY?: number; pointerId?: number },
+): Event {
+  const ev = new Event(type, { bubbles: true, cancelable: true, composed: true });
+  Object.defineProperty(ev, 'clientX', { value: init.clientX ?? 0, configurable: true });
+  Object.defineProperty(ev, 'clientY', { value: init.clientY ?? 0, configurable: true });
+  Object.defineProperty(ev, 'pointerId', { value: init.pointerId ?? 1, configurable: true });
+  return ev;
+}
+
+/**
+ * The editor-row Box the workspace sizes: `<Textarea data-testid="db-query-editor">`
+ * → relative Box → SqlEditor root Flex → the height-bearing Box (QueryTabs.tsx:465).
+ */
+function editorRowBox(): HTMLElement {
+  const textarea = screen.getByTestId('db-query-editor');
+  const box = textarea.parentElement?.parentElement?.parentElement;
+  if (!box) throw new Error('editor row box not found');
+  return box;
+}
+
+beforeEach(() => {
+  dbQueryExecuteMock.mockReset();
+  dbQueryExecuteMock.mockResolvedValue(outcome());
+});
+
+afterEach(() => {
+  cleanup();
+});
+
+describe('QueryTabs — tab strip (R-3.1 / G-273 / G-274)', () => {
+  it('scrolls horizontally and ellipsizes only the tab label (close + dirty exempt)', () => {
+    renderWithChakra(<QueryTabs connectionId="c1" />);
+
+    const strip = screen.getByTestId('db-query-tabs');
+    expect(getComputedStyle(strip).overflowX).toBe('auto');
+    expect(getComputedStyle(strip).overflowY).toBe('hidden');
+
+    const tab = screen.getAllByTestId('db-query-tab')[0];
+    const label = within(tab).getByTestId('db-query-tab-label');
+    expect(getComputedStyle(label).textOverflow).toBe('ellipsis');
+    expect(getComputedStyle(label).overflow).toBe('hidden');
+    expect(getComputedStyle(label).whiteSpace).toBe('nowrap');
+
+    const close = within(tab).getByTestId('db-query-tab-close');
+    expect(getComputedStyle(close).flexShrink).toBe('0');
+    expect(getComputedStyle(close).textOverflow).not.toBe('ellipsis');
+
+    // Editing marks the tab dirty; the dirty indicator is exempt from the clamp.
+    fireEvent.change(editor(), { target: { value: 'SELECT 1' } });
+    const dirty = within(screen.getAllByTestId('db-query-tab')[0]).getByTestId('db-query-tab-dirty');
+    expect(getComputedStyle(dirty).flexShrink).toBe('0');
+    expect(getComputedStyle(dirty).textOverflow).not.toBe('ellipsis');
+  });
+
+  it('keeps SQL and results independent per tab', () => {
+    renderWithChakra(<QueryTabs connectionId="c1" />);
+
+    fireEvent.change(editor(), { target: { value: 'SELECT 1' } });
+    expect(editor().value).toBe('SELECT 1');
+
+    fireEvent.click(screen.getByTestId('db-query-tab-new'));
+    expect(screen.getAllByTestId('db-query-tab')).toHaveLength(2);
+    expect(editor().value).toBe('');
+
+    fireEvent.change(editor(), { target: { value: 'SELECT 2' } });
+    expect(editor().value).toBe('SELECT 2');
+
+    fireEvent.click(screen.getAllByTestId('db-query-tab')[0]);
+    expect(editor().value).toBe('SELECT 1');
+  });
+
+  it('adds and closes tabs, never closing the last one', () => {
+    renderWithChakra(<QueryTabs connectionId="c1" />);
+
+    fireEvent.click(screen.getByTestId('db-query-tab-new'));
+    expect(screen.getAllByTestId('db-query-tab')).toHaveLength(2);
+
+    fireEvent.click(within(screen.getAllByTestId('db-query-tab')[1]).getByTestId('db-query-tab-close'));
+    expect(screen.getAllByTestId('db-query-tab')).toHaveLength(1);
+
+    fireEvent.click(within(screen.getAllByTestId('db-query-tab')[0]).getByTestId('db-query-tab-close'));
+    expect(screen.getAllByTestId('db-query-tab')).toHaveLength(1);
+  });
+});
+
+describe('QueryTabs — run scope (R-3.2/R-3.6)', () => {
+  it('defaults Run to mode:single with the caret statement scope', async () => {
+    renderWithChakra(<QueryTabs connectionId="c1" />);
+    fireEvent.change(editor(), { target: { value: 'SELECT 1; SELECT 2;' } });
+
+    fireEvent.click(screen.getByTestId('db-query-run'));
+
+    await waitFor(() => expect(dbQueryExecuteMock).toHaveBeenCalledTimes(1));
+    expect(dbQueryExecuteMock).toHaveBeenCalledWith({
+      connectionId: 'c1',
+      sql: 'SELECT 1; SELECT 2;',
+      mode: 'single',
+      selection: { start: 10, end: 18 },
+      confirmedStatementHashes: [],
+      limit: 100,
+    });
+  });
+
+  it('sends mode:all only from the explicit Run all action', async () => {
+    renderWithChakra(<QueryTabs connectionId="c1" />);
+    fireEvent.change(editor(), { target: { value: 'SELECT 1; SELECT 2;' } });
+
+    fireEvent.click(screen.getByTestId('db-query-run-all'));
+
+    await waitFor(() => expect(dbQueryExecuteMock).toHaveBeenCalledTimes(1));
+    expect(dbQueryExecuteMock).toHaveBeenCalledWith({
+      connectionId: 'c1',
+      sql: 'SELECT 1; SELECT 2;',
+      mode: 'all',
+      selection: null,
+      confirmedStatementHashes: [],
+      limit: 100,
+    });
+  });
+
+  it('forwards the stored default row limit as the first-page limit (QA-12)', async () => {
+    renderWithChakra(<QueryTabs connectionId="c1" defaultRowLimit={150} />);
+    fireEvent.change(editor(), { target: { value: 'SELECT * FROM qa_big' } });
+
+    fireEvent.click(screen.getByTestId('db-query-run'));
+
+    await waitFor(() => expect(dbQueryExecuteMock).toHaveBeenCalledTimes(1));
+    expect(dbQueryExecuteMock.mock.calls[0][0].limit).toBe(150);
+  });
+
+  it('renders every result set from a Run all outcome in order', async () => {
+    dbQueryExecuteMock.mockResolvedValue(
+      outcome({
+        resultSets: [
+          { ...set, resultSetId: 'rs-1', rows: [['one']] },
+          { ...set, resultSetId: 'rs-2', rows: [['two']] },
+        ],
+      }),
+    );
+    renderWithChakra(<QueryTabs connectionId="c1" />);
+    fireEvent.change(editor(), { target: { value: 'SELECT 1; SELECT 2;' } });
+
+    fireEvent.click(screen.getByTestId('db-query-run-all'));
+
+    await waitFor(() => expect(screen.getByTestId('db-resultsets')).toBeDefined());
+    expect(screen.getAllByTestId('db-resultset-tab')).toHaveLength(2);
+  });
+
+  it('renders a typed query error with its position (R-3.5)', async () => {
+    dbQueryExecuteMock.mockResolvedValue(
+      outcome({ error: { kind: 'query', message: 'boom', line: 1, column: 3, position: 3 } }),
+    );
+    renderWithChakra(<QueryTabs connectionId="c1" />);
+    fireEvent.change(editor(), { target: { value: 'SELEC 1' } });
+
+    fireEvent.click(screen.getByTestId('db-query-run'));
+
+    await waitFor(() => expect(screen.getByTestId('db-query-error')).toBeDefined());
+    expect(screen.getByTestId('db-query-error')).toHaveTextContent('boom');
+    expect(screen.getByTestId('db-query-error-position')).toHaveTextContent('line 1, column 3');
+  });
+});
+
+describe('QueryTabs — dropped connection (R-3.8)', () => {
+  it('notifies the shell with the connection id when a query is typed connectionLost', async () => {
+    dbQueryExecuteMock.mockResolvedValue(
+      outcome({
+        error: {
+          kind: 'connectionLost',
+          message: 'connection lost: the server is no longer reachable',
+          line: null,
+          column: null,
+          position: null,
+        },
+      }),
+    );
+    const onConnectionLost = vi.fn();
+    renderWithChakra(<QueryTabs connectionId="c1" onConnectionLost={onConnectionLost} />);
+    fireEvent.change(editor(), { target: { value: 'SELECT 1' } });
+
+    fireEvent.click(screen.getByTestId('db-query-run'));
+
+    await waitFor(() => expect(onConnectionLost).toHaveBeenCalledWith('c1'));
+    expect(onConnectionLost).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not notify the shell for an ordinary typed error', async () => {
+    dbQueryExecuteMock.mockResolvedValue(
+      outcome({ error: { kind: 'query', message: 'boom', line: null, column: null, position: null } }),
+    );
+    const onConnectionLost = vi.fn();
+    renderWithChakra(<QueryTabs connectionId="c1" onConnectionLost={onConnectionLost} />);
+    fireEvent.change(editor(), { target: { value: 'SELEC 1' } });
+
+    fireEvent.click(screen.getByTestId('db-query-run'));
+
+    await waitFor(() => expect(screen.getByTestId('db-query-error')).toBeDefined());
+    expect(onConnectionLost).not.toHaveBeenCalled();
+  });
+});
+
+describe('QueryTabs — destructive confirmation (R-5.3 UI)', () => {
+  it('opens the confirm dialog and echoes the hash only after an explicit confirm', async () => {
+    dbQueryExecuteMock
+      .mockResolvedValueOnce(
+        outcome({
+          confirmationRequired: {
+            statementClass: 'destructive',
+            statementHash: 'h1',
+            preview: 'DELETE FROM users',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(outcome({ resultSets: [set] }));
+
+    renderWithChakra(<QueryTabs connectionId="c1" />);
+    fireEvent.change(editor(), { target: { value: 'DELETE FROM users' } });
+
+    fireEvent.click(screen.getByTestId('db-query-run'));
+
+    await waitFor(() => expect(screen.getByTestId('db-destructive-confirm')).toBeDefined());
+    expect(screen.getByTestId('db-destructive-class')).toHaveTextContent('destructive');
+    expect(screen.getByTestId('db-destructive-preview')).toHaveTextContent('DELETE FROM users');
+    // Nothing was executed on the first call beyond the refusal.
+    expect(dbQueryExecuteMock).toHaveBeenCalledTimes(1);
+    expect(dbQueryExecuteMock.mock.calls[0][0].confirmedStatementHashes).toEqual([]);
+
+    fireEvent.click(screen.getByTestId('db-destructive-run'));
+
+    await waitFor(() => expect(dbQueryExecuteMock).toHaveBeenCalledTimes(2));
+    expect(dbQueryExecuteMock.mock.calls[1][0].confirmedStatementHashes).toEqual(['h1']);
+    expect(screen.queryByTestId('db-destructive-confirm')).toBeNull();
+  });
+
+  it('cancelling closes the dialog and executes nothing further', async () => {
+    dbQueryExecuteMock.mockResolvedValue(
+      outcome({
+        confirmationRequired: {
+          statementClass: 'unknown',
+          statementHash: 'h2',
+          preview: 'VACUUM',
+        },
+      }),
+    );
+    renderWithChakra(<QueryTabs connectionId="c1" />);
+    fireEvent.change(editor(), { target: { value: 'VACUUM' } });
+
+    fireEvent.click(screen.getByTestId('db-query-run'));
+    await waitFor(() => expect(screen.getByTestId('db-destructive-confirm')).toBeDefined());
+
+    fireEvent.click(screen.getByTestId('db-destructive-cancel'));
+    await waitFor(() => expect(screen.queryByTestId('db-destructive-confirm')).toBeNull());
+    expect(dbQueryExecuteMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── Spec #3049 (ST-4): the editor ↔ results split (GA-3, GA-5, GA-7) ──────────
+//
+// The QueryTabs-internal split is threaded the committed height as a prop and
+// reports changes once per drag-end / key step; a drag reflows the editor row
+// live and clamps to the split's static bounds.
+
+describe('QueryTabs — editor↔results split (Spec #3049, ST-4)', () => {
+  it('renders the editor-results separator with the binding ARIA + default height', () => {
+    renderWithChakra(<QueryTabs connectionId="c1" />);
+
+    const handle = screen.getByTestId('db-resize-handle-editor-results');
+    expect(handle.getAttribute('role')).toBe('separator');
+    expect(handle.getAttribute('aria-orientation')).toBe('horizontal');
+    expect(handle.getAttribute('aria-valuenow')).toBe('220');
+    expect(handle.getAttribute('aria-valuemin')).toBe('120');
+    expect(handle.getAttribute('aria-valuemax')).toBe('720');
+    expect(handle.tabIndex).toBe(0);
+  });
+
+  it('the editor row reflects the editorHeight prop (the size drives the box)', () => {
+    renderWithChakra(<QueryTabs connectionId="c1" editorHeight={333} />);
+
+    expect(
+      screen.getByTestId('db-resize-handle-editor-results').getAttribute('aria-valuenow'),
+    ).toBe('333');
+    expect(getComputedStyle(editorRowBox()).height).toBe('333px');
+  });
+
+  it('a drag reflows the editor live and commits once with the clamped height', () => {
+    const onEditorHeightChange = vi.fn();
+    renderWithChakra(<QueryTabs connectionId="c1" onEditorHeightChange={onEditorHeightChange} />);
+
+    const handle = screen.getByTestId('db-resize-handle-editor-results');
+    fireEvent(handle, makePointerEvent('pointerdown', { clientY: 300 }));
+    expect(onEditorHeightChange).not.toHaveBeenCalled();
+
+    fireEvent(handle, makePointerEvent('pointermove', { clientY: 360 })); // +60 → 280
+    expect(handle.getAttribute('aria-valuenow')).toBe('280');
+    expect(getComputedStyle(editorRowBox()).height).toBe('280px');
+    expect(onEditorHeightChange).not.toHaveBeenCalled();
+
+    fireEvent(handle, makePointerEvent('pointermove', { clientY: 9999 })); // clamp at max
+    expect(handle.getAttribute('aria-valuenow')).toBe('720');
+
+    fireEvent(handle, makePointerEvent('pointerup', { clientY: 9999 }));
+    expect(onEditorHeightChange).toHaveBeenCalledTimes(1);
+    expect(onEditorHeightChange).toHaveBeenCalledWith(720);
+  });
+
+  it('keyboard Home/End commit the min/max editor height', () => {
+    const onEditorHeightChange = vi.fn();
+    renderWithChakra(<QueryTabs connectionId="c1" onEditorHeightChange={onEditorHeightChange} />);
+
+    const handle = screen.getByTestId('db-resize-handle-editor-results');
+    fireEvent.keyDown(handle, { key: 'Home' });
+    expect(onEditorHeightChange).toHaveBeenLastCalledWith(120);
+
+    fireEvent.keyDown(handle, { key: 'End' });
+    expect(onEditorHeightChange).toHaveBeenLastCalledWith(720);
+  });
+});
+
+// ── Spec #3049 (round 2): the tier-2 clamp must bound the RENDERED height ─────
+//
+// Same class as the shell regression: a tall editor height committed at a tall
+// window, then the workspace body shrinks with NO divider touched, must reflow
+// the editor under the container-aware max so the results region keeps its
+// `RESULTS_MIN` floor. A captured ResizeObserver drives the measured size (jsdom
+// has no layout engine).
+
+/** Capture the ResizeObserver callback so a test can drive a measured size. */
+class ControlledResizeObserver {
+  static instances: ControlledResizeObserver[] = [];
+  private readonly callback: ResizeObserverCallback;
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback;
+    ControlledResizeObserver.instances.push(this);
+  }
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+  emit(size: { width: number; height: number }): void {
+    this.callback(
+      [{ contentRect: size } as unknown as ResizeObserverEntry],
+      this as unknown as ResizeObserver,
+    );
+  }
+}
+
+function emitContainerSize(size: { width: number; height: number }): void {
+  act(() => {
+    for (const observer of ControlledResizeObserver.instances) observer.emit(size);
+  });
+}
+
+describe('QueryTabs — tier-2 clamp on the render path (Spec #3049 round 2)', () => {
+  beforeEach(() => {
+    ControlledResizeObserver.instances = [];
+    vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('clamps the rendered editor height when the workspace body shrinks below the prop', async () => {
+    renderWithChakra(<QueryTabs connectionId="c1" editorHeight={720} />);
+
+    // Unmeasured → the rendered height equals the committed prop.
+    expect(getComputedStyle(editorRowBox()).height).toBe('720px');
+
+    emitContainerSize({ width: 900, height: 602 });
+
+    // effectiveMax = max(120, min(720, 602 - 120 - 8)) = 474
+    await waitFor(() => expect(getComputedStyle(editorRowBox()).height).toBe('474px'));
+    expect(screen.getByTestId('db-resize-handle-editor-results').getAttribute('aria-valuenow')).toBe(
+      '474',
+    );
+    // The results region keeps its floor: 602 - 474 - 8 = 120 ≥ RESULTS_MIN.
+    expect(602 - 474 - 8).toBeGreaterThanOrEqual(120);
+  });
+});
+
+// ── Spec #3050 (ST-C): the openRequest channel (new tab + optional auto-run) ──
+//
+// `openRequest` is the schema-explorer "Open table data" / "New query" seam.
+// Distinct from `externalSql`: it ALWAYS appends a fresh tab (never loads the
+// active one), activates it, and only runs it when `run && connectionId`. The
+// auto-run uses the whole-buffer scope (`mode: 'all'`, `selection: null`,
+// `confirmedStatementHashes: []`) with the stored default row limit.
+
+describe('QueryTabs — openRequest channel (Spec #3050, ST-C)', () => {
+  it('opens a NEW active tab with the SQL and runs it with the whole-buffer scope (R-2a/R-2c)', async () => {
+    const sql = 'SELECT * FROM "public"."users" LIMIT 100';
+    renderWithChakra(
+      <QueryTabs
+        connectionId="c1"
+        defaultRowLimit={100}
+        openRequest={{ sql, run: true, nonce: 1 }}
+      />,
+    );
+
+    const tabs = screen.getAllByTestId('db-query-tab');
+    expect(tabs).toHaveLength(2);
+    // The NEW tab is active and carries the generated SQL (the first is untouched).
+    expect(tabs[1]).toHaveAttribute('aria-selected', 'true');
+    expect(editor().value).toBe(sql);
+
+    await waitFor(() => expect(dbQueryExecuteMock).toHaveBeenCalledTimes(1));
+    expect(dbQueryExecuteMock).toHaveBeenCalledWith({
+      connectionId: 'c1',
+      sql,
+      mode: 'all',
+      selection: null,
+      confirmedStatementHashes: [],
+      limit: 100,
+    });
+  });
+
+  it('opens a blank active tab and never executes for a run:false request (R-3 "New query")', () => {
+    renderWithChakra(
+      <QueryTabs connectionId="c1" openRequest={{ sql: '', run: false, nonce: 1 }} />,
+    );
+
+    const tabs = screen.getAllByTestId('db-query-tab');
+    expect(tabs).toHaveLength(2);
+    expect(tabs[1]).toHaveAttribute('aria-selected', 'true');
+    expect(editor().value).toBe('');
+    expect(dbQueryExecuteMock).not.toHaveBeenCalled();
+  });
+
+  it('never executes when no connection is active, but still opens the tab (R-4)', () => {
+    const sql = 'SELECT * FROM "public"."users" LIMIT 100';
+    renderWithChakra(
+      <QueryTabs connectionId={null} openRequest={{ sql, run: true, nonce: 1 }} />,
+    );
+
+    expect(screen.getAllByTestId('db-query-tab')).toHaveLength(2);
+    expect(editor().value).toBe(sql);
+    expect(dbQueryExecuteMock).not.toHaveBeenCalled();
+  });
+
+  it('appends another tab when the nonce advances (two invocations → two tabs)', async () => {
+    const first = 'SELECT * FROM "public"."a" LIMIT 100';
+    const second = 'SELECT * FROM "public"."b" LIMIT 100';
+    const { rerender } = renderWithChakra(
+      <QueryTabs connectionId="c1" openRequest={{ sql: first, run: true, nonce: 1 }} />,
+    );
+    expect(screen.getAllByTestId('db-query-tab')).toHaveLength(2);
+
+    rerender(<QueryTabs connectionId="c1" openRequest={{ sql: second, run: true, nonce: 2 }} />);
+
+    const tabs = screen.getAllByTestId('db-query-tab');
+    expect(tabs).toHaveLength(3);
+    expect(tabs[2]).toHaveAttribute('aria-selected', 'true');
+    expect(editor().value).toBe(second);
+    await waitFor(() => expect(dbQueryExecuteMock).toHaveBeenCalledTimes(2));
+  });
+
+  it('the existing externalSql channel still loads the ACTIVE tab and never runs (regression)', () => {
+    const { rerender } = renderWithChakra(<QueryTabs connectionId="c1" />);
+    fireEvent.change(editor(), { target: { value: 'SELECT 1' } });
+
+    rerender(<QueryTabs connectionId="c1" externalSql={{ sql: 'SELECT 2', nonce: 1 }} />);
+
+    // No new tab — the active tab's text is replaced and nothing executes.
+    expect(screen.getAllByTestId('db-query-tab')).toHaveLength(1);
+    expect(editor().value).toBe('SELECT 2');
+    expect(dbQueryExecuteMock).not.toHaveBeenCalled();
+  });
+});
+

@@ -45,15 +45,15 @@ The label set models the workflow state. An issue's label is its pipeline state;
 | Label | Meaning | Requested by | → next |
 |-------|---------|--------------|--------|
 | `backlog` | Backlog issue created (backlog phase) | Product Owner | `planning` |
-| `planning` | Implementation Plan being produced (planning phase — the plan deliverable in `.opencode/tmp/<issue>/triage.md` must converge before leaving) | Self-Improver | `ready-for-dev` |
-| `ready-for-dev` | **Feature** — implementation phase; the developer works directly on the feature's `spec/<N>` branch | Self-Improver | `testing`, or back to `planning` (backward rescope — the "loop back to Phase 2 (Architect)" scope-redesign leg; the forward commit gate does not apply) |
+| `planning` | Implementation Plan being produced (planning phase — the plan deliverable in `.opencode/tmp/<issue>/triage.md` must converge before leaving) | Orchestrator | `ready-for-dev` |
+| `ready-for-dev` | **Feature** — implementation phase; the developer works directly on the feature's `spec/<N>` branch | Orchestrator | `testing`, or back to `planning` (backward rescope — the "loop back to Phase 2 (Architect)" scope-redesign leg; the forward commit gate does not apply) |
 | `in-progress-dev` | Legacy dev-work label (accepted for `create-worktree`) | — (reserved; no action sets it today) | — |
 | `ready-for-test` | Legacy implementation-phase label (accepted for `create-worktree`) | — (legacy) | — |
-| `testing` | **Feature** — testing phase; the tester posts its `## Tests Runs` verdict on the **feature issue** | Self-Improver | `audit` or back to `implementation` |
-| `audit` | Self-Improver is auditing the issue | Self-Improver | `cleanup` (success) or restart |
-| `cleanup` | Teardown-only phase — SI removes worktrees, prunes stale branches (spec/* kept), cleans scratch, retains evidence | Self-Improver (auto via `audit-record --verdict success`) | `done` (via `close-issue`) |
-| `blocked` | Work is stalled on a dependency | Self-Improver or Developer (with `Status` comment) | `ready-for-dev` after unblock |
-| `done` | Work passed testing + cleanup | Self-Improver (auto via cleanup close) | `planning` (reopen leg — post-merge defect reported while the issue is still OPEN); otherwise the human closes it manually |
+| `testing` | **Feature** — testing phase; the tester posts its `## Tests Runs` verdict on the **feature issue** | Orchestrator | `audit` or back to `implementation` |
+| `audit` | Auditor is auditing the issue | Auditor | `cleanup` (success) or restart |
+| `cleanup` | Teardown-only phase — Orchestrator removes worktrees, prunes stale branches (spec/* kept), cleans scratch, retains evidence | Auditor (auto via `audit-record --verdict success`) | `done` (via `close-issue`) |
+| `blocked` | Work is stalled on a dependency | Orchestrator or Developer (with `Status` comment) | `ready-for-dev` after unblock |
+| `done` | Work passed testing + cleanup | Orchestrator (auto via cleanup close) | **Terminal** — the human closes it manually; a post-merge defect becomes a follow-up spec (`revises: #N`), never a reopen |
 
 **Label transitions** are executed by the state machine via the `transition` action — never by an agent calling `gh issue edit` directly. The state machine rejects transitions that skip phases or whose guards aren't met.
 
@@ -68,13 +68,13 @@ The label set models the workflow state. An issue's label is its pipeline state;
 
 **Keep the spec branch synced with `main`'s pipeline config.** Agents' sandbox/tool permissions are read from the `opencode.json` in the working tree they are launched from. When a spec branch forks before pipeline-config changes land on `main` (agent permission allowlists, script paths, skill wiring, docs), agents launched from that stale branch run with the **old** permissions — silent failures (blocked `powershell -File` scripts, missing tool patterns). Before dispatching any agent to a spec branch (especially the **tester**), sync the spec branch with `main`: `git fetch origin main && git merge origin/main` (or rebase) and push. The spec PR then carries the current pipeline config alongside the feature's product code. Developers must also `git fetch origin spec/<N>` + reset their worktree to the new tip before starting.
 
-**PRs:** the only PR in the pipeline is the **spec PR** (`spec/<N>` → `main`), auto-created by the state machine when the feature enters `testing`. It stays open during testing; once the tester passes and the feature moves to `audit`, the state machine auto-merges it (the branch always survives so evidence URLs keep rendering). These are deterministic side-effects of the `transition` action — no separate actions exist.
+**PRs:** the **spec PR** (`spec/<N>` → `main`) is the product PR — auto-created by the state machine when the feature enters `testing`, and auto-merged when the tester passes and the feature moves to `audit`. **Exception — the NO-PR round:** on a post-merge restart into `testing` the previous round's spec PR was squash-merged and its head branch deleted, so there is no head to open a PR from and nothing left to merge; the machine recreates `spec/<N>` from the trunk tip, opens no PR, and records a `spec-branch.recreated` event (`pr: none`). The Orchestrator must re-serve the root at the recreated tip before the tester runs, because the tree is identical but the commit is new. The other PR is the post-audit **SPEC MAINT PR** (`maint/<N>` — the pipeline's own edits + the product docs, force-merged by the machine; see the single-writer exception below). Both are deterministic side-effects of the `transition`/`maint-pr` actions — no hand-run PR commands.
 
 ---
 
 ## Spec PR Checklist
 
-The only PR in the pipeline is the **spec PR** (`spec/<N>` → `main`), auto-created by the state machine when the feature transitions to testing. It must complete this checklist before merge; the Self-Improver verifies it.
+The **spec PR** (`spec/<N>` → `main`) is auto-created by the state machine when the feature transitions to testing — except on a post-merge restart into `testing`, where the machine recreates the branch and opens NO PR (the previous round's PR already merged; see the NO-PR round note above). It must complete this checklist before merge; the Orchestrator verifies it.
 
 ```markdown
 - [ ] References the feature issue (spec #<N>)
@@ -89,7 +89,24 @@ The only PR in the pipeline is the **spec PR** (`spec/<N>` → `main`), auto-cre
 
 ## Comment Conventions
 
-Prefix every agent comment to keep issue timelines scannable and filterable. **Comments are posted by the state machine** via the `comment` action. **Agents never write to GitHub directly** — they draft the comment as a `.md` file in `.opencode/tmp/<issue>/<prefix>.md` using the comment templates in [templates/](templates/), and the state machine reads that file and posts it (`--body-file` is optional and overrides the conventional `.opencode/tmp/<issue>/<prefix>.md` path).
+Every pipeline comment is a **structured, authored, machine-posted** message. The `@`-handle on a comment is the machine's `gh` principal (the human's account), so **the author must live in the body**: every comment ends with its literal `*Authored by <Agent>*` footer (anti-spoofing — the flush gate refuses an unattributed draft). Comments are posted by the state machine; **agents never write to GitHub directly** — they draft the comment as a `.md` file in `.opencode/tmp/<issue>/` using the comment templates in [templates/](templates/), and the state machine reads that file and posts it (`--body-file` is optional and overrides the conventional path).
+
+### The header set — one structured comment per phase
+
+| Phase | Author | Header | Template |
+|-------|--------|--------|----------|
+| planning | triage cluster (assembled by the machine) | `## Triage Plan` | `Triage-plan-comment-template.md` |
+| implementation | **each** developer | `## Developer <ST-id> — verification` | per-developer comment (see [artifacts.md](artifacts.md#developer-verification-comment)) |
+| implementation (roll-up) | machine (from the pool's drafts) | `## Development Summary` | `Development-summary-comment-template.md` |
+| retry round | Software Architect | `## Fix Plan (round N)` | `Fix-plan-comment-template.md` |
+| testing | tester | `## Tests Runs (round N)` | `Tests-runs-comment-template.md` |
+| audit | **auditor** (one message at its turn) | `## Audit Verdict` | `Audit-verdict-comment-template.md` |
+| post-audit | Curator (**one** comment) | `## Pipeline Improvement` | `Pipeline-improvement-comment-template.md` |
+| done | orchestrator | `## Final Status` | `Final-status-comment-template.md` |
+
+**The free-form `## Decision` header is dropped.** The audit verdict is the structured `## Audit Verdict` (verdict + per-AC re-derivation). There is no bare machine verdict with no author.
+
+### Ad-hoc comments — the only agent-facing prefix
 
 | Prefix | Purpose | Requested by | Template |
 |--------|---------|--------------|----------|
@@ -98,21 +115,21 @@ Prefix every agent comment to keep issue timelines scannable and filterable. **C
 **Removed prefixes** (PO decision, #2756 data — 1 Question + 1 Decision across a 2,826-comment spec):
 - `Evidence` — the canonical verdict is the `## Tests Runs` timeline draft (machine round-stamped); screenshots go through `upload-evidence` (upload-only, uploaded as `gh image` user-attachments). Caused the G-006/G-020/G-029 bug class.
 - `Question` — genuine ambiguity IS a blocker until answered: use the `block` action (`--reason`, label + SLA); the orchestrator resolves and re-dispatches with the answer inlined in the brief. A parallel Q/A channel nobody reads (workers get answers via briefs, never by scanning threads).
-- `Decision` (free-form) — MACHINE-ONLY: posted by the `audit-record` verdict. Decisions reach the record via `audit-record --reason` or a PO amendment through `Status`.
+- `Decision` (free-form) — REMOVED: the audit verdict is now the structured `## Audit Verdict` comment (posted by `audit-record`), and decisions reach the record via `audit-record --reason` or a PO amendment through `Status`. No bare `## Decision` comment is posted.
 
 **Rules:**
 - One topic per comment; blockers get the label too (`block` action posts the Status + sets it).
 - Evidence lives in the `## Tests Runs` draft: links, screenshots, log excerpts — not "it worked."
-- Every agent-authored comment ends with `*Authored by <Agent Name>*`.
+- **Every comment — the structured phase comments AND the ad-hoc `Status` comments — ends with its literal `*Authored by <Agent Name>*` footer.** The machine posts through the human's `gh` auth, so the footer is the only in-body attribution.
 - The state machine validates the prefix is `Status` before posting; anything else is refused with a pointer to the correct channel.
 
-**Timeline comments (the issue narrative):** the transition / `audit-record` auto-post five titled comments from `.opencode/tmp/<issue>/` drafts (templates in [templates/](templates/)): `## Triage Plan` (triage→implementation), `## Fix Plan (round N)` (rework re-entry — Architect-authored), `## Development Summary` (implementation→testing), `## Tests Runs` (testing — carries the verdict, read by the gate), `## SI Summary` (audit→done). **The issue BODY is the single PO Backlog** — no `## PO Backlog` comment is posted (it duplicated the body; PO feedback #2688).
+**Timeline comments (the issue narrative):** the transition / `audit-record` / `record-improvement` / `close-issue` auto-post the structured comments above from `.opencode/tmp/<issue>/` drafts (templates in [templates/](templates/)): `## Triage Plan` (triage→implementation), the per-developer `## Developer <ST-id> — verification` (posted by the `comment` action), `## Development Summary` (implementation→testing), `## Fix Plan (round N)` (rework re-entry — Architect-authored), `## Tests Runs` (testing — carries the verdict, read by the gate), `## Audit Verdict` (audit), `## Pipeline Improvement` (post-audit — Curator), `## Final Status` (done — closes the issue). **The issue BODY is the single PO Backlog** — no `## PO Backlog` comment is posted (it duplicated the body; PO feedback #2688).
 
-**Retry rounds are machine-stamped on the timeline.** The state machine derives the current round from the event log (the count of `phase.started` entries for `testing` — every rework advances the round, never stuck at "round 1") and stamps it on retry-relevant comments — never the drafting agent:
-- the restart `## Decision` comment reads `Audit verdict: **restart → <phase> (round N)**` and lists the missed ACs for round N;
-- `## Development Summary`, `## Tests Runs`, `## Fix Plan`, and `## SI Summary` post as `## <title> (round N)`.
+**Retry rounds are machine-stamped on the timeline.** The state machine derives the current round from the event log (the count of `phase.started` entries for `testing`, advanced early by an implementation re-entry from `testing`/`audit` so a rework in flight — before the next testing entry — is already on the new round, never stuck at "round 1") and stamps it on retry-relevant comments — never the drafting agent:
+- the restart `## Audit Verdict` comment reads `Verdict: **RESTART → <phase> (round N)**` and lists the missed ACs for round N;
+- `## Development Summary`, `## Tests Runs`, and `## Fix Plan` post as `## <title> (round N)`.
 
-`## Triage Plan` is posted once (round-1 only) and stays untagged; the full plan is never re-posted on retry — a compact `## Fix Plan (round N)` carries the deltas. **The Fix Plan is authored by the Software Architect** (draft `.opencode/tmp/<issue>/fix-plan.md` from the tester's FAIL verdict; footer `*Authored by Software Architect*`) — the SI dispatches the architect before re-entering implementation, and the machine round-stamps and posts it; when no authored draft exists the machine falls back to deriving a compact plan from the Triage Plan draft. The **round-aware verification guard** enforces the round: a retry round is only satisfied by evidence carrying the current round, so a stale round-1 PASS can never clear a round-2 audit (`latest_evidence_comment` parses `(round N)` from the `## Tests Runs` header; untagged evidence counts as round 1).
+`## Triage Plan` is posted once (round-1 only) and stays untagged; the full plan is never re-posted on retry — a compact `## Fix Plan (round N)` carries the deltas. **The Fix Plan is authored by the Software Architect** (draft `.opencode/tmp/<issue>/fix-plan.md` from the tester's FAIL verdict; footer `*Authored by Software Architect*`) — the Orchestrator dispatches the architect before re-entering implementation, and the machine round-stamps and posts it; when no authored draft exists the machine falls back to deriving a compact plan from the Triage Plan draft. The **round-aware verification guard** enforces the round: a retry round is only satisfied by evidence carrying the current round, so a stale round-1 PASS can never clear a round-2 audit (`latest_evidence_comment` parses `(round N)` from the `## Tests Runs` header; untagged evidence counts as round 1).
 
 **The Product Owner's GitHub output is deterministic:** `create-issue` creates the issue whose BODY is the backlog (the single PO Backlog), and after #2734 the PO may post `Status` comments (PO amendments) — but never gate-critical artifacts (verdicts are `## Tests Runs`; decisions are machine-only). The `post-comments` action remains gated to reject `product-owner`.
 
@@ -127,22 +144,22 @@ Because the state machine is the **single writer**, mechanical label/project boo
 
 | Capability | State machine action |
 |-----------|----------------------|
-| Auto-assemble the plan into the `## Triage Plan` feature-issue comment | `transition` side-effect (`triage → implementation`); `update-plan` (self-improver-gated, idempotent per-section replacement of the `triage-plan.md` draft) remains for edge/repair only |
+| Auto-assemble the plan into the `## Triage Plan` feature-issue comment | `transition` side-effect (`triage → implementation`); `update-plan` (orchestrator-gated, idempotent per-section replacement of the `triage-plan.md` draft) remains for edge/repair only |
 | Persist feature test suites to `main` | `tests-commit` (auto side-effect of `triage → implementation`; shared with the Tester) |
 | Auto label transition on phase change | `transition` (labels + side-effects are state-machine-driven) |
-| Auto A2A seed + spec branch + spec PR + merge | `transition` side-effects: `→ triage` seeds the A2A file; `triage → implementation` assembles the `## Triage Plan` comment + persists test suites (`tests-commit`) + creates `spec/<N>`; `→ testing` opens the spec PR; `testing → audit` merges it |
-| Timeline comments (the issue narrative) | auto-posted from `.opencode/tmp/<issue>/*.md` drafts (`triage-plan.md` / `fix-plan.md` / `dev-summary.md` / `tests-runs.md` / `si-summary.md`) on every transition and `audit-record`; `post-comments` flushes pending drafts; a `## Tests Runs` draft is refused unless it carries a literal `Verdict:` line AND every image reference is an `https://` URL (bare filenames/local paths are unviewable evidence — refused, draft kept) |
-| Project Status sync (labels + Status) | every transition mirrors the phase onto the GitHub project Status field (Backlog → Planning → Coding → E2E → Reviewing → Done); `create-issue` adds the issue to the project; `done`/`canceled` set `Done` while the issue stays OPEN for manual close — best-effort, never fatal |
+| Auto A2A seed + spec branch + spec PR + merge | `transition` side-effects: `→ triage` seeds the A2A file; `triage → implementation` assembles the `## Triage Plan` comment + persists test suites (`tests-commit`) + creates `spec/<N>`; `→ testing` opens the spec PR — **or, on a post-merge restart, recreates `spec/<N>` from `origin/main` and opens NO PR** (the previous round's PR already merged; a `spec-branch.recreated` event records it); `testing → audit` merges it |
+| Timeline comments (the issue narrative) | auto-posted from `.opencode/tmp/<issue>/*.md` drafts (`triage-plan.md` / `fix-plan.md` / `dev-summary.md` / `dev-verify-<ST-id>.md` / `tests-runs.md` / `audit-verdict.md` / `pipeline-improvement.md` / `final-status.md`) on every transition, `audit-record`, `record-improvement`, and `close-issue`; `post-comments` flushes pending drafts; a `## Tests Runs` draft is refused unless it carries a literal `Verdict:` line AND every image reference is an `https://` URL (bare filenames/local paths are unviewable evidence — refused, draft kept) |
+| Project Status sync (labels + Status) | every transition mirrors the phase onto the GitHub project Status field (Backlog → Planning → Coding → E2E → Reviewing); `create-issue` adds the issue to the project; a finished `done` sets **Reviewing** (awaiting manual human review — the issue stays OPEN for manual test/close) and only `canceled` sets `Done` — best-effort, never fatal |
 | SLA escalation on `blocked` | surfaced via the `health` report's **overdue-blocker list** (issues blocked past the default 4h SLA) — not a `blockedDuration` metric |
 | Worktree lifecycle | `create-worktree` / `remove-worktree` (developer); `prune` removes orphaned worktrees; `spec/*` branches are never pruned |
-| Hardening: lock all OPEN pipeline issues | `hardening-lock-open-issues` (Self-Improver) — enumerate OPEN pipeline issues (pipeline label) and `PUT .../issues/<n>/lock` with `lock_reason: off-topic`; skips `temp:` harness issues; one-shot |
-| Hardening: repo interaction limit | `interaction-limit` (Self-Improver) — `PUT .../interaction-limits` `{ limit: "collaborators_only", expiry: "six_months" }`; temporal |
+| Hardening: lock all OPEN pipeline issues | `hardening-lock-open-issues` (Machinist) — enumerate OPEN pipeline issues (pipeline label) and `PUT .../issues/<n>/lock` with `lock_reason: off-topic`; skips `temp:` harness issues; one-shot |
+| Hardening: repo interaction limit | `interaction-limit` (Machinist) — `PUT .../interaction-limits` `{ limit: "collaborators_only", expiry: "six_months" }`; temporal |
 | Hardening: lock-on-create | `create-issue` side-effect — a newly created non-`temp:` pipeline issue is locked immediately (best-effort) so it is comment-safe at birth |
 
-**The two deliberate exceptions to single-writer — the developer pushes to the spec integration branch, and the self-improver pushes product docs to `main`.**
+**The one deliberate exception to single-writer — the developer pushes to the spec integration branch.**
 
-1. **The developer pushes to the spec integration branch.** The developer commits in a detached worktree and pushes `git push origin HEAD:spec/<N>` (allowed in the developer permission set; `main`/`master` and `HEAD:main` denied). Rationale: `spec/<N>` is the developer's shared *work product* — the worktree sits at its tip, and pushing is how the plan's checklist work lands. It is not a pipeline-state mutation (issues, labels, comments, merges, closes). Everything *around* the push is still the state machine's: worktree creation/removal (`create-worktree`/`remove-worktree`) and cleanup (`prune`). The **spec PR** (`spec/<N>` → `main`) is created and merged automatically by `transition` — the only PR in the pipeline.
+1. **The developer pushes to the spec integration branch.** The developer commits in a detached worktree and pushes `git push origin HEAD:spec/<N>` (allowed in the developer permission set; `main`/`master` and `HEAD:main` denied). Rationale: `spec/<N>` is the developer's shared *work product* — the worktree sits at its tip, and pushing is how the plan's checklist work lands. It is not a pipeline-state mutation (issues, labels, comments, merges, closes). Everything *around* the push is still the state machine's: worktree creation/removal (`create-worktree`/`remove-worktree`) and cleanup (`prune`). The **spec PR** (`spec/<N>` → `main`) is created and merged automatically by `transition` (the post-audit **SPEC MAINT PR** is the other, opened by `maint-pr`).
 
-2. **The self-improver fast-forward pushes synced product docs to `main`** (the doc-sync gate, [principle 6](principles.md#6-a-self-improver-gate-audits-every-issue)). The SI is the product-doc owner and commits the synced product docs (ARCHITECTURE.md, CLI_GUIDE.md, SETUP.md, SECURITY.md, FAQ.md) at the audit gate. Its one direct write is `git push origin main` — fast-forward only (allowed in the self-improver permission set). Everything force-ish or indirect stays denied: `--all`, `--mirror`, `--delete`, `--force`/`--force-with-lease` to `main`, `HEAD`-based pushes, `-u`/`--set-upstream origin main`, any `upstream` push to `main`, and **any push to `master`** remain denied.
+2. **The post-audit gate merges through the machine, not a direct push.** The Orchestrator is the product-doc owner and, at the post-audit gate, opens **ONE consolidated SPEC MAINT PR** (`maint/<N>`) through the state machine's `maint-pr` action — carrying both the pipeline's own edits (playbooks/references, skills, state-machine/config) and the product docs (ARCHITECTURE.md, CLI_GUIDE.md, SETUP.md, SECURITY.md, FAQ.md). The machine force-merges it as the privileged writer (`--admin`), which **skips the required `validate` status check** (the repo has auto-merge disabled, so `--auto` is not used), and the feature cannot reach `done` unless it merged. The machine performs the branch push + merge, so the orchestrator's `git push origin main` is **denied** in its sandbox (G-395). Everything force-ish or indirect stays denied: `--all`, `--mirror`, `--delete`, `--force`/`--force-with-lease` to `main`, `HEAD`-based pushes, `-u`/`--set-upstream origin main`, any `upstream` push to `main`, and **any push to `master`** remain denied.
 
-Agents never call `gh`/`git` to write GitHub state — the state machine does. Reads stay direct. **Exceptions:** the developer pushes `HEAD:spec/<N>` only, and the self-improver fast-forward pushes `main` for synced product docs only (see above).
+Agents never call `gh`/`git` to write GitHub state — the state machine does. Reads stay direct. **Exception:** the developer pushes `HEAD:spec/<N>` only; the post-audit gate merges through the machine's `maint-pr` action (see above).

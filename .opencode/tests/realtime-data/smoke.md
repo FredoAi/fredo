@@ -26,4 +26,4 @@
 - [x] S-7 (PASS round 3): a canonical `fredo emit` projects into the declared table and emits `featureBatch` (captured in-page via `window.__TAURI__.event.listen('fredo-stream-event', …)`; `tauri_ipc_monitor` does not capture emitted events).
 - [x] S-8/S-9 (PASS round 3): idempotent create + restart durability — the restored real corpus serves 31 stored sessions on open; a cold restart leaves the marker set and does not re-drain.
 - [x] S-10 (PASS round 3): isolation via a FRESH `qa2896r3probe` scope on the disposable DB — both cross-namespace reads refused with hard named errors; the real corpus stays clean (probe discarded with the disposable DB).
-- [ ] S-11 (UNVERIFIED round 3 — named blocker): the S6 live failure/disconnect state cannot be driven (write `sqlite3` DDL sandbox-denied; no stream-health signal). See `functional.md` F-17.
+- [ ] S-11 (UNVERIFIED round 3 — named blocker): the S6 live failure/disconnect state cannot be driven (a direct DDL write against the store is sandbox-denied; no stream-health signal). See `functional.md` F-17.

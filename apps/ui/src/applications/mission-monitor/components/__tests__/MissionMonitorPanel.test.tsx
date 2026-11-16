@@ -1,0 +1,778 @@
+/**
+ * Component tests for MissionMonitorPanel (SQLite-driven persistence).
+ *
+ * Prerequisites: vitest, @testing-library/react, @testing-library/jest-dom, jsdom
+ *
+ * Spec #2723 (R-1 / AC1): the session token bar is a compact, right-aligned
+ * strip placed at the TOP of the canvas column — ABOVE the ReactFlow canvas,
+ * below the header. It stays hidden when no session is selected.
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { screen, act, within, cleanup, waitFor, fireEvent } from '@testing-library/react';
+import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
+import { MissionMonitorPanel } from '../MissionMonitorPanel';
+import { getNavigationHost } from '@/shared/navigation/ui';
+import {
+  MISSION_MONITOR_DETAIL_CLOSE_VERB_ID,
+  MISSION_MONITOR_SURFACE_APP_ID,
+} from '../../missionMonitorSurface';
+import type { ContractDelivery } from '../../../../shared/classes/EventSubscription';
+import type { MonitorNodeData } from '../../types';
+import type { StreamHealth } from '@/shared/hooks/streamHealth';
+import { adapterBridge } from '@/shared/utils/adapterBridge';
+
+afterEach(() => cleanup());
+
+let mockDeliveries: ContractDelivery[] = [];
+
+// Spec #3064 ST-2: the panel reads the derived `isConnected` from StreamContext.
+// Drive it from a mutable three-valued health so `degraded`/`down` can be
+// exercised (the derivation itself lives in StreamContext, unchanged here).
+let mockStreamHealth: StreamHealth = 'down';
+
+// Spec #2896 ST-6: the session list comes from the declared `sessions` table
+// (`useApplicationRead` + `useApplicationWatch`). Mock both hooks over a mutable row set.
+let mockDeclaredSessions: Array<{ sessionId: string; startTime: number; latestAt: string }> = [
+  { sessionId: 's1', startTime: 1, latestAt: '2026-01-01T00:00:00.000Z' },
+];
+
+/** S6: force a read/watch failure (the verbatim backend error). */
+let mockSessionsError: string | null = null;
+
+function declaredRows(): Map<string, unknown> {
+  return new Map(
+    mockDeclaredSessions.map((s) => [
+      JSON.stringify([s.sessionId]),
+      {
+        _rowVersion: 1,
+        sessionId: s.sessionId,
+        startedAtNs: s.startTime * 1e6,
+        latestAt: s.latestAt,
+        chatRowCount: 0,
+        nonSubagentChatRowCount: 1,
+        visibleTurnCount: 1,
+        userDispatchCount: 0,
+        derivedName: null,
+        agentName: null,
+        customName: null,
+      },
+    ]),
+  );
+}
+
+vi.mock('@/shared/hooks/useApplicationData', () => ({
+  useApplicationRead: () => ({
+    rows: declaredRows(),
+    version: 1,
+    error: mockSessionsError,
+    loading: false,
+  }),
+  useApplicationWatch: () => ({
+    rows: declaredRows(),
+    epoch: 1,
+    error: mockSessionsError,
+    ready: true,
+  }),
+}));
+
+// Spec #2896 ST-6: the canvas + session metrics source is the selected
+// session's canonical activity watch (ST-9). Project the same fixtures the
+// StreamContext mock serves.
+vi.mock('../../hooks/useSessionActivityWatch', async () => {
+  const { rowsFromDeliveries } = await import('../../hooks/__tests__/fixtures/rowsFromDeliveries');
+  return {
+    useSessionActivityWatch: (sessionId: string | null) => {
+      const { chatRows, toolRows } = rowsFromDeliveries(mockDeliveries);
+      const toMap = (rows: Array<{ sessionId: string; correlationId: string }>) =>
+        new Map(
+          (sessionId === null ? [] : rows.filter((r) => r.sessionId === sessionId)).map(
+            (r) => [`${r.sessionId}\u0000${r.correlationId}`, r] as const,
+          ),
+        );
+      return {
+        chatRows: toMap(chatRows),
+        toolUseRows: toMap(toolRows),
+        epoch: 1,
+        error: null,
+        ready: true,
+      };
+    },
+  };
+});
+
+vi.mock('@/shared/contexts/StreamContext', () => ({
+  useStream: vi.fn().mockImplementation(() => ({
+    deliveries: mockDeliveries,
+    health: mockStreamHealth,
+    isConnected: mockStreamHealth === 'healthy',
+    clearEvents: vi.fn(),
+  })),
+}));
+
+// #2739 ST-2 / #2743 ST-7: capture the NODE_TYPES registry + canvas event
+// callbacks passed to <ReactFlow> so tests can assert the registered node
+// types and drive the detail panel (the registry/props are module-private in
+// MissionMonitorPanel.tsx). #2743 ST-6 (AC-7): the interaction contract is
+// double-click-to-open — `onNodeClick` is gone, `onNodeDoubleClick` is wired.
+// #2743 ST-6 round-5 (AC-7/AC-8 root cause): `zoomOnDoubleClick` must be
+// `false` — ReactFlow's default `true` attaches a d3-zoom dblclick handler to
+// the renderer that stopImmediatePropagation()s the dblclick BEFORE it reaches
+// React's root container, so onNodeDoubleClick NEVER fires (the round-4
+// defect: no DetailPanel DOM in ANY double-click attempt).
+const reactflowState = vi.hoisted(() => ({
+  nodeTypes: undefined as any,
+  onNodeDoubleClick: undefined as ((e: unknown, node: any) => void) | undefined,
+  onPaneClick: undefined as ((e: unknown) => void) | undefined,
+  zoomOnDoubleClick: undefined as boolean | undefined,
+}));
+
+// #2748 ST-6 (AC5 / R-5.3-minimap): capture the MiniMap nodeColor callback so
+// tests can assert the neutral (status-independent) coloring contract.
+const miniMapState = vi.hoisted(() => ({
+  nodeColor: undefined as ((node: any) => string) | undefined,
+}));
+
+// Mock reactflow — stub all components used by MissionMonitorCanvas
+vi.mock('reactflow', () => ({
+  __esModule: true,
+  default: ({ children, nodeTypes, onNodeDoubleClick, onPaneClick, zoomOnDoubleClick }: {
+    children?: React.ReactNode; nodeTypes?: any;
+    onNodeDoubleClick?: (e: unknown, node: any) => void; onPaneClick?: (e: unknown) => void;
+    zoomOnDoubleClick?: boolean;
+  }) => {
+    reactflowState.nodeTypes = nodeTypes;
+    reactflowState.onNodeDoubleClick = onNodeDoubleClick;
+    reactflowState.onPaneClick = onPaneClick;
+    reactflowState.zoomOnDoubleClick = zoomOnDoubleClick;
+    return <div data-testid="reactflow">{children}</div>;
+  },
+  Background: () => <div data-testid="background" />,
+  BackgroundVariant: { Dots: 'dots' },
+  Controls: () => <div data-testid="controls" />,
+  MiniMap: ({ nodeColor }: { nodeColor?: (node: any) => string }) => {
+    miniMapState.nodeColor = nodeColor;
+    return <div data-testid="minimap" />;
+  },
+  ReactFlowProvider: ({ children }: { children: React.ReactNode }) => (
+    <div data-testid="reactflow-provider">{children}</div>
+  ),
+  useReactFlow: () => ({ fitView: vi.fn(), setCenter: vi.fn(), getZoom: vi.fn(() => 1) }),
+}));
+
+// Spec #2962 ST-3: the graph-builder hook mock is driven by a hoisted state so
+// tests can seed graph nodes and observe the cursor's ReactFlow select change.
+const graphState = vi.hoisted(() => ({
+  nodes: [] as any[],
+  edges: [] as any[],
+  onNodesChange: vi.fn(),
+}));
+
+// Mock the graph-builder hook — the panel wires deliveries through it.
+vi.mock('../../hooks/useMissionMonitor', () => ({
+  useDeliveryGraph: () => ({
+    nodes: graphState.nodes,
+    edges: graphState.edges,
+    onNodesChange: graphState.onNodesChange,
+    onEdgesChange: vi.fn(),
+    layoutVersion: 0,
+    eventCount: 0,
+  }),
+}));
+
+/** Chat-node delivery for the panel's selected session 's1'. */
+function makeChatDelivery(
+  correlationId: string,
+  lifecycle: 'init' | 'update' | 'end',
+  tokens: { prompt?: number; cacheRead?: number; reasoning?: number; completion?: number },
+): ContractDelivery {
+  const inner: Record<string, unknown> = {};
+  // Spec #2795 (AC2): a session is LISTED only if it renders ≥1 node, so the
+  // fixture turn must be a real, non-transitional reply (a completed turn with
+  // an EMPTY agentReply is transitional/suppressed → ghost → not listed).
+  inner.agentReply = 'assistant reply';
+  if (tokens.prompt !== undefined) inner.promptTokens = tokens.prompt;
+  if (tokens.cacheRead !== undefined) inner.cacheReadTokens = tokens.cacheRead;
+  if (tokens.reasoning !== undefined) inner.reasoningTokens = tokens.reasoning;
+  if (tokens.completion !== undefined) inner.completionTokens = tokens.completion;
+  return {
+    id: `id-${correlationId}-${lifecycle}`,
+    contractName: 'chat-node',
+    lifecycle,
+    key: { sessionId: 's1', correlationId },
+    payload: { payload: inner },
+    timestamp: '2026-01-01T00:00:00.000Z',
+  };
+}
+
+/**
+ * #2748 ST-6 (AC3): tool-use-lifecycle delivery for the parent session's `task`
+ * span carrying child-completion fields (the SUBAGENTS source — ST-1
+ * `computeSubagentTokenTotals` consumes these). Mirrors the sessionMeta suite
+ * fixture shape (graph.ts `extractDeliveryPayload` unwraps the inner payload).
+ */
+function makeTaskDelivery(
+  correlationId: string,
+  lifecycle: 'init' | 'update' | 'end',
+  overrides: Record<string, unknown> = {},
+): ContractDelivery {
+  const inner: Record<string, unknown> = {
+    'gen_ai.tool.name': 'task',
+    input: JSON.stringify({ subagent_type: 'explore', prompt: 'investigate' }),
+    ...overrides,
+  };
+  return {
+    id: `task-${correlationId}-${lifecycle}`,
+    contractName: 'tool-use-lifecycle',
+    lifecycle,
+    key: { sessionId: 's1', correlationId },
+    payload: { payload: inner },
+    timestamp: '2026-01-01T00:00:00.000Z',
+  };
+}
+
+// #2748 FIX-3 (round-2 AC4 / R-4.1): capture the window-title neutralization —
+// the panel updates the own window-kernel entry's title (which the kernel's
+// WindowFrame renders as BOTH the visible window-header label AND the
+// `role="group"` container's `aria-label`) so no `Mission Monitor` text
+// survives in the panel's a11y tree.
+const windowActionsState = vi.hoisted(() => ({
+  updateWindow: vi.fn(),
+}));
+
+// Mock the own window-kernel hooks — the panel consumes useWindowActions only
+// to neutralize the window title; the window system itself is out of scope here.
+vi.mock('@/shared/window-system/useWindowActions', () => ({
+  useWindowActions: () => ({
+    openWindow: vi.fn(),
+    closeWindow: vi.fn(),
+    focusWindow: vi.fn(),
+    updateWindow: windowActionsState.updateWindow,
+  }),
+}));
+
+// #2748 FIX-3: DOM/a11y scan helper — no element in the rendered tree may
+// carry the `Mission Monitor` brand text as aria-label, title, or text content
+// (the AC4-1 letter's "no remnant text anywhere" scan).
+function findMissionMonitorRemnants(container: HTMLElement): string[] {
+  const remnants: string[] = [];
+  container.querySelectorAll<HTMLElement>('*').forEach((el) => {
+    const ariaLabel = el.getAttribute('aria-label');
+    const title = el.getAttribute('title');
+    if (ariaLabel?.includes('Mission Monitor')) remnants.push(`aria-label: "${ariaLabel}"`);
+    if (title?.includes('Mission Monitor')) remnants.push(`title: "${title}"`);
+    if (el.textContent?.includes('Mission Monitor')) remnants.push(`text: "${el.textContent.trim()}"`);
+  });
+  return remnants;
+}
+
+describe('MissionMonitorPanel', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDeliveries = [];
+    reactflowState.onNodeDoubleClick = undefined;
+    reactflowState.onPaneClick = undefined;
+    reactflowState.zoomOnDoubleClick = undefined;
+    miniMapState.nodeColor = undefined;
+    mockDeclaredSessions = [
+      { sessionId: 's1', startTime: 1, latestAt: '2026-01-01T00:00:00.000Z' },
+    ];
+    mockSessionsError = null;
+    graphState.nodes = [];
+    graphState.edges = [];
+    mockStreamHealth = 'down';
+  });
+
+  it('#2748 AC4 / R-4.1: does NOT render the "Mission Monitor" header strip AND neutralizes the window/dialog identity', () => {
+    const { container } = renderWithChakra(<MissionMonitorPanel />);
+
+    // The header strip is gone — no "Mission Monitor" text, no `·` separator,
+    // no session-identity line above the token bar.
+    expect(screen.queryByText('Mission Monitor')).toBeNull();
+    expect(screen.queryByText('·')).toBeNull();
+
+    // #2748 FIX-3: the window title is neutralized to the drawer-consistent
+    // "Sessions" — the WindowManager's `role="dialog"` aria-label (and visible
+    // window-header label) derive from that title, so no `dialog Mission
+    // Monitor` remnant remains in the a11y tree.
+    expect(windowActionsState.updateWindow).toHaveBeenCalledWith(
+      'mission-monitor',
+      { title: 'Sessions' },
+    );
+
+    // AC4-1 letter: a DOM/a11y scan finds NO `Mission Monitor` remnant text
+    // anywhere — as aria-label, title, or text content.
+    expect(findMissionMonitorRemnants(container)).toEqual([]);
+  });
+
+  it('shows empty state when no sessions exist', () => {
+    mockDeclaredSessions = [];
+    renderWithChakra(<MissionMonitorPanel />);
+
+    // Empty state shows the waiting message
+    expect(screen.getAllByText('Waiting for agent activity…').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('#2748 AC4 / R-4.1: the no-session state shows no header remnant', async () => {
+    // No declared sessions and no live deliveries → EmptyState is the topmost
+    // element; the removed header's "Mission Monitor" / "No session" / `·`
+    // remnants must never appear, and the bar stays hidden (no session).
+    mockDeclaredSessions = [];
+    const { container } = renderWithChakra(<MissionMonitorPanel />);
+    await act(async () => { await Promise.resolve(); });
+
+    expect(screen.getAllByText('Waiting for agent activity…').length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText('Mission Monitor')).toBeNull();
+    expect(screen.queryByText('No session')).toBeNull();
+    expect(screen.queryByText('·')).toBeNull();
+    expect(screen.queryByTestId('session-token-bar')).toBeNull();
+    // #2748 FIX-3 (AC4-1 letter): no `Mission Monitor` remnant anywhere in the
+    // a11y tree — aria-label, title, or text content.
+    expect(findMissionMonitorRemnants(container)).toEqual([]);
+  });
+
+  it('Spec #2896 ST-6 (S6/QA-3.5): a read/watch failure renders a role=alert inline status with the verbatim backend error, keeping stored sessions visible (fail-open)', () => {
+    mockSessionsError = 'application_data_read failed: table sessions is not declared';
+    renderWithChakra(<MissionMonitorPanel />);
+
+    const alert = screen.getByTestId('mm-watch-error');
+    expect(alert.getAttribute('role')).toBe('alert');
+    // Verbatim backend text — never swallowed.
+    expect(alert.textContent).toContain(
+      'application_data_read failed: table sessions is not declared',
+    );
+    // Fail-open: the stored session row remains visible; never the empty state.
+    expect(screen.getAllByTitle('Delete session').length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText('Waiting for agent activity…')).toBeNull();
+  });
+
+  it('Spec #2896 ST-6 (S6): a disconnected stream renders a role=status warning while stored sessions stay visible', () => {
+    renderWithChakra(<MissionMonitorPanel />);
+
+    const status = screen.getByTestId('mm-watch-disconnected');
+    expect(status.getAttribute('role')).toBe('status');
+    expect(status.textContent).toContain('Live updates disconnected');
+    expect(screen.queryByTestId('mm-watch-error')).toBeNull();
+    expect(screen.getAllByTitle('Delete session').length).toBeGreaterThanOrEqual(1);
+  });
+
+  // Spec #3064 ST-2 / REQ-7: the SAME derived flag drives the banner — a
+  // `degraded` or `down` stream health (both non-`healthy`) renders it, and a
+  // `healthy` health does not (negative control). The panel component itself is
+  // UNCHANGED; only the derivation moved into StreamContext.
+  it('Spec #3064 ST-2: a `degraded` stream health renders the disconnected banner', () => {
+    mockStreamHealth = 'degraded';
+    renderWithChakra(<MissionMonitorPanel />);
+
+    const status = screen.getByTestId('mm-watch-disconnected');
+    expect(status.getAttribute('role')).toBe('status');
+    expect(status.textContent).toContain('Live updates disconnected');
+  });
+
+  it('Spec #3064 ST-2: a `down` stream health renders the disconnected banner', () => {
+    mockStreamHealth = 'down';
+    renderWithChakra(<MissionMonitorPanel />);
+
+    expect(screen.getByTestId('mm-watch-disconnected')).toBeInTheDocument();
+  });
+
+  it('Spec #3064 ST-2: a `healthy` stream health does NOT render the disconnected banner', () => {
+    mockStreamHealth = 'healthy';
+    renderWithChakra(<MissionMonitorPanel />);
+
+    expect(screen.queryByTestId('mm-watch-disconnected')).toBeNull();
+  });
+
+  it('#2748 AC3/AC4 (R-3.1, R-3.2, R-4.2): the bar is the TOP row and shows the wired SUBAGENTS figure', async () => {
+    // One parent chat turn + two task spans with child-completion fields:
+    // SUBAGENTS = (1000+200+300+500) + 700 = 2,700 (ST-1 compute, wired in
+    // the panel's sessionMetrics memo); TOTAL = parent five-way (100) + 2,700
+    // = 2,800 (ST-5's component sums the two passed props — the panel never
+    // pre-sums). Parent families stay byte-equal (R-3.3).
+    mockDeliveries = [
+      makeChatDelivery('corr-1', 'init', { prompt: 100 }),
+      makeChatDelivery('corr-1', 'end',  { prompt: 100 }),
+      // Per-family breakdown for one dispatch...
+      makeTaskDelivery('task-1', 'end', {
+        childInputTokens: 1000, childCacheReadTokens: 200,
+        childReasoningTokens: 300, childOutputTokens: 500,
+      }),
+      // ...aggregate-only (legacy) for the other.
+      makeTaskDelivery('task-2', 'end', { childTokens: 700 }),
+    ];
+
+    const { container, rerender } = renderWithChakra(<MissionMonitorPanel />);
+    await act(async () => { await Promise.resolve(); });
+    rerender(<MissionMonitorPanel />);
+    await act(async () => { await Promise.resolve(); });
+
+    const bar = screen.getByTestId('session-token-bar');
+    // R-4.2: with the header gone, the bar is the FIRST element of the canvas
+    // column (nothing — no header strip — precedes it above the canvas).
+    expect(bar.parentElement?.firstElementChild).toBe(bar);
+    expect(screen.queryByText('Mission Monitor')).toBeNull();
+    // #2748 FIX-3 (AC4-1 letter): no `Mission Monitor` remnant anywhere — even
+    // with a session selected and the bar rendered as the top row.
+    expect(findMissionMonitorRemnants(container)).toEqual([]);
+
+    // R-3.1: SUBAGENTS figure from ST-1 computeSubagentTokenTotals.
+    expect(within(bar).getByText('SUBAGENTS')).toBeDefined();
+    expect(within(bar).getByText('2,700')).toBeDefined();
+    // R-3.2: TOTAL = parent five-way (100) + SUBAGENTS (2,700) = 2,800.
+    expect(within(bar).getByText('2,800')).toBeDefined();
+    // R-3.3: parent INPUT stays 100 (subagent tokens never bleed into the
+    // parent families).
+    expect(within(bar).getByText('100')).toBeDefined();
+  });
+
+  it('#2748 AC5 / R-5.3-minimap: the MiniMap nodeColor is a single neutral token for every node', async () => {
+    mockDeliveries = [
+      makeChatDelivery('corr-1', 'init', { prompt: 100 }),
+      makeChatDelivery('corr-1', 'end',  { prompt: 100 }),
+    ];
+
+    const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+    await act(async () => { await Promise.resolve(); });
+    rerender(<MissionMonitorPanel />);
+    await act(async () => { await Promise.resolve(); });
+
+    // The canvas is rendered (a session is selected) so the MiniMap's
+    // nodeColor callback is wired.
+    expect(miniMapState.nodeColor).toBeDefined();
+    // Every node — regardless of status — maps to the single neutral
+    // var(--border-color); the status-keyed switch is gone.
+    expect(miniMapState.nodeColor?.({ data: { status: 'working' } })).toBe('var(--border-color)');
+    expect(miniMapState.nodeColor?.({ data: { status: 'error' } })).toBe('var(--border-color)');
+    expect(miniMapState.nodeColor?.({ data: { status: 'permission_required' } })).toBe('var(--border-color)');
+    expect(miniMapState.nodeColor?.({ data: { status: 'permission_granted' } })).toBe('var(--border-color)');
+    expect(miniMapState.nodeColor?.({ data: { status: 'compacted' } })).toBe('var(--border-color)');
+    expect(miniMapState.nodeColor?.({ data: {} })).toBe('var(--border-color)');
+  });
+
+  it('has no localStorage dependencies', () => {
+    // Verify no sessionStorage functions are imported
+    const source = MissionMonitorPanel.toString();
+    expect(source).not.toContain('localStorage');
+    expect(source).not.toContain('getSessionEvents');
+    expect(source).not.toContain('loadSessions');
+    expect(source).not.toContain('sessionStorage');
+  });
+
+  it('has no localStorage calls in source', () => {
+    const source = MissionMonitorPanel.toString();
+    expect(source).not.toContain('localStorage');
+  });
+
+  it('renders the session token bar ABOVE the canvas for a selected session (Spec #2723 R-1)', async () => {
+    mockDeliveries = [
+      makeChatDelivery('corr-1', 'init', { prompt: 1840, cacheRead: 1200, reasoning: 500, completion: 780 }),
+      makeChatDelivery('corr-1', 'end',  { prompt: 1840, cacheRead: 1200, reasoning: 500, completion: 780 }),
+    ];
+
+    const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+    // Flush the persisted-session load + auto-select so the canvas + bar render.
+    await act(async () => { await Promise.resolve(); });
+    rerender(<MissionMonitorPanel />);
+    await act(async () => { await Promise.resolve(); });
+
+    const bar = screen.getByTestId('session-token-bar');
+    const canvas = screen.getByTestId('reactflow-provider');
+    // The bar is the first child of the canvas column — it must precede the
+    // ReactFlow canvas in document order (DOM sibling above it).
+    expect(bar.compareDocumentPosition(canvas) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // ST-3 / AC-4: "Session Token Usage" left + figures right (space-between).
+    expect(bar.style.justifyContent).toBe('space-between');
+    expect(bar.style.borderBottom).toBe('1px solid var(--border-color)');
+  });
+
+  it('registers NO toolsNode type — the standalone ToolsNode was removed (#2764 ST-2)', async () => {
+    mockDeliveries = [
+      makeChatDelivery('corr-1', 'init', { prompt: 100 }),
+      makeChatDelivery('corr-1', 'end',  { prompt: 100 }),
+    ];
+
+    const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+    await act(async () => { await Promise.resolve(); });
+    rerender(<MissionMonitorPanel />);
+    await act(async () => { await Promise.resolve(); });
+
+    expect(reactflowState.nodeTypes).toBeDefined();
+    // #2764 ST-2: tool calls embed inside the chat node — no standalone
+    // toolsNode registration may exist anywhere.
+    expect(reactflowState.nodeTypes.toolsNode).toBeUndefined();
+    // NFR-6: the sibling node types stay registered (no regression).
+    expect(reactflowState.nodeTypes.agentNode).toBeDefined();
+    expect(reactflowState.nodeTypes.subagentNode).toBeDefined();
+    // #2745 ST-6: the dead toolNode/fileNode registrations were removed (AC-5).
+    expect(reactflowState.nodeTypes.toolNode).toBeUndefined();
+    expect(reactflowState.nodeTypes.fileNode).toBeUndefined();
+  });
+
+  it('anchors the detail panel to the canvas wrapper BELOW the session token bar (AC-5)', async () => {
+    mockDeliveries = [
+      makeChatDelivery('corr-1', 'init', { prompt: 1840, cacheRead: 1200, reasoning: 500, completion: 780 }),
+      makeChatDelivery('corr-1', 'end',  { prompt: 1840, cacheRead: 1200, reasoning: 500, completion: 780 }),
+    ];
+
+    const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+    // Flush the persisted-session load + auto-select so the canvas + bar render.
+    await act(async () => { await Promise.resolve(); });
+    rerender(<MissionMonitorPanel />);
+    await act(async () => { await Promise.resolve(); });
+
+    const bar = screen.getByTestId('session-token-bar');
+    const wrapper = screen.getByTestId('mm-canvas-wrapper');
+    // The wrapper (canvas + detail panel) is a sibling BELOW the bar — the
+    // bar stays above it in DOM order (AC-5: the panel must never cover it).
+    expect(bar.compareDocumentPosition(wrapper) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The wrapper is the position:relative containing block for the panel.
+    expect(wrapper.style.position).toBe('relative');
+
+    // Open the detail panel by firing the ReactFlow onNodeDoubleClick captured
+    // by the mock (#2743 ST-6 AC-7 — double-click opens the node detail).
+    const nodeData: MonitorNodeData = {
+      eventType: 'agent',
+      status: 'inactive',
+      payload: {
+        correlationId: 'corr-1',
+        sessionId: 's1',
+        promptTokens: 1840,
+        cacheReadTokens: 1200,
+        reasoningTokens: 500,
+        completionTokens: 780,
+      },
+      timestamp: '2026-01-01T00:00:00.000Z',
+      label: 'Chat',
+      threadId: 'main',
+      relatedEvents: [],
+    };
+    act(() => {
+      reactflowState.onNodeDoubleClick?.({}, { data: nodeData });
+    });
+
+    const panel = screen.getByTestId('detail-panel');
+    // The panel renders INSIDE the canvas wrapper (its containing block) and
+    // is positioned absolutely anchored to it (top:0) — so it cannot overlap
+    // the bar which lives OUTSIDE the wrapper above it.
+    expect(wrapper.contains(panel)).toBe(true);
+    expect(panel.style.position).toBe('absolute');
+    expect(panel.style.top).toBe('0px');
+    // The bar is not a descendant of the wrapper — the panel cannot cover it.
+    expect(wrapper.contains(bar)).toBe(false);
+  });
+
+  it('#2743 ST-6 (AC-7): single-click NEVER opens the detail panel — only double-click does (onNodeClick neutralized)', async () => {
+    mockDeliveries = [
+      makeChatDelivery('corr-1', 'init', { prompt: 100 }),
+      makeChatDelivery('corr-1', 'end',  { prompt: 100 }),
+    ];
+
+    const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+    await act(async () => { await Promise.resolve(); });
+    rerender(<MissionMonitorPanel />);
+    await act(async () => { await Promise.resolve(); });
+
+    // AC-7 interaction contract: onNodeClick is NOT wired to ReactFlow; the
+    // single trigger is onNodeDoubleClick.
+    expect(reactflowState.onNodeClick).toBeUndefined();
+    expect(typeof reactflowState.onNodeDoubleClick).toBe('function');
+    // AC-7 round-5 root cause: zoomOnDoubleClick must be false so the native
+    // dblclick reaches React's delegated onDoubleClick (d3-zoom's default
+    // `true` swallows it with stopImmediatePropagation at the renderer).
+    expect(reactflowState.zoomOnDoubleClick).toBe(false);
+
+    // A single-click must not open the panel — there is no onNodeClick handler
+    // at all; simulate what a click on a node would have invoked and assert
+    // no detail panel renders.
+    expect(screen.queryByTestId('detail-panel')).toBeNull();
+
+    // Double-click opens the node detail.
+    const nodeData: MonitorNodeData = {
+      eventType: 'agent',
+      status: 'inactive',
+      payload: {
+        correlationId: 'corr-1',
+        sessionId: 's1',
+        promptTokens: 100,
+        completionTokens: 50,
+      },
+      timestamp: '2026-01-01T00:00:00.000Z',
+      label: 'Chat',
+      threadId: 'main',
+      relatedEvents: [],
+    };
+    act(() => {
+      reactflowState.onNodeDoubleClick?.({}, { data: nodeData });
+    });
+
+    expect(screen.getByTestId('detail-panel')).toBeDefined();
+  });
+
+  // ── #2760 (EARS-1 / EARS-2): Force layout removal ────────────────────────────
+  //
+  // The Force layout engine, the Chain/Force toggle, and the persisted
+  // `Fredo_mm_layout_mode` preference were removed (#2760) — Chain is the only
+  // layout. These assertions pin the removal contract: no toggle DOM of any
+  // kind (EARS-1), and a STALE pre-removal `'force'` preference (mocked
+  // `get_setting` + localStorage seed) must be ignored — the chain renders
+  // normally with no crash/blank/error (EARS-2; the key is never read or
+  // written again, so no migration code exists).
+  describe('#2760: Force layout fully removed — Chain is the only layout', () => {
+    afterEach(() => {
+      localStorage.clear();
+    });
+
+    /** Two chat deliveries for session 's1' so the selected-session canvas
+     *  branch renders. */
+    function seedDeliveries(): void {
+      mockDeliveries = [
+        makeChatDelivery('corr-1', 'init', { prompt: 100 }),
+        makeChatDelivery('corr-1', 'end',  { prompt: 100 }),
+      ];
+    }
+
+    it('renders NO layout toggle anywhere in the DOM (EARS-1)', async () => {
+      seedDeliveries();
+      const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+      await act(async () => { await Promise.resolve(); });
+      rerender(<MissionMonitorPanel />);
+      await act(async () => { await Promise.resolve(); });
+
+      // The #2752 toggle (data-testid `mm-layout-toggle`) is gone entirely —
+      // nothing replaces it (AC1: removal, not redesign).
+      expect(screen.queryByTestId('mm-layout-toggle')).toBeNull();
+      // No layout-mode group or Chain/Force buttons anywhere either.
+      expect(screen.queryByRole('group', { name: 'Layout mode' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Chain' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Force' })).toBeNull();
+      // The canvas itself still renders normally.
+      expect(screen.getByTestId('reactflow-provider')).toBeDefined();
+    });
+
+    it('ignores a stale persisted Fredo_mm_layout_mode=force — Chain renders normally (EARS-2)', async () => {
+      // Pre-seed the LEGACY pre-removal preference in BOTH stores the settings
+      // service reads: the Tauri `get_setting` path (mocked) and the dev
+      // localStorage fallback. #2760 makes the key never read again, so the
+      // panel must render the chain normally — no crash, no blank canvas,
+      // no error — with zero migration code.
+      localStorage.setItem('Fredo_mm_layout_mode', 'force');
+      const invokeSpy = vi.spyOn(adapterBridge, 'invoke').mockImplementation(async (command, args) => {
+        if (command === 'get_setting' && (args as { key?: string } | undefined)?.key === 'Fredo_mm_layout_mode') {
+          return 'force';
+        }
+        return undefined;
+      });
+      try {
+        seedDeliveries();
+        const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+        await act(async () => { await Promise.resolve(); });
+        rerender(<MissionMonitorPanel />);
+        await act(async () => { await Promise.resolve(); });
+
+        // The chain canvas renders (no crash/blank/error) and no toggle exists.
+        await waitFor(() => {
+          expect(screen.getByTestId('reactflow-provider')).toBeDefined();
+        });
+        expect(screen.getByTestId('mm-canvas-wrapper')).toBeDefined();
+        expect(screen.queryByTestId('mm-layout-toggle')).toBeNull();
+        // The stale preference is never rewritten either (no read/write path).
+        expect(localStorage.getItem('Fredo_mm_layout_mode')).toBe('force');
+      } finally {
+        invokeSpy.mockRestore();
+      }
+    });
+  });
+});
+
+// ── Spec #3121 R-21 / F-3(e): the shipped detail Escape close binding ────────
+//
+// Escape with the detail panel open is closed by the PRE-EXISTING `window`
+// keydown listeners owned by DetailPanel (#3121 keeps them, behaviour-preserving)
+// — NOT by a navigation verb. This mounted-panel test drives the REAL Escape on
+// the listener target and proves the panel closes while the navigation journal
+// gains no `mission-monitor.detail.close` entry.
+
+/** A minimal ReactFlow agent node for the mocked `useDeliveryGraph`. */
+function makeGraphNode(id: string, correlationId: string): any {
+  return {
+    id,
+    type: 'agentNode',
+    position: { x: 0, y: 0 },
+    data: {
+      eventType: 'agent',
+      status: 'inactive',
+      payload: {
+        correlationId,
+        sessionId: 's1',
+        userMessage: 'Hello, can you help me?',
+        agentReply: 'Sure, here is the plan.',
+        promptTokens: 100,
+        completionTokens: 50,
+      },
+      timestamp: '2026-01-01T00:00:00.000Z',
+      label: 'Chat',
+      threadId: 'main',
+      relatedEvents: [],
+    },
+  };
+}
+
+describe('R-03(e)/F-3(e) — Escape with the detail panel open closes it in the mounted panel', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDeliveries = [];
+    reactflowState.onNodeDoubleClick = undefined;
+    reactflowState.onPaneClick = undefined;
+    reactflowState.zoomOnDoubleClick = undefined;
+    miniMapState.nodeColor = undefined;
+    mockDeclaredSessions = [
+      { sessionId: 's1', startTime: 1, latestAt: '2026-01-01T00:00:00.000Z' },
+    ];
+    mockSessionsError = null;
+    graphState.nodes = [];
+    graphState.edges = [];
+    mockStreamHealth = 'down';
+  });
+
+  it('R-03(e)/F-3(e) — Escape with the detail panel open closes it in the mounted panel (real window keydown, never a verb intent)', async () => {
+    mockDeliveries = [
+      makeChatDelivery('corr-1', 'init', { prompt: 100 }),
+      makeChatDelivery('corr-1', 'end', { prompt: 100 }),
+    ];
+
+    const { rerender } = renderWithChakra(<MissionMonitorPanel />);
+    // Flush the declared-session read + auto-select so the canvas renders and
+    // the ReactFlow mock captures onNodeDoubleClick.
+    await act(async () => { await Promise.resolve(); });
+    rerender(<MissionMonitorPanel />);
+    await act(async () => { await Promise.resolve(); });
+
+    // Open the shipped detail panel through the double-click seam the mock
+    // captures — the only product path that mounts DetailPanel.
+    act(() => {
+      reactflowState.onNodeDoubleClick?.({}, makeGraphNode('agent-corr-1', 'corr-1'));
+    });
+    expect(screen.getByTestId('detail-panel')).toBeDefined();
+
+    // The mounted navigation provider registered its host; the Escape binding
+    // must NOT add a `mission-monitor.detail.close` journal entry.
+    const host = getNavigationHost(MISSION_MONITOR_SURFACE_APP_ID);
+    expect(host).not.toBeNull();
+    const detailCloseEntries = () =>
+      host!.getSnapshot().entries.filter(
+        (entry) => entry.verbId === MISSION_MONITOR_DETAIL_CLOSE_VERB_ID,
+      ).length;
+    const before = detailCloseEntries();
+
+    // Real native Escape on the listener's actual target (window) — never a
+    // runIntent / verb call.
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Escape' });
+    });
+
+    // The panel closes…
+    expect(screen.queryByTestId('detail-panel')).toBeNull();
+    // …and the binding closed it directly: no detail.close verb was journaled.
+    expect(detailCloseEntries()).toBe(before);
+    expect(detailCloseEntries()).toBe(0);
+  });
+});

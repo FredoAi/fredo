@@ -88,7 +88,7 @@
 ## Ghost-session follow-up (AC1 / AC2 / AC3 / AC4 / AC5)
 
 - [ ] F-12 (AC-1): Drive a ghost-class session (landed rows + zero graph nodes; confirm the exact ghost source via `telemetry_spans` — do NOT assume `build`/`plan`/transitional/composited as fact). Select it. DOM snapshot + screenshot + grep for the literal #2791 copy in the whole DOM and console.
-  - EXPECTED: the delivered UI NEVER renders "No graph content for this session" NOR any empty-diagram/explained placeholder; zero occurrences of the literal copy anywhere; never a silent blank canvas (whether or not the session is listed — it must NOT be listed per AC-2).
+  - EXPECTED: the delivered UI NEVER renders "No graph content for this session" NOR any empty-graph/explained placeholder; zero occurrences of the literal copy anywhere; never a silent blank canvas (whether or not the session is listed — it must NOT be listed per AC-2).
   - Edge: (a) a deliberately non-qualifying session is never presented as an explained OR silent blank; (b) theme tokens only in any residual state.
 - [ ] F-13 (AC-2): After the drive, enumerate every sidebar session; for each, select it and snapshot the canvas. Cross-check `telemetry_spans` at the same instant (G-073.3).
   - EXPECTED: sidebar lists ONLY sessions that render ≥1 node; every listed session's canvas renders ≥1 node (ChatNode / SubagentNode / `── TOOLS (N) ──`) once its rows have landed; a session with landed rows + zero nodes is NOT listed; no listed session presents a blank canvas once rows landed.
@@ -303,10 +303,216 @@
 - [x] F-38 (QA-4.3, **PASS 2026-09-19 #2896 round 3**): the declared `feature_mission_monitor_sessions` holds **31 rows** = exactly the 31 canonically-qualifying, non-tombstoned sessions (SQL: 187 canonical chat sessions → 31 qualifying after the lowercase `response`/`timeout` terminal-blank rule and 13 tombstones; 0 missing). `feature_data_tables['mission-monitor'].backfill_done = 1` WITH rows. Backfill logs: row leg `fed=0`, rollup leg `fed=210 elapsed_ms=4377`, final `declared-table projection backfill complete tables=1 completed=1 failed=0 fed=210`. Cold restarts (08:10:58 and 08:16:57) re-materialize only (`persisted declared tables re-materialized tables=1`) with **no** backfill leg re-drain (marker respected). NFR-1 measurable.
 - [x] F-42 (S0+S5, **PASS 2026-09-19 #2896 round 3**): MM open renders stored rows in the first painted frame — 31 `.mm-session-row` nodes in the drawer container (overflow auto, scrollHeight 1395) and a selected session's Chat node; `No sessions yet` / `Waiting for agent activity` never present during mount (MutationObserver `sawEmpty=false`, `sawSpinner=false`). Screenshot: the Sessions drawer with the stored list. (Genuinely-empty S5 leg not re-driven this round — time-boxed; no regression evidence.)
 - [ ] F-41 (S4, **UNVERIFIED 2026-09-19 #2896 round 3** — named blocker retained): MM auto-selects the newest stored session on open (`useSessionHistory.ts` auto-select + `userPickedRef`), and clicking the selected row re-selects (verified: click `r3-change-A` → still selected, `NoSessionSelected` absent). `sessions.length > 0 && selectedSessionId === null` is not a steady state; no deselect affordance exists. Per the round-3 Fix Plan this is a technique/scope reachability gap (R-5.1 remains unit-covered; a live S4 steady state needs a new deselect affordance = out of non-goals), not a product defect.
-- [ ] F-43 (S6, **UNVERIFIED 2026-09-19 #2896 round 3** — named blocker retained): the `mm-watch-error` leg's sanctioned lever (drop the declared table on the disposable DB) is **sandbox-denied** — `sqlite3 "<appdata>\fredo.db" "DROP TABLE IF EXISTS feature_mission_monitor_sessions"` → permission denied (only `sqlite3 -readonly` is allowlisted); no product command invalidates a declared table. The `mm-watch-disconnected` leg has no product lever at all (`isConnected` is a mount-lifetime flag; `AppProvider.tsx:88-92`; no stream-health signal). The hook-level hard rejection remains live-verified (`feature '<x>' has not declared table '<y>' (call feature_data_declare first)`).
+- [ ] F-43 (S6, **UNVERIFIED 2026-09-19 #2896 round 3** — named blocker retained): the `mm-watch-error` leg's sanctioned lever (drop the declared table on the disposable DB) is **sandbox-denied** — a direct DROP/DML against the store is not permitted (only read-only reads are allowlisted); no product command invalidates a declared table. The `mm-watch-disconnected` leg has no product lever at all (`isConnected` is a mount-lifetime flag; `AppProvider.tsx:88-92`; no stream-health signal). The hook-level hard rejection remains live-verified (`feature '<x>' has not declared table '<y>' (call feature_data_declare first)`).
 - [x] F-44/F-45 (S2/S3 + drawer chrome, **PASS-observed 2026-09-19 #2896 round 3**): selection renders the stored session's Chat node; drawer/rename/search/token-bar/DetailPanel chrome unchanged (screenshots); all surfaces use CSS vars (`var(--card-bg)`, `var(--border-color)`, `var(--text-secondary)`, `var(--status-error)`) — no hardcoded hex.
 - [x] N-16 (NFR-1, **PASS 2026-09-19 #2896 round 3**): A-14 Δ pair measured live — large corpus (31 sessions / 30,320 chat rows) mount→first-session-row Δ = **39.8 ms** and **92.7 ms** (two runs); small corpus (3 sessions / 3 chat rows, SI-B disposable DB) Δ = **62.4 ms**. 92.7 ≤ 250 ms absolute PASS; 92.7 ≤ 2.0 × max(62.4, 100 ms floor) = 200 ms PASS. No growth with total history.
 - [x] N-17 (NFR-2, **PASS 2026-09-19 #2896 round 3**): the projection ran unconditionally (no read/watch gating) — with MM closed a canonical `fredo emit` projected a declared row; `feature_data_while_closed.rs` still green on the branch.
 - [x] N-18 (NFR-3, **PASS 2026-09-19 #2896 round 3**): console clean after open/mount/measure/watch start-stop — only the pre-existing `motion() is deprecated` WARN and `[mission-monitor] auto-fit` DEBUG lines.
 - [x] N-19 (NFR-4, **PASS 2026-09-19 #2896 round 3**): MM list/canvas visually unchanged; theme tokens only.
 - [x] Legacy quarantine + no resurrection (**PASS 2026-09-19 #2896 round 3**): on the real-corpus snapshot exactly one `feature_mission_monitor_sessions__legacy_20260919071609` exists (legacy `events`/`session_names`/`deleted_sessions` preserved); 13 tombstones; declared rows whose sessionId is one of the 12 legacy-deleted sessions = **0**.
+
+---
+
+# Mission Monitor — Functional Test Cases (Spec #2945 — every supported agent CLI in one view, each labeled with its CLI)
+
+> Durable functional suite (feature domain `mission-monitor`), extended from #2791/#2792/#2795/#2835/#2896/#2933. One `- [ ]` case per AC (AC1–AC5; AC-3 split into its positive and negative legs). Marks `unknown` until executed by the Tester.
+>
+> **Evidence policy: LIVE** — the exit gate / audit fail-closed unless the tester's Evidence references `telemetry_spans` (a live-query result) AND a rendered-webview receipt (DOM snapshot / screenshot) for the same instant. A static-only PASS is a FALSE PASS.
+>
+> **Provider vocabulary oracle (Spec #2932):** canonical `provider` tokens are exactly `open_code` / `claude_code` / `copilot_cli` / `internal` / `unknown`, resolved from the OTLP resource `service.name` (`fredo-opencode-plugin → open_code`; `copilot-cli → copilot_cli`; else `unknown`). The CLI label MUST read the row's `provider` field — NEVER `telemetry_spans.provider` (a label equal to a model id such as `openai`/`anthropic` is a FAIL).
+>
+> Fixture doctrine (G-073/G-076/G-080): OpenCode = live Run CLI drive (free model, minimal tree, unique marker in the FIRST prompt), never the `opencode` binary from a shell. Copilot = the in-repo deterministic `inject-otlp-fixture.ts --copilot` producer (no paid subscription). Cross-check `telemetry_spans`/`chat_rows`/`tool_use_rows`/`agent_session_rows` at the same instant as every DOM assertion (G-073.3).
+
+## Both CLIs in one view + Copilot activity parity (AC-1)
+
+- [x] F-46 (AC-1, **PASS 2026-09-25 #2945 round 1**): With an OpenCode session (`open_code`, live drive `ses_f266442d1ffeWgWWl3i6V90zcZ` via `fredo open-terminal --cli opencode`) AND a Copilot-shaped session (`copilot_cli`, in-repo split-turn fixture re-keyed to `e2e-copilotsplit2945b`, injected over the real OTLP/HTTP receiver) both present in the store, Mission Monitor listed BOTH as distinct entries and selecting the Copilot session rendered its activity at the same structural detail as the OpenCode session (chat node, `── USER ──`, `── TOOLS (1) ──` view 10ms, `── RESPONSE ──`, token figures). Live DB: `chat_rows` providers `open_code`/`copilot_cli`; `feature_mission_monitor_sessions` carried both rows; `telemetry_spans` carried all 4 Copilot spans (`otlp_http`, end_time set) + the OpenCode `fredo.*` spans at the same instant. Frame: [Copilot split-turn node + both CLIs in the list](https://github.com/user-attachments/assets/d1c99dc3-7283-45d9-9e38-23283695f029).
+  - EXPECTED: the list shows sessions from BOTH CLIs as distinct entries (never merged, never one hidden); selecting the Copilot session renders its activity at the SAME structural detail as an equivalent OpenCode session — chat turn node(s), user prompt (or the documented `—`/absent outcome for a null continuation `userMessage`), `── TOOLS (N) ──` (or a zero-tools node), RESPONSE, token figures.
+  - Edge: OpenCode-only store; Copilot-only store; both in one store; switching back and forth; the Copilot session renders while its split-turn rows land mid-stream.
+- [x] F-47 (AC-1, **PASS 2026-09-25 #2945 round 1**): Copilot split-turn node `agent-e2e-copilotsplit2945b_4` (DOM `data-testid=rf__node-…`) rendered `gpt-4o`, `── USER ──` = the prompt, `── TOOLS (1) ──` (view, outcome dot, 10ms, INPUT/OUTPUT), `── RESPONSE ──` = sentinel, TOKEN USAGE INPUT 10,241 / OUTPUT 14 / TOTAL 10,255 — the same sections/labels/token rows an OpenCode chat node shows (`── USER ──` / `── TOOLS (n) ──` / `── RESPONSE ──` / TOKEN USAGE). Zero SubagentNodes (no `task` dispatch) — not a rendering failure per the case edge.
+  - EXPECTED: no structural element present for OpenCode is missing for Copilot at the same data shape (same sections/labels/token rows); a split-turn continuation with a null `userMessage` still renders its node (never dropped) and does NOT yield two list entries.
+  - Edge: content-off Copilot split turn (call 1 user-text + tool-call, call 2 tool-response + assistant-text, `execute_tool view` inside call 1's window); no `task`/subagent dispatch → zero SubagentNodes, not a rendering failure.
+
+## CLI label in list row + header, from canonical provider (AC-2)
+
+- [x] F-48 (AC-2, **PASS 2026-09-25 #2945 round 1**): `[data-testid="mm-session-cli-label"]` on the OpenCode list row read `◈OpenCode` (`data-provider="open_code"`) and the selected-session header `[data-testid="mm-selected-cli-label"]` read `◈OpenCode` (`aria-label="CLI: OpenCode"`); the Copilot row/header read `◆GitHub Copilot` (`data-provider="copilot_cli"`, `aria-label="CLI: GitHub Copilot"`). Cross-check `SELECT provider FROM chat_rows WHERE session_id='ses_f266442d1ffeWgWWl3i6V90zcZ'` = `open_code`; `e2e-copilotsplit2945b` = `copilot_cli`; declared rollup `feature_mission_monitor_sessions.provider` matched. Rename survives (see R-51). Frames: [OpenCode row+header chip](https://github.com/user-attachments/assets/5e9adacd-347b-4508-a592-8021ea492031), [Copilot row+header chip](https://github.com/user-attachments/assets/d1c99dc3-7283-45d9-9e38-23283695f029).
+  - EXPECTED: each list row and the header display the CLI that produced the session, resolved from canonical provider attribution — `open_code` renders the OpenCode label, `copilot_cli` renders the Copilot label; text non-blank and consistent between row and header.
+  - Edge: label survives rename / select / switch; a session whose rows carry `internal`/`claude_code` (if present) renders its own label; label is not the model provider (`openai`/`anthropic`).
+- [x] F-49 (AC-2 negative, **PASS 2026-09-25 #2945 round 1** — alternate lever): the plan's named orphan-mode lever (`--count 1 --prefix ses_prov2945`) emits only a subagent tool span → no chat row → can never qualify for the list, so a chat-carrying OTLP/JSON fixture with the Resource `service.name` OMITTED was used instead (session `e2e-provunk2945`). Canonical rows `provider="unknown"`; declared rollup `unknown`; list row + header both rendered the explicit non-blank `?Unknown CLI` (`data-cli-unknown="true"`, dashed `var(--status-warning)` border), NEVER OpenCode. Frame: [Unknown CLI fallback on row + header](https://github.com/user-attachments/assets/eefa1b69-1593-4efa-8723-4c2122213521).
+  - EXPECTED: the label is an EXPLICIT, NON-BLANK fallback (the Architect-bound literal — QA-4) and is NEVER silently presented as `OpenCode`/`open_code`; the fallback is visually distinct from the OpenCode label.
+  - Edge: absent/empty provider value; a legacy pre-provider row defaulting to `unknown`; the label updates if the provider is later re-derived (never stale).
+
+## Copilot-shaped session appears once it has renderable activity (AC-3 positive)
+
+- [x] F-50 (AC-3a, **PASS 2026-09-25 #2945 round 1**): replayed the split-turn shape with fresh ids (`bun .opencode/scripts/inject-otlp-fixture.ts --copilot --fixture .opencode/tmp/2945/copilot-split-2945b.fixture.json`; the committed `e2e-copilotsplit2933` id is tombstoned in the live DB). The session appeared ONCE in the list (no duplicate per split span) and rendered exactly 1 node (`.`). 4 `telemetry_spans` rows (`invoke_agent`/2×`chat`/`execute_tool`), 2 `chat_rows` (`_2` transitional + `_4` continuation), 1 `tool_use_rows` (`view`), declared rollup `copilot_cli`. Frame: [split-turn session listed once + 1 node](https://github.com/user-attachments/assets/7da62bdc-36e6-4c59-8857-a0a11f10bbbc).
+  - EXPECTED: the session appears ONCE (no duplicate per split span) and renders ≥1 node once its activity lands — consistent with the #2896/#2933 renderable-activity qualification; the split turn does not produce two list entries.
+  - Edge: a continuation whose `userMessage` is null → node still renders; the session qualifying only after the continuation row lands (legitimate transient, G-074).
+
+## No-agent-activity session does not appear (AC-3 negative)
+
+- [x] F-51 (AC-3b, **PASS 2026-09-25 #2945 round 1** — live negative + predicate): a plain-shell `Terminal` session was spawned live (`fredo open-terminal --cli shell --dir …\oc-workdir`; `list_terminal_sessions` → `{cli:"shell", status:"running"}`, no agent process). It produced **0** canonical rows (`chat_rows`/`tool_use_rows`/`agent_session_rows`/`telemetry_spans` all 0 for that id) and was NOT listed (MM stayed at the agent sessions only; declared table did not grow). Predicate cross-check: `sessionRollupQualifies` (`useSessionHistory.ts:46-54`) / `qualifies` (`session_rollup.rs:356-359`) = `visibleTurnCount > 0 || (nonSubagentChatRowCount > 0 && userDispatchCount > 0)` — a `visibleTurnCount=0`, no-dispatch row is never inserted. Screenshot cell: n/a — the assertion is an absence (query + session list receipt above).
+  - EXPECTED: the non-agent session does NOT appear in the Mission Monitor session list. If no sanctioned lever exists, the deliberate triage decision is verified instead: a declared rollup row with `visibleTurnCount = 0` and no user dispatch is not listed — the renderable-agent-activity qualification excludes it.
+  - Edge: Terminal session alongside real sessions → only real sessions listed; never receives an agent label; a session that later gains real agent activity becomes listed (transient, G-074).
+
+## Themeable CLI labeling (AC-5)
+
+- [x] F-52 (AC-5, **PASS 2026-09-25 #2945 round 1**): dark (`#0c1117` body) and Light Default (`#ffffff` body, toggled through Settings → Appearance → Theme presets) both re-tinted every chip live. Computed values: known chip `color` = the active `--text-primary` (`rgb(12,17,23)` light), `background` = `color-mix(... var(--accent-primary|secondary) 18%, transparent)`; unknown chip `color`/`border` = `var(--status-warning)` (dashed) + `color-mix(...14%)`. Setting the accent vars to `#ff3b30`/`#ff9500` immediately produced `background color(srgb 1 0.231373 0.188235 / 0.18)` / `color(srgb 1 0.584314 0 / 0.18)` — zero code change. No hex/rgba literal and no `var(--x)NN` anywhere in the chip (static check: inline style uses var()/`tint()` only). Frame: [CLI chips under Light Default](https://github.com/user-attachments/assets/81b7aa9c-d673-4ab5-882a-00a19074ec50).
+  - EXPECTED: labels use the theming feature's semantic tokens (→ CSS vars); no hardcoded hex/rgba; no invalid `var(--token)NN` alpha-append (use `color-mix()`/`tint()`); a theme/accent change restyles the label with zero code change.
+  - Edge: light; dark; non-default accent; both providers' labels; the fallback label.
+
+## CI parity (mandatory — the spec touches the UI build and possibly the Rust rollup)
+
+- [x] F-53 (CI parity, **PASS 2026-09-25 #2945 round 1**): `pnpm --filter @fredo/ui build` → `✓ 2594 modules transformed / built in 9.52s` (zero TS errors); `pnpm --filter @fredo/ui test:run` → `126 passed (126)` files / `1876 passed (1876)` tests; `cargo check --locked` → Finished (0 warnings); `cargo clippy --locked -- -D warnings` → Finished (clean); `cargo test --locked` → `950 passed; 0 failed` lib + `feature_data_upgrade_path` 2/2 + `feature_data_while_closed` 2/2 + `voice_invariants` 16/16. (`cargo test` required a full dev-env Down first — the running `fredo.exe` locks the target binary; dev-env restored Up afterwards.)
+  - EXPECTED: `pnpm --filter @fredo/ui build` clean (TypeScript, zero errors); `pnpm --filter @fredo/ui test` (or the UI unit runner) green for the mission-monitor + session-history suites; if the Rust rollup/declaration is touched, `cargo check` and `cargo clippy --locked -- -D warnings` clean from `apps/tauri/src-tauri/`. Any red = FAIL for the whole spec.
+  - Edge: a UI-only change still runs the UI build + tests; a Rust change additionally requires both cargo gates with `--locked`.
+
+## Non-functional #2945 (NFR-1 / NFR-2 / NFR-3 / NFR-4)
+
+- [x] N-23 (NFR-1, latency, **PASS 2026-09-25 #2945 round 1**): raw Δ (mount→first rendered `.mm-session-row`, window close → `app-open-request` reopen, MutationObserver, `performance.now()`) over the live 3-session corpus: **35.0, 28.2, 29.6, 30.1, 29.8 ms** (median ≈29.8 ms). 29.8 ≤ 250 ms absolute PASS; ≤ 2.0 × max(small-corpus Δ, 100 ms floor) = ≤200 ms PASS. Two out-of-band samples (1214/1230 ms) came from a flawed multi-cycle in-page probe whose internal close/reopen raced (rows not asserted absent before reopen) — the controlled single-cycle runs all `rowsBefore=0` and are consistent; disclosed per G-171. Small-corpus leg not separately producible without wiping the live store (named limitation): the 100 ms floor bound applies.
+  - EXPECTED: Δ within the #2896 A-14 bound (≤ 250 ms absolute AND ≤ 2.0× small-corpus Δ, 100 ms floor — QA-6) — provider labeling adds no measurable latency. A "feels fine" with no numbers = FAIL.
+- [x] N-24 (NFR-2, no full-history scan, **PASS 2026-09-25 #2945 round 1** — code inspection): the list reads the declared `sessions` rollup via `useFeatureRead`/`useFeatureWatch` on `MISSION_MONITOR_SESSIONS_REF` (`useSessionHistory.ts:36-40,136-141`); the label is `asString(row.provider) ?? null` (`rollupRowToSession`, :90) — a projected row field, no per-session OTLP span lookup and no history scan. Zero UI references to `telemetry_spans` (grep: only 2 comment mentions, no query).
+  - EXPECTED: the label is a projected row field; the list still renders on its first round-trip with no full-history scan.
+- [x] N-25 (NFR-3, single shared provider rule, **PASS 2026-09-25 #2945 round 1** — code + live cross-check): the rollup copies `ChatRow.provider` verbatim (`RollupChatRow::from_chat_row`, `session_rollup.rs:120-133`; `compute_facts` picks it, :299-319) — no extraction in the projection. The token is produced by the one shared `resolve_provider_token` (`rtdb/attrs.rs:323-341`, reads only `service.name`). Live cross-check: `SELECT provider FROM chat_rows WHERE session_id='e2e-copilotsplit2945b'` = `copilot_cli`, `…provunk2945` = `unknown`, OpenCode = `open_code` — never a model id; the UI reads the typed field directly (no `??` extraction chain; the single `?? null` is the typed-null normalize).
+  - EXPECTED: ONE shared extraction path (`rtdb/attrs.rs`, Spec #2932) feeds the row's `provider`; the UI reads the typed field directly — no `??` fallback chain, no multi-path lookup, no text filtering. FAIL if the label re-derives provider or reads `telemetry_spans.provider`.
+- [x] N-26 (NFR-4, no re-render loop, #523, **PASS 2026-09-25 #2945 round 1**): `tauri_read_logs(source="console")` after open/select/switch/rename/delete/theme change showed NO `Error:` / `Uncaught` / `Maximum update depth exceeded` — only the pre-existing `motion() is deprecated` WARN, `[mission-monitor] auto-fit` DEBUG lines, and the tester's own synthetic-open probe WARN (`confirm_app_open_request failed … "lat*"` — a fixture-seam artifact of the latency lever, not a product defect; no user path emits it). Derivation is `useMemo` on the row-store `epoch` + stable map (`useSessionHistory.ts:154-172`), no `.length`/newly-created-object deps.
+  - EXPECTED: no `Error:` / `Uncaught` / `Maximum update depth exceeded`; derivation epoch-based (no `.length`/newly-created-object `useEffect`/`useMemo` deps added).
+  - Regression risk (#523): a `useEffect` depending on the session array `.length` or a newly-created label object → FAIL.
+
+---
+
+# Mission Monitor — Functional Test Cases (Slice 3, #2976 — migrated PostgreSQL RTDB/SpanStore, end-to-end acceptance)
+
+> Durable functional suite (feature domain `mission-monitor`), extended for slice 3 of the PostgreSQL
+> migration (#2976): `RtdbStore` + `SpanStore` move onto the shared PG pool behind an unchanged
+> write-behind/LRU row pipeline. Mission Monitor is the end-to-end acceptance surface — a store-migration
+> bug surfaces here even when the unit gates are green.
+>
+> **Evidence policy: LIVE (mandatory).** The exit gate / audit fail-closed unless the tester's Evidence
+> references `telemetry_spans` (an OTLP-ingested live receipt — the CLI `fredo emit` path writes NO
+> spans, G-256) AND a rendered-webview receipt (DOM snapshot / screenshot) for the SAME instant, on the
+> migrated store. A static-only PASS is a FALSE PASS.
+>
+> **G-263 SAFETY:** every live leg is bounded and torn down via
+> `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec 2976` / `-Action Down`; never a bare
+> `postgres`/`pg_ctl`; the named failure mode is the #2948 ~11 h `pg.stop()` hang. An unbounded wait is
+> a FAIL, not a skip.
+>
+> Fixture doctrine (G-073/G-076/G-080): OpenCode = a live Terminal-driven session (never the `opencode`
+> binary from a shell); Copilot = the committed in-repo split-turn producer
+> (`bun .opencode/scripts/inject-otlp-fixture.ts --copilot --fixture <fixture>`), never a filesystem
+> hunt (G-172). Cross-check `telemetry_spans` / `chat_rows` / `tool_use_rows` / `agent_session_rows` at
+> the SAME instant as every DOM assertion (G-073.3).
+
+## Migrated store end-to-end acceptance (HUMAN DIRECTIVE — MANDATORY)
+
+- [ ] **F-54 (HUMAN DIRECTIVE, slice 3 #2976 — duplicate of `postgres-stores` F-39). Boot the app on the migrated PostgreSQL store and verify Mission Monitor still renders LIVE agent sessions / tools / tokens / graph for BOTH an OpenCode session AND a Copilot session at ONE instant, cross-checked against `telemetry_spans` and the migrated row tables — NO regression vs the pre-migration rendering.**
+  Procedure: start on the PostgreSQL store (the only store); drive a live
+  OpenCode session through the **Terminal** feature (`write_pty_input` with a trailing `\r`) AND inject
+  a Copilot split-turn session via the in-repo producer; open Mission Monitor; select each session in
+  turn at one instant; snapshot the DOM + screenshot; query `telemetry_spans` +
+  `chat_rows`/`tool_use_rows`/`agent_session_rows` + `pg_stat_activity` at the SAME instant.
+  - EXPECTED: BOTH sessions are listed as distinct entries (never merged, never one hidden); selecting
+    each renders its chat node(s) + `── USER ──` + `── TOOLS (N) ──` + `── RESPONSE ──` + token
+    figures + the graph at the SAME structural detail as the pre-migration OpenCode baseline; the
+    rendered session/tool/token values equal the same-instant `telemetry_spans` rows AND the columns
+    of the migrated `*_rows` tables (the rows are served by PostgreSQL, not the SQLite fallback);
+    `pg_stat_activity` / `storage_engine_status` confirm the PG engine is active. No regression vs the
+    pre-migration rendering.
+  - Edge: OpenCode-only; Copilot-only; both in one store; switching back and forth; rows landing
+    mid-stream; a stale SQLite fallback (FAIL); a blank/partial panel while rows exist (FAIL); the
+    Copilot split-turn null `userMessage` still rendering its node.
+  - Evidence: the same-instant DOM snapshot + screenshot + `telemetry_spans`/row query output +
+    `storage_engine_status` (the live receipt). A static-only or single-provider receipt = **FALSE
+    PASS**.
+
+## Non-functional — slice 3 (#2976)
+
+- [ ] **N-27 (NFR, no regression under the migrated store, #523):** `tauri_read_logs(source="console")`
+  after PG-selected boot, session select/switch, and the dual-provider drive.
+  - EXPECTED: no `Error:` / `Uncaught` / `Maximum update depth exceeded`; derivation epoch-based; the
+    migrated store adds no round-trip or full-history scan to the list path.
+  - Regression risk (#523): a `useEffect`/`useMemo` dep on `.length` or a newly-created object; a new
+    synchronous scan introduced by the store swap.
+
+## Round 1 — 2026-10-01, `spec/2976 @ c83a0b62` — **F-54 PASS**
+
+PostgreSQL boot (the only store). Live OpenCode session driven through **Terminal**
+(`spawn_terminal_session` + `write_pty_input` with trailing `\r`), session `ses_f076afb13ffepyVcchvL1Onuya`;
+Copilot session via the committed split-turn producer
+(`bun .opencode/scripts/inject-otlp-fixture.ts --copilot --fixture .opencode/scripts/copilot-turn-split.fixture.json`),
+session `e2e-copilotsplit2933`. Both listed as distinct entries (`◈OpenCode` / `◆GitHub Copilot`); selecting
+each renders chat node + `── TOOLS (N) ──` + RESPONSE + tokens + graph. Same-instant cross-check: Copilot node
+INPUT 10,241 / OUTPUT 14 = PG `chat_rows` `_4`; tool `view` 10 ms = PG `tool_use_rows` `_3.duration_ms`;
+OpenCode session bar TOTAL 52,261 = PG `agent_session_rows` `_4.total_tokens`; `pg_stat_activity` client
+backends 7 ≤ 8. Persistence re-verified after a full restart. Console clean (only the pre-existing
+`motion() is deprecated` WARN + `auto-fit` DEBUG). **R-61..R-65 / N-27 PASS.**
+
+---
+
+# Mission Monitor — Functional Test Cases (Slice 6, #2979 — default PostgreSQL cutover + SQLite removal, E2E acceptance)
+
+> Durable functional suite (feature domain `mission-monitor`), extended for slice 6 of the PostgreSQL
+> migration (#2979): embedded PostgreSQL becomes the DEFAULT and the SQLite persistence path is
+> removed. Mission Monitor is the end-to-end acceptance surface — a cutover/removal bug surfaces here
+> even when the unit gates are green. This is the HUMAN DIRECTIVE row (G-256).
+>
+> **Evidence policy: LIVE (mandatory).** The exit gate / audit fail-closed unless the tester's Evidence
+> references `telemetry_spans` (an OTLP-ingested live receipt — the CLI `fredo emit` path writes NO
+> spans, G-256) AND a rendered-webview receipt (DOM snapshot / screenshot) for the SAME instant, on the
+> PostgreSQL-default store. A static-only PASS is a FALSE PASS.
+>
+> **G-284 PG read lever (disclosed substitution).** `telemetry-query` is SQLite-only and cannot read
+> the migrated PG store; live PG reads use the managed `psql`
+> (`%APPDATA%\com.fredo.app\postgres-install\18.6.0\bin\psql.exe`) via the allowlisted wrapper
+> `run-exitcode.ps1`, URI from `pg_supervisor_status` + the `postgres.password` AppStore key, database
+> `postgres`.
+>
+> **G-263 SAFETY:** every live leg is bounded and torn down via
+> `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec 2979` / `-Action Down`; never a bare
+> `postgres`/`pg_ctl`; the named failure mode is the #2948 ~11 h `pg.stop()` hang. An unbounded wait is
+> a FAIL, not a skip.
+>
+> Fixture doctrine (G-073/G-076/G-080): OpenCode = a live Terminal-driven session (never the `opencode`
+> binary from a shell); Copilot = the committed in-repo split-turn producer
+> (`bun .opencode/scripts/inject-otlp-fixture.ts --copilot --fixture <fixture>`). Cross-check
+> `telemetry_spans` / `chat_rows` / `tool_use_rows` / `agent_session_rows` at the SAME instant as every
+> DOM assertion (G-073.3).
+
+## Default-cutover end-to-end acceptance (HUMAN DIRECTIVE — MANDATORY)
+
+- [ ] **F-55 (HUMAN DIRECTIVE, slice 6 #2979 — duplicate of `postgres-cutover` F-12). Boot the app on
+  the PostgreSQL-DEFAULT path with REAL migrated data and verify Mission Monitor still renders LIVE
+  agent sessions / tools / tokens / graph for BOTH an OpenCode session AND a Copilot session at ONE
+  instant, at parity with the pre-cutover SQLite rendering — AND exercise the executable SQLite
+  backout to prove reversibility.**
+  Procedure: capture a pre-cutover Mission Monitor baseline (DOM + screenshot + source rows) on the
+  BEFORE leg (`dev-env.ps1 -Action Up -Spec 2979 -At <pre-change-tip>`); cut over the real corpus
+  (bounded per table, G-286); boot on the PostgreSQL store;
+  drive a live OpenCode session through the **Terminal** feature (`write_pty_input` with a trailing
+  `\r`) AND inject a Copilot split-turn session via the in-repo producer; open Mission Monitor; select
+  each session at one instant; snapshot the DOM + screenshot; read the migrated store via managed
+  `psql` at the SAME instant. Then execute the historical SQLite backout (stop app → restore the
+  pre-cutover snapshot over the legacy SQLite file → start the pre-cutover build) and confirm the restored counts/checksums.
+  - EXPECTED: BOTH sessions listed as distinct entries (never merged, never one hidden); selecting
+    each renders its chat node(s) + `── USER ──` + `── TOOLS (N) ──` + RESPONSE + token figures + the
+    graph at the SAME structural detail as the pre-cutover SQLite baseline; the rendered
+    session/tool/token values equal the same-instant `telemetry_spans` rows AND the columns of the
+    migrated `*_rows` tables (served by PostgreSQL, not a SQLite fallback); the backout is executed
+    and the restored legacy-file checksums match the pre-cutover values; `rollback.verified == true`.
+    No regression vs the pre-cutover rendering.
+  - Edge: OpenCode-only; Copilot-only; both in one store; switching back and forth; rows landing
+    mid-stream; a stale SQLite read (FAIL); a blank/partial panel while rows exist (FAIL); the Copilot
+    split-turn null `userMessage` still rendering its node; a backout that does not restore byte-exact
+    (FAIL).
+  - Evidence: the same-instant DOM snapshot + screenshot + `telemetry_spans`/row query output +
+    `storage_engine_status` + the restored-snapshot checksum (the live receipt). A static-only,
+    single-provider, or backout-less receipt = **FALSE PASS**.
+
+## Non-functional — slice 6 (#2979)
+
+- [ ] **N-28 (NFR, no regression on the default PostgreSQL path, #523):**
+  `tauri_read_logs(source="console")` after the PostgreSQL-default boot, session select/switch, and the
+  dual-provider drive.
+  - EXPECTED: no `Error:` / `Uncaught` / `Maximum update depth exceeded`; derivation epoch-based; the
+    cutover/removal adds no round-trip or full-history scan to the list path.
+  - Regression risk (#523): a `useEffect`/`useMemo` dep on `.length` or a newly-created object; a new
+    synchronous scan introduced by the removal.
